@@ -42,6 +42,10 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer positions_device;
 	SparkMemoryBuffer context_device;
 	SparkMemoryBuffer state_device;
+	SparkMemoryBuffer runs_host;
+	SparkMemoryBuffer runs_device;
+	SparkMemoryBuffer seqslot_host;
+	SparkMemoryBuffer seqslot_device;
 	SparkMemoryBuffer output_tokens;
 	SparkMemoryBuffer output_scores;
 	SparkK3DsparkPack drafter_pack;
@@ -513,13 +517,109 @@ static SparkStatus K3ServingInitialize(
 		status = SparkMemoryBufferAllocate(&state->state_device,
 			SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (uint64_t)state->max_rows * 4u);
 	if ( status == SPARK_STATUS_OK )
-	/* The KDA runs: consecutive rows sharing a resident slot form ONE
-	 * sequential run through the recurrence kernels (a multi-row prefill
-	 * span of one sequence = one run; batch-decode rows are runs of one).
-	 * The kernels address state per SEQUENCE (state_index[sequence]), so
-	 * the run-slot array carries each run's first row's slot. A run count
-	 * that disagrees with the submission's declared active count is a
-	 * contract break - fail loud, never guess the grouping. */
+		status = SparkMemoryBufferAllocate(&state->runs_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT,
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->runs_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
+			((uint64_t)state->max_rows + 1u) * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->seqslot_host,
+			SPARK_MEMORY_SPACE_HOST_COHERENT,
+			(uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->seqslot_device,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
+			(uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->output_tokens,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
+			(uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMemoryBufferAllocate(&state->output_scores,
+			SPARK_MEMORY_SPACE_DEVICE_PRIVATE,
+			(uint64_t)state->max_rows * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
+			SPARK_STATUS_CAPACITY_EXCEEDED : status; }
+	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status; }
+	status = K3ServingInitializeSpeculationSeam(state);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status; }
+	*adapter_state = state;
+	return SPARK_STATUS_OK;
+}
+
+static void K3ServingDestroy(void *adapter_state)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	if ( state == 0 )
+		return;
+	SparkK3StageRunnerDestroy(&state->runner);
+	SparkMemoryBufferFree(&state->positions_host);
+	SparkMemoryBufferFree(&state->context_host);
+	SparkMemoryBufferFree(&state->state_host);
+	SparkMemoryBufferFree(&state->positions_device);
+	SparkMemoryBufferFree(&state->context_device);
+	SparkMemoryBufferFree(&state->state_device);
+	SparkMemoryBufferFree(&state->runs_host);
+	SparkMemoryBufferFree(&state->runs_device);
+	SparkMemoryBufferFree(&state->seqslot_host);
+	SparkMemoryBufferFree(&state->seqslot_device);
+	SparkMemoryBufferFree(&state->output_tokens);
+	SparkMemoryBufferFree(&state->output_scores);
+	if ( state->drafter_pack_bound != 0u )
+		SparkK3DsparkPackRelease(&state->drafter_pack);
+	free(state->pack_path);
+	free(state);
+}
+
+static SparkStatus K3ServingValidateSubmission(void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	if ( state == 0 || submission == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( submission->row_count == 0u || submission->row_count > state->max_rows )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3ServingSubmit(void *adapter_state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	SparkK3StageRunnerDispatch dispatch;
+	uint64_t *positions_host64;
+	uint32_t rows;
+	SparkStatus status;
+	if ( state == 0 || submission == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	rows = submission->row_count;
+	positions_host64 = (uint64_t *)malloc((uint64_t)rows * sizeof(uint64_t));
+	if ( positions_host64 == 0 )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	memcpy(positions_host64, submission->row_positions,
+		(uint64_t)rows * sizeof(uint64_t));
+	for ( uint32_t i = 0u; i < rows; ++i )
+	{
+		((uint32_t *)state->positions_host.pointer)[i] = (uint32_t)positions_host64[i];
+		((uint32_t *)state->context_host.pointer)[i] = (uint32_t)positions_host64[i] + 1u;
+		((uint32_t *)state->state_host.pointer)[i] = submission->lanes != 0
+			? submission->lanes[submission->row_lane_indices != 0
+				? submission->row_lane_indices[i] : i].resident_sequence_slot
+			: i;
+	}
+	free(positions_host64);
+	(void)SparkMemoryBufferCopy(&state->positions_device,
+		&state->positions_host, (uint64_t)rows * 4u, 0);
+	(void)SparkMemoryBufferCopy(&state->context_device,
+		&state->context_host, (uint64_t)rows * 4u, 0);
+	(void)SparkMemoryBufferCopy(&state->state_device,
+		&state->state_host, (uint64_t)rows * 4u, 0);
 	{
 		uint32_t *runs = (uint32_t *)state->runs_host.pointer;
 		uint32_t *slots = (uint32_t *)state->state_host.pointer;
@@ -539,7 +639,7 @@ static SparkStatus K3ServingInitialize(
 			&state->runs_host, ((uint64_t)active + 1u) * sizeof(uint32_t), 0);
 		(void)SparkMemoryBufferCopy(&state->seqslot_device,
 			&state->seqslot_host, (uint64_t)active * sizeof(uint32_t), 0);
-	}	memset(&dispatch, 0, sizeof(dispatch));
+	}
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
 	dispatch.request_id = submission->request_id;
@@ -547,7 +647,8 @@ static SparkStatus K3ServingInitialize(
 	dispatch.sequence_position = submission->sequence_position;
 	dispatch.deadline_time_ns = submission->deadline_time_ns;
 	dispatch.row_count = rows;
-	dispatch.active_sequence_count = submission->active_sequence_count;
+	dispatch.active_sequence_count = submission->active_sequence_count != 0u
+		? submission->active_sequence_count : rows;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.positions = state->positions_device.pointer;
 	dispatch.context_length = state->context_device.pointer;
@@ -658,6 +759,8 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
 	.capability_flags =
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
@@ -676,6 +779,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
+	.resident_sequence_slot_reuse = 0u,
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
