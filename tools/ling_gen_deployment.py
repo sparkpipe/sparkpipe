@@ -3,17 +3,14 @@
 shared multi-node model_resident.json.
 
 Hosts: rank r -> spark hex letter r (fleet pack policy), overridable via
-LING_TP_HOSTS. The tp_collective session port base is ENV-DRIVEN with NO
-frozen default: the session-port space above 64700 is structurally out of
-room for degree-16 fleets (route-kind offsets +256/+512/+768 against the
-65535 ceiling), so the numeric base is PENDING a fleet-level port
-renumber owned by the manager + coredev. hidden_transport (ling's
-required backend) refuses to generate until LING_SESSION_BASE (and
-optionally LING_SESSION_HC_BASE) allocate a cleared range.
+LING_TP_HOSTS. The tp_collective session port base is the frozen fleet
+ledger value (sparkpipe-coord/PORT_LEDGER.md): ling = 12288, block
+12288-13311, sized for the full TP16 session matrix plus every
+route-kind offset (+768 worst case) with margin. LING_SESSION_BASE
+overrides for a renumbered fleet.
 
 Usage:
-  LING_SESSION_BASE=61000 python3 tools/ling_gen_deployment.py \
-      --output deployment/ling_tp16
+  python3 tools/ling_gen_deployment.py --output deployment/ling_tp16
 """
 from __future__ import annotations
 
@@ -34,7 +31,7 @@ RUNTIME_ROOT = os.environ.get(
 CONTROL_BASE = int(os.environ.get("LING_CONTROL_BASE", "19590"))
 COLLECTIVE_BASE = int(os.environ.get("LING_COLLECTIVE_BASE", "63560"))
 TRANSPORT_BASE = int(os.environ.get("LING_TRANSPORT_BASE", "60730"))
-SESSION_BASE = os.environ.get("LING_SESSION_BASE")
+SESSION_BASE = os.environ.get("LING_SESSION_BASE", "12288")
 SESSION_HC_BASE = os.environ.get("LING_SESSION_HC_BASE")
 COLLECTIVE_ID = 9911223344556680
 BACKEND = os.environ.get("LING_BACKEND", "hidden_transport")
@@ -55,15 +52,12 @@ def tp_collective() -> dict:
         raise SystemExit(
             f"LING_BACKEND={BACKEND}: the ling driver program requires the "
             f"hidden-transport backend (REQUIRES_HIDDEN_TRANSPORT)")
-    if SESSION_BASE is None:
+    base = int(SESSION_BASE)
+    if base <= 0 or base + TP * TP - 1 + 768 > 65535:
         raise SystemExit(
-            "LING_SESSION_BASE is required and intentionally has NO default: "
-            "every session cell takes route-kind offsets (+256 D2A, +512 "
-            "TREE_ACK, +768 D2A_ACK) against the 65535 ceiling, so a TP16 "
-            "matrix needs ~1024 cleared ports and the space above 64700 "
-            "cannot host one. The numeric base is PENDING a fleet-level "
-            "port renumber (manager + coredev). Allocate a cleared range "
-            "and export LING_SESSION_BASE=<first port>.")
+            f"LING_SESSION_BASE {base}: the session matrix plus the "
+            f"route-kind offsets (+768 D2A_ACK worst case) must stay under "
+            f"65535; the frozen ledger value for ling is 12288")
     table = {
         "backend": BACKEND,
         "backend_module_path": "lib/hidden_transport.so",

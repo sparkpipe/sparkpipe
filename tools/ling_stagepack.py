@@ -210,6 +210,74 @@ def to_bytes(t: np.ndarray) -> bytes:
     return np.ascontiguousarray(t).tobytes()
 
 
+MASK64 = (1 << 64) - 1
+
+
+def _rotl64(x: int, r: int) -> int:
+    return ((x << r) | (x >> (64 - r))) & MASK64
+
+
+def _fmix64(k: int) -> int:
+    k ^= k >> 33
+    k = (k * 0xff51afd7ed558ccd) & MASK64
+    k ^= k >> 33
+    k = (k * 0xc4ceb9fe1a85ec53) & MASK64
+    k ^= k >> 33
+    return k
+
+
+def ck128(data: bytes) -> bytes:
+    """Bit-exact port of src/spark_ck128.c (MurmurHash3 x64 128, seed 0)."""
+    c1 = 0x87c37b91114253d5
+    c2 = 0x4cf5ad432745937f
+    h1 = h2 = 0
+    whole = len(data) // 16
+    for block in range(whole):
+        k1, k2 = struct.unpack_from("<QQ", data, block * 16)
+        k1 = (k1 * c1) & MASK64
+        k1 = _rotl64(k1, 31)
+        k1 = (k1 * c2) & MASK64
+        h1 ^= k1
+        h1 = _rotl64(h1, 27)
+        h1 = (h1 + h2) & MASK64
+        h1 = (h1 * 5 + 0x52dce729) & MASK64
+        k2 = (k2 * c2) & MASK64
+        k2 = _rotl64(k2, 33)
+        k2 = (k2 * c1) & MASK64
+        h2 ^= k2
+        h2 = _rotl64(h2, 31)
+        h2 = (h2 + h1) & MASK64
+        h2 = (h2 * 5 + 0x38495ab5) & MASK64
+    tail = data[whole * 16:]
+    k1 = k2 = 0
+    if len(tail) > 8:
+        k2 = struct.unpack("<Q", tail[8:].ljust(8, b"\0"))[0]
+        k2 = (k2 * c2) & MASK64
+        k2 = _rotl64(k2, 33)
+        k2 = (k2 * c1) & MASK64
+        h2 ^= k2
+    k1 = struct.unpack("<Q", tail[:8].ljust(8, b"\0"))[0] if tail else 0
+    k1 = (k1 * c1) & MASK64
+    k1 = _rotl64(k1, 31)
+    k1 = (k1 * c2) & MASK64
+    h1 ^= k1
+    total = (len(data) & MASK64)
+    h1 ^= total
+    h2 ^= total
+    h1 = (h1 + h2) & MASK64
+    h2 = (h2 + h1) & MASK64
+    h1 = _fmix64(h1)
+    h2 = _fmix64(h2)
+    h1 = (h1 + h2) & MASK64
+    h2 = (h2 + h1) & MASK64
+    return struct.pack("<QQ", h1, h2)
+
+
+EXPERT_MANIFEST_MAGIC = 0x58504557
+EXPERT_MANIFEST_VERSION = 2
+EXPERT_RANGE_BYTES_MAX = 64 * 1024 * 1024
+
+
 class Entry:
     def __init__(self, kind: int, layer: int, payload_type: int, weight_codec: int,
                  scale_encoding: int, group_count: int, rows: int, columns: int):
@@ -656,6 +724,43 @@ def census_check(weight_map: Dict[str, str], packed: List[str],
     }
 
 
+def write_expert_manifest(pack_path: Path, plan: List[PlanItem]) -> int:
+    """Emit <pack>.experts: the weightd lazy-expert manifest v2.
+
+    16-byte header (magic 0x58504557, version 2, range count, reserved 0)
+    then one 48-byte record per expert plane: layer, expert, kind
+    (tensor kind * 2 + plane, payload plane only - the bf16 arm has no
+    scale planes), reserved 0, offset, bytes, ck128 digest. Ranges are
+    emitted in offset order; SparkWeightdManifestLoad re-sorts and
+    re-checks overlap anyway."""
+    ranges = []
+    for item in plan:
+        entry = item.entry
+        if entry.kind not in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
+            continue
+        per = entry.payload_bytes // EXPERTS
+        if per == 0 or per > EXPERT_RANGE_BYTES_MAX:
+            raise PackFailure(f"{entry.kind}: per-expert slab {per} bytes "
+                              f"outside the weightd manifest contract")
+        for expert in range(EXPERTS):
+            ranges.append((entry.payload_offset + expert * per, per,
+                           entry.layer_index, expert, entry.kind * 2))
+    ranges.sort()
+    with pack_path.open("rb") as pack:
+        records = bytearray()
+        for offset, length, layer, expert, kind in ranges:
+            pack.seek(offset)
+            digest = ck128(pack.read(length))
+            records += struct.pack("<IIIIQQ", layer, expert, kind, 0,
+                                   offset, length) + digest
+    sidecar = pack_path.parent / (pack_path.name + ".experts")
+    with sidecar.open("wb") as out:
+        out.write(struct.pack("<IIII", EXPERT_MANIFEST_MAGIC,
+                              EXPERT_MANIFEST_VERSION, len(ranges), 0))
+        out.write(records)
+    return len(ranges)
+
+
 def mtp_tensor_names(weight_map: Dict[str, str]) -> List[str]:
     return sorted(name for name in weight_map if name.startswith("model.layers.42."))
 
@@ -703,6 +808,13 @@ def main() -> int:
         with path.open("rb") as file:
             for block in iter(lambda: file.read(8 * 1024 * 1024), b""):
                 digest.update(block)
+        spine_bytes = sum(item.entry.payload_bytes for item in packer.plan
+                          if item.entry.kind not in (K_EXPERT_UP_GATE,
+                                                     K_EXPERT_DOWN))
+        expert_bytes = sum(item.entry.payload_bytes for item in packer.plan
+                           if item.entry.kind in (K_EXPERT_UP_GATE,
+                                                  K_EXPERT_DOWN))
+        manifest_ranges = write_expert_manifest(path, packer.plan)
         receipt = {
             "pack": path.name,
             "sha256": digest.hexdigest(),
@@ -714,12 +826,21 @@ def main() -> int:
             "source_revision": source_revision,
             "expert_codec": args.expert_codec,
             "census": census,
+            "resident_bytes": {
+                "spine": spine_bytes,
+                "expert_payload": expert_bytes,
+                "note": "spine is always-resident; expert_payload is the "
+                        "weightd lazy tier's working set per node",
+            },
+            "expert_manifest_ranges": manifest_ranges,
         }
         (receipts / f"rank{rank}.json").write_text(json.dumps(receipt, indent=1) + "\n")
         print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes, "
               f"sha256 {receipt['sha256'][:16]}... (tp{receipt['tp_degree']} "
               f"rank {rank}, census {census['checkpoint_tensors']} = "
-              f"{census['packed']} packed + {census['omitted_mtp']} mtp)")
+              f"{census['packed']} packed + {census['omitted_mtp']} mtp, "
+              f"spine {spine_bytes} + expert {expert_bytes} bytes, "
+              f"{manifest_ranges} manifest ranges)")
     source.close()
     return 0
 
