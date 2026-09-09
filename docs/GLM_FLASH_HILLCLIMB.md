@@ -1,5 +1,15 @@
 # GLM 5.3 Flash hill-climbing log
 
+The checkpoint layer reference accepts `--layers 3` to compute the entire
+initial KDA/dense prefix at position zero, including every residual transition.
+Each intermediate array is named `layerN_stage`; `next_attention_norm` is the
+following layer's input. Unsupported layer types fail before tensor loading.
+The one-layer run on reference revision efb24be, compared with merged TP16
+driver 19bbc6e, measured relative L2 0.0129513 and cosine 0.9999163 at layer 1.
+This is diagnostic evidence, not acceptance: activation FP8 quantization is
+not modeled, and full-model output still repeats. Receipts are preserved at
+`/private/tmp/ds4_glm_layer1_19bbc6e/comparison.json` on the coordinator.
+
 The checkpoint layer reference (`tools/glm5_next_checkpoint_layer_reference.py`)
 computes layer zero at position zero from a token and checkpoint weights only.
 It covers embedding, full-width KDA, dense MLP, both hyperconnection sites and
