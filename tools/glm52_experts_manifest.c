@@ -83,17 +83,8 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHead
 	SparkGlm52StagePackEntry entry;
 	uint32_t words[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,SPARK_WEIGHTD_RANGE_MANIFEST_VERSION,0u,0u};
 	uint32_t i;
-	uint32_t routed_layers = 0u;
-	uint64_t up = 0u,down = 0u;
+	uint32_t up_seen = 0u,down_seen = 0u;
 	int32_t err;
-	for (i=0u; i<SPARK_GLM52_MODEL_LAYER_COUNT; i++)
-		if ( SparkGlm52StagePackKindIsDense(SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP) == 0u && i >= SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER )
-		{
-			up |= (UINT64_C(1) << i);
-			down |= (UINT64_C(1) << i);
-			routed_layers++;
-		}
-	(void)routed_layers;
 	if ( fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-8);
 	for (i=0u; i<header->tensor_count; i++)
@@ -102,18 +93,18 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHead
 			return(-9);
 		if ( entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
 		{
-			if ( entry.layer_index >= 64u )
+			if ( entry.layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER )
 				return(-23);
 			if ( entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE )
-				up &= ~(UINT64_C(1) << entry.layer_index);
+				up_seen++;
 			else
-				down &= ~(UINT64_C(1) << entry.layer_index);
+				down_seen++;
 		}
 		err = entry_write(pack,out,header,&entry,&words[2]);
 		if ( err < 0 )
 			return(err);
 	}
-	if ( up != 0u || down != 0u || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
+	if ( up_seen != down_seen || up_seen != SPARK_GLM52_MODEL_LAYER_COUNT - SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-10);
 	return(0);
 }
@@ -128,7 +119,7 @@ static int32_t header_read(FILE *pack,SparkGlm52StagePackHeader *header)
 		return(-12);
 	if ( header->file_bytes != (uint64_t)st.st_size || header->routed_expert_count == 0u || header->tensor_count == 0u )
 		return(-13);
-	if ( header->first_layer_index != 0u || header->layer_count != SPARK_GLM52_MODEL_LAYER_COUNT )
+	if ( header->layer_count != SPARK_GLM52_MODEL_LAYER_COUNT )
 		return(-26);
 	directory_bytes = ((uint64_t)header->tensor_count * sizeof(SparkGlm52StagePackEntry));
 	if ( header->directory_offset < sizeof(*header) || header->directory_offset > header->file_bytes || directory_bytes > (header->file_bytes - header->directory_offset) )

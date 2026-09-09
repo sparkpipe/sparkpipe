@@ -116,6 +116,7 @@ def resident_deployment(codec, runtime_root_template):
     return {
         "schema_version": 2,
         "coordinator_rank_index": 0,
+        "weightd": {"socket_path": "/tmp/spark_weightd.sock"},
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
             "shared_object_path": "lib/model_driver.so",
