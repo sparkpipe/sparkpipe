@@ -25,6 +25,7 @@
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
+#include "sparkpipe/spark_dsv4_model.h"
 #include "modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h"
 
 #define DSV4_EXPERT_KIND_COUNT 3u
