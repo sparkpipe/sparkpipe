@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
@@ -280,7 +281,8 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 }
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
-	SparkK3BoundLayer *bounds, uint32_t layer_count)
+	SparkK3BoundLayer *bounds, uint32_t layer_count,
+	SparkWeightdLazyPack *lazy)
 {
 	if ( d == 0 || pack == 0 || bounds == 0 || layer_count != d->layer_count )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
@@ -293,7 +295,30 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		K3LayerWeights *w = &host[off];
 		for ( uint32_t i = 0u; i < (uint32_t)(sizeof(k3_weight_binds) / sizeof(k3_weight_binds[0])); ++i )
 		{
-			const void *payload = SparkK3BoundPayload(pack, bound, k3_weight_binds[i].name);
+			const char *name = k3_weight_binds[i].name;
+			size_t name_len = strlen(name);
+			int32_t is_expert = name_len >= 16u &&
+				strcmp(name + name_len - 16u, "expert_w1_weight") == 0;
+			const void *payload = 0;
+			if ( !is_expert && name_len >= 16u )
+				is_expert = strcmp(name + name_len - 16u,
+					"expert_w2_weight") == 0;
+			if ( lazy != 0 )
+			{
+				const SparkK3PackEntry *entry =
+					SparkK3BoundEntry(bound, name);
+				if ( entry == 0 )
+					continue;
+				if ( is_expert )
+					continue; /* leased per layer at dispatch */
+				status = SparkWeightdLazyPackSlice(lazy,
+					pack->payload_base + entry->payload_offset,
+					entry->bytes, &payload);
+				if ( status != SPARK_K3_DISPATCH_OK )
+					return status;
+			}
+			else
+				payload = SparkK3BoundPayload(pack, bound, name);
 			if ( payload != 0 )
 				*(const void **)((char *)w + k3_weight_binds[i].offset) = payload;
 		}

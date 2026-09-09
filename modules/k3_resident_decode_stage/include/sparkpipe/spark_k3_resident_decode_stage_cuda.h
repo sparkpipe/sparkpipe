@@ -1,3 +1,4 @@
+struct SparkWeightdLazyPack;
 #ifndef SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_CUDA_H
 #define SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_CUDA_H
 
@@ -76,7 +77,8 @@ int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack);
 void SparkK3DispatchUnregisterPack(SparkK3Pack *pack);
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
-	SparkK3BoundLayer *bounds, uint32_t layer_count);
+	SparkK3BoundLayer *bounds, uint32_t layer_count,
+	SparkWeightdLazyPack *lazy);
 
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
