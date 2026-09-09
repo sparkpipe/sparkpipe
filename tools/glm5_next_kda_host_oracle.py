@@ -55,6 +55,24 @@ class Safetensors:
         fh.seek(base + offs[0])
         return np.frombuffer(fh.read(offs[1] - offs[0]), dtype=self._np(dt)).reshape(shape)
 
+    def raw_rows(self, name, first, count):
+        fname = self.map[name]
+        hdr,base = self._header(fname)
+        entry = hdr[name]
+        shape = entry['shape']
+        if len(shape) != 2 or first < 0 or count <= 0 or first+count > shape[0]:
+            raise ValueError('checkpoint row range outside a matrix')
+        dtype = np.dtype(self._np(entry['dtype']))
+        stride = shape[1]*dtype.itemsize
+        if entry['data_offsets'][1]-entry['data_offsets'][0] != shape[0]*stride:
+            raise ValueError('checkpoint matrix extent disagrees with shape')
+        fh = self.fds[fname]
+        fh.seek(base+entry['data_offsets'][0]+first*stride)
+        data = fh.read(count*stride)
+        if len(data) != count*stride:
+            raise ValueError('truncated checkpoint row range')
+        return np.frombuffer(data,dtype=dtype).reshape(count,shape[1])
+
     @staticmethod
     def _np(dt):
         return {"BF16": np.uint16, "F32": np.float32, "F16": np.float16,

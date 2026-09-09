@@ -1,5 +1,11 @@
 # GLM 5.3 Flash hill-climbing log
 
+The independent reference reads only the requested BF16 embedding row through
+the shared checkpoint reader. Token lookup requires 8192 payload bytes, not the
+entire 1268776960-byte embedding matrix. Row offsets, matrix extents, bounds and
+short reads are checked. This removes an observed cold Ceph read stall before
+the first layer; full-model projection weights are still required by the reference.
+
 The checkpoint reference now accepts `--layers 45` to compute the first token's
 logits through the full text model. It adds first-position DSA, routed/shared
 experts, the final mean of HC streams, and the output head. DSA uses the single
