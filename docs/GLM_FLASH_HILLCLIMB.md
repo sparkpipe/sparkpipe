@@ -940,3 +940,22 @@ HC1/HC2/HC4, widths 7/257/4096, separate output and snapshot aliasing.
 Removing coefficient rounding fails the first case. This component result
 does not establish GPU throughput or end-to-end numerical acceptance;
 merged-main first-layer captures and decode timing must follow.
+
+
+## BF16 RMS normalization contract
+
+GLM TextRMSNorm computes normalization in FP32, converts the normalized
+value to the input BF16 dtype, then applies the BF16 gain. The previous
+residual-capable kernel multiplied the gain before that intermediate round.
+All eight GLM call sites pass no residual. They now use the common
+LmBf16RmsNormKernel with only input, gain, output, geometry and epsilon.
+This covers attention/FFN input norms, DSA query and KV norms, and both head
+paths, retaining one launch and the existing shared-row staging. The
+residual-capable operation remains separate for callers that actually need it.
+
+The actual kernel passes 18 host cases spanning B1/B3/B17 and widths
+7/257/4096, with zero rows, padding guards and in-place normalization.
+Removing the intermediate BF16 round fails the first weighted case.
+This is a mathematical dtype contract, not a driver-selectable debug or
+performance mode. GPU and end-to-end numerical qualification still follow
+the merged-main deployment; do not infer them from the host harness.

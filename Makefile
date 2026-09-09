@@ -365,6 +365,7 @@ PYTHON_TESTS := \
 	tests/test_kda_host.py \
 	tests/test_tp_reduce_host.py \
 	tests/test_hc_post_host.py \
+	tests/test_bf16_rms_host.py \
 	tests/test_kv_failure_host.py \
 	tests/test_frame_error_host.py \
 	tests/test_kernel_frame_error_source.py \

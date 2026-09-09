@@ -74,6 +74,30 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *output,uint32_t dimension,uint32_t row_stride,float epsilon)
+{
+	extern __shared__ float lm_norm_shared[];
+	float *row = lm_norm_shared,*reduction = lm_norm_shared + dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
+	uint32_t index;
+	float total = 0.0f,scale,value;
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(input[base + index]);
+		row[index] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(LmFloatToBf16(row[index] * scale));
+		output[base + index] = LmFloatToBf16(value * LmBf16ToFloat(weight[index]));
+	}
+}
+
 template<uint32_t THREADS, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, const Weight *__restrict__ bias, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
