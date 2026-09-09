@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sparkpipe/spark_sha256.h"
 #include <time.h>
 
 #include <cuda_runtime.h>
@@ -1185,6 +1186,46 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4ModuleVerifyAcceptedPack(const char *path)
+{
+	char sidecar_path[4096];
+	char expected_hex[SPARK_SHA256_HEX_BYTES + 1u] = {0};
+	char actual_hex[SPARK_SHA256_HEX_BYTES] = {0};
+	char *newline;
+	FILE *sidecar;
+	size_t used;
+	snprintf(sidecar_path,sizeof(sidecar_path),"%s.sha256",path);
+	sidecar = fopen(sidecar_path,"rb");
+	if ( sidecar == 0 )
+	{
+		fprintf(stderr,"%s accepted_pack_sidecar_missing path=%s\n",SPARK_DSV4_MODULE_TAG,sidecar_path);
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	used = fread(expected_hex,1,SPARK_SHA256_HEX_BYTES,sidecar);
+	expected_hex[used] = '\0';
+	fclose(sidecar);
+	newline = strchr(expected_hex,'\n');
+	if ( newline != 0 )
+		*newline = '\0';
+	if ( used != SPARK_SHA256_HEX_BYTES || SparkSha256HexIsValid(expected_hex) == false )
+	{
+		fprintf(stderr,"%s accepted_pack_sidecar_malformed path=%s\n",SPARK_DSV4_MODULE_TAG,sidecar_path);
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	if ( SparkSha256File(path,actual_hex) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s accepted_pack_unreadable path=%s\n",SPARK_DSV4_MODULE_TAG,path);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	if ( memcmp(actual_hex,expected_hex,SPARK_SHA256_HEX_BYTES) != 0 )
+	{
+		fprintf(stderr,"%s accepted_pack_mismatch path=%s accepted=%s actual=%.*s\n",
+			SPARK_DSV4_MODULE_TAG,path,expected_hex,16,actual_hex);
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const char *path)
 {
 	SparkDsv4StagePackHeader header,expected;
@@ -1194,6 +1235,9 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 	SparkStatus status;
 	int32_t compare;
 	uint32_t index;
+	status = SparkDsv4ModuleVerifyAcceptedPack(path);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	file = fopen(path,"rb");
 	if ( file == 0 )
 	{

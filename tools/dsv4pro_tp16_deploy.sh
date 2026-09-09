@@ -44,7 +44,8 @@ else
     rsync -a --info=progress2 "${warm}/rank${rank}.spstage" "${target}:${remote_pack}"
     have=$(ssh -o BatchMode=yes "${target}" "sha256sum '${remote_pack}'" | awk '{print $1}')
     [[ "$have" == "$want" ]] || { echo "RANK${rank}-SHA-MISMATCH after copy"; exit 1; }
-    echo "RANK${rank}-PLACED ${target} sha=${have}"
+    ssh -o BatchMode=yes "${target}" "printf '%s  %s\n' '${have}' '$(basename "${remote_pack}")' > '${remote_pack}.sha256'"
+    echo "RANK${rank}-PLACED ${target} sha=${have} (accepted-pack sidecar written)"
 fi
 
 # Stage the TP16 deployment config on every visited node (idempotent).
