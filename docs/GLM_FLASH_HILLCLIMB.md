@@ -1,5 +1,25 @@
 # GLM 5.3 Flash hill-climbing log
 
+2026-09-09 embedding diagnosis: rank-zero captures on main `dd57197`
+contained zero layer-zero inputs for tokens outside its vocabulary shard.
+The embedding kernel intentionally emits zeros on non-owning ranks, but the
+required HC-wide embedding reduction returned success without enqueueing
+whenever `mtp_active` was zero. That field was never assigned. Removing the
+gate restores the collective before attention. The host regression executes
+the production submission function at B1 and B3, checks deferred completion,
+missing collective initialization and enqueue failure. The original function
+fails this regression with exit 2. Distributed numerical qualification follows
+merged-main deployment; this finding alone does not establish correct output.
+
+The same capture's recurrent-state difference against FP64 recomputation was
+approximately 1.1e-7 relative L2 at pass four. The first two captured inputs
+were all zero, so those exact comparisons provide little numerical coverage.
+PR #871 corrected missing BF16 rounding in the Python output-gating oracle
+and prevented normalization mismatches from silently omitting a comparison.
+Its merged-main replay removed the gating mismatch without changing tolerances.
+For future drivers, verify replicated input availability before judging
+downstream kernels; a locally correct computation on zero input is insufficient.
+
 Operator scope, 2026-09-08: concentrate on GLM Flash until it meets and exceeds
 the hardware-normalized performance target. Defer other model integrations
 and optimization lanes. Use their existing code as potential donors, but

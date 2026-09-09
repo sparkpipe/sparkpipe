@@ -99,7 +99,6 @@ struct SparkGlm5NextModuleState
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint32_t tp_collective_disabled;
-	uint32_t mtp_active;
 	uint32_t resident_sequence_capacity;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -2095,11 +2094,6 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 	uint64_t ordinal;
 	state = chain->state;
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
-	{
-		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
-		return(SPARK_STATUS_OK);
-	}
-	if ( hc_wide != 0u && state->mtp_active == 0u )
 	{
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
