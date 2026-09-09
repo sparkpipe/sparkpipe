@@ -36,8 +36,6 @@ extern "C" cudaError_t SparkMinimaxH3Conv1dDilated(cudaStream_t stream,
 	uint32_t channels, uint32_t length, uint32_t dilation, void *output_bf16);
 extern "C" cudaError_t SparkMinimaxH3Snake(cudaStream_t stream, const void *input_bf16,
 	const void *alpha_bf16, uint32_t channels, uint32_t length, void *output_bf16);
-extern "C" int32_t SparkMinimaxH3SchedulerBuildSigmas(float shift,
-	uint32_t sigma_point_count, float *sigmas_out, uint32_t *sigma_count_out);
 
 #define SPARK_MINIMAX_H3_VAL_MAX_RELATIVE_L2 2e-2
 #define SPARK_MINIMAX_H3_VAL_MIN_COSINE 0.9999

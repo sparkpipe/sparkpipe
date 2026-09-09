@@ -4,6 +4,10 @@
 
 #include "sparkpipe/spark_minimax_h3_model.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define SPARK_MINIMAX_H3_SCHEDULER_VIDEO_SHIFT SPARK_MINIMAX_H3_SCHEDULER_SHIFT
 #define SPARK_MINIMAX_H3_SCHEDULER_AUDIO_SHIFT SPARK_MINIMAX_H3_AUDIO_SCHEDULER_SHIFT
 
@@ -15,3 +19,7 @@ void SparkMinimaxH3SchedulerTimestepsFromSigmas(const float *sigmas, uint32_t si
 
 void SparkMinimaxH3SchedulerStepElement(float timestep, float sigma, float sigma_next,
 	float sample, float velocity, float *sample_next_out);
+
+#ifdef __cplusplus
+}
+#endif
