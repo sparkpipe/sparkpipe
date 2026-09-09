@@ -943,12 +943,12 @@ static int SparkLingValOracleSelftest(void)
 	{
 		uint32_t selected[SPARK_LING_VAL_TOP_K];
 		float weights[SPARK_LING_VAL_TOP_K];
-		static float router[SPARK_LING_VAL_EXPERTS * 2u];
+		static float router[SPARK_LING_VAL_EXPERTS * SPARK_LING_VAL_HIDDEN];
 		static float hidden[SPARK_LING_VAL_HIDDEN];
 		float correction[SPARK_LING_VAL_EXPERTS];
 		float total = 0.0f;
 		int distinct = 1,grouped = 1;
-		for (uint32_t i = 0u; i < SPARK_LING_VAL_EXPERTS * 2u; i++)
+		for (uint64_t i = 0u; i < (uint64_t)SPARK_LING_VAL_EXPERTS * SPARK_LING_VAL_HIDDEN; i++)
 			router[i] = ((float)(int32_t)(i % 17u) - 8.0f) * 0.05f;
 		for (uint32_t i = 0u; i < SPARK_LING_VAL_HIDDEN; i++)
 			hidden[i] = ((float)(int32_t)(i % 7u) - 3.0f) * 0.05f;
