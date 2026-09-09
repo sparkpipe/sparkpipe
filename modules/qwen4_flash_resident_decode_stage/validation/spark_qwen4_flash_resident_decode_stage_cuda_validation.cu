@@ -1123,8 +1123,10 @@ static int SparkQwen4FlashValCheckModule(void)
 				return(SparkQwen4FlashValFail("module_decode_vs_prefill","token_mismatch"));
 		}
 	}
+#if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT != 0
 	if (module.head_stage != 0u && SparkQwen4FlashValCheckMtpDraft(&module) != 0)
 		return(1);
+#endif
 	SparkQwen4FlashResidentDecodeStageDestroy(module.state);
 	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);

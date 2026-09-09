@@ -6,6 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef SPARK_SYNTH_EMIT_MTP_TAIL
+#define SPARK_SYNTH_EMIT_MTP_TAIL 1
+#endif
+#ifndef SPARK_SYNTH_HEAD_GLOBAL_KINDS
+#define SPARK_SYNTH_HEAD_GLOBAL_KINDS SPARK_SYNTH_MTP_GLOBAL_KINDS
+#endif
+
 #ifdef SPARK_SYNTH_QWEN_TEMPLATE
 typedef struct SparkSynthContext
 {
@@ -217,10 +224,17 @@ static int32_t SparkSynthBuildDirectory(SparkSynthContext *context, uint32_t qua
 	}
 	if ( last == SPARK_SYNTH_MODEL_LAYER_COUNT )
 	{
+#if SPARK_SYNTH_EMIT_MTP_TAIL == 0
+		static const uint32_t head_globals[] =
+		{
+			SPARK_SYNTH_HEAD_GLOBAL_KINDS
+		};
+#else
 		static const uint32_t mtp_globals[] =
 		{
 			SPARK_SYNTH_MTP_GLOBAL_KINDS
 		};
+#endif
 		if ( context->first_layer_index != 0u )
 			if ( SparkSynthAppend(context,SPARK_SYNTH_TENSOR_EMBEDDING,0u,1u,quantize) < 0 )
 				return(-9);
@@ -228,12 +242,17 @@ static int32_t SparkSynthBuildDirectory(SparkSynthContext *context, uint32_t qua
 			return(-3);
 		if ( SparkSynthAppend(context,SPARK_SYNTH_TENSOR_LM_HEAD,0u,1u,quantize) < 0 )
 			return(-4);
+#if SPARK_SYNTH_EMIT_MTP_TAIL == 0
+		if ( SparkSynthAppendKinds(context,head_globals,(uint32_t)(sizeof(head_globals) / sizeof(head_globals[0])),0u,1u,quantize) < 0 )
+			return(-6);
+#else
 		if ( SparkSynthAppendKinds(context,mtp_globals,(uint32_t)(sizeof(mtp_globals) / sizeof(mtp_globals[0])),0u,1u,quantize) < 0 )
 			return(-6);
 		if ( SparkSynthAppendEveryLayer(context,SPARK_SYNTH_MTP_LAYER,quantize) < 0 )
 			return(-7);
 		if ( SparkSynthAppendAttnLayer(context,SPARK_SYNTH_MTP_LAYER,quantize) < 0 )
 			return(-8);
+#endif
 	}
 	if ( context->entry_count != SPARK_SYNTH_EXPECTED_TENSOR_COUNT(context->first_layer_index,context->layer_count) )
 		return(-5);

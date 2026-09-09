@@ -10,6 +10,7 @@
 
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
@@ -568,7 +569,11 @@ static uint64_t SparkQwen4FlashModuleExpectedGlobalBits(const SparkQwen4FlashMod
 	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
 		bits |= 1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP);
+		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP);
+#if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT != 0
+	if ( state->owns_final_head != 0u )
+		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP);
+#endif
 	return(bits);
 }
 
@@ -2142,6 +2147,7 @@ static SparkStatus SparkQwen4FlashModuleEmbedRows(SparkQwen4FlashModuleState *st
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchHcStreamReplicate(stream,slot->normalized_bf16,streams_bf16,rows),"embedding_replicate"));
 }
 
+#if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT != 0
 static SparkStatus SparkQwen4FlashModuleRunMtpPackInput(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const uint32_t *token_src, const void *streams_src, uint32_t rows_p)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -2282,6 +2288,7 @@ static SparkStatus SparkQwen4FlashModuleRunMtpDraftChain(SparkQwen4FlashModuleSt
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync((uint8_t *)frame->buffers[out_index].address + sizeof(uint32_t),slot->mtp_draft_ids,view->draft_token_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"mtp_emit");
 	return(status);
 }
+#endif
 
 static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen4FlashResidentDecodeStageFrameContext *context, uint32_t rows)
 {
@@ -2344,7 +2351,13 @@ static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *st
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,rows),"head_emit");
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u
 		&& (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u )
+	{
+#if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT == 0
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+#else
 		status = SparkQwen4FlashModuleRunMtpDraftChain(state,slot,context,frame,rows);
+#endif
+	}
 	wants_output = context != 0 && (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && wants_output != 0u )
 		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,rows);
