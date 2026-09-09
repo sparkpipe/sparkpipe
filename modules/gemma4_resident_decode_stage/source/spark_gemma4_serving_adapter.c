@@ -23,24 +23,29 @@
 #error "GEMMA4_CONTRACT_SHA256 must identify the exact package contract"
 #endif
 
-#define SPARK_GEMMA4_SERVING_ADAPTER_ID \
-	"spark.gemma4.serving-adapter.tp4pp4.v1"
-#define SPARK_GEMMA4_SERVING_MODEL_ID "Qwen/Qwen3.8-Flash-Next"
-#define SPARK_GEMMA4_SERVING_DRIVER_MODEL_ID \
-	"gemma4.resident-decode-stage-firmware"
-#define SPARK_GEMMA4_SERVING_STAGE_NAME "gemma4_resident_decode_stage"
-#define SPARK_GEMMA4_SERVING_TARGET \
-	"cuda.sm121.gemma4.resident_decode_stage.fp8"
-#define SPARK_GEMMA4_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_GEMMA4_SERVING_STAGE_COUNT 16u
+#define SPARK_GEMMA4_SERVING_DRIVER_MODEL_ID SPARK_GEMMA4_MODEL_DRIVER_MODEL_ID
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+#define SPARK_GEMMA4_SERVING_ADAPTER_ID "spark.gemma4.serving-adapter.tp4pp4.v1"
+#define SPARK_GEMMA4_SERVING_MODEL_ID "google/gemma-4-26B-A4B-it"
+#define SPARK_GEMMA4_SERVING_TARGET "cuda.sm121.gemma4.26b-a4b.resident_decode_stage.bf16"
+#define SPARK_GEMMA4_SERVING_STAGE_COUNT 4u
 #define SPARK_GEMMA4_SERVING_DEFAULT_TP_DEGREE 4u
 #define SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE 4u
-#define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT \
-	(SPARK_GEMMA4_SERVING_STAGE_COUNT / SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE)
-#define SPARK_GEMMA4_SERVING_MAX_PP_STAGE_COUNT \
-	SPARK_GEMMA4_SERVING_PP_STAGE_COUNT
-#define SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT \
-	(SPARK_GEMMA4_MODEL_LAYER_COUNT / SPARK_GEMMA4_SERVING_PP_STAGE_COUNT)
+#define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT 4u
+#define SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST 8u,8u,7u,7u
+#else
+#define SPARK_GEMMA4_SERVING_ADAPTER_ID "spark.gemma4.serving-adapter.tp16.v1"
+#define SPARK_GEMMA4_SERVING_MODEL_ID "google/gemma-4-31B-it"
+#define SPARK_GEMMA4_SERVING_TARGET "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
+#define SPARK_GEMMA4_SERVING_STAGE_COUNT 1u
+#define SPARK_GEMMA4_SERVING_DEFAULT_TP_DEGREE 16u
+#define SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE 16u
+#define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT 1u
+#define SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST 60u
+#endif
+#define SPARK_GEMMA4_SERVING_MAX_PP_STAGE_COUNT SPARK_GEMMA4_SERVING_PP_STAGE_COUNT
+#define SPARK_GEMMA4_SERVING_STAGE_NAME "gemma4_resident_decode_stage"
+#define SPARK_GEMMA4_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_GEMMA4_SERVING_MAX_SEQUENCE_POSITIONS_CAP \
 	SPARK_GEMMA4_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_GEMMA4_SERVING_REQUIRED_PROGRAM_FLAGS \
@@ -59,18 +64,18 @@
 #define SPARK_GEMMA4_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
 #define SPARK_GEMMA4_SERVING_SEAM_IO_TIMEOUT_MS 30000u
 
-#define SPARK_GEMMA4_SERVING_ADAPTER_FN(name) SparkGemma4##name
-#define SPARK_GEMMA4_SERVING_ADAPTER_TYPE(name) SparkGemma4##name
-#define SPARK_GEMMA4_SERVING_ADAPTER_CONST(name) SPARK_GEMMA4_##name
-#define SPARK_GEMMA4_SERVING_ADAPTER_MODEL_REVISION GEMMA4_MODEL_REVISION
-#define SPARK_GEMMA4_SERVING_ADAPTER_CONTRACT_SHA256 GEMMA4_CONTRACT_SHA256
-#define SPARK_GEMMA4_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
+#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkGemma4##name
+#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkGemma4##name
+#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_GEMMA4_##name
+#define SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION GEMMA4_MODEL_REVISION
+#define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 GEMMA4_CONTRACT_SHA256
+#define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) == SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE)
-#define SPARK_GEMMA4_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
+#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	(state)->pp_stage_count
-#define SPARK_GEMMA4_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
+#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
 	SparkGemma4ServingPpStageIndex(state,(state)->stage_index)
-#define SPARK_GEMMA4_SERVING_ADAPTER_BIND_FAMILY(state) SPARK_STATUS_OK
+#define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) SPARK_STATUS_OK
 
 typedef struct SparkGemma4ServingPending
 {
@@ -164,7 +169,7 @@ static const SparkModelServingAdapterDescriptor SparkGemma4ServingDescriptor =
 	.boundary_element_count = SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,
 	.boundary_element_bytes = SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 1u,
 	.max_active_sequence_count = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
@@ -172,12 +177,12 @@ static const SparkModelServingAdapterDescriptor SparkGemma4ServingDescriptor =
 	.max_resident_sequence_count = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
-	.stage_layer_counts = {SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT,SPARK_GEMMA4_SERVING_STAGE_LAYER_COUNT},
+	.stage_layer_counts = {SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u},
 	.minimum_efficient_submission_row_count = 0u
 };
 
 #define SparkModelServingAdapterGetInterface SparkGemma4ServingTemplateGetInterface
-#include "sparkpipe/spark_gemma4_pp_serving_adapter_common.h"
+#include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
 #undef SparkModelServingAdapterGetInterface
 
 static SparkStatus SparkGemma4ServingInitializeSeam(
@@ -187,7 +192,7 @@ static SparkStatus SparkGemma4ServingInitializeSeam(
 	const char *control_value;
 	uint32_t enabled_source_mask;
 	SparkStatus status;
-	control_value = getenv(SPARK_GEMMA4_SERVING_ADAPTER_ENV(SPECULATORS));
+	control_value = getenv(SPARK_QWEN38_SERVING_ADAPTER_ENV(SPECULATORS));
 	status = SparkSpeculationSeamParseControl(control_value,
 		SPARK_GEMMA4_SERVING_SEAM_AVAILABLE_SOURCES,&enabled_source_mask);
 	if ( status != SPARK_STATUS_OK )
@@ -197,7 +202,7 @@ static SparkStatus SparkGemma4ServingInitializeSeam(
 	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
 	configuration.available_source_mask = SPARK_GEMMA4_SERVING_SEAM_AVAILABLE_SOURCES;
-	configuration.default_speculative_token_count = SPARK_GEMMA4_MODEL_MTP_LAYER_COUNT;
+	configuration.default_speculative_token_count = 0u;
 	configuration.lane_count = state->max_active_sequence_count;
 	configuration.max_committed_token_count = SPARK_GEMMA4_SERVING_SEAM_MAX_COMMITTED_TOKEN_COUNT;
 	configuration.draft_time_budget_ms = SPARK_GEMMA4_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
@@ -212,48 +217,48 @@ static SparkStatus SparkGemma4ServingInitializeSeam(
 	configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
 	configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
 	configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
-	configuration.model_contract.draft_layer_count = SPARK_GEMMA4_MODEL_MTP_LAYER_COUNT;
+	configuration.model_contract.draft_layer_count = 0u;
 	configuration.model_contract.block_size = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	configuration.model_contract.hidden_dimension = SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
-	configuration.model_contract.intermediate_dimension = SPARK_GEMMA4_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
-	configuration.model_contract.attention_head_count = SPARK_GEMMA4_MODEL_ATTENTION_HEAD_COUNT;
-	configuration.model_contract.kv_head_count = SPARK_GEMMA4_MODEL_KV_HEAD_COUNT;
-	configuration.model_contract.head_dimension = SPARK_GEMMA4_MODEL_HEAD_DIMENSION;
+	configuration.model_contract.intermediate_dimension = 0u;
+	configuration.model_contract.attention_head_count = SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT;
+	configuration.model_contract.kv_head_count = SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT;
+	configuration.model_contract.head_dimension = SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
 	configuration.model_contract.vocab_size = SPARK_GEMMA4_MODEL_VOCAB_COUNT;
 	configuration.model_contract.draft_vocab_size = SPARK_GEMMA4_MODEL_VOCAB_COUNT;
-	configuration.model_contract.maximum_speculative_token_count = SPARK_GEMMA4_MODEL_MTP_LAYER_COUNT;
+	configuration.model_contract.maximum_speculative_token_count = 0u;
 	configuration.model_contract.verifier_accept_k = 1u;
 	return(SparkSpeculationSeamInitialize(&configuration,&state->seam));
 }
 
-static SparkStatus SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
 {
-	SPARK_GEMMA4_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
 	SparkStatus status;
-	status = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
+	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	state = (SPARK_GEMMA4_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
+	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
 	status = SparkGemma4ServingInitializeSeam(state);
 	if ( status != SPARK_STATUS_OK )
 	{
-		SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDestroy)(state);
+		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(state);
 		return(status);
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static void SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
+static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
 	void *adapter_state)
 {
-	SPARK_GEMMA4_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
 	SparkModelDriverRuntimeSnapshot snapshot;
-	state = (SPARK_GEMMA4_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
 	if ( state == 0 )
 		return;
-	if ( SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
+	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
 		return;
 	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
 	{
@@ -263,25 +268,25 @@ static void SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
 	}
 	SparkSpeculationSeamDestroy(state->seam);
 	state->seam = 0;
-	SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDestroy)(adapter_state);
+	SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(adapter_state);
 }
 
-static const SparkModelServingAdapterInterface SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingSeamInterface) =
+static const SparkModelServingAdapterInterface SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSeamInterface) =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,
-	.descriptor = &SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDescriptor),
-	.initialize = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingInitializeWithSeam),
-	.destroy = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingDestroyWithSeam),
-	.validate_submission = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingValidateSubmission),
-	.submit = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingSubmit),
-	.progress = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingProgress),
-	.quiesce = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingQuiesce),
-	.snapshot = SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingSnapshot)
+	.descriptor = &SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDescriptor),
+	.initialize = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam),
+	.destroy = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam),
+	.validate_submission = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission),
+	.submit = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit),
+	.progress = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingProgress),
+	.quiesce = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce),
+	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot)
 };
 
 __attribute__((visibility("default")))
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
-	return(&SPARK_GEMMA4_SERVING_ADAPTER_FN(ServingSeamInterface));
+	return(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSeamInterface));
 }
