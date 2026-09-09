@@ -597,3 +597,66 @@ mathematical operation, precision/codec and device implementation boundaries.
 An optimized CUDA operation can be shared across families without placing
 CUDA assumptions in universal scheduling. The October Mac Studios require
 the same policy with Metal backend operations, not another model scheduler.
+
+## 2026-09-09: corrected expert packing and unresolved numerical drift
+
+PR #877 (`e38ebb2f6df03079a4839fd0423cf18dfb3b521e`) corrected TP expert
+packing: every rank now receives matching slices of up and gate projections
+and the corresponding down-projection columns. All 16 destination packs were
+checkpoint-verified and their hashes checked before deployment. The earlier
+layout test had repeated the incorrect packing rule; its replacement also
+executes sharded SwiGLU/down-projection mathematics against an unsharded result.
+
+For token 9880 at position zero, the layer-4 attention-normalized input now has
+relative L2 error 0.01211963128298521 against the independent checkpoint prefix
+reference, cosine 0.9999265670776367 and maximum absolute difference 0.01171875.
+The former relative L2 error was approximately 0.7542. This is improvement,
+not numerical acceptance. The receipt explicitly records `qualified: false`.
+The reference source is `d3fbf5e4fdb758421c06bee0ef227f6ae77556f4`.
+
+Do not attribute this discrepancy to FP8 activation quantization. The deployed
+GLM expert calls use the default `SPARK_ACTIVATION_CODEC_NONE` in
+`runtime/gemm.cuh`: FP8 expert weights with BF16 activations. The spine calls
+`Glm5NextLaunchBf16Linear`. A previous conversational explanation suggesting
+activation quantization was unsupported by those actual call sites.
+
+Two rounding-boundary differences require separate measurement:
+
+- `tools/glm5_next_checkpoint_layer_reference.py:rms` preserves the upstream
+  BF16 boundary between normalization and gain multiplication. The production
+  `LmFusedResidualRmsNormKernel` retains FP32 until after gain multiplication.
+- The reference rounds SiLU to BF16 before multiplying by up. Production
+  `LmClampedUpGateKernel` retains FP32 through the multiplication and rounds
+  the product once. Both paths apply the model's required clamping.
+
+An isolated RMS calculation used the captured 4096-element collapsed input,
+the first 256 captured gain values, and the corresponding 256 GPU output
+values. With the model epsilon of 1e-5, the single-round calculation matched
+all 256 GPU values exactly. The upstream two-round calculation differed on
+77 values: relative L2 0.0030511226505041122 and maximum absolute difference
+0.001953125. This proves a local rounding difference; it does not establish
+the cause or acceptable size of the complete prefix discrepancy. The gain
+capture covers only 256 elements, and this observation covers one position.
+
+Keep the upstream semantic reference independent. A production-arithmetic
+diagnostic may separately model fusion and TP reduction order, but must never
+replace that reference or turn unexplained drift into an automatic pass.
+Next isolate each operation using identical captured inputs, then propagate
+the measured differences through layers and recurrent decode positions.
+Report both implementation error and departure from upstream arithmetic,
+including routing decisions, logits and generated-token agreement. Define
+acceptance from that evidence rather than choosing a tolerance that passes
+the present output.
+
+The corrected deployment produced the expected answer 70 for the math fixture,
+but continued into a fabricated user turn because required model EOS defaults
+are missing from common serving configuration. Functional acceptance remains
+failed. No accepted warm-decode throughput follows from these requests.
+
+Controller artifacts:
+
+- `/private/tmp/ds4_glm_paired_deployment_receipt.json`
+- `/private/tmp/ds4_glm_layer4_e38ebb2/comparison.json`
+- `/private/tmp/ds4_glm_layer4_e38ebb2/residentd.log`
+- `/private/tmp/ds4_glm_layer4_e38ebb2/rms_rounding_analysis.json`
+- `/private/tmp/ds4_glm_chat_checks/math-receipt.json`
