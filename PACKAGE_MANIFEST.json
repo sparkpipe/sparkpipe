@@ -788,8 +788,8 @@
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
-      "sha256": "59a4b9e6dc351b27108609fb47aa8e2bbe04a3e222d4c276d582bd4ad4e703e8",
-      "size_bytes": 61554
+      "sha256": "44593e4558c635942008814e7d0a8a3325b4efa90c4fc873d6eb8be455f8b61f",
+      "size_bytes": 62632
     },
     {
       "path": "docs/GLM_KDA_REFERENCE.md",
@@ -4048,8 +4048,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "17f5f74ccd24a2c3569183d456ecde301bf0e7dfe7c352bca70e4df7d4548270",
-      "size_bytes": 87439
+      "sha256": "5bf9ab90f02271a8e2cb6e8c5d148be3ab9bdbd4f32e287ddc7e0a049a7fa394",
+      "size_bytes": 89249
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -9765,5 +9765,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32712251
+  "total_bytes": 32715139
 }
