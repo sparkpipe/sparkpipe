@@ -741,15 +741,13 @@ static int32_t Glm5NextLayerAttention(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->attn_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -776,15 +774,13 @@ static int32_t Glm5NextLayerAttention(
         return status;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_QUERY_A_DIM + 8u) * sizeof(float),
         stream,
         buffers->q_compressed_bf16,
-        0,
         (const uint16_t *)buffers->q_a_norm_weight,
-        0,
         buffers->q_compressed_bf16,
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_QUERY_A_DIM,
@@ -841,15 +837,13 @@ static int32_t Glm5NextLayerAttention(
         return status;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_LATENT + 8u) * sizeof(float),
         stream,
         buffers->kv_slot_bf16,
-        0,
         (const uint16_t *)buffers->kv_a_norm_weight,
-        0,
         buffers->kv_slot_bf16,
         GLM5_NEXT_LATENT,
         GLM5_NEXT_LATENT_ROW,
@@ -1230,15 +1224,13 @@ static int32_t Glm5NextLayerKda(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->attn_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -1923,15 +1915,13 @@ static int32_t Glm5NextLayerDenseMlp(
     }
 
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2083,15 +2073,13 @@ static int32_t Glm5NextLayerMoeRoute(
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_collapsed_bf16,
-        0,
         (const uint16_t *)buffers->mlp_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2379,15 +2367,13 @@ static int32_t Glm5NextHead(
 
     tiles = (vocabulary + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE;
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_mean_bf16,
-        0,
         (const uint16_t *)head_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
@@ -2448,15 +2434,13 @@ static int32_t Glm5NextHeadCertifiedB1(
         return LM_LAUNCH_ERR_SHAPE;
     }
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS, uint16_t>),
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
         1u,
         GLM5_NEXT_LAYER_THREADS,
         (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hc_mean_bf16,
-        0,
         (const uint16_t *)head_norm_weight,
-        0,
         buffers->normed_bf16,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
