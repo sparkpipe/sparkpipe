@@ -2404,7 +2404,7 @@ static SparkStatus SparkDsv4ModuleExpandDsparkVerify(
 		slot->dspark_host_draft_tokens[row] = host_tokens[1u + row];
 	for (row = 0u; row < rows; row++)
 	{
-		host_positions[row] = anchor_position + 1u + row;
+		host_positions[row] = anchor_position + row;
 		if ( host_positions[row] >= state->max_sequence_positions )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		page = (uint32_t)(host_positions[row] /
@@ -3476,7 +3476,7 @@ static void SparkDsv4ModuleContinueHeadMax(void *context,SparkStatus status)
 		continuation->chain_step_count > 1u )
 		status = SparkDsv4ModuleRecordResidentToken(continuation,0u);
 	if ( error == cudaSuccess && status == SPARK_STATUS_OK &&
-		state->owns_final_head != 0u )
+		( state->owns_final_head != 0u || state->dspark_enabled != 0u ) )
 		error = cudaMemcpyAsync(slot->host_output_token_ids,
 			continuation->chain_step_count > 1u ? slot->resident_token_ids :
 			slot->output_token_ids,(uint64_t)continuation->rows *
