@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_resident_client.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -115,7 +116,7 @@ static SparkStatus SparkModelResidentClientWait(
 	descriptor.events = events;
 	status = poll(&descriptor,1,(int32_t)timeout_ms);
 	if ( status <= 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 	return((descriptor.revents & events) != 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 }
 
@@ -138,10 +139,10 @@ static SparkStatus SparkModelResidentClientWriteFull(
 			return(status);
 		written = SparkModelResidentClientSend(fd,bytes + offset,message_bytes - offset);
 		if ( written <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 		offset += (uint32_t)written;
 	}
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientReadFull(
@@ -163,10 +164,10 @@ static SparkStatus SparkModelResidentClientReadFull(
 			return(status);
 		received = recv(fd,bytes + offset,message_bytes - offset,0);
 		if ( received <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 		offset += (uint32_t)received;
 	}
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientValidateConfiguration(
@@ -174,9 +175,9 @@ static SparkStatus SparkModelResidentClientValidateConfiguration(
 {
 	SparkStatus status;
 	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( configuration->abi_version != SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATC);
 	status = SparkModelServingAdapterValidateRuntimeLimits(configuration->adapter_descriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -184,8 +185,8 @@ static SparkStatus SparkModelResidentClientValidateConfiguration(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( configuration->rank_index >= configuration->adapter_descriptor->stage_count || configuration->stage_index >= configuration->adapter_descriptor->stage_count || configuration->runtime_limits.max_inflight_submission_count > SPARK_MODEL_RESIDENT_CLIENT_MAX_QUEUE_CAPACITY || configuration->connect_timeout_ms == 0u || configuration->reserved0 != 0u || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientAllocate(
@@ -202,7 +203,7 @@ static SparkStatus SparkModelResidentClientAllocate(
 		return(status);
 	client = (SparkModelResidentClient *)calloc(1u,sizeof(*client));
 	if ( client == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
 	client->fd = -1;
 	client->queue_capacity = configuration->runtime_limits.max_inflight_submission_count;
 	client->output_message_capacity = output_bytes;
@@ -214,10 +215,10 @@ static SparkStatus SparkModelResidentClientAllocate(
 	if ( client->outputs == 0 || client->pending == 0 || client->output_storage == 0 || client->input == 0 )
 	{
 		SparkModelResidentClientDestroy(client);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
 	}
 	*client_out = client;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientPrepareSocket(
@@ -227,7 +228,7 @@ static SparkStatus SparkModelResidentClientPrepareSocket(
 	int32_t enabled;
 	enabled = 1;
 	if ( setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof(enabled)) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 #endif
 	return(SparkModelResidentClientSetNonblocking(fd));
 }
@@ -242,17 +243,17 @@ static SparkStatus SparkModelResidentClientFinishConnect(
 	socklen_t error_bytes;
 	SparkStatus status;
 	if ( connect(fd,address,address_bytes) == 0 )
-		return(SPARK_STATUS_OK);
+		SPARK_FAIL(SPARK_STATUS_O);
 	if ( errno != EINPROGRESS )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 	status = SparkModelResidentClientWait(fd,POLLOUT,timeout_ms);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	error = 0;
 	error_bytes = sizeof(error);
 	if ( getsockopt(fd,SOL_SOCKET,SO_ERROR,&error,&error_bytes) != 0 || error != 0 )
-		return(SPARK_STATUS_IO_ERROR);
-	return(SPARK_STATUS_OK);
+		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientOpenUnix(
@@ -263,10 +264,10 @@ static SparkStatus SparkModelResidentClientOpenUnix(
 	struct sockaddr_un address;
 	SparkStatus status;
 	if ( strlen(endpoint->unix_socket_path) >= sizeof(address.sun_path) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
 	client->fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if ( client->fd < 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 	status = SparkModelResidentClientPrepareSocket(client->fd);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -286,7 +287,7 @@ static SparkStatus SparkModelResidentClientOpenTcp(
 	int32_t enabled;
 	SparkStatus status;
 	if ( snprintf(service,sizeof(service),"%u",endpoint->tcp_port) < 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	memset(&hints,0,sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
@@ -303,7 +304,7 @@ static SparkStatus SparkModelResidentClientOpenTcp(
 		}
 	}
 	if ( addresses == 0 )
-		return(SPARK_STATUS_ROUTE_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_ROUTE_NOT_FOUN);
 	status = SPARK_STATUS_IO_ERROR;
 	for (address=addresses; address!=0 && status!=SPARK_STATUS_OK; address=address->ai_next)
 	{
@@ -334,7 +335,7 @@ static SparkStatus SparkModelResidentClientOpenEndpoint(
 		return(SparkModelResidentClientOpenUnix(client,endpoint,timeout_ms));
 	if ( endpoint->kind == SPARK_MODEL_RESIDENT_ENDPOINT_KIND_TCP )
 		return(SparkModelResidentClientOpenTcp(client,endpoint,timeout_ms));
-	return(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 }
 
 static SparkStatus SparkModelResidentClientHandshake(
@@ -369,7 +370,7 @@ SparkStatus SparkModelResidentClientConnect(
 	SparkModelResidentClient *client;
 	SparkStatus status;
 	if ( client_out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	*client_out = 0;
 	client = 0;
 	status = SparkModelResidentClientValidateConfiguration(configuration);
@@ -398,7 +399,7 @@ SparkStatus SparkModelResidentClientConnect(
 	client->completion_function = configuration->completion_function;
 	client->completion_context = configuration->completion_context;
 	*client_out = client;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 void SparkModelResidentClientDestroy(SparkModelResidentClient *client)
@@ -510,18 +511,18 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	uint32_t index,message_bytes;
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->submission_id <= client->last_submission_id )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( client->output_count >= client->queue_capacity || client->pending_count >= client->queue_capacity )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUS);
 	pending = SparkModelResidentClientReservePending(client,submission,
 		message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ? 1u : 0u);
 	if ( pending == 0 )
-		return(SPARK_STATUS_DUPLICATE);
+		SPARK_FAIL(SPARK_STATUS_DUPLICAT);
 	index = (client->output_head + client->output_count) % client->queue_capacity;
 	output = &client->outputs[index];
 	message = client->output_storage + ((uint64_t)index * client->output_message_capacity);
@@ -550,7 +551,7 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	client->submitted_count++;
 	client->last_submission_id = submission->submission_id;
 	(void)SparkModelResidentClientFlush(client);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelResidentClientSubmit(
@@ -577,19 +578,19 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission == 0 ||
 		client->client_generation == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( (client->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTE);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 		client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->submission_id <= client->last_submission_id )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( client->output_count >= client->queue_capacity ||
 		client->pending_count >= client->queue_capacity )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUS);
 	status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,
 		submission->row_count,submission->model_extension_bytes,&message_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -643,7 +644,7 @@ static SparkStatus SparkModelResidentClientQueueDecision(
 	output->sent_bytes = 0u;
 	client->output_count++;
 	(void)SparkModelResidentClientFlush(client);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelResidentClientCanQueueDecision(
@@ -657,16 +658,16 @@ SparkStatus SparkModelResidentClientCanQueueDecision(
 	if ( client == 0 || client->connected == 0u || submission_id == 0u ||
 		(decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT &&
 		 decision_kind != SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	pending = SparkModelResidentClientFindPendingConst(client,submission_id);
 	if ( pending == 0 || pending->requires_decision == 0u ||
 		pending->prepared == 0u || pending->committed != 0u ||
 		pending->decision_kind != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( client->output_count >= client->queue_capacity )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUS);
 	if ( client->output_message_capacity < SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
 	memset(&submission,0,sizeof(submission));
 	submission.submission_id = pending->submission_id;
 	submission.control_generation = pending->control_generation;
@@ -683,14 +684,14 @@ SparkStatus SparkModelResidentClientCommit(
 	SparkModelResidentClientPending *pending;
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	pending = SparkModelResidentClientFindPending(client,submission_id);
 	if ( pending == 0 || pending->requires_decision == 0u || pending->prepared == 0u || pending->committed != 0u || pending->decision_kind != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	status = SparkModelResidentClientQueueDecision(client,pending,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelResidentClientAbort(
@@ -700,14 +701,14 @@ SparkStatus SparkModelResidentClientAbort(
 	SparkModelResidentClientPending *pending;
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || submission_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	pending = SparkModelResidentClientFindPending(client,submission_id);
 	if ( pending == 0 || pending->requires_decision == 0u || pending->prepared == 0u || pending->committed != 0u || pending->decision_kind != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	status = SparkModelResidentClientQueueDecision(client,pending,SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientFlush(SparkModelResidentClient *client)
@@ -721,16 +722,16 @@ static SparkStatus SparkModelResidentClientFlush(SparkModelResidentClient *clien
 		message = client->output_storage + ((uint64_t)client->output_head * client->output_message_capacity);
 		written = SparkModelResidentClientSend(client->fd,message + output->sent_bytes,output->message_bytes - output->sent_bytes);
 		if ( written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
-			return(SPARK_STATUS_OK);
+			SPARK_FAIL(SPARK_STATUS_O);
 		if ( written <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 		output->sent_bytes += (uint32_t)written;
 		if ( output->sent_bytes != output->message_bytes )
-			return(SPARK_STATUS_OK);
+			SPARK_FAIL(SPARK_STATUS_O);
 		client->output_head = (client->output_head + 1u) % client->queue_capacity;
 		client->output_count--;
 	}
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientProcessResult(
@@ -745,12 +746,12 @@ static SparkStatus SparkModelResidentClientProcessResult(
 		return(status);
 	pending = SparkModelResidentClientFindPending(client,result->submission_id);
 	if ( pending == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
 	status = SparkModelResidentIpcValidateSubmitResult(result,message_bytes,pending->message_id,pending->submission_id);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( pending->result_received != 0u )
-		return(SPARK_STATUS_DUPLICATE);
+		SPARK_FAIL(SPARK_STATUS_DUPLICAT);
 	pending->result_received = 1u;
 	status = (SparkStatus)result->status;
 	if ( status == SPARK_STATUS_OK )
@@ -776,7 +777,7 @@ static SparkStatus SparkModelResidentClientProcessResult(
 	}
 	if ( client->submit_result_function != 0 )
 		client->submit_result_function(client->submit_result_context,result->submission_id,status);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientProcessCompletion(
@@ -792,16 +793,16 @@ static SparkStatus SparkModelResidentClientProcessCompletion(
 		return(status);
 	pending = SparkModelResidentClientFindPending(client,completion.submission_id);
 	if ( pending == 0 || pending->committed == 0u )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
 	status = SparkModelServingAdapterValidateStageCompletion(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,&completion);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( ((const SparkModelResidentIpcHeader *)message)->message_id != pending->message_id || pending->request_id != completion.request_id || pending->sequence_id != completion.sequence_id || pending->sequence_position != completion.sequence_position || pending->control_generation != completion.control_generation || pending->transaction_id != completion.transaction_id || pending->dispatch_generation != completion.dispatch_generation || pending->request_generation != completion.request_generation || pending->step_generation != completion.step_generation )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERRO);
 	client->completed_count++;
 	SparkModelResidentClientReleasePending(client,pending);
 	client->completion_function(client->completion_context,&completion);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientProcessDecisionResult(
@@ -818,7 +819,7 @@ static SparkStatus SparkModelResidentClientProcessDecisionResult(
 	SparkStatus status;
 	pending = result != 0 ? SparkModelResidentClientFindPending(client,result->submission_id) : 0;
 	if ( pending == 0 || pending->prepared == 0u || pending->decision_kind == 0u || pending->decision_result_received != 0u )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
 	memset(&submission,0,sizeof(submission));
 	submission.submission_id = pending->submission_id;
 	submission.control_generation = pending->control_generation;
@@ -849,7 +850,7 @@ static SparkStatus SparkModelResidentClientProcessDecisionResult(
 		SparkModelResidentClientReleasePending(client,pending);
 	if ( callback != 0 )
 		callback(callback_context,submission_id,decision_kind,status);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 static SparkStatus SparkModelResidentClientProcessMessage(
@@ -865,7 +866,7 @@ static SparkStatus SparkModelResidentClientProcessMessage(
 		return(SparkModelResidentClientProcessCompletion(client,message,message_bytes));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT )
 		return(SparkModelResidentClientProcessDecisionResult(client,(const SparkModelResidentIpcDecisionResult *)message,message_bytes));
-	return(SPARK_STATUS_UNSUPPORTED);
+	SPARK_FAIL(SPARK_STATUS_UNSUPPORTE);
 }
 
 static SparkStatus SparkModelResidentClientRead(
@@ -881,15 +882,15 @@ static SparkStatus SparkModelResidentClientRead(
 	{
 		received = recv(client->fd,client->input + client->input_bytes,client->input_target_bytes - client->input_bytes,0);
 		if ( received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
-			return(SPARK_STATUS_OK);
+			SPARK_FAIL(SPARK_STATUS_O);
 		if ( received <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERRO);
 		client->input_bytes += (uint32_t)received;
 		if ( client->input_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES && client->input_target_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES )
 		{
 			header = (SparkModelResidentIpcHeader *)client->input;
 			if ( header->message_bytes < SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES || header->message_bytes > client->input_capacity )
-				return(SPARK_STATUS_SCHEMA_ERROR);
+				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERRO);
 			client->input_target_bytes = header->message_bytes;
 		}
 		if ( client->input_bytes == client->input_target_bytes )
@@ -902,7 +903,7 @@ static SparkStatus SparkModelResidentClientRead(
 			processed++;
 		}
 	}
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelResidentClientProgress(
@@ -911,7 +912,7 @@ SparkStatus SparkModelResidentClientProgress(
 {
 	SparkStatus status;
 	if ( client == 0 || client->connected == 0u || maximum_message_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	status = SparkModelResidentClientFlush(client);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentClientRead(client,maximum_message_count);
@@ -927,7 +928,7 @@ SparkStatus SparkModelResidentClientGetPollDescriptor(
 	SparkModelResidentClientPollDescriptor *descriptor)
 {
 	if ( client == 0 || descriptor == 0 || client->connected == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_POLL_DESCRIPTOR_BYTES;
@@ -935,7 +936,7 @@ SparkStatus SparkModelResidentClientGetPollDescriptor(
 	descriptor->events = SPARK_MODEL_RESIDENT_CLIENT_POLL_READ;
 	if ( client->output_count != 0u )
 		descriptor->events |= SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelResidentClientGetView(
@@ -943,7 +944,7 @@ SparkStatus SparkModelResidentClientGetView(
 	SparkModelResidentClientView *view)
 {
 	if ( client == 0 || view == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	memset(view,0,sizeof(*view));
 	view->abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
 	view->descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_VIEW_BYTES;
@@ -967,5 +968,5 @@ SparkStatus SparkModelResidentClientGetView(
 	view->rejected_count = client->rejected_count;
 	view->aborted_count = client->aborted_count;
 	view->completed_count = client->completed_count;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }

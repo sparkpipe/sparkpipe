@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_memlink.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -126,14 +127,14 @@ SparkStatus SparkMemlinkFormatHostFromTemplate(
 
     if (host_template == NULL || host == NULL || host_capacity == 0u)
     {
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
     }
     {
         int template_kind = SparkMemlinkTemplatePlaceholder(
             host_template,&placeholder);
         if (template_kind < 0)
         {
-            return(SPARK_STATUS_INVALID_ARGUMENT);
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
         }
         if (template_kind == 0)
         {

@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_error_site.h"
 #include "tp_device_collective_nccl.h"
 
 #include <cuda_runtime_api.h>
@@ -1339,9 +1340,9 @@ static SparkStatus SparkTpDeviceCollectiveTreeFoldGroups(SparkTpDeviceCollective
 		rank_devices[peer] = binding->receive_device;
 	}
 	if ( operation->arrived != recv_bits )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUS);
 	if ( operation->packed != 0u )
-		return(SPARK_STATUS_OK);
+		SPARK_FAIL(SPARK_STATUS_O);
 	rank_devices[collective->tp_rank] = operation->full_device;
 	return(implementation->combine_all_bf16_function(implementation->combine_context,operation->full_device,rank_devices,collective->tp_rank,operation->active_sequence_count,collective->local_hidden_dimension,operation->cuda_stream));
 }

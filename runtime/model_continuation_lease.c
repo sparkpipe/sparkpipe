@@ -1,4 +1,5 @@
 #include "model_continuation_lease.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -24,12 +25,12 @@ SparkStatus SparkModelContinuationLeaseEstablish(
 {
 	if ( lease == 0 || client_generation == 0u || control_generation == 0u ||
 		step_generation == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	lease->lease_client_generation = client_generation;
 	lease->lease_control_generation = control_generation;
 	lease->next_sequence_position = next_sequence_position;
 	lease->last_step_generation = step_generation;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelContinuationLeaseDecodePosition(
@@ -39,12 +40,12 @@ SparkStatus SparkModelContinuationLeaseDecodePosition(
 {
 	uint64_t advance;
 	if ( tokens_per_sequence == 0u || next_sequence_position == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	advance = (uint64_t)tokens_per_sequence - 1u;
 	if ( context_token_count > UINT64_MAX - advance )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDE);
 	*next_sequence_position = context_token_count + advance;
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_O);
 }
 
 SparkStatus SparkModelContinuationLeaseValidate(
@@ -56,13 +57,13 @@ SparkStatus SparkModelContinuationLeaseValidate(
 {
 	if ( lease == 0 || client_generation == 0u || control_generation == 0u ||
 		step_generation == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMEN);
 	if ( lease->lease_client_generation == 0u )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUN);
 	if ( lease->lease_client_generation != client_generation ||
 		lease->lease_control_generation != control_generation ||
 		lease->next_sequence_position != sequence_position ||
 		step_generation <= lease->last_step_generation )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	return(SPARK_STATUS_OK);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERRO);
+	SPARK_FAIL(SPARK_STATUS_O);
 }

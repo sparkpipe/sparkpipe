@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_spine.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -13,7 +14,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 {
 	SparkStatus status;
 	if ( pack == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	pack->ready = 0u;
 	if ( pack->worker != 0 )
 	{
@@ -32,7 +33,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	if ( pack->spine_allocation != 0 )
 	{
 		if ( cudaFree(pack->spine_allocation) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		pack->spine_allocation = 0;
 		pack->spine = 0;
 	}
@@ -40,7 +41,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 		SparkWeightdClientClose(pack->client);
 	SparkWeightdManifestDestroy(&pack->manifest);
 	free(pack);
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const SparkWeightdLazyAttachRequest *request,uint64_t budget)
@@ -49,10 +50,10 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	if ( bytes != 0u )
 	{
 		if ( bytes > (SIZE_MAX - 255u) || (bytes + 255u) > budget )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		pack->spine_allocation_bytes = (bytes + 255u);
 		if ( cudaMalloc(&pack->spine_allocation,(size_t)pack->spine_allocation_bytes) != cudaSuccess )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
 	}
 	return(SparkWeightdSpineLoad(fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
@@ -101,26 +102,26 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	struct stat info;
 	int32_t fd;
 	if ( out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
 	if ( socket == 0 || request == 0 || request->expert_pool_bytes == 0u || request->pack_path[0] == 0 || memchr(request->pack_path,0,sizeof(request->pack_path)) == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	identity = request->identity;
 	if ( SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	fd = open(request->pack_path,O_RDONLY | O_NONBLOCK);
 	if ( fd < 0 )
 		return(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
 	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 || info.st_size <= 0 || (uint64_t)info.st_size != identity.arena_bytes )
 	{
 		(void)close(fd);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	pack = calloc(1u,sizeof(*pack));
 	if ( pack == 0 )
 	{
 		(void)close(fd);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	status = lazy_pack_initialize(pack,fd,socket,request,spine_budget,timeout,check,context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
@@ -143,10 +144,10 @@ SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t 
 	uint64_t compact;
 	SparkStatus status;
 	if ( pointer == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*pointer = 0;
 	if ( pack == 0 || pack->ready == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkWeightdManifestSpineSlice(&pack->manifest,offset,bytes,&compact);
 	if ( status == SPARK_STATUS_OK )
 		*pointer = ((uint8_t *)pack->spine + compact);

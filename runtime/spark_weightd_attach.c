@@ -1,5 +1,6 @@
 
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -37,12 +38,12 @@ SparkStatus SparkWeightdAttachRequested(void)
 	const char *socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	const char *setting = getenv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH);
 	if ( setting != 0 && strcmp(setting,"0") != 0 && strcmp(setting,"1") != 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( socket != 0 )
 		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
 	if ( setting != 0 && strcmp(setting,"1") == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAIL(SPARK_STATUS_BUSY);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -403,7 +404,7 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 	{
 		SparkWeightdAttachRelease(outcome);
 		SparkWeightdAttachSetReason(reason,"arena_mismatch");
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	}
 	status = SparkWeightdAttachImportMap(outcome,slice->pack_bytes,timeout_nanoseconds,reason);
 	if ( status != SPARK_STATUS_OK || outcome->client == 0 || outcome->map_base == 0 )
@@ -411,7 +412,7 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 		SparkWeightdAttachRelease(outcome);
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
 	}
-	return(SPARK_STATUS_OK);
+	SPARK_FAIL(SPARK_STATUS_OK);
 }
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)
