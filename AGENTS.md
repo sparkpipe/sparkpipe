@@ -1,5 +1,12 @@
 # SparkPipe Agent Instructions
 
+## Firmware contract
+
+- Follow [SparkPipe invariants](sparkpipe_invariants.md). Required behavior
+  cannot be waived by driver flags, stubs or compatibility paths.
+- No comments in code. Put explanations in documentation and PRs. Tests must
+  verify behavior and contracts, not comment wording.
+
 ## GitHub authentication
 
 - Never open a GitHub login flow, request a connector, call `gh auth login`, or

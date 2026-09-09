@@ -24,7 +24,6 @@ static void TestBuildDescriptor(
 	descriptor->max_resident_sequence_count = 16u;
 	descriptor->max_output_token_count = 4u;
 	descriptor->cache_block_token_count = 4u;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
 	descriptor->adapter_id = "test.adapter";
 	descriptor->model_id = "test/model";
 	descriptor->model_revision = "revision";

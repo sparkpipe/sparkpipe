@@ -583,7 +583,7 @@ static void SparkModelBatchQueueTerminal(
 {
 	request->terminal_event_kind = kind;
 	request->terminal_status = status;
-	if ( status == SPARK_STATUS_OK && engine->failed_status == SPARK_STATUS_OK && request->resident_bound != 0u && engine->adapter_descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE )
+	if ( status == SPARK_STATUS_OK && engine->failed_status == SPARK_STATUS_OK && request->resident_bound != 0u )
 	{
 		request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_RELEASE;
 		return;

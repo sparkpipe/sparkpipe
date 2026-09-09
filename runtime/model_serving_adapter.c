@@ -90,14 +90,6 @@ static SparkStatus SparkDescriptorCheckSpeculationPairing(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkDescriptorCheckSlotReusePairing(
-	const SparkModelServingAdapterDescriptor *descriptor)
-{
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_NONE || descriptor->resident_sequence_slot_reuse > SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkDescriptorCheckDecodeChainRequirements(
 	const SparkModelServingAdapterDescriptor *descriptor)
 {
@@ -203,7 +195,6 @@ static const SparkModelServingAdapterDescriptorCheck SPARK_MODEL_SERVING_ADAPTER
 	SparkDescriptorCheckBoundaryAndCodecFields,
 	SparkDescriptorCheckCapacityFields,
 	SparkDescriptorCheckSpeculationPairing,
-	SparkDescriptorCheckSlotReusePairing,
 	SparkDescriptorCheckDecodeChainRequirements,
 	SparkDescriptorCheckCacheBlockFields,
 	SparkDescriptorCheckIdentityFields,

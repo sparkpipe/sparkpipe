@@ -334,7 +334,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 	.max_resident_sequence_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.stage_layer_counts = SPARK_QWEN38_27B_SERVING_STAGE_LAYER_COUNTS,
 	.minimum_efficient_submission_row_count = 0u
 };

@@ -86,8 +86,6 @@ int main(void)
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT);
 	assert(library.adapter_interface.descriptor->stage_count == 13u);
 	assert(library.adapter_interface.descriptor->minimum_efficient_submission_row_count == 16u);
-	assert(library.adapter_interface.descriptor->resident_sequence_slot_reuse ==
-		SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE);
 	assert(library.adapter_interface.descriptor->cache_block_token_count ==
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS);
 	hidden_input_bytes = 4u * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;

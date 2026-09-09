@@ -394,6 +394,35 @@ loads the complete deployment through the C validator and checks its capacity
 against the firmware's page size; previously it loaded only the stage config.
 TP4xPP4 still needs adapter geometry and boundary integration beyond this fix.
 
+Persistent API testing on merged `0f2b0a3` exposed a slot-release contract
+mismatch. GLM still advertised position-zero reuse, so the common batch engine
+completed requests without sending RELEASE. Live inspection found sequence
+100001 still owning slot 0 after its 64 output tokens. The next concurrent
+requests repeatedly returned BUSY when that slot was reassigned. One of three
+requests completed; two timed out at 180 seconds. The API stayed alive and its
+health endpoint returned OK despite the stalled work. This is not successful
+continuous-batching qualification.
+
+The common contract now requires explicit release for every bound sequence.
+ABI 22 removes the driver's slot-reuse policy field and all three options;
+the scheduler always queues release and residentd never accepts a new owner
+over an existing binding, including at position zero. Old ABI adapters fail
+loading. Testing a release callback directly does not prove the scheduler
+will invoke it; regression coverage must exercise ownership transitions.
+The driver contract is firmware: implement efficient inference through fixed
+required operations. Common code owns scheduling, batching, cache ownership,
+release, cancellation and lifecycle. Model hooks describe math and state;
+backend hooks implement hardware operations. Do not add capability switches
+to accommodate an incomplete implementation. Missing required behavior blocks
+acceptance. Topology and hardware differences belong in explicit configuration
+and narrow hooks, not exceptions to ownership or correctness.
+Use one persistent engine per deployed code/configuration version for all
+benchmark phases; request completion must preserve weights and connections
+while releasing sequence ownership. Replace the engine on deployment changes
+or unrecoverable failure. HTTP completion latency includes prefill and is not
+a decode-throughput metric. The 0f2b0a3 outputs remain incoherent, so matching
+tokens between runs establish consistency only, not numerical correctness.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed

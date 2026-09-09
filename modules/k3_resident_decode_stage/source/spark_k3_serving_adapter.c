@@ -677,7 +677,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.resident_sequence_slot_reuse = 0u,
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },

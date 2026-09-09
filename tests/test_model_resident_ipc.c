@@ -8,7 +8,6 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 {
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->cache_block_token_count = 4u;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE;
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
 	descriptor->capability_flags = 0u;

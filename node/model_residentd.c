@@ -688,32 +688,15 @@ static uint32_t SparkModelResidentdSequenceSlotMatches(
 	return(slot->bound != 0u && slot->request_id == lane->request_id && slot->request_generation == lane->request_generation && slot->sequence_id == lane->sequence_id ? 1u : 0u);
 }
 
-static uint32_t SparkModelResidentdLaneStartsAtPositionZero(
-	const SparkModelServingSubmission *submission,
-	uint32_t lane_index)
-{
-	uint32_t row;
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lanes[lane_index].sequence_position != 0u )
-		return(0u);
-	for (row=0u; row<submission->row_count; row++)
-		if ( submission->row_lane_indices[row] == lane_index && submission->row_positions[row] == 0u )
-			return(1u);
-	return(0u);
-}
-
 static SparkStatus SparkModelResidentdValidatePersistentSlot(
 	const SparkModelResidentdRuntime *runtime,
 	const SparkModelResidentdRoute *route,
 	uint32_t lane_index)
 {
-	const SparkModelServingAdapterDescriptor *descriptor;
 	const SparkModelResidentdSequenceSlot *slot;
 	const SparkModelServingLane *lane;
-	descriptor = runtime->adapter_library.adapter_interface.descriptor;
 	lane = &route->submission.lanes[lane_index];
 	slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
-		return(SPARK_STATUS_OK);
 	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		if ( slot->bound == 0u )
@@ -721,8 +704,6 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 		return(SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( slot->bound == 0u || SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u )
-		return(SPARK_STATUS_OK);
-	if ( descriptor->resident_sequence_slot_reuse == SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO && SparkModelResidentdLaneStartsAtPositionZero(&route->submission,lane_index) != 0u )
 		return(SPARK_STATUS_OK);
 	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
@@ -835,13 +816,10 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 	{
 		lane = &route->submission.lanes[lane_index];
 		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-		if ( descriptor->resident_sequence_slot_reuse != SPARK_MODEL_SERVING_SLOT_REUSE_NONE )
-		{
-			slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
-			slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
-			slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
-			slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
-		}
+		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
+		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
+		slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
+		slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
 		if ( (descriptor->capability_flags &
 			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{

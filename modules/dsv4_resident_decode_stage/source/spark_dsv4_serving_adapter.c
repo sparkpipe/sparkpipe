@@ -364,7 +364,6 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 	.max_resident_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_DSV4_SERVING_OUTPUT_TOKEN_CAPACITY,
 	.max_speculative_token_count = SPARK_DSV4_MODEL_DSPARK_SPEC_STEP,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE,
 	.stage_layer_counts = SPARK_DSV4_SERVING_STAGE_LAYERS,
 	.minimum_efficient_submission_row_count = SPARK_DSV4_SERVING_TOPOLOGY_FLAG != 0u ? 1u : 16u,
 	.cache_block_token_count =

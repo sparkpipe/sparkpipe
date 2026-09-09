@@ -163,7 +163,6 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.max_resident_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.adapter_id = SPARK_GLM5_NEXT_SERVING_ADAPTER_ID,
 	.model_id = SPARK_GLM5_NEXT_SERVING_MODEL_ID,
 	.model_revision = GLM5_NEXT_MODEL_REVISION,

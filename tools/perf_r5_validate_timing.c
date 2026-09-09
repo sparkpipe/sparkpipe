@@ -28,7 +28,6 @@ static void BuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_input_row_count = 256u;
 	descriptor->max_resident_sequence_count = 512u;
 	descriptor->max_output_token_count = BUCKET;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
 	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";
