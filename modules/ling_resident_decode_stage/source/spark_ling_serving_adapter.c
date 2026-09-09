@@ -4,6 +4,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_ling_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_admission.h"
@@ -505,6 +506,8 @@ static SparkStatus SparkLingServingLoadTpCollective(
 			status = SparkLingServingLoadTpStepRails(document,object,
 				tp_degree,&state->tp_collective_topology);
 	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
 	return(status);
 }
 
@@ -562,6 +565,8 @@ static SparkStatus SparkLingServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
 	return(status);
 }
 
@@ -775,7 +780,9 @@ static SparkStatus SparkLingServingLoadDriver(
 	request.wake_function = SparkLingServingDriverWake;
 	request.wake_context = state;
 	status = state->driver.interface->create(&request,&state->driver_instance);
-	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return(state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkLingServingValidateConfiguration(

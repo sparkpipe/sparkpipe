@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
@@ -913,7 +914,7 @@ static SparkStatus SparkLingAdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_FAIL(status);
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
@@ -924,7 +925,7 @@ static SparkStatus SparkLingAdmissionPredicate(
 			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
 			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_FAIL(status);
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
