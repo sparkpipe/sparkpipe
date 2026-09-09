@@ -2,6 +2,7 @@ CC ?= cc
 CXX ?= c++
 AR ?= ar
 NVCC ?= nvcc
+
 CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
 CFLAGS += -D_GNU_SOURCE
@@ -529,6 +530,11 @@ $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
 build:
 	mkdir -p build
+
+.PHONY: test-glm-head-offset
+test-glm-head-offset: | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" tests/test_glm5_next_head_offset.cu -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o build/test_glm5_next_head_offset
+	./build/test_glm5_next_head_offset
 
 build/test_modules:
 	mkdir -p build/test_modules

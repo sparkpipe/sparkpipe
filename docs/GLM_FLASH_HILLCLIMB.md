@@ -440,6 +440,15 @@ controlled completion events, finishes B before A, enqueues C, and verifies
 the A/C replies and empty queue. It does not run an inference engine. A separate
 negative control removed tail recovery and was rejected by the test deadline.
 
+Head-selection inspection found another numerical defect: B1 passed the rank
+vocabulary offset to the common certified head, whose final reduction already
+adds it, and then the GLM TP maxloc pack added the offset again. Batched full
+head candidates were local and received only the latter offset. Keep B1
+candidates local as well. `make test-glm-head-offset NVCC=/usr/local/cuda/bin/nvcc`
+executes the production head path on synthetic BF16 inputs with a known local
+winner at B1/B3 for every TP16 rank. GPU qualification of this change is pending;
+this defect alone does not explain the existing rank-zero-range output stream.
+
 1. Complete GLM integration with the shared cache: qualify dynamic mappings on
    the GPU and implement full KV/index/KDA/convolution/continuity restoration.
    Prove prefix-hit execution matches uninterrupted computation. No fixed
