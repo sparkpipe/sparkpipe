@@ -759,8 +759,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
 	.capability_flags =
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
@@ -779,7 +777,6 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.resident_sequence_slot_reuse = 0u,
 	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
