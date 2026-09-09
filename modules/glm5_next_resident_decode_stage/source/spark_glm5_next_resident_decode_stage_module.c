@@ -1872,7 +1872,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1913,7 +1913,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;
@@ -1950,8 +1950,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	state->tp_device_collective_initialized = 1u;
 	{
 		uint32_t hc_credit_count = configuration_hc.credit_count;
-		uint64_t hc_credit_bytes = (uint64_t)configuration_hc.max_active_sequence_count *
-			configuration_hc.local_hidden_dimension * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES;
+		uint64_t hc_credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration_hc.max_active_sequence_count,configuration_hc.local_hidden_dimension);
 		uint64_t hc_total;
 		void *hc_mapped_send,*hc_mapped_receive;
 		hc_total = 0u;

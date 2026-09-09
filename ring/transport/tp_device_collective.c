@@ -544,6 +544,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateConfig(
         config->tp_rank >= config->tp_degree ||
         config->local_hidden_dimension == 0u ||
         config->max_active_sequence_count == 0u ||
+        SparkTpDeviceCollectiveCreditBytes(config->max_active_sequence_count,config->local_hidden_dimension) == 0u ||
         config->connect_timeout_milli == 0u ||
         config->operation_timeout_milli == 0u ||
         config->collective_identifier == 0u ||
@@ -1192,7 +1193,7 @@ static uint32_t SparkTpDeviceCollectiveTransitionPhase(
 
 static uint64_t SparkTpDeviceCollectiveCreditOffset(const SparkTpDeviceCollective *collective,uint32_t credit)
 {
-	return((uint64_t)credit * ((uint64_t)collective->max_active_sequence_count * collective->local_hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT + NONCE_BYTES));
+	return((uint64_t)credit * SparkTpDeviceCollectiveCreditBytes(collective->max_active_sequence_count,collective->local_hidden_dimension));
 }
 
 static void SparkTpDeviceCollectiveTreeSend(
@@ -2254,9 +2255,7 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
             return status;
         credit_span_bytes = (uint64_t)
             implementation->collective->credit_count *
-            ((uint64_t)packet.bytes_per_sequence *
-            implementation->collective->max_active_sequence_count +
-            NONCE_BYTES);
+            SparkTpDeviceCollectiveCreditBytes(implementation->collective->max_active_sequence_count,packet.hidden_dimension);
         status = SparkHiddenTransportSetFixedLocal(
             implementation->receive_sessions[step_index],
             binding->receive_transport,credit_span_bytes);
@@ -2279,9 +2278,7 @@ static SparkStatus SparkTpDeviceCollectiveRegisterFixedSlots(
             return status;
         credit_span_bytes = (uint64_t)
             implementation->collective->credit_count *
-            ((uint64_t)packet.bytes_per_sequence *
-            implementation->collective->max_active_sequence_count +
-            NONCE_BYTES);
+            SparkTpDeviceCollectiveCreditBytes(implementation->collective->max_active_sequence_count,packet.hidden_dimension);
         status = SparkHiddenTransportSetFixedLocal(
             implementation->d2a_receive_sessions[step_index],
             binding->receive_transport,credit_span_bytes);
@@ -3129,9 +3126,7 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         }
     }
     implementation->fixed_slots_enabled = 1u;
-    implementation->nonce_offset = (uint64_t)config->local_hidden_dimension *
-        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT *
-        config->max_active_sequence_count;
+    implementation->nonce_offset = SparkTpDeviceCollectiveCreditBytes(config->max_active_sequence_count,config->local_hidden_dimension) - NONCE_BYTES;
     {
         uint64_t pitch = implementation->nonce_offset + NONCE_BYTES;
         size_t bytes = (size_t)pitch *

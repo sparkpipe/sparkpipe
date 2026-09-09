@@ -1243,7 +1243,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		total_bytes += credit_bytes * configuration.credit_count;
@@ -1284,7 +1284,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	for (route=0u; route<route_count; route++)
 	{
 		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES;
+		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 		for (credit=0u; credit<configuration.credit_count; credit++)
 		{
 			SparkTpDeviceCollectiveCreditBinding *binding;

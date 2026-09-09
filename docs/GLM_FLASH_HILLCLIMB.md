@@ -1023,3 +1023,22 @@ payload/credit sizing rule, checked binding spans, FP32 accumulator storage
 owned through GPU completion, explicit required arithmetic callbacks, and
 coordinated ABI rejection of old binaries. Preserve the B1 policy and U64
 max semantics while carrying FP32 through both intermediate tree levels.
+
+The first sizing migration preserves the existing BF16 wire format and
+ABI. SparkTpDeviceCollectiveCreditBytes now supplies the payload-plus-nonce
+stride to the common sender, registration and scratch allocation, all six
+driver allocation constructors, and the three hardware harnesses that
+construct bindings. GLM Flash already included the nonce, so its size is
+unchanged. Older driver formulas omitted eight bytes per credit; their
+allocations and pointer strides now include that space. The Qwen transport
+microbenchmark also used a hardcoded stride different from the registered
+stride. Fixing its storage does not qualify its no-op arithmetic callbacks
+as inference or usable end-to-end performance evidence.
+
+The credit-flow test writes full payloads and nonces into three adjacent
+credits using the real common send offsets, then checks each nonce and a
+trailing guard for B1/B3/B97 and widths 7/4096. Removing nonce space fails
+this check. Existing ownership, ACK, tree arrival-order and logical-batch
+tests remain applicable. A later coordinated ABI change is still required
+for FP32 payloads, checked external binding capacities and new arithmetic
+hooks; this migration does not enable FP32 transport by itself.
