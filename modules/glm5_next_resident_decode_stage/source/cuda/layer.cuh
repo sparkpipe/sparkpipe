@@ -2,6 +2,7 @@
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/hc.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
@@ -1782,47 +1783,6 @@ __global__ void Glm5NextHcPreReduceKernel(
     }
 }
 
-__global__ void Glm5NextHcPostKernel(
-    const uint16_t *__restrict__ out_bf16,
-    const uint16_t *__restrict__ snapshot_bf16,
-    const float *__restrict__ post_f32,
-    const float *__restrict__ comb_f32,
-    uint16_t *__restrict__ streams_bf16,
-    uint32_t row_count,
-    uint32_t hc,
-    uint32_t dimension)
-{
-    __shared__ float post[4];
-    __shared__ float comb[16];
-    uint32_t row = blockIdx.x;
-    uint32_t element, stream, source;
-    float residual[4], out, value;
-    if (row >= row_count || hc > 4u)
-        return;
-    if (threadIdx.x < hc)
-        post[threadIdx.x] = post_f32[(uint64_t)row * hc + threadIdx.x];
-    if (threadIdx.x < hc * hc)
-        comb[threadIdx.x] = comb_f32[(uint64_t)row * hc * hc + threadIdx.x];
-    __syncthreads();
-    for (element = threadIdx.x; element < dimension; element += blockDim.x)
-    {
-        out = LmBf16ToFloat(out_bf16[(uint64_t)row * dimension + element]);
-        for (source = 0u; source < hc; ++source)
-            residual[source] = LmBf16ToFloat(
-                snapshot_bf16[((uint64_t)row * hc + source) * dimension +
-                              element]);
-        for (stream = 0u; stream < hc; ++stream)
-        {
-            value = post[stream] * out;
-            for (source = 0u; source < hc; ++source)
-                value = __fmaf_rn(comb[source * hc + stream],
-                                  residual[source], value);
-            streams_bf16[((uint64_t)row * hc + stream) * dimension + element] =
-                LmFloatToBf16(value);
-        }
-    }
-}
-
 __global__ void Glm5NextHcHeadMeanKernel(
     const uint16_t *__restrict__ streams_bf16,
     uint16_t *__restrict__ reduced_bf16,
@@ -1924,7 +1884,7 @@ static int32_t Glm5NextHcPost(
         Glm5NextProbeVecF32(stream,buffers->hc_comb_f32,GLM5_NEXT_HC * GLM5_NEXT_HC,buffers->layer_index,(uint32_t)pass,"hc_comb_weights");
     }
     LM_LAUNCH(
-        (Glm5NextHcPostKernel),
+        (LmHcPostBf16Kernel),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,

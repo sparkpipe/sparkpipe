@@ -917,3 +917,26 @@ reduce_rank0 through reduce_rank15 vectors and reduce_result use passes
 allows independent fixed-order FP32 summation of actual GPU partials,
 separating collective arithmetic from a CPU approximation of projections.
 No arithmetic or launch-error handling is changed by the diagnostic.
+
+
+## HC BF16 operation boundaries
+
+Upstream casts HC post and combination coefficients to the hidden dtype,
+rounds the multiplication and residual matmul outputs to BF16, then adds
+them. Keeping FP32 coefficients and combining every term before a single
+round changed that computation. Preserve those boundaries inside the fused
+operation; do not add a production mode to choose between meanings.
+
+The common CUDA LmHcPostBf16Kernel in inference/kernels/hc.cuh replaces the
+GLM-local kernel. Coefficients are rounded once when staged in shared memory.
+The residual accumulates in FP32 and rounds to BF16; the post product also
+rounds before addition. The launch count and global tensor passes stay the
+same. Geometry is explicit (rows, HC width up to four, hidden width), so
+other drivers with this mathematical contract can reuse it.
+
+The actual kernel executes in the host CUDA harness against an independent
+BF16 coefficient/product/matmul/add reference over 54 cases: B1/B3/B17,
+HC1/HC2/HC4, widths 7/257/4096, separate output and snapshot aliasing.
+Removing coefficient rounding fails the first case. This component result
+does not establish GPU throughput or end-to-end numerical acceptance;
+merged-main first-layer captures and decode timing must follow.
