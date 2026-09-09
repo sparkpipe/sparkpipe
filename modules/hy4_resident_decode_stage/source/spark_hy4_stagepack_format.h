@@ -401,10 +401,19 @@ static inline int32_t SparkHy4StagePackResolvedShape(uint32_t tensor_kind,
 }
 
 static inline uint32_t SparkHy4StagePackExpectedTensorCount(
-	uint32_t moe_layer_count)
+	uint32_t first_layer_index, uint32_t moe_layer_count)
 {
-	/* every-layer kinds x all layers + 6 global tensors */
-	return (uint32_t)(moe_layer_count * 33u) + 6u;
+	/* 33 every-layer kinds per MoE layer; the globals ride only on
+	 * the slice that contains them, mirroring the common directory
+	 * builder: embedding on first_layer_index==0, and final_norm +
+	 * lm_head + the three output hc globals on the closing slice. */
+	uint32_t tensors = moe_layer_count * 33u;
+	if ( first_layer_index == 0u )
+		tensors += 1u;
+	if ( first_layer_index + moe_layer_count ==
+		SPARK_HY4_MODEL_LAYER_COUNT )
+		tensors += 5u;
+	return tensors;
 }
 
 static inline void SparkHy4StagePackExpectedGeometry(
@@ -414,7 +423,7 @@ static inline void SparkHy4StagePackExpectedGeometry(
 	header->format_version = SPARK_HY4_STAGEPACK_FORMAT_VERSION;
 	header->header_bytes = SPARK_HY4_STAGEPACK_HEADER_BYTES;
 	header->directory_entry_bytes = SPARK_HY4_STAGEPACK_ENTRY_BYTES;
-	header->tensor_count = SparkHy4StagePackExpectedTensorCount(
+	header->tensor_count = SparkHy4StagePackExpectedTensorCount(0u,
 		moe_layer_count);
 	header->hidden_dimension = SPARK_HY4_MODEL_HIDDEN_DIMENSION;
 	header->layer_count = SPARK_HY4_MODEL_LAYER_COUNT;
