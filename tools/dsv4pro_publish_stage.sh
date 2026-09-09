@@ -41,7 +41,8 @@ publish)
   make build/sparkpipe_module_compile build/sparkpipe_model_residentd \
     build/sparkpipe_model_api build/sparkpipe_model_batch
   make -C modules/dsv4_resident_decode_stage -f Makefile.pro publish \
-    "${PRO_MAKE_FLAGS[@]}" || { echo "STAGE-$STAGE-FAIL"; exit 1; }
+    "${PRO_MAKE_FLAGS[@]}" GPU_VALIDATOR=validation/dsv4_validator_wrapper.sh \
+    || { echo "STAGE-$STAGE-FAIL"; exit 1; }
   RR=$HOME/sparkdata/dsv4_pro.tp4pp4
   build/sparkpipe_model_compile \
     --model examples/model_descriptions/dsv4_pro_resident_decode_stage_firmware.json \
