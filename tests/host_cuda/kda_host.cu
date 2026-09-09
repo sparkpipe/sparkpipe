@@ -35,6 +35,32 @@ static float NextRandom(uint32_t *state)
 	return (float)((*state >> 8) & 0xffffu) / 32768.0f - 1.0f;
 }
 
+static int32_t TestGatedNorm(void)
+{
+	uint16_t input[4],gate[4],output[4],expected;
+	float values[4] = {0.001f,0.002f,-0.003f,0.004f};
+	float gates[4] = {1.0f,-1.0f,10.0f,-10.0f},weight[4] = {1.0f,2.0f,0.5f,-1.0f};
+	uint32_t index;
+	double sum = 0.0,value;
+	for (index=0u; index<4u; index++)
+	{
+		input[index] = bf16(values[index]);
+		gate[index] = bf16(gates[index]);
+		value = f32(input[index]);
+		sum += value * value;
+	}
+	LM_HOST_LAUNCH(dim3(1u),(LmRmsNormSigmoidGateKernel<THREADS>(input,gate,weight,output,4u,1e-5f)));
+	for (index=0u; index<4u; index++)
+	{
+		value = f32(input[index]) / sqrt(sum / 4.0 + 1e-5);
+		value = value * weight[index] / (1.0 + exp(-(double)f32(gate[index])));
+		expected = bf16((float)value);
+		if ( output[index] != expected )
+			return(-1);
+	}
+	return(0);
+}
+
 int main(void)
 {
 	static uint16_t query[STEPS][HEADS * KEY_DIM];
@@ -49,6 +75,8 @@ int main(void)
 	static uint8_t state_pool[HEADS * KEY_DIM * VALUE_DIM * 4u];
 	static uint32_t state_index[1] = { 0u };
 	uint32_t seed = 12345u, step, index, head;
+	if ( TestGatedNorm() != 0 )
+		return(1);
 
 	memset(state_pool, 0, sizeof(state_pool));
 	for (index = 0u; index < HEADS * KEY_DIM; ++index)

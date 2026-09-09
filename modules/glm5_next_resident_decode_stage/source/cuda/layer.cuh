@@ -1404,27 +1404,6 @@ static int32_t Glm5NextLayerKda(
         rank_v,
         sequences,
         commit);
-    LM_LAUNCH(
-        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
-        dim3(rows,rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->q_bf16,
-        rank_heads,
-        rows,
-        GLM5_NEXT_RMS_EPSILON);
-    LM_LAUNCH(
-        (LmL2NormalisePerHeadKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM>),
-        dim3(rows,rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kv_slot_bf16,
-        rank_heads,
-        rows,
-        GLM5_NEXT_RMS_EPSILON);
-
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
@@ -1570,28 +1549,17 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_VALUE_DIM);
 #endif
     LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,float>),
+        (LmRmsNormSigmoidGateKernel<GLM5_NEXT_LAYER_THREADS>),
         dim3((uint64_t)rows * rank_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        (GLM5_NEXT_KDA_VALUE_DIM + 8u) * sizeof(float),
-        stream,
-        buffers->attention_out_bf16,
-        0,
-        (const float *)buffers->kda_out_norm_weight,
-        0,
-        buffers->attention_out_bf16,
-        GLM5_NEXT_KDA_VALUE_DIM,
-        GLM5_NEXT_KDA_VALUE_DIM,
-        GLM5_NEXT_RMS_EPSILON);
-    LM_LAUNCH(
-        (LmOutputGateKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,
         buffers->attention_out_bf16,
         buffers->kda_gate_bf16,
-        rank_v);
+        (const float *)buffers->kda_out_norm_weight,
+        buffers->attention_out_bf16,
+        GLM5_NEXT_KDA_VALUE_DIM,
+        GLM5_NEXT_RMS_EPSILON);
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);

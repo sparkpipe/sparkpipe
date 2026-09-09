@@ -1,5 +1,31 @@
 # GLM 5.3 Flash hill-climbing log
 
+2026-09-09 KDA reference audit: remove the extra BF16 Q/K normalization
+between convolution and the shared delta-rule kernel. The recurrence already
+normalizes Q/K in FP32 with epsilon 1e-6. Apply the missing query scale
+1/sqrt(key dimension) in that shared kernel. Fuse output RMS normalization,
+FP32 gain and sigmoid gating before the single BF16 output store. This removes
+three launches per GLM KDA layer and restores the reference operation order.
+The shared delta-rule scale also affects its other model callers; this change
+does not qualify those drivers.
+
+Reference source is Transformers `modeling_glm5_next.py`, retrieved 2026-09-09,
+SHA256 `5a885692edc74056f370d70af10ba746c0b12d59d245fb782c8ec8964059ea6e`.
+Its recurrent and chunk implementations normalize Q/K once and scale Q;
+its gated RMS function keeps normalization and gating in FP32. The Python
+oracle now follows those equations. PR #871's intermediate BF16 rounding
+matched the old driver but was incorrect relative to the reference and is
+reversed. A stage-local oracle must not adopt a driver's arithmetic merely
+to eliminate its mismatch.
+
+Host verification executes the production recurrence against an independent
+scaled reference over six steps (relative error 0.001921 at BF16 output),
+with exact committed-state replay, chunk/decode equivalence and no state
+mutation for uncommitted work. Substituting the old kernel fails with relative
+error 1.003. A separate small-value fixture checks fused gated normalization
+against a double-precision formula, including epsilon-sensitive values.
+GPU component and full-model results remain pending merged-main deployment.
+
 2026-09-09 MLP formula audit: the checkpoint's `swiglu_limit=10.0` was
 generated into the model header but unused by dense, routed and shared MLP
 activation launches. All three used an unclamped SiLU multiplication. The
