@@ -350,7 +350,6 @@ uint32_t SparkH3RefSelfCheck(void)
 	float cos_angles[SPARK_H3_REF_SEQ * SPARK_H3_REF_ROPE_DIM];
 	float sin_angles[SPARK_H3_REF_SEQ * SPARK_H3_REF_ROPE_DIM];
 	float q[(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM];
-	float k[(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM];
 	float v[(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM];
 	float rotated[(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM];
 	float original[(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM];
@@ -371,7 +370,6 @@ uint32_t SparkH3RefSelfCheck(void)
 	for (row=0u; row<(uint64_t)SPARK_H3_REF_SEQ * SPARK_H3_REF_HEADS * SPARK_H3_REF_HEAD_DIM; row++)
 	{
 		q[row] = SparkH3RefRandom(&rng);
-		k[row] = SparkH3RefRandom(&rng);
 		v[row] = SparkH3RefRandom(&rng);
 		original[row] = q[row];
 	}

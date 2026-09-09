@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -69,7 +70,7 @@ static void SparkMinimaxH3ValFill(uint16_t *packed, float *exact, uint64_t count
 	{
 		float uniform;
 		*state = *state * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
-		uniform = (float)(*state >> 11u) / 1000000.0f - 1.0f;
+		uniform = (float)((*state >> 11u) % 2000001u) / 1000000.0f - 1.0f;
 		packed[index] = SparkMinimaxH3ValToBf16(uniform * scale);
 		exact[index] = SparkMinimaxH3ValFromBf16(packed[index]);
 	}
@@ -556,6 +557,8 @@ int main(int argc, char **argv)
 		float module_sigmas[SPARK_H3_REF_SIGMA_POINTS];
 		uint32_t oracle_count = 0u;
 		uint32_t module_count = 0u;
+		uint32_t identical;
+		uint32_t within_two_ulp;
 		float shifts[2u];
 		uint32_t shift_index;
 		int32_t status;
@@ -563,22 +566,45 @@ int main(int argc, char **argv)
 		shifts[1] = SPARK_MINIMAX_H3_SCHEDULER_AUDIO_SHIFT;
 		for (shift_index=0u; shift_index<2u; shift_index++)
 		{
+			uint32_t index;
 			SparkH3RefSchedulerBuildSigmas(shifts[shift_index],
 				SPARK_H3_REF_SIGMA_POINTS,oracle_sigmas,&oracle_count);
 			status = SparkMinimaxH3SchedulerBuildSigmas(shifts[shift_index],
 				SPARK_H3_REF_SIGMA_POINTS,module_sigmas,&module_count);
-			if ( status != 0 || module_count != oracle_count ||
-				memcmp(module_sigmas,oracle_sigmas,
-				(size_t)oracle_count * sizeof(float)) != 0 )
+			identical = 1u;
+			within_two_ulp = 1u;
+			for (index=0u; index<oracle_count; index++)
+			{
+				float a = oracle_sigmas[index];
+				float b = module_sigmas[index];
+				float difference = fabsf(a - b);
+				float magnitude = fmaxf(fmaxf(fabsf(a),fabsf(b)),1e-30f);
+				int32_t ia,ib;
+				memcpy(&ia,&a,sizeof(ia));
+				memcpy(&ib,&b,sizeof(ib));
+				ia = ia < 0 ? INT32_MIN - ia : ia;
+				ib = ib < 0 ? INT32_MIN - ib : ib;
+				if ( ia != ib )
+					identical = 0u;
+				if ( difference > 2.0f * (float)FLT_EPSILON * magnitude )
+					within_two_ulp = 0u;
+			}
+			if ( status != 0 || module_count != oracle_count || within_two_ulp == 0u )
 			{
 				printf("scheduler shift=%.1f mismatch module=%u oracle=%u status=%d "
 					"FAIL\n",(double)shifts[shift_index],module_count,oracle_count,
 					(int)status);
 				SparkMinimaxH3ValFailures++;
 			}
-			else
+			else if ( identical != 0u )
 			{
 				printf("scheduler shift=%.1f            bit-identical %u sigmas OK\n",
+					(double)shifts[shift_index],oracle_count);
+			}
+			else
+			{
+				printf("scheduler shift=%.1f            %u sigmas within 2 ulp "
+					"(cross-compiler fma contraction) OK\n",
 					(double)shifts[shift_index],oracle_count);
 			}
 		}
