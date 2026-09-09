@@ -269,7 +269,11 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 			total += LmBf16ToFloat(taps[tap])
 				* LmScalarToFloat(weight[(channel * KERNEL) + tap]);
 		if ( ACTIVATION == LM_CONV_SWISH )
+		{
+			if ( sizeof(Weight) == sizeof(uint16_t) )
+				total = LmBf16ToFloat(LmFloatToBf16(total));
 			total = total * (1.0f / (1.0f + __expf(-total)));
+		}
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 	}
 	if ( commit == 0u )
