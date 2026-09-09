@@ -992,3 +992,34 @@ no implementation users and only accept BF16 input contributions; they
 do not provide FP32-to-FP32 tree folding. B2+ tree selection remains
 mandatory. Do not hide this failure by switching B2+ to the direct path
 or accepting the B8 output as a new reference.
+
+## FP32 tree arithmetic primitives
+
+The common TP kernel header now supplies BF16-to-FP32 conversion, a
+rank-ordered FP32 sum supporting destination aliasing, and final FP32-to-BF16
+rounding. The production collective still uses BF16 tree messages; adding
+these primitives alone does not change that or qualify batch consistency.
+
+The host check runs the actual arithmetic kernels through the TP4/TP16
+pair/group composition for B1/B3/B17, widths 7/257/4096 and every group
+root. It compares against an independent FP64 sum rounded once, checks
+aliasing and bounds, and includes the cancellation example 256+1-256.
+Rounding each intermediate fold back to BF16 fails the first test case.
+The separate GPU check uses CUDA launches of the same common kernels:
+
+```
+make test-tp-f32-arithmetic-gpu NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a
+```
+
+Queue that command from a clean synced merged-main checkout. This is an
+arithmetic check, not a distributed-transport or performance measurement.
+
+The caller audit found independent allocation formulas in GLM Flash,
+GLM52, DSV4, Qwen4 Flash, Qwen38 Max and Qwen38 27B. Several older formulas
+omit the nonce space already required by the existing common collective.
+K3 receives externally constructed bindings. The interface migration must
+cover these constructors and hardware harnesses together: one authoritative
+payload/credit sizing rule, checked binding spans, FP32 accumulator storage
+owned through GPU completion, explicit required arithmetic callbacks, and
+coordinated ABI rejection of old binaries. Preserve the B1 policy and U64
+max semantics while carrying FP32 through both intermediate tree levels.
