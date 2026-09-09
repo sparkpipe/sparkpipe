@@ -8,6 +8,11 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_weightd_map.h"
+#include "sparkpipe/spark_weightd_lease.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_stage_module_common.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
@@ -145,6 +150,19 @@ typedef struct SparkK3RunnerState
 	int collective_created;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
+	/* Shared lazy-expert residency: configured when SPARK_WEIGHTD_SOCKET
+	 * is set. Expert tensors are leased per routed layer through the
+	 * weightd daemon; the whole-pack pin is skipped. The socket-absent
+	 * path is the unchanged direct load. */
+	SparkWeightdLazyPack *lazy_pack;
+	SparkWeightdMap *expert_map;
+	uint32_t lazy_experts;
+	uint64_t lease_identifier;
+	uint32_t lease_inflight;
+	void *lease_address;
+	uint32_t *group_offset_host;
+	uint64_t layer_w1_offset[96];
+	uint64_t layer_w2_offset[96];
 	uint32_t tp_rank;
 	uint16_t *fused_device;
 	uint32_t fused_rows;
@@ -221,6 +239,8 @@ static uint32_t K3RunnerGraphsEligible(const SparkK3RunnerState *state,
 	if ( state->graph_capture_enabled == 0u || state->graphs_broken != 0u ||
 		stream == 0 )
 		return 0u;
+	if ( state->lazy_experts != 0u )
+		return 0u; /* per-layer daemon round trips are host work */
 	if ( state->device_collective_created == 0 )
 		return 1u;
 	return state->device_collective.backend_kind ==
@@ -563,6 +583,152 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerHookDump(state, state->tp_rank, layer, phase, "post", elements);
 	}
 }
+/* The k3 lazy manifest contract: every routed layer contributes two
+ * per-expert ranges (kind 0 = w1 payload, kind 1 = w2 payload), each
+ * range exactly the expert's span inside its tensor in the pack, and no
+ * groups beyond the routed layers. Verified against the pack's own
+ * entries before the spine GPU allocation. */
+typedef struct SparkK3ManifestCheckContext
+{
+	SparkK3Pack *pack;
+} SparkK3ManifestCheckContext;
+
+static SparkStatus SparkK3ManifestCheck(const SparkWeightdManifest *manifest,
+	void *context)
+{
+	SparkK3ManifestCheckContext *check = (SparkK3ManifestCheckContext *)context;
+	SparkK3Pack *pack = check->pack;
+	uint32_t group_index = 0u;
+	uint32_t layer;
+	if ( manifest->group_count == 0u ||
+		manifest->range_count < manifest->group_count )
+		return SPARK_STATUS_PARSE_ERROR;
+	for ( layer = pack->config.first_layer;
+		layer < pack->config.first_layer + pack->config.total_layers;
+		++layer )
+	{
+		char name[SPARK_K3_PACK_MAX_NAME_BYTES];
+		SparkK3PackEntry w1;
+		SparkK3PackEntry w2;
+		int have_w1;
+		int have_w2;
+		uint32_t expert;
+		uint32_t r;
+		snprintf(name, sizeof(name), "model.layers.%u.expert_w1_weight",
+			layer);
+		have_w1 = SparkK3PackLoadEntry(pack, name, &w1) == SPARK_STATUS_OK;
+		snprintf(name, sizeof(name), "model.layers.%u.expert_w2_weight",
+			layer);
+		have_w2 = SparkK3PackLoadEntry(pack, name, &w2) == SPARK_STATUS_OK;
+		if ( have_w1 != have_w2 )
+			return SPARK_STATUS_PARSE_ERROR;
+		if ( !have_w1 )
+			continue;
+		if ( w1.bytes % pack->config.experts != 0u ||
+			w2.bytes % pack->config.experts != 0u ||
+			w1.bytes / pack->config.experts !=
+				w2.bytes / pack->config.experts )
+			return SPARK_STATUS_PARSE_ERROR;
+		for ( expert = 0u; expert < pack->config.experts; ++expert )
+		{
+			const SparkWeightdRangeGroup *group =
+				&manifest->groups[group_index + expert];
+			const SparkWeightdRange *range;
+			uint32_t r;
+			if ( group->layer != layer || group->expert != expert ||
+				group->range_count != 2u )
+				return SPARK_STATUS_PARSE_ERROR;
+			for ( r = 0u; r < 2u; ++r )
+			{
+				const SparkK3PackEntry *tensor =
+					r == 0u ? &w1 : &w2;
+				uint64_t expert_bytes =
+					tensor->bytes / pack->config.experts;
+				uint64_t expected = pack->payload_base +
+					tensor->payload_offset +
+					(uint64_t)expert * expert_bytes;
+				range = &manifest->ranges[group->first_range + r];
+				if ( range->offset != expected ||
+					range->bytes != expert_bytes ||
+					range->kind != r * 2u ||
+					range->layer != layer ||
+					range->expert != expert )
+					return SPARK_STATUS_PARSE_ERROR;
+			}
+		}
+		group_index += pack->config.experts;
+		moe_layers += 1u;
+	}
+	if ( group_index != manifest->group_count )
+		return SPARK_STATUS_PARSE_ERROR;
+	(void)moe_layers;
+	return SPARK_STATUS_OK;
+}
+
+/* Lazy dispatch hooks: after a routed layer's route build the route
+ * grouping is read back (expert_count+1 offsets), converted to per-expert
+ * keys, and the layer's working set is leased from the daemon. The
+ * expert tensor pointers bind against the consumer-local lease address
+ * for exactly this layer; completion is recorded on the submission
+ * stream before the lease is released. */
+static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
+	void *buffers_void)
+{
+	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
+	K3LayerBuffers *buffers = (K3LayerBuffers *)buffers_void;
+	SparkWeightdExpertKey keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
+	uint32_t count = 0u;
+	cudaError_t error;
+	SparkStatus status;
+	if ( state == 0 || state->expert_map == 0 || buffers == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	error = cudaStreamSynchronize(state->stream);
+	if ( error != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	error = cudaMemcpy(state->group_offset_host, buffers->group_row_offset,
+		(K3_EXPERTS + 1u) * 4u, cudaMemcpyDeviceToHost);
+	if ( error != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	status = SparkWeightdRouteKeys(layer, state->group_offset_host,
+		K3_EXPERTS, state->rows, keys, SPARK_WEIGHTD_LEASE_GROUPS_MAX,
+		&count);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkWeightdMapAcquire(state->expert_map, keys, count,
+		&state->lease_identifier, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	state->lease_inflight = 1u;
+	status = SparkWeightdMapBeginUse(state->expert_map,
+		state->lease_identifier, &state->lease_address);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	buffers->expert_w1_weight = (const uint8_t *)state->lease_address +
+		state->layer_w1_offset[layer];
+	buffers->expert_w2_weight = (const uint8_t *)state->lease_address +
+		state->layer_w2_offset[layer];
+	return SPARK_STATUS_OK;
+}
+
+static void SparkK3RunnerLazyRelease(void *context, uint32_t layer)
+{
+	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
+	SparkStatus status;
+	(void)layer;
+	if ( state == 0 || state->expert_map == 0 || state->lease_inflight == 0u )
+		return;
+	status = SparkWeightdMapRecordCompletion(state->expert_map,
+		state->lease_identifier, state->stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapRelease(state->expert_map,
+			state->lease_identifier,
+			SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "sparkpipe_k3: lease release failed status=%d "
+			"(retained for recovery)\n", (int)status);
+	state->lease_inflight = 0u;
+}
+
 SparkStatus SparkK3StageRunnerInitialize(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerConfiguration *configuration)
@@ -626,15 +792,80 @@ SparkStatus SparkK3StageRunnerInitialize(
 		configuration->kv_pages_per_sequence,
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
-		{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	status = SparkWeightdAttachRequested();
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		state->lazy_experts = 0u;
+		if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
+			{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	}
+	else if ( status == SPARK_STATUS_OK )
+	{
+		SparkWeightdLazyAttachRequest request;
+		SparkK3ManifestCheckContext check;
+		const char *digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+		uint64_t expert_pool = 0u, spine_budget = 0u;
+		memset(&request, 0, sizeof(request));
+		if ( digest == 0 || strlen(digest) != 64u ||
+			strlen(configuration->rank_pack_path) >=
+			sizeof(request.pack_path) )
+		{
+			fprintf(stderr, "sparkpipe_k3: lazy load requires"
+				" SPARK_WEIGHTD_PACK_SHA256 (64 hex chars)\n");
+			{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		}
+		if ( SparkStageModuleEnvironmentUnsigned64("k3",
+			"SPARK_WEIGHTD_EXPERT_POOL_BYTES", 1u, UINT64_MAX,
+			&expert_pool) != SPARK_STATUS_OK ||
+			SparkStageModuleEnvironmentUnsigned64("k3",
+			"SPARK_WEIGHTD_SPINE_BUDGET_BYTES", 1u, UINT64_MAX,
+			&spine_budget) != SPARK_STATUS_OK )
+		{
+			fprintf(stderr, "sparkpipe_k3: lazy load requires the weightd"
+				" pool and spine budget envs\n");
+			{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		}
+		memcpy(request.identity.pack_sha256, digest, 64u);
+		snprintf(request.identity.model, sizeof(request.identity.model), "kimi-k3");
+		snprintf(request.identity.revision, sizeof(request.identity.revision), "mxfp4");
+		request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+		request.identity.arena_bytes = expert_pool;
+		request.identity.topology = configuration->tp_degree;
+		memcpy(request.pack_path, configuration->rank_pack_path,
+			strlen(configuration->rank_pack_path) + 1u);
+		request.expert_pool_bytes = expert_pool;
+		check.pack = &state->module.pack;
+		status = SparkWeightdLazyPackCreateChecked(
+			getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET), &request, spine_budget,
+			SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, SparkK3ManifestCheck,
+			&check, &state->lazy_pack);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr, "sparkpipe_k3: lazy startup failed status=%d"
+				" (fail-closed, no eager fallback)\n", (int)status);
+			{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		}
+		state->lazy_experts = 1u;
+	}
+	else
+	{
+		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	}
 	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
-			state->module.bound,state->module.bound_count) != SPARK_K3_DISPATCH_OK )
+			state->module.bound,state->module.bound_count,
+			state->lazy_experts != 0u ? state->lazy_pack : 0) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	cudaMemset(state->dispatch.page_table, 0,
 		(uint64_t)state->module.sizing.mla_layer_count *
 		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
+	if ( state->lazy_experts != 0u )
+	{
+		state->group_offset_host =
+			(uint32_t *)malloc((K3_EXPERTS + 1u) * 4u);
+		if ( state->group_offset_host == 0 )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 &&
 		entry.shape_count >= 1u )
 		state->vocab_slice_rows = entry.shape[0];
@@ -643,6 +874,14 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_context = state;
+	if ( state->lazy_experts != 0u )
+	{
+		state->dispatch.slice_state->lazy_context = state;
+		state->dispatch.slice_state->lazy_acquire =
+			SparkK3RunnerLazyAcquire;
+		state->dispatch.slice_state->lazy_release =
+			SparkK3RunnerLazyRelease;
+	}
 	if ( configuration->tp_degree > 1u )
 	{
 		if ( configuration->tp_collective == 0 &&
@@ -1005,10 +1244,23 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 			(void)cudaGraphExecDestroy(state->graphs[i].executable);
 	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
-	if ( state->module.pack.mapping != 0 )
+	if ( state->lease_inflight != 0u && state->expert_map != 0 )
+	{
+		(void)SparkWeightdMapRelease(state->expert_map,
+			state->lease_identifier,
+			SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+		state->lease_inflight = 0u;
+	}
+	if ( state->module.pack.mapping != 0 && state->lazy_experts == 0u )
 		SparkK3DispatchUnregisterPack(&state->module.pack);
 	SparkK3ModuleDestroy(&state->module);
+	if ( state->lazy_pack != 0 )
+	{
+		(void)SparkWeightdLazyPackDestroy(state->lazy_pack);
+		state->lazy_pack = 0;
+	}
 	delete[] state->staging_values;
+	free(state->group_offset_host);
 	delete[] state->staging_scratch;
 	delete[] state->head_slots_host;
 	delete[] state->output_token_host;
