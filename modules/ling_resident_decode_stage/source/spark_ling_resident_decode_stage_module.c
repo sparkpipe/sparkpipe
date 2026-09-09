@@ -11,15 +11,6 @@
 
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
 
-#define SPARK_LING_PROBE_CONNECT_TIMEOUT_SCALE 4u
-#define SPARK_LING_PROBE_OPERATION_TIMEOUT_SCALE 8u
-static int SparkLingProbeEnabled(void)
-{
-	static int probe_enabled = -1;
-	if ( probe_enabled < 0 )
-		probe_enabled = getenv("SPARK_LING_PROBE") != 0 ? 1 : 0;
-	return(probe_enabled);
-}
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_kv_model_table.h"
@@ -118,9 +109,6 @@ struct SparkLingModuleState
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	uint8_t *head_certified_fp8_payload;
-	float *head_certified_fp8_scale_f32;
-	float *head_certified_fp8_norm_f32;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
 	uint32_t *page_table;
@@ -650,15 +638,6 @@ static SparkStatus SparkLingAllocateSlotHead(
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,1u,sizeof(uint32_t),(void **)&slot->output_token);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,1u,sizeof(float),(void **)&slot->output_score);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,1u,sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
-	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
-	{
-		uint64_t shard_rows = SPARK_LING_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-		status = SparkLingAllocateBytes(state,1u,SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_LING_MODEL_HIDDEN_DIMENSION),1u,(void **)&slot->head_certified_scratch);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingAllocateBytes(state,1u,SparkHeadCertifiedFp8CandidateBytes(shard_rows),1u,(void **)&slot->head_certified_candidates);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingAllocateBytes(state,1u,1u,sizeof(uint32_t),(void **)&slot->head_screened_count);
-	}
 	return(status);
 }
 
@@ -934,15 +913,7 @@ static SparkStatus SparkLingAdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
-			{
-				fprintf(stderr,"G5N-DBG admit: PrepareLane -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
-					(int)status,(unsigned long long)lane->context_token_count,
-					(unsigned long long)lane->sequence_position,
-					(unsigned long long)lane->flags,
-					(unsigned long long)lane->publish_token_count,
-					(unsigned long long)lane->prefix_token_count);
 				return(status);
-			}
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
@@ -953,15 +924,7 @@ static SparkStatus SparkLingAdmissionPredicate(
 			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
 			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
 			if ( status != SPARK_STATUS_OK )
-			{
-				fprintf(stderr,"G5N-DBG admit: BeginTxn -> %d lane ctx %llu pos %llu flags %llu pub %llu pre %llu\n",
-					(int)status,(unsigned long long)lane->context_token_count,
-					(unsigned long long)lane->sequence_position,
-					(unsigned long long)lane->flags,
-					(unsigned long long)lane->publish_token_count,
-					(unsigned long long)lane->prefix_token_count);
 				return(status);
-			}
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
@@ -1240,9 +1203,6 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 	wave->embedding_bf16 = state->embedding_bf16;
 	wave->final_norm_bf16 = state->final_norm_bf16;
 	wave->lm_head_bf16 = state->lm_head_bf16;
-	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
-	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
-	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
 	wave->layers = state->layers;
 	wave->slot = slot;
 	wave->kv_cache = state->kv_cache;
@@ -1325,7 +1285,7 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	SparkLingModuleState *state,
 	const SparkLingResidentDecodeStageNodeContext *context)
 {
-	SparkTpDeviceCollectiveConfig configuration;	uint32_t probe_connect_timeout_milli,probe_operation_timeout_milli;
+	SparkTpDeviceCollectiveConfig configuration;
 	uint64_t credit_bytes,offset,total_bytes;
 	uint32_t credit,hidden,memory_mode,route,route_count;
 	void *mapped_receive,*mapped_send;
@@ -1335,22 +1295,6 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
-	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
-	if ( SparkLingProbeEnabled() )
-	{
-		if ( probe_connect_timeout_milli >
-			UINT32_MAX / SPARK_LING_PROBE_CONNECT_TIMEOUT_SCALE )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		probe_connect_timeout_milli *= SPARK_LING_PROBE_CONNECT_TIMEOUT_SCALE;
-	}
-	probe_operation_timeout_milli = context->tp_operation_timeout_milli;
-	if ( SparkLingProbeEnabled() )
-	{
-		if ( probe_operation_timeout_milli >
-			UINT32_MAX / SPARK_LING_PROBE_OPERATION_TIMEOUT_SCALE )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		probe_operation_timeout_milli *= SPARK_LING_PROBE_OPERATION_TIMEOUT_SCALE;
-	}
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = context->tp_collective_backend_kind;
@@ -1360,8 +1304,8 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	configuration.credit_count = state->pipeline_slot_count * SPARK_LING_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_LING_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.connect_timeout_milli = probe_connect_timeout_milli;
-	configuration.operation_timeout_milli = probe_operation_timeout_milli;
+	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
+	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
 	configuration.control_port_base = context->tp_collective_control_port_base;
 	configuration.collective_identifier = context->tp_collective_identifier;
 	configuration.backend_module_path = context->tp_collective_backend_module_path;
@@ -1552,8 +1496,6 @@ static void SparkLingTpChainFail(SparkLingTpChain *chain,SparkStatus status)
 	SparkLingModuleState *state;
 	SparkLingAsyncCompletion *async;
 	state = chain->state;
-	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
-		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
 	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
@@ -1756,11 +1698,6 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
-		fprintf(stderr,"G5N-DBG complete: kv_access_error code %u kind %u row %u seq %u pos %u page %u (slot %u status_in %u)\n",
-			(unsigned)slot->host_kv_access_error[0],(unsigned)slot->host_kv_access_error[1],
-			(unsigned)slot->host_kv_access_error[2],(unsigned)slot->host_kv_access_error[3],
-			(unsigned)slot->host_kv_access_error[4],(unsigned)slot->host_kv_access_error[5],
-			(unsigned)async->slot_index,(unsigned)async->completion.status);
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if ( async->completion.status == SPARK_STATUS_OK )
@@ -1771,35 +1708,17 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 		{
 			SparkStatus complete_status;
 			const SparkModelDriverCacheLane *remembered;
-			const SparkKvPageCacheSequence *sequence;
 			resident = async->lane_indices[lane];
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
 			remembered = &state->kv_lane_cache_lanes[resident];
-			sequence = &state->kv_page_cache.sequences[resident];
 			if ( remembered->sequence_id != 0u &&
 				remembered->sequence_id == async->lane_sequence_ids[lane] )
 			{
 				complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
 				if ( complete_status != SPARK_STATUS_OK )
 				{
-					fprintf(stderr,"G5N-DBG complete: CompleteLane resident %u -> %d | lane seq %llu pos %llu ctx %llu pre %llu pub %llu flags %llx | cache seq %llu next %llu mut %u | block %u async(pos %llu rows %u lanes %u bound %llu nextpos %llu)\n",
-						(unsigned)resident,(int)complete_status,
-						(unsigned long long)remembered->sequence_id,
-						(unsigned long long)remembered->sequence_position,
-						(unsigned long long)remembered->context_token_count,
-						(unsigned long long)remembered->prefix_token_count,
-						(unsigned long long)remembered->publish_token_count,
-						(unsigned long long)remembered->flags,
-						(unsigned long long)sequence->sequence_id,
-						(unsigned long long)sequence->next_token_position,
-						(unsigned)sequence->mutable_logical_page_index,
-						(unsigned)state->kv_page_cache.kv_cache_arena->block_token_count,
-						(unsigned long long)async->completion.sequence_position,
-						(unsigned)async->row_count,(unsigned)async->lane_count,
-						(unsigned long long)async->lane_bound[lane],
-						(unsigned long long)async->lane_next_positions[lane]);
 					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 				}
 			}
@@ -1820,8 +1739,6 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 				rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,remembered,state->kv_lane_mutation_flags[resident]);
 				if ( rollback_status != SPARK_STATUS_OK )
 				{
-					fprintf(stderr,"G5N-DBG complete: RollbackLane resident %u -> %d (status_in %u)\n",
-						(unsigned)resident,(int)rollback_status,(unsigned)async->completion.status);
 					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 				}
 			}
@@ -1946,7 +1863,6 @@ SparkStatus SparkLingResidentDecodeStageExecute(
 	status = SparkLingValidateFrame(state,frame,&context);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"G5N-DBG execute: ValidateFrame -> %d\n",(int)status);
 		if ( state != 0 )
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 		return(status);
@@ -1996,9 +1912,6 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( decision->accepted == 0u )
-		fprintf(stderr,"G5N-DBG admit: shape-rejected reason %u\n",
-			(unsigned)decision->rejection_reason);
 	if ( decision->accepted == 0u )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 	return(status);
@@ -2058,26 +1971,6 @@ void SparkLingResidentDecodeStageDestroy(void *module_state)
 	free(state);
 }
 
-static SparkStatus SparkLingBuildHeadShadow(SparkLingModuleState *state)
-{
-	uint64_t head_rows,dim;
-	SparkStatus status;
-	if ( state->owns_final_head == 0u || state->lm_head_bf16 == 0 )
-		return(SPARK_STATUS_OK);
-	head_rows = SPARK_LING_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-	dim = SPARK_LING_MODEL_HIDDEN_DIMENSION;
-	status = SparkLingAllocateBytes(state,head_rows,dim,1u,(void **)&state->head_certified_fp8_payload);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_scale_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingAllocateBytes(state,head_rows,dim / 32u,sizeof(float),(void **)&state->head_certified_fp8_norm_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,SparkLingLaunchHeadCertifiedQuantize(0,state->lm_head_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,(uint32_t)head_rows,(uint32_t)dim),"head_certified_quantize");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,cudaDeviceSynchronize(),"head_certified_sync");
-	return(status);
-}
-
 static SparkStatus SparkLingInitializeState(
 	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -2102,8 +1995,6 @@ static SparkStatus SparkLingInitializeState(
 		status = SparkLingAllocateSlots(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingModuleInitializeTpCollective(state,(const SparkLingResidentDecodeStageNodeContext *)host_services->node_context);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingBuildHeadShadow(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkLingReleaseSlotHost(state);

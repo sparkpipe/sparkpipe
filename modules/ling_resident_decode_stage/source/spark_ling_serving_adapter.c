@@ -505,7 +505,6 @@ static SparkStatus SparkLingServingLoadTpCollective(
 			status = SparkLingServingLoadTpStepRails(document,object,
 				tp_degree,&state->tp_collective_topology);
 	}
-	(void)fprintf(stderr,"LING-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
 	return(status);
 }
 
@@ -563,7 +562,6 @@ static SparkStatus SparkLingServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
-	(void)fprintf(stderr,"LING-ADAPTER LoadConfiguration rc=%d\n",(int)status);
 	return(status);
 }
 
@@ -656,12 +654,11 @@ static void SparkLingServingDriverCompletion(
 	SparkLingServingPending *pending;
 	SparkLingServingState *state;
 	SparkModelServingCompletion completion;
-	uint32_t index,matches,raw_accepted;
+	uint32_t index,matches;
 	pending = (SparkLingServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
 	if ( state == 0 || pending->active == 0u || driver_completion == 0 )
 		return;
-	raw_accepted = driver_completion->accepted_token_count;
 	matches = driver_completion->request_id == pending->request_id && driver_completion->sequence_id == pending->sequence_id && driver_completion->sequence_position == pending->sequence_position && driver_completion->program_id == state->program->program_id;
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
@@ -698,14 +695,6 @@ static void SparkLingServingDriverCompletion(
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
 	}
-	fprintf(stderr,"G5N-DBG completion emit: sub %llu status %u flags %u tokcnt %u tps %u acc %u raw_acc %u ext %u resid_zero %d\n",
-		(unsigned long long)completion.submission_id,(unsigned)completion.status,
-		(unsigned)completion.completion_flags,(unsigned)completion.token_count,
-		(unsigned)completion.tokens_per_sequence,
-		(unsigned)completion.accepted_token_count,
-		(unsigned)raw_accepted,
-		(unsigned)completion.model_extension_bytes,
-		(int)(completion.residency.word0 == 0u));
 	pending->active = 0u;
 	state->completion_function(state->completion_context,&completion);
 }
@@ -786,7 +775,6 @@ static SparkStatus SparkLingServingLoadDriver(
 	request.wake_function = SparkLingServingDriverWake;
 	request.wake_context = state;
 	status = state->driver.interface->create(&request,&state->driver_instance);
-	(void)fprintf(stderr,"LING-ADAPTER LoadDriver rc=%d\n",(int)status);
 	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
 }
 
@@ -902,21 +890,12 @@ static SparkStatus SparkLingServingValidateSubmission(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkLingServingDescriptor,&state->runtime_limits,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: runtime_submission -> %d (kind %u rows %u lanes %u ext %u)\n",
-			(int)status,submission->work_kind,submission->row_count,submission->active_sequence_count,submission->model_extension_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingServingValidateBoundaries(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: boundaries -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingServingValidateRowOrder(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG validate: row_order -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
 	{
-		fprintf(stderr,"G5N-DBG validate: model_extension_bytes=%u kind=%u\n",
-			submission->model_extension_bytes,submission->model_extension_kind);
 		status = SPARK_STATUS_UNSUPPORTED;
 	}
 	return(status);
@@ -1010,13 +989,9 @@ static SparkStatus SparkLingServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	SparkLingServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
 	status = SparkLingServingAdmit(state,submission,&frame);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = state->program->submit(state->driver_instance,&frame);
-		if ( status != SPARK_STATUS_OK )
-			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
 	}
 	if ( status != SPARK_STATUS_OK )
 		pending->active = 0u;

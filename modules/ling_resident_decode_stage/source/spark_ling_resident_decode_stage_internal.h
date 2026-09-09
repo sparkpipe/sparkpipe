@@ -97,9 +97,6 @@ typedef struct SparkLingExecutionSlot
 	uint32_t *output_token;
 	float *output_score;
 	uint64_t *head_maxloc_u64;
-	void *head_certified_scratch;
-	uint32_t *head_certified_candidates;
-	uint32_t *head_screened_count;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
@@ -130,9 +127,6 @@ typedef struct SparkLingCudaWave
 	const void *embedding_bf16;
 	const void *final_norm_bf16;
 	const void *lm_head_bf16;
-	const uint8_t *head_certified_fp8_payload;
-	const float *head_certified_fp8_scale_f32;
-	const float *head_certified_fp8_norm_f32;
 	const SparkLingLayerWeights *layers;
 	SparkLingExecutionSlot *slot;
 	uint8_t *kv_cache;
@@ -177,7 +171,6 @@ int32_t SparkLingLaunchCudaLayerMlp(const SparkLingCudaWave *wave,uint32_t local
 int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 cudaError_t SparkLingLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkLingLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
-cudaError_t SparkLingLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkLingLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
 cudaError_t SparkLingLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkLingConfigureCudaModule(uint32_t *multiprocessor_count);

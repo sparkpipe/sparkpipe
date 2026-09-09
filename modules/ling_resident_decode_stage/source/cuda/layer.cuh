@@ -220,32 +220,6 @@ static int32_t LingLaunchBf16Linear(
             stream);
 }
 
-static void LingProbeVecU16(cudaStream_t stream,const uint16_t *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
-{
-    static uint16_t vec_buf[16384];
-    uint32_t i;
-    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
-        cudaMemcpy(vec_buf,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-        return;
-    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
-    for ( i = 0u; i < count; i++ )
-        fprintf(stderr," %04x",vec_buf[i]);
-    fputc('\n',stderr);
-}
-
-static void LingProbeVecF32(cudaStream_t stream,const float *device,uint32_t count,uint32_t layer,uint32_t pass,const char *label)
-{
-    static uint32_t vec_buf[16384];
-    uint32_t i;
-    if ( count > 16384u || cudaStreamSynchronize(stream) != cudaSuccess ||
-        cudaMemcpy(vec_buf,device,count * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-        return;
-    fprintf(stderr,"G5N-VEC L%u P%u %s %u",layer,pass,label,count);
-    for ( i = 0u; i < count; i++ )
-        fprintf(stderr," %08x",vec_buf[i]);
-    fputc('\n',stderr);
-}
-
 static int32_t LingLayerAttention(
     const LingLayerBuffers *buffers,
     uint32_t rows,
@@ -532,141 +506,6 @@ static int32_t LingDeltaRuleOptIn(uint32_t shared_bytes)
 }
 
 
-#include <stdlib.h>
-#include <stdio.h>
-
-static int LingKdaProbeActive(const LingLayerBuffers *buffers)
-{
-    static int probe_enabled = -1;
-    if ( probe_enabled < 0 )
-        probe_enabled = getenv("SPARK_LING_PROBE") != 0 ? 1 : 0;
-    return(probe_enabled != 0 && buffers != 0 && buffers->tp_rank == 0u);
-}
-
-static int LingKdaProbeDeep(const LingLayerBuffers *buffers)
-{
-    uint32_t layer = buffers != 0 ? buffers->layer_index : 0u;
-    return(LingKdaProbeActive(buffers) &&
-        (layer == 0u || (layer >= 16u && layer <= 20u) || layer >= 43u));
-}
-
-#define LING_KDA_PROBE_RAW(stream,lyr,label,dev) \
-    do { \
-        uint16_t probe_h[256]; float probe_f[8]; uint32_t probe_i; \
-        if ( cudaStreamSynchronize((stream)) == cudaSuccess && \
-             cudaMemcpy(probe_h,(dev),256 * sizeof(uint16_t),cudaMemcpyDeviceToHost) == cudaSuccess ) \
-        { \
-            for ( probe_i = 0u; probe_i < 8u; probe_i++ ) \
-            { \
-                uint32_t probe_bits = ((uint32_t)probe_h[probe_i]) << 16; \
-                (void)memcpy(&probe_f[probe_i],&probe_bits,sizeof(float)); \
-            } \
-            fprintf(stderr,"G5N-PROBE kda L%u %s raw %u %u %u %u %u %u %u %u f %.6g %.6g %.6g %.6g %.6g %.6g %.6g %.6g\n", \
-                (unsigned)(lyr),(label),probe_h[0],probe_h[1],probe_h[2],probe_h[3], \
-                probe_h[4],probe_h[5],probe_h[6],probe_h[7], \
-                (double)probe_f[0],(double)probe_f[1],(double)probe_f[2],(double)probe_f[3], \
-                (double)probe_f[4],(double)probe_f[5],(double)probe_f[6],(double)probe_f[7]); \
-        } \
-    } while (0)
-
-static uint64_t LingProbeBf16Sum(cudaStream_t stream,const uint16_t *device,uint32_t count)
-{
-    uint16_t host[256];
-    uint64_t total;
-    uint32_t i,taken;
-    total = 0u;
-    if ( cudaStreamSynchronize(stream) != cudaSuccess )
-        return(0xDEADDEADu);
-    while ( count != 0u )
-    {
-        taken = count < 256u ? count : 256u;
-        if ( cudaMemcpy(host,device,taken * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-            return(0xDEADDEADu);
-        for ( i = 0u; i < taken; i++ )
-            total += host[i];
-        count -= taken;
-        device += taken;
-    }
-    return(total);
-}
-
-static void LingProbeFloats(cudaStream_t stream,const float *device,uint32_t count,float *host)
-{
-    if ( cudaStreamSynchronize(stream) != cudaSuccess )
-        return;
-    (void)cudaMemcpy(host,device,count * sizeof(float),cudaMemcpyDeviceToHost);
-}
-
-static void LingProbeBf16Floats(cudaStream_t stream,const uint16_t *device,uint32_t count,float *host)
-{
-    uint16_t probe_b[8];
-    uint32_t probe_i;
-    if ( count > 8u || cudaStreamSynchronize(stream) != cudaSuccess ||
-         cudaMemcpy(probe_b,device,count * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-        return;
-    for ( probe_i = 0u; probe_i < count; probe_i++ )
-    {
-        uint32_t probe_bits = ((uint32_t)probe_b[probe_i]) << 16;
-        (void)memcpy(&host[probe_i],&probe_bits,sizeof(float));
-    }
-}
-
-#define LING_KDA_PROBE(stream,label,dev,cnt) \
-    do { fprintf(stderr,"G5N-PROBE kda L%u %s bf16sum %llu\n", \
-        buffers->layer_index,(label), \
-        (unsigned long long)LingProbeBf16Sum((stream),(const uint16_t *)(dev),(cnt))); } while (0)
-
-#define LING_KDA_PROBE_STATE(stream,label,pool) \
-    do { \
-        float probe_s[4]; uint32_t probe_w; uint64_t probe_bits = 0u; \
-        uint32_t probe_words[1024]; \
-        LingProbeFloats((stream),(const float *)(pool),4u,probe_s); \
-        if ( cudaStreamSynchronize((stream)) == cudaSuccess && \
-             cudaMemcpy(probe_words,(pool),sizeof(probe_words),cudaMemcpyDeviceToHost) == cudaSuccess ) \
-            for ( probe_w = 0u; probe_w < 1024u; probe_w++ ) \
-                probe_bits += probe_words[probe_w]; \
-        else \
-            probe_bits = 0xDEADDEADu; \
-        fprintf(stderr,"G5N-PROBE kda L%u %s f %.6g %.6g %.6g %.6g bits4096B %llu\n", \
-            buffers->layer_index,(label),(double)probe_s[0],(double)probe_s[1], \
-            (double)probe_s[2],(double)probe_s[3],(unsigned long long)probe_bits); \
-    } while (0)
-
-
-static int LingKdaProbeVecLayer(const LingLayerBuffers *buffers)
-{
-    static int vec_layer = -1;
-    if ( vec_layer < 0 )
-    {
-        const char *layer_env = getenv("SPARK_LING_PROBE_VEC_KDA_LAYER");
-        vec_layer = (layer_env != 0 && *layer_env != 0)
-            ? (int)atoi(layer_env) : 0;
-    }
-    return(vec_layer);
-}
-
-static int LingKdaProbeVecPass(const LingLayerBuffers *buffers)
-{
-    static int vec_enabled = -1;
-    static uint32_t vec_pass = 0u;
-    uint32_t cap;
-    if ( vec_enabled < 0 )
-        vec_enabled = getenv("SPARK_LING_PROBE_VEC") != 0 ? 1 : 0;
-    if ( vec_enabled == 0 || buffers == 0 || buffers->tp_rank != 0u ||
-        (int)buffers->layer_index != LingKdaProbeVecLayer(buffers) )
-        return(0);
-    cap = 30u;
-    {
-        const char *cap_env = getenv("SPARK_LING_PROBE_VEC_PASSES");
-        if ( cap_env != 0 && *cap_env != 0 )
-            cap = (uint32_t)atoi(cap_env);
-    }
-    if ( vec_pass >= cap )
-        return(0);
-    vec_pass += 1u;
-    return((int)vec_pass);
-}
-
 static int32_t LingLayerKda(
     const LingLayerBuffers *buffers,
     uint32_t rows,
@@ -678,7 +517,6 @@ static int32_t LingLayerKda(
     const uint32_t rank_heads = buffers->kda_heads;
     const uint32_t rank_qk = rank_heads * LING_KDA_KEY_DIM;
     const uint32_t rank_v = rank_heads * LING_KDA_VALUE_DIM;
-    const int32_t vec_pass = (int32_t)LingKdaProbeVecPass(buffers);
     int32_t status;
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
@@ -717,24 +555,6 @@ static int32_t LingLayerKda(
         LING_HIDDEN,
         LING_HIDDEN,
         LING_RMS_EPSILON);
-
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"input",buffers->hidden_bf16,256u);
-        LING_KDA_PROBE(stream,"normed",buffers->normed_bf16,256u);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecU16(stream,buffers->hidden_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_input_head");
-        LingProbeVecU16(stream,buffers->normed_bf16,256u,buffers->layer_index,(uint32_t)vec_pass,"k_normed");
-    }
-    if ( LingKdaProbeDeep(buffers) )
-    {
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"input",buffers->hidden_bf16);
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"normed",buffers->normed_bf16);
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
-    }
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kda_qkv_beta_weight,
@@ -796,11 +616,6 @@ static int32_t LingLayerKda(
         rank_v,
         rank_heads,
         rank_qk * 2u + rank_v + rank_heads);
-
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"fused_qkvb",buffers->fused_qkvb_bf16,256u);
-    }
     LM_LAUNCH(
         (LmCausalConvKernel<LING_LAYER_THREADS,LING_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_qk + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS),
@@ -869,34 +684,6 @@ static int32_t LingLayerKda(
         rank_heads,
         rows,
         LING_RMS_EPSILON);
-
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
-        LING_KDA_PROBE(stream,"k_postconv",buffers->kv_slot_bf16,256u);
-        LING_KDA_PROBE(stream,"v_postconv",buffers->gate_up_bf16,256u);
-        LING_KDA_PROBE(stream,"beta_logit",buffers->kda_beta_logit,64u);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecU16(stream,buffers->q_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"q_postconv");
-        LingProbeVecU16(stream,buffers->kv_slot_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"k_postconv");
-        LingProbeVecU16(stream,buffers->gate_up_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"v_postconv");
-    }
-    if ( LingKdaProbeDeep(buffers) )
-    {
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"q_postconv",buffers->q_bf16);
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"k_postconv",buffers->kv_slot_bf16);
-        LING_KDA_PROBE_RAW(stream,buffers->layer_index,"v_postconv",buffers->gate_up_bf16);
-    }
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"decay_logit",buffers->kda_decay_logit_bf16,256u);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecU16(stream,buffers->kda_decay_logit_bf16,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"decay_logit");
-    }
     LM_LAUNCH(
         (LmBoundedDecayKernel<LING_LAYER_THREADS,LING_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -918,34 +705,10 @@ static int32_t LingLayerKda(
         stream,
         buffers->kda_beta_logit,
         buffers->kda_write_gate,
-        rank_heads);
-    if ( LingKdaProbeActive(buffers) )
-    {
-        float probe_r[4],probe_b[4];
-        LingProbeFloats(stream,buffers->kda_retention,4u,probe_r);
-        LingProbeFloats(stream,buffers->kda_write_gate,4u,probe_b);
-        fprintf(stderr,"G5N-PROBE kda L%u retention %.6g %.6g %.6g %.6g write_gate %.6g %.6g %.6g %.6g\n",
-            buffers->layer_index,(double)probe_r[0],(double)probe_r[1],(double)probe_r[2],
-            (double)probe_r[3],(double)probe_b[0],(double)probe_b[1],(double)probe_b[2],(double)probe_b[3]);
-        LING_KDA_PROBE_STATE(stream,"state_pre",buffers->kda_state_pool);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
-        LingProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
-    }
-    status = LingDeltaRuleOptIn(
+        rank_heads);    status = LingDeltaRuleOptIn(
         LING_KDA_KEY_DIM * LING_KDA_VALUE_DIM * sizeof(float));
     if (status != LM_LAUNCH_OK)
         return(status);
-#ifdef LING_KDA_DEBUG_LAUNCHES
-    fprintf(stderr,"kda delta: grid(%u,%u) threads %u shared %u heads %u vhp %u seqs %u slot_bytes %u q=%p k=%p v=%p out=%p\n",
-        sequences,rank_heads,LING_LAYER_THREADS,
-        (unsigned)(LING_KDA_KEY_DIM * LING_KDA_VALUE_DIM * sizeof(float)),
-        rank_heads,1u,sequences,buffers->kda_state_slot_bytes,
-        (void*)buffers->q_bf16,(void*)buffers->kv_slot_bf16,(void*)buffers->gate_up_bf16,
-        (void*)buffers->attention_out_bf16);
-#endif
     LM_LAUNCH(
         (LmDeltaRuleKernel<LING_LAYER_THREADS,LING_KDA_KEY_DIM,LING_KDA_VALUE_DIM>),
         dim3(sequences,rank_heads),
@@ -966,22 +729,7 @@ static int32_t LingLayerKda(
         rank_heads,
         1u,
         sequences,
-        commit);
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"delta_out_raw",buffers->attention_out_bf16,256u);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_out");
-    }
-#ifdef LING_KDA_DEBUG_LAUNCHES
-    fprintf(stderr,"kda norm: grid %llu threads %u shared %u dim %u\n",
-        (unsigned long long)((uint64_t)rows * rank_heads),LING_LAYER_THREADS,
-        (unsigned)((LING_KDA_VALUE_DIM + 8u) * sizeof(float)),
-        LING_KDA_VALUE_DIM);
-#endif
-    LM_LAUNCH(
+        commit);    LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<LING_LAYER_THREADS,float>),
         dim3((uint64_t)rows * rank_heads),
         LING_LAYER_THREADS,
@@ -1003,18 +751,7 @@ static int32_t LingLayerKda(
         stream,
         buffers->attention_out_bf16,
         buffers->kda_gate_bf16,
-        rank_v);
-    if ( LingKdaProbeActive(buffers) )
-    {
-        LING_KDA_PROBE(stream,"delta_out_gated",buffers->attention_out_bf16,256u);
-        LING_KDA_PROBE(stream,"kda_gate",buffers->kda_gate_bf16,256u);
-    }
-    if ( vec_pass != 0 )
-    {
-        LingProbeVecU16(stream,buffers->attention_out_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"delta_gated");
-        LingProbeVecU16(stream,buffers->kda_gate_bf16,rank_v,buffers->layer_index,(uint32_t)vec_pass,"kda_gate");
-    }
-    LM_LAUNCH(
+        rank_v);    LM_LAUNCH(
         (LmCopyRowsKernel<LING_LAYER_THREADS>),
         dim3((rank_v + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS,rows),
         LING_LAYER_THREADS,
@@ -1036,28 +773,7 @@ static int32_t LingLayerKda(
         LING_HIDDEN,
         0u,
         multiprocessors,
-        stream);
-    if ( status == LM_LAUNCH_OK && LingKdaProbeActive(buffers) )
-    {
-        float probe_o[4];
-        LING_KDA_PROBE(stream,"kda_out_partial",buffers->attention_out_bf16,256u);
-        LingProbeBf16Floats(stream,buffers->attention_out_bf16,4u,probe_o);
-        fprintf(stderr,"G5N-PROBE kda L%u out_partial_f %.6g %.6g %.6g %.6g\n",
-            buffers->layer_index,(double)probe_o[0],(double)probe_o[1],(double)probe_o[2],(double)probe_o[3]);
-        LING_KDA_PROBE_STATE(stream,"state_post",buffers->kda_state_pool);
-    }
-    if ( status == LM_LAUNCH_OK && vec_pass != 0 )
-    {
-        uint32_t vec_head;
-        LingProbeVecU16(stream,buffers->attention_out_bf16,LING_HIDDEN,buffers->layer_index,(uint32_t)vec_pass,"out_partial");
-        for ( vec_head = 0u; vec_head < rank_heads; vec_head++ )
-            LingProbeVecF32(stream,(const float *)buffers->kda_state_pool +
-                ((uint64_t)vec_head * LING_KDA_KEY_DIM * LING_KDA_VALUE_DIM),
-                LING_KDA_KEY_DIM * LING_KDA_VALUE_DIM,buffers->layer_index,(uint32_t)vec_pass,
-                vec_head == 0u ? "state_h0" : (vec_head == 1u ? "state_h1" :
-                (vec_head == 2u ? "state_h2" : "state_h3")));
-    }
-    return(status);
+        stream);    return(status);
 }
 
 static int32_t LingLayerDenseMlp(
@@ -1520,50 +1236,4 @@ static int32_t LingHead(
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
-}
-
-static int32_t LingHeadCertifiedB1(
-    const LingLayerBuffers *buffers,
-    const void *head_norm_weight,
-    const void *head_weight,
-    const uint8_t *certified_payload,
-    const float *certified_scale,
-    const float *certified_norm,
-    void *certified_scratch,
-    uint32_t *candidate_ids,
-    uint32_t *screened_count,
-    uint32_t rank_offset,
-    uint32_t vocabulary,
-    cudaStream_t stream)
-{
-    cudaError_t status;
-    if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
-        certified_payload == 0 || certified_scale == 0 ||
-        certified_norm == 0 || certified_scratch == 0 ||
-        candidate_ids == 0 || screened_count == 0 ||
-        buffers->hidden_bf16 == 0 || buffers->normed_bf16 == 0 ||
-        buffers->output_token == 0 || buffers->output_score == 0)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-    LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<LING_LAYER_THREADS, uint16_t>),
-        1u,
-        LING_LAYER_THREADS,
-        (LING_HIDDEN + 8u) * sizeof(float),
-        stream,
-        buffers->hidden_bf16,
-        buffers->residual_bf16,
-        (const uint16_t *)head_norm_weight,
-        0,
-        buffers->normed_bf16,
-        LING_HIDDEN,
-        LING_HIDDEN,
-        LING_RMS_EPSILON);
-    status = SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
-        stream, buffers->normed_bf16, head_weight, certified_payload,
-        certified_scale, certified_norm, certified_scratch, candidate_ids,
-        screened_count, buffers->output_token, buffers->output_score,
-        rank_offset, 1u, vocabulary, LING_HIDDEN);
-    return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }

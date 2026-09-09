@@ -97,11 +97,6 @@
 	(SPARK_LING_MODEL_MOE_INTERMEDIATE_DIMENSION * \
 	 SPARK_LING_MODEL_MOE_W1_COMPONENT_COUNT)
 
-#define SPARK_LING_MODEL_EXPERT_SWIGLU_LIMIT(layer_index) \
-	((float)((layer_index) >= 35u ? 4.0f : 0.0f))
-#define SPARK_LING_MODEL_SHARED_SWIGLU_LIMIT(layer_index) \
-	((float)((layer_index) >= 40u ? 7.0f : (layer_index) >= 34u ? 5.0f : 0.0f))
-
 #define SPARK_LING_MODEL_FP8_SCALE_BLOCK 128u
 
 #define SPARK_LING_MODEL_KV_BITS 16u
