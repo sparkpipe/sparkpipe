@@ -126,6 +126,14 @@ _Static_assert((SPARK_HY4_MODEL_VOCAB_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"h
 _Static_assert((SPARK_HY4_MODEL_ROUTED_EXPERT_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"hy4 experts must tile the ranks");
 _Static_assert((SPARK_HY4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 expert intermediate must tile scale groups");
 _Static_assert((SPARK_HY4_MODEL_HIDDEN_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 hidden must tile scale groups");
+/* The firmware header's literal weight-format codes must match the
+ * shared stagepack format constants. Code 9 (F8_E4M3 payload + U8
+ * E8M0 group-32 scales) is hy4-specific and lives only here. */
+#if defined(SPARK_STAGEPACK_FORMAT_WEIGHT_BF16)
+_Static_assert(SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"hy4 bf16 weight code must match the shared format");
+_Static_assert(SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"hy4 f32 weight code must match the shared format");
+_Static_assert(SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_I64 == SPARK_STAGEPACK_FORMAT_WEIGHT_I64,"hy4 i64 weight code must match the shared format");
+#endif
 
 typedef SparkStagePackTensorShape SparkHy4StagePackTensorShape;
 
