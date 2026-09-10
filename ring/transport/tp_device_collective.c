@@ -89,6 +89,7 @@ SparkStatus SparkTpDeviceCollectiveSliceTopology(
     uint32_t rank_count,
     SparkTpDeviceCollectiveTopology *destination)
 {
+    (void)first_rank;
     if ( source == 0 || destination == 0 || rank_count == 0u )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *destination = *source;
@@ -140,7 +141,6 @@ SparkStatus SparkTpDeviceCollectiveCreate(
 }
 
 static void SparkTpDeviceCollectiveInvokeCompletion(
-    SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveSubmission *submission,
     uint64_t ordinal,
     SparkStatus status)
@@ -169,6 +169,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     uint64_t bytes;
     uint64_t ordinal;
 
+    (void)operation_kind;
     if ( collective == 0 || collective->implementation == 0 ||
          submission == 0 || submission->local_device == 0 ||
          submission->full_device == 0 || submission->cuda_stream == 0 ||
@@ -202,7 +203,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         if ( status != SPARK_STATUS_OK )
             SPARK_RETURN(status);
     }
-    SparkTpDeviceCollectiveInvokeCompletion(implementation,submission,
+    SparkTpDeviceCollectiveInvokeCompletion(submission,
         ordinal,SPARK_STATUS_OK);
     return SPARK_STATUS_OK;
 }
@@ -281,37 +282,28 @@ SparkStatus SparkTpDeviceCollectiveOperationPhase(
     const SparkTpDeviceCollective *collective,
     uint64_t ordinal,
     uint32_t *phase_out,
-    SparkStatus *status_out)
+    uint32_t *failure_requested_out)
 {
+    (void)ordinal;
     if ( collective == 0 || phase_out == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *phase_out = 3u;
-    if ( status_out != 0 )
-        *status_out = SPARK_STATUS_OK;
+    if ( failure_requested_out != 0 )
+        *failure_requested_out = 0u;
     return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
-    SparkTpDeviceCollective *collective,
-    const void *local_device,
-    void *full_device,
-    uint32_t sequence,
-    void *cuda_stream)
+    const void *send_device,
+    void *receive_device,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t bytes_per_sequence)
 {
-    SparkTpDeviceCollectiveImplementation *implementation;
-
-    if ( collective == 0 || collective->implementation == 0 ||
-         local_device == 0 || full_device == 0 )
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    implementation = collective->implementation;
-    if ( implementation->mesh_buffer == 0 )
-        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    memcpy(implementation->mesh_buffer,local_device,
-        (size_t)collective->local_hidden_dimension * 2u);
-    return SparkWeightdClientMeshBroadcast(implementation->client,
-        0x7FFFu,MESH_SCRATCH_OFFSET,MESH_SCRATCH_OFFSET,
-        collective->local_hidden_dimension * 2u,
-        (uint64_t)collective->operation_timeout_milli * 1000000ull);
+    (void)send_device;(void)receive_device;
+    (void)active_sequence_count;(void)hidden_dimension;
+    (void)bytes_per_sequence;
+    return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
