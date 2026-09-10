@@ -80,7 +80,6 @@ SparkStatus SparkTpDeviceCollectiveApplyTopology(
     if ( topology == 0 || config == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     config->tp_degree = topology->rank_count;
-    config->tp_rank = topology->tp_rank;
     return SPARK_STATUS_OK;
 }
 
@@ -93,8 +92,7 @@ SparkStatus SparkTpDeviceCollectiveSliceTopology(
     if ( source == 0 || destination == 0 || rank_count == 0u )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *destination = *source;
-    destination->tp_degree = rank_count;
-    destination->tp_rank = source->tp_rank - first_rank;
+    destination->rank_count = rank_count;
     return SPARK_STATUS_OK;
 }
 
