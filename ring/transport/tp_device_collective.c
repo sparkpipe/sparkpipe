@@ -200,7 +200,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     bytes = (uint64_t)submission->active_sequence_count *
         collective->local_hidden_dimension * 2u;
-    if ( bytes + 8u > SPARK_WEIGHTD_MESH_SLOT_BYTES )
+    if ( bytes + 16u > SPARK_WEIGHTD_MESH_SLOT_BYTES )
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     ordinal = submission->ordinal;
     timeout_nanoseconds =
@@ -215,17 +215,24 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     if ( cudaStreamSynchronize(submission->cuda_stream) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    *(uint64_t *)(scratch + bytes) = ordinal + 1u;
+    *(uint64_t *)(scratch + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) =
+        ordinal + 1u;
     for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
     {
         uint32_t peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
         uint64_t peer_index = collective->tp_rank < peer_rank ?
             collective->tp_rank : (uint64_t)collective->tp_rank - 1u;
+        uint64_t remote_base = implementation->band_base +
+            (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
         SparkStatus write_status = SparkWeightdClientMeshWrite(
-            implementation->client,peer_rank,0u,
-            implementation->band_base +
-            (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES,
-            (uint32_t)(bytes + 8u),timeout_nanoseconds);
+            implementation->client,peer_rank,0u,remote_base,
+            (uint32_t)bytes,timeout_nanoseconds);
+        if ( write_status == SPARK_STATUS_OK )
+            write_status = SparkWeightdClientMeshWrite(
+                implementation->client,peer_rank,
+                SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+                remote_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+                8u,timeout_nanoseconds);
         if ( write_status != SPARK_STATUS_OK )
         {
             if ( write_status == SPARK_STATUS_IO_ERROR )
@@ -240,7 +247,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     {
         volatile uint64_t *sequence = (volatile uint64_t *)
             (implementation->mesh_buffer + implementation->band_base +
-            (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES + bytes);
+            (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
+            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
         while ( *sequence < ordinal + 1u )
         {
             struct timespec pause = {0,100000};
@@ -255,7 +263,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
                 {
                     volatile uint64_t *probe = (volatile uint64_t *)
                         (implementation->mesh_buffer + implementation->band_base +
-                        (uint64_t)(scan + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES + bytes);
+                        (uint64_t)(scan + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
+                        SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
                     fprintf(stderr," %u=%llu",scan < collective->tp_rank ? scan : scan + 1u,
                         (unsigned long long)*probe);
                 }
