@@ -1,5 +1,5 @@
 {
-  "file_count": 1971,
+  "file_count": 1969,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "5e0806a7efab78ec197d112da8ab31476fd429fb94fc2b96a14835fef6da1047",
-      "size_bytes": 94968
+      "sha256": "62115165ffa9e3058fd4c51d0dda09c8a725c5dfa376f7a6a4cfb14c3aa601e3",
+      "size_bytes": 94934
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -6527,11 +6527,6 @@
       "size_bytes": 4140
     },
     {
-      "path": "tests/host_cuda/glm52_layer_host.cu",
-      "sha256": "88bacf3f3734cb526462a68401fa97678c3ec8a26a08f54ea6377255479036de",
-      "size_bytes": 20084
-    },
-    {
       "path": "tests/host_cuda/glm_index_kv_host.cu",
       "sha256": "deca6d5db4da3e54f248ab226e8ad15f0396c4fe3150be620e7415aa29d206e9",
       "size_bytes": 1694
@@ -7040,11 +7035,6 @@
       "path": "tests/test_glm52_dspark_trace_quality.py",
       "sha256": "ed8602d0267a314e37e2992ae27febf644f602baabef71d882260c169fb969f8",
       "size_bytes": 2309
-    },
-    {
-      "path": "tests/test_glm52_layer_host.py",
-      "sha256": "fb095cc85beeb660f7e893a704ef1284b59c8158ce80358379f3a65a63ba40ea",
-      "size_bytes": 17881
     },
     {
       "path": "tests/test_glm52_module_contract.py",
@@ -9860,5 +9850,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32428344
+  "total_bytes": 32390345
 }
