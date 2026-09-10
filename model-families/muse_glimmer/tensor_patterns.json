@@ -4,10 +4,10 @@
  "source_scope": "model.language_model.* + lm_head.weight only; vision_tower/vision_adapter/multi_modal_projector tensors are counted and skipped",
  "dtype": "BF16",
  "census": {
-  "status": "verify at pack time against the warm safetensors index; contract expects 626 text tensors and 810 skipped vision tensors",
+  "status": "RESOLVED at V1 against the real warm index (sha256 7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba, 1436 entries): 627 text tensors match these patterns (624 = 12 classes x 52 layers, + embed_tokens + final norm + lm_head); 809 skipped (806 vision_tower + vision_adapter.fc1/fc2 + vision_projection). The patterns side was right; the contract's 626 was corrected to 627",
   "expected_text_tensors_from_patterns": 627,
-  "contract_expected_text_tensors": 626,
-  "delta_note": "52x12 kept layer tensors + 3 globals = 627; DESIGN/contract say 626 - packer asserts the pattern counts and reports the one-tensor delta to the manager instead of guessing which side is right (rotary inv_freq buffers are non-persistent and absent from safetensors per the pinned modeling source)"
+  "contract_expected_text_tensors": 627,
+  "delta_note": "resolved: no delta. 52x12 kept layer tensors + 3 globals = 627, proven by the real index (per-suffix counts exactly 52 for each of the 12 classes; no persistent rotary inv_freq buffers in the checkpoint, confirming the pinned modeling source)"
  },
  "globals": {
   "model.language_model.embed_tokens.weight": {

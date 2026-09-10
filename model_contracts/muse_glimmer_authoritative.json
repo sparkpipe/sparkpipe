@@ -6,19 +6,21 @@
  "source_revision": "4177486a9f199bd7be520eff14431071d5d41ec5",
  "scope": {
   "text_decode_path_only": true,
-  "vision_tower": "model.vision_tower/model.vision_adapter/model.multi_modal_projector out of scope by contract (810 tensors; not served)",
+  "vision_tower": "model.vision_tower/model.vision_adapter/model.vision_projection out of scope by contract (809 tensors; not served)",
   "speculation_note": "docs/archive/DFLASH2_ADOPTION_SPEC.md names muse as a DFlash2 sidecar target; this contract covers greedy decode only and keeps the embedding norm a runtime step (unmergable) so a draft module stays possible"
  },
  "sources": {
   "warm_path": "/mnt/model-warm/muse-glimmer-30b",
-  "status": "download in flight per coordinator log firing 267; digests freeze when the warm copy is complete",
+  "status": "warm copy complete on sparkc (56G, PUBLISHED marker, verified 2026-09-10); digests frozen in digest_freeze",
   "modeling_reference": {
    "path": "model_contracts/references/modeling_muse_glimmer.py",
    "upstream": "https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/muse_glimmer/modeling_muse_glimmer.py",
-   "commit": "4177486a9f199bd7be520eff14431071d5d41ec5",
+   "commit": "4815a0a6a064214f2d8208c094464a5a6b76ca8d",
+   "sha256": "e69eb21d6efd815a48499d4d0e4180afda2f443beb441a734d50efc2cf83f975",
+   "pin_note": "commit was mispinned as the HF model revision 4177486a; corrected to the transformers commit the file sha256 verifies against (validation PINS.txt, byte-identical on fetch 2026-09-09); local copy re-hashed identical at V1",
    "fetched_at": "2026-09-09",
    "config_transformers_version": "5.15.0.dev0",
-   "diff_before_V1_law": "re-diff this pinned copy against upstream before any real-pack anchor run"
+   "diff_before_V1_law": "satisfied at V1: local copy sha256 equals the PINS-verified upstream sha256"
   }
  },
  "model": {
@@ -97,13 +99,23 @@
   "note": "tokenizer files freeze with the warm download; token ids in this contract come from config.json"
  },
  "digest_freeze": {
-  "status": "pending warm download",
-  "files": {}
+  "status": "frozen 2026-09-10 on sparkc (sparkcap-wrapped sha256sum over the warm copy; config/index shas independently cross-checked against the pack receipts and validation PINS.txt)",
+  "files": {
+   "model-00001-of-00002.safetensors": "8eef61530e1283642c77ce2e6721feb5c6f348fa055c00e90f2844a136372694",
+   "model-00002-of-00002.safetensors": "b58cc2144ba1ba1af4420f67f4ca3ced7f09298510b80464cc75018a0be14381",
+   "model.safetensors.index.json": "7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba",
+   "config.json": "5a9df2d8a385b3d361ab6ae68d73586f4e775033933bd0cd863fb7f3820e6a14",
+   "generation_config.json": "1fa51889b1f8d3659802dedaa27e005b81e5c58483f13ecf13f2d97306bc6e35",
+   "tokenizer.json": "c9dbee66967b58f31a7c27f723c3760da3526ccd0427578e8905b0abb0031c4d",
+   "tokenizer_config.json": "781e6c74f571642c71202167b67d9255b28cc439bdda1582ff31346182f5a9c5",
+   "processor_config.json": "97e2a486dd9866b81f40cf4b8bc0c9ced9a7cd8a5bc65aa4cc2f4de0712dae77",
+   "chat_template.jinja": "cfc67e5f349f37690dfd31ed1f18bc4442a9dd32fe39a648f993cb4eb3cae678"
+  }
  },
  "tensor_census": {
-  "status": "pending warm download",
-  "expected_text_tensors": 626,
-  "expected_skipped_vision_tensors": 810,
+  "status": "RESOLVED against the real warm index at V1 (index sha256 7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba, 1436 entries total): 624 layer tensors (12 classes x 52) + embed_tokens + final norm + lm_head = 627 text tensors; 809 skipped (806 vision_tower + vision_adapter.fc1/fc2 + vision_projection). The pre-download estimate said 626 text / 810 vision; the real index proves 627/809 - the patterns side was right, this contract was off by one",
+  "expected_text_tensors": 627,
+  "expected_skipped_vision_tensors": 809,
   "expected_text_pattern_classes": 12,
   "layer_classes": {
    "global": ["embed_tokens", "final_norm", "lm_head"],
