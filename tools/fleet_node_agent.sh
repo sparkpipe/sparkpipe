@@ -85,9 +85,9 @@ report_if_changed() {
 unload_root() {
     local rr="$HOME/sparkdata/$1" p t gone
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -TERM "$p"
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -9 "$p"
     done
-    for t in $(seq 1 30); do
+    for t in $(seq 1 5); do
         gone=1
         for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
             [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && gone=0
