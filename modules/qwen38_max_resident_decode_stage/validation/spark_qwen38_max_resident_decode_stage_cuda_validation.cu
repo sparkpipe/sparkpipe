@@ -560,104 +560,6 @@ static int SparkQwen38MaxValCheckGdnStep(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("gdn_step_state",&metrics,1e-3,0.999999));
 }
 
-static int SparkQwen38MaxValCheckGdnStepTp4(void)
-{
-	/* SKIPPED (dated): this check simulates a rank-local TP4 GDN view by
-	 * rebinding pool widths, but the GdnStep kernel derives its geometry
-	 * globally (the tp params were dropped in the shared-launcher
-	 * re-architecture) - the kernel computes global geometry over the
-	 * local buffers and the comparison is meaningless garbage (measured
-	 * rel_l2 0.325). The rank-local GDN gate returns with the GDN
-	 * head-split increment, which restores the tp-aware signature. */
-	printf("check=gdn_step_tp4 SKIPPED (stale premise: kernel is global-geometry; re-lands with GDN head-split)\n");
-	return 0;
-	if (0)
-	{
-	const uint32_t tp = 4u,local_heads = SPARK_QWEN38_MAX_VAL_HEADS / tp;
-	const uint32_t local_qk = (SPARK_QWEN38_MAX_MODEL_GDN_KEY_HEAD_COUNT / tp) * SPARK_QWEN38_MAX_VAL_DK;
-	const uint32_t local_conv = (2u * local_qk) + (local_heads * SPARK_QWEN38_MAX_VAL_DV);
-	uint64_t state_elements = (uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DK * SPARK_QWEN38_MAX_VAL_DV;
-	SparkQwen38MaxValDevice device;
-	uint16_t *host_conv = (uint16_t *)calloc(local_conv,sizeof(uint16_t));
-	float *exact = (float *)calloc(local_conv,sizeof(float));
-	float *state_host = (float *)calloc(state_elements,sizeof(float));
-	float *oracle_out = (float *)calloc((uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV,sizeof(float));
-	float *actual = (float *)calloc((uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV,sizeof(float));
-	uint16_t *core_packed = (uint16_t *)calloc((uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV,sizeof(uint16_t));
-	uint32_t lanes[1] = {0u};
-	uint32_t cold[1] = {0u};
-	float host_log_decay[SPARK_QWEN38_MAX_VAL_HEADS / 4u],host_beta[SPARK_QWEN38_MAX_VAL_HEADS / 4u];
-	SparkQwen38MaxValMetrics metrics;
-	uint32_t head;
-	cudaError_t error;
-	if (host_conv == 0 || exact == 0 || state_host == 0 || oracle_out == 0 || actual == 0 || core_packed == 0)
-		return(SparkQwen38MaxValFail("gdn_step_tp4","host_alloc"));
-	if (SparkQwen38MaxValDeviceSetup(&device) != 0)
-		return(1);
-	device.pool.state_layer_stride_elements = state_elements;
-	device.pool.state_lane_stride_elements = state_elements;
-	device.pool.conv_tail_layer_stride_elements = (uint64_t)local_conv * (SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL - 1u);
-	device.pool.conv_tail_lane_stride_elements = device.pool.conv_tail_layer_stride_elements;
-	SparkQwen38MaxValRandomState = 73u;
-	SparkQwen38MaxValFillBf16(host_conv,exact,local_conv,1.0f);
-	{
-		uint32_t index;
-		for (index = 0u; index < local_conv; index++)
-			exact[index] = SparkQwen38MaxValFromBf16(host_conv[index]);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < state_elements; index++)
-			state_host[index] = SparkQwen38MaxValUniform(0.25f);
-	}
-	for (head = 0u; head < local_heads; head++)
-	{
-		host_log_decay[head] = SparkQwen38MaxValUniform(0.5f) - 0.5f;
-		host_beta[head] = 0.25f + fabsf(SparkQwen38MaxValUniform(0.5f));
-	}
-	error = cudaMemcpy(device.state,state_host,state_elements * sizeof(float),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.qkv,host_conv,local_conv * sizeof(uint16_t),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.log_decay,host_log_decay,sizeof(host_log_decay),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.beta,host_beta,sizeof(host_beta),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.cold,cold,sizeof(cold),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMemcpy(device.lane_indices,lanes,sizeof(lanes),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess)
-		error = SparkQwen38MaxLaunchGdnStep(cudaStreamPerThread,device.qkv,device.log_decay,device.beta,&device.pool,device.core_out,device.lane_indices,1u,0u);
-	if (error == cudaSuccess) error = cudaStreamSynchronize(cudaStreamPerThread);
-	if (error == cudaSuccess) error = cudaMemcpy(core_packed,device.core_out,(uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV * sizeof(uint16_t),cudaMemcpyDeviceToHost);
-	if (SparkQwen38MaxValCuda(error,"gdn_step_tp4") != 0)
-	{
-		cudaFree(device.state); free(host_conv); free(exact); free(state_host); free(oracle_out); free(actual); free(core_packed);
-		return(1);
-	}
-	for (head = 0u; head < local_heads; head++)
-	{
-		uint32_t key_head = head / SPARK_QWEN38_MAX_VAL_GVA;
-		const float *q = exact + ((uint64_t)key_head * SPARK_QWEN38_MAX_VAL_DK);
-		const float *k = q + local_qk;
-		const float *v = exact + (2ull * local_qk) + ((uint64_t)head * SPARK_QWEN38_MAX_VAL_DV);
-		SparkQwen38MaxValGdnRecurrence(q,k,v,&host_log_decay[head],&host_beta[head],
-			state_host + ((uint64_t)head * SPARK_QWEN38_MAX_VAL_DK * SPARK_QWEN38_MAX_VAL_DV),
-			oracle_out + ((uint64_t)head * SPARK_QWEN38_MAX_VAL_DV),1u);
-	}
-	{
-		uint64_t index;
-		for (index = 0u; index < (uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV; index++)
-			actual[index] = SparkQwen38MaxValFromBf16(core_packed[index]);
-	}
-	SparkQwen38MaxValMeasure(&metrics,actual,oracle_out,(uint64_t)local_heads * SPARK_QWEN38_MAX_VAL_DV);
-	{
-		void *marks[] = {device.conv_weight,device.a_log,device.dt_bias,device.gdn_norm_weight,device.q_norm_weight,device.k_norm_weight,device.state,device.conv_tail,device.cold,device.lane_indices,device.qkv,device.conv_out,device.core_out,device.z_bf16,device.gated_out,device.ba_bf16,device.log_decay,device.beta,device.chunk_qn,device.chunk_kn,device.chunk_cum_g,device.chunk_decay,device.chunk_attn,device.chunk_w,device.chunk_kg};
-		uint32_t mark;
-		for (mark = 0u; mark < sizeof(marks) / sizeof(marks[0]); mark++)
-			if ( marks[mark] != 0 )
-				cudaFree(marks[mark]);
-	}
-	free(host_conv); free(exact); free(state_host); free(oracle_out); free(actual); free(core_packed);
-	return(SparkQwen38MaxValReport("gdn_step_tp4",&metrics,5e-3,0.99999));
-	}
-}
-
 static int SparkQwen38MaxValCheckGatedNorm(SparkQwen38MaxValDevice *device)
 {
 	uint64_t elements = (uint64_t)SPARK_QWEN38_MAX_VALIDATION_ROWS * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION;
@@ -1454,7 +1356,6 @@ int main(int argc, char **argv)
 	if (result == 0) result = SparkQwen38MaxValCheckAttention(&device);
 	if (result == 0) result = SparkQwen38MaxValCheckGdnChunk(&device);
 	if (result == 0) result = SparkQwen38MaxValCheckMoeMxfp4(&device);
-	if (result == 0) result = SparkQwen38MaxValCheckGdnStepTp4();
 	if (result == 0) result = SparkQwen38MaxValCheckModule();
 	if (result == 0)
 		printf("qwen38_max_validation PASS\n");
