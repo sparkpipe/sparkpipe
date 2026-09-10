@@ -18,6 +18,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
 {
     SparkWeightdClient *client;
     uint8_t *mesh_buffer;
+    uint64_t band_base;
     uint32_t tp_rank;
     uint32_t tp_degree;
     uint32_t local_hidden_dimension;
@@ -134,12 +135,18 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     socket = getenv("SPARK_WEIGHTD_SOCKET");
     if ( socket == 0 || socket[0] == '\0' )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    if ( config->collective_identifier == 0u ||
+         config->collective_identifier >= SPARK_WEIGHTD_MESH_BANDS )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = calloc(1u,sizeof(*implementation));
     if ( implementation == 0 )
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     implementation->tp_rank = config->tp_rank;
     implementation->tp_degree = config->tp_degree;
     implementation->local_hidden_dimension = config->local_hidden_dimension;
+    implementation->band_base = (uint64_t)(config->collective_identifier - 1u) *
+        SPARK_WEIGHTD_MESH_SLOT_BYTES *
+        SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
     if ( SparkWeightdClientConnect(socket,&implementation->client,0) !=
             SPARK_STATUS_OK )
     {
@@ -201,7 +208,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     timeout_nanoseconds =
         (uint64_t)collective->operation_timeout_milli * 1000000ull;
     deadline = SparkTpDeviceCollectiveTimeNs() + timeout_nanoseconds;
-    scratch = implementation->mesh_buffer;
+    scratch = implementation->mesh_buffer + implementation->band_base;
     fprintf(stderr,"MESH-SUBMIT rank=%u ordinal=%llu bytes=%llu\n",
         collective->tp_rank,(unsigned long long)ordinal,
         (unsigned long long)bytes);
@@ -218,6 +225,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
             collective->tp_rank : (uint64_t)collective->tp_rank - 1u;
         SparkStatus write_status = SparkWeightdClientMeshWrite(
             implementation->client,peer_rank,0u,
+            implementation->band_base +
             (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES,
             (uint32_t)(bytes + 8u),timeout_nanoseconds);
         if ( write_status != SPARK_STATUS_OK )
@@ -233,7 +241,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
     {
         volatile uint64_t *sequence = (volatile uint64_t *)
-            (implementation->mesh_buffer +
+            (implementation->mesh_buffer + implementation->band_base +
             (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES + bytes);
         while ( *sequence < ordinal + 1u )
         {
@@ -248,7 +256,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
                 for ( scan = 0u; scan < collective->tp_degree - 1u && scan < 4u; scan++ )
                 {
                     volatile uint64_t *probe = (volatile uint64_t *)
-                        (implementation->mesh_buffer +
+                        (implementation->mesh_buffer + implementation->band_base +
                         (uint64_t)(scan + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES + bytes);
                     fprintf(stderr," %u=%llu",scan < collective->tp_rank ? scan : scan + 1u,
                         (unsigned long long)*probe);
@@ -268,7 +276,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
         {
             const uint64_t *peer_data = (const uint64_t *)
-                (implementation->mesh_buffer +
+                (implementation->mesh_buffer + implementation->band_base +
                 (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES);
             for ( index = 0u; index < count; index++ )
                 if ( peer_data[index] > result[index] )
@@ -286,7 +294,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
             for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
             {
                 const uint16_t *peer_data = (const uint16_t *)
-                    (implementation->mesh_buffer +
+                    (implementation->mesh_buffer + implementation->band_base +
                     (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES);
                 sum += SparkTpDeviceCollectiveBf16Float(peer_data[index]);
             }
