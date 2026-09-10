@@ -8,6 +8,9 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
 
+SparkStatus SparkWeightdMeshInit(void);
+uint32_t SparkWeightdMeshReady(void);
+
 static volatile sig_atomic_t SparkWeightdStop;
 
 static void SparkWeightdSignal(int signal_number)
@@ -157,6 +160,13 @@ int main(int argument_count, char **arguments)
     printf("spark_weightd ready unix=%s ceiling=%llu\n",
         socket_path, (unsigned long long)device_bytes_max);
     fflush(stdout);
+
+    {
+        SparkStatus mesh_status = SparkWeightdMeshInit();
+        if (mesh_status != SPARK_STATUS_OK)
+            fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
+                SparkStatusToString(mesh_status));
+    }
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
 

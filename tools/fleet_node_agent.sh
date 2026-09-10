@@ -160,15 +160,34 @@ sync_rendezvous() {
     local name="$1" host rd
     host=$(hostname -s)
     rd="$HOME/sparkdata/$name/rendezvous"
-    [ -d "$rd" ] || return 0
-    if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
-        [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
-        touch "$rd/.upload_lock"
-        $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
-        scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
-            "$HUB:release/qpn/$host/$name/" 2>/dev/null
-        $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
-        touch "$rd/.shipped"
+    if [ -d "$rd" ]; then
+        if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
+            [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
+            touch "$rd/.upload_lock"
+            $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
+            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
+                "$HUB:release/qpn/$host/$name/" 2>/dev/null
+            $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
+            touch "$rd/.shipped"
+        fi
+    fi
+    local mesh_dir="/tmp/weightd-mesh"
+    if [ -d "$mesh_dir" ]; then
+        if [ ! -f "$mesh_dir/.shipped" ] || [ -n "$(find "$mesh_dir" -name 'mesh-*.rec' -newer "$mesh_dir/.shipped" 2>/dev/null | head -1)" ]; then
+            $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
+            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$mesh_dir"/mesh-*.rec \
+                "$HUB:release/qpn/$host/mesh/" 2>/dev/null
+            touch "$mesh_dir/.shipped"
+        fi
+        local pr pn fn
+        for pr in $(seq 0 15); do
+            pn="spark$(printf '%x' $pr)"
+            [ "$pn" = "$host" ] && continue
+            fn="$mesh_dir/mesh-$pr.rec"
+            [ -f "$fn" ] && continue
+            curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$pn/mesh/mesh-$pr.rec" \
+                -o "$fn" 2>/dev/null || rm -f "$fn"
+        done
     fi
 }
 
