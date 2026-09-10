@@ -73,10 +73,6 @@ def tp_collective() -> dict:
         "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
         "step_rail_indices": [0] + [1] * (TP - 1),
         "session_ports": session_port_table(int(SESSION_BASE)),
-        # The shared topology struct carries the hc session table and the
-        # adapter's member whitelist (the shared hidden-transport contract)
-        # still requires the member, but ling's deleted hyper-connections
-        # never read it: emitted diag-0.
         "session_ports_hc": [[0] * TP for _ in range(TP)],
     }
     if SESSION_HC_BASE is not None:

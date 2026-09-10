@@ -1,21 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compiles the validator translation unit against the MODULE ARCHIVE and
-# runs it against the pinned configuration. The binary runs the host
-# oracle selftest first (bounded decay, bf16 round trip, rope identity,
-# group-limited router, codec slab addressing, and end-to-end KDA/MLA
-# oracle executions at real geometry), then the GPU tiers on synthesized
-# weights: tier 1 the KDA layer + dense MLP (layers 0,1), tier 2a the
-# rope-64 absorbed-MLA layer + routed experts through the group router
-# (layers 5,6), tier 3 a multi-position prefill run through the KDA
-# recurrence followed by a cached decode step, each against the same fp32
-# oracle with a bit-exact determinism re-walk and a clean KV access-error
-# lane. The binary FAILS (nonzero) until every tier passes; a failing
-# tier is a hard failure, never a silent pass.
-# The mechanical skeleton is the shared validation driver; the codec
-# ladder and the build-identity defaults below are ling's own.
-
 validation_label="ling"
 validation_digest_label=""
 validation_gate_label="ling"

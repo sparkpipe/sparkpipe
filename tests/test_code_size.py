@@ -1457,11 +1457,6 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
-# ling driver completion onto post-#831/#853 main (lane/ling-driver, PR
-# #830): corruption repair, donor debug/HC/B1 residue deletion, bf16 expert
-# pass-through codec arm, packer/verify tooling, registry wiring. The
-# ceiling re-pins from measured reality after the rebase per the ratchet
-# rule; the 233150 pin is stale until that measurement lands.
 CEILING = 233150
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
