@@ -51,7 +51,7 @@ extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
 extern int SparkWeightdMeshBufferFd(void);
-extern int SparkWeightdMeshShareFd(void);
+extern SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64]);
 extern void SparkWeightdMeshPoll(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
@@ -64,7 +64,11 @@ __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
 __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
-__attribute__((weak)) int SparkWeightdMeshShareFd(void) { return -1; }
+__attribute__((weak)) SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64])
+{
+    (void)out;
+    return SPARK_STATUS_UNSUPPORTED;
+}
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
@@ -1927,20 +1931,12 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
     {
         SparkWeightdIpcMeshInfoResult *result =
             (SparkWeightdIpcMeshInfoResult *)response;
-        int share_fd;
         memset(result, 0, sizeof(*result));
         SparkWeightdBuildHeader(response, result_kind, request_id);
         result->gpu_ready = SparkWeightdMeshReady();
-        share_fd = result->gpu_ready != 0u ?
-            SparkWeightdMeshShareFd() : -1;
-        if (share_fd < 0)
-        {
-            result->status = (uint32_t)SPARK_STATUS_BUSY;
-            return(sizeof(*result));
-        }
-        result->has_fd = 1u;
-        result->status = (uint32_t)SPARK_STATUS_OK;
-        connection->response_fds[connection->response_fd_count++] = share_fd;
+        result->status = result->gpu_ready != 0u ?
+            SparkWeightdMeshIpcHandle(result->ipc_handle) :
+            (uint32_t)SPARK_STATUS_BUSY;
         return(sizeof(*result));
     }
 
@@ -2954,67 +2950,36 @@ SparkStatus SparkWeightdClientMeshBroadcast(
 
 
 SparkStatus SparkWeightdClientMeshInfo(SparkWeightdClient *client,
-    int *share_fd_out,
+    unsigned char ipc_handle[64],
     uint64_t timeout_nanoseconds)
 {
     SparkWeightdIpcHeader wire;
     SparkWeightdIpcMeshInfoResult wire_result;
-    uint64_t now = SparkWeightdMonotonicTimeNs();
-    uint64_t deadline;
-    int fds[1];
-    uint32_t fds_received = 0u;
     SparkStatus status;
 
-    if (client == 0 || share_fd_out == 0)
+    if (client == 0 || ipc_handle == 0)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    *share_fd_out = -1;
     memset(&wire, 0, sizeof(wire));
     wire.magic = SPARK_WEIGHTD_IPC_MAGIC;
     wire.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
     wire.kind = SPARK_WEIGHTD_IPC_KIND_MESH_INFO;
     wire.body_bytes = 0u;
     wire.request_id = ++client->next_request_id;
-    if (now == 0ull)
-        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    deadline = now + (timeout_nanoseconds != 0ull ?
-        timeout_nanoseconds : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
     memset(&wire_result, 0, sizeof(wire_result));
-    status = SparkWeightdClientWriteAll(client,(const uint8_t *)&wire,
-        (uint32_t)sizeof(wire),deadline);
-    if (status == SPARK_STATUS_OK)
-        status = SparkWeightdClientReadFrameWithFds(client,
-            (uint8_t *)&wire_result,(uint32_t)sizeof(wire_result),deadline,
-            fds,1u,&fds_received);
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
     if (status != SPARK_STATUS_OK)
     {
-        if (fds_received != 0u)
-            (void)close(fds[0]);
         SPARK_RETURN(status);
     }
+    if (wire_result.status != (uint32_t)SPARK_STATUS_OK)
     {
-        const SparkWeightdIpcHeader *response_header =
-            (const SparkWeightdIpcHeader *)&wire_result;
-        if (SparkWeightdIpcValidateHeader(response_header,sizeof(wire_result),
-                SparkWeightdKindResultKind(wire.kind)) != SPARK_STATUS_OK ||
-            response_header->request_id != wire.request_id)
-        {
-            if (fds_received != 0u)
-                (void)close(fds[0]);
-            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-        }
+        return SparkWeightdStatusFromWire(wire_result.status);
     }
-    if (wire_result.status != (uint32_t)SPARK_STATUS_OK ||
-        wire_result.has_fd == 0u || fds_received == 0u)
-    {
-        if (fds_received != 0u)
-            (void)close(fds[0]);
-        return wire_result.status != (uint32_t)SPARK_STATUS_OK ?
-            SparkWeightdStatusFromWire(wire_result.status) :
-            SPARK_STATUS_BUSY;
-    }
-    *share_fd_out = fds[0];
+    memcpy(ipc_handle,wire_result.ipc_handle,64u);
     return SPARK_STATUS_OK;
 }
 

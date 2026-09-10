@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
-#include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -250,52 +249,11 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     implementation->round_timeout_ns =
         (uint64_t)config->operation_timeout_milli * 1000000ull;
     {
-        int share_fd = -1;
-        if ( SparkWeightdClientMeshInfo(implementation->client,&share_fd,
-                0ull) == SPARK_STATUS_OK )
-        {
-            CUmemAllocationProp prop;
-            size_t granularity = 0;
-            CUdeviceptr reserve_base = 0;
-            CUmemGenericAllocationHandle imported = 0;
-            CUresult result;
-            memset(&prop,0,sizeof(prop));
-            prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-            prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = 0;
-            if ( cuMemGetAllocationGranularity(&granularity,&prop,
-                    CU_MEM_ALLOCATION_GRANULARITY_RECOMMENDED) ==
-                    CUDA_SUCCESS && granularity != 0u )
-            {
-                size_t reserve_bytes =
-                    ((SPARK_WEIGHTD_MESH_BUFFER_BYTES + granularity - 1u) /
-                        granularity) * granularity;
-                result = cuMemAddressReserve(&reserve_base,reserve_bytes,
-                    0u,0u,0u);
-                if (result == CUDA_SUCCESS)
-                    result = cuMemImportFromShareableHandle(&imported,
-                        (void *)(intptr_t)share_fd,
-                        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-                if (result == CUDA_SUCCESS)
-                    result = cuMemMap(reserve_base,
-                        SPARK_WEIGHTD_MESH_BUFFER_BYTES,0u,imported,0u);
-                if (result == CUDA_SUCCESS)
-                {
-                    CUmemAccessDesc access;
-                    memset(&access,0,sizeof(access));
-                    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-                    access.location.id = 0;
-                    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    result = cuMemSetAccess(reserve_base,
-                        SPARK_WEIGHTD_MESH_BUFFER_BYTES,&access,1u);
-                }
-                if (result == CUDA_SUCCESS)
-                    implementation->gpu_base = (uint8_t *)reserve_base;
-                else
-                    (void)cuMemAddressFree(reserve_base,reserve_bytes);
-            }
-            close(share_fd);
-        }
+        unsigned char ipc[64];
+        if ( SparkWeightdClientMeshInfo(implementation->client,ipc,
+                sizeof(ipc)) == SPARK_STATUS_OK )
+            (void)cudaIpcOpenMemHandle((void **)&implementation->gpu_base,
+                *(const cudaIpcMemHandle_t *)ipc,1u);
     }
     if ( SparkWeightdClientConnect(socket,&implementation->client,0) !=
             SPARK_STATUS_OK )
