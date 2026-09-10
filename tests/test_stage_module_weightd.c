@@ -105,15 +105,11 @@ int main(void)
 	unsetenv("SPARK_WEIGHTD_SOCKET");
 	direct_pointer = 0;
 	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset,
-		region_bytes,&direct_pointer) == SPARK_STATUS_OK);
-	assert(direct_pointer != 0);
-	assert(ledger.pack_arena == 0);
-	assert(cudaMemcpy(staging,direct_pointer,region_bytes,
-		cudaMemcpyDeviceToHost) == cudaSuccess);
-	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
+		region_bytes,&direct_pointer) == SPARK_STATUS_UNSUPPORTED);
+	assert(direct_pointer == 0 && ledger.device_allocation_count == 0u && ledger.pack_arena == 0);
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
-	printf("stage_module_weightd: conflicting attach rejected; unconfigured direct load PASS\n");
+	printf("stage_module_weightd: conflicting attach rejected; unconfigured load refused PASS\n");
 	unsetenv("SPARK_WEIGHTD_SOCKET");
 	TestStageAttachFailureAllocatesNothing(sha_hex);
 	setenv("SPARK_WEIGHTD_SOCKET",SOCKET_PATH,1);
