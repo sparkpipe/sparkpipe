@@ -364,6 +364,10 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 	SparkMinimaxH3V4Gem(tokens,SPARK_MINIMAX_H3_V4_VIDEO_PATCHES,
 		SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,24u,latent_rows,proj_in_weight,proj_in_bias);
 	free(latent_rows);
+	SparkMinimaxH3V4Stats("proj_in_weight",proj_in_weight,
+		(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN * 24u);
+	SparkMinimaxH3V4Stats("registers",registers,
+		4u * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
 	memcpy(tokens + (uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_PATCHES *
 		SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,registers,
 		4u * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN * 4u);
