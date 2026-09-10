@@ -1,6 +1,8 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_weightd.h"
 #include <infiniband/verbs.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,10 +11,10 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 
 #define SPARK_WEIGHTD_MESH_PEERS 15
-#define SPARK_WEIGHTD_MESH_RECV_BYTES 1048576
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
 
@@ -49,6 +51,7 @@ typedef struct SparkWeightdMesh
     struct ibv_qp *recv_qps[SPARK_WEIGHTD_MESH_PEERS];
     SparkWeightdMeshQpInfo qp_info[SPARK_WEIGHTD_MESH_PEERS];
     void *recv_buffer;
+    int memfd;
     uint32_t mesh_ready;
     uint32_t local_rank;
 } SparkWeightdMesh;
@@ -280,11 +283,27 @@ SparkStatus SparkWeightdMeshInit(void)
         fprintf(stderr,"weightd-mesh: cq failed\n");
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    weightd_mesh.recv_buffer = calloc(1,SPARK_WEIGHTD_MESH_RECV_BYTES);
-    if (weightd_mesh.recv_buffer == 0)
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    weightd_mesh.memfd = memfd_create("spark-mesh",0u);
+    if (weightd_mesh.memfd < 0)
+    {
+        fprintf(stderr,"weightd-mesh: memfd failed errno=%d\n",errno);
+        return SPARK_STATUS_IO_ERROR;
+    }
+    if (ftruncate(weightd_mesh.memfd,SPARK_WEIGHTD_MESH_BUFFER_BYTES) != 0)
+    {
+        fprintf(stderr,"weightd-mesh: ftruncate failed errno=%d\n",errno);
+        return SPARK_STATUS_IO_ERROR;
+    }
+    weightd_mesh.recv_buffer = mmap(0,SPARK_WEIGHTD_MESH_BUFFER_BYTES,
+        PROT_READ | PROT_WRITE,MAP_SHARED,weightd_mesh.memfd,0);
+    if (weightd_mesh.recv_buffer == MAP_FAILED)
+    {
+        fprintf(stderr,"weightd-mesh: mmap failed errno=%d\n",errno);
+        weightd_mesh.recv_buffer = 0;
+        return SPARK_STATUS_IO_ERROR;
+    }
     weightd_mesh.recv_mr = ibv_reg_mr(weightd_mesh.protection_domain,
-        weightd_mesh.recv_buffer,SPARK_WEIGHTD_MESH_RECV_BYTES,
+        weightd_mesh.recv_buffer,SPARK_WEIGHTD_MESH_BUFFER_BYTES,
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (weightd_mesh.recv_mr == 0)
     {
@@ -419,6 +438,11 @@ uint32_t SparkWeightdMeshReady(void)
 uint64_t SparkWeightdMeshBufferAddress(void)
 {
     return (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
+}
+
+int SparkWeightdMeshBufferFd(void)
+{
+    return weightd_mesh.mesh_ready != 0u ? dup(weightd_mesh.memfd) : -1;
 }
 
 uint32_t SparkWeightdMeshBufferLkey(void)

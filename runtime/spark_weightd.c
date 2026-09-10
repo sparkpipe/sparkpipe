@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -49,6 +50,7 @@
 extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
+extern int SparkWeightdMeshBufferFd(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset);
@@ -58,6 +60,7 @@ extern uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
 __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
 __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
+__attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
 __attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset)
@@ -1155,6 +1158,23 @@ static SparkStatus SparkWeightdExpertManifestLoad(const char *pack_path,uint64_t
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkWeightdServerStageMeshFd(SparkWeightdConnection *connection)
+{
+    int fd;
+    if (SparkWeightdMeshReady() == 0u ||
+        connection->response_fd_count >= SPARK_WEIGHTD_EXPORT_BATCH_MAX)
+        return;
+    fd = SparkWeightdMeshBufferFd();
+    if (fd < 0)
+        return;
+    if (fcntl(fd,F_SETFD,FD_CLOEXEC) != 0)
+    {
+        (void)close(fd);
+        return;
+    }
+    connection->response_fds[connection->response_fd_count++] = fd;
+}
+
 static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     const SparkWeightdIpcAttachLazy *request,
@@ -1241,7 +1261,8 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->loaded_from_pack = 0u;
             result->mesh_ready = SparkWeightdMeshReady();
             result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-            result->mesh_send_buffer_bytes = 131072u;
+            result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_BUFFER_BYTES;
+            SparkWeightdServerStageMeshFd(connection);
             (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
         }
         return;
@@ -1316,7 +1337,8 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     result->loaded_from_pack = 1u;
     result->mesh_ready = SparkWeightdMeshReady();
     result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-    result->mesh_send_buffer_bytes = 131072u;
+    result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_BUFFER_BYTES;
+    SparkWeightdServerStageMeshFd(connection);
     (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
     printf("weightd lazy-attach model=%s experts=%u arena=%llu pool=%llu\n",
         identity.model, expert_count,
@@ -2693,6 +2715,14 @@ SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkWeightdClientReadFrameWithFds(SparkWeightdClient *client,
+    uint8_t *buffer,
+    uint32_t bytes,
+    uint64_t deadline_ns,
+    int *fds_out,
+    uint32_t fds_capacity,
+    uint32_t *fds_received);
+
 SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     const SparkWeightdLazyAttachRequest *request,
     SparkWeightdLazyAttachResult *result,
@@ -2731,12 +2761,63 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
         strlen(request->pack_path) + 1u);
     wire.expert_pool_bytes = request->expert_pool_bytes;
     memset(&wire_result, 0, sizeof(wire_result));
-    status = SparkWeightdClientExchange(client, &wire,
-        SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES, &wire_result,
-        SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES, timeout_nanoseconds);
-    if (status != SPARK_STATUS_OK)
     {
-        SPARK_RETURN(status);
+        /* the reply rides the mesh scratch memfd in its SCM_RIGHTS; the
+         * mapping replaces the daemon-side address so the consumer writes
+         * the shared pages under its own virtual address */
+        uint64_t now = SparkWeightdMonotonicTimeNs();
+        uint64_t deadline;
+        int fds[1];
+        uint32_t fds_received = 0u;
+        if (now == 0ull)
+        {
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        deadline = now + (timeout_nanoseconds != 0ull
+            ? timeout_nanoseconds
+            : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
+        status = SparkWeightdClientWriteAll(client,
+            (const uint8_t *)&wire, SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES,
+            deadline);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkWeightdClientReadFrameWithFds(client,
+                (uint8_t *)&wire_result,
+                SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES, deadline,
+                fds, 1u, &fds_received);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            SPARK_RETURN(status);
+        }
+        {
+            const SparkWeightdIpcHeader *response_header =
+                (const SparkWeightdIpcHeader *)&wire_result;
+            if (SparkWeightdIpcValidateHeader(response_header,
+                    sizeof(wire_result),
+                    SparkWeightdKindResultKind(wire.header.kind)) !=
+                    SPARK_STATUS_OK ||
+                response_header->request_id != wire.header.request_id)
+            {
+                if (fds_received != 0u)
+                {
+                    (void)close(fds[0]);
+                }
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+            }
+        }
+        if (fds_received != 0u)
+        {
+            void *mapping = mmap(0, wire_result.mesh_send_buffer_bytes,
+                PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
+            (void)close(fds[0]);
+            if (mapping == MAP_FAILED)
+            {
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+            }
+            wire_result.mesh_send_buffer_addr = (uint64_t)(uintptr_t)mapping;
+            result->mesh_mapping = mapping;
+        }
     }
     if (wire_result.status != (uint32_t)SPARK_STATUS_OK)
     {

@@ -59,6 +59,9 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
 
+#define SPARK_WEIGHTD_MESH_SLOT_BYTES 1048576u
+#define SPARK_WEIGHTD_MESH_BUFFER_BYTES (SPARK_WEIGHTD_MESH_SLOT_BYTES * 16u)
+
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC UINT32_C(0x58504557)
@@ -434,6 +437,7 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t mesh_ready;
     uint64_t mesh_send_buffer_addr;
     uint32_t mesh_send_buffer_bytes;
+    void *mesh_mapping;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint8_t manifest_sha256[32];
@@ -453,6 +457,22 @@ typedef struct SparkWeightdEnsureResult
 SparkStatus SparkWeightdClientConnect(const char *socket_path,
     SparkWeightdClient **client,
     SparkWeightdHelloResult *hello_out);
+
+void SparkWeightdClientClose(SparkWeightdClient *client);
+
+SparkStatus SparkWeightdClientMeshWrite(SparkWeightdClient *client,
+    uint32_t peer_rank,
+    uint64_t source_offset,
+    uint64_t remote_offset,
+    uint32_t length,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
+    uint32_t peer_mask,
+    uint64_t source_offset,
+    uint64_t remote_offset,
+    uint32_t length,
+    uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     const SparkWeightdAttachRequest *request,
