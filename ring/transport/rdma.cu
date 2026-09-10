@@ -198,13 +198,12 @@ static SparkStatus SparkHiddenSparkHostRdmaReleasePersistent(
 
 static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
     void *transport_state,
-    const void *local_buffer,
-    uint64_t bytes,
-    uint64_t remote_offset,
-    uint32_t sequence)
+    uint32_t credit_index,
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
 {
-    return SparkHiddenSparkHostRdmaSendFixed(transport_state,
-        local_buffer,bytes,remote_offset,sequence);
+    (void)credit_index;(void)generation;
+    return SparkHiddenSparkHostRdmaSend(transport_state,packet);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaReservePersistent(
