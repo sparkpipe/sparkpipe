@@ -16,22 +16,7 @@
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
 
-struct Glm5NextKv
-{
-    static constexpr uint32_t kSlotBytes = GLM5_NEXT_KV_SLOT_BYTES;
-    static constexpr uint32_t kPageSlots = GLM5_NEXT_KV_PAGE_SLOTS;
-    static constexpr uint32_t kPageBytes =
-        GLM5_NEXT_KV_SLOT_BYTES * GLM5_NEXT_KV_PAGE_SLOTS;
-    static constexpr bool kGrows = true;
-    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
-    { return position / GLM5_NEXT_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
-    { return position % GLM5_NEXT_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
-    { return (tokens + GLM5_NEXT_KV_PAGE_SLOTS - 1u) / GLM5_NEXT_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
-    { return pages * (uint64_t)kPageBytes; }
-};
+using Glm5NextKv = LmKvGeometry<GLM5_NEXT_KV_SLOT_BYTES, GLM5_NEXT_KV_PAGE_SLOTS, true>;
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
