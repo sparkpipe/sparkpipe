@@ -1458,6 +1458,11 @@ CEILING = 237507
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
 CEILING = 233150
+# ling continuation round on the coredev-aligned branch cc49cf8 (lane base
+# 8f3a6f2 + the glm53-p0 mesh rebuild): the lane's 24 suspension commits +
+# the coredev's 22 mesh/transport commits measure exact 241968. Re-pinned
+# from measured reality per the ratchet rule.
+CEILING = 241968
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
