@@ -291,3 +291,22 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
    gone at the engine); (b) bounce ONE weightd and time the boot with the
    receipt (expect seconds-class vs minutes); (c) then record + attack
    prefill/numerics.
+
+
+## Iteration 9 (09-11 ~13:00, lane 40fcc8f) — crash diagnosed, receipts proven
+
+- HOST-REGISTERED ENGINE REVERTED after diagnosis: cudaHostRegister inside the
+  residentd returns rc=712 (launch-class = the CUDA context is ALREADY fatally
+  corrupted by an earlier async op in the boot path — standalone probe passes,
+  residentd fails; the corruption predates the register call). Engine back to
+  the working doorbell+IPC round; MESH-REGISTER code preserved in history at
+  426e038. NEXT for this: bisect the module's pre-TP GPU work to find the
+  first failing async op (cuda-gdb or a printf ladder in PackLoad/TP init);
+  suspicion: the spine->device copy path or a warmup kernel.
+- SPINE RECEIPTS PROVEN: fleet wave after weightd restart now 16/16 in ~90s
+  (was 6+ minutes) — the ck128-only path works; receipt files landing.
+- Serving restored, 32-tok cold ~31s (warm re-measure next run).
+- env.local question (operator): we do NOT need it — three static deployment
+  facts (MTP=0, expert pool 4GB, spine budget 8GB) in an unversioned per-node
+  shell file that silently breaks foreground debug runs; fold into the
+  deployment manifest + delete the file and the sourcing in start_root.
