@@ -168,25 +168,31 @@ static SparkStatus SparkHiddenSparkHostRdmaCreditReady(
 
 static SparkStatus SparkHiddenSparkHostRdmaActivatePersistent(
     void *transport_state,
-    uint32_t credit_index)
+    uint32_t credit_index,
+    uint64_t generation,
+    SparkHiddenTransportPacket *packet)
 {
-    (void)transport_state;(void)credit_index;
+    (void)transport_state;(void)credit_index;(void)generation;(void)packet;
     return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaCancelPersistent(
     void *transport_state,
-    uint32_t credit_index)
+    uint32_t credit_index,
+    uint64_t generation)
 {
-    (void)transport_state;(void)credit_index;
+    (void)transport_state;(void)credit_index;(void)generation;
     return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaReleasePersistent(
     void *transport_state,
-    uint32_t credit_index)
+    uint32_t credit_index,
+    uint64_t generation,
+    void *consumer_cuda_stream)
 {
-    (void)transport_state;(void)credit_index;
+    (void)transport_state;(void)credit_index;(void)generation;
+    (void)consumer_cuda_stream;
     return SPARK_STATUS_OK;
 }
 
