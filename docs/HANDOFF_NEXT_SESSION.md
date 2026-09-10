@@ -161,3 +161,58 @@ Receiver: spin on *(uint64_t*)(buffer + (peer+1)*(bytes+8) + bytes) >= ordinal+1
 - Dev cycle now: module commit -> ~2min wave (weightd waves ~90s, module-only
   ~30s) -> API self-heals -> unlimited requests. Next: Stage A GPU-resident
   mesh, then graphs (launch tax is the proven 10x).
+
+
+## OPERATOR DIRECTIVE + STAGE A/B BUILD ORDER (09-11 ~06:50): "as fast as before, in the new architecture"
+
+Target: 14 tok/s plain B1 (71ms/token). Current 1.58 (634ms/token). The gap
+decomposition (all measured): launch ioctls ~277ms/token (12.6K x 22us,
+serialized because each blocking round drains the pipeline and the module
+cannot submit ahead), module CPU + engine ~remainder. The OLD system hit
+71ms because its STREAM-ORDERED async collective kept the module's 4 inflight
+slots pipelining: wave N+1's kernels were submitted while wave N's reduce flew.
+Restoring that under the weightd-mesh architecture = GPU-resident mesh + all
+device-side round mechanics. Function-level build order:
+
+1. weightd_mesh.c: mesh region becomes GPU memory — cudaMalloc(2GB) in Init
+   (link -lcudart already present), ibv_reg_mr on the pointer (GPU-Direct,
+   the proven NIC-DMA->GPU path), cudaIpcGetMemHandle -> store the handle
+   bytes. Keep the host doorbell region: cudaHostAlloc(mapped, 4KB) per node
+   + its own ibv MR; doorbell layout: one uint64 per (band, rank) = seq
+   published; ALSO export doorbell addr+rkey via the mesh RECORD so peers'
+   weightds can RDMA seq words into it (records gain doorbell_rkey/addr;
+   TryWire stamps them into qp_info).
+2. lazy attach: reply gains the CUDA IPC handle (rides the same SCM_RIGHTS
+   tier, 64 bytes) + doorbell host address (engine-local alias not needed:
+   the engine only writes its OWN doorbell via the H2H staged memcpy below).
+3. Engine round becomes FIVE stream-ordered ops, ZERO IPCs, no CPU sync:
+   a. cudaMemcpyAsync(gpu_slot <- local_device, bytes, D2D, stream)
+   b. cudaMemcpyAsync(own_host_doorbell <- pinned_seq_staging, 8, H2H, stream)
+      (pinned staging holds ordinal+1, CPU-written before enqueue)
+   c. module WAIT kernel: spins until every peer slot-end GPU word >= ordinal+1
+   d. cudaMemcpyAsync(full_device <- own gpu_slot, D2D) + 15x module combine
+      kernels on peer gpu slots (config.combine_bf16_function — device ptrs)
+   e. module DONE kernel: writes host-mapped done word for this ordinal
+   Completion watcher thread (CPU, plain host reads) fires the module
+   completion callback when done advances (CUDA calls allowed there).
+4. weightd: per-round IPC deleted — a doorbell poller (mesh thread, already
+   exists: fold into SparkWeightdMeshPoll) reads own host doorbells; on
+   advance, posts payload RDMA (GPU->peers GPU, offset = band+rank*32MB) +
+   seq RDMA (8B GPU slot-end AND 8B peer host doorbells at rank offset, from
+   the seq staging word — dual sge/post). Doorbell read = plain load, no ioctl.
+5. Module additions (nvcc side): SparkGlm5NextModuleMeshWait(ctx, slot_base,
+   ordinal, degree, stream) and SparkGlm5NextModuleMeshDone(ctx, host_word,
+   ordinal, stream) — expose via config fn pointers like combine.
+6. Numerics: combine kernels in peer order (module reference path) replaces
+   the CPU f32 sum — also the accuracy gate's correct reference.
+
+Expected: launches amortize in a deep stream (~5us submissions), rounds ~
+network+kernel latency (~200-500us), module slots pipeline again. Stage B+
+graphs remain the further 2x if needed after this lands.
+
+Measurement gates: after (1-4) expect <= 8s/32tok; after module kernels
+<= 5s; then attack prefill (chunked) and re-run COMPSEC-17.
+Danger notes: cudaMalloc in weightd needs the primary context (call
+cudaSetDevice(0)+cudaFree(0) trick in main before the mesh thread); IPC
+handle lifetime = weightd process (mesh re-wire keeps allocation, only QPs
+re-transition); engine must cudaIpcCloseMemHandle at Destroy.
