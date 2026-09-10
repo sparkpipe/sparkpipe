@@ -684,21 +684,23 @@ static void SparkMinimaxH3V4Conv1d(float *out, const float *input, uint32_t out_
 	uint32_t dilation, uint32_t padding)
 {
 	uint32_t channel;
+	(void)in_channels;
 	#pragma omp parallel for schedule(static)
 	for (channel=0u; channel<out_channels; channel++)
 	{
 		uint32_t weight_channel = channel % weight_out_channels;
+		uint32_t batch = channel / weight_out_channels;
 		uint32_t position;
 		for (position=0u; position<length; position++)
 		{
 			float total = bias != 0 ? bias[weight_channel] : 0.0f;
 			uint32_t inner,tap;
-			for (inner=0u; inner<in_channels; inner++)
+			for (inner=0u; inner<weight_in_channels; inner++)
 			{
-				uint32_t weight_inner = inner % weight_in_channels;
-				const float *input_row = input + (uint64_t)inner * length;
+				const float *input_row = input +
+					((uint64_t)batch * weight_in_channels + inner) * length;
 				const float *weight_row = weight +
-					(((uint64_t)weight_channel * weight_in_channels) + weight_inner) *
+					(((uint64_t)weight_channel * weight_in_channels) + inner) *
 					kernel;
 			for (tap=0u; tap<kernel; tap++)
 			{
