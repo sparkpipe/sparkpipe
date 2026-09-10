@@ -264,3 +264,43 @@ RECEIPTS (spark9, jobs in ~/.sparkpipe/queue/state-v2.json):
   paths, output /tmp/ling_r16_packs (r14's attempts died at TTL under
   IO contention; rank0 partial file /tmp/ling_r13_packs/*.partial
   removed by the chain's fresh-output-dir).
+
+## PACK CHAIN GREEN (r16c + direct nohup runs, 09-11)
+
+The queued chain hit the 15-min job TTL mid-emit (warm IO ~12MB/s under
+contention; r14 died the same way), so the emit ran as direct nohup
+sparkcap jobs per the fallback rule. Receipts:
+
+- rank0: /tmp/ling_r16_packs/ling.bf16.tp16.rank0.sp - 730 tensors,
+  15725069824 bytes, sha256 1f0642fb3362202a..., census 63783 = 62230
+  packed + 1553 mtp, spine 625519384 + expert 15099494400 bytes,
+  40960 manifest ranges.
+- rank15 (hex rank naming): ling.bf16.tp16.rankf.sp - 730 tensors,
+  15725069824 bytes, sha256 0df030880eec4d32..., same census.
+- VERIFY TWO-PASS GREEN (ling_verify_pack.py --ranks 0,15, run twice):
+  PASS rank0, PASS rankf, PASS boundary ranks 0 and 15 (identical tensor
+  counts, complementary head/vocab/expert shards), placement proof
+  re-run clean. The verifier exercised its first real pack ever and
+  needed three first-exercise fixes (commits on lane/ling-driver):
+  the receipt census check compared against a summary field that never
+  existed (now verifies closure: checkpoint = packed + omitted_mtp), and
+  hex rank names need int(...,16).
+- FIN DRY-PLAN GREEN: lingfin rank 0 - 730 pack tensors, census
+  63783 = 62230 + 1553, mechanically identical to the ling contract.
+
+CONTRACT FREEZE + PACKAGE_MANIFEST/SHA256SUMS remain LAST per plan: they
+should be cut on the final pack set after the tier3 GEMM deadlock fix
+(the packs themselves are emit- and verify-complete for ranks 0/15).
+
+VALIDATOR STATE AT HANDOFF: tier1 4/4 tokens + determinism GREEN;
+tier2a 4/4 attention probes GREEN (rel 0.0032/0.0124/0.0158/0.0167,
+cos >= 0.99986); tier2a tier-end route+boundary checks RED on the
+synthetic-fixture near-tie flip at w3 (dev expert 24 vs oracle 63,
+weights 0.309/0.288) and the heavy-tailed synthetic expert output it
+flips to (element 30: dev -2288 vs oracle -4544; cos 0.99968 - one
+element). Fixture design gap vs the anchor's tie-free-by-construction
+requirement, not a device/oracle logic bug. tier3 blocked by the m=4
+persistent-GEMM deadlock (open device bug, cuda-gdb evidence logged).
+Diagnostic probes (carry/stage/mlp/logits) are still in the validator
+and are the evidence trail; strip or keep deliberately next round.
+
