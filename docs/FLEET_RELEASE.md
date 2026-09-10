@@ -96,9 +96,13 @@ root, pack template, kv dir all derive from it.
    together.
 5. `ensure_root` — boots a down root. Restart discipline: TERM
    (cwd-scoped), wait for real exit, gate `MemAvailable >= pack + 8GB`,
-   start exactly one. The autospawn guard blocks only if **node uptime
+   start exactly one. No per-process memory caps: weights+KV legitimately
+   reach ~100GB per node — containment is structural (the framework seam
+   refuses direct pack loads; weightd's fail-closed budgets own node
+   memory). The autospawn guard blocks only if **node uptime
    < 15 min** (reboot-loop protection); it never blocks on failed
-   attempts — transient failures retry next loop so the fleet converges.
+   attempts — transient failures retry next loop so the fleet
+   converges.
 6. `ensure_api` (rank 0) — starts the model API once the fleet view
    reports 16 ready.
 

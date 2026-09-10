@@ -25,12 +25,11 @@ root_state() {
     local rr="$HOME/sparkdata/$1"
     if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null && \
        [ "$(readlink /proc/$(pgrep -f 'bin/sparkpipe_model_residentd' | head -1)/cwd 2>/dev/null)" = "$rr" ]; then
-        local last
-        last=$(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)
-        case "$last" in
-            *"model_residentd ready"*) echo "ready" ;;
-            *) echo "starting: $last" ;;
-        esac
+        if grep -q "model_residentd ready" "$rr/residentd.log" 2>/dev/null; then
+            echo "ready"
+        else
+            echo "starting: $(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)"
+        fi
     else
         echo "down"
     fi
@@ -117,17 +116,9 @@ start_root() {
     [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
-    local cap="${FLEET_RESIDENTD_MEMORY_MAX:-8589934592}"
-    if [ "$cap" != 0 ] && command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --user --quiet --scope -p MemoryMax="$cap" \
-            env LD_LIBRARY_PATH="$rr/lib" ./bin/sparkpipe_model_residentd \
-            --deployment model_resident.json --rank-index "$RANK" \
-            > residentd.log 2>&1 < /dev/null &
-    else
-        LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
-            --deployment model_resident.json --rank-index "$RANK" \
-            > residentd.log 2>&1 < /dev/null &
-    fi
+    LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
+        --deployment model_resident.json --rank-index "$RANK" \
+        > residentd.log 2>&1 < /dev/null &
     report
 }
 
@@ -209,8 +200,8 @@ sync_root() {
     mkdir -p "$root"
     apply_manifest "$name" "$root" || return 0
     local refdir="release/$name"
+    $HUBSSH "$HUB" "test -f '$refdir/UPDATE'" || return 0
     upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    [ -n "$upd" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
         unload_root "$name" || return 0
         $HUBSSH "$HUB" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
