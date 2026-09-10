@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
