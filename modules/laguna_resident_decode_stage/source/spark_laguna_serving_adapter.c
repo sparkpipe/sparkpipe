@@ -873,7 +873,7 @@ static SparkStatus SparkLagunaServingInitialize(
 	status = SparkLagunaServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_LAGUNA_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_LAGUNA_SERVING_TP_DEGREE) )
+	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index % SPARK_LAGUNA_SERVING_TP_DEGREE || tp_degree != SPARK_LAGUNA_SERVING_TP_DEGREE) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{

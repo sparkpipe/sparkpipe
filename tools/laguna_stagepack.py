@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
 """Build laguna (poolside/Laguna-S-2.1) resident-decode stage packs (.lgsp).
 
-Real-checkpoint packer: reads /mnt/model-warm/glm-5.3-flash (FP8 e4m3
-[128,128] checkpoint, 62 shards) through header-only safetensors memmaps
-and emits one wire-format-v1 .g5nsp per TP rank. The tensor vocabulary is
-the 49-kind table in modules/laguna_resident_decode_stage/source/
-spark_laguna_stagepack_format.h, and every checkpoint->pack transform
-follows model-families/laguna/name_map.json:
+Real-checkpoint packer: reads the warm laguna-s-2.1 checkpoint (bf16
+safetensors shards) through header-only safetensors memmaps and emits one
+.lgsp per (stage, rank). The census lock fails closed on any checkpoint
+tensor outside the 23 locked patterns or any count mismatch (36096 experts
++ 47 router + 47 correction bias + 141 shared + 432 attn/norm + 3 dense +
+3 global = 36769); every checkpoint->pack transform follows
+model-families/laguna/name_map.json:
 
-  - the pack-V2 fusions: kda_qkv_beta = q|k|v|beta rows (the checkpoint's
-    separate q_proj/k_proj/v_proj/b_proj), kda_decay_gate_down = f_a|g_a.
-  - the kv_b split+per-head transpose (glm52's add_kv_b pattern).
-  - f32 upcasts where the kernels read f32: hc fn/base/scale, kda o_norm,
-    the compressor ape, dt_bias (F32 already), A_log (F32 already).
-  - FP8 MLA/dense/shared projections dequantize to bf16 at pack time
-    (exact: e4m3 values are representable in bf16) - the module's spine
-    path is bf16; routed experts stay packaged fp8 payload + f32 scales.
+  - fused q|k|v with per-section whole-head row slices, o cols by head
+    groups.
+  - gate-first W1 for dense/shared/routed (silu gate_first=true); expert
+    W1/W2 intermediate-sliced per the donor grouped-GEMM.
+  - router correction bias stamped f32.
+
+The pack header carries --revision (the warm snapshot's HF tree id) and
+--contract-sha256 (sha256 of model_contracts/laguna_authoritative.json);
+both are required so a pack is never emitted without its identity.
 
 Run on a spark node with warm ceph (per the fleet notes: NOT sparke - its
 client holds a stale negative cache after the metadata incident).
 
-Usage (per rank; or --tp-all for the 16-rank set in one process, sharing
-the dequant cache):
-  python3 tools/laguna_resident_stagepack.py \
-      --source /mnt/model-warm/glm-5.3-flash --output-dir build/stagepacks \
-      --tp-all 16
-
-The expert codec is source-driven: BF16 sources pass through verbatim,
-FP8-native sources package fp8 payload + f32 scales, and nvfp4 releases
-(redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale) package
-packed e2m1 + UE4M3 planes + F32 globals verbatim - never quantized.
+Usage (per rank; or --tp-all for the 16-rank set in one process):
+  python3 tools/laguna_stagepack.py \
+      --source /mnt/model-warm/laguna-s-2.1 --output-dir build/stagepacks \
+      --revision <hf-tree-id> --contract-sha256 <contract-sha> \
+      --stage-count 2 --stage-index 0 --tp-degree 8 --tp-rank 0 \
+      --owns-embedding
 """
 from __future__ import annotations
 
@@ -108,9 +106,17 @@ def census_lock(source: "SourceReader"):
     and on any count mismatch."""
     import re
     census = load_census(Path(__file__).resolve().parents[1])
-    compiled = {pattern: re.compile("^" + re.escape(pattern)
-                .replace("{layer}", r"(\d+)").replace("{expert}", r"(\d+)") + "$")
-                for pattern in census["patterns"]}
+
+    def pattern_regex(pattern: str) -> "re.Pattern":
+        parts = []
+        for token in re.split(r"(\{layer\}|\{expert\})", pattern):
+            if token == "{layer}" or token == "{expert}":
+                parts.append(r"(\d+)")
+            else:
+                parts.append(re.escape(token))
+        return re.compile("^" + "".join(parts) + "$")
+
+    compiled = {pattern: pattern_regex(pattern) for pattern in census["patterns"]}
     counts = {pattern: 0 for pattern in census["patterns"]}
     for name in source.weight_map:
         for pattern, regex in compiled.items():
@@ -562,7 +568,7 @@ class Packer:
             "layer_count": self.layer_count,
             "tensors": len(self.plan),
             "payload_bytes": sum(item.entry.payload_bytes for item in self.plan),
-            "sha_feed": [f"{item.entry.tensor_kind}:{item.entry.layer_index}:"
+            "sha_feed": [f"{item.entry.kind}:{item.entry.layer}:"
                          f"{item.entry.payload_bytes}" for item in self.plan],
         }
     def build(self) -> None:
@@ -660,7 +666,8 @@ def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> Non
         raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
 
 
-def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
+def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any],
+          revision: str, contract_sha256: str) -> int:
     packer.build()
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
@@ -673,7 +680,7 @@ def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
             cursor = e.scale_offset + e.scale_bytes
     file_bytes = cursor
     header = assemble_header(packer, dict(header_extra, directory_offset=directory_offset),
-                             file_bytes, REVISION, CONTRACT_SHA256)
+                             file_bytes, revision, contract_sha256)
     with path.open("wb") as out:
         out.write(header)
         out.seek(directory_offset)
@@ -687,13 +694,14 @@ def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
     return file_bytes
 
 
-def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+def emit(packer: Packer, path: Path, header_extra: Dict[str, Any],
+         revision: str, contract_sha256: str) -> None:
     if path.exists():
         raise PackFailure(f"output already exists; choose a new artifact path: {path}")
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
     os.close(fd)
     try:
-        file_bytes = _emit(packer, Path(temporary), header_extra)
+        file_bytes = _emit(packer, Path(temporary), header_extra, revision, contract_sha256)
         with open(temporary, "rb") as source:
             os.fsync(source.fileno())
         # An exclusive link preserves an existing artifact even across a race.
@@ -741,6 +749,10 @@ def main() -> int:
     parser.add_argument("--tp-degree", type=int, default=8)
     parser.add_argument("--tp-all", type=int, default=0,
                         help="emit all N rank packs in one process (shared dequant cache)")
+    parser.add_argument("--revision", required=True,
+                        help="model revision stamped into the pack header (the warm snapshot's HF tree id)")
+    parser.add_argument("--contract-sha256", required=True,
+                        help="sha256 of model_contracts/laguna_authoritative.json, stamped into the pack header")
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
@@ -768,7 +780,8 @@ def main() -> int:
                                               rank, args.stage_count, args.stage_index),
              dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
                   layer_count=args.layer_count,
-                  flags=0))
+                  flags=0),
+             args.revision, args.contract_sha256)
         print("receipt " + json.dumps(packer.receipt(), sort_keys=True))
     source.close()
     return 0

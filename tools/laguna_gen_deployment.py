@@ -46,7 +46,7 @@ TRANSPORT_BASE = int(os.environ.get("LAGUNA_TRANSPORT_BASE", "60710"))
 COLLECTIVE_ID = 9911223344556679
 PACK_TEMPLATE = os.environ.get(
     "LAGUNA_PACK_TEMPLATE",
-    "packs/laguna-s-2.1.bf16.tp8pp2.stage%d.rank%d.lgsp")
+    "packs/laguna_stage.tp8.pp2.stage%d.rank%d.lgsp")
 MODEL_REVISION = "PRE-FREEZE"
 NODE_TARGET = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_bf16"
 
