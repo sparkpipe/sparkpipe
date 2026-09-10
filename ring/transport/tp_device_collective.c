@@ -244,7 +244,10 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
                 (uint32_t)(bytes + 8u),
                 (uint64_t)collective->operation_timeout_milli * 1000000ull);
             if ( ws != SPARK_STATUS_OK )
+            {
+                fprintf(stderr,"MESH-WRITE-FAIL peer=%u status=%u\n",peer_rank,(uint32_t)ws);
                 SPARK_RETURN(ws);
+            }
         }
     }
     {
