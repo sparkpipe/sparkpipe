@@ -24,9 +24,8 @@ export PATH="/usr/local/cuda/bin:$PATH"
 SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
-rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so build/sparkpipe_weightd
-make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_weightd build/libhidden_transport_spark_host_rdma_verbs.so
-make -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
+make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_weightd build/libhidden_transport_spark_host_rdma_verbs.so
+make -j16 -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
 ADAPTER_SO="build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
 [ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
 strings build/libhidden_transport_spark_host_rdma_verbs.so | grep QP-WIRE > /dev/null || { echo "DSO stale"; exit 1; }
@@ -42,7 +41,7 @@ for t in $(seq 1 15); do
 done
 
 echo "== module publish (GPU receipts)"
-make -C "modules/$FAMILY" publish \
+make -j16 -C "modules/$FAMILY" publish \
     EXPERT_CODEC="$CODEC" \
     MODEL_REVISION="$REVISION" \
     CONTRACT_SHA256="$SHA" \

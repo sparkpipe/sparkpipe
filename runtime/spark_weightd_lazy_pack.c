@@ -64,18 +64,23 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
 	uint8_t manifest_digest[32];
 	SparkStatus status;
+	status = SparkWeightdClientConnect(socket,&pack->client,0);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdClientAttachLazy(pack->client,request,&pack->attached,timeout);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	(void)snprintf(path,sizeof(path),"%s.experts",request->pack_path);
 	status = SparkWeightdManifestLoad(path,request->identity.arena_bytes,&pack->manifest);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( check != 0 )
 		status = check(&pack->manifest,context);
-	if ( status == SPARK_STATUS_OK )
-		status = lazy_spine_load(pack,fd,request,budget);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdClientConnect(socket,&pack->client,0);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdClientAttachLazy(pack->client,request,&pack->attached,timeout);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = lazy_spine_load(pack,fd,request,budget);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdManifestIdentity(&pack->manifest,manifest_digest);
 	if ( status == SPARK_STATUS_OK && memcmp(manifest_digest,pack->attached.manifest_sha256,sizeof(manifest_digest)) != 0 )
