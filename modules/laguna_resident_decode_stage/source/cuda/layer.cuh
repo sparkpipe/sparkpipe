@@ -13,6 +13,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/config.h"
+#include "modules/laguna_resident_decode_stage/source/cuda/launch_shape.h"
 
 using LagunaKv = LmKvGeometry<LAGUNA_KV_SLOT_BYTES,LAGUNA_KV_PAGE_SLOTS,true>;
 
@@ -195,7 +196,7 @@ static inline void LagunaBuildYarnInvFrequency(
 	half = rotary_dimension / 2u;
 	for (index = 0u; index < half; ++index)
 	{
-		float base = __powf(theta,-2.0f * (float)index / (float)rotary_dimension);
+		float base = powf(theta,-2.0f * (float)index / (float)rotary_dimension);
 		float ramp = ((float)index - low) / fmaxf(high - low,1e-6f);
 		float blend = fminf(fmaxf(ramp,0.0f),1.0f);
 		inv_freq[index] = (base * (1.0f - blend)) + ((base / factor) * blend);
