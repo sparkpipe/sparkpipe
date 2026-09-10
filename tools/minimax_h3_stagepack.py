@@ -151,10 +151,12 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
         index = json.loads((directory / COMPONENT_INDEX[component]).read_text())
         shards = sorted(set(index["weight_map"].values()))
     headers = {}
+    data_section = {}
     for shard in shards:
         with (directory / shard).open("rb") as file:
             header_len = struct.unpack("<Q", file.read(8))[0]
             headers[shard] = json.loads(file.read(header_len))
+            data_section[shard] = 8 + header_len
     names = sorted(name for name in headers[shards[0]]) if COMPONENT_INDEX[component] is None else sorted(
         (name for name, shard in json.loads((directory / COMPONENT_INDEX[component]).read_text())[
             "weight_map"].items() if shard in headers))
@@ -170,8 +172,11 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
             if not any(rx.fullmatch(name) for rx in excluded):
                 stray.append(name)
             continue
+        base, end = info["data_offsets"]
+        shift = data_section[shard]
         entries.append(dict(matched, name=name, shard=shard, shape=info["shape"],
-                            dtype=info["dtype"], data_offsets=info["data_offsets"]))
+                            dtype=info["dtype"],
+                            data_offsets=(shift + base, shift + end)))
     if stray:
         raise SystemExit(
             f"{component}: {len(stray)} checkpoint tensors match no pattern and no exclusion; "

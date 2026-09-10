@@ -47,6 +47,7 @@ def main() -> int:
     if missing:
         raise SystemExit(f"missing tensors in {index_path}: {missing}")
     headers = {}
+    header_len_storage = {}
     descriptors = {}
     manifest_lines = []
     for name in wanted:
@@ -56,9 +57,13 @@ def main() -> int:
             file = descriptors[shard]
             (header_len,) = struct.unpack("<Q", os.pread(file, 8, 0))
             headers[shard] = json.loads(os.pread(file, header_len, 8))
+            header_len_storage[shard] = 8 + header_len
         file = descriptors[shard]
         header = headers[shard]
         info = header[name]
+        base, end = info["data_offsets"]
+        info = dict(info, data_offsets=(header_len_storage[shard] + base,
+            header_len_storage[shard] + end))
         shape = info["shape"]
         dtype = info["dtype"]
         if len(shape) >= 2:
