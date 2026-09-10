@@ -460,6 +460,9 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
     glm52_resident_decode_stage_archive \
     glm52_resident_decode_stage_publish \
     glm52_serving_adapter \
+    minimax_h3_resident_media_stage_contract \
+    minimax_h3_resident_media_stage_archive \
+    minimax_h3_resident_media_stage_publish \
     hidden_transport_spark_host_rdma_verbs \
     hidden_transport_spark_gpudirect_rdma_verbs \
     kv_mooncake \
@@ -1249,6 +1252,15 @@ glm52_serving_adapter:
 
 glm52_dspark_draft_backend:
 	$(MAKE) -C modules/glm52_dspark_draft_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
+
+minimax_h3_resident_media_stage_contract:
+	$(MAKE) -C modules/minimax_h3_resident_media_stage contract NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+minimax_h3_resident_media_stage_archive:
+	$(MAKE) -C modules/minimax_h3_resident_media_stage archive NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+minimax_h3_resident_media_stage_publish:
+	$(MAKE) -C modules/minimax_h3_resident_media_stage publish NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
 
 tree_summary:
 	@printf "core_public_headers="; find include/sparkpipe -type f | wc -l
