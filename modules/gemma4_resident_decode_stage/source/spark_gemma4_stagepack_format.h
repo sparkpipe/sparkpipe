@@ -142,7 +142,7 @@ _Static_assert((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT % SPARK_GEMMA4_MODEL
 _Static_assert((SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT % SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT) == 0u,"gemma4 full query heads must group evenly onto kv heads");
 _Static_assert(SPARK_GEMMA4_MODEL_FULL_ATTENTION_K_EQ_V == 1u,"gemma4 full layers carry no v projection (attention_k_eq_v)");
 _Static_assert(SPARK_GEMMA4_MODEL_SLIDING_ROPE_DIMENSION == SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,"gemma4 sliding rope covers the whole head");
-_Static_assert(SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS == 256u,"gemma4 proportional rope table is 256 fp32 entries (128 frequencies then zeros)");
+_Static_assert(SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS == 256u,"gemma4 proportional rope table is 256 fp32 entries (64 nonzero frequencies then 192 zeros)");
 
 static inline uint32_t SparkGemma4StagePackKvHeadsPerRank(uint32_t global_kv_head_count, uint32_t tp_degree)
 {
