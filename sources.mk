@@ -56,8 +56,7 @@ SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
-    ring/transport/tp_device_collective.c \
-    ring/transport/tp_device_collective_nccl.c
+    ring/transport/tp_device_collective.c
 
 SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
