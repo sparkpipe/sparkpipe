@@ -157,7 +157,7 @@ HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o Contro
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
 
 sync_rendezvous() {
-    local name="$1" host rd peer line sum file
+    local name="$1" host rd
     host=$(hostname -s)
     rd="$HOME/sparkdata/$name/rendezvous"
     [ -d "$rd" ] || return 0
@@ -170,24 +170,6 @@ sync_rendezvous() {
         $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
         touch "$rd/.shipped"
     fi
-    for peer in $FLEET_HOSTS; do
-        [ "$peer" = "$host" ] && continue
-        (
-            tmp="/tmp/qpn.$$.$RANDOM.$peer"
-            curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$peer/$name/index.txt" \
-                -o "$tmp" 2>/dev/null || exit 0
-            while read -r sum file; do
-                [ -n "$file" ] || continue
-                if [ -f "$rd/$file" ] && \
-                   [ "$(sha256sum < "$rd/$file" | cut -d' ' -f1)" = "$sum" ]; then
-                    continue
-                fi
-                curl -sf --max-time 4 "$RELEASE_HTTP/qpn/$peer/$name/$file" \
-                    -o "$rd/$file" 2>/dev/null || rm -f "$rd/$file"
-            done < "$tmp"
-            rm -f "$tmp"
-        ) &
-    done
 }
 
 apply_manifest() {

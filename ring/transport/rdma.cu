@@ -151,6 +151,130 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC \
     UINT64_C(0x5245454e44565a53)
 
+static const char *SparkHiddenSparkHostRdmaRendezvousHub(void)
+{
+    const char *hub = getenv("SPARK_QPN_HUB");
+    return hub != 0 && hub[0] != '\0' ? hub : "10.10.100.25:8802";
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaHttpFetch(
+    const char *hub,
+    const char *path,
+    void *body,
+    size_t body_capacity,
+    size_t *body_bytes)
+{
+    struct addrinfo hints;
+    struct addrinfo *addresses = 0;
+    struct pollfd connect_poll;
+    struct timeval timeout;
+    char request[512];
+    char response[8192];
+    char host[128];
+    char port[8];
+    const char *colon;
+    ssize_t sent;
+    ssize_t received;
+    size_t total_received;
+    char *body_start;
+    size_t header_bytes;
+    size_t available;
+    int fd;
+    int poll_result;
+    int socket_error;
+    socklen_t socket_error_bytes;
+
+    *body_bytes = 0;
+    colon = strchr(hub,':');
+    if ( colon == 0 || (size_t)(colon - hub) >= sizeof(host) - 1u )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memcpy(host,hub,(size_t)(colon - hub));
+    host[colon - hub] = '\0';
+    snprintf(port,sizeof(port),"%s",colon + 1);
+    memset(&hints,0,sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if ( getaddrinfo(host,port,&hints,&addresses) != 0 || addresses == 0 )
+        return SPARK_STATUS_BUSY;
+    fd = socket(addresses->ai_family,addresses->ai_socktype,
+        addresses->ai_protocol);
+    if ( fd < 0 )
+    {
+        freeaddrinfo(addresses);
+        return SPARK_STATUS_BUSY;
+    }
+    (void)fcntl(fd,F_SETFL,O_NONBLOCK);
+    if ( connect(fd,addresses->ai_addr,addresses->ai_addrlen) == 0 )
+        ;
+    else if ( errno == EINPROGRESS )
+    {
+        memset(&connect_poll,0,sizeof(connect_poll));
+        connect_poll.fd = fd;
+        connect_poll.events = POLLOUT;
+        poll_result = poll(&connect_poll,1,2000);
+        socket_error = 0;
+        socket_error_bytes = sizeof(socket_error);
+        if ( poll_result <= 0 ||
+             getsockopt(fd,SOL_SOCKET,SO_ERROR,&socket_error,
+                 &socket_error_bytes) != 0 || socket_error != 0 )
+        {
+            (void)close(fd);
+            freeaddrinfo(addresses);
+            return SPARK_STATUS_BUSY;
+        }
+    }
+    else
+    {
+        (void)close(fd);
+        freeaddrinfo(addresses);
+        return SPARK_STATUS_BUSY;
+    }
+    freeaddrinfo(addresses);
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    (void)setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
+    (void)setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+    snprintf(request,sizeof(request),
+        "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",path,hub);
+    sent = 0;
+    while ( sent < (ssize_t)strlen(request) )
+    {
+        ssize_t chunk = write(fd,request + sent,strlen(request) - (size_t)sent);
+        if ( chunk <= 0 )
+        {
+            (void)close(fd);
+            return SPARK_STATUS_BUSY;
+        }
+        sent += chunk;
+    }
+    total_received = 0;
+    for (;;)
+    {
+        received = read(fd,response + total_received,
+            sizeof(response) - total_received - 1u);
+        if ( received <= 0 )
+            break;
+        total_received += (size_t)received;
+        if ( total_received >= sizeof(response) - 1u )
+            break;
+    }
+    (void)close(fd);
+    response[total_received] = '\0';
+    if ( total_received < 16u || strncmp(response,"HTTP/1.0 200",12) != 0 )
+        return SPARK_STATUS_BUSY;
+    body_start = strstr(response,"\r\n\r\n");
+    if ( body_start == 0 )
+        return SPARK_STATUS_BUSY;
+    body_start += 4;
+    header_bytes = (size_t)(body_start - response);
+    available = total_received - header_bytes;
+    if ( available > body_capacity )
+        available = body_capacity;
+    memcpy(body,body_start,available);
+    *body_bytes = available;
+    return SPARK_STATUS_OK;
+}
+
 typedef struct SparkHiddenSparkHostRdmaRendezvousRecord
 {
     uint64_t magic;
@@ -483,41 +607,38 @@ static SparkStatus SparkHiddenSparkHostRdmaReadPeerRecord(
     SparkHiddenSparkHostRdmaRendezvousRecord *record)
 {
     char path[384];
-    int fd;
-    char *cursor;
-    size_t remaining;
+    const char *peer_host;
+    const char *root;
+    const char *slash;
+    size_t body_bytes;
+    SparkStatus status;
 
     SparkHiddenSparkHostRdmaRendezvousPath(state,peer_rank,path,
         sizeof(path));
-    fd = open(path,O_RDONLY);
-    if (fd < 0)
+    peer_host = state->is_sender != 0u ? state->sink_host :
+        state->source_host;
+    if ( peer_host == 0 || peer_host[0] == '\0' )
         return SPARK_STATUS_BUSY;
-    cursor = (char *)record;
-    remaining = sizeof(*record);
-    while (remaining > 0u)
+    root = getenv("SPARK_QPN_ROOT");
+    if ( root == 0 || root[0] == '\0' )
+        root = "glm53flash.fp8.tp16";
+    slash = strrchr(path,'/');
+    if ( slash == 0 )
+        return SPARK_STATUS_BUSY;
     {
-        ssize_t received = read(fd,cursor,remaining);
-        if (received <= 0)
-        {
-            (void)close(fd);
+        char url[512];
+        (void)snprintf(url,sizeof(url),"/qpn/%s/%s%s",
+            peer_host,root,slash);
+        status = SparkHiddenSparkHostRdmaHttpFetch(
+            SparkHiddenSparkHostRdmaRendezvousHub(),url,
+            record,sizeof(*record),&body_bytes);
+        if ( status != SPARK_STATUS_OK || body_bytes != sizeof(*record) )
             return SPARK_STATUS_BUSY;
-        }
-        cursor += (size_t)received;
-        remaining -= (size_t)received;
     }
-    (void)close(fd);
-    if (record->magic != SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC ||
+    if ( record->magic != SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC ||
         record->lane_count != state->lane_count ||
         record->lanes[0].qp_number == 0u)
         return SPARK_STATUS_BUSY;
-    {
-        struct stat file_status;
-        if (fstatat(AT_FDCWD,path,&file_status,0) != 0 ||
-            (uint64_t)file_status.st_mtime +
-                SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_TTL_SECONDS <
-            (uint64_t)time(0))
-            return SPARK_STATUS_BUSY;
-    }
     return SPARK_STATUS_OK;
 }
 
