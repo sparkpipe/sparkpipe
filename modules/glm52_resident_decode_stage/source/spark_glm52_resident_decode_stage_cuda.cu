@@ -312,10 +312,23 @@ static void SparkGlm52BindLayer(
 	buffers->dense_up_weight = weight->dense_gate_up_bf16 == 0 ? 0 : (const uint16_t *)weight->dense_gate_up_bf16 + ((uint64_t)GLM52_DENSE_INTERMEDIATE * GLM52_HIDDEN);
 	buffers->dense_down_weight = weight->dense_down_bf16;
 	buffers->dense_gate_up_fused = weight->dense_gate_up_bf16 != 0 ? 1u : 0u;
-	buffers->expert_w1_weight = weight->expert_up_gate_payload;
-	buffers->expert_w1_scale = weight->expert_up_gate_scale;
-	buffers->expert_w2_weight = weight->expert_down_payload;
-	buffers->expert_w2_scale = weight->expert_down_scale;
+	if ( wave->expert_lease_base != 0 &&
+		wave->expert_lease_local_layer == local_layer )
+	{
+		/* Lazy arena: expert pointers are consumer-local leased VMM
+		 * addresses; the weightd map exposes only acquired extents. */
+		buffers->expert_w1_weight = wave->expert_lease_base + weight->expert_up_gate_payload_offset;
+		buffers->expert_w1_scale = weight->expert_up_gate_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
+		buffers->expert_w2_weight = wave->expert_lease_base + weight->expert_down_payload_offset;
+		buffers->expert_w2_scale = weight->expert_down_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
+	}
+	else
+	{
+		buffers->expert_w1_weight = weight->expert_up_gate_payload;
+		buffers->expert_w1_scale = weight->expert_up_gate_scale;
+		buffers->expert_w2_weight = weight->expert_down_payload;
+		buffers->expert_w2_scale = weight->expert_down_scale;
+	}
 	buffers->shared_gate_up_weight = weight->shared_gate_up_bf16;
 	buffers->shared_down_weight = weight->shared_down_bf16;
 	buffers->hidden_bf16 = slot->hidden_bf16;
@@ -375,16 +388,54 @@ static int32_t SparkGlm52RunLayerAttention(const SparkGlm52CudaWave *wave,uint32
 	return(status);
 }
 
-static int32_t SparkGlm52RunLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
 	Glm52LayerBuffers buffers;
 	uint32_t layer,packed_rows;
 	int32_t status;
+	cudaError_t error;
 	layer = wave->first_layer_index + local_layer;
 	packed_rows = wave->row_count * GLM52_TOP_K;
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
-	status = layer < GLM52_FIRST_ROUTED_LAYER ? Glm52LayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream) : Glm52LayerMoe<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
-	return(status);
+	if ( layer < GLM52_FIRST_ROUTED_LAYER )
+		return(Glm52LayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	status = Glm52LayerMoeRoute<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	/* Publish the group offsets to host storage and mark readiness only
+	 * when the slot is wired for lazy acquisition (event + pinned host
+	 * mirror). Resident and validator slots skip this entirely. */
+	wave->slot->route_recorded = 0u;
+	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
+	{
+		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM52_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
+		if ( error == cudaSuccess )
+			error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
+		if ( error != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		wave->slot->route_recorded = 1u;
+	}
+	return(LM_LAUNCH_OK);
+}
+
+static int32_t SparkGlm52RunLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	Glm52LayerBuffers buffers;
+	uint32_t layer,packed_rows;
+	layer = wave->first_layer_index + local_layer;
+	packed_rows = wave->row_count * GLM52_TOP_K;
+	if ( layer < GLM52_FIRST_ROUTED_LAYER )
+		return(LM_LAUNCH_OK);
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	return(Glm52LayerMoeExperts<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+}
+
+static int32_t SparkGlm52RunLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	int32_t status = SparkGlm52RunLayerMlpRoute(wave,local_layer);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(SparkGlm52RunLayerMlpExperts(wave,local_layer));
 }
 
 static int32_t SparkGlm52RunLayers(const SparkGlm52CudaWave *wave)
@@ -476,6 +527,26 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,u
 	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm52RunLayerMlp(wave,local_layer));
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	int32_t status;
+	status = SparkGlm52ValidateWaveShape(wave);
+	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
+		return(LM_LAUNCH_ERR_SHAPE);
+	if ( wave->slot->route_ready_event == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(SparkGlm52RunLayerMlpRoute(wave,local_layer));
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	int32_t status;
+	status = SparkGlm52ValidateWaveShape(wave);
+	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(SparkGlm52RunLayerMlpExperts(wave,local_layer));
 }
 
 extern "C" int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave)

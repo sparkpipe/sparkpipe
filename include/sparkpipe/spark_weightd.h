@@ -66,7 +66,12 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
 
-#define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
+/* Per-pack manifest entry budget. glm53full needs 75 routed layers x 256
+ * experts x 2 kinds = 38400 entries; glm5.3-flash needs 24192. The
+ * manifest load is a calloc of count * ~48B (~2MB at the cap). */
+#define SPARK_WEIGHTD_EXPERT_COUNT_MAX 40960u
+/* Materialized-expert budget the lazy arena reclaims against. */
+#define SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT (8ull * 1024ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC UINT32_C(0x58504557)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_VERSION 1u
