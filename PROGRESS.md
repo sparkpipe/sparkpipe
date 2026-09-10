@@ -116,6 +116,12 @@ differ. They bind the kernels (criterion 4+).
 
 ## Work log
 
+- 2026-09-10 (round 3, coordinator directive): OPERATOR MEMORY MECHANISM — all heavy-IO
+  node commands (gate validators, shard slice reads, pack runs) now run under
+  `sparkcap [--mem MB] cmd` (sysadmin /usr/local/sbin/sparkcap on all sparks; cgroup v2
+  MemoryMax default 4096MB + 70% MemoryHigh, page cache counted). Queue jobs for this
+  lane wrap the gate scripts in sparkcap from round 3 onward. Tooling RSS receipts
+  already measured ≤1GB stay well inside the default cap.
 - 2026-09-09: lane start. Previous coder died pre-write (verified: `git status` clean at
   8f3a6f2, only DESIGN.md untracked). Survey done: serving adapter ABI v22 read in full
   (`include/sparkpipe/spark_model_serving_adapter.h`), batch engine read in full
@@ -143,6 +149,39 @@ differ. They bind the kernels (criterion 4+).
   point: a multi-minute video job cannot own a 15-min window end-to-end with setup;
   the detached-chain/cursor pattern (round 1) or an idle-window reservation is needed.
   C4 sparke runs observed: core+runtime lib build ~fast on GB10 (-j4, well under TTL);
+- 2026-09-10 (round 3): ANCHOR FINDINGS absorbed and acted on. (a) AUDIO CENSUS:
+  header-level census job on sparke (minimax-census1) gave audio_vae shard = 1087
+  tensors = 914 decode path + 22 pre_block + 4 mean/logs_proj + 147 encoder.* — the
+  decode-path pack count is now BOUND at 914 by static assert; pre_block is encode-only
+  (pinned AutoencoderKLMiniMaxH3Audio.encode calls it, decode never does — proven
+  bit-exact by the anchor decode without it); RESBLOCKS_PER_STAGE 9→3 (21 resblocks,
+  6 alias-free activations x 4 tensors + 6 weight-norm convs x 3 = 42 each);
+  conv_post has no bias. The C kind enum was ALSO wrong in a way round 2 could not
+  see: sparse hand codes (DIT_PROJ_IN 0x2003) never matched the packer's dense
+  appearance-order assignment (0x2000 in every written pack) — enum re-derived from
+  tensor_patterns.json, PRE_* kinds deleted, dry-run census green on sparke
+  (minimax-census2/3: 705/638/585/914, strict fail-closed coverage, 22.6 MiB RSS).
+  Packer now fails closed on any checkpoint tensor matching no pattern and no
+  exclusion. (b) transformers pin re-pinned to 4815a0a6 (5.18.0.dev0) per anchors.
+  (c) C5 V3 gate built: 4 new module kernels (weighted RMS norm, deterministic
+  K-segment GEMM whose fp32 partials combine ((s0+s1)+(s2+s3)) so a 4-way TP
+  partition is bit-identical to TP1 by construction, row-indexed adaLN affine and
+  gate-residual) + spark_minimax_h3_v3_gate.cu consuming the anchor fixture
+  fixtures/real/dit_blocks01_real.npz (converted to raw LE binaries and committed).
+  (d) C6 V4 gates built: video ViT decoder (36 blocks, biased attn, bare qk rms-norm,
+  48-dim rope theta 100, scale1/scale2 sandwich, chunk assembly 7 tokens -> 22
+  frames) and audio BigVGAN decoder (legacy weight_norm, inverted channel ladder
+  1024->8 while time x800, 21 AMP resblocks with 6 alias-free activations each,
+  checkpoint kaiser filters, bias-free conv_post) vs the real anchor fixtures.
+  (e) CRITICAL swiglu fix: diffusers SwiGLU = first_chunk * silu(second_chunk); the
+  round-2 oracle and CUDA kernel silu'd the FIRST chunk (self-consistent, so the
+  kernel-vs-oracle V2 gate could not see it); oracle, kernel, and V4 validator all
+  corrected — the real-fixture gates are the checks that bind. (f) C9: deployment
+  generator tools/minimax_h3_gen_deployment.py pins the FROZEN official block
+  17408-18431 (PORT_LEDGER v2): session cells BASE+group*64+a*4+b, max used port
+  with +768 route offsets = 18383, generator refuses non-official bases; 16 stage
+  configs + deployment_manifest.json committed. Live 16-spark cell + seam numbers
+  remain (needs the 135GB pack set placed — the pending C9 work).
   module archive + validator run well under TTL.
 
 ## Criterion status (DESIGN.md §10)
