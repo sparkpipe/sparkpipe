@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
-REF_BASE="${1:?reference base dir}"
-ROOTS="${2:?comma-separated runtime root names}"
-HUB="${3:-sparkf}"
+ROOTS="${1:?comma-separated runtime root names}"
+HUB="${2:-sparkf}"
 HOST=$(hostname)
 RANK=$((16#${HOST#spark}))
 PID_FILE="$HOME/.fleet_agent.pid"
-VIEW="$HOME/current"          # local copy of the report
+VIEW="$HOME/current"
 LAST_REPORT=""
 LAST_PIDS=""
 LAST_START=0
@@ -33,7 +32,9 @@ root_state() {
 report() {
     {
         printf '{"host":"%s","time":"%s"' "$HOST" "$(date -Is)"
-        printf ',"weightd":"%s"' "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)"
+        printf ',"weightd":"%s","agent":"%s"' \
+            "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)" \
+            "$(sha16 "$0" 2>/dev/null)"
         local r first=1 states=""
         IFS=, read -ra RA <<< "$ROOTS"
         for r in "${RA[@]}"; do
@@ -120,7 +121,7 @@ ensure_api() {
     local rr="$HOME/sparkdata/glm53flash.fp8.tp16"
     [ -x "$rr/bin/sparkpipe_model_api" ] || return 0
     local ready_count now
-    ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 sparkf \
+    ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
         "grep -l '\"state\":\"ready' current/*.json 2>/dev/null | wc -l" 2>/dev/null)
     [ "${ready_count:-0}" -ge 16 ] || return 0
     local p
@@ -148,34 +149,23 @@ FLEET_SIZE=16
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
 
-hub_has() {
-    curl -sf --max-time 5 "$RELEASE_HTTP/$1" > /dev/null 2>&1
-}
-
-sync_root() {
-    local name="$1" p upd
-    local refhost="${REF_BASE%%:*}"
-    local refdir="${REF_BASE#*:}/$name"
-    local root="$HOME/sparkdata/$name"
-    mkdir -p "$root"
-    local manifest_cur="/tmp/fleet_manifest_$name.txt"
-    local manifest_applied="$root/.applied_manifest"
+apply_manifest() {
+    local name="$1" root="$2" manifest_cur manifest_applied
+    manifest_cur="/tmp/fleet_manifest_$name.txt"
+    manifest_applied="$root/.applied_manifest"
     if ! curl -sf --max-time 8 "$RELEASE_HTTP/$name/MANIFEST" -o "$manifest_cur"; then
         [ -f "$manifest_applied" ] || echo "$(date +%T) $name: manifest unreachable" >&2
-        return 0
+        return 1
     fi
-    if cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null; then
-        return 0
-    fi
+    cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null && return 1
     echo "$(date +%T) $name: manifest changed; syncing"
-    local fetch_errors=0
-    local line
+    local fetch_errors=0 line
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         local want="${line%% *}"
         local rel="${line#*  }"
         local tmp="$root/.fetch.tmp"
-        if ! curl -sf --max-time 120 "$RELEASE_HTTP/$name/$rel" -o "$tmp"; then
+        if ! curl -sf --max-time 300 "$RELEASE_HTTP/$name/$rel" -o "$tmp"; then
             echo "$(date +%T) $name: fetch failed: $rel" >&2
             fetch_errors=$((fetch_errors+1))
             continue
@@ -193,16 +183,22 @@ sync_root() {
             bin/*) chmod 755 "$root/$rel" ;;
         esac
     done < "$manifest_cur"
-    if [ "$fetch_errors" != 0 ]; then
-        echo "$(date +%T) $name: $fetch_errors fetch errors; retrying next cycle" >&2
-        return 0
-    fi
+    [ "$fetch_errors" != 0 ] && { echo "$(date +%T) $name: $fetch_errors fetch errors; retrying next cycle" >&2; return 1; }
     cp "$manifest_cur" "$manifest_applied"
-    upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
+    return 0
+}
+
+sync_root() {
+    local name="$1" upd
+    local root="$HOME/sparkdata/$name"
+    mkdir -p "$root"
+    apply_manifest "$name" "$root" || return 0
+    local refdir="release/$name"
+    upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
     [ -n "$upd" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
         unload_root "$name" || return 0
-        $HUBSSH "$refhost" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        $HUBSSH "$HUB" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
         upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
     fi
     local gate_wait=0
@@ -210,28 +206,53 @@ sync_root() {
           [ "$gate_wait" -lt 120 ]; do
         sleep 1
         gate_wait=$((gate_wait + 1))
-        upd=$($HUBSSH "$refhost" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
+        upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
     done
     [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
         start_root "$name" || return 0
-        $HUBSSH "$refhost" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
+        $HUBSSH "$HUB" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
         upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
     fi
     [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
     local c
-    c=$($HUBSSH "$refhost" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
-    $HUBSSH "$refhost" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
+    c=$($HUBSSH "$HUB" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
+    $HUBSSH "$HUB" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
 }
 
-sync_weightd() {
-    local home="$HOME/sparkdata/weightd"
-    mkdir -p "$home"
-    if [ -x "$home/sparkpipe_weightd" ] && [ "$(hub_has weightd/UPDATE)" != yes ]; then
-        return 0
-    fi
-    rsync -a -e "$HUBSSH" --checksum "$REF_BASE/weightd/" "$home/" 2>>"$HOME/fleet_agent_rsync.log" || true
-    $HUBSSH "${REF_BASE%%:*}" "mv '${REF_BASE#*:}/weightd/UPDATE' '${REF_BASE#*:}/weightd/UPDATE.$(date +%s)'" 2>/dev/null || true
+sync_core() {
+    local core="$HOME/sparkdata/core"
+    mkdir -p "$core/bin"
+    apply_manifest core "$core"
+}
+
+install_core() {
+    local core="$HOME/sparkdata/core" wd="$HOME/sparkdata/weightd" p
+    [ -x "$core/bin/sparkpipe_weightd" ] || return 0
+    local cand installed
+    cand=$(sha16 "$core/bin/sparkpipe_weightd")
+    installed=$(sha16 "$wd/sparkpipe_weightd")
+    [ "$cand" != "$installed" ] || return 0
+    echo "$(date +%T) core: weightd $installed -> $cand; deliberate restart"
+    for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
+        kill -9 "$p" 2>/dev/null
+    done
+    sleep 1
+    mkdir -p "$wd"
+    install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
+    mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
+    setsid nohup "$wd/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        > "$HOME/weightd.log" 2>&1 < /dev/null &
+    sleep 1
+}
+
+self_update() {
+    local new="$HOME/sparkdata/core/bin/fleet_node_agent.sh" self="$0"
+    [ -f "$new" ] || return 0
+    [ "$(sha16 "$new")" != "$(sha16 "$self")" ] || return 0
+    echo "$(date +%T) agent: self-updating"
+    cp "$new" "$self.new" && chmod 755 "$self.new" && mv "$self.new" "$self"
+    exec bash "$self" "$ROOTS" "$HUB"
 }
 
 ensure_weightd() {
@@ -244,9 +265,9 @@ ensure_weightd() {
 }
 
 echo "$$" > "$PID_FILE"
-echo "agent: rank=$RANK roots=$ROOTS ref=$REF_BASE hub=$HUB"
+echo "agent: rank=$RANK roots=$ROOTS hub=$HUB http=$RELEASE_HTTP self=$(sha16 "$0")"
 report
-sync_weightd
+ensure_weightd
 ensure_root() {
     local name="$1"
     local st; st=$(root_state "$name")
@@ -266,8 +287,9 @@ ensure_root() {
 }
 
 while true; do
-    sync_weightd
-    ensure_weightd
+    sync_core
+    install_core
+    self_update
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
     for r in "${RA[@]}"; do ensure_root "$r"; done
