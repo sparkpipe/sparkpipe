@@ -118,9 +118,12 @@ differ. They bind the kernels (criterion 4+).
 
 - 2026-09-10 (round 3, coordinator directive): OPERATOR MEMORY MECHANISM — all heavy-IO
   node commands (gate validators, shard slice reads, pack runs) now run under
-  `sparkcap [--mem MB] cmd` (sysadmin /usr/local/sbin/sparkcap on all sparks; cgroup v2
-  MemoryMax default 4096MB + 70% MemoryHigh, page cache counted). Queue jobs for this
-  lane wrap the gate scripts in sparkcap from round 3 onward. Tooling RSS receipts
+  `sudo -n sparkcap [--mem MB] cmd` (sysadmin /usr/local/sbin/sparkcap on all sparks;
+  cgroup v2 MemoryMax default 4096MB + 70% MemoryHigh, page cache counted). Inside a
+  queue job the invocation must be `sudo -n sparkcap`: scopes cannot nest, so the
+  unprivileged systemd-run --scope fails with "Interactive authentication required";
+  under sudo -n sparkcap resolves SUDO_USER and creates the scope root-side. Queue
+  jobs for this lane wrap the gate scripts from round 3 onward. Tooling RSS receipts
   already measured ≤1GB stay well inside the default cap.
 - 2026-09-09: lane start. Previous coder died pre-write (verified: `git status` clean at
   8f3a6f2, only DESIGN.md untracked). Survey done: serving adapter ABI v22 read in full
