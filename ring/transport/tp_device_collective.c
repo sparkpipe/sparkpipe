@@ -239,7 +239,23 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         {
             struct timespec pause = {0,100000};
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
+            {
+                uint32_t scan;
+                fprintf(stderr,
+                    "MESH-SPIN-TIMEOUT rank=%u peer=%u want=%llu got=%llu bytes=%llu ordinals:",
+                    collective->tp_rank,peer,(unsigned long long)(ordinal + 1u),
+                    (unsigned long long)*sequence,(unsigned long long)bytes);
+                for ( scan = 0u; scan < collective->tp_degree - 1u && scan < 4u; scan++ )
+                {
+                    volatile uint64_t *probe = (volatile uint64_t *)
+                        (implementation->mesh_buffer +
+                        (uint64_t)(scan + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES + bytes);
+                    fprintf(stderr," %u=%llu",scan < collective->tp_rank ? scan : scan + 1u,
+                        (unsigned long long)*probe);
+                }
+                fprintf(stderr,"\n");
                 SPARK_FAIL(SPARK_STATUS_BUSY);
+            }
             nanosleep(&pause,0);
         }
     }
