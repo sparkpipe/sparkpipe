@@ -8,8 +8,10 @@ weightd main:
   MESH INIT (new):
     - Load transport DSO (hidden_transport.so) — same one residentds use
     - Open verbs device (already does for memory registration)
-    - Read topology from env or config file (~/.sparkdata/mesh.json):
-      { tp_degree: 16, tp_rank: <derived from hostname>, peers: [spark0..sparkf] }
+    - Read topology from the launch parameters the agent states
+      (--mesh-rank --mesh-interface --mesh-sgid-index; rank is the
+      deployment's roster index for this host, never derived from the
+      hostname):
     - For each tree route (7 per node in TP16 tree topology):
       - Create 4 QPs (send, receive, ack_send, ack_receive)
       - Register fixed receive buffers
