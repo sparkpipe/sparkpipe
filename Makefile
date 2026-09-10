@@ -45,6 +45,7 @@ DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideploym
 CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src $(DSV4_DEFAULT_BATCH_FLAGS)
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
+LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
