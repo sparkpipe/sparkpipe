@@ -120,7 +120,7 @@ def verify_pack(path: Path, tp_degree: int) -> Dict[str, Any]:
         if (linear_codec, expert_codec, kv_codec) != (CODEC_BF16, CODEC_BF16, CODEC_BF16):
             fail("codecs", f"{path.name}: linear {linear_codec} expert "
                            f"{expert_codec} kv {kv_codec}")
-        if (tp32, rank32) != (tp_degree, int(path.name.rsplit("rank", 1)[1].split(".")[0])):
+        if (tp32, rank32) != (tp_degree, int(path.name.rsplit("rank", 1)[1].split(".")[0], 16)):
             fail("identity", f"{path.name}: header tp{tp32} rank {rank32}")
         if stage_count != 1 or stage_index != 0 or first_layer != 0 or \
                 layer_count != LAYERS or total_layers != LAYERS:
