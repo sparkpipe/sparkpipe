@@ -26,7 +26,8 @@ names="${names%,}"
 python3 "${repository_root}/tools/minimax_h3_extract_tensors.py" \
 	--component-dir "${warm}/transformer" --names "${names}" --out "${work}/weights"
 
-"${nvcc_bin}" -O2 -std=c++17 -arch="${arch}" \
+"${nvcc_bin}" -O2 -std=c++17 \
+	-gencode arch="${MINIMAX_H3_CUDA_COMPUTE_ARCH:-compute_121}",code="${arch}" \
 	-I"${repository_root}/include" \
 	-I"${repository_root}/model-families/minimax_h3/include" \
 	-I"${repository_root}/model-families/common/include" \
