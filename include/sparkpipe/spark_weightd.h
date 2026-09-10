@@ -267,7 +267,8 @@ typedef struct SparkWeightdIpcMeshInfoResult
     SparkWeightdIpcHeader header;
     uint32_t status;
     uint32_t gpu_ready;
-    unsigned char ipc_handle[64];
+    uint32_t has_fd;
+    unsigned char reserved[60];
 } SparkWeightdIpcMeshInfoResult;
 
 typedef struct SparkWeightdIpcEnsure
@@ -498,7 +499,7 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientMeshInfo(SparkWeightdClient *client,
-    unsigned char ipc_handle[64],
+    int *share_fd_out,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,

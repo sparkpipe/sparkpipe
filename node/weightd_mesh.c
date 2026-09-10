@@ -2,8 +2,8 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
+#include <cuda.h>
 #include <infiniband/verbs.h>
-#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +57,8 @@ typedef struct SparkWeightdMesh
     struct ibv_qp *recv_qps[SPARK_WEIGHTD_MESH_PEERS];
     SparkWeightdMeshQpInfo qp_info[SPARK_WEIGHTD_MESH_PEERS];
     void *gpu_buffer;
+    CUmemGenericAllocationHandle mesh_handle;
+    int mesh_fd;
     void *doorbell_map;
     int doorbell_fd;
     uint64_t doorbell_addr;
@@ -381,18 +383,74 @@ SparkStatus SparkWeightdMeshInit(void)
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     weightd_mesh.gpu_buffer = 0;
-    if ( cudaMalloc(&weightd_mesh.gpu_buffer,
-            SPARK_WEIGHTD_MESH_BUFFER_BYTES) != 0 )
+    weightd_mesh.mesh_fd = -1;
     {
-        fprintf(stderr,"weightd-mesh: gpu alloc failed\n");
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        CUmemAllocationProp prop;
+        size_t granularity = 0;
+        CUresult result;
+        memset(&prop,0,sizeof(prop));
+        prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+        prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        prop.location.id = 0;
+        result = cuMemGetAllocationGranularity(&granularity,&prop,
+            CU_MEM_ALLOCATION_GRANULARITY_RECOMMENDED);
+        if (result != CUDA_SUCCESS || granularity == 0u)
+            granularity = 2097152u;
+        result = cuMemCreate(&weightd_mesh.mesh_handle,
+            ((SPARK_WEIGHTD_MESH_BUFFER_BYTES + granularity - 1u) /
+                granularity) * granularity,&prop,0u);
+        if (result != CUDA_SUCCESS)
+        {
+            fprintf(stderr,"weightd-mesh: vmm create failed %d\n",(int)result);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
+        result = cuMemAddressReserve(
+            (CUmemGenericAllocationHandle *)&weightd_mesh.gpu_buffer,
+            SPARK_WEIGHTD_MESH_BUFFER_BYTES,0u,0u,0u);
+        if (result != CUDA_SUCCESS)
+        {
+            fprintf(stderr,"weightd-mesh: vmm reserve failed %d\n",(int)result);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
+        result = cuMemMap((CUdeviceptr)weightd_mesh.gpu_buffer,
+            SPARK_WEIGHTD_MESH_BUFFER_BYTES,0u,
+            weightd_mesh.mesh_handle,0u);
+        if (result != CUDA_SUCCESS)
+        {
+            fprintf(stderr,"weightd-mesh: vmm map failed %d\n",(int)result);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
+        {
+            CUmemAccessDesc access;
+            memset(&access,0,sizeof(access));
+            access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = 0;
+            access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            result = cuMemSetAccess((CUdeviceptr)weightd_mesh.gpu_buffer,
+                SPARK_WEIGHTD_MESH_BUFFER_BYTES,&access,1u);
+            if (result != CUDA_SUCCESS)
+            {
+                fprintf(stderr,"weightd-mesh: vmm access failed %d\n",
+                    (int)result);
+                return SPARK_STATUS_DRIVER_LOAD_ERROR;
+            }
+        }
+        result = cuMemExportToShareableHandle(&weightd_mesh.mesh_fd,
+            weightd_mesh.mesh_handle,
+            CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0u);
+        if (result != CUDA_SUCCESS || weightd_mesh.mesh_fd < 0)
+        {
+            fprintf(stderr,"weightd-mesh: vmm export failed %d\n",(int)result);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
     }
-    weightd_mesh.recv_mr = ibv_reg_mr(weightd_mesh.protection_domain,
-        weightd_mesh.gpu_buffer,SPARK_WEIGHTD_MESH_BUFFER_BYTES,
+    weightd_mesh.recv_mr = ibv_reg_dmabuf_mr(
+        weightd_mesh.protection_domain,0u,SPARK_WEIGHTD_MESH_BUFFER_BYTES,
+        (uint64_t)(uintptr_t)weightd_mesh.gpu_buffer,weightd_mesh.mesh_fd,
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (weightd_mesh.recv_mr == 0)
     {
-        fprintf(stderr,"weightd-mesh: gpu mr failed errno=%d\n",errno);
+        fprintf(stderr,"weightd-mesh: dmabuf mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     weightd_mesh.doorbell_fd = memfd_create("spark-mesh-doorbell",0u);
@@ -498,17 +556,10 @@ uint32_t SparkWeightdMeshReady(void)
     return weightd_mesh.mesh_ready;
 }
 
-SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64])
+int SparkWeightdMeshShareFd(void)
 {
-    cudaError_t error;
-    cudaIpcMemHandle_t handle;
-    if (weightd_mesh.mesh_ready == 0u || weightd_mesh.gpu_buffer == 0)
-        return SPARK_STATUS_BUSY;
-    error = cudaIpcGetMemHandle(&handle,weightd_mesh.gpu_buffer);
-    if (error != cudaSuccess)
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
-    memcpy(out,&handle,sizeof(handle));
-    return SPARK_STATUS_OK;
+    return weightd_mesh.mesh_ready != 0u && weightd_mesh.mesh_fd >= 0 ?
+        dup(weightd_mesh.mesh_fd) : -1;
 }
 
 
