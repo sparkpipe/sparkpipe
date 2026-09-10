@@ -125,6 +125,12 @@ stage configs' tp_degree == TP_DEGREE. Unset, empty, or nonsense values
 leave the descriptor unconfigured and the host's adapter-load
 validation fails closed.
 
+LAUNCHER PASSTHROUGH: tools/fleet_serve.sh forwards
+SPARK_GLM52_SERVING_FLAT_RANKS to residentd verbatim (no default — an
+unset value fails closed at load with the adapter's diagnostic). The
+glm53full TP16 window-respawn must export 16 before relaunch; the 5.2
+TP8 band exports 8.
+
 DRIVER MODEL ID: the expected DRIVER model id must equal the model.id
 of the firmware the driver was compiled from
 (ServingAdapterTemplateLoadDriver strcmps them). The bf16 arm's
