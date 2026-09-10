@@ -161,9 +161,9 @@ sync_rendezvous() {
     host=$(hostname -s)
     rd="$HOME/sparkdata/$name/rendezvous"
     [ -d "$rd" ] || return 0
-    [ -f "$rd/.sync_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.sync_lock") )) -lt 5 ] && return 0
-    touch "$rd/.sync_lock"
     if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
+        [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
+        touch "$rd/.upload_lock"
         $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
         scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
             "$HUB:release/qpn/$host/$name/" 2>/dev/null
