@@ -54,6 +54,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RELEASE_RESULT 18u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE 19u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT 20u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE 21u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT 22u
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -200,8 +202,29 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint32_t loaded_from_pack;
+    uint32_t mesh_ready;
+    uint64_t mesh_send_buffer_addr;
+    uint32_t mesh_send_buffer_bytes;
     uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
+
+typedef struct SparkWeightdIpcMeshWrite
+{
+    SparkWeightdIpcHeader header;
+    uint32_t peer_rank;
+    uint32_t reserved;
+    uint64_t source_offset;
+    uint64_t remote_offset;
+    uint32_t length;
+    uint32_t reserved2;
+} SparkWeightdIpcMeshWrite;
+
+typedef struct SparkWeightdIpcMeshWriteResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reserved;
+} SparkWeightdIpcMeshWriteResult;
 
 typedef struct SparkWeightdIpcEnsure
 {
@@ -388,6 +411,9 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t arena_count;
     uint32_t expert_count;
     uint32_t loaded_from_pack;
+    uint32_t mesh_ready;
+    uint64_t mesh_send_buffer_addr;
+    uint32_t mesh_send_buffer_bytes;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint8_t manifest_sha256[32];
