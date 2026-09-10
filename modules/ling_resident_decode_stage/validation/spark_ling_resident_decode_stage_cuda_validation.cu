@@ -2181,25 +2181,44 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 				static float actual[SPARK_LING_VAL_HIDDEN];
 				static float reference[SPARK_LING_VAL_HIDDEN];
 				SparkLingValMetrics metrics,worst;
+				uint32_t worst_row = 0u,worst_element = 0u;
+				float worst_device = 0.0f,worst_oracle = 0.0f;
 				memset(&worst,0,sizeof(worst));
 				worst.cosine = 2.0;
 				for (uint32_t row = 0u; row < SPARK_LING_VAL_ROWS; row++)
 				{
+					float row_abs = 0.0f;
+					uint32_t row_element = 0u;
 					for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 					{
 						actual[index] = SparkLingValFromBf16(
 							first[(uint64_t)row * SPARK_LING_VAL_HIDDEN + index]);
 						reference[index] = walk.boundary_rows[row][index];
+						if ( fabsf(actual[index] - reference[index]) > row_abs )
+						{
+							row_abs = fabsf(actual[index] - reference[index]);
+							row_element = index;
+						}
 					}
 					SparkLingValMeasure(&metrics,actual,reference,SPARK_LING_VAL_HIDDEN);
 					if ( metrics.max_relative_l2 > worst.max_relative_l2 )
+					{
 						worst = metrics;
+						worst_row = row;
+						worst_element = row_element;
+						worst_device = actual[row_element];
+						worst_oracle = reference[row_element];
+					}
 				}
 				{
 					char worst_label[160];
+					snprintf(worst_label,sizeof(worst_label),
+						"%s boundary stream (row %u elem %u dev %.6g or %.6g)",
+						label,worst_row,worst_element,worst_device,worst_oracle);
 					snprintf(worst_label,sizeof(worst_label),"%s boundary stream",label);
 					failures += SparkLingValReport(worst_label,&worst,0.02,0.999);
 				}
+
 			}
 		}
 	}
