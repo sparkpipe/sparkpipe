@@ -215,7 +215,7 @@ SparkStatus SparkWeightdMeshInit(void)
     struct ibv_port_attr port_attr;
     struct ibv_qp_init_attr qp_attributes;
     SparkWeightdMeshRecord own_record;
-    SparkWeightdMeshRecord peer_record;
+    SparkWeightdMeshRecord peer_records[SPARK_WEIGHTD_MESH_PEERS];
     int device_count;
     uint32_t peer;
     uint32_t peer_rank;
