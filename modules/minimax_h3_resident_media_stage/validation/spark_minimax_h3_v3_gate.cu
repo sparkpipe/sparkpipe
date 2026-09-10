@@ -215,91 +215,160 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 	const float *rope_cos, const float *rope_sin, const uint32_t *row_of,
 	struct SparkMinimaxH3V3Scratch *scratch, void *result_bf16)
 {
+	const char *stage = "start";
 	cudaError_t error;
+	stage = "call SparkMinimaxH3RmsNorm #1";
 	error = SparkMinimaxH3RmsNorm(stream,input_bf16,weights->norm1,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch->normed);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3AdaLNIndexed #2";
 	error = SparkMinimaxH3AdaLNIndexed(stream,scratch->normed,scale_msa,shift_msa,
 		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch->adaln);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #3";
 	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->query,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
 		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->q);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3RmsNorm #4";
 	error = SparkMinimaxH3RmsNorm(stream,scratch->q,weights->norm_q,
 		SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HEADS,
 		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,
 		scratch->q);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Rope3d #5";
 	error = SparkMinimaxH3Rope3d(stream,scratch->q,rope_cos,rope_sin,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
 		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,scratch->q_rope);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #6";
 	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->key,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
 		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->k);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3RmsNorm #7";
 	error = SparkMinimaxH3RmsNorm(stream,scratch->k,weights->norm_k,
 		SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HEADS,
 		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,
 		scratch->k);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Rope3d #8";
 	error = SparkMinimaxH3Rope3d(stream,scratch->k,rope_cos,rope_sin,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
 		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,scratch->k_rope);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #9";
 	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->value,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
 		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->v);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3DenseAttention #10";
 	error = SparkMinimaxH3DenseAttention(stream,scratch->q_rope,scratch->k_rope,
 		scratch->v,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
 		SPARK_MINIMAX_H3_V3_HEAD_DIM,scratch->attn_raw);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #11";
 	error = SparkMinimaxH3Gemm(stream,scratch->attn_raw,weights->output_proj,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		SPARK_MINIMAX_H3_V3_QKV,scratch->segments,scratch->attn_out);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3GateResidualIndexed #12";
 	error = SparkMinimaxH3GateResidualIndexed(stream,scratch->attn_out,gate_msa,
 		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		scratch->normed);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3RmsNorm #13";
 	error = SparkMinimaxH3RmsNorm(stream,scratch->normed,weights->norm2,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch->ffn_out);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3AdaLNIndexed #14";
 	error = SparkMinimaxH3AdaLNIndexed(stream,scratch->ffn_out,scale_mlp,shift_mlp,
 		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch->ffn_out);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #15";
 	error = SparkMinimaxH3Gemm(stream,scratch->ffn_out,weights->gate_up,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_FFN_FUSED,
 		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->ffn_fused);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3SiluMul #16";
 	error = SparkMinimaxH3SiluMul(stream,scratch->ffn_fused,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_FFN,scratch->ffn_mid);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
+	stage = "call SparkMinimaxH3Gemm #17";
 	error = SparkMinimaxH3Gemm(stream,scratch->ffn_mid,weights->down,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		SPARK_MINIMAX_H3_V3_FFN,scratch->segments,scratch->ffn_out);
 	if ( error != cudaSuccess )
+	{
+		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
+	}
 	return(SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
 		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		result_bf16));

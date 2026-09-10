@@ -391,8 +391,8 @@ int main(int argc, char **argv)
 	float *rope_cos,*rope_sin;
 	struct SparkMinimaxH3V5Weights block0,block1;
 	struct SparkMinimaxH3V5Scratch scratch;
-	static uint16_t runs[4u][SPARK_MINIMAX_H3_V5_STEPS * SPARK_MINIMAX_H3_V5_ELEMENTS];
-	uint32_t step,index,run;
+	static uint16_t runs[4u][SPARK_MINIMAX_H3_V5_STEPS][SPARK_MINIMAX_H3_V5_ELEMENTS];
+	uint32_t step,run;
 	if ( argc != 4 && argc != 5 )
 	{
 		printf("usage: %s FIXTURE_DIR WEIGHTS_DIR WEIGHT_MANIFEST [SEED]\n",argv[0]);
@@ -483,7 +483,8 @@ int main(int argc, char **argv)
 			if ( SparkMinimaxH3V5RunLoop(&block0,&block1,device_scale_msa,
 				device_shift_msa,device_gate_msa,device_scale_mlp,device_shift_mlp,
 				device_gate_mlp,device_cos,device_sin,tags_host,timesteps_host,seed,
-				run < 2u ? 0u : 1u,&scratch,device_h,device_result,runs[run]) != 0 )
+				run < 2u ? 0u : 1u,&scratch,device_h,device_result,
+				(uint16_t *)runs[run]) != 0 )
 			{
 				printf("loop run %u cuda failure FAIL\n",run);
 				return(1);
