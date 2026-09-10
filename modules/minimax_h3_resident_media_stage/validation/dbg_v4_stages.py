@@ -156,15 +156,18 @@ def main():
         _resblock_kernel_sizes=(3, 7, 11),
         _resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5))))
 
-    def act1(t, prefix):
+    def act1(t, prefix, mid_name=None):
         t = ref.audio_upsample1d(t, 2, 12, w["%s.upsample.filter" % prefix])
         t = ref.audio_snake_beta(t, w["%s.act.alpha" % prefix],
             w["%s.act.beta" % prefix])
+        if mid_name is not None:
+            dump_full(mid_name, t)
         return ref.audio_lowpass(t, w["%s.downsample.lowpass.filter" % prefix], 2, 12)
 
-    def amp_block(t, w, prefix, kernel_size, dilation, marks, act_marks=()):
+    def amp_block(t, w, prefix, kernel_size, dilation, marks, act_marks=(), mid_marks=()):
         for idx, dil in enumerate(dilation):
-            a1 = act1(t, "%s.activations.%d" % (prefix, 2 * idx))
+            a1 = act1(t, "%s.activations.%d" % (prefix, 2 * idx),
+                "refa_s0_m%d" % (2 * idx) if (2 * idx) in mid_marks else None)
             if (2 * idx) in act_marks:
                 dump_full("refa_s0_a%d" % (2 * idx), a1)
             r = F.conv1d(a1, ref.wn_weight(w["%s.convs1.%d.weight_g" % (prefix, idx)],
