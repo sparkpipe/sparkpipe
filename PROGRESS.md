@@ -2,7 +2,9 @@
 
 Branch `lane/gemma4-driver`, rebased onto origin/main **50bd0d3** (PR #913,
 the E2E-proven platform). NEVER pushed (manager owns GitHub). Working dir
-/Users/mac/batch-gemma4. DESIGN.md untracked (per brief).
+/Users/mac/batch-gemma4. DESIGN.md is now tracked (02a5264) with the
+publisher-corrected rope constants — round 1 had kept it untracked; the
+corrections made it worth freezing in-tree.
 
 ## REBASE RECORD (round 2)
 
