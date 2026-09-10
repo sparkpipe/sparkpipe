@@ -1,4 +1,5 @@
 #include "spark_qwen38_27b_tp.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <errno.h>
 #include <sched.h>
@@ -118,13 +119,13 @@ SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
 	if ( cudaMalloc(&tp->credit_send_bf16,(size_t)total_bytes) != cudaSuccess )
 	{
 		SparkQwen38_27bTpDestroy(tp);
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	tp->credit_device_allocated = 1u;
 	if ( cudaMalloc(&tp->credit_receive_bf16,(size_t)total_bytes) != cudaSuccess )
 	{
 		SparkQwen38_27bTpDestroy(tp);
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	if ( mapped_host != 0u )
 	{
@@ -135,7 +136,7 @@ SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
 		{
 			fprintf(stderr, "%s credit_host_alloc_failed\n", SPARK_QWEN38_27B_TP_TAG);
 			SparkQwen38_27bTpDestroy(tp);
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		cudaFree(tp->credit_send_bf16);
 		cudaFree(tp->credit_receive_bf16);
@@ -167,7 +168,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 
 	if ( tp == 0 || degree == 0u || rank >= degree ||
 		max_active_sequence_count == 0u || registration_cuda_stream == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(tp, 0, sizeof(*tp));
 	tp->degree = degree;
 	tp->rank = rank;
@@ -183,7 +184,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	{
 		fprintf(stderr, "%s geometry_undividable degree=%u\n",
 			SPARK_QWEN38_27B_TP_TAG, degree);
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	tp->gdn_qk_channels = SPARK_QWEN38_27B_MODEL_GDN_QK_DIMENSION / degree;
 	tp->gdn_value_channels = SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION / degree;
@@ -249,7 +250,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 			uint32_t row_index,column_index;
 			unsigned long cell_value;
 			if ( session_ports_text == 0 )
-				return SPARK_STATUS_INVALID_ARGUMENT;
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			cell_scan = session_ports_text;
 			for (row_index = 0u; row_index < degree; row_index++)
 				for (column_index = 0u; column_index < degree; column_index++)
@@ -260,7 +261,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 					if ( cell_end == cell_scan || errno != 0 ||
 						cell_value > 65535u ||
 						(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
-						return SPARK_STATUS_INVALID_ARGUMENT;
+						SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 					configuration.session_ports[row_index][column_index] = (uint16_t)cell_value;
 					cell_scan = cell_end;
 					while ( *cell_scan == ',' )
@@ -300,7 +301,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
 			if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
 				credit_bytes * configuration.credit_count )
-				return SPARK_STATUS_CAPACITY_EXCEEDED;
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			total_bytes += credit_bytes * configuration.credit_count;
 		}
 		status = SparkQwen38_27bTpAllocateCreditMemory(tp,total_bytes,
@@ -312,7 +313,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		if ( bindings == 0 )
 		{
 			SparkQwen38_27bTpDestroy(tp);
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		offset = 0u;
 		configuration.credit_binding_count = 0u;
@@ -401,11 +402,11 @@ SparkStatus SparkQwen38_27bTpReduceHidden(
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || rows == 0u || cuda_stream == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
 	if ( rows > tp->collective.max_active_sequence_count )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return SparkQwen38_27bTpSubmit(tp,buffer,rows,logical_count,cuda_stream,0u);
 }
 
@@ -417,7 +418,7 @@ SparkStatus SparkQwen38_27bTpReduceU64Max(
 	void *cuda_stream)
 {
 	if ( tp == 0 || buffer == 0 || count == 0u || cuda_stream == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( tp->degree <= 1u || tp->initialized == 0u )
 		return SPARK_STATUS_OK;
 	return SparkQwen38_27bTpSubmit(tp,buffer,count,logical_count,cuda_stream,1u);

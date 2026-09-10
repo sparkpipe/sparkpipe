@@ -21,8 +21,9 @@ HOSTS = [h for h in os.environ.get(
     "GLM5_NEXT_TP_HOSTS",
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
+ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
-                              "/home/{host}/sparkdata/glm53flash.bf16.tp16")
+                              "/home/{host}/sparkdata/" + ROOT_NAME)
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("GLM5_NEXT_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("GLM5_NEXT_TRANSPORT_BASE", "60710"))
@@ -31,10 +32,10 @@ COLLECTIVE_SESSION_BASE = int(os.environ.get(
 COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
     "GLM5_NEXT_SESSION_HC_BASE", "62550"))
 COLLECTIVE_ID = 9911223344556679
-BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "nccl")
+BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
-    "packs/glm53flash.bf16-official.tp16.rank%d.sp")
+    "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
@@ -152,7 +153,7 @@ def resident_deployment() -> dict:
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
+            "kv_backing_directory": "/home/%s/kvcache/" % host + ROOT_NAME,
             "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",

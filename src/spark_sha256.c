@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -372,7 +373,7 @@ SparkStatus SparkSha256Bytes(const void *data, size_t data_bytes, char hex[SPARK
 
     if ((data == 0 && data_bytes != 0u) || hex == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     SparkSha256Initialize(&context);
@@ -470,12 +471,12 @@ static SparkStatus SparkSha256FilePipelined(
     int index;
     if (pthread_mutex_init(&pipeline.mutex, 0) != 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     if (pthread_cond_init(&pipeline.progress, 0) != 0)
     {
         pthread_mutex_destroy(&pipeline.mutex);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     pipeline.file_descriptor = file_descriptor;
     pipeline.reader_started = 0;
@@ -579,13 +580,13 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
 
     if (path == 0 || hex == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     file = fopen(path, "rb");
     if (file == 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     SparkSha256Initialize(&context);
@@ -602,7 +603,7 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
         if (ferror(file) != 0)
         {
             fclose(file);
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         status = SPARK_STATUS_OK;
     }
@@ -612,7 +613,7 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
     }
     if (fclose(file) != 0 && status == SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (status != SPARK_STATUS_OK)
     {

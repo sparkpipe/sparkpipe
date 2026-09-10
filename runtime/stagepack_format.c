@@ -1,5 +1,6 @@
 
 #include <string.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_stagepack_format.h"
 
@@ -172,5 +173,5 @@ int32_t SparkStagePackHeaderMatches(const SparkStagePackHeaderCommon *file_heade
 		status = SparkStagePackHeaderMatchesAttnGeometry(file_header,expected);
 	if ( status == 0 )
 		status = SparkStagePackHeaderMatchesMoEGeometry(file_header,expected);
-	return(status);
+	SPARK_RETURN(status);
 }

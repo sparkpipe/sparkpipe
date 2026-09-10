@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_runtime.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -56,7 +57,7 @@ SparkStatus SparkModelRuntimeValidateContract(
         (contract->required_operation_mask &
             ~SPARK_MODEL_RUNTIME_OPERATION_KNOWN_MASK) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     precision_policy = &contract->precision_policy;
     if (!((precision_policy->expert_weight_precision ==
@@ -74,20 +75,20 @@ SparkStatus SparkModelRuntimeValidateContract(
         precision_policy->accumulator_precision !=
             SPARK_MODEL_RUNTIME_PRECISION_FP32)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     for (reserved_index = 0u; reserved_index < 3u; ++reserved_index)
     {
         if (precision_policy->reserved[reserved_index] != 0u)
         {
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
     }
     for (reserved_index = 0u; reserved_index < 2u; ++reserved_index)
     {
         if (contract->reserved[reserved_index] != 0u)
         {
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
     }
     return SPARK_STATUS_OK;
@@ -168,7 +169,7 @@ SparkStatus SparkModelRuntimeValidateProvider(
         provider->commit == 0 ||
         provider->cancel == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkModelRuntimeValidateContract(provider->contract);
     if (status != SPARK_STATUS_OK)
@@ -192,7 +193,7 @@ SparkStatus SparkModelRuntimeValidateProvider(
             (operation & ~SPARK_MODEL_RUNTIME_OPERATION_KNOWN_MASK) != 0u ||
             (provider->supported_operation_mask & operation) == 0u)
         {
-            return SPARK_STATUS_VALIDATION_FAILED;
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
         }
         observed_operation_mask |= operation;
     }
@@ -205,7 +206,7 @@ SparkStatus SparkModelRuntimeValidateProvider(
         provider->operation_sequence[provider->operation_count - 1u] !=
             SPARK_MODEL_RUNTIME_OPERATION_OUTPUT_HEAD)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     return SPARK_STATUS_OK;
 }
@@ -227,7 +228,7 @@ SparkStatus SparkModelRuntimeExecute(
         SparkWorkTransactionValidateIdentity(&request->identity) !=
             SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = provider->begin(provider->provider_context,request);
     if (status != SPARK_STATUS_OK)

@@ -1,4 +1,5 @@
 #include "spark_filesystem.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -45,7 +46,7 @@ SparkStatus SparkReadEntireFile(const char *path, char **data, size_t *data_byte
 
     if (path == 0 || data == 0 || data_bytes == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *data = 0;
     *data_bytes = 0u;
@@ -53,37 +54,37 @@ SparkStatus SparkReadEntireFile(const char *path, char **data, size_t *data_byte
     file = fopen(path, "rb");
     if (file == 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (fseek(file, 0, SEEK_END) != 0)
     {
         fclose(file);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     file_bytes = ftell(file);
     if (file_bytes < 0 || fseek(file, 0, SEEK_SET) != 0)
     {
         fclose(file);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     buffer = (char *)malloc((size_t)file_bytes + 1u);
     if (buffer == 0)
     {
         fclose(file);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     bytes_read = fread(buffer, 1u, (size_t)file_bytes, file);
     if (bytes_read != (size_t)file_bytes || ferror(file) != 0)
     {
         free(buffer);
         fclose(file);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (fclose(file) != 0)
     {
         free(buffer);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     buffer[bytes_read] = '\0';
@@ -100,13 +101,13 @@ SparkStatus SparkWriteEntireFile(const char *path, const void *data, size_t data
 
     if (path == 0 || (data == 0 && data_bytes != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     file = fopen(path, "wb");
     if (file == 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     status = SPARK_STATUS_OK;
     bytes_written = fwrite(data, 1u, data_bytes, file);
@@ -132,11 +133,11 @@ SparkStatus SparkWriteEntireFileAtomically(const char *path, const void *data, s
 
     if (path == 0 || (data == 0 && data_bytes != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (snprintf(temporary_path, sizeof(temporary_path), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(temporary_path))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     status = SparkWriteEntireFile(temporary_path, data, data_bytes);
@@ -148,7 +149,7 @@ SparkStatus SparkWriteEntireFileAtomically(const char *path, const void *data, s
     if (rename(temporary_path, path) != 0)
     {
         unlink(temporary_path);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -163,19 +164,19 @@ SparkStatus SparkCopyFile(const char *source_path, const char *destination_path)
 
     if (source_path == 0 || destination_path == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     source = fopen(source_path, "rb");
     if (source == 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     destination = fopen(destination_path, "wb");
     if (destination == 0)
     {
         fclose(source);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     status = SPARK_STATUS_OK;
@@ -218,12 +219,12 @@ SparkStatus SparkCreateDirectories(const char *path)
 
     if (path == 0 || path[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     path_length = strlen(path);
     if (path_length >= sizeof(mutable_path))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     memcpy(mutable_path, path, path_length + 1u);
 
@@ -234,18 +235,18 @@ SparkStatus SparkCreateDirectories(const char *path)
             mutable_path[character_index] = '\0';
             if (mkdir(mutable_path, 0775) != 0 && errno != EEXIST)
             {
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             if (!SparkPathIsRealDirectory(mutable_path))
             {
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             mutable_path[character_index] = '/';
         }
     }
     if (mkdir(mutable_path, 0775) != 0 && errno != EEXIST)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     return SparkPathIsRealDirectory(mutable_path) ?
         SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
@@ -291,7 +292,7 @@ SparkStatus SparkRemoveDirectoryTree(const char *path)
     if (path == 0 || path[0] == '\0' || strcmp(path, "/") == 0 ||
         strcmp(path, ".") == 0 || strcmp(path, "..") == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (lstat(path, &file_status) != 0)
     {
@@ -310,7 +311,7 @@ SparkStatus SparkRemoveDirectoryTree(const char *path)
         directory = opendir(path);
         if (directory == 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         status = SPARK_STATUS_OK;
         errno = 0;
@@ -359,13 +360,13 @@ SparkStatus SparkJoinPath(const char *left, const char *right, char *path, uint3
 
     if (left == 0 || right == 0 || path == 0 || path_bytes == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     separator = left[0] != '\0' && left[strlen(left) - 1u] == '/' ? "" : "/";
     formatted_bytes = snprintf(path, path_bytes, "%s%s%s", left, separator, right);
     if (formatted_bytes < 0 || (uint32_t)formatted_bytes >= path_bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -418,7 +419,7 @@ SparkStatus SparkResolveRuntimePath(
     if (!SparkPathIsNormalized(runtime_root, true) ||
         !SparkPathIsNormalized(relative_path, false))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkJoinPath(runtime_root, relative_path, path, path_bytes);
 }
@@ -437,14 +438,14 @@ SparkStatus SparkRunProcess(const char *executable, char *const arguments[], int
 
     if (executable == 0 || arguments == 0 || exit_code == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *exit_code = -1;
 
     child_process = fork();
     if (child_process < 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (child_process == 0)
     {
@@ -453,7 +454,7 @@ SparkStatus SparkRunProcess(const char *executable, char *const arguments[], int
     }
     if (waitpid(child_process, &wait_status, 0) < 0)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (WIFEXITED(wait_status))
     {
@@ -476,13 +477,13 @@ SparkStatus SparkCopyString(char *destination, uint32_t destination_bytes, const
 
     if (destination == 0 || destination_bytes == 0u || source == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     source_bytes = strlen(source);
     if (source_bytes >= destination_bytes)
     {
         destination[0] = '\0';
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     memcpy(destination, source, source_bytes + 1u);
     return SPARK_STATUS_OK;

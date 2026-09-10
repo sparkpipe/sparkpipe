@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -199,7 +200,7 @@ static SparkStatus SparkGlm52ServingLoadTpCollective(
 		state->tp_collective_topology = config.topology;
 	}
 	(void)fprintf(stderr,"GLM52-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,config.backend_kind);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingLoadConfiguration(
@@ -285,7 +286,7 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	free(relative_stage_pack_path);
 	free(draft_bridge_host_value);
 	(void)fprintf(stderr,"GLM52-ADAPTER LoadConfiguration rc=%d\n",(int)status);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingInitializeSpeculationSeam(
@@ -331,7 +332,7 @@ static SparkStatus SparkGlm52ServingInitializeSpeculationSeam(
 	seam_configuration.model_contract.verifier_accept_k = 1u;
 	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
 	(void)fprintf(stderr,"GLM52-ADAPTER SpeculationSeam rc=%d\n",(int)status);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingValidateRowOrder(
@@ -522,7 +523,7 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 		&state->driver_instance);
 	state->program = program;
 	(void)fprintf(stderr,"GLM52-ADAPTER LoadDriver rc=%d\n",(int)status);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingValidateConfiguration(
@@ -535,7 +536,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkGlm52ServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( configuration->stage_index >= SPARK_GLM52_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
@@ -554,7 +555,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	*adapter_state = 0;
 	status = SparkGlm52ServingValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state = (SparkGlm52ServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -608,7 +609,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm52ServingDestroy(state);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);
@@ -645,7 +646,7 @@ static SparkStatus SparkGlm52ServingValidateSubmission(
 		status = SparkGlm52ServingValidateRowOrder(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
 		status = SPARK_STATUS_UNSUPPORTED;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkGlm52ServingBuildFrame(
@@ -717,7 +718,7 @@ static SparkStatus SparkGlm52ServingAdmit(
 	status = SparkAdmissionRequestFromSubmission(
 		state->program->program_id,submission,cache_lanes,admission_flags,&request);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(SparkAdmissionEvaluateAndApply(
 		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
@@ -756,7 +757,7 @@ static SparkStatus SparkGlm52ServingPrefetch(
 					state->driver_instance,&request,&decision);
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingResolvePrefetch(
@@ -776,7 +777,7 @@ static SparkStatus SparkGlm52ServingResolvePrefetch(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkGlm52ServingValidateSubmission(state,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return(SPARK_STATUS_OK);
 	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
@@ -791,7 +792,7 @@ static SparkStatus SparkGlm52ServingResolvePrefetch(
 	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
 		submission,state->prefetch_lanes,admission_flag,&request);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(SparkAdmissionEvaluate(state->driver.interface,
 		state->driver_instance,&request,&decision));
 }
@@ -810,7 +811,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 	state = (SparkGlm52ServingState *)adapter_state;
 	status = SparkGlm52ServingValidateSubmission(state,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pending = SparkGlm52ServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
@@ -821,7 +822,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 	if ( status != SPARK_STATUS_OK )
 	{
 		pending->common.active = 0u;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
@@ -834,7 +835,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 			status = state->program->submit(state->driver_instance,&frame);
 		if ( status != SPARK_STATUS_OK )
 			pending->common.active = 0u;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	SparkGlm52ServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
 	frame.cache_lane_count = pending->cache_lane_count;
@@ -844,7 +845,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status != SPARK_STATUS_OK )
 		pending->common.active = 0u;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ServingProgress(
@@ -871,7 +872,7 @@ static SparkStatus SparkGlm52ServingQuiesce(
 	memset(&snapshot,0,sizeof(snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
@@ -889,7 +890,7 @@ static SparkStatus SparkGlm52ServingSnapshot(
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;

@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_kv_model_table.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -17,7 +18,7 @@ SparkStatus SparkKvModelTableValidate(const SparkKvModelTable *table)
         table->page_store_config.descriptor_bytes !=
             SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (table->sequence_capacity == 0u ||
         table->entry_capacity == 0u ||
@@ -27,11 +28,11 @@ SparkStatus SparkKvModelTableValidate(const SparkKvModelTable *table)
         table->hash_bucket_heads == 0 ||
         table->entry_indices_by_logical_page == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (table->entry_capacity > table->arena_configuration.logical_block_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -52,7 +53,7 @@ SparkStatus SparkKvBackendInitialize(
     }
     if (arena == 0 || page_cache == 0 || page_store == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkKvCacheArenaInitialize(arena, &table->arena_configuration);

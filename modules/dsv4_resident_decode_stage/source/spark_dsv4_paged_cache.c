@@ -1,4 +1,5 @@
 #include "spark_dsv4_paged_cache.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -178,7 +179,7 @@ SparkStatus SparkDsv4PagedCacheInitialize(
 			configuration->resident_sequence_capacity);
 	if ( status != SPARK_STATUS_OK )
 		SparkDsv4PagedCacheDestroyHost(cache);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkDsv4PagedCacheResolvePages(
@@ -195,7 +196,7 @@ static SparkStatus SparkDsv4PagedCacheResolvePages(
 		status = SparkKvCacheArenaResolveBlock(&cache->arena,
 			logical_pages[page],&view);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		if ( (view.flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
 			view.resident_slot_index >= cache->physical_page_capacity )
 			return(SPARK_STATUS_BUSY);
@@ -263,7 +264,7 @@ SparkStatus SparkDsv4PagedCachePrepareLane(
 		(void)SparkKvPageCacheRollbackLaneTransaction(&cache->page_cache,lane,
 			prepared_lane->mutation_flags);
 		prepared_lane->mutation_flags = 0u;
-		return(status);
+		SPARK_RETURN(status);
 	}
 	prepared_lane->logical_page_count = page_count;
 	prepared_lane->mutable_logical_page = mutable_page;
@@ -327,7 +328,7 @@ SparkStatus SparkDsv4PagedCachePinLane(
 				(void)SparkKvCacheArenaUnpinResidentBlock(&cache->arena,
 					logical_pages[page]);
 			}
-			return(status);
+			SPARK_RETURN(status);
 		}
 	}
 	return(SPARK_STATUS_OK);

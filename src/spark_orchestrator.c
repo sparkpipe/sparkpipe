@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_orchestrator.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -128,13 +129,13 @@ SparkStatus SparkCreateOrchestrator(
         configuration->driver_capacity == 0u || configuration->route_capacity == 0u ||
         configuration->route_endpoint_capacity == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *orchestrator = 0;
     created_orchestrator = (SparkOrchestrator *)calloc(1u, sizeof(*created_orchestrator));
     if (created_orchestrator == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     created_orchestrator->nodes = (SparkOrchestratorNode *)calloc(configuration->node_capacity, sizeof(*created_orchestrator->nodes));
     created_orchestrator->drivers = (SparkOrchestratorDriver *)calloc(configuration->driver_capacity, sizeof(*created_orchestrator->drivers));
@@ -144,7 +145,7 @@ SparkStatus SparkCreateOrchestrator(
         created_orchestrator->routes == 0 || created_orchestrator->route_endpoints == 0)
     {
         SparkDestroyOrchestrator(created_orchestrator);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     created_orchestrator->configuration = *configuration;
     *orchestrator = created_orchestrator;
@@ -194,21 +195,21 @@ SparkStatus SparkOrchestratorAddNode(
 
     if (orchestrator == 0 || node_id == 0 || target == 0 || node_handle == 0 || node_id[0] == '\0' || target[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (orchestrator->route_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if (orchestrator->node_count >= orchestrator->configuration.node_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     for (node_index = 0u; node_index < orchestrator->node_count; ++node_index)
     {
         if (strcmp(orchestrator->nodes[node_index].node_id, node_id) == 0)
         {
-            return SPARK_STATUS_DUPLICATE;
+            SPARK_FAIL(SPARK_STATUS_DUPLICATE);
         }
     }
 
@@ -246,21 +247,21 @@ SparkStatus SparkOrchestratorAttachDriver(
 
     if (orchestrator == 0 || driver_path == 0 || driver_handle == 0 || node_handle >= orchestrator->node_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (orchestrator->route_count != 0u)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "drivers must be attached before routes are resolved");
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if (orchestrator->driver_count >= orchestrator->configuration.driver_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     node = &orchestrator->nodes[node_handle];
     if (!node->active)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     driver = &orchestrator->drivers[orchestrator->driver_count];
@@ -276,7 +277,7 @@ SparkStatus SparkOrchestratorAttachDriver(
     if (driver->program_outstanding == 0)
     {
         SparkUnloadModelDriver(&driver->loaded_driver);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     {
         uint32_t program_index;
@@ -360,7 +361,7 @@ SparkStatus SparkOrchestratorResolveRoute(
         program_name == 0 || route_handle == 0 || model_id[0] == '\0' || model_revision[0] == '\0' ||
         stage_name[0] == '\0' || program_name[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     route = SparkFindOrchestratorRoute(orchestrator, model_id, model_revision, stage_name, program_name, route_handle);
     if (route != 0)
@@ -369,7 +370,7 @@ SparkStatus SparkOrchestratorResolveRoute(
     }
     if (orchestrator->route_count >= orchestrator->configuration.route_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     endpoint_count = 0u;
@@ -419,11 +420,11 @@ SparkStatus SparkOrchestratorResolveRoute(
             "spark_orchestrator route_not_found model_id=%s revision=%s stage=%s program=%s drivers=%u\n",
             model_id,model_revision,stage_name,program_name,
             orchestrator->driver_count);
-        return SPARK_STATUS_ROUTE_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_ROUTE_NOT_FOUND);
     }
     if (endpoint_count > orchestrator->configuration.route_endpoint_capacity - orchestrator->route_endpoint_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     route = &orchestrator->routes[orchestrator->route_count];
@@ -614,13 +615,13 @@ static SparkStatus SparkReserveRouteEndpoint(
 
     if (!selected_endpoint_valid)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     *reserved_endpoint = &orchestrator->route_endpoints[route->first_endpoint + selected_endpoint_index];
     if (!SparkTryReserveRouteEndpointOutstanding(orchestrator, *reserved_endpoint))
     {
         *reserved_endpoint = 0;
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     return SPARK_STATUS_OK;
 }
@@ -641,12 +642,12 @@ SparkStatus SparkOrchestratorSubmit(
 
     if (orchestrator == 0 || frame == 0 || route_handle >= orchestrator->route_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     route = &orchestrator->routes[route_handle];
     if (!route->active || route->endpoint_count == 0u)
     {
-        return SPARK_STATUS_ROUTE_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_ROUTE_NOT_FOUND);
     }
 
     base_frame_flags =
@@ -702,7 +703,7 @@ SparkStatus SparkOrchestratorSubmit(
             return status;
         }
     }
-    return SPARK_STATUS_BUSY;
+    SPARK_FAIL(SPARK_STATUS_BUSY);
 }
 
 uint64_t SparkOrchestratorGetDriverOutstanding(
@@ -730,13 +731,13 @@ SparkStatus SparkOrchestratorGetDriverProgramSnapshot(
         driver_handle >= orchestrator->driver_count ||
         !orchestrator->drivers[driver_handle].active)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     driver = &orchestrator->drivers[driver_handle];
     program = SparkFindLoadedModelDriverProgram(&driver->loaded_driver, program_name);
     if (program == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     return driver->loaded_driver.interface->snapshot(
         driver->driver_instance,

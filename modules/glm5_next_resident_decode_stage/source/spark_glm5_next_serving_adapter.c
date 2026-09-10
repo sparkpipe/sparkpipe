@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include "sparkpipe/spark_error_site.h"
 #include <stdatomic.h>
 #include <string.h>
 
@@ -312,7 +313,7 @@ static SparkStatus SparkGlm5NextServingLoadTpRailHosts(
 					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
 			free(host);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	return(SPARK_STATUS_OK);
@@ -426,7 +427,7 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	status = SparkGlm5NextServingValidateTpCollectiveMembers(document,object,
 		state->tp_collective_backend_kind);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	relative_backend_path = 0;
 	token = SparkGlm5NextServingJsonMember(document,object,"backend_module_path");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
@@ -437,11 +438,11 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 			sizeof(state->tp_collective_backend_path));
 	free(relative_backend_path);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	token = SparkGlm5NextServingJsonMember(document,object,"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state->tp_collective_identifier = collective_identifier;
 	status = SparkGlm5NextServingJsonUnsigned(document,object,"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
@@ -534,7 +535,7 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 				tp_degree,&state->tp_collective_topology);
 	}
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextServingLoadConfiguration(
@@ -592,7 +593,7 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadConfiguration rc=%d\n",(int)status);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextServingValidateRowOrder(
@@ -805,7 +806,7 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	SparkLoadedModelDriverReset(&state->driver);
 	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	descriptor = state->driver.interface->descriptor;
 	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
@@ -845,7 +846,7 @@ static SparkStatus SparkGlm5NextServingValidateConfiguration(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkGlm5NextServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( configuration->stage_index >= SPARK_GLM5_NEXT_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM5_NEXT_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
@@ -864,7 +865,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	*adapter_state = 0;
 	status = SparkGlm5NextServingValidateConfiguration(configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state = (SparkGlm5NextServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -933,7 +934,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextServingDestroy(state);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);
@@ -972,7 +973,7 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 		status = SparkGlm5NextServingValidateRowOrder(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->model_extension_bytes != 0u )
 		status = SPARK_STATUS_UNSUPPORTED;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkServingCacheAdmission SparkGlm5NextServingCacheContext(SparkGlm5NextServingState *state,SparkModelDriverCacheLane *lanes)
@@ -1083,7 +1084,7 @@ static SparkStatus SparkGlm5NextServingAdmit(
 	cache = SparkGlm5NextServingCacheContext(state,pending->cache_lanes);
 	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	frame->cache_lanes = pending->cache_lanes;
 	frame->cache_lane_count = request.cache_lane_count;
 	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
@@ -1100,7 +1101,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	state = (SparkGlm5NextServingState *)adapter_state;
 	status = SparkGlm5NextServingValidateSubmission(state,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	pending = SparkGlm5NextServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
@@ -1126,7 +1127,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	}
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextServingProgress(
@@ -1153,7 +1154,7 @@ static SparkStatus SparkGlm5NextServingQuiesce(
 	memset(&snapshot,0,sizeof(snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
@@ -1171,7 +1172,7 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
@@ -1201,7 +1202,7 @@ static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkGlm5NextServingQuiesce(state,UINT64_MAX);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	request.descriptor_bytes = sizeof(request);
 	request.program_id = state->program->program_id;
 	request.control_generation = control_generation;
@@ -1215,7 +1216,7 @@ static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t
 		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
 		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t control_generation)
@@ -1229,7 +1230,7 @@ static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t contro
 		return(SPARK_STATUS_BUSY);
 	status = SparkGlm5NextServingResetControl(state,control_generation);
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =

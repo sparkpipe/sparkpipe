@@ -1,5 +1,6 @@
 
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -37,12 +38,12 @@ SparkStatus SparkWeightdAttachRequested(void)
 	const char *socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	const char *setting = getenv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH);
 	if ( setting != 0 && strcmp(setting,"0") != 0 && strcmp(setting,"1") != 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( socket != 0 )
 		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
 	if ( setting != 0 && strcmp(setting,"1") == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAIL(SPARK_STATUS_BUSY);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -61,7 +62,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     if (outcome == 0 || slice == 0 || pack_path == 0 ||
         pack_path[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(outcome, 0, sizeof(*outcome));
     if (reason != 0)
@@ -73,24 +74,24 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     if (status == SPARK_STATUS_INVALID_ARGUMENT)
     {
         SparkWeightdAttachSetReason(reason, "attach_config");
-        return status;
+        SPARK_RETURN(status);
     }
     if (SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0)
     {
         SparkWeightdAttachSetReason(reason, "env_off");
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
     if (socket == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_socket");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
     if (digest == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_identity");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(&identity, 0, sizeof(identity));
     {
@@ -104,7 +105,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         if (model == 0)
         {
             SparkWeightdAttachSetReason(reason, "no_identity");
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         memcpy(identity.model, model,
             strlen(model) + 1u <= SPARK_WEIGHTD_ID_BYTES
@@ -126,7 +127,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     if (SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK)
     {
         SparkWeightdAttachSetReason(reason, "identity");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkWeightdClientConnect(socket, &outcome->client, 0);
@@ -134,7 +135,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     {
         outcome->client = 0;
         SparkWeightdAttachSetReason(reason, "no_daemon");
-        return status;
+        SPARK_RETURN(status);
     }
     memset(&request, 0, sizeof(request));
     request.identity = identity;
@@ -149,7 +150,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, SparkStatusToString(status));
-        return status;
+        SPARK_RETURN(status);
     }
     if (result.status != SPARK_STATUS_OK)
     {
@@ -229,18 +230,18 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
 
     if (outcome == 0 || reason == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     (void)SparkWeightdAttachDeviceId();
     if (outcome->client == 0)
     {
         SparkWeightdAttachSetReason(reason, "not_attached");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (outcome->map_base != 0)
     {
         SparkWeightdAttachSetReason(reason, "already_mapped");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(&batch, 0, sizeof(batch));
 
@@ -250,13 +251,13 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_exchange");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (batch.status != SPARK_STATUS_OK)
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, SparkStatusToString(batch.status));
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     chunk_bytes = batch.chunk_bytes;
@@ -268,7 +269,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_shape");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     covered_bytes = chunk_bytes * (uint64_t)chunk_count;
     if (covered_bytes < expected_arena_bytes)
@@ -276,7 +277,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_short");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     outcome->map_handles = (void **)calloc(chunk_count, sizeof(void *));
@@ -285,7 +286,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_shape");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     outcome->map_chunk_bytes = chunk_bytes;
     outcome->map_chunk_count = chunk_count;
@@ -303,7 +304,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_exchange");
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
         }
         if (batch.status != SPARK_STATUS_OK ||
@@ -317,7 +318,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
             SparkWeightdAttachMapUndo(outcome);
             SparkWeightdAttachRelease(outcome);
             SparkWeightdAttachSetReason(reason, "import_shape");
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         for (index = 0u; index < batch.batch_count; index++)
         {
@@ -334,7 +335,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_handle");
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             (void)close(batch.fds[index]);
             batch.fds[index] = -1;
@@ -352,7 +353,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachMapUndo(outcome);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_map");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     outcome->map_base = (void *)(uintptr_t)base;
     {
@@ -367,7 +368,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_map");
-                return SPARK_STATUS_IO_ERROR;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             outcome->map_mapped_count++;
         }
@@ -381,7 +382,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachMapUndo(outcome);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_access");
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     outcome->device_handle = (uint64_t)(uintptr_t)base;
@@ -398,12 +399,12 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 	SparkStatus status;
 	status = SparkWeightdAttachPack(slice,pack_path,timeout_nanoseconds,outcome,reason);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( outcome->client == 0 || outcome->arena_bytes != slice->pack_bytes )
 	{
 		SparkWeightdAttachRelease(outcome);
 		SparkWeightdAttachSetReason(reason,"arena_mismatch");
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	}
 	status = SparkWeightdAttachImportMap(outcome,slice->pack_bytes,timeout_nanoseconds,reason);
 	if ( status != SPARK_STATUS_OK || outcome->client == 0 || outcome->map_base == 0 )

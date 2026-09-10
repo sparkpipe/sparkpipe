@@ -1,4 +1,5 @@
 #include <string.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_admission.h"
 
@@ -11,7 +12,7 @@ SparkStatus SparkAdmissionRequestFromSubmission(
 {
     if (submission == 0 || request == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(request, 0, sizeof(*request));
     request->descriptor_bytes = (uint32_t)sizeof(*request);
@@ -51,7 +52,7 @@ SparkStatus SparkAdmissionRequestFromFrame(
 {
     if (frame == 0 || request == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(request, 0, sizeof(*request));
     request->descriptor_bytes = (uint32_t)sizeof(*request);
@@ -138,7 +139,7 @@ SparkStatus SparkAdmissionMergeDecision(
         SparkModelDriverAdmissionDecisionIsValid(source) == 0u ||
         source->accepted == 0u)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
 
     if (source->driver_dispatch_slot != SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
@@ -155,7 +156,7 @@ SparkStatus SparkAdmissionMergeDecision(
                  destination->driver_dispatch_cookie0 != source->driver_dispatch_cookie0 ||
                  destination->driver_dispatch_cookie1 != source->driver_dispatch_cookie1)
         {
-            return SPARK_STATUS_ABI_MISMATCH;
+            SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
         }
     }
 

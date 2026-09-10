@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_weightd_worker.h"
+#include "sparkpipe/spark_error_site.h"
 #include <cuda.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -63,29 +64,29 @@ SparkStatus SparkWeightdWorkerCreate(SparkWeightdWorker **out)
 	SparkStatus status;
 	CUcontext context;
 	if ( out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
 	if ( cuCtxGetCurrent(&context) != CUDA_SUCCESS || context == 0 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	worker = calloc(1u,sizeof(*worker));
 	if ( worker == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	worker->cuda_context = context;
 	if ( pthread_mutex_init(&worker->mutex,0) != 0 )
 	{
 		free(worker);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	if ( pthread_cond_init(&worker->changed,0) != 0 )
 	{
 		pthread_mutex_destroy(&worker->mutex);
 		free(worker);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	if ( pthread_create(&worker->thread,0,worker_main,worker) != 0 )
 	{
 		worker_free(worker);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	pthread_mutex_lock(&worker->mutex);
 	while ( worker->ready == 0u )
@@ -96,7 +97,7 @@ SparkStatus SparkWeightdWorkerCreate(SparkWeightdWorker **out)
 	{
 		pthread_join(worker->thread,0);
 		worker_free(worker);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	*out = worker;
 	return(SPARK_STATUS_OK);
@@ -106,12 +107,12 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 {
 	uint32_t tail;
 	if ( worker == 0 || function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	pthread_mutex_lock(&worker->mutex);
 	if ( worker->stop != 0u || worker->count == SPARK_WEIGHTD_WORK_QUEUE_CAPACITY )
 	{
 		pthread_mutex_unlock(&worker->mutex);
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	tail = ((worker->head + worker->count) % SPARK_WEIGHTD_WORK_QUEUE_CAPACITY);
 	worker->jobs[tail].function = function;
@@ -128,9 +129,9 @@ SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeo
 	uint64_t start,current,remaining;
 	uint32_t idle;
 	if ( worker == 0 || pthread_equal(pthread_self(),worker->thread) != 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	start = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
 	for (;;)
 	{
@@ -140,10 +141,10 @@ SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeo
 		if ( idle != 0u )
 			return(SPARK_STATUS_OK);
 		if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		current = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
 		if ( current < start || (current - start) >= timeout_nanoseconds )
-			return(SPARK_STATUS_BUSY);
+			SPARK_FAIL(SPARK_STATUS_BUSY);
 		remaining = (timeout_nanoseconds - (current - start));
 		pause.tv_sec = 0;
 		pause.tv_nsec = remaining < UINT64_C(1000000) ? (long)remaining : 1000000L;
@@ -154,18 +155,18 @@ SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeo
 SparkStatus SparkWeightdWorkerDestroy(SparkWeightdWorker *worker)
 {
 	if ( worker == 0 || pthread_equal(pthread_self(),worker->thread) != 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	pthread_mutex_lock(&worker->mutex);
 	if ( worker->count != 0u || worker->active != 0u )
 	{
 		pthread_mutex_unlock(&worker->mutex);
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	worker->stop = 1u;
 	pthread_cond_signal(&worker->changed);
 	pthread_mutex_unlock(&worker->mutex);
 	if ( pthread_join(worker->thread,0) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	worker_free(worker);
 	return(SPARK_STATUS_OK);
 }

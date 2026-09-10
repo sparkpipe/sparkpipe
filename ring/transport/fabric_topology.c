@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_fabric_topology.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -7,13 +8,13 @@ static SparkStatus SparkFabricTopologyValidateCommon(
 {
     if (configuration == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (configuration->abi_version != SPARK_FABRIC_TOPOLOGY_ABI_VERSION ||
         configuration->descriptor_bytes !=
             SPARK_FABRIC_TOPOLOGY_CONFIGURATION_DESCRIPTOR_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if ((configuration->flags & ~SPARK_FABRIC_TOPOLOGY_KNOWN_FLAGS) != 0u ||
         configuration->node_count < 2u ||
@@ -23,11 +24,11 @@ static SparkStatus SparkFabricTopologyValidateCommon(
         configuration->mtu_bytes < SPARK_FABRIC_TOPOLOGY_MINIMUM_MTU_BYTES ||
         configuration->mtu_bytes > SPARK_FABRIC_TOPOLOGY_MAXIMUM_MTU_BYTES)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (configuration->reserved0 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -51,7 +52,7 @@ SparkStatus SparkFabricTopologyValidate(
                 configuration->active_port_count != 2u ||
                 configuration->flags != SPARK_FABRIC_TOPOLOGY_FLAG_DEBUG_ONLY)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
             return SPARK_STATUS_OK;
 
@@ -61,7 +62,7 @@ SparkStatus SparkFabricTopologyValidate(
                 configuration->active_port_count != 1u ||
                 configuration->flags != SPARK_FABRIC_TOPOLOGY_FLAG_SWITCHED)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
             return SPARK_STATUS_OK;
 
@@ -73,12 +74,12 @@ SparkStatus SparkFabricTopologyValidate(
                     (SPARK_FABRIC_TOPOLOGY_FLAG_SWITCHED |
                      SPARK_FABRIC_TOPOLOGY_FLAG_FUTURE_ONLY))
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
-            return SPARK_STATUS_UNSUPPORTED;
+            SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 
         default:
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 }
 
@@ -141,7 +142,7 @@ SparkStatus SparkFabricTopologyResolveRoute(
 
     if (route == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkFabricTopologyValidate(configuration);
     if (status != SPARK_STATUS_OK)
@@ -151,7 +152,7 @@ SparkStatus SparkFabricTopologyResolveRoute(
     if (destination_node_index >= configuration->node_count ||
         destination_node_index == configuration->local_node_index)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     SparkFabricTopologyInitializeRoute(
@@ -177,7 +178,7 @@ SparkStatus SparkFabricTopologyResolveRoute(
         route->switched = 1u;
         return SPARK_STATUS_OK;
     }
-    return SPARK_STATUS_UNSUPPORTED;
+    SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 const char *SparkFabricTopologyModeToString(SparkFabricTopologyMode mode)

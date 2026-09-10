@@ -24,8 +24,8 @@ export PATH="/usr/local/cuda/bin:$PATH"
 SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
-rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so
-make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
+rm -f build/sparkpipe_model_compile build/libhidden_transport_spark_host_rdma_verbs.so build/sparkpipe_weightd
+make -j8 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_weightd build/libhidden_transport_spark_host_rdma_verbs.so
 make -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
 ADAPTER_SO="build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
 [ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
@@ -58,4 +58,5 @@ build/sparkpipe_model_compile \
     --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm \
     --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
 
-exec "$(dirname "$0")/publish_local.sh" "$FAMILY" "$CODEC" "$ROOT_NAME"
+"$(dirname "$0")/publish_local.sh" "$FAMILY" "$CODEC" "$ROOT_NAME"
+exec "$(dirname "$0")/publish_core.sh"

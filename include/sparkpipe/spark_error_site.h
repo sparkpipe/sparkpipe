@@ -28,4 +28,16 @@ static _Thread_local __attribute__((unused)) SparkErrorSiteRecord
 		return spark_fail_code; \
 	} while (0)
 
+#define SPARK_RETURN(status_value) \
+	do { \
+		int32_t spark_ret_code = (int32_t)(status_value); \
+		if (spark_ret_code != 0) { \
+			spark_last_error_site.code = spark_ret_code; \
+			spark_last_error_site.file = __FILE__; \
+			spark_last_error_site.line = (uint32_t)__LINE__; \
+			SPARK_ERR_REPORT(spark_ret_code); \
+		} \
+		return spark_ret_code; \
+	} while (0)
+
 #endif

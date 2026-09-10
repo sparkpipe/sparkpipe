@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_pipeline_runtime.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -202,7 +203,7 @@ static SparkStatus SparkPipelineRuntimeBuildTransportedRankPlan(
 	status = SparkPipelineRuntimeDeriveStageGeometry(descriptor,
 		node->rank_index,node->stage_index,hybrid,&geometry);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( hybrid != 0u )
 	{
 		if ( node->previous_rank_index != geometry.previous_rank_index ||
@@ -668,7 +669,7 @@ SparkStatus SparkPipelineRuntimeValidateRankPlan(
 	{
 		status = SPARK_PIPELINE_RUNTIME_RANK_PLAN_CHECKS[index](descriptor,rank_plan);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }

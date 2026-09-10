@@ -8,6 +8,17 @@ TREE="$HOME/sparkpipe-build"
 RELEASE="$HOME/release/$ROOT_NAME"
 ADAPTER_SO="$TREE/build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
 
+DEPLOY_JSON="$RELEASE/model_resident.json"
+if [ -f "$DEPLOY_JSON" ]; then
+    BAD=$(grep -c "sparkdata/[^\"]*$ROOT_NAME" "$DEPLOY_JSON")
+    TOTAL=$(grep -c "runtime_root" "$DEPLOY_JSON")
+    [ "$BAD" = "$TOTAL" ] || {
+        echo "deployment runtime_root does not match release root $ROOT_NAME ($BAD/$TOTAL)"
+        grep -o "sparkdata/[a-z0-9._]*tp16" "$DEPLOY_JSON" | sort -u | head -3
+        exit 1
+    }
+fi
+
 mkdir -p "$RELEASE/stages/stage_000" "$RELEASE/lib" "$RELEASE/bin"
 
 install -m 644 "$HOME/sparkdata/out/stages/stage_000/model_driver.so" \

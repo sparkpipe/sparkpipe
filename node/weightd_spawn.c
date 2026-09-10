@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
+#include "sparkpipe/spark_error_site.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -50,7 +51,7 @@ static int32_t SparkWeightdReadDigestPath(const char *path,char digest[65])
 	}
 	status = SparkWeightdReadDigest(file,digest);
 	(void)fclose(file);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char digest[65])
@@ -72,7 +73,7 @@ static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char diges
 			return(-6);
 		status = SparkWeightdReadDigestPath(path,digest);
 		if ( status != 0 )
-			return(status);
+			continue;
 		found = 1u;
 		errno = 0;
 	}
@@ -94,25 +95,21 @@ static int32_t SparkWeightdResolveDigest(const char *root,char digest[65])
 		return(-11);
 	status = SparkWeightdFindDigest(directory,root,digest);
 	(void)closedir(directory);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_path)
 {
 	struct sockaddr_un address;
 	char digest[65];
-	const char *setting;
 	int32_t fd,status;
 	if ( root == 0 || socket_path == 0 || root[0] == '\0' || socket_path[0] == '\0' )
 		return(-12);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return(-13);
-	setting = getenv("SPARK_WEIGHTD_ATTACH");
-	if ( setting != 0 && strcmp(setting,"0") == 0 )
-		return(-14);
 	status = SparkWeightdResolveDigest(root,digest);
 	if ( status != 0 )
-		return(status);
+		SPARK_RETURN(status);
 	fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if ( fd < 0 )
 		return(-15);

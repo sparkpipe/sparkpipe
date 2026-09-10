@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_fixed_ring.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <infiniband/verbs.h>
 #include <nng/nng.h>
@@ -428,23 +429,23 @@ SparkStatus SparkFixedRingCreate(
     int i;
     (void)start_rank;
     if (ring_out == 0 || degree == 0u || degree > 16u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *ring_out = 0;
     ring = (SparkFixedRing *)calloc(1u, sizeof(*ring));
     if (ring == 0)
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     ring->rank = rank;
     ring->degree = degree;
     ring->chunk_elems = ELEMS / degree;
     ring->chunk_bytes = ring->chunk_elems * 2u;
     ring->slot_stride = 2048u;
     if (open_qp(&ring->qp_next) != 0 || open_qp(&ring->qp_prev) != 0)
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     memset(my_entry, 0, sizeof(my_entry));
     memcpy(my_entry, &ring->qp_next.local, sizeof(wire_info));
     memcpy(my_entry + 64, &ring->qp_prev.local, sizeof(wire_info));
     if (broker_exchange(rank, degree, broker_port, my_entry, table) != 0)
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     next = (rank + 1u) % degree;
     prev = (rank + degree - 1u) % degree;
     memcpy(&ring->qp_next.remote, table + (size_t)next * ENTRY_BYTES + 64,
@@ -452,7 +453,7 @@ SparkStatus SparkFixedRingCreate(
     memcpy(&ring->qp_prev.remote, table + (size_t)prev * ENTRY_BYTES,
         sizeof(wire_info));
     if (bring_rts(&ring->qp_next) != 0 || bring_rts(&ring->qp_prev) != 0)
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     for (i = 0; i < 32; ++i)
         post_recv(&ring->qp_prev);
     for (i = 0; i < 4; ++i)
@@ -460,11 +461,11 @@ SparkStatus SparkFixedRingCreate(
     if (probe_pair(ring) != 0)
     {
         fprintf(stderr, "fixed_ring: rank %u probe failed\n", rank);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     memset(my_entry, 0, sizeof(my_entry));
     if (broker_exchange(rank, degree, broker_port, my_entry, table) != 0)
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     *ring_out = ring;
     return SPARK_STATUS_OK;
 }
@@ -474,7 +475,7 @@ SparkStatus SparkFixedRingSetChunkBytes(
     uint32_t chunk_bytes)
 {
     if (ring == 0 || chunk_bytes == 0u || chunk_bytes > 2048u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     ring->slot_stride = chunk_bytes;
     return SPARK_STATUS_OK;
 }
@@ -486,7 +487,7 @@ SparkStatus SparkFixedRingSendNext(
     uint32_t immediate)
 {
     if (ring == 0 || buffer == 0 || bytes == 0u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     send_wr(&ring->qp_next, buffer, bytes, immediate, ring->slot_stride);
     return SPARK_STATUS_OK;
 }
@@ -497,9 +498,9 @@ SparkStatus SparkFixedRingWaitPrev(
     uint64_t timeout_ns)
 {
     if (ring == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (wait_imm(&ring->qp_prev, expect_immediate, timeout_ns) != 0)
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     drain_send_cq(&ring->qp_next);
     return SPARK_STATUS_OK;
 }

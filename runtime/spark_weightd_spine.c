@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 #include <cuda_runtime_api.h>
 #include <errno.h>
@@ -18,7 +19,7 @@ static SparkStatus spine_read(int32_t fd,uint8_t *buffer,uint64_t offset,uint32_
 		if ( count < 0 && errno == EINTR )
 			continue;
 		if ( count <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		done += (uint32_t)count;
 	}
 	return(SPARK_STATUS_OK);
@@ -38,7 +39,7 @@ static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *ind
 		if ( end > limit )
 			end = limit;
 		if ( end > start && cudaMemcpy(destination + span->compact_offset + (start - span->offset),buffer + (start - offset),(size_t)(end - start),cudaMemcpyHostToDevice) != cudaSuccess )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( (span->offset + span->bytes) > limit )
 			break;
 		(*index)++;
@@ -60,11 +61,11 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 		bytes = (uint32_t)((pack_bytes - offset) < sizeof(buffer) ? (pack_bytes - offset) : sizeof(buffer));
 		status = spine_read(fd,buffer,offset,bytes);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		SparkSha256Update(&hash,buffer,bytes);
 		status = spine_copy(manifest,&index,buffer,offset,bytes,destination);
 		if ( status != SPARK_STATUS_OK )
-			return(status);
+			SPARK_RETURN(status);
 		offset += bytes;
 	}
 	SparkSha256Finalize(&hash,digest);
@@ -88,17 +89,17 @@ SparkStatus SparkWeightdSpineLoad(int32_t fd,const SparkWeightdManifest *manifes
 	struct stat before,after;
 	SparkStatus status;
 	if ( fd < 0 || manifest == 0 || sha256 == 0 || SparkSha256HexIsValid(sha256) == 0 || pack_bytes == 0u || pack_bytes > INT64_MAX )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( manifest->spine_allocation_bytes > capacity || capacity > SIZE_MAX )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( manifest->spine_allocation_bytes != 0u && (destination == 0 || ((uintptr_t)destination & 255u) != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( fstat(fd,&before) != 0 || S_ISREG(before.st_mode) == 0 || before.st_size < 0 || (uint64_t)before.st_size != pack_bytes )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = spine_stream(fd,manifest,pack_bytes,sha256,destination);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( fstat(fd,&after) != 0 || spine_unchanged(&before,&after) == 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
 }

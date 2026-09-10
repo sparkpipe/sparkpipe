@@ -1,4 +1,5 @@
 #include "tp_device_collective_nccl.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <arpa/inet.h>
 #include <dlfcn.h>
@@ -230,12 +231,12 @@ static SparkStatus SparkTpNcclPollSocket(int32_t socket_descriptor,short events,
 	struct pollfd descriptor;
 	int32_t result,timeout;
 	if ( socket_descriptor < 0 || returned_events == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (;;)
 	{
 		timeout = SparkTpNcclPollTimeout(deadline_milli);
 		if ( timeout <= 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		memset(&descriptor,0,sizeof(descriptor));
 		descriptor.fd = socket_descriptor;
 		descriptor.events = events;
@@ -246,7 +247,7 @@ static SparkStatus SparkTpNcclPollSocket(int32_t socket_descriptor,short events,
 			return(SPARK_STATUS_OK);
 		}
 		if ( result == 0 || errno != EINTR )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 }
 
@@ -255,7 +256,7 @@ static SparkStatus SparkTpNcclSetNonblocking(int32_t socket_descriptor)
 	int32_t flags;
 	flags = fcntl(socket_descriptor,F_GETFL,0);
 	if ( flags < 0 || fcntl(socket_descriptor,F_SETFL,flags | O_NONBLOCK) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -265,11 +266,11 @@ static SparkStatus SparkTpNcclConfigureSocket(int32_t socket_descriptor)
 	enabled = 1;
 	if ( setsockopt(socket_descriptor,IPPROTO_TCP,TCP_NODELAY,&enabled,
 		sizeof(enabled)) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 #ifdef SO_NOSIGPIPE
 	if ( setsockopt(socket_descriptor,SOL_SOCKET,SO_NOSIGPIPE,&enabled,
 		sizeof(enabled)) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 #endif
 	return(SparkTpNcclSetNonblocking(socket_descriptor));
 }
@@ -296,14 +297,14 @@ static SparkStatus SparkTpNcclSendAll(int32_t socket_descriptor,const void *data
 			continue;
 		}
 		if ( result == 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( errno == EINTR )
 			continue;
 		if ( (errno != EAGAIN && errno != EWOULDBLOCK) ||
 			SparkTpNcclPollSocket(socket_descriptor,POLLOUT,deadline_milli,
 			&events) != SPARK_STATUS_OK || (events & POLLOUT) == 0 ||
 			(events & (POLLERR | POLLHUP | POLLNVAL)) != 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -325,14 +326,14 @@ static SparkStatus SparkTpNcclReceiveAll(int32_t socket_descriptor,void *data,ui
 			continue;
 		}
 		if ( result == 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( errno == EINTR )
 			continue;
 		if ( (errno != EAGAIN && errno != EWOULDBLOCK) ||
 			SparkTpNcclPollSocket(socket_descriptor,POLLIN,deadline_milli,
 			&events) != SPARK_STATUS_OK || (events & POLLIN) == 0 ||
 			(events & (POLLERR | POLLNVAL)) != 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -354,7 +355,7 @@ static SparkStatus SparkTpNcclConnectAddress(const struct sockaddr *address,sock
 	SparkStatus status;
 	descriptor = socket(address->sa_family,SOCK_STREAM,0);
 	if ( descriptor < 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkTpNcclConfigureSocket(descriptor);
 	result = status == SPARK_STATUS_OK ?
 		connect(descriptor,address,address_bytes) : -1;
@@ -378,7 +379,7 @@ static SparkStatus SparkTpNcclConnectAddress(const struct sockaddr *address,sock
 		}
 	}
 	(void)close(descriptor);
-	return(SPARK_STATUS_IO_ERROR);
+	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static SparkStatus SparkTpNcclConnectUntil(const char *host,uint16_t port,uint64_t deadline_milli,int32_t *socket_out)
@@ -387,12 +388,12 @@ static SparkStatus SparkTpNcclConnectUntil(const char *host,uint16_t port,uint64
 	char service[16];
 	SparkStatus status;
 	if ( snprintf(service,sizeof(service),"%u",(uint32_t)port) <= 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	memset(&hints,0,sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 	if ( getaddrinfo(host,service,&hints,&addresses) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SPARK_STATUS_IO_ERROR;
 	while ( SparkTpNcclPollTimeout(deadline_milli) > 0 )
 	{
@@ -408,7 +409,7 @@ static SparkStatus SparkTpNcclConnectUntil(const char *host,uint16_t port,uint64
 		SparkTpNcclRetryPause();
 	}
 	freeaddrinfo(addresses);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkTpNcclListen(uint16_t port,int32_t *socket_out)
@@ -417,14 +418,14 @@ static SparkStatus SparkTpNcclListen(uint16_t port,int32_t *socket_out)
 	int32_t descriptor,enabled;
 	descriptor = socket(AF_INET,SOCK_STREAM,0);
 	if ( descriptor < 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	enabled = 1;
 	if ( setsockopt(descriptor,SOL_SOCKET,SO_REUSEADDR,&enabled,
 		sizeof(enabled)) != 0 || SparkTpNcclSetNonblocking(descriptor) !=
 		SPARK_STATUS_OK )
 	{
 		(void)close(descriptor);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	memset(&address,0,sizeof(address));
 	address.sin_family = AF_INET;
@@ -434,7 +435,7 @@ static SparkStatus SparkTpNcclListen(uint16_t port,int32_t *socket_out)
 		listen(descriptor,(int32_t)SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE) != 0 )
 	{
 		(void)close(descriptor);
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	*socket_out = descriptor;
 	return(SPARK_STATUS_OK);
@@ -455,17 +456,17 @@ static SparkStatus SparkTpNcclAcceptUntil(int32_t listen_socket,uint64_t deadlin
 				(void)close(*socket_out);
 				*socket_out = -1;
 			}
-			return(status);
+			SPARK_RETURN(status);
 		}
 		if ( errno == EINTR )
 			continue;
 		if ( errno != EAGAIN && errno != EWOULDBLOCK )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		status = SparkTpNcclPollSocket(listen_socket,POLLIN,deadline_milli,
 			&events);
 		if ( status != SPARK_STATUS_OK || (events & POLLIN) == 0 ||
 			(events & (POLLERR | POLLHUP | POLLNVAL)) != 0 )
-			return(SPARK_STATUS_IO_ERROR);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 }
 
@@ -498,13 +499,13 @@ static SparkStatus SparkTpNcclValidateHello(const SparkTpDeviceCollectiveConfig 
 	if ( ntohl(hello->magic) != SPARK_TP_NCCL_BOOTSTRAP_MAGIC ||
 		SparkTpNcclDecodeIdentifier(hello->identifier_high,
 		hello->identifier_low) != config->collective_identifier )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	if ( ntohl(hello->abi_version) != SPARK_TP_NCCL_BOOTSTRAP_ABI_VERSION ||
 		ntohl(hello->tp_degree) != config->tp_degree || rank == 0u ||
 		rank >= config->tp_degree )
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	if ( (seen_mask & (1u << rank)) != 0u )
-		return(SPARK_STATUS_DUPLICATE);
+		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	*rank_out = rank;
 	return(SPARK_STATUS_OK);
 }
@@ -530,7 +531,7 @@ static SparkStatus SparkTpNcclValidateResponse(const SparkTpDeviceCollectiveConf
 		ntohl(response->tp_degree) != config->tp_degree ||
 		SparkTpNcclDecodeIdentifier(response->identifier_high,
 		response->identifier_low) != config->collective_identifier )
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	status = ntohl(response->status);
 	if ( status > (uint32_t)SPARK_STATUS_UNSUPPORTED ||
 		(SparkStatus)status != SPARK_STATUS_OK )
@@ -588,7 +589,7 @@ static SparkStatus SparkTpNcclServeUniqueId(const SparkTpDeviceCollectiveConfig 
 	{
 		SparkTpNcclLog("tp-nccl rank0 listen FAILED port=%u status=%d",
 			(uint32_t)config->control_port_base,(int32_t)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	absolute_cap_milli = deadline_milli +
 		(deadline_milli - SparkTpNcclNowMilli());
@@ -664,7 +665,7 @@ static SparkStatus SparkTpNcclServeUniqueId(const SparkTpDeviceCollectiveConfig 
 	}
 	if ( listen_socket >= 0 )
 		(void)close(listen_socket);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkTpNcclFetchUniqueId(const SparkTpDeviceCollectiveConfig *config,SparkTpNcclUniqueId *unique_id,uint64_t deadline_milli)
@@ -704,7 +705,7 @@ static SparkStatus SparkTpNcclFetchUniqueId(const SparkTpDeviceCollectiveConfig 
 			}
 			SparkTpNcclLog("tp-nccl rank=%u rejected by rank0 status=%d",
 				config->tp_rank,(int32_t)status);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		now_milli = SparkTpNcclNowMilli();
 		if ( now_milli == UINT64_MAX || now_milli >= deadline_milli )
@@ -722,7 +723,7 @@ static SparkStatus SparkTpNcclFetchUniqueId(const SparkTpDeviceCollectiveConfig 
 	SparkTpNcclLog("tp-nccl rank=%u deadline hit, rank0 %s:%u never answered",
 		config->tp_rank,config->rank_hosts[0],
 		(uint32_t)config->control_port_base);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkTpNcclAssignSymbol(void *dynamic_library,const char *name,void *function_out,uint32_t function_bytes)
@@ -730,11 +731,11 @@ static SparkStatus SparkTpNcclAssignSymbol(void *dynamic_library,const char *nam
 	void *symbol;
 	if ( dynamic_library == 0 || name == 0 || function_out == 0 ||
 		function_bytes != sizeof(symbol) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	(void)dlerror();
 	symbol = dlsym(dynamic_library,name);
 	if ( symbol == 0 || dlerror() != 0 )
-		return(SPARK_STATUS_DRIVER_LOAD_ERROR);
+		SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
 	memcpy(function_out,&symbol,sizeof(symbol));
 	return(SPARK_STATUS_OK);
 }
@@ -745,7 +746,7 @@ static SparkStatus SparkTpNcclLoadLibrary(const char *path,SparkTpNcclLibrary *l
 	memset(library,0,sizeof(*library));
 	library->dynamic_library = dlopen(path,RTLD_NOW | RTLD_LOCAL);
 	if ( library->dynamic_library == 0 )
-		return(SPARK_STATUS_DRIVER_LOAD_ERROR);
+		SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
 #define SPARK_TP_NCCL_LOAD_SYMBOL(member,name) \
 	status = SparkTpNcclAssignSymbol(library->dynamic_library,name, \
 		&library->member,sizeof(library->member)); \
@@ -770,7 +771,7 @@ static SparkStatus SparkTpNcclLoadLibrary(const char *path,SparkTpNcclLibrary *l
 fail_load:
 	(void)dlclose(library->dynamic_library);
 	memset(library,0,sizeof(*library));
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkTpNcclReportError(const SparkTpDeviceCollective *collective,const SparkTpDeviceNcclImplementation *implementation,const char *operation,SparkTpNcclResult result)
@@ -812,13 +813,13 @@ static SparkStatus SparkTpNcclValidateConfig(const SparkTpDeviceCollectiveConfig
 		config->combine_tp4_bf16_function != 0 ||
 		config->combine_u64_max_function != 0 || config->combine_context != 0 ||
 		config->debug_hooks != 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (rank=0u; rank<config->tp_degree; rank++)
 		if ( SparkTpNcclTextIsValid(config->rank_hosts[rank]) == 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (; rank<SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++)
 		if ( config->rank_hosts[rank] != 0 )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -828,14 +829,14 @@ static SparkStatus SparkTpNcclDistributeUniqueId(const SparkTpDeviceCollectiveCo
 	SparkTpNcclResult result;
 	deadline_milli = SparkTpNcclDeadline(config->connect_timeout_milli);
 	if ( deadline_milli == UINT64_MAX )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( config->tp_rank != 0u )
 		return(SparkTpNcclFetchUniqueId(config,unique_id,deadline_milli));
 	result = implementation->library.get_unique_id(unique_id);
 	if ( result != SPARK_TP_NCCL_SUCCESS )
 	{
 		SparkTpNcclReportError(0,implementation,"get_unique_id",result);
-		return(SPARK_STATUS_DRIVER_LOAD_ERROR);
+		SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
 	}
 	return(SparkTpNcclServeUniqueId(config,unique_id,deadline_milli));
 }
@@ -853,15 +854,15 @@ SparkStatus SparkTpDeviceCollectiveNcclCreate(const SparkTpDeviceCollectiveConfi
 	SparkStatus status;
 	int32_t version;
 	if ( collective_out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	SparkTpNcclResetCollective(collective_out);
 	status = SparkTpNcclValidateConfig(config);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	implementation = (SparkTpDeviceNcclImplementation *)calloc(1u,
 		sizeof(*implementation));
 	if ( implementation == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = pthread_mutex_init(&implementation->mutex,0) == 0 ?
 		SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	implementation->mutex_initialized = status == SPARK_STATUS_OK ? 1u : 0u;
@@ -893,7 +894,7 @@ SparkStatus SparkTpDeviceCollectiveNcclCreate(const SparkTpDeviceCollectiveConfi
 		if ( implementation->mutex_initialized != 0u )
 			(void)pthread_mutex_destroy(&implementation->mutex);
 		free(implementation);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	atomic_init(&implementation->admission_open,1u);
 	atomic_init(&implementation->failure_status,SPARK_STATUS_OK);
@@ -929,7 +930,7 @@ static SparkStatus SparkTpNcclValidateSubmission(const SparkTpDeviceCollective *
 		(submission->flags & ~SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS) != 0u ||
 		submission->local_device == 0 || submission->full_device == 0 ||
 		submission->cuda_stream == 0 || submission->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -949,7 +950,7 @@ static SparkStatus SparkTpNcclCheckAsyncError(SparkTpDeviceCollective *collectiv
 		memory_order_release);
 	atomic_store_explicit(&implementation->failure_status,
 		SPARK_STATUS_IO_ERROR,memory_order_release);
-	return(SPARK_STATUS_IO_ERROR);
+	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static SparkStatus SparkTpNcclSubmitAllReduce(
@@ -965,10 +966,10 @@ static SparkStatus SparkTpNcclSubmitAllReduce(
 	SparkStatus status;
 	status = SparkTpNcclValidateSubmission(collective,submission);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	implementation = (SparkTpDeviceNcclImplementation *)collective->implementation;
 	if ( pthread_mutex_lock(&implementation->mutex) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = atomic_load_explicit(&implementation->admission_open,
 		memory_order_acquire) != 0u ? SPARK_STATUS_OK :
 		(SparkStatus)atomic_load_explicit(&implementation->failure_status,
@@ -1002,7 +1003,7 @@ static SparkStatus SparkTpNcclSubmitAllReduce(
 	}
 	(void)pthread_mutex_unlock(&implementation->mutex);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	memset(&completion,0,sizeof(completion));
 	/* The callback is a stream-order continuation: the reduction is enqueued,
 	 * and the callback may enqueue dependent work on the same stream. The
@@ -1019,7 +1020,7 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *colle
 {
 	uint64_t element_count;
 	if ( collective == 0 || submission == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	element_count = submission->reserved0 != 0u
 		? (uint64_t)submission->reserved0
 		: (uint64_t)submission->active_sequence_count *
@@ -1031,7 +1032,7 @@ SparkStatus SparkTpDeviceCollectiveNcclSubmitBf16(SparkTpDeviceCollective *colle
 SparkStatus SparkTpDeviceCollectiveNcclSubmitU64Max(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission)
 {
 	if ( submission == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkTpNcclSubmitAllReduce(collective,submission,
 		submission->active_sequence_count,SPARK_TP_NCCL_DATA_TYPE_U64,
 		SPARK_TP_NCCL_REDUCTION_MAX));
@@ -1041,7 +1042,7 @@ static SparkStatus SparkTpNcclFailureIsValid(SparkStatus failure_status)
 {
 	if ( failure_status == SPARK_STATUS_OK || failure_status ==
 		SPARK_STATUS_BUSY || failure_status == SPARK_STATUS_PENDING )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1052,10 +1053,10 @@ SparkStatus SparkTpDeviceCollectiveNcclRequestFailure(SparkTpDeviceCollective *c
 	if ( collective == 0 || collective->implementation == 0 ||
 		collective->backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL ||
 		SparkTpNcclFailureIsValid(failure_status) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	implementation = (SparkTpDeviceNcclImplementation *)collective->implementation;
 	if ( pthread_mutex_lock(&implementation->mutex) != 0 )
-		return(SPARK_STATUS_INTERNAL_ERROR);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	atomic_store_explicit(&implementation->admission_open,0u,
 		memory_order_release);
 	atomic_store_explicit(&implementation->failure_status,failure_status,
@@ -1078,11 +1079,11 @@ SparkStatus SparkTpDeviceCollectiveNcclRequestOperationFailure(SparkTpDeviceColl
 {
 	SparkTpDeviceNcclImplementation *implementation;
 	if ( collective == 0 || collective->implementation == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	implementation = (SparkTpDeviceNcclImplementation *)collective->implementation;
 	if ( ordinal < atomic_load_explicit(&implementation->next_ordinal,
 		memory_order_acquire) )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	return(SparkTpDeviceCollectiveNcclRequestFailure(collective,failure_status));
 }
 
@@ -1091,12 +1092,12 @@ SparkStatus SparkTpDeviceCollectiveNcclOperationPhase(const SparkTpDeviceCollect
 	const SparkTpDeviceNcclImplementation *implementation;
 	if ( collective == 0 || collective->implementation == 0 ||
 		phase_out == 0 || failure_requested_out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	implementation = (const SparkTpDeviceNcclImplementation *)
 		collective->implementation;
 	if ( ordinal < atomic_load_explicit(&implementation->next_ordinal,
 		memory_order_acquire) )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	*phase_out = SPARK_TP_DEVICE_COLLECTIVE_PHASE_FREE;
 	*failure_requested_out = atomic_load_explicit(
 		&implementation->admission_open,memory_order_acquire) == 0u ? 1u : 0u;
