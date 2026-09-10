@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +10,6 @@
 
 #define SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE 1
 #define SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST 2
-extern int cudaSetDevice(int device);
 extern int cudaMalloc(void **pointer,size_t bytes);
 extern int cudaFree(void *pointer);
 extern int cudaMemcpyAsync(void *destination,const void *source,
@@ -22,15 +20,6 @@ extern int cudaEventDestroy(void *event);
 extern int cudaEventRecord(void *event,void *stream);
 extern int cudaEventSynchronize(void *event);
 
-typedef struct SparkTpDeviceCollectiveWork
-{
-    struct SparkTpDeviceCollectiveWork *next;
-    SparkTpDeviceCollectiveSubmission submission;
-    uint64_t ordinal;
-    uint32_t operation_kind;
-    void *event;
-} SparkTpDeviceCollectiveWork;
-
 typedef struct SparkTpDeviceCollectiveImplementation
 {
     SparkWeightdClient *client;
@@ -39,15 +28,9 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t peer_stage_bytes;
     uint64_t band_base;
     uint64_t slot_bytes;
+    uint64_t round_timeout_ns;
     SparkTpDeviceCollectiveCombineBf16Function combine;
     void *combine_context;
-    pthread_mutex_t lock;
-    pthread_cond_t wake;
-    SparkTpDeviceCollectiveWork *head;
-    SparkTpDeviceCollectiveWork *tail;
-    pthread_t worker;
-    uint64_t round_timeout_ns;
-    uint32_t stopping;
     uint32_t tp_rank;
     uint32_t tp_degree;
     uint32_t local_hidden_dimension;
@@ -174,7 +157,9 @@ static void SparkTpDeviceCollectiveInvokeCompletion(
 
 static SparkStatus SparkTpDeviceCollectiveRunRound(
     SparkTpDeviceCollectiveImplementation *implementation,
-    SparkTpDeviceCollectiveWork *work)
+    SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind,
+    void *event)
 {
     SparkTpDeviceCollectiveSubmission *submission;
     uint64_t bytes;
@@ -185,12 +170,11 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     uint8_t *scratch;
     uint32_t peer;
 
-    submission = &work->submission;
     bytes = (uint64_t)submission->active_sequence_count *
         implementation->local_hidden_dimension * 2u;
     if ( bytes + 16u > implementation->slot_bytes )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    ordinal = work->ordinal;
+    ordinal = submission->ordinal;
     timeout_nanoseconds = 0ull;
     deadline = SparkTpDeviceCollectiveTimeNs() +
         implementation->round_timeout_ns;
@@ -204,9 +188,9 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         if ( cudaMemcpyAsync(scratch,submission->local_device,(size_t)bytes,
                 SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 )
             return SPARK_STATUS_IO_ERROR;
-        if ( cudaEventRecord(work->event,submission->cuda_stream) != 0 )
+        if ( cudaEventRecord(event,submission->cuda_stream) != 0 )
             return SPARK_STATUS_IO_ERROR;
-        if ( cudaEventSynchronize(work->event) != 0 )
+        if ( cudaEventSynchronize(event) != 0 )
             return SPARK_STATUS_IO_ERROR;
         SparkTpDeviceCollectivePhase("d2h",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
@@ -259,7 +243,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         }
         SparkTpDeviceCollectivePhase("spin",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
-    if ( work->operation_kind ==
+    if ( operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 &&
          implementation->combine != 0 )
     {
@@ -308,7 +292,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         SparkTpDeviceCollectivePhase("combine-enqueue",mark);
         return SPARK_STATUS_PENDING;
     }
-    if ( work->operation_kind ==
+    if ( operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
     {
         uint64_t *result = (uint64_t *)scratch;
@@ -353,46 +337,6 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     SparkTpDeviceCollectivePhase("cpu-tail",mark);
     }
     return SPARK_STATUS_OK;
-}
-
-static void *SparkTpDeviceCollectiveWorker(void *argument)
-{
-    SparkTpDeviceCollectiveImplementation *implementation =
-        (SparkTpDeviceCollectiveImplementation *)argument;
-    (void)cudaSetDevice(0);
-    for (;;)
-    {
-        SparkTpDeviceCollectiveWork *work;
-        SparkStatus status;
-        pthread_mutex_lock(&implementation->lock);
-        while ( implementation->head == 0 && implementation->stopping == 0u )
-            pthread_cond_wait(&implementation->wake,&implementation->lock);
-        work = implementation->head;
-        if ( work != 0 )
-        {
-            implementation->head = work->next;
-            if ( implementation->head == 0 )
-                implementation->tail = 0;
-        }
-        pthread_mutex_unlock(&implementation->lock);
-        if ( work == 0 )
-            break;
-        status = SparkTpDeviceCollectiveRunRound(implementation,work);
-        if ( status == SPARK_STATUS_PENDING )
-        {
-            if ( cudaEventRecord(work->event,
-                    work->submission.cuda_stream) != 0 ||
-                 cudaEventSynchronize(work->event) != 0 )
-                status = SPARK_STATUS_IO_ERROR;
-            else
-                status = SPARK_STATUS_OK;
-        }
-        SparkTpDeviceCollectiveInvokeCompletion(&work->submission,
-            work->ordinal,status);
-        (void)cudaEventDestroy(work->event);
-        free(work);
-    }
-    return 0;
 }
 
 SparkStatus SparkTpDeviceCollectiveCreate(
@@ -440,20 +384,6 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         free(implementation);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
-    if ( pthread_mutex_init(&implementation->lock,0) != 0 ||
-         pthread_cond_init(&implementation->wake,0) != 0 )
-    {
-        (void)SparkWeightdClientClose(implementation->client);
-        free(implementation);
-        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    }
-    if ( pthread_create(&implementation->worker,0,
-            SparkTpDeviceCollectiveWorker,implementation) != 0 )
-    {
-        (void)SparkWeightdClientClose(implementation->client);
-        free(implementation);
-        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    }
     collective_out->implementation = implementation;
     return SPARK_STATUS_OK;
 }
@@ -464,7 +394,9 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     uint32_t operation_kind)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
-    SparkTpDeviceCollectiveWork *work;
+    SparkTpDeviceCollectiveSubmission round;
+    void *event;
+    SparkStatus status;
 
     if ( collective == 0 || collective->implementation == 0 ||
          submission == 0 || submission->local_device == 0 ||
@@ -476,26 +408,22 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     implementation = collective->implementation;
     if ( implementation->mesh_buffer == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    work = calloc(1u,sizeof(*work));
-    if ( work == 0 )
-        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-    work->submission = *submission;
-    work->ordinal = submission->ordinal;
-    work->operation_kind = operation_kind;
-    if ( cudaEventCreateWithFlags(&work->event,1u) != 0 )
-    {
-        free(work);
+    round = *submission;
+    if ( cudaEventCreateWithFlags(&event,1u) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    status = SparkTpDeviceCollectiveRunRound(implementation,&round,
+        operation_kind,event);
+    if ( status == SPARK_STATUS_PENDING )
+    {
+        if ( cudaEventRecord(event,round.cuda_stream) != 0 ||
+             cudaEventSynchronize(event) != 0 )
+            status = SPARK_STATUS_IO_ERROR;
+        else
+            status = SPARK_STATUS_OK;
     }
-    pthread_mutex_lock(&implementation->lock);
-    if ( implementation->tail == 0 )
-        implementation->head = work;
-    else
-        implementation->tail->next = work;
-    implementation->tail = work;
-    pthread_cond_signal(&implementation->wake);
-    pthread_mutex_unlock(&implementation->lock);
-    return SPARK_STATUS_OK;
+    SparkTpDeviceCollectiveInvokeCompletion(&round,round.ordinal,status);
+    (void)cudaEventDestroy(event);
+    return status;
 }
 
 SparkStatus SparkTpDeviceCollectiveSubmitBf16(
@@ -592,11 +520,6 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     if ( collective == 0 || collective->implementation == 0 )
         return;
     implementation = collective->implementation;
-    pthread_mutex_lock(&implementation->lock);
-    implementation->stopping = 1u;
-    pthread_cond_signal(&implementation->wake);
-    pthread_mutex_unlock(&implementation->lock);
-    pthread_join(implementation->worker,0);
     if ( implementation->peer_stage != 0 )
         (void)cudaFree(implementation->peer_stage);
     SparkWeightdClientClose(implementation->client);
