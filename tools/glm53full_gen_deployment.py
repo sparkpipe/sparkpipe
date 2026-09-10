@@ -54,6 +54,8 @@ RUNTIME_ROOT_TEMPLATE = os.environ.get(
 
 COLLECTIVE_SESSION_BASE = int(os.environ.get(
     "GLM53FULL_SESSION_BASE", "63500"))
+COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
+    "GLM53FULL_SESSION_HC_BASE", "64500"))
 
 def tp_collective(collective_base):
     return {
@@ -72,6 +74,9 @@ def tp_collective(collective_base):
         "step_rail_indices": [0] + [1] * (TP - 1),
         "session_ports": [
             [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+             for b in range(TP)] for a in range(TP)],
+        "session_ports_hc": [
+            [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
              for b in range(TP)] for a in range(TP)],
     }
 
