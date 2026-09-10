@@ -10,7 +10,7 @@
 #define SPARK_MINIMAX_H3_V4_VIDEO_HEAD_DIM 64u
 #define SPARK_MINIMAX_H3_V4_VIDEO_FFN 16384u
 #define SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT 3072u
-#define SPARK_MINIMAX_H3_V4_VIDEO_EPS 1e-06f
+#define SPARK_MINIMAX_H3_V4_VIDEO_EPS 1e-05f
 #define SPARK_MINIMAX_H3_V4_VIDEO_TOKENS 33u
 #define SPARK_MINIMAX_H3_V4_VIDEO_PATCHES 28u
 #define SPARK_MINIMAX_H3_V4_VIDEO_FRAMES 22u
@@ -353,7 +353,7 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			float total = post_quant_bias[channel];
 			uint32_t inner;
 			for (inner=0u; inner<24u; inner++)
-				total += z[index * 24u + inner] *
+				total += z[inner * (z_elements / 24u) + index] *
 					post_quant_weight[channel * 24u + inner];
 			latent_rows[index * 24u + channel] = total;
 		}
@@ -854,10 +854,12 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			x = next;
 			next = swap;
 		}
+		memset(residual,0,(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
+			output_length * 4u);
 		for (block=0u; block<3u; block++)
 		{
 			snprintf(prefix,sizeof(prefix),"decoder_resblocks_%u_",stage * 3u + block);
-			memset(residual,0,(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
+			memcpy(next,x,(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
 				output_length * 4u);
 			for (dilation_index=0u; dilation_index<3u; dilation_index++)
 			{
@@ -882,7 +884,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						"upsample_filter",12u);
 					SparkMinimaxH3V4LoadWeight(&down_filter,weight_dir,act_prefix,
 						"downsample_lowpass_filter",12u);
-					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,x,
+					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,next,
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
@@ -906,22 +908,26 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						activation_buffer = conv_out;
 						conv_out = swap;
 					}
-					if ( pass == 1u )
-					{
-						for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
-							out_channels * output_length; index++)
-							residual[index] += activation_buffer[index];
-					}
 				}
+				for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+					out_channels * output_length; index++)
+					next[index] += activation_buffer[index];
 			}
+			snprintf(stage_tag,sizeof(stage_tag),"audio_s%u_b%u",stage,block);
+			SparkMinimaxH3V4Stats(stage_tag,next,
+				(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
+				output_length);
 			for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
 				out_channels * output_length; index++)
-				x[index] += residual[index] / 3.0f;
+				residual[index] += next[index];
+		}
+		for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+			out_channels * output_length; index++)
+			x[index] = residual[index] / 3.0f;
 		snprintf(stage_tag,sizeof(stage_tag),"audio_after_stage_%u",stage);
 		SparkMinimaxH3V4Stats(stage_tag,x,
 			(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
 			output_length);
-		}
 	}
 	{
 		float *alpha,*beta,*up_filter,*down_filter;

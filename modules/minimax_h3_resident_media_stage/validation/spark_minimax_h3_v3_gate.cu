@@ -140,6 +140,48 @@ static void *SparkMinimaxH3V3ReadBf16(const void *device, uint64_t count)
 	return(host);
 }
 
+static const char *SparkMinimaxH3V3StageDirectory;
+
+static void SparkMinimaxH3V3CompareStage(const char *name, const void *device_bf16,
+	uint64_t count)
+{
+	char path[1024];
+	uint16_t *packed;
+	float *reference;
+	float *actual;
+	FILE *file;
+	if ( SparkMinimaxH3V3StageDirectory == 0 )
+		return;
+	snprintf(path,sizeof(path),"%s/%s",SparkMinimaxH3V3StageDirectory,name);
+	file = fopen(path,"rb");
+	if ( file == 0 )
+	{
+		printf("missing stage fixture %s\n",path);
+		SparkMinimaxH3V3Failures++;
+		return;
+	}
+	packed = (uint16_t *)malloc(count * 2u);
+	reference = (float *)malloc(count * 4u);
+	if ( packed == 0 || reference == 0 )
+		exit(2);
+	if ( fread(packed,1,count * 2u,file) != count * 2u )
+	{
+		printf("short read on %s\n",path);
+		exit(2);
+	}
+	fclose(file);
+	for (uint64_t index=0u; index<count; index++)
+	{
+		uint32_t bits = (uint32_t)packed[index] << 16u;
+		memcpy(&reference[index],&bits,sizeof(bits));
+	}
+	free(packed);
+	actual = (float *)SparkMinimaxH3V3ReadBf16(device_bf16,count);
+	SparkMinimaxH3V3Compare(name,actual,reference,count);
+	free(actual);
+	free(reference);
+}
+
 struct SparkMinimaxH3V3Weights
 {
 	void *query,*key,*value,*output_proj,*norm_q,*norm_k,*gate_up,*down,*norm1,*norm2;
@@ -248,6 +290,7 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 	struct SparkMinimaxH3V3Scratch *scratch, void *result_bf16)
 {
 	const char *stage = "start";
+	uint64_t rows = (uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HIDDEN;
 	cudaError_t error;
 	stage = "call SparkMinimaxH3RmsNorm #1";
 	error = SparkMinimaxH3RmsNorm(stream,input_bf16,weights->norm1,
@@ -275,6 +318,12 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s01_norm1__13x5376.u16",scratch->normed,
+		rows);
+	SparkMinimaxH3V3CompareStage("ref_s02_adaln__13x5376.u16",scratch->adaln,
+		rows);
+	SparkMinimaxH3V3CompareStage("ref_s03_q__13x7168.u16",scratch->q,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
 	stage = "call SparkMinimaxH3RmsNorm #4";
 	error = SparkMinimaxH3RmsNorm(stream,scratch->q,weights->norm_q,
 		SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HEADS,
@@ -285,6 +334,8 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s04_qnorm__13x7168.u16",scratch->q,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
 	stage = "call SparkMinimaxH3Rope3d #5";
 	error = SparkMinimaxH3Rope3d(stream,scratch->q,rope_cos,rope_sin,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
@@ -294,6 +345,8 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s05_qrope__13x7168.u16",scratch->q_rope,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
 	stage = "call SparkMinimaxH3Gemm #6";
 	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->key,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
@@ -322,6 +375,8 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s08_krope__13x7168.u16",scratch->k_rope,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
 	stage = "call SparkMinimaxH3Gemm #9";
 	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->value,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
@@ -349,6 +404,12 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s09_v__13x7168.u16",scratch->v,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
+	SparkMinimaxH3V3CompareStage("ref_s10_attn__13x7168.u16",scratch->attn_raw,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_QKV);
+	SparkMinimaxH3V3CompareStage("ref_s11_attnout__13x5376.u16",scratch->attn_out,
+		rows);
 	stage = "call SparkMinimaxH3GateResidualIndexed #12";
 	error = SparkMinimaxH3GateResidualIndexed(stream,scratch->attn_out,gate_msa,
 		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
@@ -358,6 +419,8 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s12_hmid__13x5376.u16",scratch->normed,
+		rows);
 	stage = "call SparkMinimaxH3RmsNorm #13";
 	error = SparkMinimaxH3RmsNorm(stream,scratch->normed,weights->norm2,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
@@ -384,6 +447,11 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s14_mlpmod__13x5376.u16",scratch->ffn_out,
+		rows);
+	SparkMinimaxH3V3CompareStage("ref_s15_ffnfused__13x28672.u16",
+		scratch->ffn_fused,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+		SPARK_MINIMAX_H3_V3_FFN_FUSED);
 	stage = "call SparkMinimaxH3SiluMul #16";
 	error = SparkMinimaxH3SiluMul(stream,scratch->ffn_fused,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_FFN,scratch->ffn_mid);
@@ -392,6 +460,8 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
+	SparkMinimaxH3V3CompareStage("ref_s16_ffnmid__13x14336.u16",scratch->ffn_mid,
+		(uint64_t)SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_FFN);
 	stage = "call SparkMinimaxH3Gemm #17";
 	error = SparkMinimaxH3Gemm(stream,scratch->ffn_mid,weights->down,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
@@ -401,9 +471,15 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 		printf("kernel failure at %s: %s\n",stage,cudaGetErrorString(error));
 		return(error);
 	}
-	return(SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
+	SparkMinimaxH3V3CompareStage("ref_s17_ffnout__13x5376.u16",scratch->ffn_out,
+		rows);
+	error = SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
 		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-		result_bf16));
+		result_bf16);
+	if ( error != cudaSuccess )
+		return(error);
+	SparkMinimaxH3V3CompareStage("ref_s18_out__13x5376.u16",result_bf16,rows);
+	return(cudaSuccess);
 }
 
 int main(int argc, char **argv)
@@ -525,10 +601,12 @@ int main(int argc, char **argv)
 		cudaMemcpy(device_h_saved,device_h,rows_bytes * 2u,cudaMemcpyDeviceToDevice);
 		SparkMinimaxH3V3LoadBlock(&block0,argv[2],argv[3],0u);
 		SparkMinimaxH3V3LoadBlock(&block1,argv[2],argv[3],1u);
+		SparkMinimaxH3V3StageDirectory = argv[1];
 		error = SparkMinimaxH3V3BlockForward(stream,&block0,device_h,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
 			&scratch,device_result);
+		SparkMinimaxH3V3StageDirectory = 0;
 		if ( error != cudaSuccess )
 		{
 			printf("block0 forward cuda error: %s FAIL\n",cudaGetErrorString(error));
