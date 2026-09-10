@@ -315,8 +315,6 @@ static void SparkGlm52BindLayer(
 	if ( wave->expert_lease_base != 0 &&
 		wave->expert_lease_local_layer == local_layer )
 	{
-		/* Lazy arena: expert pointers are consumer-local leased VMM
-		 * addresses; the weightd map exposes only acquired extents. */
 		buffers->expert_w1_weight = wave->expert_lease_base + weight->expert_up_gate_payload_offset;
 		buffers->expert_w1_scale = weight->expert_up_gate_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
 		buffers->expert_w2_weight = wave->expert_lease_base + weight->expert_down_payload_offset;
@@ -402,9 +400,6 @@ static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_
 	status = Glm52LayerMoeRoute<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	/* Publish the group offsets to host storage and mark readiness only
-	 * when the slot is wired for lazy acquisition (event + pinned host
-	 * mirror). Resident and validator slots skip this entirely. */
 	wave->slot->route_recorded = 0u;
 	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
 	{

@@ -30,18 +30,6 @@
 #error "GLM52_MODEL_DESCRIPTION_SHA256 must identify the exact model description"
 #endif
 
-/* Deployment-facing geometry: FLAT_RANKS flat ranks, one per TP rank,
- * single PP stage. The residentd fans each submission out to every rank
- * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
- * adapter maps flat rank -> tp_rank and pins the firmware stage to 0.
- * The 5.2 serving band was TP8; the glm53full fleet deploys TP16 — the
- * rank count is a per-deployment environment selection
- * (SPARK_GLM52_SERVING_FLAT_RANKS, 8 or 16) so one adapter artifact
- * serves both topologies while each keeps its own adapter identity
- * (ValidateForAdapter pins deployment node_count == stage_count and the
- * stage configs' tp_degree == TP_DEGREE). Nonsense values leave the
- * descriptor unconfigured; the host's adapter-load validation then
- * fails closed. */
 #define SPARK_GLM52_SERVING_FLAT_RANKS_ENV "SPARK_GLM52_SERVING_FLAT_RANKS"
 #define SPARK_GLM52_SERVING_FLAT_RANKS_TP8 8ul
 #define SPARK_GLM52_SERVING_FLAT_RANKS_TP16 16ul
@@ -49,11 +37,6 @@
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
-/* The expected DRIVER model id must equal the model.id of the firmware the
- * driver was compiled from (ServingAdapterTemplateLoadDriver strcmps them).
- * The bf16 arm's firmware pins the 5.3-full identity (native publisher
- * precision arm, per-source firmware pins); every other codec's firmware
- * keeps the 5.2 identity. GLM52_EXPERT_WEIGHT_CODEC is a numeric define. */
 #if GLM52_EXPERT_WEIGHT_CODEC == 1
 #define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
 	"zai.glm-5.3-full.resident-decode-stage-firmware"

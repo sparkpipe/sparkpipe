@@ -425,8 +425,6 @@ typedef struct SparkGlm52ManifestContext
 	uint32_t count;
 } SparkGlm52ManifestContext;
 
-/* FP8-only on the lazy path: the shared lazy pack currently qualifies
- * the FP8 codec; BF16 keeps the resident eager load. */
 static SparkStatus SparkGlm52ManifestPlane(const SparkWeightdManifest *manifest,const SparkGlm52StagePackEntry *entry,uint32_t plane)
 {
 	const SparkWeightdRangeGroup *group = 0;
@@ -527,10 +525,6 @@ static SparkStatus SparkGlm52PackLoadEntry(
 	scale = 0;
 	if ( state->lazy_pack != 0 )
 	{
-		/* Lazy: routed experts stay in the arena's sparse address space
-		 * and materialize through per-wave acquisition; retain pack
-		 * offsets for lease binding. Non-expert tensors come from the
-		 * compact spine. */
 		if ( entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
 			return(SparkGlm52PackAssign(state,entry,0,0));
 		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
