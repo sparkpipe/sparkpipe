@@ -1810,6 +1810,9 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		for (row = 0u; row < rows; row++)
 		{
 			const float *residual = local == 0u ? 0 : walk->row_sublayer[row];
+			float prev_mlp[SPARK_LING_VAL_HIDDEN];
+			if ( residual != 0 )
+				memcpy(prev_mlp,residual,sizeof(prev_mlp));
 			if ( probe != 0 && local == 0u && row == 0u )
 			{
 				static float actual[SPARK_LING_VAL_HIDDEN];
@@ -1905,7 +1908,7 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			if ( residual != 0 )
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 					walk->row_hidden[row][index] = SparkLingValFromBf16(
-						SparkLingValBf16(walk->row_hidden[row][index] + residual[index]));
+						SparkLingValBf16(walk->row_hidden[row][index] + prev_mlp[index]));
 			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 				walk->row_hidden[row][index] = SparkLingValFromBf16(
 					SparkLingValBf16(walk->row_hidden[row][index] + walk->row_sublayer[row][index]));
