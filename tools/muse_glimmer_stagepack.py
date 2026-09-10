@@ -171,7 +171,7 @@ def build_records(tp_degree: int, tp_rank: int) -> list:
         records.append(Record(
             KIND_QGKV, layer, qgkv_rows, HIDDEN,
             [f"{LAYER_PREFIX}{layer}.self_attn.q_proj.weight",
-             f"{LAYER_PREFIX}{layer}.gate_proj.weight",
+             f"{LAYER_PREFIX}{layer}.self_attn.gate_proj.weight",
              f"{LAYER_PREFIX}{layer}.self_attn.k_proj.weight",
              f"{LAYER_PREFIX}{layer}.self_attn.v_proj.weight"],
             {"qgkv": qgkv_row_spans(tp_degree, tp_rank)}))
