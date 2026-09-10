@@ -231,7 +231,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         {
             struct timespec pause = {0,100000};
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
-                SPARK_FAIL(SPARK_STATUS_TIMEOUT);
+                SPARK_FAIL(SPARK_STATUS_BUSY);
             nanosleep(&pause,0);
         }
     }
