@@ -21,7 +21,6 @@ extern int cudaEventCreateWithFlags(void **event,unsigned int flags);
 extern int cudaEventDestroy(void *event);
 extern int cudaEventRecord(void *event,void *stream);
 extern int cudaEventSynchronize(void *event);
-extern int cudaLaunchHostFunc(void *stream,void (*function)(void *),void *user_data);
 
 typedef struct SparkTpDeviceCollectiveWork
 {
@@ -331,15 +330,6 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     return SPARK_STATUS_OK;
 }
 
-static void SparkTpDeviceCollectiveWorkDone(void *argument)
-{
-    SparkTpDeviceCollectiveWork *work =
-        (SparkTpDeviceCollectiveWork *)argument;
-    SparkTpDeviceCollectiveInvokeCompletion(&work->submission,
-        work->ordinal,SPARK_STATUS_OK);
-    free(work);
-}
-
 static void *SparkTpDeviceCollectiveWorker(void *argument)
 {
     SparkTpDeviceCollectiveImplementation *implementation =
@@ -365,15 +355,10 @@ static void *SparkTpDeviceCollectiveWorker(void *argument)
         status = SparkTpDeviceCollectiveRunRound(implementation,work);
         if ( status == SPARK_STATUS_PENDING )
         {
-            (void)cudaEventDestroy(work->event);
-            if ( cudaLaunchHostFunc(work->submission.cuda_stream,
-                    SparkTpDeviceCollectiveWorkDone,work) != 0 )
-            {
-                SparkTpDeviceCollectiveInvokeCompletion(&work->submission,
-                    work->ordinal,SPARK_STATUS_IO_ERROR);
-                free(work);
-            }
-            continue;
+            if ( cudaStreamSynchronize(work->submission.cuda_stream) != 0 )
+                status = SPARK_STATUS_IO_ERROR;
+            else
+                status = SPARK_STATUS_OK;
         }
         SparkTpDeviceCollectiveInvokeCompletion(&work->submission,
             work->ordinal,status);
