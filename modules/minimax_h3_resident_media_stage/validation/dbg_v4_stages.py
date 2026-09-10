@@ -45,6 +45,7 @@ import gen_v3_v4_real as gen
 
 OUT_DIR = sys.argv[1]
 MODULE_FIX = sys.argv[2]
+VIDEO_BLOCKS = int(sys.argv[3]) if len(sys.argv) > 3 else 36
 WARM = "/mnt/model-warm/minimax-h3"
 
 
@@ -85,7 +86,7 @@ def main():
     suffix = position_ids.new_zeros((b, 5, 3))
     position_ids = torch.cat([position_ids, suffix], dim=1)
     cos, sin = ref.vae_video_rope(position_ids, 48, 100.0)
-    for i in range(36):
+    for i in range(VIDEO_BLOCKS):
         p = "decoder.transformer_blocks.%d." % i
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm1.weight"), 1e-5).to(x.dtype)
         if i == 0:
@@ -107,10 +108,11 @@ def main():
             k1, k2 = kr.chunk(2, dim=-1)
             query = torch.cat([qr * c + torch.cat([-q2, q1], dim=-1) * s_, qp], dim=-1)
             key = torch.cat([kr * c + torch.cat([-k2, k1], dim=-1) * s_, kp], dim=-1)
-            dump("refv_b0_qr", query.flatten(1, 2)[0])
-            dump("refv_b0_kr", key.flatten(1, 2)[0])
-            dump("refv_b0_v", value.flatten(1, 2)[0])
-            out = ref.attention(query, key, value, use_sdpa=True).flatten(1, 2)
+            dump("refv_b0_qr", query.flatten(2, 3)[0])
+            dump("refv_b0_kr", key.flatten(2, 3)[0])
+            dump("refv_b0_v", value.flatten(2, 3)[0])
+            out = ref.attention(query, key, value, use_sdpa=True)
+            out = out.flatten(2, 3)
             a = gen.slab_linear_full(out, raw, p + "attn.to_out.0.weight", p + "attn.to_out.0.bias")
             dump("refv_b0_ao", a[0])
         else:
@@ -123,18 +125,19 @@ def main():
         x = x + ffn * gen.slab_vec(raw, p + "scale2")
         if i in (0, 1, 17, 35):
             dump("refv_b%d" % i, x[0])
-    x = F.layer_norm(x, (x.shape[-1],), gen.slab_vec(raw, "decoder.norm_out.weight"),
-        gen.slab_vec(raw, "decoder.norm_out.bias"), 1e-5)
-    dump("refv_layernorm", x[0])
-    x = gen.slab_linear_full(x, raw, "decoder.proj_out.weight", "decoder.proj_out.bias")
-    dump("refv_pixels", x[0])
-    x = x[:, :num_patches, :]
-    ps, pst = 16, 4
-    x = x.view(b, f, hgt, wid, 3, pst, ps, ps)
-    x = x.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
-    full = x.reshape(b, 3, f * pst, hgt * ps, wid * ps)
-    trim = torch.cat([full[:, :, 3:20], full[:, :, 23:28]], dim=2)
-    dump("refv_decoded", trim[0])
+    if VIDEO_BLOCKS >= 36:
+        x = F.layer_norm(x, (x.shape[-1],), gen.slab_vec(raw, "decoder.norm_out.weight"),
+            gen.slab_vec(raw, "decoder.norm_out.bias"), 1e-5)
+        dump("refv_layernorm", x[0])
+        x = gen.slab_linear_full(x, raw, "decoder.proj_out.weight", "decoder.proj_out.bias")
+        dump("refv_pixels", x[0])
+        x = x[:, :num_patches, :]
+        ps, pst = 16, 4
+        x = x.view(b, f, hgt, wid, 3, pst, ps, ps)
+        x = x.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
+        full = x.reshape(b, 3, f * pst, hgt * ps, wid * ps)
+        trim = torch.cat([full[:, :, 3:20], full[:, :, 23:28]], dim=2)
+        dump("refv_decoded", trim[0])
 
     audio_latents = np.fromfile(os.path.join(MODULE_FIX,
         "v4_audio/latents__2x32x4.f32"), dtype=np.float32)
