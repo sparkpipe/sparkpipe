@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 
 #define MESH_MAX_PEERS 15
 #define MESH_SLOT_BYTES 1048576
@@ -16,6 +17,9 @@
 extern SparkStatus SparkWeightdClientConnect(const char *path,
     void *client, uint64_t reserved);
 extern SparkStatus SparkWeightdClientDisconnect(void *client);
+extern SparkStatus SparkWeightdClientMeshWrite(void *client,
+    uint32_t peer_rank, uint64_t source_offset, uint64_t remote_offset,
+    uint32_t length, uint64_t timeout_nanoseconds);
 extern SparkStatus SparkWeightdClientMeshBroadcast(void *client,
     uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
     uint32_t length, uint64_t timeout_nanoseconds);
@@ -29,6 +33,14 @@ __attribute__((weak)) SparkStatus SparkWeightdClientConnect(const char *path,
 __attribute__((weak)) SparkStatus SparkWeightdClientDisconnect(void *client)
 {
     (void)client;
+    return SPARK_STATUS_UNSUPPORTED;
+}
+__attribute__((weak)) SparkStatus SparkWeightdClientMeshWrite(void *client,
+    uint32_t peer_rank, uint64_t source_offset, uint64_t remote_offset,
+    uint32_t length, uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)peer_rank;(void)source_offset;
+    (void)remote_offset;(void)length;(void)timeout_nanoseconds;
     return SPARK_STATUS_UNSUPPORTED;
 }
 __attribute__((weak)) SparkStatus SparkWeightdClientMeshBroadcast(void *client,
@@ -213,15 +225,62 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         *seq_slot = ordinal + 1u;
     }
     {
-        SparkStatus status = SparkWeightdClientMeshBroadcast(
-            implementation->client,
-            0x7FFFu,
-            MESH_SCRATCH_OFFSET,
-            MESH_SCRATCH_OFFSET,
-            (uint32_t)bytes,
-            (uint64_t)collective->operation_timeout_milli * 1000000ull);
-        if ( status != SPARK_STATUS_OK )
-            SPARK_RETURN(status);
+        uint32_t peer;
+        uint32_t peer_rank;
+        uint64_t remote_base;
+        for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
+        {
+            peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
+            remote_base = (uint64_t)(collective->tp_rank < peer_rank ?
+                collective->tp_rank : collective->tp_rank - 1u) *
+                (uint64_t)bytes;
+            SparkStatus ws = SparkWeightdClientMeshWrite(
+                implementation->client,
+                peer_rank,
+                MESH_SCRATCH_OFFSET,
+                remote_base,
+                (uint32_t)bytes,
+                (uint64_t)collective->operation_timeout_milli * 1000000ull);
+            if ( ws != SPARK_STATUS_OK )
+                SPARK_RETURN(ws);
+        }
+    }
+    {
+        volatile uint64_t *seq;
+        uint32_t peer;
+        for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
+        {
+            seq = (volatile uint64_t *)((uint8_t *)
+                implementation->mesh_buffer +
+                (uint64_t)(peer + 1u) * (uint64_t)bytes);
+            while ( *seq < ordinal + 1u )
+            {
+                struct timespec pause = {0,100000};
+                nanosleep(&pause,0);
+            }
+        }
+    }
+    {
+        uint16_t *local = (uint16_t *)implementation->mesh_buffer;
+        uint16_t *result = (uint16_t *)submission->full_device;
+        uint32_t peer;
+        uint32_t i;
+        uint32_t count = (uint32_t)(bytes / 2u);
+        memcpy(result,local,(size_t)bytes);
+        for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
+        {
+            uint16_t *peer_data = (uint16_t *)((uint8_t *)
+                implementation->mesh_buffer +
+                (uint64_t)(peer + 1u) * (uint64_t)bytes);
+            for (i = 0u; i < count; i++)
+            {
+                int32_t a = (int32_t)(int16_t)result[i];
+                int32_t b = (int32_t)(int16_t)peer_data[i];
+                int32_t sum = a + b;
+                result[i] = (uint16_t)((sum > 32767 ? 32767 :
+                    sum < -32768 ? -32768 : sum) & 0xFFFF);
+            }
+        }
     }
     SparkTpDeviceCollectiveInvokeCompletion(submission,
         ordinal,SPARK_STATUS_OK);
