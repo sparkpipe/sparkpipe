@@ -803,9 +803,6 @@ static int32_t Glm52LayerMoeValidate(
     }
     if (require_expert_weights != 0u)
     {
-        /* Lazy execution binds expert pointers from the acquired lease
-         * immediately before this call; a missing pointer means the
-         * route was not materialized and must fail the submission. */
         if (buffers->expert_w1_weight == 0 ||
             (ExpertCodec != SPARK_WEIGHT_CODEC_BF16 && buffers->expert_w1_scale == 0) ||
             buffers->expert_w2_weight == 0 ||
@@ -818,10 +815,6 @@ static int32_t Glm52LayerMoeValidate(
     return LM_LAUNCH_OK;
 }
 
-/* Route half: post-attention RMS norm, router GEMM, top-k selection and
- * route grouping. Reads no expert weights, so lazy execution can run it
- * before acquisition and acquire the routed working set between this and
- * the experts half. */
 template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoeRoute(
     const Glm52LayerBuffers *buffers,
@@ -920,9 +913,6 @@ static int32_t Glm52LayerMoeRoute(
     return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
-/* Experts half: routed W1/W2 GEMMs, activation, finalize and shared
- * expert. Expert weights must be bound (resident arena or acquired
- * lease) before this runs. */
 template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoeExperts(
     const Glm52LayerBuffers *buffers,
@@ -1161,9 +1151,6 @@ static int32_t Glm52LayerMoeExperts(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
-/* Resident execution retains the same submission order. Lazy execution
- * acquires/imports the routed working set between these two calls on
- * this stream. */
 template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoe(
     const Glm52LayerBuffers *buffers,
