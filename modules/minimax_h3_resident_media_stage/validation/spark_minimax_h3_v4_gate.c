@@ -244,21 +244,21 @@ static void SparkMinimaxH3V4SelfAttention(float *attention_out, const float *inp
 			float *query_row =
 				query_buffer + ((uint64_t)token * heads + head) * head_dim;
 			float *key_row = key_buffer + ((uint64_t)token * heads + head) * head_dim;
-			for (key_dim=0u; key_dim<rope_dim; key_dim++)
+			for (key_dim=0u; key_dim<rope_dim / 2u; key_dim++)
 			{
 				uint32_t half = rope_dim / 2u;
-				float cosine = cos_angles[token * rope_dim + key_dim];
-				float sine = sin_angles[token * rope_dim + key_dim];
-				float self = query_row[key_dim];
-				float partner = key_dim < half ?
-					query_row[half + key_dim] : query_row[key_dim - half];
-				float rotated = key_dim < half ? -partner : partner;
-				query_row[key_dim] = self * cosine + rotated * sine;
-				self = key_row[key_dim];
-				partner = key_dim < half ? key_row[half + key_dim] :
-					key_row[key_dim - half];
-				rotated = key_dim < half ? -partner : partner;
-				key_row[key_dim] = self * cosine + rotated * sine;
+				float cosine_a = cos_angles[token * rope_dim + key_dim];
+				float sine_a = sin_angles[token * rope_dim + key_dim];
+				float cosine_b = cos_angles[token * rope_dim + half + key_dim];
+				float sine_b = sin_angles[token * rope_dim + half + key_dim];
+				float query_a = query_row[key_dim];
+				float query_b = query_row[half + key_dim];
+				query_row[key_dim] = query_a * cosine_a - query_b * sine_a;
+				query_row[half + key_dim] = query_b * cosine_b + query_a * sine_b;
+				float key_a = key_row[key_dim];
+				float key_b = key_row[half + key_dim];
+				key_row[key_dim] = key_a * cosine_a - key_b * sine_a;
+				key_row[half + key_dim] = key_b * cosine_b + key_a * sine_b;
 			}
 		}
 	}
@@ -991,18 +991,14 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						"upsample_filter",12u);
 					SparkMinimaxH3V4LoadWeight(&down_filter,weight_dir,act_prefix,
 						"downsample_lowpass_filter",12u);
+					if ( stage == 0u && block == 0u && dilation_index == 0u &&
+						pass == 0u )
+						SparkMinimaxH3V4PreSnakeCompare =
+							"refa_s0_u0__2x512x40.f32";
 					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,next,
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
-					if ( stage == 0u && block == 0u && dilation_index == 0u &&
-						pass == 0u )
-					{
-						char ref_tag[48];
-						snprintf(ref_tag,sizeof(ref_tag),
-							"refa_s0_u0__2x512x40.f32");
-						SparkMinimaxH3V4PreSnakeCompare = ref_tag;
-					}
 					if ( stage == 0u && block == 0u && dilation_index == 0u )
 					{
 						char ref_tag[48];
