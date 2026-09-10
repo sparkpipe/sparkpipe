@@ -9,13 +9,28 @@
 | 2× TP8 trees | 5 × 4 = 20 (within group) | 20 | Already deployed: glm53flash.fp8.tp8 |
 | TP4 tree (single) | 3 × 4 = 12 | 12 | qwen27b, k3 |
 
-## Broadcast (same QPs as allreduce, down-pass only)
+## All-to-all exchange (B1 decode: every node sends to every peer in parallel)
 
-No separate mesh — the allreduce tree handles broadcast as its down-pass
-stage (rank 0's data flows down the tree, 4 hops for TP16, intermediate
-nodes fan out to their subtrees). The switched fabric means any node can
-reach any node; the tree distributes send load instead of bottlennecking
-at the root's NIC.
+For B1 allreduce, the fastest pattern is all-to-all: each node RDMA-writes
+its partial vector (~8KB bf16 at 4096 hidden) to all 15 peers simultaneously
+(the switched fabric handles full duplex on all 16 ports — 240 parallel
+transfers at 8KB each = 1.9MB total, trivial for the switch). Each node then
+locally sums 16 vectors. ONE hop, no tree stages, no fold kernels.
+
+| Topology | Send QPs per node | Receive QPs per node | Total |
+|----------|-------------------|---------------------|-------|
+| TP16 all-to-all | 15 | 15 | 30 QPs |
+| TP8 all-to-all (per group) | 7 | 7 | 14 QPs |
+| TP4 all-to-all (per group) | 3 | 3 | 6 QPs |
+
+These are ADDITIONAL to the tree allreduce QPs (the tree is better for B8+
+where bandwidth matters more than latency; all-to-all is better at B1 where
+the vector is small and latency dominates).
+
+## Broadcast (tree down-pass for pipeline/logits)
+
+The allreduce tree's down-pass handles one-to-many distribution (pipeline
+scatter, token broadcast from rank 0). Same QPs as allreduce.
 
 ## Pipeline connections (point-to-point between groups)
 
@@ -28,9 +43,10 @@ at the root's NIC.
 ## Total worst case per node
 
 If ALL topologies are active simultaneously:
-- Allreduce (broadcast shares these QPs): 28 + 12 + 20 + 12 = 72 QPs
+- Allreduce trees: 28 + 12 + 20 + 12 = 72 QPs
+- All-to-all (B1): 30 + 14 + 6 = 50 QPs
 - Pipeline: 4 + 8 + 1 = 13 QPs
-- **Total: ~85 QPs per node**
+- **Total: ~135 QPs per node**
 
 ## Lazy creation
 
