@@ -16,6 +16,7 @@
 #define SPARK_WEIGHTD_MESH_PEERS 15
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
+#define SPARK_WEIGHTD_MESH_WAVE_NS UINT64_C(120000000000)
 
 typedef struct SparkWeightdMeshQpInfo
 {
@@ -38,6 +39,7 @@ typedef struct SparkWeightdMeshRecord
     uint16_t lid;
     uint8_t gid[16];
     uint8_t reserved[4];
+    uint64_t boot_ns;
 } SparkWeightdMeshRecord;
 
 typedef struct SparkWeightdMesh
@@ -51,11 +53,22 @@ typedef struct SparkWeightdMesh
     SparkWeightdMeshQpInfo qp_info[SPARK_WEIGHTD_MESH_PEERS];
     void *recv_buffer;
     int memfd;
+    uint64_t send_ok;
+    uint64_t send_err;
+    uint64_t send_logged;
     uint32_t mesh_ready;
     uint32_t local_rank;
 } SparkWeightdMesh;
 
 static SparkWeightdMesh weightd_mesh;
+
+static uint64_t SparkWeightdMeshRealtimeNs(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME,&now) != 0)
+        return 0ull;
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
 
 static uint32_t SparkWeightdMeshRankFromHost(void)
 {
@@ -222,10 +235,12 @@ SparkStatus SparkWeightdMeshInit(void)
     uint32_t peer;
     uint32_t peer_rank;
     uint32_t my_index_in_peer;
+    uint64_t boot_ns;
     time_t deadline;
 
     memset(&weightd_mesh,0,sizeof(weightd_mesh));
     weightd_mesh.local_rank = SparkWeightdMeshRankFromHost();
+    boot_ns = SparkWeightdMeshRealtimeNs();
 
     devices = ibv_get_device_list(&device_count);
     if (devices == 0 || device_count == 0)
@@ -334,6 +349,7 @@ SparkStatus SparkWeightdMeshInit(void)
     memset(&own_record,0,sizeof(own_record));
     own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
     own_record.rank = weightd_mesh.local_rank;
+    own_record.boot_ns = boot_ns;
     own_record.rkey = weightd_mesh.recv_mr->rkey;
     own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
     own_record.lid = (uint16_t)port_attr.lid;
@@ -376,8 +392,13 @@ SparkStatus SparkWeightdMeshInit(void)
                 }
                 peer_rank = peer < weightd_mesh.local_rank ?
                     peer : peer + 1u;
+                /* a record from before this restart wave means the peer's
+                 * weightd is the previous generation: its QPs are dead, so
+                 * wait for the fresh record instead of wiring against it */
                 if (SparkWeightdMeshReadPeerRecord(peer_rank,
-                        &peer_records[peer]) == SPARK_STATUS_OK)
+                        &peer_records[peer]) == SPARK_STATUS_OK &&
+                        peer_records[peer].boot_ns +
+                            SPARK_WEIGHTD_MESH_WAVE_NS >= boot_ns)
                 {
                     found[peer] = 1u;
                     found_count++;
@@ -432,6 +453,44 @@ SparkStatus SparkWeightdMeshInit(void)
 uint32_t SparkWeightdMeshReady(void)
 {
     return weightd_mesh.mesh_ready;
+}
+
+void SparkWeightdMeshPoll(void)
+{
+    struct ibv_wc completions[16];
+    int completed;
+    int index;
+
+    if (weightd_mesh.mesh_ready == 0u)
+        return;
+    for (;;)
+    {
+        completed = ibv_poll_cq(weightd_mesh.cq,16,completions);
+        if (completed <= 0)
+            break;
+        for (index = 0; index < completed; index++)
+        {
+            if (completions[index].status == IBV_WC_SUCCESS)
+                weightd_mesh.send_ok++;
+            else
+            {
+                weightd_mesh.send_err++;
+                fprintf(stderr,
+                    "WD-MESH-CQERR wr=%llu opcode=%u status=%u vendor=%u\n",
+                    (unsigned long long)completions[index].wr_id,
+                    (unsigned)completions[index].opcode,
+                    (unsigned)completions[index].status,
+                    (unsigned)completions[index].vendor_err);
+            }
+        }
+    }
+    if (weightd_mesh.send_ok - weightd_mesh.send_logged >= 2048ull)
+    {
+        weightd_mesh.send_logged = weightd_mesh.send_ok;
+        fprintf(stderr,"WD-MESH-CQ ok=%llu err=%llu\n",
+            (unsigned long long)weightd_mesh.send_ok,
+            (unsigned long long)weightd_mesh.send_err);
+    }
 }
 
 uint64_t SparkWeightdMeshBufferAddress(void)
