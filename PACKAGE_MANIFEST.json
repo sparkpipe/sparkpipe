@@ -4458,8 +4458,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "f5abb601de7f6b93d4cea2caba805cfee7bc59b4d3378f4136f730da36d7b918",
-      "size_bytes": 117981
+      "sha256": "5f885edc646074e48ae44ad8eb081415d229e9bad555428d3f8718cdb597fcb7",
+      "size_bytes": 113559
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -9865,5 +9865,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32393456
+  "total_bytes": 32389034
 }
