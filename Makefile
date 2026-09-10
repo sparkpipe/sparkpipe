@@ -104,6 +104,10 @@ RUNTIME_SOURCES := $(SPARKPIPE_RUNTIME_SOURCES)
 sp_objects = $(patsubst %.c,build/obj/%.o,$(1))
 
 CORE_OBJECTS := $(call sp_objects,$(CORE_SOURCES))
+TRANSPORT_SOURCES := $(SPARKPIPE_TRANSPORT_SOURCES)
+CACHE_SOURCES := $(SPARKPIPE_CACHE_SOURCES)
+TRANSPORT_OBJECTS := $(call sp_objects,$(TRANSPORT_SOURCES))
+CACHE_OBJECTS := $(call sp_objects,$(CACHE_SOURCES))
 MODEL_COMMON_OBJECTS := $(call sp_objects,$(MODEL_COMMON_SOURCES))
 DEPLOYMENT_OBJECTS := $(call sp_objects,$(DEPLOYMENT_SOURCES))
 GLM52_HOST_OBJECTS := $(call sp_objects,$(GLM52_HOST_SOURCES))
@@ -134,6 +138,7 @@ $(QWEN38_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN38_INCLUDE_FLAGS)
 $(DSV4_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(DSV4_INCLUDE_FLAGS)
 CORE_LIBRARY := build/libsparkpipe_core.a
 MODEL_COMMON_LIBRARY := build/libsparkpipe_model_common.a
+TRANSPORT_LIBRARY := build/libsparkpipe_transport.a
 DEPLOYMENT_LIBRARY := build/libsparkpipe_deployment.a
 GLM52_HOST_LIBRARY := build/libglm52_host.a
 QWEN38_27B_HOST_LIBRARY := build/libqwen38_27b_host.a
@@ -560,6 +565,9 @@ $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(MODEL_COMMON_LIBRARY): $(MODEL_COMMON_OBJECTS)
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
+
+$(TRANSPORT_LIBRARY): $(TRANSPORT_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(DEPLOYMENT_LIBRARY): $(DEPLOYMENT_OBJECTS)
