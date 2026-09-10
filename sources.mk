@@ -51,24 +51,30 @@ SPARKPIPE_RUNTIME_SOURCES := \
 # Formerly model-families/common/src, which is the directory the handoff records
 # as deleted twice with every gate green, because it was named for who shared it
 # rather than what it is.
-SPARKPIPE_MODEL_COMMON_SOURCES := \
-    $(SPARKPIPE_WEIGHTD_SOURCES) \
+SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
     ring/transport/tp_device_collective.c \
-    ring/transport/tp_device_collective_nccl.c \
-    text/tokenizer.c \
-    text/tokenizer_sidecar.c \
+    ring/transport/tp_device_collective_nccl.c
+
+SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
-	cache/kv_page_cache.c \
-	cache/kv_page_store.c \
-	cache/kv_model_table.c \
+    cache/kv_page_cache.c \
+    cache/kv_page_store.c \
+    cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
-    cache/nvme_tier.c \
+    cache/nvme_tier.c
+
+SPARKPIPE_MODEL_COMMON_SOURCES := \
+    $(SPARKPIPE_WEIGHTD_SOURCES) \
+    $(SPARKPIPE_TRANSPORT_SOURCES) \
+    $(SPARKPIPE_CACHE_SOURCES) \
+    text/tokenizer.c \
+    text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
     runtime/serving_adapter_template.c \
     runtime/memory_buffer.c \
