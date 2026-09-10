@@ -1022,7 +1022,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 							out_channels * output_length * 2u);
 						if ( pass == 0u )
 						{
-							FILE *dbg_file = fopen("/mnt/model-warm/staging/minimax-lane/refa_s0_m0__2x512x40.f32","rb");
+							FILE *dbg_file = fopen("modules/minimax_h3_resident_media_stage/validation/fixtures/real/v4_audio/refa_s0_m0__2x512x40.f32","rb");
 							float dbg_ref[8];
 							if ( dbg_file != 0 )
 							{
