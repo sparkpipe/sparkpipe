@@ -11,13 +11,16 @@
 
 SparkStatus SparkWeightdMeshInit(void);
 uint32_t SparkWeightdMeshReady(void);
+void SparkWeightdMeshDoorbellLoop(void);
 
 static void *SparkWeightdMeshThread(void *argument)
 {
     SparkStatus status;
     (void)argument;
     status = SparkWeightdMeshInit();
-    if (status != SPARK_STATUS_OK)
+    if (status == SPARK_STATUS_BUSY)
+        SparkWeightdMeshDoorbellLoop();
+    else if (status != SPARK_STATUS_OK)
         fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
             SparkStatusToString(status));
     return 0;

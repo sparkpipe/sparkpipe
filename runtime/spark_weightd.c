@@ -1266,7 +1266,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->loaded_from_pack = 0u;
             result->mesh_ready = SparkWeightdMeshReady();
             result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-            result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_BUFFER_BYTES;
+            result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_REGION_BYTES;
             SparkWeightdServerStageMeshFd(connection);
             (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
         }
@@ -1342,7 +1342,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     result->loaded_from_pack = 1u;
     result->mesh_ready = SparkWeightdMeshReady();
     result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-    result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_BUFFER_BYTES;
+    result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_REGION_BYTES;
     SparkWeightdServerStageMeshFd(connection);
     (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
     printf("weightd lazy-attach model=%s experts=%u arena=%llu pool=%llu\n",

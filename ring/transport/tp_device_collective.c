@@ -153,7 +153,6 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     uint64_t bytes;
     uint64_t ordinal;
     uint64_t deadline;
-    uint64_t timeout_nanoseconds;
     uint64_t slot_bytes;
     uint8_t *scratch;
     uint32_t peer;
@@ -163,7 +162,6 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     if ( bytes + 16u > implementation->slot_bytes )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     ordinal = submission->ordinal;
-    timeout_nanoseconds = 0ull;
     deadline = SparkTpDeviceCollectiveTimeNs() +
         implementation->round_timeout_ns;
     {
@@ -181,21 +179,17 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         SparkTpDeviceCollectivePhase("d2h",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
     {
-        uint64_t slot_base = implementation->band_base +
-            (uint64_t)implementation->tp_rank * slot_bytes;
-        SparkStatus write_status = SparkWeightdClientMeshBroadcast(
-            implementation->client,0xFFFFu,slot_base,slot_base,
-            (uint32_t)bytes,ordinal + 1u,
-            slot_base + slot_bytes - 8u,timeout_nanoseconds);
-        if ( write_status != SPARK_STATUS_OK )
-        {
-            if ( write_status == SPARK_STATUS_IO_ERROR )
-            {
-                fprintf(stderr,"MESH-BROADCAST-IO: exiting\n");
-                _exit(1);
-            }
-            return write_status;
-        }
+        volatile uint64_t *entry = (volatile uint64_t *)
+            (implementation->mesh_buffer +
+            SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(
+                (implementation->band_base /
+                    (SPARK_WEIGHTD_MESH_SLOT_BYTES *
+                     SPARK_WEIGHTD_MESH_SLOTS_PER_BAND)),
+                implementation->tp_rank));
+        entry[1] = bytes;
+        __sync_synchronize();
+        entry[0] = ordinal + 1u;
+        __sync_synchronize();
     }
         SparkTpDeviceCollectivePhase("broadcast",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
