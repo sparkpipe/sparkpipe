@@ -16,7 +16,6 @@
 #define SPARK_WEIGHTD_MESH_PEERS 15
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
-#define SPARK_WEIGHTD_MESH_WAVE_NS UINT64_C(120000000000)
 
 typedef struct SparkWeightdMeshQpInfo
 {
@@ -54,6 +53,8 @@ typedef struct SparkWeightdMesh
     void *recv_buffer;
     int memfd;
     uint64_t boot_ns;
+    uint64_t record_check_ns;
+    uint64_t wired_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
     uint64_t send_ok;
     uint64_t send_err;
     uint64_t send_logged;
@@ -178,6 +179,13 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     int flags;
 
     memset(&attributes,0,sizeof(attributes));
+    attributes.qp_state = IBV_QPS_RESET;
+    if (ibv_modify_qp(qp,&attributes,IBV_QP_STATE) != 0)
+    {
+        fprintf(stderr,"weightd-mesh RESET failed errno=%d\n",errno);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    memset(&attributes,0,sizeof(attributes));
     attributes.qp_state = IBV_QPS_INIT;
     attributes.pkey_index = 0;
     attributes.port_num = 1;
@@ -231,16 +239,23 @@ static void SparkWeightdMeshTryWire(void)
     uint32_t peer;
     uint32_t peer_rank;
     uint32_t my_index_in_peer;
+    uint32_t changed;
 
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
         if (SparkWeightdMeshReadPeerRecord(peer_rank,
-                &peer_records[peer]) != SPARK_STATUS_OK ||
-            peer_records[peer].boot_ns + SPARK_WEIGHTD_MESH_WAVE_NS <
-                weightd_mesh.boot_ns)
+                &peer_records[peer]) != SPARK_STATUS_OK)
             return;
     }
+    changed = weightd_mesh.mesh_ready == 0u;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        if (peer_records[peer].boot_ns != weightd_mesh.wired_boot_ns[peer])
+            changed = 1u;
+    }
+    if (changed == 0u)
+        return;
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
@@ -263,13 +278,15 @@ static void SparkWeightdMeshTryWire(void)
         weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
         weightd_mesh.qp_info[peer].remote_addr =
             peer_records[peer].recv_addr;
+        weightd_mesh.wired_boot_ns[peer] = peer_records[peer].boot_ns;
     }
-    weightd_mesh.mesh_ready = 1u;
+    if (weightd_mesh.mesh_ready == 0u)
     {
         FILE *marker = fopen(SPARK_WEIGHTD_MESH_DIR "/.ready","w");
         if (marker != 0)
             (void)fclose(marker);
     }
+    weightd_mesh.mesh_ready = 1u;
     printf("weightd-mesh: ready rank=%u peers=%u rkey=%u\n",
         weightd_mesh.local_rank,SPARK_WEIGHTD_MESH_PEERS,
         weightd_mesh.recv_mr->rkey);
@@ -437,7 +454,15 @@ void SparkWeightdMeshPoll(void)
     int index;
 
     if (weightd_mesh.mesh_ready == 0u)
+    {
         SparkWeightdMeshTryWire();
+    }
+    else if (SparkWeightdMeshRealtimeNs() - weightd_mesh.record_check_ns >=
+        1000000000ull)
+    {
+        weightd_mesh.record_check_ns = SparkWeightdMeshRealtimeNs();
+        SparkWeightdMeshTryWire();
+    }
     if (weightd_mesh.mesh_ready == 0u)
         return;
     for (;;)
