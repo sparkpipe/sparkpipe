@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_error_site.h"
 #include <time.h>
 
 #include <cuda_runtime.h>
@@ -1111,38 +1112,24 @@ static SparkStatus SparkDsv4ModuleBindLayer(SparkDsv4ModuleState *state, const S
 }
 
 static SparkStatus SparkDsv4ModuleLoadEntry(SparkDsv4ModuleState *state,
-	SparkStageModuleLoadPipeline *pipeline, FILE *file,
 	const SparkDsv4StagePackEntry *entry)
 {
-	uint64_t payload_bytes = SparkDsv4StagePackPayloadBytes(entry->weight_format,entry->rows,entry->columns);
 	uint64_t scale_bytes = SparkDsv4StagePackScaleBytes(entry->weight_format,entry->rows,entry->columns);
 	void *payload = 0,*scale = 0;
 
 	uint32_t is_global = entry->layer_index == SPARK_DSV4_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	SparkStatus status = SPARK_STATUS_OK;
 
-	if ( state->weightd_arena_base != 0 )
+	if ( state->weightd_arena_base == 0 )
+
 	{
-		payload = (void *)((uint8_t *)state->weightd_arena_base + entry->payload_offset);
-		if ( scale_bytes != 0u )
-			scale = (void *)((uint8_t *)state->weightd_arena_base + entry->scale_offset);
+		fprintf(stderr,"%s weightd_arena_absent kind=%u layer=%u\n",SPARK_DSV4_MODULE_TAG,entry->tensor_kind,entry->layer_index);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	else
-	{
-		if ( pipeline != 0 )
-			status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->payload_offset,payload_bytes,&payload);
-		else
-			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,payload_bytes,&payload);
-		if ( status == SPARK_STATUS_OK && scale_bytes != 0u )
-		{
-			if ( pipeline != 0 )
-				status = SparkStageModuleLoadPipelineRegion(pipeline,&state->ledger,entry->scale_offset,scale_bytes,&scale);
-			else
-				status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,scale_bytes,&scale);
-		}
-	}
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
+
+	payload = (void *)((uint8_t *)state->weightd_arena_base + entry->payload_offset);
+	if ( scale_bytes != 0u )
+		scale = (void *)((uint8_t *)state->weightd_arena_base + entry->scale_offset);
+
 	if ( is_global != 0u )
 		return(SparkDsv4ModuleBindGlobal(state,entry,payload,scale));
 	return(SparkDsv4ModuleBindLayer(state,entry,payload,scale));
@@ -1159,7 +1146,10 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	uint64_t geometry = UINT64_C(1469598103934665603);
 	SparkStatus status;
 	if ( SparkWeightdAttachRequested() != SPARK_STATUS_OK )
-		return(SPARK_STATUS_OK);
+	{
+		fprintf(stderr,"%s weightd_attach_not_configured path=%s\n",SPARK_DSV4_MODULE_TAG,path);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	geometry = SparkHashBytes(geometry,&header->format_version,sizeof(uint32_t));
 	geometry = SparkHashBytes(geometry,&header->codec_abi_version,sizeof(uint32_t));
 	geometry = SparkHashBytes(geometry,&header->linear_weight_codec,sizeof(uint32_t));
@@ -1237,7 +1227,6 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 {
 	SparkDsv4StagePackHeader header,expected;
 	SparkDsv4StagePackEntry *directory;
-	SparkStageModuleLoadPipeline *pipeline;
 	FILE *file;
 	SparkStatus status;
 	int32_t compare;
@@ -1275,19 +1264,8 @@ static SparkStatus SparkDsv4ModuleLoadPack(SparkDsv4ModuleState *state, const ch
 		status = SparkStageModulePackRead(SPARK_DSV4_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkDsv4StagePackEntry));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleWeightdAttach(state,path,&header);
-	pipeline = 0;
-	if ( status == SPARK_STATUS_OK && state->weightd_arena_base == 0 &&
-		SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK )
-		status = SparkStageModuleLoadPipelineCreate(SPARK_DSV4_MODULE_TAG,file,&pipeline);
 	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
-		status = SparkDsv4ModuleLoadEntry(state,pipeline,file,&directory[index]);
-	if ( pipeline != 0 )
-	{
-		SparkStatus finish_status = SparkStageModuleLoadPipelineFinish(pipeline);
-		if ( status == SPARK_STATUS_OK )
-			status = finish_status;
-		SparkStageModuleLoadPipelineDestroy(pipeline);
-	}
+		status = SparkDsv4ModuleLoadEntry(state,&directory[index]);
 	free(directory);
 	fclose(file);
 	SPARK_RETURN(status);
