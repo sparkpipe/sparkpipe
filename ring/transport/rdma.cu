@@ -260,7 +260,8 @@ static SparkStatus SparkHiddenSparkHostRdmaHttpFetch(
     }
     (void)close(fd);
     response[total_received] = '\0';
-    if ( total_received < 16u || strncmp(response,"HTTP/1.0 200",12) != 0 )
+    if ( total_received < 16u || strncmp(response,"HTTP/1.",7) != 0 ||
+        strncmp(response + 9,"200",3) != 0 )
         return SPARK_STATUS_BUSY;
     body_start = strstr(response,"\r\n\r\n");
     if ( body_start == 0 )
