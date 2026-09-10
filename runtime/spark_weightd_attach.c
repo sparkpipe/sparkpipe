@@ -1,5 +1,6 @@
 
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -455,4 +456,101 @@ void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)
     outcome->arena_generation = 0ull;
     outcome->loaded_from_pack = 0u;
     outcome->refcount = 0u;
+}
+
+/* Lazy variant of the attach helper: same env identity contract as
+ * SparkWeightdAttachPack, but sends ATTACH_LAZY with the caller's expert
+ * pool budget and leaves the connection open for the working-set calls
+ * (ACQUIRE / EXPORT_LEASE / RELEASE). Fail-closed: every stage names its
+ * reason; there is no direct-load fallback. */
+SparkStatus SparkWeightdAttachPackLazyEnv(const SparkWeightdPackSlice *slice,
+    const char *pack_path, uint64_t expert_pool_bytes,
+    SparkWeightdClient **client_out, uint64_t timeout_nanoseconds,
+    SparkWeightdLazyAttachResult *result,
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES])
+{
+    SparkWeightdLazyAttachRequest request;
+    SparkWeightdIdentity identity;
+    const char *socket;
+    const char *digest;
+    const char *model;
+    const char *revision;
+    SparkStatus status;
+
+    if (client_out == 0 || result == 0 || slice == 0 || pack_path == 0 ||
+        pack_path[0] == '\0' || expert_pool_bytes == 0ull)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (SparkWeightdAttachRequested() != SPARK_STATUS_OK)
+    {
+        SparkWeightdAttachSetReason(reason, "attach_config");
+        return SPARK_STATUS_BUSY;
+    }
+    socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+    if (socket == 0)
+    {
+        SparkWeightdAttachSetReason(reason, "no_socket");
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+    if (digest == 0)
+    {
+        SparkWeightdAttachSetReason(reason, "no_identity");
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(&identity, 0, sizeof(identity));
+    model = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_MODEL);
+    revision = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_REVISION);
+    model = model != 0 ? model : slice->model;
+    revision = revision != 0 ? revision : slice->revision;
+    revision = revision != 0 ? revision : "";
+    if (model == 0)
+    {
+        SparkWeightdAttachSetReason(reason, "no_identity");
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memcpy(identity.model, model,
+        strlen(model) + 1u <= SPARK_WEIGHTD_ID_BYTES
+            ? strlen(model) + 1u
+            : SPARK_WEIGHTD_ID_BYTES);
+    memcpy(identity.revision, revision,
+        strlen(revision) + 1u <= SPARK_WEIGHTD_REVISION_BYTES
+            ? strlen(revision) + 1u
+            : SPARK_WEIGHTD_REVISION_BYTES);
+    memcpy(identity.pack_sha256, digest,
+        strlen(digest) + 1u <= SPARK_WEIGHTD_SHA256_HEX_BYTES
+            ? strlen(digest) + 1u
+            : SPARK_WEIGHTD_SHA256_HEX_BYTES);
+    identity.topology = slice->topology;
+    identity.geometry_fingerprint = slice->geometry_fingerprint;
+    identity.arena_bytes = slice->pack_bytes;
+    identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    if (SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK)
+    {
+        SparkWeightdAttachSetReason(reason, "identity");
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    memset(result, 0, sizeof(*result));
+    status = SparkWeightdClientConnect(socket, client_out, 0);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkWeightdAttachSetReason(reason, "connect");
+        return status;
+    }
+    memset(&request, 0, sizeof(request));
+    request.identity = identity;
+    memcpy(request.pack_path, pack_path,
+        strlen(pack_path) + 1u <= SPARK_WEIGHTD_PATH_BYTES
+            ? strlen(pack_path) + 1u
+            : SPARK_WEIGHTD_PATH_BYTES);
+    request.expert_pool_bytes = expert_pool_bytes;
+    status = SparkWeightdClientAttachLazy(*client_out, &request, result,
+        timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK || result->status != SPARK_STATUS_OK)
+    {
+        SparkWeightdAttachSetReason(reason, "attach_lazy");
+        return status != SPARK_STATUS_OK ? status
+            : (SparkStatus)result->status;
+    }
+    return SPARK_STATUS_OK;
 }
