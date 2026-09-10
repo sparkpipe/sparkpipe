@@ -333,3 +333,23 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
   module/common diff (keep receipts+env fold) to split the space, or printf
   ladder in ReduceHiddenWide; also try COMPUTECHECK/cuda-gdb.
 - Fleet boots are fast now (receipts) so bisect cycles are ~90s each.
+
+
+## Iteration 11 (09-11 ~15:30, lane e8cc397) — TWO crash-class bugs fixed
+
+1. SEGFAULT ROOT-CAUSED AND FIXED: unbounded recursion — the inline engine
+   fired the module completion INSIDE the submit frame (ReduceHiddenWide ->
+   SubmitInternal -> completion -> TpChainAdvance -> ReduceHiddenWide ...)
+   until stack exhaustion. Full gdb bt in /tmp/segfault.bt proved the cycle.
+   Fix: completions leave the submit frame via a dedicated drain thread with a
+   queue (round stays inline; only the callback defers). Zero segfaults since.
+2. STALL ROOT-CAUSED AND FIXED: one transient RDMA failure flushes the RC QP
+   into permanent error state (30x IBV_WC_WR_FLUSH_ERR on rank 6; rounds 1-2
+   delivered, round 3+ dead both directions). Fix: QP self-repair — the
+   doorbell loop rewires via TryWire and retries a failed post once; the CQ
+   drain triggers rewire on flush errors. Records/mapping survive rewire.
+- VERIFIED: 32-token request served (20.26s warm = the pre-drift best is BACK),
+  20/20 stress, 0 segfaults. rc=712 hypothesis retired (distinct bug, fixed
+  differently; revisit host-registered round later if wanted).
+- NEXT: the perf ladder resumes — re-measure COMPSEC baseline, then chunked
+  prefill, numerics gate, Stage B.
