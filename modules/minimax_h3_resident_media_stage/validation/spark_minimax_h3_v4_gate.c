@@ -58,7 +58,7 @@ static void SparkMinimaxH3V4LoadWeight(float **target, const char *dir,
 	const char *prefix, const char *name, uint64_t elements)
 {
 	char full[512];
-	snprintf(full,sizeof(full),"%s%s",prefix,name);
+	snprintf(full,sizeof(full),"%s%s.bin",prefix,name);
 	*target = (float *)SparkMinimaxH3V4ReadBin(dir,full,elements * 4u);
 }
 
