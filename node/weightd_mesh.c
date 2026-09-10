@@ -58,6 +58,8 @@ typedef struct SparkWeightdMesh
     uint64_t send_ok;
     uint64_t send_err;
     uint64_t send_logged;
+    uint64_t seq_storage;
+    struct ibv_mr *seq_mr;
     uint32_t mesh_active;
     uint32_t mesh_ready;
     uint32_t local_rank;
@@ -390,6 +392,14 @@ SparkStatus SparkWeightdMeshInit(void)
         fprintf(stderr,"weightd-mesh: mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
+    weightd_mesh.seq_mr = ibv_reg_mr(weightd_mesh.protection_domain,
+        &weightd_mesh.seq_storage,sizeof(weightd_mesh.seq_storage),
+        IBV_ACCESS_LOCAL_WRITE);
+    if (weightd_mesh.seq_mr == 0)
+    {
+        fprintf(stderr,"weightd-mesh: seq mr failed errno=%d\n",errno);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
     memset(&qp_attributes,0,sizeof(qp_attributes));
     qp_attributes.send_cq = weightd_mesh.cq;
     qp_attributes.recv_cq = weightd_mesh.cq;
@@ -532,9 +542,11 @@ uint32_t SparkWeightdMeshBroadcast(
     uint32_t peer_rank_mask,
     uint64_t source_offset,
     uint32_t length,
-    uint64_t remote_offset)
+    uint64_t remote_offset,
+    uint64_t seq_value,
+    uint64_t seq_remote_offset)
 {
-    struct ibv_sge scatter;
+    struct ibv_sge scatter[2];
     struct ibv_send_wr work_request;
     struct ibv_send_wr *bad;
     uint32_t rank;
@@ -542,11 +554,19 @@ uint32_t SparkWeightdMeshBroadcast(
 
     if (weightd_mesh.mesh_ready == 0u)
         return 0u;
-    memset(&scatter,0,sizeof(scatter));
-    scatter.addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer +
+    if ( seq_remote_offset != 0ull && weightd_mesh.seq_mr != 0 )
+    {
+        weightd_mesh.seq_storage = seq_value;
+        memset(&scatter[1],0,sizeof(scatter[1]));
+        scatter[1].addr = (uint64_t)(uintptr_t)&weightd_mesh.seq_storage;
+        scatter[1].length = sizeof(weightd_mesh.seq_storage);
+        scatter[1].lkey = weightd_mesh.seq_mr->lkey;
+    }
+    memset(&scatter[0],0,sizeof(scatter[0]));
+    scatter[0].addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer +
         source_offset;
-    scatter.length = length;
-    scatter.lkey = weightd_mesh.recv_mr->lkey;
+    scatter[0].length = length;
+    scatter[0].lkey = weightd_mesh.recv_mr->lkey;
     for (rank = 0u; rank < SparkWeightdMeshRankCount(); rank++)
     {
         int32_t peer;
@@ -557,7 +577,7 @@ uint32_t SparkWeightdMeshBroadcast(
             continue;
         memset(&work_request,0,sizeof(work_request));
         work_request.wr_id = (uint64_t)(uint32_t)peer;
-        work_request.sg_list = &scatter;
+        work_request.sg_list = &scatter[0];
         work_request.num_sge = 1;
         work_request.opcode = IBV_WR_RDMA_WRITE;
         work_request.send_flags = IBV_SEND_SIGNALED;
@@ -566,7 +586,24 @@ uint32_t SparkWeightdMeshBroadcast(
         work_request.wr.rdma.rkey = weightd_mesh.qp_info[peer].rkey;
         if (ibv_post_send(weightd_mesh.send_qps[peer],
                 &work_request,&bad) == 0)
+        {
             posted++;
+        if ( seq_remote_offset != 0ull && weightd_mesh.seq_mr != 0 )
+        {
+            struct ibv_send_wr seq_request;
+            memset(&seq_request,0,sizeof(seq_request));
+            seq_request.wr_id = (uint64_t)(uint32_t)peer;
+            seq_request.sg_list = &scatter[1];
+            seq_request.num_sge = 1;
+            seq_request.opcode = IBV_WR_RDMA_WRITE;
+            seq_request.send_flags = 0;
+            seq_request.wr.rdma.remote_addr =
+                weightd_mesh.qp_info[peer].remote_addr + seq_remote_offset;
+            seq_request.wr.rdma.rkey = weightd_mesh.qp_info[peer].rkey;
+            (void)ibv_post_send(weightd_mesh.send_qps[peer],
+                &seq_request,&bad);
+        }
+        }
     }
     return posted;
 }

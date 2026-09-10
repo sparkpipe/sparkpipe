@@ -56,7 +56,8 @@ extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset);
 extern uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
-    uint64_t source_offset, uint32_t length, uint64_t remote_offset);
+    uint64_t source_offset, uint32_t length, uint64_t remote_offset,
+    uint64_t seq_value, uint64_t seq_remote_offset);
 
 __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
@@ -71,9 +72,11 @@ __attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     return SPARK_STATUS_UNSUPPORTED;
 }
 __attribute__((weak)) uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
-    uint64_t source_offset, uint32_t length, uint64_t remote_offset)
+    uint64_t source_offset, uint32_t length, uint64_t remote_offset,
+    uint64_t seq_value, uint64_t seq_remote_offset)
 {
     (void)peer_mask;(void)source_offset;(void)length;(void)remote_offset;
+    (void)seq_value;(void)seq_remote_offset;
     return 0u;
 }
 
@@ -1927,7 +1930,9 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
             broadcast->peer_mask,
             broadcast->source_offset,
             broadcast->length,
-            broadcast->remote_offset);
+            broadcast->remote_offset,
+            broadcast->seq_value,
+            broadcast->seq_remote_offset);
         result->status = result->posted_count != 0u ?
             (uint32_t)SPARK_STATUS_OK :
             (uint32_t)SPARK_STATUS_BUSY;
@@ -2887,6 +2892,8 @@ SparkStatus SparkWeightdClientMeshBroadcast(
     uint64_t source_offset,
     uint64_t remote_offset,
     uint32_t length,
+    uint64_t seq_value,
+    uint64_t seq_remote_offset,
     uint64_t timeout_nanoseconds)
 {
     SparkWeightdIpcMeshBroadcast wire;
@@ -2906,6 +2913,8 @@ SparkStatus SparkWeightdClientMeshBroadcast(
     wire.source_offset = source_offset;
     wire.remote_offset = remote_offset;
     wire.length = length;
+    wire.seq_value = seq_value;
+    wire.seq_remote_offset = seq_remote_offset;
     memset(&wire_result, 0, sizeof(wire_result));
     status = SparkWeightdClientExchange(client, &wire,
         (uint32_t)sizeof(wire), &wire_result,

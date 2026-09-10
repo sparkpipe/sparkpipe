@@ -244,6 +244,8 @@ typedef struct SparkWeightdIpcMeshBroadcast
     uint64_t remote_offset;
     uint32_t length;
     uint32_t reserved2;
+    uint64_t seq_value;
+    uint64_t seq_remote_offset;
 } SparkWeightdIpcMeshBroadcast;
 
 typedef struct SparkWeightdIpcMeshBroadcastResult
@@ -476,6 +478,8 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
     uint64_t source_offset,
     uint64_t remote_offset,
     uint32_t length,
+    uint64_t seq_value,
+    uint64_t seq_remote_offset,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,

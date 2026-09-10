@@ -180,28 +180,23 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             return SPARK_STATUS_IO_ERROR;
         SparkTpDeviceCollectivePhase("d2h",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
-        *(uint64_t *)(scratch + slot_bytes - 8u) = ordinal + 1u;
+    {
+        uint64_t slot_base = implementation->band_base +
+            (uint64_t)implementation->tp_rank * slot_bytes;
+        SparkStatus write_status = SparkWeightdClientMeshBroadcast(
+            implementation->client,0xFFFFu,slot_base,slot_base,
+            (uint32_t)bytes,ordinal + 1u,
+            slot_base + slot_bytes - 8u,timeout_nanoseconds);
+        if ( write_status != SPARK_STATUS_OK )
         {
-            uint64_t slot_base = implementation->band_base +
-                (uint64_t)implementation->tp_rank * slot_bytes;
-            SparkStatus write_status = SparkWeightdClientMeshBroadcast(
-                implementation->client,0xFFFFu,slot_base,slot_base,
-                (uint32_t)bytes,timeout_nanoseconds);
-            if ( write_status == SPARK_STATUS_OK )
-                write_status = SparkWeightdClientMeshBroadcast(
-                    implementation->client,0xFFFFu,
-                    slot_base + slot_bytes - 8u,slot_base + slot_bytes - 8u,
-                    8u,timeout_nanoseconds);
-            if ( write_status != SPARK_STATUS_OK )
+            if ( write_status == SPARK_STATUS_IO_ERROR )
             {
-                if ( write_status == SPARK_STATUS_IO_ERROR )
-                {
-                    fprintf(stderr,"MESH-BROADCAST-IO: exiting\n");
-                    _exit(1);
-                }
-                return write_status;
+                fprintf(stderr,"MESH-BROADCAST-IO: exiting\n");
+                _exit(1);
             }
+            return write_status;
         }
+    }
         SparkTpDeviceCollectivePhase("broadcast",mark);
         mark = SparkTpDeviceCollectiveTimeNs();
         for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
