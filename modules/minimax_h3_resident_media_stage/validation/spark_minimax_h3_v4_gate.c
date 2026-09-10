@@ -472,12 +472,16 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
 		SparkMinimaxH3V4LoadWeight(&proj_bias,weight_dir,"decoder_","proj_out_bias",
 			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
+		SparkMinimaxH3V4Stats("norm_out_w",norm_weight,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
+		SparkMinimaxH3V4Stats("proj_out_w",proj_weight,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
 		SparkMinimaxH3V4LayerNorm(proj_out,hidden,norm_weight,norm_bias,
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			SPARK_MINIMAX_H3_V4_VIDEO_EPS);
+		SparkMinimaxH3V4Stats("post_layernorm",proj_out,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
 		SparkMinimaxH3V4Gem(pixels,SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,
 			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			proj_out,proj_weight,proj_bias);
+		SparkMinimaxH3V4Stats("pixels",pixels,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
 		free(norm_weight); free(norm_bias); free(proj_weight); free(proj_bias);
 	}
 	for (frame=0u; frame<SPARK_MINIMAX_H3_V4_VIDEO_FRAMES; frame++)
