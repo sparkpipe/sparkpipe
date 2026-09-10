@@ -9,8 +9,7 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(REPOSITORY_ROOT)/model-families/minimax_h3/src/spark_minimax_h3_scheduler.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 MINIMAX_H3_MODEL_REVISION := 42ed227ee7df40d41602854ae760620d6eb651fe
 MINIMAX_H3_DIFFUSERS_COMMIT := 3c22124636a332a0df02910f609315d4c2898f57
 MINIMAX_H3_SHA256 := $(shell command -v shasum >/dev/null 2>&1 && echo "shasum -a 256" || echo "sha256sum")
