@@ -135,6 +135,11 @@ typedef struct SparkGemma4ModuleState
 	const void *layer_post_attention_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	const void *layer_pre_feedforward_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	const void *layer_post_feedforward_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+	const void *layer_post_feedforward_1_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_pre_feedforward_2_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_post_feedforward_2_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+#endif
 	SparkGemma4SlidingLayerWeights sliding_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	SparkGemma4FullLayerWeights full_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	SparkGemma4DenseMlpWeights mlp_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
@@ -400,6 +405,11 @@ static SparkStatus SparkGemma4ModuleBindLayer(SparkGemma4ModuleState *state, con
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_ATTENTION_NORM: state->layer_post_attention_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM: state->layer_pre_feedforward_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM: state->layer_post_feedforward_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_1: state->layer_post_feedforward_1_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM_2: state->layer_pre_feedforward_2_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_2: state->layer_post_feedforward_2_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+#endif
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_GATE_UP: SparkGemma4ModuleFillLinearView(&state->mlp_by_layer[layer].gate_up,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_DOWN: SparkGemma4ModuleFillLinearView(&state->mlp_by_layer[layer].down,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_SLIDING_QUERY: SparkGemma4ModuleFillLinearView(&sliding->query,entry,payload,scale); return(SPARK_STATUS_OK);
@@ -1064,7 +1074,11 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	{
 		const SparkGemma4MoeLayerWeights *moe = &state->moe_by_layer[layer];
-		cudaError_t error = SparkGemma4LaunchHeadRmsNorm(stream,slot->hidden_bf16,0,slot->branch_bf16,rows,1u,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+		cudaError_t error = SparkGemma4LaunchRmsNorm(stream,slot->mlp_down_bf16,state->layer_post_feedforward_1_norm_by_layer[layer],slot->mlp_down_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+		if ( error == cudaSuccess )
+			error = SparkGemma4LaunchRmsNorm(stream,slot->hidden_bf16,state->layer_pre_feedforward_2_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+		if ( error == cudaSuccess )
+			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->hidden_bf16,0,slot->branch_bf16,rows,1u,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchGateScores(stream,&moe->router_proj,slot->branch_bf16,slot->moe_scores_f32,rows);
 		if ( error == cudaSuccess )
@@ -1081,6 +1095,8 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 			error = SparkGemma4LaunchGroupedExpertLinear(stream,&moe->experts_down,slot->moe_gate_packed_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count,state->tp_degree,state->tp_rank,0u,slot->frame_error);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->branch_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION);
+		if ( error == cudaSuccess )
+			error = SparkGemma4LaunchRmsNorm(stream,slot->branch_bf16,state->layer_post_feedforward_2_norm_by_layer[layer],slot->branch_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchBranchAdd(stream,slot->mlp_down_bf16,slot->branch_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION);
 		if ( error != cudaSuccess )

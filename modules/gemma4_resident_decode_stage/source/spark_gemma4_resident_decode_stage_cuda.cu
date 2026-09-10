@@ -95,8 +95,9 @@ extern "C" cudaError_t SparkGemma4LaunchHeadRmsNorm(cudaStream_t stream, const v
 
 extern "C" cudaError_t SparkGemma4LaunchLinear(cudaStream_t stream, const SparkGemma4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	if ( view->weight_format == SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 && row_count >= 2u * SPARK_LM_TILE && view->input_dimension > SPARK_LM_TILE_K && view->output_dimension != 0u )
-		return(SparkLmHostLaunchBatchedLinearMloop(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
+	(void)row_count;
+	if ( view == 0 || view->weight_payload == 0 || view->input_dimension == 0u || view->output_dimension == 0u )
+		return(cudaErrorInvalidValue);
 	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
@@ -124,7 +125,7 @@ static __device__ __forceinline__ float SparkGemma4GeluTanh(float value)
 	return(0.5f * value * (1.0f + tanhf(0.7978845608028654f * (value + 0.044715f * cube))));
 }
 
-static __global__ void SparkGemma4GatedGeluKernel(const void *gate_up_bf16, uint32_t row_count, uint32_t intermediate)
+static __global__ void SparkGemma4GatedGeluKernel(void *gate_up_bf16, uint32_t row_count, uint32_t intermediate)
 {
 	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t row = (uint32_t)(index / intermediate),element = (uint32_t)(index % intermediate);
@@ -378,8 +379,8 @@ extern "C" cudaError_t SparkGemma4LaunchMoePairReduceOverwrite(cudaStream_t stre
 extern "C" cudaError_t SparkGemma4ConfigureCudaKernels(void)
 {
 	uint32_t widest = SPARK_GEMMA4_MODEL_FULL_QUERY_DIMENSION;
-	if ( 2u * SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION > widest )
-		widest = 2u * SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION;
+	if ( SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION > widest )
+		widest = SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION;
 	return(cudaFuncSetAttribute(
 		(const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
 		cudaFuncAttributeMaxDynamicSharedMemorySize,

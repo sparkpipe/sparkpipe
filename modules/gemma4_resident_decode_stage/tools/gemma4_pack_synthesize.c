@@ -143,15 +143,20 @@ int main(int argc, char **argv)
 	for (index = context.first_layer_index; index < context.first_layer_index + context.layer_count; index++)
 	{
 		uint32_t kind;
-		uint32_t layer_kinds[16];
+		uint32_t layer_kinds[20];
 		uint32_t layer_kind_count = 0u;
-		uint32_t norm_kinds[4] = {
+		uint32_t norm_kinds[7] = {
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_INPUT_NORM,
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_ATTENTION_NORM,
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM,
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+			,SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_1,
+			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM_2,
+			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_2
+#endif
 		};
-		for (kind = 0u; kind < 4u; kind++)
+		for (kind = 0u; kind < (uint32_t)(sizeof(norm_kinds) / sizeof(norm_kinds[0])); kind++)
 			layer_kinds[layer_kind_count++] = norm_kinds[kind];
 		layer_kinds[layer_kind_count++] = SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_GATE_UP;
 		layer_kinds[layer_kind_count++] = SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_DOWN;

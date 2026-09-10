@@ -5,7 +5,7 @@ MODEL_HEADER := ../../model-families/gemma4/include/sparkpipe/spark_gemma4_model
 MODULE_ENTRY_PREFIX := SparkGemma4ResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_cuda.cu
-include $(REPOSITORY_ROOT)/runtime/weightd_sources.mk
+include ../../runtime/weightd_sources.mk
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
