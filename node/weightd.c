@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <cuda_runtime.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
@@ -179,7 +178,6 @@ int main(int argument_count, char **arguments)
 
     {
         static pthread_t mesh_thread;
-        cudaFree(0);
         if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
             fprintf(stderr, "weightd-mesh: thread create failed\n");
     }
