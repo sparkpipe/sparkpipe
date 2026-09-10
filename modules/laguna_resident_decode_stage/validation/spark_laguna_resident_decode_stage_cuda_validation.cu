@@ -98,9 +98,9 @@ int main(int argc,char **argv)
 	snprintf(path,sizeof(path),"%s_yarn_table.txt",dump_prefix);
 	if ( ValidationDumpF32(path,host_yarn,(uint32_t)(sizeof(host_yarn) / sizeof(host_yarn[0]))) != 0 )
 		return(2);
-	if ( host_yarn[0] <= 1.0f )
+	if ( host_yarn[0] < 1.0f )
 	{
-		fprintf(stderr,"laguna validation: yarn inv_freq[0] must exceed 1 (theta^0 blended toward theta^-0)\n");
+		fprintf(stderr,"laguna validation: yarn inv_freq[0] must be 1 (theta^0, zero blend at index 0)\n");
 		return(1);
 	}
 	if ( host_yarn[SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION / 2u - 1u] >= 1.0f )

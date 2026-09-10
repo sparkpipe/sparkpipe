@@ -328,6 +328,8 @@ static void SparkLagunaPackMarkSeen(
 	SparkLagunaModuleState *state,
 	const SparkLagunaStagePackEntry *entry)
 {
+	if ( entry->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT )
+		return;
 	if ( entry->layer_index == SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER )
 		state->global_seen |= UINT64_C(1) << entry->tensor_kind;
 	else
