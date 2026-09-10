@@ -185,7 +185,6 @@ sync_rendezvous() {
             rm -f /tmp/qpn_idx.$$.$peer
         ) &
     done
-    wait
 }
 
 apply_manifest() {
