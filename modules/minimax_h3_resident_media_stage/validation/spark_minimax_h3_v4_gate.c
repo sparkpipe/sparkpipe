@@ -438,6 +438,10 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 	hidden = (float *)malloc(hidden_elements * 4u);
 	SparkMinimaxH3V4VideoRope(cos_angles,sin_angles);
 	SparkMinimaxH3V4Stats("tokens_in",tokens,hidden_elements);
+	SparkMinimaxH3V4CompareStageF32("refv_rope_cos__33x48.f32",cos_angles,
+		(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * 48u);
+	SparkMinimaxH3V4CompareStageF32("refv_rope_sin__33x48.f32",sin_angles,
+		(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * 48u);
 	SparkMinimaxH3V4Stats("weights_postquant_w",post_quant_weight,576u);
 	memcpy(hidden,tokens,hidden_elements * 4u);
 	for (block=0u; block<SPARK_MINIMAX_H3_V4_VIDEO_BLOCKS; block++)
@@ -972,6 +976,12 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
+					if ( stage == 0u && block == 0u && dilation_index == 0u &&
+						pass == 0u )
+						SparkMinimaxH3V4CompareStageF32(
+							"refa_s0_a0__2x512x20.f32",activation_buffer,
+							(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+							out_channels * output_length);
 					snprintf(act_prefix,sizeof(act_prefix),"%sconvs%u_%u_",prefix,
 						pass + 1u,dilation_index);
 					SparkMinimaxH3V4LoadWeight(&weight_bg,weight_dir,act_prefix,

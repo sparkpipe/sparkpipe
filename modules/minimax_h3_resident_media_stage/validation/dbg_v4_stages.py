@@ -86,6 +86,8 @@ def main():
     suffix = position_ids.new_zeros((b, 5, 3))
     position_ids = torch.cat([position_ids, suffix], dim=1)
     cos, sin = ref.vae_video_rope(position_ids, 48, 100.0)
+    dump("refv_rope_cos", cos[0])
+    dump("refv_rope_sin", sin[0])
     for i in range(VIDEO_BLOCKS):
         p = "decoder.transformer_blocks.%d." % i
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm1.weight"), 1e-5).to(x.dtype)
@@ -160,9 +162,11 @@ def main():
             w["%s.act.beta" % prefix])
         return ref.audio_lowpass(t, w["%s.downsample.lowpass.filter" % prefix], 2, 12)
 
-    def amp_block(t, w, prefix, kernel_size, dilation, marks):
+    def amp_block(t, w, prefix, kernel_size, dilation, marks, act_marks=()):
         for idx, dil in enumerate(dilation):
             a1 = act1(t, "%s.activations.%d" % (prefix, 2 * idx))
+            if (2 * idx) in act_marks:
+                dump_full("refa_s0_a%d" % (2 * idx), a1)
             r = F.conv1d(a1, ref.wn_weight(w["%s.convs1.%d.weight_g" % (prefix, idx)],
                 w["%s.convs1.%d.weight_v" % (prefix, idx)]),
                 w["%s.convs1.%d.bias" % (prefix, idx)], dilation=dil,
@@ -195,7 +199,9 @@ def main():
         for j in range(3):
             prefix = "decoder.resblocks.%d" % (i * 3 + j)
             r = amp_block(h, w, prefix, w["_resblock_kernel_sizes"][j],
-                w["_resblock_dilation_sizes"][j], (0, 1, 2) if i == 0 and j == 0 else ())
+                w["_resblock_dilation_sizes"][j],
+                (0, 1, 2) if i == 0 and j == 0 else (),
+                (0, 1) if i == 0 and j == 0 else ())
             if i == 0 and j in (0, 1, 2):
                 dump_full("refa_s0_b%d" % j, r)
             if i == 1 and j in (0, 1, 2):
