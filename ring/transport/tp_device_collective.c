@@ -221,25 +221,26 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         (size_t)bytes);
     {
         uint64_t *seq_slot = (uint64_t *)((uint8_t *)
-            implementation->mesh_buffer + MESH_SLOT_BYTES - 8);
+            implementation->mesh_buffer + bytes);
         *seq_slot = ordinal + 1u;
     }
     {
         uint32_t peer;
         uint32_t peer_rank;
         uint64_t remote_base;
+        uint64_t slot_stride = bytes + 8u;
         for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
         {
             peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
             remote_base = (uint64_t)(collective->tp_rank < peer_rank ?
                 collective->tp_rank : collective->tp_rank - 1u) *
-                (uint64_t)bytes;
+                slot_stride;
             SparkStatus ws = SparkWeightdClientMeshWrite(
                 implementation->client,
                 peer_rank,
                 MESH_SCRATCH_OFFSET,
                 remote_base,
-                (uint32_t)bytes,
+                (uint32_t)(bytes + 8u),
                 (uint64_t)collective->operation_timeout_milli * 1000000ull);
             if ( ws != SPARK_STATUS_OK )
                 SPARK_RETURN(ws);
@@ -248,11 +249,12 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     {
         volatile uint64_t *seq;
         uint32_t peer;
+        uint64_t slot_stride = bytes + 8u;
         for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
         {
             seq = (volatile uint64_t *)((uint8_t *)
                 implementation->mesh_buffer +
-                (uint64_t)(peer + 1u) * (uint64_t)bytes);
+                (uint64_t)(peer + 1u) * slot_stride + bytes);
             while ( *seq < ordinal + 1u )
             {
                 struct timespec pause = {0,100000};
@@ -271,7 +273,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         {
             uint16_t *peer_data = (uint16_t *)((uint8_t *)
                 implementation->mesh_buffer +
-                (uint64_t)(peer + 1u) * (uint64_t)bytes);
+                (uint64_t)(peer + 1u) * (bytes + 8u));
             for (i = 0u; i < count; i++)
             {
                 int32_t a = (int32_t)(int16_t)result[i];
