@@ -7,6 +7,8 @@
 #include <cuda_runtime_api.h>
 #include <errno.h>
 #include <string.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -65,7 +67,8 @@ static void spine_receipt_path(char *out,size_t out_bytes,int32_t fd,
 {
 	struct stat st;
 	SparkSha256Context hash;
-	uint8_t digest[32],hex[SPARK_SHA256_HEX_BYTES];
+	uint8_t digest[32];
+	char hex[SPARK_SHA256_HEX_BYTES];
 	if ( fstat(fd,&st) != 0 )
 	{
 		snprintf(out,out_bytes,"/tmp/spine-receipt-invalid");
