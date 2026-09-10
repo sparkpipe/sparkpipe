@@ -216,3 +216,18 @@ Danger notes: cudaMalloc in weightd needs the primary context (call
 cudaSetDevice(0)+cudaFree(0) trick in main before the mesh thread); IPC
 handle lifetime = weightd process (mesh re-wire keeps allocation, only QPs
 re-transition); engine must cudaIpcCloseMemHandle at Destroy.
+
+
+## Hill-climb iteration 6 (09-11 ~07:40, lane 8c57291) — third reliability defect
+
+- Found: the api connects its engine ONLY at startup — a residentd restart
+  mid-connection left every request failing status 4 forever (engine_completed=0,
+  boot_pid pinned to the dead residentd). Fix: the agent's ensure_api kills any
+  api that PREDATES the running residentd (start clock ticks from /proc stat
+  field 22; /proc dir mtime proved unreliable) and the gate relaunches it.
+- sparke REBOOTED (~262s uptime; the 15-min boot guard held autospawn by
+  design). Fleet rides 15/16 until its window opens, then mesh re-ships records
+  and everything converges. NEXT RUN: verify serving end-to-end post-reboot,
+  measure warm 32-tok (expect ~20.3s baseline), then START THE STAGE A/B BUILD
+  per the function-level order above (GPU-resident mesh + stream-ordered
+  rounds) — that is the operator directive.
