@@ -55,6 +55,23 @@ extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
 extern uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
     uint64_t source_offset, uint32_t length, uint64_t remote_offset);
 
+__attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
+__attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
+__attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
+__attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
+    uint64_t local_addr, uint32_t lkey, uint32_t length,
+    uint64_t remote_offset)
+{
+    (void)peer;(void)local_addr;(void)lkey;(void)length;(void)remote_offset;
+    return SPARK_STATUS_UNSUPPORTED;
+}
+__attribute__((weak)) uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
+    uint64_t source_offset, uint32_t length, uint64_t remote_offset)
+{
+    (void)peer_mask;(void)source_offset;(void)length;(void)remote_offset;
+    return 0u;
+}
+
 #include <cuda_runtime.h>
 #include <cuda.h>
 
