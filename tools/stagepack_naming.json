@@ -11,7 +11,8 @@
     "k3",
     "hy4",
     "ling",
-    "lingfin"
+    "lingfin",
+    "dsv41flash"
   ],
   "quants": [
     "bf16",

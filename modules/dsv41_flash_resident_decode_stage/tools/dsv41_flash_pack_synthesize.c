@@ -71,10 +71,14 @@ static int synth_align(SynthState *synth)
 
 static uint64_t synth_plane_bytes(uint32_t kind,const SparkDsv41FlashStagePackTensorShape *shape,uint32_t plane)
 {
-	uint64_t per_group;
+	uint64_t per_group,width;
 	(void)kind;
 	if ( plane == 0u )
-		per_group = (uint64_t)shape->rows * shape->columns;
+	{
+		width = shape->payload_type == SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16 ? 2u :
+			shape->payload_type == SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_F32 ? 4u : 1u;
+		per_group = (uint64_t)shape->rows * shape->columns * width;
+	}
 	else if ( shape->weight_codec == SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
 		per_group = (uint64_t)shape->rows * ((uint64_t)shape->columns * 2u / 32u);
 	else if ( shape->scale_encoding == SPARK_WEIGHT_SCALE_ENCODING_E8M0 )
