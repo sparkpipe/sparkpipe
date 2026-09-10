@@ -47,6 +47,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
@@ -2465,7 +2469,8 @@ static SparkStatus SparkWeightdClientWriteAll(SparkWeightdClient *client,
     uint32_t written = 0u;
     while (written < bytes)
     {
-        ssize_t chunk = write(client->fd, buffer + written, bytes - written);
+        ssize_t chunk = send(client->fd, buffer + written, bytes - written,
+            MSG_NOSIGNAL);
         int timeout_ms;
         if (chunk < 0)
         {
@@ -2615,6 +2620,18 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
         free(instance);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+#if defined(SO_NOSIGPIPE)
+    {
+        int enable = 1;
+        if (setsockopt(instance->fd, SOL_SOCKET, SO_NOSIGPIPE, &enable,
+                sizeof(enable)) != 0)
+        {
+            (void)close(instance->fd);
+            free(instance);
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+        }
+    }
+#endif
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, socket_path, strlen(socket_path) + 1u);
