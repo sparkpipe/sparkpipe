@@ -26,6 +26,9 @@
 #ifndef GLM52_CONTRACT_SHA256
 #error "GLM52_CONTRACT_SHA256 must identify the exact package contract"
 #endif
+#ifndef GLM52_MODEL_DESCRIPTION_SHA256
+#error "GLM52_MODEL_DESCRIPTION_SHA256 must identify the exact model description"
+#endif
 
 /* Deployment-facing geometry: FLAT_RANKS flat ranks, one per TP rank,
  * single PP stage. The residentd fans each submission out to every rank
@@ -549,7 +552,7 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 	request.contract.driver_model_revision = GLM52_MODEL_REVISION;
 	request.contract.driver_stage_name = SPARK_GLM52_SERVING_STAGE_NAME;
 	request.contract.driver_target = SPARK_GLM52_SERVING_TARGET;
-	request.contract.model_description_sha256 = GLM52_CONTRACT_SHA256;
+	request.contract.model_description_sha256 = GLM52_MODEL_DESCRIPTION_SHA256;
 	request.node_context = &state->node_context;
 	request.completion_context = state;
 	request.completion_function = SparkGlm52ServingOrphanDriverCompletion;
