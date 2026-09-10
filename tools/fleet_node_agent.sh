@@ -117,17 +117,9 @@ start_root() {
     [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
-    local cap="${FLEET_RESIDENTD_MEMORY_MAX:-34359738368}"
-    if [ "$cap" != 0 ] && command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --user --quiet --scope -p MemoryMax="$cap" \
-            env LD_LIBRARY_PATH="$rr/lib" ./bin/sparkpipe_model_residentd \
-            --deployment model_resident.json --rank-index "$RANK" \
-            > residentd.log 2>&1 < /dev/null &
-    else
-        LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
-            --deployment model_resident.json --rank-index "$RANK" \
-            > residentd.log 2>&1 < /dev/null &
-    fi
+    LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
+        --deployment model_resident.json --rank-index "$RANK" \
+        > residentd.log 2>&1 < /dev/null &
     report
 }
 
