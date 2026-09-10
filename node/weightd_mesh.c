@@ -58,6 +58,7 @@ typedef struct SparkWeightdMesh
     uint64_t send_ok;
     uint64_t send_err;
     uint64_t send_logged;
+    uint32_t mesh_active;
     uint32_t mesh_ready;
     uint32_t local_rank;
 } SparkWeightdMesh;
@@ -439,6 +440,7 @@ SparkStatus SparkWeightdMeshInit(void)
         return SPARK_STATUS_IO_ERROR;
     printf("weightd-mesh: published; wiring continues as peers appear\n");
     fflush(stdout);
+    weightd_mesh.mesh_active = 1u;
     return SPARK_STATUS_BUSY;
 }
 
@@ -453,6 +455,8 @@ void SparkWeightdMeshPoll(void)
     int completed;
     int index;
 
+    if (weightd_mesh.mesh_active == 0u)
+        return;
     if (weightd_mesh.mesh_ready == 0u)
     {
         SparkWeightdMeshTryWire();
