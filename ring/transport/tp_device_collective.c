@@ -161,7 +161,6 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     uint32_t operation_kind,
     void *event)
 {
-    SparkTpDeviceCollectiveSubmission *submission;
     uint64_t bytes;
     uint64_t ordinal;
     uint64_t deadline;
