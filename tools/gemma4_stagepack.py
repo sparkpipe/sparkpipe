@@ -110,7 +110,7 @@ GEOMETRY = {
  KIND_FULL_K_NORM, KIND_MLP_GATE_UP, KIND_MLP_DOWN, KIND_ROPE_TABLE,
  KIND_ROUTER_PROJ, KIND_PER_EXPERT_SCALE, KIND_EXPERT_GATE_UP,
  KIND_EXPERT_DOWN, KIND_POST_FF_1_NORM, KIND_PRE_FF_2_NORM,
- KIND_POST_FF_2_NORM) = range(26)
+ KIND_POST_FF_2_NORM, KIND_LAYER_SCALAR) = range(27)
 
 BASE_NORM_KINDS = (KIND_INPUT_NORM, KIND_POST_ATTENTION_NORM,
                    KIND_PRE_FF_NORM, KIND_POST_FF_NORM)
@@ -135,8 +135,11 @@ def bf16_blocks_to_f32(packed: bytes) -> bytes:
 
 def read_matrix(source: SafetensorsSource, name: str, rows: int, columns: int,
                 row_start: int = 0, row_count: int | None = None,
-                column_start: int = 0, column_count: int | None = None) -> bytes:
-    """Stream a bf16 row/column slice of one safetensors tensor."""
+                column_start: int = 0, column_count: int | None = None,
+                expected_shape: list | None = None) -> bytes:
+    """Stream a bf16 row/column slice of one safetensors tensor. A 3-D (or
+    higher) checkpoint tensor is addressed flattened: leading dimensions fold
+    into rows, the last dimension is columns."""
     if column_count is None:
         column_count = columns - column_start
     if row_count is None:
@@ -145,8 +148,16 @@ def read_matrix(source: SafetensorsSource, name: str, rows: int, columns: int,
     dtype, shape = meta["dtype"], meta["shape"]
     if dtype != "BF16":
         raise PackFailure(f"{name}: dtype {dtype}, expected BF16 (never quantize)")
-    if len(shape) != 2 or shape[0] != rows or shape[1] != columns:
-        raise PackFailure(f"{name}: shape {shape}, expected [{rows}, {columns}]")
+    if expected_shape is None:
+        expected_shape = [rows, columns]
+    if shape != expected_shape:
+        raise PackFailure(f"{name}: shape {shape}, expected {expected_shape}")
+    shape_product = 1
+    for dim in expected_shape:
+        shape_product *= dim
+    if rows * columns != shape_product:
+        raise PackFailure(f"{name}: caller rows*columns {rows}x{columns} does not "
+                          f"match expected shape product {expected_shape}")
     row_bytes = columns * 2
     slice_bytes = row_count * column_count * 2
     with (source.root / shard).open("rb") as file:
@@ -171,11 +182,10 @@ def read_vector(source: SafetensorsSource, name: str, count: int) -> bytes:
     return payload
 
 
-def read_scalar_ones(source: SafetensorsSource, layer: int) -> None:
+def read_layer_scalar(source: SafetensorsSource, layer: int) -> float:
     payload = read_vector(source, f"model.language_model.layers.{layer}.layer_scalar", 1)
     bits = payload[0] | (payload[1] << 8)
-    if bits not in (0x3F80, 0x0000):
-        raise PackFailure(f"layer {layer} layer_scalar is not 1.0 (bits {bits:#x}); fail closed")
+    return struct.unpack("<f", struct.pack("<I", bits << 16))[0]
 
 
 def kv_heads_per_rank(global_kv_heads: int, tp_degree: int) -> tuple[int, int]:
@@ -207,6 +217,7 @@ def build_inventory(geometry: dict, tp_degree: int, tp_rank: int,
         add(KIND_POST_ATTENTION_NORM, layer, 1, hidden)
         add(KIND_PRE_FF_NORM, layer, 1, hidden)
         add(KIND_POST_FF_NORM, layer, 1, hidden)
+        add(KIND_LAYER_SCALAR, layer, 1, 1)
         if geometry["experts"] is not None:
             for kind in MOE_NORM_KINDS:
                 add(kind, layer, 1, hidden)
@@ -247,7 +258,7 @@ def build_inventory(geometry: dict, tp_degree: int, tp_rank: int,
 
 def expected_tensor_count(geometry: dict, first_layer: int, layer_count: int) -> int:
     moe = geometry["experts"] is not None
-    per_layer = 13 if moe else 6
+    per_layer = 14 if moe else 7
     tensors = layer_count * (per_layer + 5) + 1
     if first_layer == 0:
         tensors += 1
@@ -307,6 +318,8 @@ def payload_for(source: SafetensorsSource, geometry: dict, entry: dict,
         row_start, row_count = tp_shard_range(geometry["vocab"], tp_degree, tp_rank)
         return read_matrix(source, "model.language_model.embed_tokens.weight",
                            geometry["vocab"], hidden, row_start, row_count)
+    if kind == KIND_LAYER_SCALAR:
+        return read_vector(source, f"{prefix}.{layer}.layer_scalar", 1)
     if kind == KIND_FINAL_NORM:
         return read_vector(source, "model.language_model.norm.weight", hidden)
     if kind in BASE_NORM_KINDS:
@@ -400,8 +413,9 @@ def payload_for(source: SafetensorsSource, geometry: dict, entry: dict,
         source_rows = 2 * geometry["expert_inter"]
         return read_matrix(
             source, f"{prefix}.{layer}.experts.gate_up_proj",
-            geometry["experts"], hidden,
-            tp_rank * experts_per_rank * source_rows, experts_per_rank * source_rows)
+            geometry["experts"] * source_rows, hidden,
+            tp_rank * experts_per_rank * source_rows, experts_per_rank * source_rows,
+            expected_shape=[geometry["experts"], source_rows, hidden])
     if kind == KIND_EXPERT_DOWN:
         experts_per_rank = geometry["experts"] // tp_degree
         scaled = read_expert_down_folded(source, geometry, layer, tp_degree, tp_rank)
@@ -477,8 +491,8 @@ def ck128(data: bytes) -> bytes:
     h2 = 0
     total = len(data)
     offset = 0
-    while offset + 16 <= total:
-        k1, k2 = struct.unpack_from("<II", data, offset) if False else struct.unpack_from("<QQ", data, offset)
+    aligned = total - (total % 16)
+    for k1, k2 in struct.iter_unpack("<QQ", memoryview(data)[:aligned]):
         k1 = (k1 * CK_C1) & MASK64
         k1 = _rotl64(k1, 31)
         k1 = (k1 * CK_C2) & MASK64
@@ -491,8 +505,7 @@ def ck128(data: bytes) -> bytes:
         h2 ^= k2
         h2 = (_rotl64(h2, 31) + h1) & MASK64
         h2 = (h2 * 5 + 0x38495ab5) & MASK64
-        offset += 16
-    tail = data[offset:]
+    tail = data[aligned:]
     k1 = 0
     k2 = 0
     if len(tail) > 8:
@@ -582,8 +595,9 @@ def convert(checkpoint: Path, output: Path, geometry_name: str, tp_degree: int,
     expectations = dict(hidden_size=hidden, num_hidden_layers=geometry["layers"],
                         vocab_size=geometry["vocab"])
     source.check_config(expectations, section="text_config")
+    layer_scalars = {}
     for layer in range(first_layer, first_layer + layer_count):
-        read_scalar_ones(source, layer)
+        layer_scalars[layer] = read_layer_scalar(source, layer)
     plan = build_inventory(geometry, tp_degree, tp_rank, first_layer, layer_count)
     expected_count = expected_tensor_count(geometry, first_layer, layer_count)
     if len(plan) != expected_count:
@@ -630,6 +644,7 @@ def convert(checkpoint: Path, output: Path, geometry_name: str, tp_degree: int,
         tensor_count=len(plan), census_expected=expected_count,
         file_bytes=file_bytes, payload_bytes=payload_bytes,
         spine_bytes=spine_bytes,
+        layer_scalars=layer_scalars,
         expert_bytes=(manifest_report or dict(expert_bytes=0))["expert_bytes"],
         experts_manifest=None if manifest_report is None else str(manifest_path),
         experts_manifest_records=None if manifest_report is None else manifest_report["records"],

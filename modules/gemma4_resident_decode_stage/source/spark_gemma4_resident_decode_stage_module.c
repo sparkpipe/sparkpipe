@@ -135,6 +135,7 @@ typedef struct SparkGemma4ModuleState
 	const void *layer_post_attention_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	const void *layer_pre_feedforward_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	const void *layer_post_feedforward_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
+	const void *layer_scalar_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	const void *layer_post_feedforward_1_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
 	const void *layer_pre_feedforward_2_norm_by_layer[SPARK_GEMMA4_MODEL_LAYER_COUNT];
@@ -405,6 +406,7 @@ static SparkStatus SparkGemma4ModuleBindLayer(SparkGemma4ModuleState *state, con
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_ATTENTION_NORM: state->layer_post_attention_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM: state->layer_pre_feedforward_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM: state->layer_post_feedforward_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_SCALAR: state->layer_scalar_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_1: state->layer_post_feedforward_1_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM_2: state->layer_pre_feedforward_2_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
@@ -650,6 +652,7 @@ static void SparkGemma4ModuleDescribe(void *module_state, SparkStageModuleLifecy
 extern cudaError_t SparkGemma4ConfigureCudaKernels(void);
 extern cudaError_t SparkGemma4LaunchEmbeddingGatherShardedScaled(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
 extern cudaError_t SparkGemma4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
+extern cudaError_t SparkGemma4LaunchLayerScale(cudaStream_t stream, void *hidden_bf16, const void *scalar_bf16, uint32_t row_count, uint32_t dimension);
 extern cudaError_t SparkGemma4LaunchHeadRmsNorm(cudaStream_t stream, const void *input_bf16, const void *weight_or_null_bf16, void *output_bf16, uint32_t row_count, uint32_t heads, uint32_t head_dimension, float epsilon);
 extern cudaError_t SparkGemma4LaunchLinear(cudaStream_t stream, const SparkGemma4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
@@ -1124,7 +1127,10 @@ static SparkStatus SparkGemma4ModuleRunLayer(SparkGemma4ModuleState *state, Spar
 	status = SparkGemma4ModuleRunAttentionBody(state,slot,context,layer,rows,SPARK_GEMMA4_MODEL_LAYER_IS_FULL(layer));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SparkGemma4ModuleRunFeedForward(state,slot,layer,rows));
+	status = SparkGemma4ModuleRunFeedForward(state,slot,layer,rows);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLayerScale((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->layer_scalar_by_layer[layer],rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION),"layer_scalar"));
 }
 
 static SparkStatus SparkGemma4ModuleValidateFrameContext(SparkGemma4ModuleState *state, const SparkGemma4ResidentDecodeStageFrameContext *context)

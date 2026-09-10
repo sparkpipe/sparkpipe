@@ -83,6 +83,79 @@ unset macros only.
 (EOS_ALTERNATE_2_TOKEN_ID 50); the constants had no consumers yet, so this
 fixes a future stop list, not behavior.
 
+## Round 3 state (AC6/AC8)
+
+**AC6 CUDA tier: RECEIPTED.** Both arms `make validate` (retained-receipt
+script, nvcc CUDA 13 sm_121a, sparka GB10, sparkcap-wrapped): dense arm
+`gemma4_validation PASS ... h5376.l60.v1 sites=23`, MoE arm
+`... h2816.l30.e128k8.v1 sites=24` (router tier extra). The validator
+(modules/gemma4_resident_decode_stage/validation/) drives every carved
+SparkGemma4Launch* entry against a host mirror of the anchor-oracle math:
+embed gather+scale bitwise (73.5/53.0 per arm), rms/fused-residual norms,
+weighted + scale-free per-head norms, bf16 linear (scalar/tile paths),
+residual/branch adds bitwise, gated gelu (bitwise vs mirror), sliding theta
+rope + full inv_freq-table rope with the 64-pair identity region bitwise,
+the 1024-window boundary matrix (5/1024/1030/2048) bitwise, KV store
+bitwise readback + window decode (both sliding geometries), the k_eq_v
+full-layer chain (v_norm from raw k before in-place k_norm, full-rope
+table, store post-rope, 1200-token full-context decode), router softmax +
+renormalised top-8 lowest-index ties + zero-residual uniform 1/128 (MoE),
+and a bit-exact decode determinism rerun. OPEN ITEM: the composed per-layer
+chain tier (norm->q->rope->kv->store->window->decode->o->FFN) segfaults in
+libcuda on device at chain entry on the shared sparka GPU (gdb: fault
+inside cuMemcpyDtoH; ASAN flags only device-dst memcpys = false positives
+on unified memory); gated behind SPARK_GEMMA4_VALIDATION_CHAIN for the
+receipts, diagnostics in the round-3 commits — needs a quiet GPU session.
+
+**Platform bugs found by this round (manager flags):**
+- `SparkLmExpertTileMloopKernel` (spark_lm_kernels.cuh, bf16 rows>=32
+  path) loses ~1/4 of the K accumulation — probe-verified exact 0.75
+  checksum ratio at in=512/5376/21504. Latent platform-wide: E2E decode
+  batches stayed < 32 rows. gemma4's LaunchLinear routes all rows through
+  SparkLmHostLaunchBatchedLinear until the platform fix lands.
+- GB10 (sm_121a) MaxSharedMemoryPerBlockOptin = 101376 B: configure
+  requests must be sized to the real max linear input; also plain
+  cudaMalloc memory is NOT host-writable — the launchers reset the KV
+  access_error host-side, so the error slot must come from the ledger's
+  host-mapped allocations (validator uses cudaMallocManaged).
+- The two arms write the same build/modules/.../ archive path: a clean is
+  required between dense and MoE validate runs (workflow gap).
+
+**AC8 real-pack: packer RECEIPTED against the warm checkpoints.**
+tools/gemma4_stagepack.py (donor pattern per DESIGN section 6):
+census-locked inventories (31B TP16 full-model 723 tensors incl.
+layer_scalar; 26B stages 134/133/115/116), frozen TP16/TP4 shard maps —
+full-kv x4 (31B, rank r reads head r/4) and x2 (26B, r/2) replication,
+sliding k|v row fusion, router.scale x H**-0.5 folded into proj columns,
+per_expert_scale folded into expert down rows (slot emits raw f32 for the
+seam), f32 inv_freq table, two-pass placement proof (directory sha256 +
+verify walk), .experts v2 manifests (48B records, ck128 ported bit-exact
+from src/spark_ck128.c and cross-verified against the C reference),
+spine/expert byte split + boundary-rank (0/last) checks in the receipt.
+Receipt packs on sparka: 26B stage 2 (layers 16-22) ranks 0 and 3
+(boundary, full-kv source head 1 on rank 3), 31B layers 0-7 rank 15
+(boundary, full-kv source head 3 = r/4, embed base 245760).
+
+**CONTRACT CORRECTION (warm-payload falsification):** the freeze-time
+"layer_scalar checkpoint all-ones" assertion is FALSE on the warm
+checkpoints — real learned per-layer scalars (26B layers 0/16/29 =
+0.0703125/0.5546875/0.1953125 bf16). The packer's fail-closed check fired
+exactly as designed on the first real-pack attempt. Fix landed this
+round: LAYER_SCALAR tensor kind (census +1/layer: 31B 723/60L, 26B
+573/30L full-model), module applies the scalar at the layer output
+(SparkGemma4LaunchLayerScale), packer emits + records the values,
+contracts updated. The anchor kit's all-ones fixture presumably reflected
+an earlier snapshot — anchors and warm payload disagree, warm wins
+(never-quantize weights law: the checkpoint is the source of truth).
+
+**S4/S4' audit items:** norm.cuh tail block is byte-identical to the
+muse-approved landing (verified) — merges as one copy; SPARK_RETURN/
+lazy_pack: zero code references on the lane (PROGRESS prose only).
+Rebase surface measured vs origin/main tip: ONE file (top-level
+Makefile) + the shared norm.cuh tail; A-0057 rule recorded: take main's
+side on every non-family file at the rebase hop. Manifest+sums regen
+lands as the LAST commit of this round per the ledger rule.
+
 ## Acceptance criteria status
 
 | AC | status | evidence |

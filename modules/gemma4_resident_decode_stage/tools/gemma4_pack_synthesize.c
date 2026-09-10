@@ -145,6 +145,8 @@ int main(int argc, char **argv)
 		uint32_t kind;
 		uint32_t layer_kinds[20];
 		uint32_t layer_kind_count = 0u;
+		uint32_t scalar_kind_count = 1u;
+		uint32_t scalar_kind = SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_SCALAR;
 		uint32_t norm_kinds[7] = {
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_INPUT_NORM,
 			SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_ATTENTION_NORM,
@@ -160,6 +162,8 @@ int main(int argc, char **argv)
 			layer_kinds[layer_kind_count++] = norm_kinds[kind];
 		layer_kinds[layer_kind_count++] = SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_GATE_UP;
 		layer_kinds[layer_kind_count++] = SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_DOWN;
+		for (kind = 0u; kind < scalar_kind_count; kind++)
+			layer_kinds[layer_kind_count++] = scalar_kind;
 		if ( SPARK_GEMMA4_MODEL_LAYER_IS_FULL(index) != 0u )
 		{
 			layer_kinds[layer_kind_count++] = SPARK_GEMMA4_STAGEPACK_TENSOR_FULL_QUERY;

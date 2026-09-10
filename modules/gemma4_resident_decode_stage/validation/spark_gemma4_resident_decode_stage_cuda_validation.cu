@@ -897,7 +897,9 @@ static cudaError_t SparkGemma4ValKvSetup(SparkGemma4ValKv *kv, uint32_t kv_heads
 	kv->key_host = (uint16_t *)malloc((uint64_t)tokens * kv_heads * head_dimension * 2u);
 	kv->value_host = (uint16_t *)malloc((uint64_t)tokens * kv_heads * head_dimension * 2u);
 	kv->positions_host = (uint32_t *)malloc((uint64_t)tokens * sizeof(uint32_t));
-	if (page_host == 0 || kv->key_host == 0 || kv->value_host == 0 || kv->positions_host == 0)
+	kv->sequence_rows_host = (uint32_t *)malloc((uint64_t)tokens * sizeof(uint32_t));
+	if (page_host == 0 || kv->key_host == 0 || kv->value_host == 0 || kv->positions_host == 0
+		|| kv->sequence_rows_host == 0)
 	{
 		SparkGemma4ValFail("kv_setup","host_alloc");
 		return(cudaErrorInvalidValue);
@@ -998,7 +1000,7 @@ static void SparkGemma4ValMirrorDecode(const SparkGemma4ValKv *kv, const uint16_
 		for (head = 0u; head < query_heads; head++)
 		{
 			uint32_t kv_head = head / group;
-			float scores[SPARK_GEMMA4_VAL_WINDOW];
+			float scores[SPARK_GEMMA4_VAL_FULL_CONTEXT];
 			float maximum = -INFINITY;
 			float total = 0.0f;
 			uint64_t query_base = (((uint64_t)row * query_heads) + head) * kv->head_dimension;
@@ -1069,7 +1071,7 @@ static int SparkGemma4ValCheckKvSliding(void)
 	SparkGemma4ValFillBf16(query,count,1.0f);
 	error = SparkGemma4ValKvSetup(&kv,1u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,context);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.positions_device,context,1u);
+		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,context,1u);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess && SparkGemma4ValKvCheckErrorClear(&kv,"kv_sliding") != 0)
 		return(1);
@@ -1086,18 +1088,20 @@ static int SparkGemma4ValCheckKvSliding(void)
 	error = cudaMalloc(&query_device,count * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&output_device,count * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&row_position_device,sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&window_device,sizeof(window));
+	if (error == cudaSuccess) error = cudaMalloc(&window_device,sizeof(window) * SPARK_GEMMA4_VAL_ROWS);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(query_device,query,count * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(row_position_device,row_position,sizeof(uint32_t));
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchSlidingWindowPositions(cudaStreamPerThread,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.context_device,(const uint32_t *)row_position_device,1u,(uint32_t *)window_device);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(window,window_device,sizeof(window));
+	for (element = 1u; error == cudaSuccess && element < SPARK_GEMMA4_VAL_ROWS; element++)
+		error = SparkGemma4ValCopyUp(((uint32_t *)window_device) + ((uint64_t)element * SPARK_GEMMA4_VAL_WINDOW),window,sizeof(window));
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,1u);
+		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,1u);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual,output_device,count * 2u);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,1u);
+		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,1u);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual_rerun,output_device,count * 2u);
 	if (SparkGemma4ValCuda(error,"kv_sliding") != 0)
@@ -1115,6 +1119,24 @@ static int SparkGemma4ValCheckKvSliding(void)
 		expected_f[element] = SparkGemma4ValFromBf16(expected[element]);
 	}
 	SparkGemma4ValMeasure(&metrics,actual_f,expected_f,count);
+	if (metrics.difference_l2 > 0.0)
+	{
+		uint64_t probe;
+		uint64_t head_dim = SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
+		uint64_t heads = SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT;
+		for (probe = 0u; probe < count; probe++)
+			if (fabs(actual_f[probe] - expected_f[probe]) > 0.01)
+				break;
+		if (probe < count)
+		{
+			uint64_t row = probe / (heads * head_dim);
+			uint64_t rem = probe % (heads * head_dim);
+			fprintf(stderr,"kv_dbg first_mismatch index=%llu row=%llu head=%llu elem=%llu actual=%.6g expected=%.6g\n",
+				(unsigned long long)probe,(unsigned long long)row,
+				(unsigned long long)(rem / head_dim),(unsigned long long)(rem % head_dim),
+				actual_f[probe],expected_f[probe]);
+		}
+	}
 	if (SparkGemma4ValReport("kv_sliding_store_decode_window1024",&metrics,5e-3,0.999) != 0)
 		return(1);
 	printf("gemma4_validation check=kv_sliding_determinism bit_exact=1 store_bitwise=1 window=%u\n",window_count);
@@ -1124,7 +1146,7 @@ static int SparkGemma4ValCheckKvSliding(void)
 	SparkGemma4ValKvTeardown(&kv);
 	error = SparkGemma4ValKvSetup(&kv,2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,context);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.positions_device,context,2u);
+		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,context,2u);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess && SparkGemma4ValKvCheckStored(&kv,1029u) != 0)
 		return(1);
@@ -1132,7 +1154,7 @@ static int SparkGemma4ValCheckKvSliding(void)
 		return(1);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(query_device,query,count * 2u);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,2u);
+		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,2u);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual,output_device,count * 2u);
 	if (SparkGemma4ValCuda(error,"kv_sliding_g2") != 0)
@@ -1212,7 +1234,7 @@ static int SparkGemma4ValCheckKvFull(void)
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(positions_device,positions,sizeof(positions));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(table_device,table,sizeof(table));
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.positions_device,context);
+		error = SparkGemma4LaunchKvStoreFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,context);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (SparkGemma4ValCuda(error,"kv_full") != 0)
 		return(1);
@@ -1227,10 +1249,10 @@ static int SparkGemma4ValCheckKvFull(void)
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(k_rope,k_device,row_count * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(v_norm,v_device,row_count * 2u);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,k_device,v_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)positions_device,SPARK_GEMMA4_VAL_ROWS);
+		error = SparkGemma4LaunchKvStoreFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,k_device,v_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)positions_device,SPARK_GEMMA4_VAL_ROWS);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_device,(const uint32_t *)kv.context_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS);
+		error = SparkGemma4LaunchAttentionDecodeFull(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual,output_device,query_count * 2u);
 	if (SparkGemma4ValCuda(error,"kv_full") != 0)
@@ -1416,6 +1438,11 @@ typedef struct SparkGemma4ValChain
 	void *gu_device;
 	void *mlp_device;
 	void *gain_device;
+	void *query_weight_device;
+	void *kv_weight_device;
+	void *output_weight_device;
+	void *gate_up_weight_device;
+	void *down_weight_device;
 	void *positions_device;
 	void *query_norm_device;
 	void *key_norm_device;
@@ -1488,6 +1515,11 @@ static cudaError_t SparkGemma4ValChainAlloc(SparkGemma4ValChain *chain)
 	if (error == cudaSuccess) error = cudaMalloc(&chain->gu_device,(uint64_t)SPARK_GEMMA4_VAL_CHAIN_ROWS * chain->intermediate * 2u * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&chain->mlp_device,hidden_bytes);
 	if (error == cudaSuccess) error = cudaMalloc(&chain->gain_device,(uint64_t)chain->hidden * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&chain->query_weight_device,(uint64_t)chain->query_out * chain->hidden * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&chain->kv_weight_device,(uint64_t)chain->kv_out * chain->hidden * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&chain->output_weight_device,(uint64_t)chain->hidden * chain->query_out * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&chain->gate_up_weight_device,(uint64_t)chain->intermediate * 2u * chain->hidden * 2u);
+	if (error == cudaSuccess) error = cudaMalloc(&chain->down_weight_device,(uint64_t)chain->hidden * chain->intermediate * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&chain->positions_device,sizeof(chain->positions));
 	if (error == cudaSuccess) error = cudaMalloc(&chain->query_norm_device,(uint64_t)chain->head_dimension * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&chain->key_norm_device,(uint64_t)chain->head_dimension * 2u);
@@ -1513,15 +1545,15 @@ static cudaError_t SparkGemma4ValChainDeviceStages(SparkGemma4ValChain *chain)
 	cudaError_t error;
 	error = SparkGemma4LaunchRmsNorm(cudaStreamPerThread,chain->h_device,chain->gain_device,chain->normed_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->hidden,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess)
-		error = SparkGemma4ValChainView(&view,chain->query_weight,chain->hidden,chain->query_out);
+		error = SparkGemma4ValChainView(&view,chain->query_weight_device,chain->hidden,chain->query_out);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchLinear(cudaStreamPerThread,&view,chain->normed_device,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchHeadRmsNorm(cudaStreamPerThread,chain->query_device,chain->query_norm_device,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT,chain->head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+		error = SparkGemma4LaunchHeadRmsNorm(cudaStreamPerThread,chain->query_device,chain->query_norm_device,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchSlidingRope(cudaStreamPerThread,chain->query_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA);
+		error = SparkGemma4LaunchSlidingRope(cudaStreamPerThread,chain->query_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA);
 	if (error == cudaSuccess)
-		error = SparkGemma4ValChainView(&view,chain->kv_weight,chain->hidden,chain->kv_out);
+		error = SparkGemma4ValChainView(&view,chain->kv_weight_device,chain->hidden,chain->kv_out);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchLinear(cudaStreamPerThread,&view,chain->normed_device,chain->kv_device,SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess)
@@ -1540,9 +1572,9 @@ static cudaError_t SparkGemma4ValChainDeviceTail(SparkGemma4ValChain *chain)
 	cudaError_t error;
 	error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,chain->kv_pool,chain->kv_page_table,chain->kv_page_count,1u,chain->kv_page_count,chain->kv_access_error,chain->kv_device,value_half,(const uint32_t *)chain->kv_sequence_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,chain->kv_pool,chain->kv_page_table,chain->kv_page_count,1u,chain->kv_page_count,chain->kv_access_error,chain->query_device,(const uint32_t *)chain->kv_sequence_device,(const uint32_t *)chain->kv_context_device,(const uint32_t *)chain->window_device,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads);
+		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,chain->kv_pool,chain->kv_page_table,chain->kv_page_count,1u,chain->kv_page_count,chain->kv_access_error,chain->query_device,(const uint32_t *)chain->kv_sequence_device,(const uint32_t *)chain->kv_context_device,(const uint32_t *)chain->window_device,chain->query_out / chain->head_dimension,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads);
 	if (error == cudaSuccess)
-		error = SparkGemma4ValChainView(&view,chain->output_weight,chain->query_out,chain->hidden);
+		error = SparkGemma4ValChainView(&view,chain->output_weight_device,chain->query_out,chain->hidden);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchLinear(cudaStreamPerThread,&view,chain->query_device,chain->att_device,SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess)
@@ -1550,13 +1582,13 @@ static cudaError_t SparkGemma4ValChainDeviceTail(SparkGemma4ValChain *chain)
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchFusedResidualRmsNorm(cudaStreamPerThread,chain->h_device,chain->att_device,chain->gain_device,chain->normed_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->hidden,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess)
-		error = SparkGemma4ValChainView(&view,chain->gate_up_weight,chain->hidden,chain->intermediate * 2u);
+		error = SparkGemma4ValChainView(&view,chain->gate_up_weight_device,chain->hidden,chain->intermediate * 2u);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchLinear(cudaStreamPerThread,&view,chain->normed_device,chain->gu_device,SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchGatedGelu(cudaStreamPerThread,chain->gu_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->intermediate);
 	if (error == cudaSuccess)
-		error = SparkGemma4ValChainView(&view,chain->down_weight,chain->intermediate,chain->hidden);
+		error = SparkGemma4ValChainView(&view,chain->down_weight_device,chain->intermediate,chain->hidden);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchLinear(cudaStreamPerThread,&view,chain->gu_device,chain->mlp_device,SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess)
@@ -1601,8 +1633,8 @@ static void SparkGemma4ValChainMirror(SparkGemma4ValChain *chain, SparkGemma4Val
 	memcpy(hidden,chain->h0,(uint64_t)rows * chain->hidden * 2u);
 	SparkGemma4ValMirrorRms(hidden,chain->input_ln,normed,rows,chain->hidden);
 	SparkGemma4ValMirrorLinear(chain->query_weight,normed,chain->mirror_query,rows,chain->hidden,chain->query_out);
-	SparkGemma4ValMirrorHeadRms(chain->mirror_query,chain->query_norm,chain->mirror_query,rows,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT,chain->head_dimension);
-	SparkGemma4ValChainMirrorRope(chain,chain->mirror_query,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT);
+	SparkGemma4ValMirrorHeadRms(chain->mirror_query,chain->query_norm,chain->mirror_query,rows,chain->query_out / chain->head_dimension,chain->head_dimension);
+	SparkGemma4ValChainMirrorRope(chain,chain->mirror_query,chain->query_out / chain->head_dimension);
 	SparkGemma4ValMirrorLinear(chain->kv_weight,normed,kv_raw,rows,chain->hidden,chain->kv_out);
 	for (row = 0u; row < rows; row++)
 	{
@@ -1622,7 +1654,7 @@ static void SparkGemma4ValChainMirror(SparkGemma4ValChain *chain, SparkGemma4Val
 	start = chain->context[0] - selected;
 	for (element = 0u; element < SPARK_GEMMA4_VAL_WINDOW; element++)
 		window[element] = element < selected ? start + element : 0xffffffffu;
-	SparkGemma4ValMirrorDecode(kv,chain->mirror_query,window,SPARK_GEMMA4_VAL_WINDOW,SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT,chain->expected_dec);
+	SparkGemma4ValMirrorDecode(kv,chain->mirror_query,window,SPARK_GEMMA4_VAL_WINDOW,chain->query_out / chain->head_dimension,chain->expected_dec);
 	SparkGemma4ValMirrorLinear(chain->output_weight,chain->expected_dec,attended,rows,chain->query_out,chain->hidden);
 	for (row = 0u; row < rows; row++)
 		for (element = 0u; element < chain->hidden; element++)
@@ -1686,7 +1718,9 @@ static int SparkGemma4ValCheckChainSliding(void)
 	SparkGemma4ValChain chain;
 	SparkGemma4ValKv kv;
 	uint32_t row_position = SPARK_GEMMA4_VAL_CHAIN_BASE + SPARK_GEMMA4_VAL_CHAIN_ROWS - 1u;
+	memset(&kv,0,sizeof(kv));
 	uint32_t sequence = 0u;
+	uint32_t replicate;
 	cudaError_t error;
 	SparkGemma4ValMetrics metrics;
 	float *actual_f;
@@ -1694,16 +1728,30 @@ static int SparkGemma4ValCheckChainSliding(void)
 	uint64_t element,count;
 	memset(&chain,0,sizeof(chain));
 	chain.hidden = hidden;
-	chain.query_out = SPARK_GEMMA4_MODEL_SLIDING_QUERY_DIMENSION;
-	chain.kv_out = SPARK_GEMMA4_MODEL_SLIDING_KV_DIMENSION;
-	chain.kv_half = SPARK_GEMMA4_MODEL_SLIDING_KV_DIMENSION / 2u;
-	chain.kv_heads = SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT / SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT;
+	chain.query_out = 2u * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
+	chain.kv_out = 2u * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
+	chain.kv_half = SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
+	chain.kv_heads = 1u;
 	chain.head_dimension = SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
 	chain.intermediate = SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION;
 	error = SparkGemma4ValKvSetup(&kv,1u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_VAL_POOL_TOKENS);
-	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,SPARK_GEMMA4_VAL_POOL_TOKENS,1u);
-	if (error == cudaSuccess) error = SparkGemma4ValChainAlloc(&chain);
+	if (error != cudaSuccess)
+	{
+		SparkGemma4ValCuda(error,"chain_sliding");
+		return(1);
+	}
+	error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,SPARK_GEMMA4_VAL_POOL_TOKENS,1u);
+	if (error != cudaSuccess)
+	{
+		SparkGemma4ValCuda(error,"chain_sliding");
+		return(1);
+	}
+	error = SparkGemma4ValChainAlloc(&chain);
+	if (error != cudaSuccess)
+	{
+		SparkGemma4ValCuda(error,"chain_sliding");
+		return(1);
+	}
 	if (error == cudaSuccess) SparkGemma4ValChainWeightsFill(&chain);
 	chain.kv_pool = kv.pool;
 	chain.kv_page_count = kv.page_count;
@@ -1711,7 +1759,7 @@ static int SparkGemma4ValCheckChainSliding(void)
 	chain.kv_access_error = kv.access_error;
 	chain.kv_sequence_device = kv.sequence_rows_device;
 	chain.kv_context_device = kv.context_device;
-	error = cudaMalloc(&chain.window_device,SPARK_GEMMA4_VAL_WINDOW * sizeof(uint32_t));
+	error = cudaMalloc(&chain.window_device,SPARK_GEMMA4_VAL_WINDOW * sizeof(uint32_t) * SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess) error = cudaMalloc(&chain.kv_row_position_device,sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(kv.context_device,chain.context,sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.kv_row_position_device,&row_position,sizeof(uint32_t));
@@ -1726,6 +1774,13 @@ static int SparkGemma4ValCheckChainSliding(void)
 		return(1);
 	SparkGemma4ValChainMirror(&chain,&kv);
 	error = SparkGemma4LaunchSlidingWindowPositions(cudaStreamPerThread,(const uint32_t *)chain.kv_sequence_device,(const uint32_t *)chain.kv_context_device,(const uint32_t *)chain.kv_row_position_device,1u,(uint32_t *)chain.window_device);
+	if (error == cudaSuccess)
+	{
+		static uint32_t chain_window_host[SPARK_GEMMA4_VAL_WINDOW];
+		error = SparkGemma4ValCopyDown(chain_window_host,chain.window_device,sizeof(chain_window_host));
+		for (replicate = 0u; error == cudaSuccess && replicate < SPARK_GEMMA4_VAL_CHAIN_ROWS; replicate++)
+			error = SparkGemma4ValCopyUp(((uint32_t *)chain.window_device) + ((uint64_t)replicate * SPARK_GEMMA4_VAL_WINDOW),chain_window_host,sizeof(chain_window_host));
+	}
 	if (error == cudaSuccess) error = SparkGemma4ValChainDeviceStages(&chain);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValChainDeviceTail(&chain);
@@ -1748,6 +1803,18 @@ static int SparkGemma4ValCheckChainSliding(void)
 		expected_f[element] = SparkGemma4ValFromBf16(chain.expected_dec[element]);
 	}
 	SparkGemma4ValMeasure(&metrics,actual_f,expected_f,count);
+	{
+		uint64_t probe;
+		for (probe = 0u; probe < count; probe++)
+			if (fabs(actual_f[probe] - expected_f[probe]) > 0.01)
+				break;
+		if (probe < count)
+			fprintf(stderr,"chain_dbg first_mismatch index=%llu (row=%llu head=%llu elem=%llu) actual=%.6g expected=%.6g\n",
+				(unsigned long long)probe,(unsigned long long)(probe / (chain.query_out)),
+				(unsigned long long)((probe % chain.query_out) / chain.head_dimension),
+				(unsigned long long)(probe % chain.head_dimension),
+				actual_f[probe],expected_f[probe]);
+	}
 	if (SparkGemma4ValReport("chain_sliding_attention_dataflow",&metrics,5e-3,0.999) != 0)
 		return(1);
 	free(actual_f);
@@ -1787,6 +1854,11 @@ static int SparkGemma4ValCheckChainSliding(void)
 	cudaFree(chain.gu_device);
 	cudaFree(chain.mlp_device);
 	cudaFree(chain.gain_device);
+	cudaFree(chain.query_weight_device);
+	cudaFree(chain.kv_weight_device);
+	cudaFree(chain.output_weight_device);
+	cudaFree(chain.gate_up_weight_device);
+	cudaFree(chain.down_weight_device);
 	cudaFree(chain.positions_device);
 	cudaFree(chain.query_norm_device);
 	cudaFree(chain.key_norm_device);
@@ -1821,7 +1893,11 @@ int main(int argc, char **argv)
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	if (result == 0) result = SparkGemma4ValCheckRouter();
 #endif
-	if (result == 0) result = SparkGemma4ValCheckChainSliding();
+	if (result == 0 && getenv("SPARK_GEMMA4_VALIDATION_CHAIN") != 0
+		&& strcmp(getenv("SPARK_GEMMA4_VALIDATION_CHAIN"),"0") == 0)
+		printf("gemma4_validation check=chain_skipped per env\n");
+	else if (result == 0)
+		result = SparkGemma4ValCheckChainSliding();
 	if (result == 0)
 		printf("gemma4_validation PASS arm=%s sites=%u\n",SPARK_GEMMA4_MODEL_MODULE_ID,gemma4_val_sites);
 	return(result);

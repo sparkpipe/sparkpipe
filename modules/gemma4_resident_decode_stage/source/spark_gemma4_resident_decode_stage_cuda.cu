@@ -229,6 +229,25 @@ static __global__ void SparkGemma4TpCombineAddKernel(void *destination_bf16, con
 	}
 }
 
+static __global__ void SparkGemma4LayerScaleKernel(void *hidden_bf16, const void *scalar_bf16, uint32_t dimension)
+{
+	float scale = SparkLmBf16ToFloat(scalar_bf16,0u);
+	uint32_t index = threadIdx.x;
+	while ( index < dimension )
+	{
+		SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(hidden_bf16,index) * scale);
+		index += blockDim.x;
+	}
+}
+
+extern "C" cudaError_t SparkGemma4LaunchLayerScale(cudaStream_t stream, void *hidden_bf16, const void *scalar_bf16, uint32_t row_count, uint32_t dimension)
+{
+	if ( hidden_bf16 == 0 || scalar_bf16 == 0 || row_count == 0u || dimension == 0u )
+		return(cudaErrorInvalidValue);
+	SparkGemma4LayerScaleKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,scalar_bf16,dimension);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkGemma4LaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
 {
 	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )

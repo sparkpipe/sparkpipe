@@ -103,7 +103,7 @@
     "per_expert_scale_fold": "per_expert_scale folded into expert down rows at pack time",
     "sliding_kv_row_fusion": "k|v rows fused per DESIGN section 6",
     "full_kv_replication": "rank r -> global head r/(tp/kv) at pack time",
-    "layer_scalar": "assert all-ones fail-closed at pack time"
+    "layer_scalar": "emitted per layer and applied by the module at the layer output (warm payload carries non-trivial learned scalars, e.g. 26B layers 0/16/29 = 0.0703/0.5547/0.1953 bf16; the freeze-time all-ones assertion was falsified by the warm payload and the fail-closed check removed)"
   },
   "precision": {
     "source": "bf16 unquantized",

@@ -1489,7 +1489,16 @@ CEILING = 233150
 # replacing the qwen4_flash donor body, arm Makefiles, serving adapter,
 # pack synth tool, contract freeze, anchor-consuming oracle, +4261 net.
 # Measured exact: 236409 at the gemma4 tip.
-CEILING = 236409
+# The gemma4 lane round 3 (AC6/AC8) adds the family GPU validator
+# (modules/gemma4_resident_decode_stage/validation/, +1870: the carved
+# kernel-set harness with the host mirror of the anchor oracle math, both
+# arms), the retained-receipt validate script (+70), the real-weight
+# stagepack packer (tools/gemma4_stagepack.py, +860: census-locked TP16/TP4
+# shard maps, router/per-expert folds, .experts v2 manifest with the ck128
+# port), the publisher-exact layer_scalar and MoE branch-norm kinds
+# (format/module/synth, net +~100), and the cuda.cu fixes (configure opt-in,
+# Mloop path removal). Ceiling moves to the exact count, ratchet law.
+CEILING = 239154
 
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -42,7 +42,8 @@ typedef enum SparkGemma4StagePackTensorKind
 	SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_1 = 23,
 	SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM_2 = 24,
 	SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM_2 = 25,
-	SPARK_GEMMA4_STAGEPACK_TENSOR_KIND_COUNT = 26
+	SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_SCALAR = 26,
+	SPARK_GEMMA4_STAGEPACK_TENSOR_KIND_COUNT = 27
 } SparkGemma4StagePackTensorKind;
 
 #define SPARK_GEMMA4_STAGEPACK_TENSOR_MTP_FC 100u
@@ -154,7 +155,7 @@ static inline uint32_t SparkGemma4StagePackKvHeadsPerRank(uint32_t global_kv_hea
 
 static inline uint32_t SparkGemma4StagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
-	uint32_t tensors = layer_count * (SPARK_GEMMA4_MODEL_MOE_BLOCK ? 13u : 6u);
+	uint32_t tensors = layer_count * (SPARK_GEMMA4_MODEL_MOE_BLOCK ? 14u : 7u);
 	tensors += layer_count * 5u;
 	tensors += 1u;
 	if ( first_layer_index == 0u )
@@ -250,6 +251,10 @@ static inline int32_t SparkGemma4StagePackShapeLayerNorm(uint32_t tensor_kind, S
 #endif
 		shape->rows = 1u;
 		shape->columns = SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
+		return(0);
+	case SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_SCALAR:
+		shape->rows = 1u;
+		shape->columns = 1u;
 		return(0);
 	default:
 		return(-1);
