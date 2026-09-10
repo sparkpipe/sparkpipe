@@ -1370,7 +1370,7 @@ static int SparkLingValFixtureBuild(SparkLingValFixture *fixture)
 			SPARK_LING_VAL_HEADS * SPARK_LING_VAL_VALUE,SPARK_LING_VAL_LATENT,0,0.01f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->mla_attn_gate,SPARK_LING_VAL_HEADS,SPARK_LING_VAL_HIDDEN,0,0.008f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->mla_o_proj,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_ATTN_COLS,0,0.004f) != 0 ||
-		SparkLingValAllocMatrix(&fixture->router,SPARK_LING_VAL_EXPERTS,SPARK_LING_VAL_HIDDEN,0,0.002f) != 0 ||
+		SparkLingValAllocMatrix(&fixture->router,SPARK_LING_VAL_EXPERTS,SPARK_LING_VAL_HIDDEN,0,0.02f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->shared_gate_up,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN,0,0.005f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->shared_down,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER,0,0.005f) != 0)
 		return(1);
