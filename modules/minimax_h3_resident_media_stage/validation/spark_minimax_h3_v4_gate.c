@@ -820,6 +820,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 	}
 	for (stage=0u; stage<SPARK_MINIMAX_H3_V4_AUDIO_STAGES; stage++)
 	{
+		char stage_tag[32];
 		uint32_t in_channels = 1024u >> stage;
 		uint32_t out_channels = 1024u >> (stage + 1u);
 		uint32_t input_length = SPARK_MINIMAX_H3_V4_AUDIO_LATENTS;
@@ -914,6 +915,10 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
 				out_channels * output_length; index++)
 				x[index] += residual[index] / 3.0f;
+		snprintf(stage_tag,sizeof(stage_tag),"audio_after_stage_%u",stage);
+		SparkMinimaxH3V4Stats(stage_tag,x,
+			(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels *
+			output_length);
 		}
 	}
 	{
@@ -930,6 +935,8 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			"decoder_activation_post_downsample_lowpass_filter",12u);
 		SparkMinimaxH3V4Activation1d(activation_buffer,length,x,channels,length,alpha,
 			beta,up_filter,down_filter,upsampled,padded,expanded);
+		SparkMinimaxH3V4Stats("audio_after_activation_post",activation_buffer,
+			(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * channels * length);
 		free(alpha); free(beta); free(up_filter); free(down_filter);
 	}
 	{
