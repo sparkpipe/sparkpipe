@@ -170,7 +170,10 @@ export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
 export RANK=$rank
 nohup ${SPARK_FLEET_RUNNER:-} bash -c 'echo \$\$ > "\$dir/residentd-r\$RANK.pid"; exec "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir/deployment.json" --rank-index \$RANK > "\$dir/residentd-r\$RANK.log"' 2>&1 < /dev/null &
-sleep 1
+for wait_index in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "\$dir/residentd-r\$RANK.pid" ]] && break
+  sleep 1
+done
 cat "\$dir/residentd-r\$RANK.pid"
 REMOTE
 )
