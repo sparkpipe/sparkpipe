@@ -116,7 +116,7 @@ static int32_t manifest_write(FILE *pack, FILE *out,
     SparkQwen38MaxStagePackEntry entry;
     uint32_t words[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,
         SPARK_WEIGHTD_RANGE_MANIFEST_VERSION, 0u, 0u};
-    uint32_t i, moe_layers = 0u;
+    uint32_t i, complete_layers = 0u;
     uint64_t seen[SPARK_QWEN38_MAX_MODEL_LAYER_COUNT] = {0};
     int32_t err;
 
@@ -134,7 +134,6 @@ static int32_t manifest_write(FILE *pack, FILE *out,
             continue;
         if (entry.layer_index >= SPARK_QWEN38_MAX_MODEL_LAYER_COUNT)
             return(-23);
-        moe_layers++;
         seen[entry.layer_index] |=
             (UINT64_C(1) << (entry.tensor_kind
                 - SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1));
@@ -149,9 +148,9 @@ static int32_t manifest_write(FILE *pack, FILE *out,
             continue;
         if (seen[i] != UINT64_C(7))
             return(-24);
-        moe_layers--;
+        complete_layers++;
     }
-    if (moe_layers != 0u || words[2] == 0u ||
+    if (complete_layers == 0u || words[2] == 0u ||
         fseeko(out, 0, SEEK_SET) != 0 ||
         fwrite(words, 1u, sizeof(words), out) != sizeof(words))
         return(-10);
