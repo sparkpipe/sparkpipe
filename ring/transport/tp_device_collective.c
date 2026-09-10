@@ -3322,6 +3322,37 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
     return status;
 }
 
+SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
+    SparkTpDeviceCollective *collective,
+    uint32_t timeout_milli)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    struct timespec pause;
+    uint64_t deadline_milli;
+
+    if ( collective == 0 || collective->implementation == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = (SparkTpDeviceCollectiveImplementation *)
+        collective->implementation;
+    deadline_milli = SparkTpDeviceCollectiveNowMilli();
+    if ( deadline_milli == UINT64_MAX )
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    deadline_milli += timeout_milli;
+    pause.tv_sec = 0;
+    pause.tv_nsec = 200000000L;
+    while ( implementation->dead_route_count != 0u )
+    {
+        if ( SparkTpDeviceCollectiveNowMilli() >= deadline_milli )
+        {
+            fprintf(stderr,"TREE-WAIT-ROUTES-TIMEOUT dead=%u\n",
+                implementation->dead_route_count);
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+        }
+        nanosleep(&pause,0);
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out)

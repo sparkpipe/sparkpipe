@@ -1941,6 +1941,9 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		SPARK_RETURN(status);
 	}
 	state->tp_device_collective_initialized = 1u;
+	status = SparkTpDeviceCollectiveWaitAllRoutes(&state->tp_device_collective,60000u);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	{
 		uint32_t hc_credit_count = configuration_hc.credit_count;
 		uint64_t hc_credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration_hc.max_active_sequence_count,configuration_hc.local_hidden_dimension);
@@ -2022,6 +2025,9 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 			SPARK_RETURN(status);
 		}
 		state->tp_device_collective_hc_initialized = 1u;
+		status = SparkTpDeviceCollectiveWaitAllRoutes(&state->tp_device_collective_hc,60000u);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
