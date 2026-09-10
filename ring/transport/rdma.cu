@@ -353,9 +353,21 @@ static void SparkHiddenSparkHostRdmaRendezvousPath(
     char *buffer,
     size_t bytes)
 {
-    snprintf(buffer,bytes,"%s/%016llx-%d-%d-%u.rec",
+    const unsigned char *text;
+    uint64_t name_hash = UINT64_C(1469598103934665603);
+    uint32_t index;
+
+    text = (const unsigned char *)(state->endpoint.route_name != 0 ?
+        state->endpoint.route_name : "");
+    for (index = 0u; text[index] != '\0' && index < 256u; ++index)
+    {
+        name_hash ^= (uint64_t)text[index];
+        name_hash *= UINT64_C(1099511628211);
+    }
+    snprintf(buffer,bytes,"%s/%016llx-%016llx-%d-%d-%u.rec",
         SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR,
         (unsigned long long)state->endpoint.route_identifier,
+        (unsigned long long)name_hash,
         state->source_rank,state->sink_rank,writer_rank);
 }
 
@@ -458,8 +470,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPublishRecord(
     if (rename(temp,path) != 0)
     {
         (void)unlink(temp);
-        fprintf(stderr,"rendezvous publish rename failed errno=%d\n",
-            errno);
+        fprintf(stderr,"rendezvous publish rename failed errno=%d temp=%s path=%s\n",
+            errno,temp,path);
         return SPARK_STATUS_IO_ERROR;
     }
     return SPARK_STATUS_OK;
