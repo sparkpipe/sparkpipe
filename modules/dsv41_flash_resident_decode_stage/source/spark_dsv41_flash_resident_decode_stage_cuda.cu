@@ -1,9 +1,6 @@
 #include <stdint.h>
 
-#include <cuda_runtime.h>
-
-#include "sparkpipe/spark_error_site.h"
-#include "sparkpipe/spark_stage_module_common.h"
+#include "spark_dsv41_flash_resident_decode_stage_internal.h"
 
 #define SPARK_DSV41_FLASH_MODULE_TAG "dsv41_flash_stage"
 

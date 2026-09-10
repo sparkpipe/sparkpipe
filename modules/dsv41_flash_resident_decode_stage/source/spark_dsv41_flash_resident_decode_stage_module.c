@@ -120,6 +120,37 @@ static SparkStatus SparkDsv41FlashEntryValidate(
 	return(SPARK_STATUS_OK);
 }
 
+static int SparkDsv41FlashHexNibble(char c)
+{
+	if ( c >= '0' && c <= '9' )
+		return(c - '0');
+	if ( c >= 'a' && c <= 'f' )
+		return(c - 'a' + 10);
+	if ( c >= 'A' && c <= 'F' )
+		return(c - 'A' + 10);
+	return(-1);
+}
+
+static SparkStatus SparkDsv41FlashContractShaValidate(const uint8_t *pack_sha)
+{
+	uint8_t expected[SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES];
+	uint32_t index;
+	int high,low;
+	if ( strlen(SPARK_DSV41_FLASH_CONTRACT_SHA256) != 2u * SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	for (index=0u; index<SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES; index++)
+	{
+		high = SparkDsv41FlashHexNibble(SPARK_DSV41_FLASH_CONTRACT_SHA256[2u * index]);
+		low = SparkDsv41FlashHexNibble(SPARK_DSV41_FLASH_CONTRACT_SHA256[2u * index + 1u]);
+		if ( high < 0 || low < 0 )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		expected[index] = (uint8_t)((high << 4) | low);
+	}
+	if ( memcmp(pack_sha,expected,SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES) != 0 )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkDsv41FlashHeaderValidate(
 	const SparkDsv41FlashModuleState *state,
 	const SparkDsv41FlashStagePackHeader *header,
@@ -149,7 +180,7 @@ static SparkStatus SparkDsv41FlashHeaderValidate(
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( strcmp(header->model_revision,state->model_revision) != 0 )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	return(SPARK_STATUS_OK);
+	return(SparkDsv41FlashContractShaValidate(header->contract_sha256));
 }
 
 static SparkStatus SparkDsv41FlashInventoryValidate(

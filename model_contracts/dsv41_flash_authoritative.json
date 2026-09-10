@@ -28,7 +28,15 @@
    "bytes_total_files": 510296708312,
    "tensor_bytes_total": 510286023000,
    "largest": ["model-00047-of-00048.safetensors 101535150936", "model-00048-of-00048.safetensors 101537926640"],
-   "digest_note": "all 48 LFS oids pinned in the HF tree API at revision dba1be0a; index.json weight_map maps every tensor to its shard"
+   "digest_note": "all 48 LFS oids pinned in the HF tree API at revision dba1be0a; index.json weight_map maps every tensor to its shard",
+   "reference_implementation": {
+    "files": "inference/model.py, inference/engram.py at the pinned revision (warm copy .cache/huggingface/download metadata records revision dba1be0a40aa45a94ad051997016db3960a90277)",
+    "sha256": {
+     "inference/model.py": "4e9ae23620edc8028ccc5d5fef552ab7fdc7dcd6f79608754fe9f67644056f65",
+     "inference/engram.py": "11f35ecbead8150c35aa002b3d180ef290b05a25afe883a11884f94d476d3897"
+    },
+    "note": "warm copy cross-checks: config.json, model.safetensors.index.json and DeepSeek_V41_Tech_Report.pdf sha256 == pinned LFS oids (receipt in PR #914)"
+   }
   }
  },
  "model": {
@@ -104,8 +112,15 @@
   },
   "compressor": {
    "layers": [2, 8, 14, 20],
-   "tensors": "attn.compressor.wkv BF16 [512, 5120], wgate BF16 [512, 5120], norm BF16 [512]",
-   "semantics": "CSA2 removes CSA entry overlap and absolute positional embedding; each compressed entry covers 2m original positions"
+   "tensors": "layers 2/8/14 (m=2): attn.compressor.wkv BF16 [512, 5120], wgate BF16 [512, 5120], norm BF16 [512]; layer 20 (m=1): wkv + norm ONLY, NO wgate (verified against pinned model.safetensors.index.json weight_map, 11 compressor tensors total)",
+   "semantics_m2": "m=2 (layers 2,8,14): pools 2 consecutive tokens into one latent as sum(kv * softmax(score)) with the wgate score; fp32 pooling at runtime (checkpoint bf16); partial-group kv_state/score_state carried across decode steps; a latent is emitted every 2nd token during decode",
+   "semantics_m1": "m=1 (layer 20): plain projection norm(wkv(x)) per token, no gate, no pooling, no state (reference Compressor.forward ratio==1 branch)",
+   "semantics_shared": "only kv_source_layers own compressors + compressed-KV caches; other layers read the shared cache (Reuse). Latent position mapping: group j takes position j*ratio (first token of its group) and rotates at compress_rope_theta 160000 with YaRN; compressed KV quantized FP4 E2M1 with E4M3 scale per 16 channels AFTER rope; indexer keys quantized separately (FP4, E8M0 per 32)"
+  },
+  "wq_b_rope_split": {
+   "layout": "wq_b [32768, 1280] is head-major: unflatten(-1, (64 heads, 512 head_dim)); per head dims 0..447 are non-rotated and dims 448..511 are the rope tail",
+   "rope": "rope applied ONLY to the tail 64 dims with adjacent element pairs as complex numbers, yarn theta 10000 factor 16; the same tail split applies to the kv latent (wkv output) and to the attention output before the inverse rotation",
+   "source": "reference Attention.forward apply_rotary_emb(q[..., -64:]) at pinned revision"
   }
  },
  "kv_cache": {
@@ -135,7 +150,14 @@
   "max_ngram_size": 4,
   "embed_tensor": "layers.N.engram.embed.weight F8_E4M3 [384006168, 256] + scale F8_E8M0 [384006168, 8]",
   "residency": "host memory with background RDMA prefetch; NOT in GPU stagepack",
-  "bytes_each": 98385580032
+  "bytes_each": 98385580032,
+  "hash_addressing_resolved": {
+   "token_map": "token ids mapped through a 99092-entry compressed vocab (normalization-collapsed: NFKC/NFD/strip/lowercase); map size is asserted == engram_compressed_vocab_size",
+   "hash": "per position: last up-to-4 tokens (lookback stops at sequence start and DEAD/image tokens, pad-filled); per (layer, lookback) odd multiplier from RNG seed 10007*layer_id bounded by int64/compressed_vocab; rolling XOR across lookbacks; id = (rolling % prime) + offset",
+   "primes": "disjoint prime bucket ranges per (layer, ngram 2..4, head 0..7), drawn in order starting from engram_vocab_size-1 = 15999999; 24 ids per layer per token ((4-1) orders x 8 heads)",
+   "decode_read": "per decode step per engram layer: 24 row gathers of 256B fp8 E4M3 + 8B E8M0 scales (~6.3KB) -> dequant bf16 -> wkv Linear(6144 -> 5120*(hc_mult+1)=25600) -> split key[4,5120]+value[5120] -> normalized-dot sigmoid sqrt-gate per hc copy -> residual add"
+  },
+  "residency_engine_question": "ESCALATED in PR #914: the released reference implementation keeps the table GPU-resident (row-sharded across ranks, all_reduce on lookup) and contains NO host-resident gather or RDMA prefetch path; host residency + background RDMA prefetch is tech report 2.4.2 prose about DeepSeek's production engine only. Our engine has no seam for a per-step 24-row gather from a host-resident 98GiB table (weightd packs are GPU-resident; driver code may not read packs directly). Options need an operator/architecture decision: pinned-host gather over the interconnect, an engine-managed hot-row cache, or revised residency; NOT to be invented in the lane"
  },
  "dspark": {
   "role": "speculative decoding (replaces MTP-style jointly-trained next-n)",
@@ -185,7 +207,7 @@
    "index_heads_32": [1, 2, 4, 8, 16],
    "routed_experts_384": [1, 2, 4, 6, 8, 12, 16, 24, 32],
    "o_groups_8": [1, 2, 4, 8],
-   "open_fact_o_groups": "o_groups 8 does not divide TP16; wo_a/wo_b group handling at TP16 needs a documented exemption or a 2-replica group split - decide at contract freeze"
+   "resolved_o_groups": "reference implementation (inference/model.py Attention.__init__) computes n_local_groups = o_groups // world_size and requires it >= 1: the o-path is reference-faithful only for TP in {1,2,4,8}. wo_a is block-diagonal per group (einsum over n_local_groups x [o_lora_rank, heads_per_group*head_dim]); wo_b is RowParallel over n_groups*o_lora_rank. TP16 (8 % 16 != 0) has NO reference-supported o-path; an exemption would need a half-group split with pairwise partial-sum reduction that does not exist in the reference code. Topology decision (TP16 exemption design vs TP4xPP4/TP8 fallback) is an operator/architecture call, escalated in PR #914"
    }
  },
  "variants": {
@@ -196,7 +218,8 @@
  },
  "qualification": {
   "status": "WIP",
-  "weights_gate": "BLOCKED on warm download completion; dd-probe + hash-verify against pinned LFS oids before any pack build",
-  "next": "module skeleton + stagepack contract header + packer + .experts v2 manifest producer + validator"
+  "weights_gate": "BLOCKED on warm download completion; at last poll 46/48 shards present, 307223630736 of 510296708312 file bytes (~60 percent), download in flight. Before any pack build: dd-probe warm, hash-verify against pinned LFS oids. config.json + index.json + tech report already hash-verified equal to pinned oids",
+  "open_facts": "RESOLVED 2026-09-10 from the pinned reference implementation: o_groups TP ceiling, wq_b 448+64 rope split, compressor m=1 vs m=2 semantics (wgate absent on layer 20 in the real index; stagepack kind map + validator literals corrected), engram hash addressing. Remaining OPEN (operator/architecture): engram host-residency engine seam; TP16 o_groups exemption design",
+  "next": "M6 CUDA gates on spark6 PASSED (both codecs x 11 buckets, nvcc sm_121a); then warm-gate packer (real index census) + M7 hill climb; DSpark sidecar LAST"
  }
 }

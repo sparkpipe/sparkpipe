@@ -79,6 +79,7 @@ DSV41_TEST_LAYERS ?= 2
 
 .PHONY: test_host
 test_host: contract
+	mkdir -p $(BUILD_DIRECTORY)
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \
 		tools/dsv41_flash_pack_synthesize.c -o $(BUILD_DIRECTORY)/dsv41_flash_pack_synthesize
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \

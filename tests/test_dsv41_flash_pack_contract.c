@@ -35,8 +35,10 @@ static uint32_t literal_layer_kind_count(uint32_t layer_index)
 	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u || layer_index == 20u ||
 		layer_index == 24u || layer_index == 28u || layer_index == 32u || layer_index == 36u )
 		count += 4u;
-	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u || layer_index == 20u )
+	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u )
 		count += 3u;
+	else if ( layer_index == 20u )
+		count += 2u;
 	return(count);
 }
 

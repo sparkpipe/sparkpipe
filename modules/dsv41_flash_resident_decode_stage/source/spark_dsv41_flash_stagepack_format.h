@@ -180,6 +180,11 @@ static inline uint32_t SparkDsv41FlashStagePackKindUsesKvSourceLayer(uint32_t la
 		layer_index == 20u ? 1u : 0u);
 }
 
+static inline uint32_t SparkDsv41FlashStagePackKindUsesCompressGateLayer(uint32_t layer_index)
+{
+	return(layer_index == 2u || layer_index == 8u || layer_index == 14u ? 1u : 0u);
+}
+
 static inline void SparkDsv41FlashStagePackShapeBf16(SparkDsv41FlashStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
 {
 	shape->payload_type = SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16;
@@ -342,7 +347,11 @@ static inline uint32_t SparkDsv41FlashStagePackKindInLayer(uint32_t tensor_kind,
 	if ( SparkDsv41FlashStagePackKindIsIndexer(tensor_kind) )
 		return(SparkDsv41FlashStagePackKindUsesIndexSourceLayer(layer_index));
 	if ( SparkDsv41FlashStagePackKindIsCompressor(tensor_kind) )
+	{
+		if ( tensor_kind == SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_WGATE )
+			return(SparkDsv41FlashStagePackKindUsesCompressGateLayer(layer_index));
 		return(SparkDsv41FlashStagePackKindUsesKvSourceLayer(layer_index));
+	}
 	return(1u);
 }
 
