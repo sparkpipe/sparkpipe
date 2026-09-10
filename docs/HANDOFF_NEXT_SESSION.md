@@ -84,3 +84,18 @@ Receiver: spin on *(uint64_t*)(buffer + (peer+1)*(bytes+8) + bytes) >= ordinal+1
 - Delete rdma_control.c from DSO build (dead code)
 - Delete tp_device_collective_nccl.c (dead code)
 - Replace CPU bf16 sum with GPU kernel
+
+
+## Hill-climb iteration 2 (09-11 ~03:10, lane 7d54c8c)
+
+- Fixed sparkf weightd segfault-loop: the server step's mesh poll raced the mesh
+  thread's construction (TryWire on NULL QPs); poll is now gated on mesh_active.
+  Loaded nodes (sparkf, the build host) hit the window; that was both fleet
+  wedges tonight.
+- Engine shapes measured for 32-token B1 requests: sync+CPU-reduce 20.4s (kept),
+  async-worker+GPU-combine 24.0s, inline+GPU-combine 33.6s (combine kernels and
+  staging queue behind the module's busy stream). Worker/staging machinery
+  deleted; engine = inline round, 2 broadcasts, CPU bf16 sum.
+- Phase data stands: engine round 0.5-1.3ms; ~6ms/round is module-side wave
+  orchestration. NEXT: nsys one request on a node, kernel-gap map of the module
+  wave path.
