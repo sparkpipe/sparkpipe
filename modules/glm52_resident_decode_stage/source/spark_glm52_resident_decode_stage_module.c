@@ -44,6 +44,7 @@ typedef struct SparkGlm52PackRange
 } SparkGlm52PackRange;
 
 typedef struct SparkGlm52ModuleState SparkGlm52ModuleState;
+typedef struct SparkGlm52TpChain SparkGlm52TpChain;
 
 typedef struct SparkGlm52AsyncCompletion
 {
@@ -120,6 +121,7 @@ struct SparkGlm52ModuleState
 	SparkWeightdLazyPack *lazy_pack;
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	SparkGlm52TpChain *lazy_retained[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint lane_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	atomic_uchar lane_bound[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -1233,9 +1235,6 @@ typedef struct SparkGlm52TpChain
 	SparkStatus retained_status;
 } SparkGlm52TpChain;
 
-/* Retained lazy chains awaiting lease recovery, keyed by pipeline slot. */
-static SparkGlm52TpChain *SparkGlm52LazyRetained[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm52CompleteAsync(void *context);
 static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain);
@@ -1501,17 +1500,16 @@ static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain)
 
 static SparkStatus SparkGlm52LazyRecoverLease(SparkGlm52ModuleState *state,uint32_t slot,SparkGlm52TpChain **out)
 {
-	(void)state;
 	SparkGlm52TpChain *chain;
 	SparkStatus status = SPARK_STATUS_OK;
 	*out = 0;
-	chain = __atomic_exchange_n(&SparkGlm52LazyRetained[slot],0,__ATOMIC_ACQ_REL);
+	chain = __atomic_exchange_n(&state->lazy_retained[slot],0,__ATOMIC_ACQ_REL);
 	if ( chain == 0 )
 		return(SPARK_STATUS_NOT_FOUND);
 	if ( chain->expert_lease != 0u )
 		status = SparkGlm52LazyRelease(chain);
 	if ( status != SPARK_STATUS_OK )
-		__atomic_store_n(&SparkGlm52LazyRetained[slot],chain,__ATOMIC_RELEASE);
+		__atomic_store_n(&state->lazy_retained[slot],chain,__ATOMIC_RELEASE);
 	else
 		*out = chain;
 	return(status);
@@ -1563,7 +1561,7 @@ static void SparkGlm52LazyWork(void *context)
 	{
 		chain->retained_status = status != SPARK_STATUS_OK ? status : cleanup;
 		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease for teardown retry\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
-		__atomic_store_n(&SparkGlm52LazyRetained[chain->slot_index],chain,__ATOMIC_RELEASE);
+		__atomic_store_n(&chain->state->lazy_retained[chain->slot_index],chain,__ATOMIC_RELEASE);
 		return;
 	}
 	if ( status != SPARK_STATUS_OK )
