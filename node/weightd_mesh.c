@@ -235,9 +235,6 @@ static void SparkWeightdMeshTryWire(void)
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
-        /* a record from before this process booted means the peer's weightd
-         * is a previous generation: its QPs are dead, so keep waiting for
-         * the fresh record instead of wiring against it */
         if (SparkWeightdMeshReadPeerRecord(peer_rank,
                 &peer_records[peer]) != SPARK_STATUS_OK ||
             peer_records[peer].boot_ns + SPARK_WEIGHTD_MESH_WAVE_NS <
@@ -493,8 +490,6 @@ static uint32_t SparkWeightdMeshRankCount(void)
     return SPARK_WEIGHTD_MESH_PEERS + 1u;
 }
 
-/* QP arrays are indexed 0..14 by peer rank with the local rank spliced out;
- * every IPC entry point speaks rank (0..15) and converts here. */
 static int32_t SparkWeightdMeshPeerIndexFromRank(uint32_t peer_rank)
 {
     if (peer_rank >= SparkWeightdMeshRankCount() ||
