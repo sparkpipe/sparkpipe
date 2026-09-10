@@ -551,6 +551,12 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		if ( block == 1u )
 			SparkMinimaxH3V4CompareStageF32("refv_b1__33x2048.f32",hidden,
 				hidden_elements);
+		if ( block == 17u )
+			SparkMinimaxH3V4CompareStageF32("refv_b17__33x2048.f32",hidden,
+				hidden_elements);
+		if ( block == 35u )
+			SparkMinimaxH3V4CompareStageF32("refv_b35__33x2048.f32",hidden,
+				hidden_elements);
 		free(query_weight); free(query_bias); free(key_weight); free(key_bias);
 		free(value_weight); free(value_bias); free(output_weight); free(output_bias);
 		free(gate_up); free(gate_bias); free(down); free(down_bias);
@@ -572,6 +578,11 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			SPARK_MINIMAX_H3_V4_VIDEO_EPS);
 		SparkMinimaxH3V4Stats("post_layernorm",proj_out,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
+		SparkMinimaxH3V4CompareStageF32("refv_layernorm__33x2048.f32",proj_out,
+			hidden_elements);
+		SparkMinimaxH3V4CompareStageF32("refv_pixels__33x3072.f32",pixels,
+			(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS *
+			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
 		SparkMinimaxH3V4Gem(pixels,SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,
 			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			proj_out,proj_weight,proj_bias);
