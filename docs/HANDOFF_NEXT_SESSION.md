@@ -99,3 +99,28 @@ Receiver: spin on *(uint64_t*)(buffer + (peer+1)*(bytes+8) + bytes) >= ordinal+1
 - Phase data stands: engine round 0.5-1.3ms; ~6ms/round is module-side wave
   orchestration. NEXT: nsys one request on a node, kernel-gap map of the module
   wave path.
+
+
+## Hill-climb iteration 3 (09-11 ~04:15, lane 851858a — analysis iteration)
+
+- gdb stack sampling during a request: the busy thread sits in map_import_lease
+  (weightd lease IPC) + CUDA; strace -c: 151,700 ioctl calls in 20s (98% of
+  syscall time, 22us each), 546 recvmsg. Per token: ~12.6K launch ioctls,
+  ~160/layer at B1. The module has NO CUDA-graph machinery (grep: zero).
+- Root cause chain: each synchronous round drains the pipeline (D2H event sync
+  waits for all prior module kernels), so every subsequent kernel launch waits
+  on an idle GPU — launch ioctls become waiting round-trips. The old 71ms/token
+  (14 tok/s) could not pay 12.6K x 22us; the bubbles are INHERENT to CPU-mediated
+  reduces at B1's serial chain, not fixable by engine reshaping (bake-off in
+  iteration 2 proved: 20.4 / 24.0 / 33.6s all within the same regime).
+- DEFINITIVE LEVER: GPU-resident mesh. Stage A: weightd allocates the mesh
+  region as GPU memory (links cudart already), ibv_reg_mr on it, exports via
+  CUDA IPC handle on the lazy-attach reply (SCM_RIGHTS carries the IPC fd);
+  engine cudaIpcOpenMemHandle -> mesh slots become GPU pointers; local vector
+  copies device->mesh-slot on-stream (no event sync, no CPU visibility needed
+  for the payload); CPU stamps seq + broadcasts from weightd's own mapping
+  (GB10 coherent); spin + CPU sum read GPU memory over C2C (512KB/round,
+  tens of us). D2H/H2D and drained-stream bubbles disappear.
+  Stage B: GPU polling kernel for seqs + module combine kernel on mesh slots,
+  then CUDA graph capture eligibility returns.
+- Also measured: 546 recvmsg/request = lease IPC is NOT the bottleneck at B1.
