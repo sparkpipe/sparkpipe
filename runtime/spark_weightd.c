@@ -51,6 +51,7 @@ extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
 extern int SparkWeightdMeshBufferFd(void);
+extern SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64]);
 extern void SparkWeightdMeshPoll(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
@@ -63,6 +64,11 @@ __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
 __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
+__attribute__((weak)) SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64])
+{
+    (void)out;
+    return SPARK_STATUS_UNSUPPORTED;
+}
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
@@ -321,6 +327,9 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcMeshBroadcast) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT:
             return sizeof(SparkWeightdIpcMeshBroadcastResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_INFO:
+        case SPARK_WEIGHTD_IPC_KIND_MESH_INFO_RESULT:
+            return sizeof(SparkWeightdIpcMeshInfoResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
             return sizeof(SparkWeightdIpcExportLease) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT:
@@ -1266,7 +1275,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->loaded_from_pack = 0u;
             result->mesh_ready = SparkWeightdMeshReady();
             result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-            result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_REGION_BYTES;
+            result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_DOORBELL_BYTES;
             SparkWeightdServerStageMeshFd(connection);
             (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
         }
@@ -1342,7 +1351,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     result->loaded_from_pack = 1u;
     result->mesh_ready = SparkWeightdMeshReady();
     result->mesh_send_buffer_addr = SparkWeightdMeshBufferAddress();
-    result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_REGION_BYTES;
+    result->mesh_send_buffer_bytes = SPARK_WEIGHTD_MESH_DOORBELL_BYTES;
     SparkWeightdServerStageMeshFd(connection);
     (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
     printf("weightd lazy-attach model=%s experts=%u arena=%llu pool=%llu\n",
@@ -1915,6 +1924,19 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
             SparkWeightdMeshBufferLkey(),
             write->length,
             write->remote_offset);
+        return(sizeof(*result));
+    }
+
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_MESH_INFO)
+    {
+        SparkWeightdIpcMeshInfoResult *result =
+            (SparkWeightdIpcMeshInfoResult *)response;
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        result->gpu_ready = SparkWeightdMeshReady();
+        result->status = result->gpu_ready != 0u ?
+            SparkWeightdMeshIpcHandle(result->ipc_handle) :
+            (uint32_t)SPARK_STATUS_BUSY;
         return(sizeof(*result));
     }
 
@@ -2923,6 +2945,41 @@ SparkStatus SparkWeightdClientMeshBroadcast(
         SPARK_RETURN(status);
     if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
         return SparkWeightdStatusFromWire(wire_result.status);
+    return SPARK_STATUS_OK;
+}
+
+
+SparkStatus SparkWeightdClientMeshInfo(SparkWeightdClient *client,
+    unsigned char ipc_handle[64],
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcHeader wire;
+    SparkWeightdIpcMeshInfoResult wire_result;
+    SparkStatus status;
+
+    if (client == 0 || ipc_handle == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    memset(&wire, 0, sizeof(wire));
+    wire.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.kind = SPARK_WEIGHTD_IPC_KIND_MESH_INFO;
+    wire.body_bytes = 0u;
+    wire.request_id = ++client->next_request_id;
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK)
+    {
+        SPARK_RETURN(status);
+    }
+    if (wire_result.status != (uint32_t)SPARK_STATUS_OK)
+    {
+        return SparkWeightdStatusFromWire(wire_result.status);
+    }
+    memcpy(ipc_handle,wire_result.ipc_handle,64u);
     return SPARK_STATUS_OK;
 }
 
