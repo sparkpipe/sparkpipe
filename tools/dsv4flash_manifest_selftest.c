@@ -1,7 +1,3 @@
-/* One-shot self-test: load a dsv4flash .experts manifest with the SHARED
- * reader (spark_weightd_manifest) and resolve one (layer, expert) group.
- * Usage: manifest_check <manifest path> <pack bytes> <layer> <expert>
- */
 #include <stdio.h>
 #include <stdlib.h>
 

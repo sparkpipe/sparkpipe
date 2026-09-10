@@ -1,15 +1,3 @@
-/* weightd_smoke — the pure-lazy driver prover: ATTACH_LAZY a pack with a
- * bounded expert pool, then exercise the sanctioned lease tier: ACQUIRE a
- * spread of manifest groups (the daemon commits chunks and copies the
- * ranges H2D under an owner-scoped lease), RELEASE each after the
- * synchronous acquire copy (no GPU work here), then detach. Nothing is
- * preloaded and no whole-file pass runs; RSS stays at one expert staging
- * range.
- *
- *   weightd_smoke <pack> <model> <revision> <pool-mib> <touches>
- * requires <pack>.experts (v2 range manifest) and
- * SPARK_WEIGHTD_SOCKET / SPARK_WEIGHTD_ATTACH in the environment.
- */
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
@@ -197,8 +185,6 @@ int main(int argc, char **argv)
             SparkWeightdClientClose(client);
             return 1;
         }
-        /* the acquire copy is synchronous; releasing right away satisfies
-         * the lease contract for a consumer with no GPU work in flight */
         (void)SparkWeightdClientRelease(client, attach.arena_generation,
             working.lease_identifier, &working, timeout_ns);
         total_ns += smoke_monotonic_ns() - touch_start;

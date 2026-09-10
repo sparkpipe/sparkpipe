@@ -71,13 +71,6 @@ SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome);
 
-// Lazy variant: connects via SPARK_WEIGHTD_SOCKET, fills the identity from
-// SPARK_WEIGHTD_IDENTITY_MODEL / SPARK_WEIGHTD_IDENTITY_REVISION /
-// SPARK_WEIGHTD_PACK_SHA256 (the eager helper's env contract) plus the
-// caller's pack path, sends ATTACH_LAZY with the caller's expert pool
-// budget, and leaves *client_out connected for ACQUIRE / EXPORT_LEASE /
-// RELEASE working-set calls. Fail-closed: errors name the stage; no
-// direct-load fallback.
 SparkStatus SparkWeightdAttachPackLazyEnv(const SparkWeightdPackSlice *slice,
     const char *pack_path,
     uint64_t expert_pool_bytes,

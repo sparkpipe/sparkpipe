@@ -458,11 +458,6 @@ void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)
     outcome->refcount = 0u;
 }
 
-/* Lazy variant of the attach helper: same env identity contract as
- * SparkWeightdAttachPack, but sends ATTACH_LAZY with the caller's expert
- * pool budget and leaves the connection open for the working-set calls
- * (ACQUIRE / EXPORT_LEASE / RELEASE). Fail-closed: every stage names its
- * reason; there is no direct-load fallback. */
 SparkStatus SparkWeightdAttachPackLazyEnv(const SparkWeightdPackSlice *slice,
     const char *pack_path, uint64_t expert_pool_bytes,
     SparkWeightdClient **client_out, uint64_t timeout_nanoseconds,

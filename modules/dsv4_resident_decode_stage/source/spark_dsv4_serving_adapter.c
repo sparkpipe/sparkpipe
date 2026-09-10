@@ -443,9 +443,6 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 		if ( state->expert_lazy != 0u )
 		{
-			/* the lazy-expert gate runs graphs-off: the host reads back the
-			 * per-layer route, which graph capture forbids. Zero graphs is
-			 * accepted only under SPARK_DSV4_EXPERT_LAZY=1, never silently. */
 			if ( value != 0u && value != expected )
 				return(SPARK_STATUS_SCHEMA_ERROR);
 			continue;
@@ -456,8 +453,10 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 			*cuda_graph_count = value;
 	}
 	if ( state->expert_lazy != 0u )
+	{
 		*cuda_graph_count = 0u;
-	return(SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
 	return(*cuda_graph_count != 0u ? SPARK_STATUS_OK :
 		SPARK_STATUS_SCHEMA_ERROR);
 }
