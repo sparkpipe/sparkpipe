@@ -1457,6 +1457,14 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
+# laguna lane adopted onto the coredev-aligned branch (origin/lane/laguna-driver
+# 5acf486 = main 8f3a6f2 + the 24 laguna family commits + the coredev mesh
+# commits): the laguna family landing (model header + kv geometry, GQA kernel
+# wave edits, the laguna resident_decode_stage module + adapter + packer +
+# generator + validator + oracle) and the coredev weightd-mesh transport land
+# on the pre-53 base. main's concurrent 53 (b9b6510 re-pin to 241052) are not
+# in this tree - theirs to account at the merge. Measured exact: 246010.
+CEILING = 246010
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
