@@ -153,7 +153,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     implementation->staging_bytes = bytes;
     __sync_synchronize();
     {
-        uint64_t *entry = (uint64_t *)
+        volatile uint64_t *entry = (volatile uint64_t *)
             (implementation->doorbell +
             SPARK_WEIGHTD_MESH_DOORBELL_PUBLISH(band_index,
                 implementation->tp_rank));
