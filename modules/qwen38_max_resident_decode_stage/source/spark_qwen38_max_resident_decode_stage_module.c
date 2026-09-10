@@ -1621,6 +1621,7 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 	SparkQwen38MaxModuleStageEnd(state,stream);
 	if ( error == cudaSuccess && state->lazy_pack != 0 )
 	{
+		SparkQwen38MaxModuleStageBegin(state,stream,SPARK_QWEN38_MAX_MODULE_STAGE_MOE_LEASE);
 		uint32_t host_offsets[SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT + 1u];
 		SparkWeightdExpertKey keys[SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT];
 		uint32_t key_count = 0u;
