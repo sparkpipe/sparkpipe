@@ -335,7 +335,6 @@ static void SparkLagunaPackMarkSeen(
 }
 
 static SparkStatus SparkLagunaPackAssignLayer(
-	SparkLagunaModuleState *state,
 	SparkLagunaLayerWeights *weights,
 	const SparkLagunaStagePackEntry *entry,
 	const void *payload,
@@ -370,7 +369,7 @@ static SparkStatus SparkLagunaPackAssign(
 	const void *scale)
 {
 	if ( entry->layer_index != SPARK_LAGUNA_STAGEPACK_GLOBAL_LAYER )
-		return(SparkLagunaPackAssignLayer(state,&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
+		return(SparkLagunaPackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_LAGUNA_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
