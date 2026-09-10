@@ -434,7 +434,6 @@ int main(int argc, char **argv)
 		void *device_h = SparkMinimaxH3V3DeviceUpload(packed_h,rows_bytes * 2u);
 		void *device_h_saved = 0;
 		void *device_result = 0;
-		void *device_segments = 0;
 		void *device_partials = 0;
 		void *device_tp1 = 0;
 		void *device_tp4 = 0;
@@ -466,7 +465,7 @@ int main(int argc, char **argv)
 			memcpy(&block0_reference[index],&bits0,sizeof(bits0));
 			memcpy(&block1_reference[index],&bits1,sizeof(bits1));
 		}
-		struct SparkMinimaxH3V3Scratch scratch;
+		struct SparkMinimaxH3V3Scratch scratch = {0};
 		cudaMalloc(&scratch.normed,rows_bytes * 2u);
 		cudaMalloc(&scratch.adaln,rows_bytes * 2u);
 		cudaMalloc(&scratch.q,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
@@ -489,7 +488,7 @@ int main(int argc, char **argv)
 		cudaMalloc(&scratch.ffn_out,rows_bytes * 2u);
 		cudaMalloc(&device_h_saved,rows_bytes * 2u);
 		cudaMalloc(&device_result,rows_bytes * 2u);
-		cudaMalloc(&device_segments,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+		cudaMalloc(&scratch.segments,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
 			SPARK_MINIMAX_H3_V3_FFN_FUSED * 4u * 4u);
 		cudaMemcpy(device_h_saved,device_h,rows_bytes * 2u,cudaMemcpyDeviceToDevice);
 		SparkMinimaxH3V3LoadBlock(&block0,argv[2],argv[3],0u);
@@ -560,7 +559,7 @@ int main(int argc, char **argv)
 				count,device_tp4);
 			SparkMinimaxH3Gemm(stream,ffn_input,block1.down,
 				SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-				SPARK_MINIMAX_H3_V3_FFN,device_segments,device_tp1);
+				SPARK_MINIMAX_H3_V3_FFN,scratch.segments,device_tp1);
 		}
 		{
 			uint16_t *tp1 = (uint16_t *)malloc(rows_bytes * 2u);
