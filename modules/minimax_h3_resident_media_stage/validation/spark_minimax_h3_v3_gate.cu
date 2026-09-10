@@ -474,7 +474,7 @@ static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 	SparkMinimaxH3V3CompareStage("ref_s17_ffnout__13x5376.u16",scratch->ffn_out,
 		rows);
 	error = SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
-		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
+		scratch->normed,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
 		result_bf16);
 	if ( error != cudaSuccess )
 		return(error);

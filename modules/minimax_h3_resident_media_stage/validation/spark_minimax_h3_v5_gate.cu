@@ -300,7 +300,7 @@ static cudaError_t SparkMinimaxH3V5BlockForward(cudaStream_t stream,
 	if ( error != cudaSuccess )
 		return(error);
 	return(SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
-		input_bf16,row_of,SPARK_MINIMAX_H3_V5_SEQ,SPARK_MINIMAX_H3_V5_HIDDEN,
+		scratch->normed,row_of,SPARK_MINIMAX_H3_V5_SEQ,SPARK_MINIMAX_H3_V5_HIDDEN,
 		result_bf16));
 }
 

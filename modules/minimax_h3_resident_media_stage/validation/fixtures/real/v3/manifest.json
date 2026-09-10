@@ -1,30 +1,5 @@
 [
  {
-  "dtype": "f64",
-  "file": "position_ids__13x3.f64",
-  "name": "position_ids",
-  "shape": [
-   13,
-   3
-  ]
- },
- {
-  "dtype": "i64",
-  "file": "token_tags__13.i64",
-  "name": "token_tags",
-  "shape": [
-   13
-  ]
- },
- {
-  "dtype": "i64",
-  "file": "video_indices__2.i64",
-  "name": "video_indices",
-  "shape": [
-   2
-  ]
- },
- {
   "dtype": "i64",
   "file": "audio_indices__6.i64",
   "name": "audio_indices",
@@ -33,37 +8,13 @@
   ]
  },
  {
-  "dtype": "i64",
-  "file": "text_indices__5.i64",
-  "name": "text_indices",
-  "shape": [
-   5
-  ]
- },
- {
-  "dtype": "i64",
-  "file": "timestep_indices__13.i64",
-  "name": "timestep_indices",
-  "shape": [
-   13
-  ]
- },
- {
   "dtype": "f32",
-  "file": "timesteps__2.f32",
-  "name": "timesteps",
-  "shape": [
-   2
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "video_rows__1x2x96.f32",
-  "name": "video_rows",
+  "file": "audio_out__1x6x32.f32",
+  "name": "audio_out",
   "shape": [
    1,
-   2,
-   96
+   6,
+   32
   ]
  },
  {
@@ -74,53 +25,6 @@
    1,
    6,
    32
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "text_rows__1x5x5120.f32",
-  "name": "text_rows",
-  "shape": [
-   1,
-   5,
-   5120
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "temb__2x2688.f32",
-  "name": "temb",
-  "shape": [
-   2,
-   2688
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "rope_cos__13x96.f32",
-  "name": "rope_cos",
-  "shape": [
-   13,
-   96
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "rope_sin__13x96.f32",
-  "name": "rope_sin",
-  "shape": [
-   13,
-   96
-  ]
- },
- {
-  "dtype": "u16",
-  "file": "packed_h__1x13x5376.u16",
-  "name": "packed_h",
-  "shape": [
-   1,
-   13,
-   5376
   ]
  },
  {
@@ -144,48 +48,9 @@
   ]
  },
  {
-  "dtype": "f32",
-  "file": "norm_out_h__1x13x5376.f32",
-  "name": "norm_out_h",
-  "shape": [
-   1,
-   13,
-   5376
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "video_out__1x2x96.f32",
-  "name": "video_out",
-  "shape": [
-   1,
-   2,
-   96
-  ]
- },
- {
-  "dtype": "f32",
-  "file": "audio_out__1x6x32.f32",
-  "name": "audio_out",
-  "shape": [
-   1,
-   6,
-   32
-  ]
- },
- {
   "dtype": "u16",
-  "file": "mod_shift_msa__6x5376.u16",
-  "name": "mod_shift_msa",
-  "shape": [
-   6,
-   5376
-  ]
- },
- {
-  "dtype": "u16",
-  "file": "mod_scale_msa__6x5376.u16",
-  "name": "mod_scale_msa",
+  "file": "mod_gate_mlp__6x5376.u16",
+  "name": "mod_gate_mlp",
   "shape": [
    6,
    5376
@@ -202,15 +67,6 @@
  },
  {
   "dtype": "u16",
-  "file": "mod_shift_mlp__6x5376.u16",
-  "name": "mod_shift_mlp",
-  "shape": [
-   6,
-   5376
-  ]
- },
- {
-  "dtype": "u16",
   "file": "mod_scale_mlp__6x5376.u16",
   "name": "mod_scale_mlp",
   "shape": [
@@ -220,11 +76,299 @@
  },
  {
   "dtype": "u16",
-  "file": "mod_gate_mlp__6x5376.u16",
-  "name": "mod_gate_mlp",
+  "file": "mod_scale_msa__6x5376.u16",
+  "name": "mod_scale_msa",
   "shape": [
    6,
    5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "mod_shift_mlp__6x5376.u16",
+  "name": "mod_shift_mlp",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "mod_shift_msa__6x5376.u16",
+  "name": "mod_shift_msa",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "norm_out_h__1x13x5376.f32",
+  "name": "norm_out_h",
+  "shape": [
+   1,
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "packed_h__1x13x5376.u16",
+  "name": "packed_h",
+  "shape": [
+   1,
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "f64",
+  "file": "position_ids__13x3.f64",
+  "name": "position_ids",
+  "shape": [
+   13,
+   3
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s01_norm1__13x5376.u16",
+  "name": "ref_s01_norm1",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s02_adaln__13x5376.u16",
+  "name": "ref_s02_adaln",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s03_q__13x7168.u16",
+  "name": "ref_s03_q",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s04_qnorm__13x7168.u16",
+  "name": "ref_s04_qnorm",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s05_qrope__13x7168.u16",
+  "name": "ref_s05_qrope",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s08_krope__13x7168.u16",
+  "name": "ref_s08_krope",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s09_v__13x7168.u16",
+  "name": "ref_s09_v",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s10_attn__13x7168.u16",
+  "name": "ref_s10_attn",
+  "shape": [
+   13,
+   7168
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s11_attnout__13x5376.u16",
+  "name": "ref_s11_attnout",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s12_hmid__13x5376.u16",
+  "name": "ref_s12_hmid",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s13_norm2__13x5376.u16",
+  "name": "ref_s13_norm2",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s14_mlpmod__13x5376.u16",
+  "name": "ref_s14_mlpmod",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s15_ffnfused__13x28672.u16",
+  "name": "ref_s15_ffnfused",
+  "shape": [
+   13,
+   28672
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s16_ffnmid__13x14336.u16",
+  "name": "ref_s16_ffnmid",
+  "shape": [
+   13,
+   14336
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s17_ffnout__13x5376.u16",
+  "name": "ref_s17_ffnout",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_s18_out__13x5376.u16",
+  "name": "ref_s18_out",
+  "shape": [
+   13,
+   5376
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "rope_cos__13x96.f32",
+  "name": "rope_cos",
+  "shape": [
+   13,
+   96
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "rope_sin__13x96.f32",
+  "name": "rope_sin",
+  "shape": [
+   13,
+   96
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "temb__2x2688.f32",
+  "name": "temb",
+  "shape": [
+   2,
+   2688
+  ]
+ },
+ {
+  "dtype": "i64",
+  "file": "text_indices__5.i64",
+  "name": "text_indices",
+  "shape": [
+   5
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "text_rows__1x5x5120.f32",
+  "name": "text_rows",
+  "shape": [
+   1,
+   5,
+   5120
+  ]
+ },
+ {
+  "dtype": "i64",
+  "file": "timestep_indices__13.i64",
+  "name": "timestep_indices",
+  "shape": [
+   13
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "timesteps__2.f32",
+  "name": "timesteps",
+  "shape": [
+   2
+  ]
+ },
+ {
+  "dtype": "i64",
+  "file": "token_tags__13.i64",
+  "name": "token_tags",
+  "shape": [
+   13
+  ]
+ },
+ {
+  "dtype": "i64",
+  "file": "video_indices__2.i64",
+  "name": "video_indices",
+  "shape": [
+   2
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "video_out__1x2x96.f32",
+  "name": "video_out",
+  "shape": [
+   1,
+   2,
+   96
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "video_rows__1x2x96.f32",
+  "name": "video_rows",
+  "shape": [
+   1,
+   2,
+   96
   ]
  }
 ]

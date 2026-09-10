@@ -33,12 +33,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.expanduser("~/val-minimax"))
+VAL_HOME = "/home/sparke/val-minimax" if os.path.isdir(
+    "/home/sparke/val-minimax") else os.path.expanduser("~/val-minimax")
+sys.path.insert(0, VAL_HOME)
 import h3_reference as ref
 import gen_v3_v4_real as gen
 
 OUT_DIR = sys.argv[1]
-FIX = os.path.expanduser("~/val-minimax/fixtures/real/dit_blocks01_real.npz")
+FIX = os.path.join(VAL_HOME, "fixtures/real/dit_blocks01_real.npz")
 
 
 def bits(tensor):
