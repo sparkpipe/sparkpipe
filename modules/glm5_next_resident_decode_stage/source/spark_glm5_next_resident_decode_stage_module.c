@@ -1764,11 +1764,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 {
 	SparkTpDeviceCollectiveConfig configuration,configuration_hc;
 	uint32_t probe_connect_timeout_milli,probe_operation_timeout_milli;
-	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,route,route_count,hc_route_count;
-	uint32_t d2a_route_count,tree_route_count;
-	void *mapped_receive,*mapped_send;
-	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
