@@ -161,6 +161,8 @@ sync_rendezvous() {
     host=$(hostname -s)
     rd="$HOME/sparkdata/$name/rendezvous"
     [ -d "$rd" ] || return 0
+    [ -f "$rd/.sync_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.sync_lock") )) -lt 5 ] && return 0
+    touch "$rd/.sync_lock"
     if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
         $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
         scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
@@ -171,8 +173,9 @@ sync_rendezvous() {
     for peer in $FLEET_HOSTS; do
         [ "$peer" = "$host" ] && continue
         (
+            tmp="/tmp/qpn.$$.$RANDOM.$peer"
             curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$peer/$name/index.txt" \
-                -o /tmp/qpn_idx.$$.$peer 2>/dev/null || exit 0
+                -o "$tmp" 2>/dev/null || exit 0
             while read -r sum file; do
                 [ -n "$file" ] || continue
                 if [ -f "$rd/$file" ] && \
@@ -181,8 +184,8 @@ sync_rendezvous() {
                 fi
                 curl -sf --max-time 4 "$RELEASE_HTTP/qpn/$peer/$name/$file" \
                     -o "$rd/$file" 2>/dev/null || rm -f "$rd/$file"
-            done < /tmp/qpn_idx.$$.$peer
-            rm -f /tmp/qpn_idx.$$.$peer
+            done < "$tmp"
+            rm -f "$tmp"
         ) &
     done
 }
