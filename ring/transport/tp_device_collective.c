@@ -38,6 +38,7 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
     const char *backend_module_path,
     uint32_t *memory_mode_out)
 {
+    (void)backend_kind;(void)backend_module_path;
     if ( memory_mode_out == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *memory_mode_out = SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST;
@@ -55,6 +56,7 @@ SparkStatus SparkTpDeviceCollectiveCreditStepCount(
     uint32_t tp_degree,
     uint32_t *step_count_out)
 {
+    (void)backend_kind;(void)tp_degree;
     if ( step_count_out == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *step_count_out = 1u;
@@ -77,7 +79,7 @@ SparkStatus SparkTpDeviceCollectiveApplyTopology(
 {
     if ( topology == 0 || config == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    config->tp_degree = topology->tp_degree;
+    config->tp_degree = topology->rank_count;
     config->tp_rank = topology->tp_rank;
     return SPARK_STATUS_OK;
 }
@@ -321,6 +323,7 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
 {
     SparkTpDeviceCollectiveImplementation *implementation;
 
+    (void)receive_bytes;
     if ( collective == 0 || collective->implementation == 0 ||
          receive_device == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
