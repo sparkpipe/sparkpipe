@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE 1
 #define SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST 2
@@ -220,7 +221,17 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
             (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES,
             (uint32_t)(bytes + 8u),timeout_nanoseconds);
         if ( write_status != SPARK_STATUS_OK )
+        {
+            if ( write_status == SPARK_STATUS_IO_ERROR )
+            {
+                /* the daemon died or the connection is gone: this process is
+                 * useless until it re-attaches, so die and let the agent
+                 * restart it with a fresh connection (the crash contract) */
+                fprintf(stderr,"MESH-WRITE-IO peer=%u: exiting\n",peer_rank);
+                _exit(1);
+            }
             SPARK_RETURN(write_status);
+        }
     }
     for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
     {

@@ -224,23 +224,67 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     return SPARK_STATUS_OK;
 }
 
+static void SparkWeightdMeshTryWire(void)
+{
+    SparkWeightdMeshRecord peer_records[SPARK_WEIGHTD_MESH_PEERS];
+    uint32_t peer;
+    uint32_t peer_rank;
+    uint32_t my_index_in_peer;
+
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
+        /* a record from before this process booted means the peer's weightd
+         * is a previous generation: its QPs are dead, so keep waiting for
+         * the fresh record instead of wiring against it */
+        if (SparkWeightdMeshReadPeerRecord(peer_rank,
+                &peer_records[peer]) != SPARK_STATUS_OK ||
+            peer_records[peer].boot_ns + SPARK_WEIGHTD_MESH_WAVE_NS <
+                weightd_mesh.boot_ns)
+            return;
+    }
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
+        my_index_in_peer = weightd_mesh.local_rank < peer_rank ?
+            weightd_mesh.local_rank : weightd_mesh.local_rank - 1u;
+        if (SparkWeightdMeshTransitionQp(
+                weightd_mesh.send_qps[peer],
+                peer_records[peer].recv_qpn[my_index_in_peer],
+                peer_records[peer].lid,
+                peer_records[peer].gid) != SPARK_STATUS_OK)
+            return;
+        if (SparkWeightdMeshTransitionQp(
+                weightd_mesh.recv_qps[peer],
+                peer_records[peer].send_qpn[my_index_in_peer],
+                peer_records[peer].lid,
+                peer_records[peer].gid) != SPARK_STATUS_OK)
+            return;
+        weightd_mesh.qp_info[peer].remote_qpn =
+            peer_records[peer].recv_qpn[my_index_in_peer];
+        weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
+        weightd_mesh.qp_info[peer].remote_addr =
+            peer_records[peer].recv_addr;
+    }
+    weightd_mesh.mesh_ready = 1u;
+    printf("weightd-mesh: ready rank=%u peers=%u rkey=%u\n",
+        weightd_mesh.local_rank,SPARK_WEIGHTD_MESH_PEERS,
+        weightd_mesh.recv_mr->rkey);
+    fflush(stdout);
+}
+
 SparkStatus SparkWeightdMeshInit(void)
 {
     struct ibv_device **devices;
     struct ibv_port_attr port_attr;
     struct ibv_qp_init_attr qp_attributes;
     SparkWeightdMeshRecord own_record;
-    SparkWeightdMeshRecord peer_records[SPARK_WEIGHTD_MESH_PEERS];
     int device_count;
     uint32_t peer;
-    uint32_t peer_rank;
-    uint32_t my_index_in_peer;
-    uint64_t boot_ns;
-    time_t deadline;
 
     memset(&weightd_mesh,0,sizeof(weightd_mesh));
     weightd_mesh.local_rank = SparkWeightdMeshRankFromHost();
-    boot_ns = SparkWeightdMeshRealtimeNs();
+    weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
 
     devices = ibv_get_device_list(&device_count);
     if (devices == 0 || device_count == 0)
@@ -349,7 +393,7 @@ SparkStatus SparkWeightdMeshInit(void)
     memset(&own_record,0,sizeof(own_record));
     own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
     own_record.rank = weightd_mesh.local_rank;
-    own_record.boot_ns = boot_ns;
+    own_record.boot_ns = weightd_mesh.boot_ns;
     own_record.rkey = weightd_mesh.recv_mr->rkey;
     own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
     own_record.lid = (uint16_t)port_attr.lid;
@@ -372,82 +416,9 @@ SparkStatus SparkWeightdMeshInit(void)
     fflush(stdout);
     if (SparkWeightdMeshWriteRecord(&own_record) != SPARK_STATUS_OK)
         return SPARK_STATUS_IO_ERROR;
-    printf("weightd-mesh: published, awaiting %u peers\n",
-        SPARK_WEIGHTD_MESH_PEERS);
+    printf("weightd-mesh: published; wiring continues as peers appear\n");
     fflush(stdout);
-    deadline = time(0) + 30;
-    {
-        uint32_t found[SPARK_WEIGHTD_MESH_PEERS];
-        uint32_t found_count;
-        memset(found,0,sizeof(found));
-        for (;;)
-        {
-            found_count = 0;
-            for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
-            {
-                if (found[peer] != 0u)
-                {
-                    found_count++;
-                    continue;
-                }
-                peer_rank = peer < weightd_mesh.local_rank ?
-                    peer : peer + 1u;
-                /* a record from before this restart wave means the peer's
-                 * weightd is the previous generation: its QPs are dead, so
-                 * wait for the fresh record instead of wiring against it */
-                if (SparkWeightdMeshReadPeerRecord(peer_rank,
-                        &peer_records[peer]) == SPARK_STATUS_OK &&
-                        peer_records[peer].boot_ns +
-                            SPARK_WEIGHTD_MESH_WAVE_NS >= boot_ns)
-                {
-                    found[peer] = 1u;
-                    found_count++;
-                    printf("weightd-mesh: peer %u found\n",peer_rank);
-                    fflush(stdout);
-                }
-            }
-            if (found_count == SPARK_WEIGHTD_MESH_PEERS)
-                break;
-            if (time(0) >= deadline)
-            {
-                fprintf(stderr,"weightd-mesh: %u/%u peers found, timeout\n",
-                    found_count,SPARK_WEIGHTD_MESH_PEERS);
-                return SPARK_STATUS_BUSY;
-            }
-            usleep(500000);
-        }
-    }
-    printf("weightd-mesh: all peers found, transitioning QPs\n");
-    fflush(stdout);
-    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
-    {
-        peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
-        my_index_in_peer = weightd_mesh.local_rank < peer_rank ?
-            weightd_mesh.local_rank : weightd_mesh.local_rank - 1u;
-        if (SparkWeightdMeshTransitionQp(
-                weightd_mesh.send_qps[peer],
-                peer_records[peer].recv_qpn[my_index_in_peer],
-                peer_records[peer].lid,
-                peer_records[peer].gid) != SPARK_STATUS_OK)
-            return SPARK_STATUS_DRIVER_LOAD_ERROR;
-        if (SparkWeightdMeshTransitionQp(
-                weightd_mesh.recv_qps[peer],
-                peer_records[peer].send_qpn[my_index_in_peer],
-                peer_records[peer].lid,
-                peer_records[peer].gid) != SPARK_STATUS_OK)
-            return SPARK_STATUS_DRIVER_LOAD_ERROR;
-        weightd_mesh.qp_info[peer].remote_qpn =
-            peer_records[peer].recv_qpn[my_index_in_peer];
-        weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
-        weightd_mesh.qp_info[peer].remote_addr =
-            peer_records[peer].recv_addr;
-    }
-    weightd_mesh.mesh_ready = 1u;
-    printf("weightd-mesh: ready rank=%u peers=%u rkey=%u\n",
-        weightd_mesh.local_rank,SPARK_WEIGHTD_MESH_PEERS,
-        weightd_mesh.recv_mr->rkey);
-    fflush(stdout);
-    return SPARK_STATUS_OK;
+    return SPARK_STATUS_BUSY;
 }
 
 uint32_t SparkWeightdMeshReady(void)
@@ -461,6 +432,8 @@ void SparkWeightdMeshPoll(void)
     int completed;
     int index;
 
+    if (weightd_mesh.mesh_ready == 0u)
+        SparkWeightdMeshTryWire();
     if (weightd_mesh.mesh_ready == 0u)
         return;
     for (;;)
