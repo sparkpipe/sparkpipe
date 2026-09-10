@@ -482,12 +482,26 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		SparkMinimaxH3V4RmsNormWeighted(normed,hidden,norm1,
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			SPARK_MINIMAX_H3_V4_VIDEO_EPS);
+		if ( block == 0u )
+			SparkMinimaxH3V4CompareStageF32("refv_b0_n1__33x2048.f32",normed,
+				hidden_elements);
 		SparkMinimaxH3V4SelfAttention(attention_out,normed,query_weight,query_bias,
 			key_weight,key_bias,value_weight,value_bias,output_weight,output_bias,
 			cos_angles,sin_angles,SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,
 			SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,SPARK_MINIMAX_H3_V4_VIDEO_HEADS,
 			SPARK_MINIMAX_H3_V4_VIDEO_HEAD_DIM,48u,SPARK_MINIMAX_H3_V4_VIDEO_EPS,
 			query_buffer,key_buffer,value_buffer);
+		if ( block == 0u )
+		{
+			SparkMinimaxH3V4CompareStageF32("refv_b0_qr__33x2048.f32",
+				query_buffer,hidden_elements);
+			SparkMinimaxH3V4CompareStageF32("refv_b0_kr__33x2048.f32",
+				key_buffer,hidden_elements);
+			SparkMinimaxH3V4CompareStageF32("refv_b0_v__33x2048.f32",
+				value_buffer,hidden_elements);
+			SparkMinimaxH3V4CompareStageF32("refv_b0_ao__33x2048.f32",
+				attention_out,hidden_elements);
+		}
 		for (index=0u; index<hidden_elements; index++)
 			hidden[index] += attention_out[index] * scale1[index %
 				SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN];
@@ -510,6 +524,9 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			SparkMinimaxH3V4CompareStageF32("refv_b0__33x2048.f32",hidden,
 				hidden_elements);
 		}
+		if ( block == 1u )
+			SparkMinimaxH3V4CompareStageF32("refv_b1__33x2048.f32",hidden,
+				hidden_elements);
 		free(query_weight); free(query_bias); free(key_weight); free(key_bias);
 		free(value_weight); free(value_bias); free(output_weight); free(output_bias);
 		free(gate_up); free(gate_bias); free(down); free(down_bias);
@@ -660,13 +677,13 @@ static void SparkMinimaxH3V4Conv1d(float *out, const float *input, uint32_t out_
 				const float *input_row = input + (uint64_t)inner * length;
 				const float *weight_row = weight +
 					(((uint64_t)channel * in_channels) + inner) * kernel;
-				for (tap=0u; tap<kernel; tap++)
-				{
-					int32_t source = (int32_t)(position + padding) -
-						(int32_t)(tap * dilation);
-					if ( source >= 0 && source < (int32_t)length )
-						total += input_row[source] * weight_row[tap];
-				}
+			for (tap=0u; tap<kernel; tap++)
+			{
+				int32_t source = (int32_t)position +
+					(int32_t)(tap * dilation) - (int32_t)padding;
+				if ( source >= 0 && source < (int32_t)length )
+					total += input_row[source] * weight_row[tap];
+			}
 			}
 			out[(uint64_t)channel * length + position] = total;
 		}

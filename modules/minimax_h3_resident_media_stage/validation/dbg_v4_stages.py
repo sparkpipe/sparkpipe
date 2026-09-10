@@ -88,7 +88,33 @@ def main():
     for i in range(36):
         p = "decoder.transformer_blocks.%d." % i
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm1.weight"), 1e-5).to(x.dtype)
-        a = gen.raw_s_vae_attn(n, raw, p, cos, sin)
+        if i == 0:
+            dump("refv_b0_n1", n[0])
+            query = gen.slab_linear_full(n, raw, p + "attn.to_q.weight", p + "attn.to_q.bias")
+            key = gen.slab_linear_full(n, raw, p + "attn.to_k.weight", p + "attn.to_k.bias")
+            value = gen.slab_linear_full(n, raw, p + "attn.to_v.weight", p + "attn.to_v.bias")
+            query = query.unflatten(2, (32, 64))
+            key = key.unflatten(2, (32, 64))
+            value = value.unflatten(2, (32, 64))
+            query = ref.rms_norm(query.float(), None, 1e-5).to(query.dtype)
+            key = ref.rms_norm(key.float(), None, 1e-5).to(key.dtype)
+            c = cos.to(query.dtype)
+            s_ = sin.to(query.dtype)
+            rd = c.shape[-1]
+            qr, qp = query[..., :rd], query[..., rd:]
+            kr, kp = key[..., :rd], key[..., rd:]
+            q1, q2 = qr.chunk(2, dim=-1)
+            k1, k2 = kr.chunk(2, dim=-1)
+            query = torch.cat([qr * c + torch.cat([-q2, q1], dim=-1) * s_, qp], dim=-1)
+            key = torch.cat([kr * c + torch.cat([-k2, k1], dim=-1) * s_, kp], dim=-1)
+            dump("refv_b0_qr", query.flatten(1, 2)[0])
+            dump("refv_b0_kr", key.flatten(1, 2)[0])
+            dump("refv_b0_v", value.flatten(1, 2)[0])
+            out = ref.attention(query, key, value, use_sdpa=True).flatten(1, 2)
+            a = gen.slab_linear_full(out, raw, p + "attn.to_out.0.weight", p + "attn.to_out.0.bias")
+            dump("refv_b0_ao", a[0])
+        else:
+            a = gen.raw_s_vae_attn(n, raw, p, cos, sin)
         x = x + a * gen.slab_vec(raw, p + "scale1")
         if i == 0:
             dump("refv_b0_attn", x[0])
