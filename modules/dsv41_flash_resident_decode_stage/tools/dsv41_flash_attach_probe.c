@@ -209,6 +209,57 @@ static SparkStatus SparkDsv41FlashProbeServicesPrepare(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv41FlashProbeEventsSynchronize(
+	cudaEvent_t begin,cudaEvent_t end,cudaStream_t stream,float *device_milliseconds)
+{
+	if ( cudaEventRecord(begin,stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( cudaEventRecord(end,stream) != cudaSuccess ||
+		cudaEventSynchronize(end) != cudaSuccess ||
+		cudaEventElapsedTime(device_milliseconds,begin,end) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv41FlashProbeFramePrepare(
+	cudaStream_t stream,
+	SparkModelDriverFrame *frame,
+	SparkModelDriverBuffer *buffers,
+	uint32_t *input_token,
+	uint32_t *output_token)
+{
+	*input_token = 123u;
+	*output_token = 0xdeadbeefu;
+	memset(frame,0,sizeof(*frame));
+	frame->active_slot_count = 1u;
+	frame->new_token_count = 1u;
+	frame->sequence_position = 0u;
+	frame->execution_stream = (void *)stream;
+	memset(buffers,0,sizeof(*buffers) * 2u);
+	buffers[0].address = input_token;
+	buffers[0].bytes = sizeof(*input_token);
+	buffers[1].address = output_token;
+	buffers[1].bytes = sizeof(*output_token);
+	frame->buffers = buffers;
+	frame->buffer_count = 2u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkDsv41FlashProbeArgumentsParse(
+	char **argv,
+	uint32_t *tp_rank,
+	uint32_t *expect_ok,
+	uint32_t *do_execute)
+{
+	if ( sscanf(argv[5],"%u:%u",expect_ok,do_execute) != 2 || *expect_ok > 1u || *do_execute > 1u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*tp_rank = (uint32_t)strtoul(argv[2],0,10);
+	if ( setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES",argv[3],1) != 0 ||
+		setenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES",argv[4],1) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
 int main(int argc,char **argv)
 {
 	SparkDsv41FlashResidentDecodeStageNodeContext context;
@@ -230,16 +281,15 @@ int main(int argc,char **argv)
 		(void)fprintf(stderr,"usage: %s PACK TP_RANK EXPERT_POOL_BYTES SPINE_BUDGET_BYTES EXPECT_OK:EXECUTE\n",argv[0]);
 		return(2);
 	}
-	tp_rank = (uint32_t)strtoul(argv[2],0,10);
-	if ( sscanf(argv[5],"%u:%u",&expect_ok,&do_execute) != 2 || expect_ok > 1u || do_execute > 1u )
-		return(2);
-	if ( setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES",argv[3],1) != 0 ||
-		setenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES",argv[4],1) != 0 )
-		return(2);
-	status = SparkDsv41FlashProbeCensus(argv[1],&census);
+	expect_ok = 0u;
+	do_execute = 0u;
+	tp_rank = 0u;
+	status = SparkDsv41FlashProbeArgumentsParse(argv,&tp_rank,&expect_ok,&do_execute);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv41FlashProbeCensus(argv[1],&census);
 	if ( status != SPARK_STATUS_OK )
 	{
-		(void)fprintf(stderr,"probe census_status=%d\n",(int)status);
+		(void)fprintf(stderr,"probe preflight_status=%d\n",(int)status);
 		return(1);
 	}
 	SparkDsv41FlashProbeInventoryDiagnose(&census,tp_rank);
@@ -250,9 +300,8 @@ int main(int argc,char **argv)
 		status = SparkDsv41FlashProbeCudaCheck(cudaEventCreate(&begin),"event_create");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv41FlashProbeCudaCheck(cudaEventCreate(&end),"event_create");
-	if ( status != SPARK_STATUS_OK )
-		return(1);
-	status = SparkDsv41FlashProbeNodeContextPrepare(argv[1],tp_rank,&context);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv41FlashProbeNodeContextPrepare(argv[1],tp_rank,&context);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv41FlashProbeConfigurationPrepare(&context,&configuration);
 	if ( status == SPARK_STATUS_OK )
@@ -261,62 +310,48 @@ int main(int argc,char **argv)
 		return(1);
 	state = 0;
 	wall_begin = SparkDsv41FlashProbeNowMilliseconds();
-	if ( cudaEventRecord(begin,stream) != cudaSuccess )
-		return(1);
-	status = SparkDsv41FlashResidentDecodeStageInitialize(&configuration,&services,&state);
-	if ( cudaEventRecord(end,stream) != cudaSuccess ||
-		cudaEventSynchronize(end) != cudaSuccess ||
-		cudaEventElapsedTime(&device_milliseconds,begin,end) != cudaSuccess )
-		return(1);
-	wall_end = SparkDsv41FlashProbeNowMilliseconds();
-	(void)printf("probe rank=%u pack=%s init_status=%d init_wall_ms=%.3f init_device_ms=%.3f entries=%u spine_bytes=%llu expert_bytes=%llu\n",
-		tp_rank,argv[1],(int)status,wall_end - wall_begin,(double)device_milliseconds,
-		census.entries,(unsigned long long)census.spine_bytes,(unsigned long long)census.expert_bytes);
-	if ( expect_ok != 0u )
+	status = SparkDsv41FlashProbeEventsSynchronize(begin,end,stream,&device_milliseconds);
+	if ( status == SPARK_STATUS_OK )
 	{
-		if ( status != SPARK_STATUS_OK )
-			return(1);
+		SparkStatus init_status = SparkDsv41FlashResidentDecodeStageInitialize(&configuration,&services,&state);
+		status = SparkDsv41FlashProbeEventsSynchronize(begin,end,stream,&device_milliseconds);
+		wall_end = SparkDsv41FlashProbeNowMilliseconds();
+		(void)printf("probe rank=%u pack=%s init_status=%d init_wall_ms=%.3f init_device_ms=%.3f entries=%u spine_bytes=%llu expert_bytes=%llu\n",
+			tp_rank,argv[1],(int)init_status,wall_end - wall_begin,(double)device_milliseconds,
+			census.entries,(unsigned long long)census.spine_bytes,(unsigned long long)census.expert_bytes);
+		status = init_status;
 	}
-	else
+	if ( expect_ok == 0u )
 	{
 		if ( state != 0 || status != SPARK_STATUS_UNSUPPORTED )
 		{
 			(void)fprintf(stderr,"probe fail_closed_violation status=%d state=%p\n",(int)status,state);
-			(void)SparkDsv41FlashResidentDecodeStageDestroy(state);
+			SparkDsv41FlashResidentDecodeStageDestroy(state);
 			return(1);
 		}
 		(void)printf("probe fail_closed_ok status=%d\n",(int)status);
 		return(0);
 	}
-	input_token = 123u;
-	output_token = 0xdeadbeefu;
-	memset(&frame,0,sizeof(frame));
-	frame.active_slot_count = 1u;
-	frame.new_token_count = 1u;
-	frame.sequence_position = 0u;
-	frame.execution_stream = (void *)stream;
-	memset(buffers,0,sizeof(buffers));
-	buffers[0].address = &input_token;
-	buffers[0].bytes = sizeof(input_token);
-	buffers[1].address = &output_token;
-	buffers[1].bytes = sizeof(output_token);
-	frame.buffers = buffers;
-	frame.buffer_count = 2u;
-	wall_begin = SparkDsv41FlashProbeNowMilliseconds();
-	if ( cudaEventRecord(begin,stream) != cudaSuccess )
+	if ( status != SPARK_STATUS_OK )
 		return(1);
-	if ( do_execute != 0u )
-		status = SparkDsv41FlashResidentDecodeStageExecute(state,&frame);
-	if ( cudaEventRecord(end,stream) != cudaSuccess ||
-		cudaEventSynchronize(end) != cudaSuccess ||
-		cudaEventElapsedTime(&device_milliseconds,begin,end) != cudaSuccess )
-		return(1);
-	wall_end = SparkDsv41FlashProbeNowMilliseconds();
-	(void)printf("probe rank=%u exec_status=%d exec_wall_ms=%.3f exec_device_ms=%.3f output_token=%u\n",
-		tp_rank,(int)status,wall_end - wall_begin,(double)device_milliseconds,output_token);
+	status = SparkDsv41FlashProbeFramePrepare(stream,&frame,buffers,&input_token,&output_token);
+	if ( status == SPARK_STATUS_OK )
+	{
+		wall_begin = SparkDsv41FlashProbeNowMilliseconds();
+		status = SparkDsv41FlashProbeEventsSynchronize(begin,end,stream,&device_milliseconds);
+		if ( status == SPARK_STATUS_OK )
+		{
+			SparkStatus exec_status = do_execute != 0u ?
+				SparkDsv41FlashResidentDecodeStageExecute(state,&frame) : SPARK_STATUS_OK;
+			status = SparkDsv41FlashProbeEventsSynchronize(begin,end,stream,&device_milliseconds);
+			wall_end = SparkDsv41FlashProbeNowMilliseconds();
+			(void)printf("probe rank=%u exec_status=%d exec_wall_ms=%.3f exec_device_ms=%.3f output_token=%u\n",
+				tp_rank,(int)exec_status,wall_end - wall_begin,(double)device_milliseconds,output_token);
+		}
+	}
 	SparkDsv41FlashResidentDecodeStageDestroy(state);
 	(void)printf("probe destroy_status=0\n");
 	if ( cudaStreamDestroy(stream) != cudaSuccess )
 		return(1);
-	return(0);
+	return(status == SPARK_STATUS_OK ? 0 : 1);
 }
