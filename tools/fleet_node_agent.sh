@@ -161,10 +161,10 @@ sync_rendezvous() {
     host=$(hostname -s)
     rd="$HOME/sparkdata/$name/rendezvous"
     [ -d "$rd" ] || return 0
-    if [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
-        $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null || return 0
+    if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
+        $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
         scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
-            "$HUB:release/qpn/$host/$name/" 2>/dev/null || return 0
+            "$HUB:release/qpn/$host/$name/" 2>/dev/null
         $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
         touch "$rd/.shipped"
     fi
