@@ -53,6 +53,7 @@ typedef struct SparkWeightdMesh
     SparkWeightdMeshQpInfo qp_info[SPARK_WEIGHTD_MESH_PEERS];
     void *recv_buffer;
     int memfd;
+    uint64_t boot_ns;
     uint64_t send_ok;
     uint64_t send_err;
     uint64_t send_logged;
