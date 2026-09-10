@@ -231,7 +231,22 @@ SparkStatus SparkWeightdMeshInit(void)
         fprintf(stderr,"weightd-mesh: no RDMA devices\n");
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    weightd_mesh.context = ibv_open_device(devices[0]);
+    {
+        int device_index;
+        int found = 0;
+        for (device_index = 0; device_index < device_count; device_index++)
+        {
+            const char *name = ibv_get_device_name(devices[device_index]);
+            if (name != 0 && strncmp(name,"rocep",5) == 0)
+            {
+                weightd_mesh.context = ibv_open_device(devices[device_index]);
+                found = 1;
+                break;
+            }
+        }
+        if (found == 0)
+            weightd_mesh.context = ibv_open_device(devices[0]);
+    }
     ibv_free_device_list(devices);
     if (weightd_mesh.context == 0)
     {
