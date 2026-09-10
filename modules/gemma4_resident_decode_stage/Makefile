@@ -5,12 +5,13 @@ MODEL_HEADER := ../../model-families/gemma4/include/sparkpipe/spark_gemma4_model
 MODULE_ENTRY_PREFIX := SparkGemma4ResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_cuda.cu
+include $(REPOSITORY_ROOT)/runtime/weightd_sources.mk
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
+	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 GEMMA4_MODEL_REVISION ?= pending-warm-download
 GEMMA4_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/gemma4_31b_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \
