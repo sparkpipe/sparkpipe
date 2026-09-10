@@ -1984,7 +1984,7 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 	const uint32_t *layers,const SparkLingValWavePlan *plans,uint32_t plan_count,
 	const char *label,int compare_routes)
 {
-	SparkLingValWalk walk;
+	static SparkLingValWalk walk;
 	uint16_t *first = (uint16_t *)malloc((uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
 	uint16_t *second = (uint16_t *)malloc((uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
 	uint32_t pass,plan,index,row;
@@ -2000,6 +2000,7 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 		uint32_t position = 0u;
 		SparkLingValResetPools(fixture);
 		memset(&walk,0,sizeof(walk));
+		printf("walk@%p windows@%p\n",(void *)&walk,(void *)walk.kda_windows);
 		if ( cudaMemcpy(fixture->boundary_in_dev,fixture->boundary_host,
 			(uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u,cudaMemcpyHostToDevice) != cudaSuccess )
 		{
