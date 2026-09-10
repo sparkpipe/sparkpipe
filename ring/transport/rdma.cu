@@ -443,6 +443,13 @@ static SparkStatus SparkHiddenSparkHostRdmaPublishRecord(
         cursor += (size_t)written;
         remaining -= (size_t)written;
     }
+    if (fsync(fd) != 0)
+    {
+        (void)close(fd);
+        (void)unlink(temp);
+        fprintf(stderr,"rendezvous publish fsync failed errno=%d\n",errno);
+        return SPARK_STATUS_IO_ERROR;
+    }
     if (close(fd) != 0)
     {
         (void)unlink(temp);
@@ -451,28 +458,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPublishRecord(
     if (rename(temp,path) != 0)
     {
         (void)unlink(temp);
-        (void)mkdir(SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR,0755);
-        fd = open(temp,O_WRONLY | O_CREAT | O_TRUNC,0644);
-        if (fd >= 0)
-        {
-            cursor = (const char *)&record;
-            remaining = sizeof(record);
-            while (remaining > 0u)
-            {
-                ssize_t written = write(fd,cursor,remaining);
-                if (written <= 0 && errno != EINTR)
-                    break;
-                if (written > 0)
-                {
-                    cursor += (size_t)written;
-                    remaining -= (size_t)written;
-                }
-            }
-            (void)close(fd);
-            if (remaining == 0u && rename(temp,path) == 0)
-                return SPARK_STATUS_OK;
-            (void)unlink(temp);
-        }
         fprintf(stderr,"rendezvous publish rename failed errno=%d\n",
             errno);
         return SPARK_STATUS_IO_ERROR;

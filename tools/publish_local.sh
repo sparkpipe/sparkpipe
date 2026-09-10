@@ -34,6 +34,5 @@ find lib bin stages config model_resident.json -type f ! -name stage.json ! -nam
     sort | xargs sha256sum > MANIFEST.tmp
 mv MANIFEST.tmp MANIFEST
 
-rm -f /srv/qpn/*.rec 2>/dev/null || true
 touch UPDATE
 echo "published $ROOT_NAME -> $RELEASE (local hub sparkf)"
