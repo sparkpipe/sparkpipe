@@ -225,12 +225,12 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         uint64_t remote_base = implementation->band_base +
             (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
         SparkStatus write_status = SparkWeightdClientMeshWrite(
-            implementation->client,peer_rank,0u,remote_base,
-            (uint32_t)bytes,timeout_nanoseconds);
+            implementation->client,peer_rank,implementation->band_base,
+            remote_base,(uint32_t)bytes,timeout_nanoseconds);
         if ( write_status == SPARK_STATUS_OK )
             write_status = SparkWeightdClientMeshWrite(
                 implementation->client,peer_rank,
-                SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+                implementation->band_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
                 remote_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
                 8u,timeout_nanoseconds);
         if ( write_status != SPARK_STATUS_OK )
