@@ -1,13 +1,5 @@
 /* spark_weightd core (docs/WEIGHTD_DESIGN.md W2a): the identity-keyed arena
  * map, the attach/detach IPC surface, and the poll-driven server loop.
- */
-
-extern uint32_t SparkWeightdMeshReady(void);
-extern uint64_t SparkWeightdMeshBufferAddress(void);
-extern uint32_t SparkWeightdMeshBufferLkey(void);
-extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
-    uint64_t local_addr, uint32_t lkey, uint32_t length,
-    uint64_t remote_offset);
  *
  * Shape of the skeleton:
  * - The server is event-driven (one non-blocking Step; no worker threads),
@@ -53,6 +45,13 @@ extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+extern uint32_t SparkWeightdMeshReady(void);
+extern uint64_t SparkWeightdMeshBufferAddress(void);
+extern uint32_t SparkWeightdMeshBufferLkey(void);
+extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
+    uint64_t local_addr, uint32_t lkey, uint32_t length,
+    uint64_t remote_offset);
 
 #include <cuda_runtime.h>
 #include <cuda.h>
