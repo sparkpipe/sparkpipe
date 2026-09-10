@@ -9,9 +9,6 @@ VIEW="$HOME/current"
 LAST_REPORT=""
 LAST_PIDS=""
 LAST_API_START=0
-START_SHA=$(sha16 "$0")
-AGENT_BLOCKED=""
-mkdir -p "$VIEW"
 
 sha16() {
     local s=""
@@ -19,6 +16,10 @@ sha16() {
     [ -n "$s" ] || s=none
     echo "$s"
 }
+
+START_SHA=$(sha16 "$0")
+AGENT_BLOCKED=""
+mkdir -p "$VIEW"
 
 root_state() {
     local rr="$HOME/sparkdata/$1"
