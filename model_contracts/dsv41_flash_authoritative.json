@@ -1,0 +1,202 @@
+{
+ "schema_version": 1,
+ "lane": "dsv5-flash",
+ "model_id": "deepseek-ai/DeepSeek-V4.1-Flash",
+ "architecture": "DeepseekV41ForCausalLM (model_type deepseek_v41; text model_type deepseek_v41_text)",
+ "source_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+ "scope": {
+  "text_decode_path_only": true,
+  "vision_tower": "vision.* and aligner.* out of scope (32 layers / 1024 hidden ViT + 2-layer projector)",
+  "lane_note": "engram conditional-memory tables are host-resident (196B params, RDMA prefetch per tech report 2.4.2) and are NOT GPU pack residents; dspark markov/confidence heads ride the MTP sidecar per MTP-sidecar law"
+ },
+ "sources": {
+  "warm_path": "PENDING (download in flight; do not pack until the weights gate passes)",
+  "hf_repo": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash",
+  "hf_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+  "published_at": "2026-09-10T08:18:10Z",
+  "verification": "Hugging Face LFS SHA-256 oids recorded per file below; warm/cold per-file equality receipt required before any pack build",
+  "pinned_files": {
+   "config.json": {"bytes": 3311, "sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879"},
+   "model.safetensors.index.json": {"bytes": 7470294, "sha256": "74b0686a3d2891980d5e303251b075a3bccae2c2ff650747db2620a649b98fa8"},
+   "DeepSeek_V41_Tech_Report.pdf": {"bytes": 1809802, "sha256": "ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d"},
+   "tokenizer.json": {"bytes": 6367257},
+   "tokenizer_config.json": {"bytes": 801}
+  },
+  "shards": {
+   "count": 48,
+   "naming": "model-%05d-of-00048.safetensors",
+   "bytes_total_files": 510296708312,
+   "tensor_bytes_total": 510286023000,
+   "largest": ["model-00047-of-00048.safetensors 101535150936", "model-00048-of-00048.safetensors 101537926640"],
+   "digest_note": "all 48 LFS oids pinned in the HF tree API at revision dba1be0a; index.json weight_map maps every tensor to its shard"
+  }
+ },
+ "model": {
+  "hidden_dimension": 5120,
+  "layer_count": 40,
+  "vocabulary_size": 129280,
+  "attention_head_count": 64,
+  "head_dimension": 512,
+  "qk_rope_head_dim": 64,
+  "kv_latent_dimension": 512,
+  "value_head_dim": 64,
+  "q_lora_rank": 1280,
+  "o_lora_rank": 1024,
+  "o_groups": 8,
+  "rms_norm_epsilon": 1e-20,
+  "rope_theta": 10000,
+  "rope_scaling": {"rope_type": "yarn", "factor": 16, "beta_fast": 32, "beta_slow": 1, "original_max_position_embeddings": 65536},
+  "compress_rope_theta": 160000,
+  "sliding_window": 128,
+  "max_position_embeddings": 1048576,
+  "tie_word_embeddings": false,
+  "dtype": "bfloat16",
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "pad_token_id": 2,
+  "activated_params_prefill": "8B",
+  "activated_params_decode": "16B",
+  "backbone_params": "552B (+196B engram)"
+ },
+ "moe": {
+  "routed_expert_count": 384,
+  "shared_expert_count": 1,
+  "experts_per_token": 6,
+  "moe_intermediate_dimension": 2304,
+  "scoring_func": "sqrtsoftplus",
+  "topk_method": "noaux_tc",
+  "norm_topk_prob": true,
+  "routed_scaling_factor": 1.5,
+  "router_weight": "layers.N.ffn.gate.weight BF16 [384, 5120]",
+  "router_bias": "layers.N.ffn.gate.bias F32 [384] (bias_vl F32 [384] is the image-token correction bias twin)"
+ },
+ "ced": {
+  "encoder_layer_count": 20,
+  "decoder_layer_count": 20,
+  "decode_visits_all_40_layers": true,
+  "global_kv_source_hidden": "encoder layer 19 hidden state feeds decoder Full-Mode global KV (tech report eq. 1)",
+  "fact_note": "per-token global KV cache 890 bytes (tech report abstract)"
+ },
+ "csa2": {
+  "modes": ["Full", "Reindex", "Reuse"],
+  "compress_ratios_43_entries": [0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+  "compress_ratios_note": "entries 0-39 are backbone layers; 40-42 are the three dspark blocks (SWA-only)",
+  "layer_plan": {
+   "swa_only_layers": [0, 1, 38, 39],
+   "encoder_csa2_m2": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+   "decoder_csa2_m1": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37],
+   "full_mode_layers": [2, 8, 14, 20],
+   "reindex_mode_layers": [24, 28, 32, 36],
+   "kv_source_layer_ids": [2, 8, 14, 20],
+   "index_source_layer_ids": [2, 8, 14, 20, 24, 28, 32, 36],
+   "candidate_source_layer_id": 20
+  },
+  "indexer": {
+   "head_count": 32,
+   "head_dim": 128,
+   "topk": 512,
+   "candidate_topk_blocks": 2048,
+   "candidate_block_size": 8,
+   "candidate_pool_positions": 16384,
+   "indexer_k_projection": "projected from main KV entries (layers.N.attn.indexer.wk BF16 [128, 512])",
+   "indexer_q": "layers.N.attn.indexer.wq_b F8_E4M3 [4096, 1280] + scale [128, 40]",
+   "index_score_proj": "layers.N.attn.indexer.weights_proj BF16 [32, 5120]"
+  },
+  "compressor": {
+   "layers": [2, 8, 14, 20],
+   "tensors": "attn.compressor.wkv BF16 [512, 5120], wgate BF16 [512, 5120], norm BF16 [512]",
+   "semantics": "CSA2 removes CSA entry overlap and absolute positional embedding; each compressed entry covers 2m original positions"
+  }
+ },
+ "kv_cache": {
+  "global_kv_codec": "MXFP4-class E2M1, one E4M3 scale per 16 channels, NO second-level global scale, quantized AFTER rope",
+  "swa_kv_codec": "FP8 (sensitivity; tech report 2.4.4)",
+  "per_token_global_bytes": 890,
+  "swa_window": 128
+ },
+ "hyper_connection": {
+  "scheme": "Single-Pass mHC (tech report 2.4.1), deployment kernel Mega-mHC",
+  "mult": 4,
+  "sinkhorn_iters": 20,
+  "sinkhorn_eps": 1e-06,
+  "coefficient_layout": "A[1x4] + B[4x4] + C[4x1] = 24 coefficients; hc_attn_base F32 [24]; hc_attn_fn F32 [24, 20480] (4 streams x 5120); hc_attn_scale F32 [3]; same triple for ffn"
+ },
+ "engram": {
+  "layer_ids": [1, 14],
+  "modules": 2,
+  "ngram_orders": [2, 3, 4],
+  "hash_heads": 8,
+  "embedding_dim_per_order": 2048,
+  "table_entries_per_layer_config": [384006168, 384016682],
+  "engram_vocab_size": 16000000,
+  "compressed_vocab_size": 99092,
+  "head_dim": 256,
+  "n_heads": 8,
+  "max_ngram_size": 4,
+  "embed_tensor": "layers.N.engram.embed.weight F8_E4M3 [384006168, 256] + scale F8_E8M0 [384006168, 8]",
+  "residency": "host memory with background RDMA prefetch; NOT in GPU stagepack",
+  "bytes_each": 98385580032
+ },
+ "dspark": {
+  "role": "speculative decoding (replaces MTP-style jointly-trained next-n)",
+  "block_count": 3,
+  "dspark_block_size": 5,
+  "swa_window": 128,
+  "markov_rank": 256,
+  "routed_expert_count": 128,
+  "experts_per_token": 3,
+  "target_layer_ids": [37, 38, 39],
+  "noise_token_id": 128799,
+  "heads": {
+   "markov_embed": "mtp.2.markov_head.embed.weight BF16 [129280, 256]",
+   "markov_head": "mtp.2.markov_head.head.weight BF16 [129280, 256]",
+   "confidence_proj": "mtp.2.confidence_head.proj.weight BF16 [1, 5376]"
+  },
+  "main_proj": "mtp.N.main_proj F8_E4M3 [5120, 15360] + scale [160, 480]",
+  "sidecar": "MTP-sidecar law: separate sysadmin sidecar files, ported LAST"
+ },
+ "precision": {
+  "dense_linear_codec": "FP8 E4M3 with UE8M0 scale, 32x32 weight blocks (quantization_config.weight_block_size, scale_fmt ue8m0)",
+  "expert_codec": "packed FP4 stored as I8 (2 nibbles/byte), UE8M0 scale per 32 input elements per output row",
+  "expert_scale_shape": "w1/w3 [2304, 160], w2 [5120, 72]",
+  "router_dtype": "BF16 weight + F32 bias",
+  "norm_dtype": "BF16",
+  "attention_sink": "layers.N.attn.attn_sink F32 [64] per head",
+  "qk_norm": "q_norm BF16 [1280] on q_lora, kv_norm BF16 [512] on kv latent"
+ },
+ "tensor_census": {
+  "index_entries": 96085,
+  "per_layer_attention": "wq_a [1280,5120], wq_b [32768,1280], wkv [512,5120], wo_a [8192,4096], wo_b [5120,8192] all F8_E4M3+scale",
+  "per_layer_moe": "gate [384,5120] BF16, 384 experts x (w1 [2304,2560] I8, w2 [5120,1152] I8, w3 [2304,2560] I8, scales F8_E8M0), shared_experts F8_E4M3 w1/w3 [2304,5120] w2 [5120,2304]",
+  "derived_expert_bytes": {
+   "per_expert_packed": 17694720,
+   "per_layer_384": 6794772480,
+   "all_40_layers": 271790899200,
+   "tp16_per_rank": 16986931200,
+   "tp4_per_rank": 67947724800,
+   "dspark_128x3": 6794772480
+  }
+ },
+ "topology": {
+  "preferred": "TP16",
+  "standard_fallback": "TP4xPP4",
+  "tp_divisibility": {
+   "attention_heads_64": [1, 2, 4, 8, 16],
+   "index_heads_32": [1, 2, 4, 8, 16],
+   "routed_experts_384": [1, 2, 4, 6, 8, 12, 16, 24, 32],
+   "o_groups_8": [1, 2, 4, 8],
+   "open_fact_o_groups": "o_groups 8 does not divide TP16; wo_a/wo_b group handling at TP16 needs a documented exemption or a 2-replica group split - decide at contract freeze"
+   }
+ },
+ "variants": {
+  "base": "40 backbone layers, no dspark, global KV producer+consumer, TP-rank param",
+  "dense_probe": "single-layer slice for layer-0 style validation gates (SWA-only layer 0 has no CSA2 deps)",
+  "dspark_sidecar": "3 dspark blocks + markov/confidence heads as separate sidecar pack; LAST per MTP-sidecar law",
+  "excluded": "vision tower, aligner, engram GPU residency"
+ },
+ "qualification": {
+  "status": "WIP",
+  "weights_gate": "BLOCKED on warm download completion; dd-probe + hash-verify against pinned LFS oids before any pack build",
+  "next": "module skeleton + stagepack contract header + packer + .experts v2 manifest producer + validator"
+ }
+}
