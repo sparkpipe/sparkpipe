@@ -14,10 +14,8 @@
 #define SPARK_QWEN38_27B_TP_TAG "qwen38_27b_tp"
 
 #define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE 58700u
-#define SPARK_QWEN38_27B_TP_DEFAULT_NCCL_PORT_BASE 61620u
 #define SPARK_QWEN38_27B_TP_IDENTIFIER 0x513630545031ull
 #define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY "libhidden_transport.so"
-#define SPARK_QWEN38_27B_TP_DEFAULT_NCCL_LIBRARY "libnccl.so.2"
 static const char *SparkQwen38_27bTpRailHosts[2][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE] =
 {
 	{ "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
@@ -108,45 +106,6 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	return (SparkStatus)pending.status;
 }
 
-SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
-	SparkQwen38_27bTpState *tp,
-	uint64_t total_bytes,
-	uint32_t mapped_host)
-{
-	void *mapped_receive = 0,*mapped_send = 0;
-	if ( total_bytes == 0u )
-		return SPARK_STATUS_OK;
-	if ( cudaMalloc(&tp->credit_send_bf16,(size_t)total_bytes) != cudaSuccess )
-	{
-		SparkQwen38_27bTpDestroy(tp);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	tp->credit_device_allocated = 1u;
-	if ( cudaMalloc(&tp->credit_receive_bf16,(size_t)total_bytes) != cudaSuccess )
-	{
-		SparkQwen38_27bTpDestroy(tp);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	if ( mapped_host != 0u )
-	{
-		if ( cudaHostAlloc(&tp->host_credit_send_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
-			cudaHostAlloc(&tp->host_credit_receive_bf16,(size_t)total_bytes,cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
-			cudaHostGetDevicePointer(&mapped_send,tp->host_credit_send_bf16,0u) != cudaSuccess ||
-			cudaHostGetDevicePointer(&mapped_receive,tp->host_credit_receive_bf16,0u) != cudaSuccess )
-		{
-			fprintf(stderr, "%s credit_host_alloc_failed\n", SPARK_QWEN38_27B_TP_TAG);
-			SparkQwen38_27bTpDestroy(tp);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		cudaFree(tp->credit_send_bf16);
-		cudaFree(tp->credit_receive_bf16);
-		tp->credit_send_bf16 = mapped_send;
-		tp->credit_receive_bf16 = mapped_receive;
-		tp->credit_device_allocated = 0u;
-	}
-	return SPARK_STATUS_OK;
-}
-
 SparkStatus SparkQwen38_27bTpInitialize(
 	SparkQwen38_27bTpState *tp,
 	uint32_t degree,
@@ -157,12 +116,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 {
 	(void)pipeline_slot_count;
 	SparkTpDeviceCollectiveConfig configuration;
-	SparkTpDeviceCollectiveCreditBinding *bindings;
-	const char *backend_name;
 	const char *library_path;
-	uint32_t transport_backend;
-	uint32_t credit,route,route_count,hidden,memory_mode;
-	uint64_t credit_bytes,offset,total_bytes;
 	SparkStatus status;
 	uint32_t index;
 
@@ -205,10 +159,10 @@ SparkStatus SparkQwen38_27bTpInitialize(
 			SPARK_QWEN38_27B_TP_TAG, degree, rank);
 		return SPARK_STATUS_OK;
 	}
-	backend_name = getenv("SPARK_QWEN38_27B_TP_BACKEND");
-	transport_backend = backend_name == 0 || strcmp(backend_name,"nccl") != 0 ? 1u : 0u;
 	memset(&configuration, 0, sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration.backend_kind =
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	configuration.tp_degree = degree;
 	configuration.tp_rank = rank;
 	configuration.operation_kind =
@@ -221,156 +175,65 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	configuration.collective_identifier = SPARK_QWEN38_27B_TP_IDENTIFIER;
 	configuration.registration_cuda_stream = registration_cuda_stream;
 	configuration.local_host = SparkQwen38_27bTpRailHosts[0][rank];
-	if ( transport_backend != 0u )
+	library_path = getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY");
+	configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY;
+	configuration.control_port_base =
+		SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE;
+	configuration.algorithm_mask =
+		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
+	configuration.rail_count = 0u;
+	configuration.direct_all_to_all_max_payload_bytes = 0u;
+	configuration.split_ring_min_payload_bytes = 0u;
+	configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
+	configuration.combine_relay_bf16_function = SparkQwen38_27bTpCombineRelayBf16;
+	configuration.combine_tp4_bf16_function = SparkQwen38_27bTpCombineTp4Bf16;
+	configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
+	configuration.combine_context = tp;
+	for (index = 0u; index < 2u; index++)
+		memcpy(configuration.rail_rank_hosts[index],SparkQwen38_27bTpRailHosts[index],sizeof(SparkQwen38_27bTpRailHosts[index]));
+	for (index = 0u; index < degree; index++)
+		configuration.rank_hosts[index] = SparkQwen38_27bTpRailHosts[0][index];
+	configuration.credit_count = 8u;
 	{
-		configuration.backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-		library_path = getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY");
-		configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY;
-		configuration.control_port_base =
-			SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE;
-		configuration.algorithm_mask =
-			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
-		configuration.rail_count = 0u;
-		configuration.direct_all_to_all_max_payload_bytes = 0u;
-		configuration.split_ring_min_payload_bytes = 0u;
-		configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
-		configuration.combine_relay_bf16_function = SparkQwen38_27bTpCombineRelayBf16;
-		configuration.combine_tp4_bf16_function = SparkQwen38_27bTpCombineTp4Bf16;
-		configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
-		configuration.combine_context = tp;
-		for (index = 0u; index < 2u; index++)
-			memcpy(configuration.rail_rank_hosts[index],SparkQwen38_27bTpRailHosts[index],sizeof(SparkQwen38_27bTpRailHosts[index]));
-		for (index = 0u; index < degree; index++)
-			configuration.rank_hosts[index] = SparkQwen38_27bTpRailHosts[0][index];
-		configuration.credit_count = 8u;
-		{
-			const char *session_ports_text = getenv("SPARK_QWEN38_27B_TP_SESSION_PORTS");
-			const char *cell_scan;
-			uint32_t row_index,column_index;
-			unsigned long cell_value;
-			if ( session_ports_text == 0 )
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			cell_scan = session_ports_text;
-			for (row_index = 0u; row_index < degree; row_index++)
-				for (column_index = 0u; column_index < degree; column_index++)
-				{
-					char *cell_end;
-					errno = 0;
-					cell_value = strtoul(cell_scan,&cell_end,10);
-					if ( cell_end == cell_scan || errno != 0 ||
-						cell_value > 65535u ||
-						(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
-						SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-					configuration.session_ports[row_index][column_index] = (uint16_t)cell_value;
-					cell_scan = cell_end;
-					while ( *cell_scan == ',' )
-						cell_scan++;
-				}
-		}
-	}
-	else
-	{
-		configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-		library_path = getenv("SPARK_QWEN38_27B_TP_NCCL_LIBRARY");
-		configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_NCCL_LIBRARY;
-		configuration.control_port_base = SPARK_QWEN38_27B_TP_DEFAULT_NCCL_PORT_BASE;
-		configuration.credit_count = 1u;
-		for (index = 0u; index < degree; index++)
-			configuration.rank_hosts[index] = SparkQwen38_27bTpRailHosts[0][index];
-	}
-	if ( transport_backend != 0u )
-	{
-		status = SparkTpDeviceCollectiveProbeMemoryMode(
-			configuration.backend_kind,configuration.backend_module_path,
-			&memory_mode);
-		if ( status != SPARK_STATUS_OK )
-		{
-			fprintf(stderr, "%s probe_memory_mode status=%d\n",
-				SPARK_QWEN38_27B_TP_TAG, (int)status);
-			return status;
-		}
-		status = SparkTpDeviceCollectiveCreditBindingRouteCount(
-			&configuration,&route_count);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		total_bytes = 0u;
-		for (route = 0u; route < route_count; route++)
-		{
-			hidden = configuration.local_hidden_dimension;
-			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
-			if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
-				credit_bytes * configuration.credit_count )
-				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-			total_bytes += credit_bytes * configuration.credit_count;
-		}
-		status = SparkQwen38_27bTpAllocateCreditMemory(tp,total_bytes,
-			memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		bindings = (SparkTpDeviceCollectiveCreditBinding *)calloc(
-			(uint64_t)route_count * configuration.credit_count,sizeof(*bindings));
-		if ( bindings == 0 )
-		{
-			SparkQwen38_27bTpDestroy(tp);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		offset = 0u;
-		configuration.credit_binding_count = 0u;
-		for (route = 0u; route < route_count; route++)
-		{
-			hidden = configuration.local_hidden_dimension;
-			credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
-			for (credit = 0u; credit < configuration.credit_count; credit++)
+		const char *session_ports_text = getenv("SPARK_QWEN38_27B_TP_SESSION_PORTS");
+		const char *cell_scan;
+		uint32_t row_index,column_index;
+		unsigned long cell_value;
+		if ( session_ports_text == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		cell_scan = session_ports_text;
+		for (row_index = 0u; row_index < degree; row_index++)
+			for (column_index = 0u; column_index < degree; column_index++)
 			{
-				SparkTpDeviceCollectiveCreditBinding *binding =
-					&bindings[configuration.credit_binding_count++];
-				binding->step_index = route;
-				binding->credit_index = credit;
-				binding->send_device = (uint8_t *)tp->credit_send_bf16 + offset;
-				binding->receive_device = (uint8_t *)tp->credit_receive_bf16 + offset;
-				binding->send_transport = memory_mode ==
-					SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-					(uint8_t *)tp->host_credit_send_bf16 + offset :
-					binding->send_device;
-				binding->receive_transport = memory_mode ==
-					SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-					(uint8_t *)tp->host_credit_receive_bf16 + offset :
-					binding->receive_device;
-				binding->flags = memory_mode ==
-					SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-					SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
-				offset += credit_bytes;
+				char *cell_end;
+				errno = 0;
+				cell_value = strtoul(cell_scan,&cell_end,10);
+				if ( cell_end == cell_scan || errno != 0 ||
+					cell_value > 65535u ||
+					(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
+					return SPARK_STATUS_INVALID_ARGUMENT;
+				configuration.session_ports[row_index][column_index] = (uint16_t)cell_value;
+				cell_scan = cell_end;
+				while ( *cell_scan == ',' )
+					cell_scan++;
 			}
-		}
-		configuration.credit_bindings = bindings;
 	}
-	fprintf(stderr, "%s config degree=%u rank=%u backend=%s credits=%u mask=0x%x rails=%u port=%u direct_max=%u split_min=%u step=[%u,%u,%u] local=%s host0=%s bindings=%u\n",
+	fprintf(stderr, "%s config degree=%u rank=%u port=%u local=%s host0=%s\n",
 		SPARK_QWEN38_27B_TP_TAG, degree, rank,
-		transport_backend != 0u ? "transport" : "nccl",
-		configuration.credit_count, configuration.algorithm_mask,
-		configuration.rail_count, configuration.control_port_base,
-		configuration.direct_all_to_all_max_payload_bytes,
-		configuration.split_ring_min_payload_bytes,
-		configuration.step_rail_indices[0], configuration.step_rail_indices[1],
-		configuration.step_rail_indices[2], configuration.local_host,
-		configuration.rank_hosts[0], configuration.credit_binding_count);
+		configuration.control_port_base, configuration.local_host,
+		configuration.rank_hosts[0]);
 	status = SparkTpDeviceCollectiveCreate(&configuration, &tp->collective);
-	free((void *)configuration.credit_bindings);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "%s create_failed status=%d degree=%u rank=%u backend=%s\n",
-			SPARK_QWEN38_27B_TP_TAG, (int)status, degree, rank,
-			transport_backend != 0u ? "transport" : "nccl");
+		fprintf(stderr, "%s create_failed status=%d degree=%u rank=%u\n",
+			SPARK_QWEN38_27B_TP_TAG, (int)status, degree, rank);
 		SparkQwen38_27bTpDestroy(tp);
 		return status;
 	}
 	tp->initialized = 1u;
 	tp->next_ordinal = 0u;
-	fprintf(stderr, "%s ready degree=%u rank=%u backend=%s credits=%u\n",
-		SPARK_QWEN38_27B_TP_TAG, degree, rank,
-		transport_backend != 0u ? "transport" : "nccl",
-		tp->collective.credit_count);
+	fprintf(stderr, "%s ready degree=%u rank=%u\n",
+		SPARK_QWEN38_27B_TP_TAG, degree, rank);
 	return SPARK_STATUS_OK;
 }
 
@@ -380,17 +243,6 @@ void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp)
 		return;
 	if ( tp->initialized != 0u )
 		(void)SparkTpDeviceCollectiveDestroy(&tp->collective);
-	if ( tp->credit_device_allocated != 0u )
-	{
-		if ( tp->credit_send_bf16 != 0 )
-			(void)cudaFree(tp->credit_send_bf16);
-		if ( tp->credit_receive_bf16 != 0 )
-			(void)cudaFree(tp->credit_receive_bf16);
-	}
-	if ( tp->host_credit_send_bf16 != 0 )
-		(void)cudaFreeHost(tp->host_credit_send_bf16);
-	if ( tp->host_credit_receive_bf16 != 0 )
-		(void)cudaFreeHost(tp->host_credit_receive_bf16);
 	memset(tp, 0, sizeof(*tp));
 }
 
