@@ -157,6 +157,7 @@ set -euo pipefail
 dir="$(deploy_dir_for "$host")"
 mkdir -p "\$dir/runtime-$rank"
 cd "\$dir"
+export dir
 export SPARK_QWEN4_FLASH_TP_DEGREE=4
 export SPARK_QWEN4_FLASH_TP_RANK=$tp
 export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="\$dir/lib/libhidden_transport_spark_host_rdma_verbs.so"
@@ -167,8 +168,9 @@ export SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS="$session_ports"
 export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
-nohup "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir/deployment.json" --rank-index "$rank" > "\$dir/residentd-r$rank.log" 2>&1 < /dev/null &
-echo \$!
+nohup ${SPARK_FLEET_RUNNER:-} bash -c 'echo \$\$ > "\$dir/residentd-r'"$rank"'.pid"; exec "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir/deployment.json" --rank-index '"$rank" > "\$dir/residentd-r'"$rank"'.log" 2>&1 < /dev/null &
+sleep 1
+cat "\$dir/residentd-r'"$rank"'.pid"
 REMOTE
 )
   record_pid "$host" "$rank" "$pid" residentd
