@@ -554,8 +554,8 @@ class Packer:
                 if dtype != "BF16":
                     raise PackFailure(f"{name}: expected native BF16, got {dtype}")
                 codes = source.raw(name).view(np.uint16).reshape(shape[0], shape[1])
-                c0, c1 = self._cols_slice(shape[1])
-                yield np.ascontiguousarray(codes[:, c0:c1]).tobytes()
+                c0, cwidth = self._cols_slice(shape[1])
+                yield np.ascontiguousarray(codes[:, c0:c0 + cwidth]).tobytes()
 
         self.plan.append(PlanItem(w1, produce_w1))
         self.plan.append(PlanItem(w2, produce_w2))
