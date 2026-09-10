@@ -679,23 +679,27 @@ static float *SparkMinimaxH3V4WnCombine(uint32_t out_channels, uint32_t inner,
 }
 
 static void SparkMinimaxH3V4Conv1d(float *out, const float *input, uint32_t out_channels,
-	uint32_t in_channels, uint32_t length, const float *weight, const float *bias,
-	uint32_t kernel, uint32_t dilation, uint32_t padding)
+	uint32_t weight_out_channels, uint32_t in_channels, uint32_t weight_in_channels,
+	uint32_t length, const float *weight, const float *bias, uint32_t kernel,
+	uint32_t dilation, uint32_t padding)
 {
 	uint32_t channel;
 	#pragma omp parallel for schedule(static)
 	for (channel=0u; channel<out_channels; channel++)
 	{
+		uint32_t weight_channel = channel % weight_out_channels;
 		uint32_t position;
 		for (position=0u; position<length; position++)
 		{
-			float total = bias != 0 ? bias[channel] : 0.0f;
+			float total = bias != 0 ? bias[weight_channel] : 0.0f;
 			uint32_t inner,tap;
 			for (inner=0u; inner<in_channels; inner++)
 			{
+				uint32_t weight_inner = inner % weight_in_channels;
 				const float *input_row = input + (uint64_t)inner * length;
 				const float *weight_row = weight +
-					(((uint64_t)channel * in_channels) + inner) * kernel;
+					(((uint64_t)weight_channel * weight_in_channels) + weight_inner) *
+					kernel;
 			for (tap=0u; tap<kernel; tap++)
 			{
 				int32_t source = (int32_t)position +
@@ -904,7 +908,8 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			SparkMinimaxH3V4Conv1d(x + (uint64_t)batch * 2048u *
 				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,latents + (uint64_t)batch *
 				SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS *
-				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,2048u,
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,2048u,2048u,
+				SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS,
 				SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS,
 				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,weight,bias,1u,1u,0u);
 		free(weight); free(bias);
@@ -924,7 +929,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 		for (batch=0u; batch<SPARK_MINIMAX_H3_V4_AUDIO_BATCH; batch++)
 			SparkMinimaxH3V4Conv1d(next + (uint64_t)batch * 1024u *
 				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,x + (uint64_t)batch * 2048u *
-				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,1024u,2048u,
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,1024u,1024u,2048u,2048u,
 				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,weight,bias,7u,1u,3u);
 		free(bias); free(weight); free(weight_g); free(weight_v);
 	}
@@ -1050,8 +1055,10 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						out_channels);
 					weight_conv = SparkMinimaxH3V4WnCombine(out_channels,out_channels,
 						block_kernels[block],weight_bg,weight_bv);
-					SparkMinimaxH3V4Conv1d(conv_out,activation_buffer,out_channels,
-						out_channels,output_length,weight_conv,bias_conv,
+					SparkMinimaxH3V4Conv1d(conv_out,activation_buffer,
+						(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels,
+						out_channels,(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+						out_channels,out_channels,output_length,weight_conv,bias_conv,
 						block_kernels[block],conv_dilation,conv_padding);
 					free(weight_bg); free(weight_bv); free(bias_conv); free(weight_conv);
 					{
@@ -1131,7 +1138,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 		for (batch=0u; batch<SPARK_MINIMAX_H3_V4_AUDIO_BATCH; batch++)
 			SparkMinimaxH3V4Conv1d(waveform + (uint64_t)batch *
 				SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,activation_buffer + (uint64_t)batch *
-				8u * SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,1u,8u,
+				8u * SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,1u,1u,8u,8u,
 				SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,weight,0,7u,1u,3u);
 		free(weight_g); free(weight_v); free(weight);
 	}
