@@ -4,12 +4,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
 
 SparkStatus SparkWeightdMeshInit(void);
 uint32_t SparkWeightdMeshReady(void);
+
+static void *SparkWeightdMeshThread(void *argument)
+{
+    SparkStatus status;
+    (void)argument;
+    status = SparkWeightdMeshInit();
+    if (status != SPARK_STATUS_OK)
+        fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
+            SparkStatusToString(status));
+    return 0;
+}
 
 static volatile sig_atomic_t SparkWeightdStop;
 
@@ -162,10 +174,9 @@ int main(int argument_count, char **arguments)
     fflush(stdout);
 
     {
-        SparkStatus mesh_status = SparkWeightdMeshInit();
-        if (mesh_status != SPARK_STATUS_OK)
-            fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
-                SparkStatusToString(mesh_status));
+        static pthread_t mesh_thread;
+        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
+            fprintf(stderr, "weightd-mesh: thread create failed\n");
     }
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
