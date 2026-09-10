@@ -107,6 +107,14 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
     uint64_t minimum,
     uint64_t maximum,
     uint64_t *value);
+SparkStatus SparkStageModuleEnvironmentUnsigned64OrDefault(
+    const char *module_tag,
+    const char *name,
+    uint64_t minimum,
+    uint64_t maximum,
+    uint64_t fallback,
+    uint64_t *value);
+
 SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
     const char *module_tag,
     const char *name,

@@ -502,6 +502,44 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
         value);
 }
 
+SparkStatus SparkStageModuleEnvironmentUnsigned64OrDefault(
+    const char *module_tag,
+    const char *name,
+    uint64_t minimum,
+    uint64_t maximum,
+    uint64_t fallback,
+    uint64_t *value)
+{
+    const char *text;
+    SparkStatus status;
+    uint64_t parsed;
+
+    if (module_tag == 0 || name == 0 || name[0] == '\0' || value == 0 ||
+        minimum > maximum || fallback < minimum || fallback > maximum)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    text = getenv(name);
+    if (text == 0 || text[0] == '\0')
+    {
+        *value = fallback;
+        return SPARK_STATUS_OK;
+    }
+    status = SparkStageModuleParseUnsigned64(
+        module_tag,
+        name,
+        text,
+        minimum,
+        maximum,
+        &parsed);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *value = parsed;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
     const char *module_tag,
     const char *name,
