@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_admission.h"
@@ -152,6 +153,8 @@ typedef struct SparkGlm52ServingState
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
 	uint32_t quiescing;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 	uint64_t orphan_completion_count;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
@@ -604,6 +607,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -673,6 +678,8 @@ static SparkStatus SparkGlm52ServingValidateSubmission(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
+	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm52ServingDescriptor,&state->runtime_limits,submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ServingValidateBoundaries(state,submission);
@@ -944,6 +951,49 @@ static SparkStatus SparkGlm52ServingSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm52ServingResetControl(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm52ServingState *state;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	state = (SparkGlm52ServingState *)adapter_state;
+	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkGlm52ServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		state->quiescing = 0u;
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm52ServingReset(void *adapter_state,uint64_t control_generation)
+{
+	SparkGlm52ServingState *state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	state = (SparkGlm52ServingState *)adapter_state;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkGlm52ServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
+}
+
 static const SparkModelServingAdapterInterface SparkGlm52ServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -957,7 +1007,8 @@ static const SparkModelServingAdapterInterface SparkGlm52ServingInterface =
 	.resolve_prefetch = SparkGlm52ServingResolvePrefetch,
 	.progress = SparkGlm52ServingProgress,
 	.quiesce = SparkGlm52ServingQuiesce,
-	.snapshot = SparkGlm52ServingSnapshot
+	.snapshot = SparkGlm52ServingSnapshot,
+	.reset = SparkGlm52ServingReset
 };
 
 __attribute__((visibility("default")))
