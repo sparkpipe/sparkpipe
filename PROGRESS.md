@@ -174,3 +174,12 @@ matches that shape.
 Next step for the lane: module lifecycle E2E (module_decode tier with
 SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER=1) once the weightd lazy-pack
 attach plumbing lands, then fleet qualification under model_residentd.
+
+Second hop (same round): main advanced 190 commits under the lane during
+validation (14df85a -> 167cde7, qwen38max-sota + k3 fleet wave merges). The
+branch was rebased again (-X ours: every shared-file conflict takes main;
+the muse family files are additions and apply clean), the lane delta vs
+167cde7 re-verified as muse-only + norm.cuh + ceiling, the code-size
+ceiling re-pinned to the measured exact 238091 (muse stack +4672 over
+main's measured 233419 at 167cde7), and the full GPU tier re-run GREEN on
+the final tree (ab8679b) against the same real audited rank00 pack.
