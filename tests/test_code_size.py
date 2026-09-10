@@ -1497,6 +1497,12 @@ CEILING = 241052
 # on top. Measured exact on the rebased lane tip 53c66ed: 242163.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 242163
+# the same round applies the S4 >50L ratchet to the ling lane's worst
+# functions (adapter LoadTpCollective 148L, module TpChainAdvance 119L,
+# KvInitialize 95L): folds add function signatures and dispatch, net +95
+# tooling-free lines; lingfin_authoritative.json added for the second
+# contract. Measured exact: 242258.
+CEILING = 242258
 
 
 ROOT = Path(__file__).resolve().parent.parent
