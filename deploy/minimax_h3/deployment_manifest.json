@@ -1,0 +1,141 @@
+{
+ "arm": "h3.bf16.tp4pp4",
+ "topology": "TP4xPP4 on 16 sparks",
+ "session_port_block": [
+  17408,
+  18431
+ ],
+ "highest_session_port_with_route_offsets": 18383,
+ "host_order": [
+  "spark0",
+  "spark1",
+  "spark2",
+  "spark3",
+  "spark4",
+  "spark5",
+  "spark6",
+  "spark7",
+  "spark8",
+  "spark9",
+  "sparka",
+  "sparkb",
+  "sparkc",
+  "sparkd",
+  "sparke",
+  "sparkf"
+ ],
+ "ranks": [
+  {
+   "rank": 0,
+   "host": "spark0",
+   "pack": "packs/h3.bf16.tp4pp4.rank0.sp",
+   "tp_rank": 0,
+   "pp_stage": 0
+  },
+  {
+   "rank": 1,
+   "host": "spark0",
+   "pack": "packs/h3.bf16.tp4pp4.rank1.sp",
+   "tp_rank": 1,
+   "pp_stage": 0
+  },
+  {
+   "rank": 2,
+   "host": "spark0",
+   "pack": "packs/h3.bf16.tp4pp4.rank2.sp",
+   "tp_rank": 2,
+   "pp_stage": 0
+  },
+  {
+   "rank": 3,
+   "host": "spark0",
+   "pack": "packs/h3.bf16.tp4pp4.rank3.sp",
+   "tp_rank": 3,
+   "pp_stage": 0
+  },
+  {
+   "rank": 4,
+   "host": "spark1",
+   "pack": "packs/h3.bf16.tp4pp4.rank4.sp",
+   "tp_rank": 0,
+   "pp_stage": 1
+  },
+  {
+   "rank": 5,
+   "host": "spark1",
+   "pack": "packs/h3.bf16.tp4pp4.rank5.sp",
+   "tp_rank": 1,
+   "pp_stage": 1
+  },
+  {
+   "rank": 6,
+   "host": "spark1",
+   "pack": "packs/h3.bf16.tp4pp4.rank6.sp",
+   "tp_rank": 2,
+   "pp_stage": 1
+  },
+  {
+   "rank": 7,
+   "host": "spark1",
+   "pack": "packs/h3.bf16.tp4pp4.rank7.sp",
+   "tp_rank": 3,
+   "pp_stage": 1
+  },
+  {
+   "rank": 8,
+   "host": "spark2",
+   "pack": "packs/h3.bf16.tp4pp4.rank8.sp",
+   "tp_rank": 0,
+   "pp_stage": 2
+  },
+  {
+   "rank": 9,
+   "host": "spark2",
+   "pack": "packs/h3.bf16.tp4pp4.rank9.sp",
+   "tp_rank": 1,
+   "pp_stage": 2
+  },
+  {
+   "rank": 10,
+   "host": "spark2",
+   "pack": "packs/h3.bf16.tp4pp4.rank10.sp",
+   "tp_rank": 2,
+   "pp_stage": 2
+  },
+  {
+   "rank": 11,
+   "host": "spark2",
+   "pack": "packs/h3.bf16.tp4pp4.rank11.sp",
+   "tp_rank": 3,
+   "pp_stage": 2
+  },
+  {
+   "rank": 12,
+   "host": "spark3",
+   "pack": "packs/h3.bf16.tp4pp4.rank12.sp",
+   "tp_rank": 0,
+   "pp_stage": 3
+  },
+  {
+   "rank": 13,
+   "host": "spark3",
+   "pack": "packs/h3.bf16.tp4pp4.rank13.sp",
+   "tp_rank": 1,
+   "pp_stage": 3
+  },
+  {
+   "rank": 14,
+   "host": "spark3",
+   "pack": "packs/h3.bf16.tp4pp4.rank14.sp",
+   "tp_rank": 2,
+   "pp_stage": 3
+  },
+  {
+   "rank": 15,
+   "host": "spark3",
+   "pack": "packs/h3.bf16.tp4pp4.rank15.sp",
+   "tp_rank": 3,
+   "pp_stage": 3
+  }
+ ]
+}

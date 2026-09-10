@@ -56,7 +56,7 @@ fi
 
 "${cc_bin}" -O2 -march=native -Wall -Wextra ${omp_flag} \
 	-o "${work}/minimax_h3_v4_gate" \
-	"${script_directory}/spark_minimax_h3_v4_gate.c"
+	"${script_directory}/spark_minimax_h3_v4_gate.c" -lm
 
 "${work}/minimax_h3_v4_gate" video "${video_fixtures}" "${work}/video_weights"
 "${work}/minimax_h3_v4_gate" audio "${audio_fixtures}" "${work}/audio_weights"
