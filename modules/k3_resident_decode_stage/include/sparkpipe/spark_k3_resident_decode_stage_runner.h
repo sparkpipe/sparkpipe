@@ -65,10 +65,6 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *context_length;
     const uint32_t *sequence_of_row;
     const uint32_t *kda_state_index;
-    /* The KDA recurrence's run prefix: active_sequence_count+1 entries,
-     * device, runs[0]=0, monotone, runs[active]==row_count. Consecutive
-     * rows runs[s]..runs[s+1) of one sequence chain through the KDA state
-     * in row order; NULL means row i IS sequence i (pure decode). */
     const uint32_t *sequence_row_begin;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
