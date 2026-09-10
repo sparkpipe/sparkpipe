@@ -112,8 +112,8 @@ def main():
             "max_active_sequences": 8,
             "max_input_rows": 8,
             "resident_sequence_capacity": 8,
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            "kv_logical_page_capacity": 8,
+            "kv_physical_page_capacity": 8,
         },
         "nodes": nodes,
     }
