@@ -1481,13 +1481,15 @@ CEILING = 233150
 # Re-merge 8f3a6f2..14df85a: glm53-p0 #912 (residentd scope release, transport
 # patient startup + route self-healing) + ceiling re-pin #911. Measured exact
 # on 14df85a: 241327 (+275).
+# PR #913 (50bd0d3) lands the E2E-proven transport: the rdma wire-up engine
+# and the old-engine test debt are deleted (tp_device_collective.c 3647 ->
+# 413, nccl backend gone), main's exact drops to 232148 (-9179).
 # The gemma4 lane #903 lands the family: two-contract model header, gemma
-# stagepack format + firmware ABI, the carved module (2533 -> 1380) and
-# kernel set (2587 -> 470) replacing the qwen4_flash donor body, arm
-# Makefiles, serving adapter, standalone pack synth tool: +3340 net. The
-# donor-body deletion is the point.
-# Measured exact: 244667 at the gemma4 tip.
-CEILING = 244667
+# stagepack format + firmware ABI, the carved module and kernel set
+# replacing the qwen4_flash donor body, arm Makefiles, serving adapter,
+# pack synth tool, contract freeze, anchor-consuming oracle, +4261 net.
+# Measured exact: 236409 at the gemma4 tip.
+CEILING = 236409
 
 
 ROOT = Path(__file__).resolve().parent.parent
