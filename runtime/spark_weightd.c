@@ -1200,6 +1200,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             result->expert_count = server->arenas[slot].expert_count;
             result->chunk_bytes = server->arenas[slot].chunk_bytes;
             result->chunk_count = server->arenas[slot].chunk_count;
+            result->loaded_from_pack = 0u;
             (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
         }
         return;
@@ -1271,6 +1272,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     result->expert_count = expert_count;
     result->chunk_bytes = server->arenas[slot].chunk_bytes;
     result->chunk_count = server->arenas[slot].chunk_count;
+    result->loaded_from_pack = 1u;
     (void)SparkWeightdManifestIdentity(&server->arenas[slot].manifest,result->manifest_sha256);
     printf("weightd lazy-attach model=%s experts=%u arena=%llu pool=%llu\n",
         identity.model, expert_count,
@@ -2674,6 +2676,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     memcpy(result->manifest_sha256,wire_result.manifest_sha256,sizeof(result->manifest_sha256));
     result->chunk_bytes = wire_result.chunk_bytes;
     result->chunk_count = wire_result.chunk_count;
+    result->loaded_from_pack = wire_result.loaded_from_pack;
     return SPARK_STATUS_OK;
 }
 

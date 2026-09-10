@@ -199,7 +199,7 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint32_t expert_count;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
-    uint32_t reserved0;
+    uint32_t loaded_from_pack;
     uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
 
@@ -387,6 +387,7 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint32_t loaded_from_pack;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint8_t manifest_sha256[32];
