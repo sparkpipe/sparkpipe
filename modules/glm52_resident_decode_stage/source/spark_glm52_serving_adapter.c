@@ -35,31 +35,17 @@
  * (PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the
  * adapter maps flat rank -> tp_rank and pins the firmware stage to 0.
  * The 5.2 serving band was TP8; the glm53full fleet deploys TP16 — the
- * rank count is a build-time selection so each topology keeps its own
- * adapter identity (ValidateForAdapter pins deployment node_count ==
- * stage_count and the stage configs' tp_degree == TP_DEGREE). */
-#ifndef SPARK_GLM52_SERVING_FLAT_RANKS
-#define SPARK_GLM52_SERVING_FLAT_RANKS 8
-#endif
-#if SPARK_GLM52_SERVING_FLAT_RANKS == 16
-#define SPARK_GLM52_SERVING_TOPOLOGY_TAG "tp16"
-#elif SPARK_GLM52_SERVING_FLAT_RANKS == 8
-#define SPARK_GLM52_SERVING_TOPOLOGY_TAG "tp8"
-#else
-#error "unsupported SPARK_GLM52_SERVING_FLAT_RANKS (8 or 16)"
-#endif
-#define SPARK_GLM52_SERVING_ADAPTER_ID \
-	"spark.glm52.serving-adapter." SPARK_GLM52_SERVING_TOPOLOGY_TAG \
-	".expert_" GLM52_EXPERT_CODEC_NAME ".v1"
-#define SPARK_GLM52_SERVING_STAGE_COUNT ((uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS)
-#define SPARK_GLM52_SERVING_TP_DEGREE ((uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS)
-#if SPARK_GLM52_SERVING_FLAT_RANKS == 16
-#define SPARK_GLM52_SERVING_STAGE_LAYERS \
-	{78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u,78u}
-#else
-#define SPARK_GLM52_SERVING_STAGE_LAYERS \
-	{78u,78u,78u,78u,78u,78u,78u,78u}
-#endif
+ * rank count is a per-deployment environment selection
+ * (SPARK_GLM52_SERVING_FLAT_RANKS, 8 or 16) so one adapter artifact
+ * serves both topologies while each keeps its own adapter identity
+ * (ValidateForAdapter pins deployment node_count == stage_count and the
+ * stage configs' tp_degree == TP_DEGREE). Nonsense values leave the
+ * descriptor unconfigured; the host's adapter-load validation then
+ * fails closed. */
+#define SPARK_GLM52_SERVING_FLAT_RANKS_ENV "SPARK_GLM52_SERVING_FLAT_RANKS"
+#define SPARK_GLM52_SERVING_FLAT_RANKS_TP8 8ul
+#define SPARK_GLM52_SERVING_FLAT_RANKS_TP16 16ul
+#define SPARK_GLM52_SERVING_ADAPTER_ID_BYTES 64u
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
@@ -177,10 +163,10 @@ typedef struct SparkGlm52ServingState
 	SparkGlm52ServingPending pending[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } SparkGlm52ServingState;
 
-static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
+static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTemplate =
 {
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_GLM52_SERVING_ADAPTER_ID,
+		0,
 		SPARK_GLM52_SERVING_MODEL_ID,
 		GLM52_MODEL_REVISION,
 		SPARK_GLM52_SERVING_PROGRAM_NAME,
@@ -188,7 +174,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
-	.stage_count = SPARK_GLM52_SERVING_STAGE_COUNT,
+	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT,
@@ -203,10 +189,45 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor =
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
 	.cache_block_token_count = 64u,
-	.stage_layer_counts = SPARK_GLM52_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},
 	.boundary_sideband_bytes_per_sequence = {0u}
 };
+
+static char SparkGlm52ServingAdapterId[SPARK_GLM52_SERVING_ADAPTER_ID_BYTES];
+static SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptor;
+
+static uint32_t SparkGlm52ServingFlatRanksEnvironment(void)
+{
+	const char *text;
+	char *parse_end;
+	unsigned long flat_ranks;
+	text = getenv(SPARK_GLM52_SERVING_FLAT_RANKS_ENV);
+	if ( text == 0 || text[0] == '\0' )
+		return 0u;
+	flat_ranks = strtoul(text,&parse_end,10);
+	if ( parse_end == text || *parse_end != '\0' || (flat_ranks != SPARK_GLM52_SERVING_FLAT_RANKS_TP8 && flat_ranks != SPARK_GLM52_SERVING_FLAT_RANKS_TP16) )
+		return 0u;
+	return (uint32_t)flat_ranks;
+}
+
+static void SparkGlm52ServingDescriptorConfigure(void)
+{
+	uint32_t flat_ranks,index;
+	flat_ranks = SparkGlm52ServingFlatRanksEnvironment();
+	if ( flat_ranks == 0u )
+	{
+		(void)fprintf(stderr,"GLM52-ADAPTER %s must be 8 or 16\n",SPARK_GLM52_SERVING_FLAT_RANKS_ENV);
+		return;
+	}
+	(void)snprintf(SparkGlm52ServingAdapterId,sizeof(SparkGlm52ServingAdapterId),
+		"spark.glm52.serving-adapter.%s.expert_" GLM52_EXPERT_CODEC_NAME ".v1",
+		flat_ranks == (uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS_TP16 ? "tp16" : "tp8");
+	SparkGlm52ServingDescriptor = SparkGlm52ServingDescriptorTemplate;
+	SparkGlm52ServingDescriptor.adapter_id = SparkGlm52ServingAdapterId;
+	SparkGlm52ServingDescriptor.stage_count = flat_ranks;
+	for (index=0u; index<flat_ranks; index++)
+		SparkGlm52ServingDescriptor.stage_layer_counts[index] = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
+}
 
 static SparkStatus SparkGlm52ServingLoadTpCollective(
 	const SparkJsonDocument *document,
@@ -478,7 +499,7 @@ static void SparkGlm52ServingDriverCompletion(
 	else
 		state->orphan_completion_count++;
 
-	if ( state->stage_index + 1u == SPARK_GLM52_SERVING_STAGE_COUNT && completion.status == SPARK_STATUS_OK )
+	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->common.active_sequence_count;
@@ -577,7 +598,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkGlm52ServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( configuration->stage_index >= SPARK_GLM52_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
+	if ( configuration->stage_index >= SparkGlm52ServingDescriptor.stage_count || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM52_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -615,7 +636,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM52_SERVING_TP_DEGREE) )
+	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SparkGlm52ServingDescriptor.stage_count) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ServingInitializeSpeculationSeam(state,max_sequence_positions);
@@ -1017,5 +1038,6 @@ static const SparkModelServingAdapterInterface SparkGlm52ServingInterface =
 __attribute__((visibility("default")))
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
+	SparkGlm52ServingDescriptorConfigure();
 	return(&SparkGlm52ServingInterface);
 }
