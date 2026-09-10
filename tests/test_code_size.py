@@ -1491,6 +1491,12 @@ CEILING = 241983
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
 CEILING = 241052
+# ling lane rebased onto main 50bd0d3 (PR #913, the E2E-proven mesh
+# dataflow): main alone grew over the 241052 pin; the lane's replayed
+# commits (family driver, module port, packer/verify/synth tooling) ride
+# on top. Measured exact on the rebased lane tip 53c66ed: 242163.
+# Re-pinned from measured reality per the ratchet rule.
+CEILING = 242163
 
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -1,0 +1,478 @@
+{
+ "schema_version": 1,
+ "family": "lingfin",
+ "contract": "model_contracts/lingfin_authoritative.json",
+ "source_revision": "content-identical to ling-3.0-flash; config.json sha256 f3e5b1ad82762c7910a303a3642290f0ac4d3abbc9046bf2eab6b19c0385aa05; model.safetensors.index.json sha256 19b4f2f2e199c7e34bab049c1fc1d99b1661700a669a9ea7e7fabcb4527c5920",
+ "checkpoint_census": {
+  "tensor_count": 63783,
+  "source": "model.safetensors.index.json @ fin warm mount (2026-09-10); census 63783 measured, name set identical to ling-3.0-flash (0 deltas both ways)",
+  "witnesses": "8 kv_a_proj_with_mqa (7 stack MLA + MTP), 43 g_proj (all layers), 35 f_proj/dt_bias/A_log (KDA), 41 routers (layers 2..42), 2 dense MLPs (layers 0,1)"
+ },
+ "layer_classes": {
+  "kda_layers": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   6,
+   7,
+   8,
+   9,
+   10,
+   12,
+   13,
+   14,
+   15,
+   16,
+   18,
+   19,
+   20,
+   21,
+   22,
+   24,
+   25,
+   26,
+   27,
+   28,
+   30,
+   31,
+   32,
+   33,
+   34,
+   36,
+   37,
+   38,
+   39,
+   40
+  ],
+  "mla_layers": [
+   5,
+   11,
+   17,
+   23,
+   29,
+   35,
+   41
+  ],
+  "mtp_layer": 42,
+  "dense_layers": [
+   0,
+   1
+  ],
+  "moe_layers": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19,
+   20,
+   21,
+   22,
+   23,
+   24,
+   25,
+   26,
+   27,
+   28,
+   29,
+   30,
+   31,
+   32,
+   33,
+   34,
+   35,
+   36,
+   37,
+   38,
+   39,
+   40,
+   41,
+   42
+  ],
+  "hc_layers": []
+ },
+ "dispatch": {
+  "kda": "layer < 42 and (layer + 1) % 6 != 0 (35 layers)",
+  "mla": "layer < 42 and (layer + 1) % 6 == 0 (7 layers)",
+  "mtp": "layer == 42 (MLA + MoE + MTP head)",
+  "dense_mlp": "layer < 2",
+  "note": "publisher dispatch (modeling_ling_bailing_moe_v3.py) plus the checkpoint census agree; MTP carries its own full layer under model.layers.42.*"
+ },
+ "reference_semantics": {
+  "source": "model_contracts/references/modeling_ling_bailing_moe_v3.py sha256 c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40",
+  "kda_forget_gate": "bounded decay: retention per (head, key-dim) from f_proj(x) + dt_bias scaled by exp(A_log), clamped at kda_lower_bound -5.0; oracle compare against the donor LmBoundedDecayKernel at validator time",
+  "kda_beta": "sigmoid(b_proj(x)) per head",
+  "kda_core": "kimi delta attention (fla chunk_kda), chunk 64 + recurrent decode, qk l2-norm in kernel",
+  "kda_output": "FusedRMSNormGated(core, sigmoid(g_proj(x))) then o_proj",
+  "mla": "publisher form: q_proj (nope 128 | rope 64 per head), kv_a_proj_with_mqa -> latent 512 + rope 64, kv_a_layernorm, kv_b_proj -> per-head nope 128 + value 128, rope interleave on the 64-dim sections, head_wise sigmoid gate, dense o_proj; kernel form: latent cache 512+64 with absorbed scoring per the shared latent-attention decode path",
+  "moe": "sigmoid(noaux_tc) scores + expert_bias for selection, group-limited top-4-of-8 groups (64 experts/group, top-2 within kept groups), unbiased sigmoid weights renormalised x routed_scaling 2.5; shared expert added"
+ },
+ "entries": [
+  {
+   "checkpoint_pattern": "model.word_embeddings.weight",
+   "pack_field": "embedding",
+   "layer_class": "global",
+   "shard_class": "vocab_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "publisher names the embedding word_embeddings, not embed_tokens"
+  },
+  {
+   "checkpoint_pattern": "model.norm.weight",
+   "pack_field": "final_norm",
+   "layer_class": "global",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "lm_head.weight",
+   "pack_field": "lm_head",
+   "layer_class": "global",
+   "shard_class": "vocab_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "tie_word_embeddings false; independent lm_head stored"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.input_layernorm.weight",
+   "pack_field": "attn_norm",
+   "layer_class": "all_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.post_attention_layernorm.weight",
+   "pack_field": "post_attn_norm",
+   "layer_class": "all_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.q_proj.weight",
+   "pack_field": "q",
+   "layer_class": "mla_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "shape [6144, 2560] = 32 heads x (nope 128 + rope 64); no q-lora in Ling"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.kv_a_proj_with_mqa.weight",
+   "pack_field": "kv_a",
+   "layer_class": "mla_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "shape [576, 2560] = latent 512 + rope 64"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.kv_a_layernorm.weight",
+   "pack_field": "kv_a_norm",
+   "layer_class": "mla_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.kv_b_proj.weight",
+   "pack_field": "kv_b_key_transposed",
+   "layer_class": "mla_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "split per-head [8192, 512] into key-transposed [512, 128] x 32 heads and value [128, 512] x 32 heads; two pack tensors",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.g_proj.weight",
+   "pack_field": "attn_gate",
+   "layer_class": "mla_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "shape [32, 2560] head-wise gate"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.dense.weight",
+   "pack_field": "attn_output",
+   "layer_class": "mla_layers",
+   "shard_class": "col_shard",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "publisher names the MLA o_proj 'dense'; shape [2560, 4096]"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.q_proj.weight",
+   "pack_field": "kda_qkv_beta",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "packer fuses q_proj|k_proj|v_proj|b_proj into one [2*4096 + 4096 + 32, 2560] tensor, row order q,k,v,beta to match LingSplitFusedProjectionsKernel",
+   "delta": "same checkpoint name as the MLA q_proj; layer class disambiguates"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.k_conv1d.weight",
+   "pack_field": "kda_qkv_beta",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "see q_proj fusion; k_proj rows",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.v_proj.weight",
+   "pack_field": "kda_qkv_beta",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "see q_proj fusion; v_proj rows",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.b_proj.weight",
+   "pack_field": "kda_qkv_beta",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "see q_proj fusion; beta rows (32)",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.q_conv1d.weight",
+   "pack_field": "kda_q_conv",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "reshape fla ShortConvolution [channels, kernel] to [4096, 4]; verify stored layout against the checkpoint at pack time",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.k_conv1d.weight",
+   "pack_field": "kda_k_conv",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "as q_conv1d",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.v_conv1d.weight",
+   "pack_field": "kda_v_conv",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "as q_conv1d; channels 4096",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.f_proj.weight",
+   "pack_field": "kda_decay_proj",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "full-rank decay projection [4096, 2560]"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.g_proj.weight",
+   "pack_field": "kda_gate_proj",
+   "layer_class": "kda_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "full-rank output gate [4096, 2560]"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.dt_bias",
+   "pack_field": "kda_decay_bias",
+   "layer_class": "kda_layers",
+   "shard_class": "col_shard",
+   "codec": "f32",
+   "transform": "",
+   "delta": "per-(head, key-dim) [4096] fp32"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.A_log",
+   "pack_field": "kda_head_log_scale",
+   "layer_class": "kda_layers",
+   "shard_class": "col_shard",
+   "codec": "f32",
+   "transform": "",
+   "delta": "[32] fp32"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.o_norm.weight",
+   "pack_field": "kda_out_norm",
+   "layer_class": "kda_layers",
+   "shard_class": "replicated",
+   "codec": "f32",
+   "transform": "",
+   "delta": "FusedRMSNormGated weight stored fp32 in the checkpoint; module kernel reads float weight"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.attention.o_proj.weight",
+   "pack_field": "kda_out",
+   "layer_class": "kda_layers",
+   "shard_class": "col_shard",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "shape [2560, 4096]"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.gate_proj.weight",
+   "pack_field": "dense_gate_up",
+   "layer_class": "dense_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "packer fuses gate_proj|up_proj rows into [12288, 2560]",
+   "delta": "layers 0,1 only"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.up_proj.weight",
+   "pack_field": "dense_gate_up",
+   "layer_class": "dense_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "see gate_proj fusion",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.down_proj.weight",
+   "pack_field": "dense_down",
+   "layer_class": "dense_layers",
+   "shard_class": "col_shard",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.gate.weight",
+   "pack_field": "router",
+   "layer_class": "moe_layers",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": "shape [512, 2560]"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.gate.expert_bias",
+   "pack_field": "router_correction",
+   "layer_class": "moe_layers",
+   "shard_class": "replicated",
+   "codec": "f32",
+   "transform": "",
+   "delta": "publisher names the correction bias expert_bias; selection-only, never multiplied into the weight"
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight",
+   "pack_field": "expert_up_gate",
+   "layer_class": "moe_layers",
+   "shard_class": "expert_major_rows",
+   "codec": "expert_codec",
+   "transform": "packer stacks per-expert gate|up rows [512 x 1536, 2560]; codec from --expert-codec",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.experts.{expert}.up_proj.weight",
+   "pack_field": "expert_up_gate",
+   "layer_class": "moe_layers",
+   "shard_class": "expert_major_rows",
+   "codec": "expert_codec",
+   "transform": "see gate_proj stacking",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.experts.{expert}.down_proj.weight",
+   "pack_field": "expert_down",
+   "layer_class": "moe_layers",
+   "shard_class": "expert_major_cols",
+   "codec": "expert_codec",
+   "transform": "[512 experts x 2560, 768]",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.shared_experts.gate_proj.weight",
+   "pack_field": "shared_gate_up",
+   "layer_class": "moe_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "fused gate|up [1536, 2560]",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.shared_experts.up_proj.weight",
+   "pack_field": "shared_gate_up",
+   "layer_class": "moe_layers",
+   "shard_class": "head_rows",
+   "codec": "bf16",
+   "transform": "see gate fusion",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.{layer}.mlp.shared_experts.down_proj.weight",
+   "pack_field": "shared_down",
+   "layer_class": "moe_layers",
+   "shard_class": "col_shard",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.42.eh_proj.weight",
+   "pack_field": "mtp_eh_proj",
+   "layer_class": "mtp_layer",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.42.enorm.weight",
+   "pack_field": "mtp_enorm",
+   "layer_class": "mtp_layer",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.42.hnorm.weight",
+   "pack_field": "mtp_hnorm",
+   "layer_class": "mtp_layer",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  },
+  {
+   "checkpoint_pattern": "model.layers.42.final_layernorm.weight",
+   "pack_field": "mtp_shared_norm",
+   "layer_class": "mtp_layer",
+   "shard_class": "replicated",
+   "codec": "bf16",
+   "transform": "",
+   "delta": ""
+  }
+ ],
+ "tensor_pattern_count": 39
+}
