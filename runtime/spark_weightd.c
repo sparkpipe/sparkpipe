@@ -1882,6 +1882,7 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
             (const SparkWeightdIpcMeshWrite *)request;
         memset(result, 0, sizeof(*result));
         SparkWeightdBuildHeader(response, result_kind, request_id);
+        fprintf(stderr,"WD-MESH-WRITE peer=%u src=%llu dst=%llu len=%u\n",write->peer_rank,(unsigned long long)write->source_offset,(unsigned long long)write->remote_offset,write->length);
         result->status = (uint32_t)SparkWeightdMeshPostWrite(
             write->peer_rank,
             SparkWeightdMeshBufferAddress() + write->source_offset,
