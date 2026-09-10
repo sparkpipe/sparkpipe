@@ -999,6 +999,8 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 					uint32_t conv_padding = pass == 0u ?
 						(block_kernels[block] * dilation - dilation) / 2u :
 						(block_kernels[block] - 1u) / 2u;
+					const float *activation_input = pass == 0u ? next :
+						activation_buffer;
 					float *alpha,*beta,*up_filter,*down_filter;
 					float *weight_bg,*weight_bv,*bias_conv,*weight_conv;
 					snprintf(act_prefix,sizeof(act_prefix),"%sactivations_%u_",prefix,
@@ -1015,7 +1017,8 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						pass == 0u )
 						SparkMinimaxH3V4PreSnakeCompare =
 							"refa_s0_u0__2x512x40.f32";
-					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,next,
+					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,
+						activation_input,
 						(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels,
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
