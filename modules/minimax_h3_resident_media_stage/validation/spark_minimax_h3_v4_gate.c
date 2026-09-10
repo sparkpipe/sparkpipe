@@ -449,7 +449,7 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			proj_out,proj_weight,proj_bias);
 		free(norm_weight); free(norm_bias); free(proj_weight); free(proj_bias);
 	}
-	for (frame=0u; frame<28u; frame++)
+	for (frame=0u; frame<SPARK_MINIMAX_H3_V4_VIDEO_FRAMES; frame++)
 	{
 		uint32_t source_frame = frame < 17u ? frame + 3u : frame + 6u;
 		for (channel=0u; channel<3u; channel++)
