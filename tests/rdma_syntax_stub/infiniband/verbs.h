@@ -37,6 +37,7 @@ struct ibv_qp_cap
     uint32_t max_recv_wr;
     uint32_t max_send_sge;
     uint32_t max_recv_sge;
+    uint32_t max_inline_data;
 };
 
 struct ibv_qp_init_attr
@@ -123,11 +124,13 @@ struct ibv_wc
     int status;
     int opcode;
     uint32_t wc_flags;
+    uint32_t vendor_err;
     uint32_t imm_data;
 };
 
 #define IBV_PORT_ACTIVE 4
 #define IBV_QPT_RC 2
+#define IBV_QPS_RESET 0
 #define IBV_QPS_INIT 1
 #define IBV_QPS_RTR 2
 #define IBV_QPS_RTS 3

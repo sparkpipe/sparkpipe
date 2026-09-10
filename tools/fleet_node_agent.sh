@@ -3,7 +3,22 @@ set -uo pipefail
 ROOTS="${1:?comma-separated runtime root names}"
 HUB="${2:-sparkf}"
 HOST=$(hostname)
-RANK=$((16#${HOST#spark}))
+FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+MESH_INTERFACE="rocep1s0f1"
+MESH_SGID_INDEX=3
+RANK=""
+_idx=0
+for _host in $FLEET_HOSTS; do
+    if [ "$_host" = "$HOST" ]; then
+        RANK=$_idx
+        break
+    fi
+    _idx=$((_idx + 1))
+done
+[ -n "$RANK" ] || {
+    echo "fleet agent: host '$HOST' is not in FLEET_HOSTS; refusing to start with a guessed rank" >&2
+    exit 2
+}
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
 LAST_REPORT=""
@@ -157,7 +172,6 @@ restart_root() {
 }
 
 FLEET_SIZE=16
-FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
 if ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
     ssh-keyscan -H "$HUB" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
@@ -181,7 +195,8 @@ sync_rendezvous() {
     fi
     local mesh_dir="/tmp/weightd-mesh"
     if [ -d "$mesh_dir" ]; then
-        local own_rank="${host#spark}"
+        local own_rank
+        printf -v own_rank '%x' "$RANK"
         local own_rec="$mesh_dir/mesh-$own_rank.rec"
         if [ -f "$own_rec" ]; then
             local sum
@@ -288,6 +303,8 @@ install_core() {
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
     setsid nohup "$wd/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
     sleep 1
 }
@@ -310,6 +327,8 @@ ensure_weightd() {
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
