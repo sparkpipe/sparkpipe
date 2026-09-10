@@ -460,12 +460,27 @@ typedef struct SparkLingValMlaWeights
 	const float *o_proj;
 } SparkLingValMlaWeights;
 
+typedef struct SparkLingValKdaDump
+{
+	float normed[SPARK_LING_VAL_HIDDEN];
+	float q_raw[SPARK_LING_VAL_KDA_QK];
+	float k_raw[SPARK_LING_VAL_KDA_QK];
+	float v_raw[SPARK_LING_VAL_KDA_V];
+	float q_conv[SPARK_LING_VAL_KDA_QK];
+	float retention[SPARK_LING_VAL_KDA_QK];
+	float beta[SPARK_LING_VAL_KDA_HEADS];
+	float o[SPARK_LING_VAL_KDA_V];
+} SparkLingValKdaDump;
+
 static void SparkLingValKdaAttention(
 	const SparkLingValKdaWeights *w,
 	const float *hidden,const float *residual,
 	uint16_t *q_window,uint16_t *k_window,uint16_t *v_window,
-	float *state,float *output)
+	float *state,float *output,SparkLingValKdaDump *dump)
 {
+	SparkLingValKdaDump local_dump;
+	if ( dump == 0 )
+		dump = &local_dump;
 	const uint32_t heads = SPARK_LING_VAL_KDA_HEADS;
 	const uint32_t key = SPARK_LING_VAL_KDA_KEY;
 	const uint32_t qk = SPARK_LING_VAL_KDA_QK;
@@ -511,6 +526,9 @@ static void SparkLingValKdaAttention(
 			sum += w->qkv_beta[(2u * qk + v_dim + (uint64_t)head) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
 		beta[head] = SparkLingValSigmoid(sum);
 	}
+	memcpy(dump->q_raw,q,sizeof(dump->q_raw));
+	memcpy(dump->k_raw,k,sizeof(dump->k_raw));
+	memcpy(dump->v_raw,v,sizeof(dump->v_raw));
 	for (index = 0u; index < qk; index++)
 	{
 		float window[SPARK_LING_VAL_KDA_CONV];
@@ -556,6 +574,7 @@ static void SparkLingValKdaAttention(
 			total += window[tap] * w->conv_v[(uint64_t)index * kernel + tap];
 		v[index] = total * SparkLingValSigmoid(total);
 	}
+	memcpy(dump->q_conv,q,sizeof(dump->q_conv));
 	SparkLingValL2PerHead(q,heads,key,SPARK_LING_VAL_RMS_EPS);
 	SparkLingValL2PerHead(k,heads,key,SPARK_LING_VAL_RMS_EPS);
 	for (index = 0u; index < qk; index++)
@@ -1041,7 +1060,7 @@ static int SparkLingValOracleSelftest(void)
 		kda.out_weight = ow;
 		for (uint32_t step = 0u; step < 3u; step++)
 			SparkLingValKdaAttention(&kda,hidden,0,
-				windows[0],windows[1],windows[2],state,output);
+				windows[0],windows[1],windows[2],state,output,0);
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 		{
 			if (!(output[j] == output[j]) || fabsf(output[j]) > 1e30f)
@@ -1589,7 +1608,8 @@ typedef struct SparkLingValWalk
 
 static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 	SparkLingValWalk *walk,uint32_t layer,uint32_t local,const float *hidden,
-	const float *residual,uint32_t row,float *sublayer_out)
+	const float *residual,uint32_t row,float *sublayer_out,
+	SparkLingValKdaDump *dump)
 {
 	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 	{
@@ -1607,7 +1627,8 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 		kda.out_weight = fixture->kda_out.host;
 		SparkLingValKdaAttention(&kda,hidden,residual,
 			walk->kda_windows[local][0],walk->kda_windows[local][1],
-			walk->kda_windows[local][2],walk->kda_state[local],sublayer_out);
+			walk->kda_windows[local][2],walk->kda_state[local],sublayer_out,
+			dump);
 	}
 	else
 	{
@@ -1785,8 +1806,14 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				static float actual[SPARK_LING_VAL_HIDDEN];
 				static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
 				SparkLingValMetrics metrics;
+				static SparkLingValKdaDump oracle_dump;
+				static uint16_t device_stage[SPARK_LING_VAL_KDA_FUSED];
+				static uint16_t device_q[SPARK_LING_VAL_KDA_QK];
+				static float device_ret[SPARK_LING_VAL_KDA_QK];
+				static float device_beta[SPARK_LING_VAL_KDA_HEADS];
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
-					walk->row_hidden[row],residual,row,walk->row_sublayer[row]);
+					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
+					&oracle_dump);
 				if ( cudaDeviceSynchronize() != cudaSuccess ||
 					cudaMemcpy(device_sublayer,fixture->attention_out_dev,
 						SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
@@ -1796,7 +1823,39 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				SparkLingValMeasure(&metrics,actual,walk->row_sublayer[row],SPARK_LING_VAL_HIDDEN);
 				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 				{
-					if ( SparkLingValReport("kda attention sublayer",&metrics,0.05,0.995) != 0 )
+					int stage_fail = metrics.max_relative_l2 > 0.05 ||
+						metrics.cosine < 0.995;
+					if ( cudaDeviceSynchronize() == cudaSuccess &&
+						cudaMemcpy(device_stage,fixture->fused_qkvb_dev,
+							sizeof(device_stage),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_q,fixture->q_dev,
+							sizeof(device_q),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_ret,fixture->kda_retention_dev,
+							sizeof(device_ret),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_beta,fixture->kda_write_gate_dev,
+							sizeof(device_beta),cudaMemcpyDeviceToHost) == cudaSuccess )
+					{
+						static float device_stage_f[SPARK_LING_VAL_KDA_FUSED];
+						static float device_q_f[SPARK_LING_VAL_KDA_QK];
+						SparkLingValMetrics m;
+						for (index = 0u; index < SPARK_LING_VAL_KDA_FUSED; index++)
+							device_stage_f[index] = SparkLingValFromBf16(device_stage[index]);
+						for (index = 0u; index < SPARK_LING_VAL_KDA_QK; index++)
+							device_q_f[index] = SparkLingValFromBf16(device_q[index]);
+						SparkLingValMeasure(&m,device_stage_f,oracle_dump.q_raw,SPARK_LING_VAL_KDA_QK);
+						printf("stage w%u q_raw rel %.4f cos %.6f",wave_index,m.max_relative_l2,m.cosine);
+						SparkLingValMeasure(&m,device_stage_f + 2u * SPARK_LING_VAL_KDA_QK,oracle_dump.v_raw,SPARK_LING_VAL_KDA_V);
+						printf(" v_raw rel %.4f",m.max_relative_l2);
+						SparkLingValMeasure(&m,device_q_f,oracle_dump.q_conv,SPARK_LING_VAL_KDA_QK);
+						printf(" q_conv+l2 rel %.4f cos %.6f",m.max_relative_l2,m.cosine);
+						SparkLingValMeasure(&m,device_ret,oracle_dump.retention,SPARK_LING_VAL_KDA_QK);
+						printf(" ret rel %.4f",m.max_relative_l2);
+						SparkLingValMeasure(&m,device_beta,oracle_dump.beta,SPARK_LING_VAL_KDA_HEADS);
+						printf(" beta rel %.4f | sublayer",m.max_relative_l2);
+					}
+					if ( SparkLingValReport("kda attention sublayer",&metrics,0.05,0.995) != 0 && !stage_fail )
+						return(1);
+					if ( stage_fail )
 						return(1);
 				}
 				else if ( SparkLingValReport("mla attention sublayer",&metrics,0.02,0.999) != 0 )
@@ -1804,7 +1863,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			}
 			else
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
-					walk->row_hidden[row],residual,row,walk->row_sublayer[row]);
+					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
+					0);
 			if ( residual != 0 )
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 					walk->row_hidden[row][index] = SparkLingValFromBf16(
