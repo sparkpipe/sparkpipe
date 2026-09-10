@@ -9,6 +9,7 @@ tools/devcycle/drivers/
 .codex/
 .tshome/
 .lane_cache/
+cache/dsv41_warm/
 deployment/rtx5090_speculation/*.local.json
 .mimosa/
 staging/

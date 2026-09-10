@@ -39,7 +39,8 @@ two Engram embedding tables. Contract: model_contracts/dsv41_flash_authoritative
 | CSA2 modes / layers | Full 2,8,14,20; Reindex 24,28,32,36; Reuse the rest of 2..37; SWA-only 0,1,38,39 | config.json kv/index/candidate source ids + tech report §2.3.1, Fig. 3 |
 | Compression ratios | m=2 encoder (2..19), m=1 decoder (20..37), 0 on 0,1,38,39 + 3 dspark blocks | config.json compress_ratios |
 | Hierarchical indexer | 32 heads x 128 dim, top-512; candidate pool 2048 blocks x 8 = 16384 positions, built by layer 20 | config.json + tech report §2.3.2 |
-| Compressor | BF16 wkv/wgate [512,5120] + norm [512] on layers 2,8,14,20 only | shard headers + index census |
+| Compressor | BF16 wkv/wgate [512,5120] + norm [512] on 2,8,14; layer 20 (m=1) wkv+norm ONLY, no wgate - 11 compressor tensors | index census (hash-verified weight_map) |
+| Indexer tensors | wq_b + weights_proj on 2,8,14,20,24,28,32,36; wk [128,512] + k_norm [128] ONLY on kv-source 2,8,14,20 (owns_k) | index census + reference Indexer |
 | MoE | 384 routed top-6 + 1 shared, moe_int 2304, noaux_tc, sqrtsoftplus, scale 1.5 | config.json + tech report §4.2.1 |
 | Router | gate.weight BF16 [384,5120], gate.bias F32 [384], gate.bias_vl F32 [384] | shard-3 header |
 | Expert codec | packed FP4 as I8 (2/byte), UE8M0 scale per 32 input elems: w1/w3 [2304,2560] s[2304,160], w2 [5120,1152] s[5120,72] | shard-3 header + quantization_config expert_dtype fp4 |
@@ -52,10 +53,12 @@ two Engram embedding tables. Contract: model_contracts/dsv41_flash_authoritative
 | Expert bytes | 17,694,720 B/expert packed; 271.8 GB all routed; TP16 → 16.99 GB/rank | derived from shard headers |
 | Manifest capacity | 40x384x3x2 = 92,160 v2 records < 131,072 SPARK_WEIGHTD_RANGE_COUNT_MAX; per-expert bytes < 64 MiB cap | include/sparkpipe/spark_weightd.h |
 
-Open facts (resolve at contract freeze): o_groups=8 does not divide TP16
-(wo_a/wo_b handling needs exemption or split); exact wq_b rope split layout
-(32768 rows = 64 heads x (448 nope + 64 rope)); compressor gate semantics at
-m=1 vs m=2; engram addressing keys at decode time.
+Open facts: RESOLVED 2026-09-10 (see model_contracts/dsv41_flash_authoritative.json
++ PR #914 receipts): o_groups=8 caps the reference o-path at TP8 (escalated);
+wq_b 32768 rows = 64 heads x (448 nope + 64 rope); compressor m=1 = plain
+norm(wkv(x)) no gate/state, m=2 = gated 2-token pooling; engram addressing
+resolved; real-index census: 11 compressor tensors (no wgate on 20), indexer
+wk+k_norm only on kv-source layers.
 
 ## Donor rules
 

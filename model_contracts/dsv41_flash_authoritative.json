@@ -106,8 +106,8 @@
    "candidate_topk_blocks": 2048,
    "candidate_block_size": 8,
    "candidate_pool_positions": 16384,
-   "indexer_k_projection": "projected from main KV entries (layers.N.attn.indexer.wk BF16 [128, 512])",
-   "indexer_q": "layers.N.attn.indexer.wq_b F8_E4M3 [4096, 1280] + scale [128, 40]",
+   "indexer_layer_split": "index_source layers 2/8/14/20/24/28/32/36 all own wq_b F8_E4M3 [4096, 1280] + scale [128, 40] and weights_proj BF16 [32, 5120]; wk BF16 [128, 512] + k_norm BF16 [128] exist ONLY on kv_source layers 2/8/14/20 (reference Indexer owns_k: index keys derive from the compressor latent, so only a KV-compressing layer can produce them; every other indexer reads them from that layer's cache) - verified against the pinned model.safetensors.index.json weight_map (24 indexer tensors total)",
+   "indexer_k_projection": "projected from the compressor latent on kv_source layers (layers.N.attn.indexer.wk BF16 [128, 512] + k_norm BF16 [128]); non-kv-source indexers reuse those keys from the owning layer's cache",
    "index_score_proj": "layers.N.attn.indexer.weights_proj BF16 [32, 5120]"
   },
   "compressor": {
@@ -218,8 +218,8 @@
  },
  "qualification": {
   "status": "WIP",
-  "weights_gate": "BLOCKED on warm download completion; at last poll 46/48 shards present, 307223630736 of 510296708312 file bytes (~60 percent), download in flight. Before any pack build: dd-probe warm, hash-verify against pinned LFS oids. config.json + index.json + tech report already hash-verified equal to pinned oids",
-  "open_facts": "RESOLVED 2026-09-10 from the pinned reference implementation: o_groups TP ceiling, wq_b 448+64 rope split, compressor m=1 vs m=2 semantics (wgate absent on layer 20 in the real index; stagepack kind map + validator literals corrected), engram hash addressing. Remaining OPEN (operator/architecture): engram host-residency engine seam; TP16 o_groups exemption design",
+  "weights_gate": "Warm download (spark6 /mnt/model-warm/deepseek-v4.1-flash at revision dba1be0a) was found STALLED at 46/48 shards on 2026-09-11 ~03:00 KST (previous root downloader died ~00:56 KST); resumed via systemd unit dsv5-warm-resume (hf download --revision dba1be0a, reusing .cache incomplete state). Remaining before any pack build: completion, dd-probe warm, hash-verify >=2 shards against pinned LFS oids, real-index census (tools/dsv41_flash_index_census.py, PASS at 96085 entries / compressor 11 / indexer 24). config.json + index.json + tech report already hash-verified equal to pinned oids",
+  "open_facts": "RESOLVED 2026-09-10 from the pinned reference implementation + hash-verified real index: o_groups TP ceiling, wq_b 448+64 rope split, compressor m=1 vs m=2 semantics, engram hash addressing, and the real-index census corrections (wgate absent on layer 20; indexer wk+k_norm only on kv_source layers 2/8/14/20 - reindex layers 24/28/32/36 carry query-side wq_b+weights_proj only, matching reference Indexer owns_k; stagepack kind map + validator literals + census tests corrected). Remaining OPEN (operator/architecture): engram host-residency engine seam; TP16 o_groups exemption design",
   "next": "M6 CUDA gates on spark6 PASSED (both codecs x 11 buckets, nvcc sm_121a); then warm-gate packer (real index census) + M7 hill climb; DSpark sidecar LAST"
  }
 }

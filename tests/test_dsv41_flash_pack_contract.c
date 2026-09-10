@@ -28,28 +28,70 @@ static int32_t read_exact(FILE *file,uint64_t offset,void *buffer,uint64_t bytes
 	return(0);
 }
 
-static uint32_t literal_layer_kind_count(uint32_t layer_index)
+static uint64_t literal_layer_kind_bits(uint32_t layer_index)
 {
-	uint32_t count;
-	count = 25u;
+	uint64_t bits;
+	uint32_t kind;
+	bits = 0u;
+	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ATTN_NORM; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_O_B; kind++)
+		bits |= UINT64_C(1) << kind;
+	for (kind=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_ATTN_FN; kind<=SPARK_DSV41_FLASH_STAGEPACK_TENSOR_SHARED_W3; kind++)
+		bits |= UINT64_C(1) << kind;
 	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u || layer_index == 20u ||
 		layer_index == 24u || layer_index == 28u || layer_index == 32u || layer_index == 36u )
-		count += 4u;
+	{
+		bits |= (UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_Q_B) |
+			(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_WEIGHTS_PROJ);
+	}
+	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u || layer_index == 20u )
+	{
+		bits |= (UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_WK) |
+			(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM) |
+			(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_WKV) |
+			(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_NORM);
+	}
 	if ( layer_index == 2u || layer_index == 8u || layer_index == 14u )
-		count += 3u;
-	else if ( layer_index == 20u )
-		count += 2u;
+		bits |= UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_WGATE;
+	return(bits);
+}
+
+static uint64_t kind_map_layer_bits(uint32_t layer_index)
+{
+	uint64_t bits;
+	uint32_t kind;
+	bits = 0u;
+	for (kind=0u; kind<SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+	{
+		if ( SparkDsv41FlashStagePackKindIsGlobal(kind) != 0u )
+			continue;
+		if ( SparkDsv41FlashStagePackKindInLayer(kind,layer_index) != 0u )
+			bits |= UINT64_C(1) << kind;
+	}
+	return(bits);
+}
+
+static uint32_t literal_bit_count(uint64_t value)
+{
+	uint32_t count;
+	count = 0u;
+	while ( value != 0u )
+	{
+		count += (uint32_t)(value & 1u);
+		value >>= 1;
+	}
 	return(count);
 }
 
 int main(int argc,char **argv)
 {
 	SparkDsv41FlashStagePackHeader header;
+	SparkDsv41FlashStagePackEntry entry;
 	SparkCk128Context ck;
 	struct stat st;
 	FILE *pack,*manifest;
 	uint8_t record[48],buffer[4096];
-	uint64_t index,done,piece,offset,bytes;
+	uint64_t index,done,piece,offset,bytes,global_seen;
+	uint64_t *seen;
 	uint32_t layer,kinds_seen;
 	uint8_t digest[16];
 	if ( argc != 3 )
@@ -79,14 +121,42 @@ int main(int argc,char **argv)
 	CHECK(header.directory_offset % 256u == 0u,"directory aligned");
 	kinds_seen = 0u;
 	for (layer=0u; layer<header.layer_count; layer++)
-		kinds_seen += literal_layer_kind_count(layer);
+		kinds_seen += literal_bit_count(literal_layer_kind_bits(layer));
 	CHECK(header.tensor_count == 3u + kinds_seen,"tensor count literal");
+	seen = (uint64_t *)calloc(header.layer_count,sizeof(uint64_t));
+	CHECK(seen != 0,"census alloc");
+	global_seen = 0u;
+	CHECK(fseeko(pack,(off_t)header.directory_offset,SEEK_SET) == 0,"directory seek");
+	for (index=0u; index<header.tensor_count; index++)
+	{
+		CHECK(fread(&entry,sizeof(entry),1u,pack) == 1u,"entry read");
+		CHECK(entry.tensor_kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT,"entry kind valid");
+		if ( SparkDsv41FlashStagePackKindIsGlobal(entry.tensor_kind) != 0u )
+		{
+			CHECK(entry.layer_index == SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER,"global layer literal");
+			CHECK((global_seen & (UINT64_C(1) << entry.tensor_kind)) == 0u,"global kind unique");
+			global_seen |= UINT64_C(1) << entry.tensor_kind;
+			continue;
+		}
+		CHECK(entry.layer_index < header.layer_count,"entry layer in range");
+		CHECK((seen[entry.layer_index] & (UINT64_C(1) << entry.tensor_kind)) == 0u,"layer kind unique");
+		seen[entry.layer_index] |= UINT64_C(1) << entry.tensor_kind;
+	}
+	CHECK(global_seen == ((UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING) |
+		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM) |
+		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD)),"global kinds literal");
+	for (layer=0u; layer<header.layer_count; layer++)
+	{
+		CHECK(seen[layer] == literal_layer_kind_bits(layer),"packer census literal");
+		CHECK(kind_map_layer_bits(layer) == literal_layer_kind_bits(layer),"kind map literal");
+	}
+	free(seen);
 	CHECK(fseeko(manifest,0,SEEK_END) == 0,"manifest seek");
 	{
 		uint64_t manifest_bytes = (uint64_t)ftello(manifest);
 		uint64_t records = (manifest_bytes - 16u) / 48u;
 		CHECK(manifest_bytes >= 16u && (manifest_bytes - 16u) % 48u == 0u,"manifest size multiple");
-		CHECK(records == 2u * (384u / header.tp_degree) * 3u * 2u,"manifest record count");
+		CHECK(records == 2u * (384u / header.tp_degree) * 3u * header.layer_count,"manifest record count");
 		CHECK(fseeko(manifest,16u,SEEK_SET) == 0,"manifest rewind");
 		for (index=0u; index<records; index++)
 		{

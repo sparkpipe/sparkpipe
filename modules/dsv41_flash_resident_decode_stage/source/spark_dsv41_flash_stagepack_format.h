@@ -345,7 +345,12 @@ static inline uint32_t SparkDsv41FlashStagePackKindInLayer(uint32_t tensor_kind,
 		SparkDsv41FlashStagePackKindIsIndexer(tensor_kind) )
 		return(0u);
 	if ( SparkDsv41FlashStagePackKindIsIndexer(tensor_kind) )
+	{
+		if ( tensor_kind == SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_WK ||
+			tensor_kind == SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM )
+			return(SparkDsv41FlashStagePackKindUsesKvSourceLayer(layer_index));
 		return(SparkDsv41FlashStagePackKindUsesIndexSourceLayer(layer_index));
+	}
 	if ( SparkDsv41FlashStagePackKindIsCompressor(tensor_kind) )
 	{
 		if ( tensor_kind == SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_WGATE )
