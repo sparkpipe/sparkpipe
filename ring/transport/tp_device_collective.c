@@ -207,9 +207,6 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         (uint64_t)collective->operation_timeout_milli * 1000000ull;
     deadline = SparkTpDeviceCollectiveTimeNs() + timeout_nanoseconds;
     scratch = implementation->mesh_buffer + implementation->band_base;
-    fprintf(stderr,"MESH-SUBMIT rank=%u ordinal=%llu bytes=%llu\n",
-        collective->tp_rank,(unsigned long long)ordinal,
-        (unsigned long long)bytes);
     if ( cudaMemcpyAsync(scratch,submission->local_device,(size_t)bytes,
             SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
