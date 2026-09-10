@@ -439,6 +439,7 @@ static SparkStatus SparkQwen38MaxModuleLazyOpen(SparkQwen38MaxModuleState *state
 		return(SPARK_STATUS_IO_ERROR);
 	request.identity.arena_bytes = (uint64_t)pack_info.st_size;
 	request.identity.topology = state->tp_degree;
+	memcpy(request.pack_path,pack_path,strlen(pack_path) + 1u);
 	status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
