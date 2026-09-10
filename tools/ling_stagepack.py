@@ -654,13 +654,34 @@ def assemble_header(plan: List[PlanItem], tp_degree: int, tp_rank: int,
     return header
 
 
-def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> None:
+class SlabDigestSink:
+    """ck128 per fixed-size slab while the payload streams to disk."""
+
+    def __init__(self, slab_bytes: int):
+        self.slab_bytes = slab_bytes
+        self.buffer = b""
+        self.digests: List[bytes] = []
+
+    def feed(self, chunk: bytes) -> None:
+        while chunk:
+            take = min(self.slab_bytes - len(self.buffer), len(chunk))
+            self.buffer += chunk[:take]
+            chunk = chunk[take:]
+            if len(self.buffer) == self.slab_bytes:
+                self.digests.append(ck128(self.buffer))
+                self.buffer = b""
+
+
+def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes],
+                sink: Optional[SlabDigestSink] = None) -> None:
     out.seek(offset)
     written = 0
     for chunk in chunks:
         if len(chunk) > expected - written:
             raise PackFailure(f"region at {offset}: producer exceeds {expected} bytes")
         out.write(chunk)
+        if sink is not None:
+            sink.feed(chunk)
         written += len(chunk)
     if written != expected:
         raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
@@ -690,8 +711,17 @@ def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes) -> int:
             for item in packer.plan:
                 out.write(serialize_entry(item.entry))
             for item in packer.plan:
+                entry = item.entry
+                sink = None
+                if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
+                    sink = SlabDigestSink(entry.payload_bytes // EXPERTS)
                 emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
-                            item.produce_payload())
+                            item.produce_payload(), sink)
+                if sink is not None:
+                    if len(sink.digests) != EXPERTS:
+                        raise PackFailure(f"{entry.kind}: slab digests "
+                                          f"{len(sink.digests)} != {EXPERTS}")
+                    item.expert_digests = sink.digests
             out.flush()
             os.fsync(out.fileno())
         os.link(temporary, path)
@@ -744,13 +774,17 @@ def write_expert_manifest(pack_path: Path, plan: List[PlanItem]) -> int:
                               f"outside the weightd manifest contract")
         for expert in range(EXPERTS):
             ranges.append((entry.payload_offset + expert * per, per,
-                           entry.layer, expert, entry.kind * 2))
+                           entry.layer, expert, entry.kind * 2,
+                           item, expert))
     ranges.sort()
     with pack_path.open("rb") as pack:
         records = bytearray()
-        for offset, length, layer, expert, kind in ranges:
-            pack.seek(offset)
-            digest = ck128(pack.read(length))
+        for offset, length, layer, expert, kind, item, expert_index in ranges:
+            if getattr(item, "expert_digests", None) is not None:
+                digest = item.expert_digests[expert_index]
+            else:
+                pack.seek(offset)
+                digest = ck128(pack.read(length))
             records += struct.pack("<IIIIQQ", layer, expert, kind, 0,
                                    offset, length) + digest
     sidecar = pack_path.parent / (pack_path.name + ".experts")
