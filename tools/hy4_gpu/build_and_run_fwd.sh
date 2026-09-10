@@ -2,7 +2,7 @@
 export PATH=/usr/local/cuda/bin:$PATH
 cd "$HOME/hy4-gpu" || exit 1
 D="$HOME/hy4-anchor"
-if [ -f "$D/gpu/gpu.done" ]; then
+if [ -f "$D/gpu/gpu.state.done" ]; then
   echo "FWD DONE ALREADY"
   exit 0
 fi

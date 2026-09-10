@@ -280,17 +280,18 @@ int main(int argc, char **argv) {
 
     for (int t = start_t; t < total; ++t) {
         if (t >= n_tok) tokens[t] = generated;
-        /* embedding from the owning rank */
-        float x0[N_EMBD];
-        if (embed_token(tokens[t], x0)) { fprintf(stderr, "embed fail\n"); return 1; }
-        if (t == 0)
-            fprintf(stderr,
-                    "MY_EMBD t0 first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
-                    x0[0], x0[1], x0[2], x0[N_EMBD - 3], x0[N_EMBD - 2],
-                    x0[N_EMBD - 1]);
-        for (int s = 0; s < HC; ++s)
-            for (int i = 0; i < N_EMBD; ++i)
-                streams[t][s][i] = x0[i];
+        if (t != start_t || start_il == 0) {
+            float x0[N_EMBD];
+            if (embed_token(tokens[t], x0)) { fprintf(stderr, "embed fail\n"); return 1; }
+            if (t == 0)
+                fprintf(stderr,
+                        "MY_EMBD t0 first3 %.6f %.6f %.6f last3 %.6f %.6f %.6f\n",
+                        x0[0], x0[1], x0[2], x0[N_EMBD - 3], x0[N_EMBD - 2],
+                        x0[N_EMBD - 1]);
+            for (int s = 0; s < HC; ++s)
+                for (int i = 0; i < N_EMBD; ++i)
+                    streams[t][s][i] = x0[i];
+        }
 
         for (int il = (t == start_t) ? start_il : 0; il < LAYERS; ++il) {
             if (il == 0 && t == 0) g_dump_hc = 1;

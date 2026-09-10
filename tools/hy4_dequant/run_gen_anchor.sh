@@ -1,7 +1,7 @@
 #!/bin/sh
 cd "$HOME/hy4-cmp" || exit 1
 D="$HOME/hy4-anchor"
-if [ -f "$D/cpu/cpu.done" ]; then
+if [ -f "$D/cpu/cpu.state.done" ]; then
   echo "GEN DONE ALREADY"
   exit 0
 fi
