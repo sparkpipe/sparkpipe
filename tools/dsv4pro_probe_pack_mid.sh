@@ -1,0 +1,15 @@
+#!/bin/bash
+set -uo pipefail
+cd $HOME/dsv4pro_checkout
+LOG=/mnt/model-warm/packbuild/dsv4pro/probe_pack_mid.log
+exec > "$LOG" 2>&1
+export PATH=/usr/local/cuda/bin:$PATH
+python3 tools/dsv4_pro_stagepack.py \
+  --model-dir /mnt/model-warm/deepseek-v4-pro-0813-ga \
+  --output /home/spark6/sparkdata/dsv4_pro.probe/probe_l3_3.spstage \
+  --first-layer 3 --layer-count 3
+rc=$?
+echo "PROBE-MID-RC=$rc"
+[ $rc -eq 0 ] && python3 tools/dsv4_pro_stagepack.py --verify-pack /home/spark6/sparkdata/dsv4_pro.probe/probe_l3_3.spstage
+[ $rc -eq 0 ] && sha256sum /home/spark6/sparkdata/dsv4_pro.probe/probe_l3_3.spstage | awk '{print $1}' > /home/spark6/sparkdata/dsv4_pro.probe/probe_l3_3.spstage.sha256
+exit $rc
