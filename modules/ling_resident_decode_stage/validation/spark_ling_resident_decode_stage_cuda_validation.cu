@@ -800,7 +800,8 @@ typedef struct SparkLingValMoeWeights
 
 static void SparkLingValMoe(
 	const SparkLingValMoeWeights *w,
-	const float *hidden,const float *residual,float *output)
+	const float *hidden,const float *residual,float *output,
+	uint32_t *selected_out,float *weights_out)
 {
 	static float normed[SPARK_LING_VAL_HIDDEN];
 	static float intermediate[SPARK_LING_VAL_EXPERT_INTER];
@@ -851,6 +852,11 @@ static void SparkLingValMoe(
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_EXPERT_INTER; j++)
 			sum += w->shared_down[(uint64_t)index * SPARK_LING_VAL_EXPERT_INTER + j] * intermediate[j];
 		output[index] = routed[index] + sum;
+	}
+	for (slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+	{
+		selected_out[slot] = selected[slot];
+		weights_out[slot] = weights[slot];
 	}
 }
 
@@ -1570,20 +1576,20 @@ static void SparkLingValBuildWave(SparkLingValFixture *fixture,
 
 typedef struct SparkLingValWalk
 {
-	float hidden[SPARK_LING_VAL_HIDDEN];
-	float sublayer[SPARK_LING_VAL_HIDDEN];
 	uint16_t kda_windows[2][3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
 	float kda_state[2][(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
 	uint16_t mla_cache[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
 	uint32_t mla_context;
 	uint32_t selected[SPARK_LING_VAL_TOP_K];
 	float route_weights[SPARK_LING_VAL_TOP_K];
+	float row_hidden[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	float row_sublayer[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float boundary_rows[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 } SparkLingValWalk;
 
 static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
-	SparkLingValWalk *walk,uint32_t layer,uint32_t local,
-	const float *residual,float *sublayer_out)
+	SparkLingValWalk *walk,uint32_t layer,uint32_t local,const float *hidden,
+	const float *residual,uint32_t row,float *sublayer_out)
 {
 	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 	{
@@ -1599,7 +1605,7 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 		kda.a_log = fixture->kda_a_log_host;
 		kda.out_norm = fixture->kda_out_norm_host;
 		kda.out_weight = fixture->kda_out.host;
-		SparkLingValKdaAttention(&kda,walk->hidden,residual,
+		SparkLingValKdaAttention(&kda,hidden,residual,
 			walk->kda_windows[local][0],walk->kda_windows[local][1],
 			walk->kda_windows[local][2],walk->kda_state[local],sublayer_out);
 	}
@@ -1616,20 +1622,20 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 		mla.attn_gate = fixture->mla_attn_gate.host;
 		mla.o_proj = fixture->mla_o_proj.host;
 		cache.slots = walk->mla_cache[0];
-		cache.context = walk->mla_context + 1u;
-		SparkLingValMlaAttention(&mla,walk->hidden,residual,
-			walk->mla_context,&cache,sublayer_out);
+		cache.context = walk->mla_context + row + 1u;
+		SparkLingValMlaAttention(&mla,hidden,residual,
+			walk->mla_context + row,&cache,sublayer_out);
 	}
 }
 
 static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
-	SparkLingValWalk *walk,uint32_t layer,const float *residual,float *sublayer_out)
+	SparkLingValWalk *walk,uint32_t layer,const float *hidden,float *sublayer_out)
 {
 	if ( layer < SPARK_LING_MODEL_FIRST_ROUTED_LAYER )
 	{
 		SparkLingValDenseMlp(fixture->dense_post_norm.host,
 			fixture->dense_gate_up.host,fixture->dense_down.host,
-			walk->hidden,residual,sublayer_out);
+			hidden,0,sublayer_out);
 	}
 	else
 	{
@@ -1644,9 +1650,8 @@ static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
 		moe.shared_gate_up = fixture->shared_gate_up.host;
 		moe.shared_down = fixture->shared_down.host;
 		moe.codec = SPARK_LING_VAL_CODEC;
-		SparkLingValMoe(&moe,walk->hidden,residual,sublayer_out);
-		SparkLingValRouter(fixture->router.host,fixture->router_correction_host,
-			walk->hidden,walk->selected,walk->route_weights);
+		SparkLingValMoe(&moe,hidden,0,sublayer_out,
+			walk->selected,walk->route_weights);
 	}
 }
 
@@ -1675,7 +1680,6 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 	for (local = 0u; local < 2u; local++)
 	{
 		uint32_t layer = layers[local];
-		const float *residual = local == 0u ? 0 : walk->sublayer;
 		status = SparkLingLaunchCudaLayerAttention(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -1683,29 +1687,42 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				status,local,cudaGetErrorString(cudaGetLastError()));
 			return(SparkLingValFail("drive","attention"));
 		}
-		if ( probe != 0 && local == 0u )
+		for (row = 0u; row < rows; row++)
 		{
-			static float actual[SPARK_LING_VAL_HIDDEN];
-			static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
-			SparkLingValMetrics metrics;
-			SparkLingValRunAttentionOracle(fixture,walk,layer,local,residual,walk->sublayer);
-			if ( cudaDeviceSynchronize() != cudaSuccess ||
-				cudaMemcpy(device_sublayer,fixture->attention_out_dev,
-					SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
-				return(SparkLingValFail("drive","attention_readback"));
-			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-				actual[index] = SparkLingValFromBf16(device_sublayer[index]);
-			SparkLingValMeasure(&metrics,actual,walk->sublayer,SPARK_LING_VAL_HIDDEN);
-			if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
+			const float *residual = local == 0u ? 0 : walk->row_sublayer[row];
+			if ( probe != 0 && local == 0u && row == 0u )
 			{
-				if ( SparkLingValReport("kda attention sublayer",&metrics,0.05,0.995) != 0 )
+				static float actual[SPARK_LING_VAL_HIDDEN];
+				static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
+				SparkLingValMetrics metrics;
+				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
+					walk->row_hidden[row],residual,row,walk->row_sublayer[row]);
+				if ( cudaDeviceSynchronize() != cudaSuccess ||
+					cudaMemcpy(device_sublayer,fixture->attention_out_dev,
+						SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+					return(SparkLingValFail("drive","attention_readback"));
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+					actual[index] = SparkLingValFromBf16(device_sublayer[index]);
+				SparkLingValMeasure(&metrics,actual,walk->row_sublayer[row],SPARK_LING_VAL_HIDDEN);
+				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
+				{
+					if ( SparkLingValReport("kda attention sublayer",&metrics,0.05,0.995) != 0 )
+						return(1);
+				}
+				else if ( SparkLingValReport("mla attention sublayer",&metrics,0.02,0.999) != 0 )
 					return(1);
 			}
-			else if ( SparkLingValReport("mla attention sublayer",&metrics,0.02,0.999) != 0 )
-				return(1);
+			else
+				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
+					walk->row_hidden[row],residual,row,walk->row_sublayer[row]);
+			if ( residual != 0 )
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+					walk->row_hidden[row][index] = SparkLingValFromBf16(
+						SparkLingValBf16(walk->row_hidden[row][index] + residual[index]));
+			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				walk->row_hidden[row][index] = SparkLingValFromBf16(
+					SparkLingValBf16(walk->row_hidden[row][index] + walk->row_sublayer[row][index]));
 		}
-		else
-			SparkLingValRunAttentionOracle(fixture,walk,layer,local,residual,walk->sublayer);
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","attn_sync"));
 		status = SparkLingLaunchCudaLayerMlp(&fixture->wave,local);
@@ -1715,7 +1732,9 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				status,local,cudaGetErrorString(cudaGetLastError()));
 			return(SparkLingValFail("drive","mlp"));
 		}
-		SparkLingValRunMlpOracle(fixture,walk,layer,residual,walk->sublayer);
+		for (row = 0u; row < rows; row++)
+			SparkLingValRunMlpOracle(fixture,walk,layer,
+				walk->row_hidden[row],walk->row_sublayer[row]);
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","mlp_sync"));
 	}
@@ -1729,12 +1748,12 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 	{
 		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		{
-			float merged = walk->hidden[index] + walk->sublayer[index];
+			float merged = walk->row_hidden[row][index] + walk->row_sublayer[row][index];
 			walk->boundary_rows[row][index] =
 				SparkLingValFromBf16(SparkLingValBf16(merged));
 		}
-		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-			walk->hidden[index] = walk->boundary_rows[row][index];
+		memcpy(walk->row_hidden[row],walk->boundary_rows[row],
+			sizeof(walk->row_hidden[row]));
 	}
 	return(0);
 }
@@ -1763,7 +1782,7 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 	SparkLingValWalk walk;
 	uint16_t *first = (uint16_t *)malloc((uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
 	uint16_t *second = (uint16_t *)malloc((uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
-	uint32_t pass,plan,index;
+	uint32_t pass,plan,index,row;
 	int failures = 0;
 	if ( first == 0 || second == 0 )
 	{
@@ -1783,8 +1802,10 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 			free(second);
 			return(SparkLingValFail(label,"boundary_reset"));
 		}
-		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-			walk.hidden[index] = SparkLingValFromBf16(fixture->boundary_host[index]);
+		for (row = 0u; row < SPARK_LING_VAL_ROWS; row++)
+			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				walk.row_hidden[row][index] = SparkLingValFromBf16(
+					fixture->boundary_host[(uint64_t)row * SPARK_LING_VAL_HIDDEN + index]);
 		for (plan = 0u; plan < plan_count; plan++)
 		{
 			uint32_t rows = plans[plan].rows;
