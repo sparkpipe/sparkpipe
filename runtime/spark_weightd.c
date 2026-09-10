@@ -51,6 +51,7 @@ extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
 extern int SparkWeightdMeshBufferFd(void);
+extern void SparkWeightdMeshPoll(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset);
@@ -61,6 +62,7 @@ __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
 __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
+__attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset)
@@ -2197,6 +2199,8 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
+
+    SparkWeightdMeshPoll();
 
     if (server->listen_fd >= 0)
     {

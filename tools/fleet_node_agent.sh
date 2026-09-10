@@ -258,6 +258,9 @@ install_core() {
     for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
         kill -9 "$p" 2>/dev/null
     done
+    for p in $(pgrep -f bin/sparkpipe_model_residentd); do
+        kill -9 "$p" 2>/dev/null
+    done
     sleep 1
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
