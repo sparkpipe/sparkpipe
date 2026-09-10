@@ -266,3 +266,28 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
   round shape) is in git history at 4d4808c to resurrect verbatim — only the
   allocation/registration/import triple changes.
 - Iteration ledger: baseline back at the doorbell engine (~30s/32tok warm).
+
+
+## Iteration 8 state (09-11 ~11:00, lane c85589d) — TWO majors deployed, fleet mid-first-boot
+
+1. HOST-REGISTERED MESH ENGINE (no peermem needed): probe on spark0 proved
+   cudaHostRegister of the 2GB memfd = 0.66s, kernel zero-copy reads 0.49ms/32MB.
+   Engine registers the mesh mapping once at PrepareReceiveBf16; each round is
+   pure stream-ordered enqueues: device->pinned-slot copy (NO sync), staged
+   doorbell H2H copies, CPU spin on peer slot-end words, own-slot H2D, module
+   combine kernels reading peer slots through the registered pointer,
+   completion at enqueue (stream-ordered contract). No D2H drain, no CPU sum,
+   no per-round IPC. nvidia_peermem CANNOT load on kernel 6.17 (EINVAL) —
+   this design bypasses the need; the VMM/dmabuf attempt code is in history
+   (4349579) if peermem ever lands.
+2. SPINE RECEIPTS (operator: "why sha256 over GB we already certified"):
+   first load verifies full sha ONCE and writes /tmp/spark-weightd-spine/
+   <sha>-<size>-<ino>.receipt (size+mtime+ctime+digest+ck128); later loads of
+   unchanged bytes pay only ck128 vs the receipt. Receipt observed written on
+   spark0 (21.7GB spine).
+3. FLEET at first-boot: all 16 in spine_stream preads (the copy I/O is the
+   floor; sha was the multiplier). NEXT RUN: (a) wait out this boot, measure
+   32-token on the new round (expect a REAL drop — the launch-tax drain is
+   gone at the engine); (b) bounce ONE weightd and time the boot with the
+   receipt (expect seconds-class vs minutes); (c) then record + attack
+   prefill/numerics.
