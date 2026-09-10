@@ -300,7 +300,7 @@ static __global__ void SparkMinimaxH3RmsNormKernel(const __nv_bfloat16 *input,
 
 static __global__ void SparkMinimaxH3GemmKernel(const __nv_bfloat16 *activations,
 	const __nv_bfloat16 *weights, uint32_t rows, uint32_t width, uint32_t depth,
-	uint32_t segment_index, float *segments)
+	uint32_t base_segment_index, float *segments)
 {
 	uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
 	uint32_t row = blockIdx.y;

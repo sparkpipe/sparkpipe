@@ -247,9 +247,9 @@ static void SparkMinimaxH3V4Swiglu(float *out, const float *input, const float *
 	{
 		for (column=0u; column<ffn; column++)
 		{
-			float up = scratch[(uint64_t)token * ffn + column];
-			float gate = scratch[(uint64_t)token * ffn + ffn + column];
-			scratch[(uint64_t)token * ffn + column] =
+			float up = scratch[(uint64_t)token * (2u * ffn) + column];
+			float gate = scratch[(uint64_t)token * (2u * ffn) + ffn + column];
+			scratch[(uint64_t)token * (2u * ffn) + column] =
 				up * (gate / (1.0f + expf(-gate)));
 		}
 	}
