@@ -1473,6 +1473,12 @@ CEILING = 233150
 # at degree 16), keepalive gains the optional tile_k pass-through for the
 # expert_tile_k=32 TP16 pack builds (+31/-18 with concurrent-lane in-flight
 # growth in the shared checkout). Measured exact: 233574.
+# batch landings 8f3a6f2..2a46b8c: muse #902 + gemma4 #903 + laguna #904 +
+# minimax #905 (driver WIP-early) + k3 adapter repair #907 + glm53-p0 #908,
+# incl. the error-site SPARK_FAIL sweep (1583 sites) and the direct-pack-load
+# purge. Growth is landing debt; shrink-back tracked by the audit del:add.
+# Measured exact: 241052 on 2a46b8c.
+CEILING = 241052
 
 
 ROOT = Path(__file__).resolve().parent.parent
