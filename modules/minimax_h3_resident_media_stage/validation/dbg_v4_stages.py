@@ -90,6 +90,8 @@ def main():
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm1.weight"), 1e-5).to(x.dtype)
         a = gen.raw_s_vae_attn(n, raw, p, cos, sin)
         x = x + a * gen.slab_vec(raw, p + "scale1")
+        if i == 0:
+            dump("refv_b0_attn", x[0])
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm2.weight"), 1e-5).to(x.dtype)
         ffn = gen.raw_s_ff(n, raw, p)
         x = x + ffn * gen.slab_vec(raw, p + "scale2")
@@ -167,7 +169,7 @@ def main():
                 w["_resblock_dilation_sizes"][j], (0, 1, 2) if i == 0 and j == 0 else ())
             if i == 0 and j in (0, 1, 2):
                 dump_full("refa_s0_b%d" % j, r)
-            if i == 1 and j in (0, 1):
+            if i == 1 and j in (0, 1, 2):
                 dump_full("refa_s1_b%d" % j, r)
             residual = r if residual is None else residual + r
         h = residual / 3

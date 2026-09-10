@@ -504,8 +504,12 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			SparkMinimaxH3V4CompareStageF32("refv_b35__33x2048.f32",hidden,
 				hidden_elements);
 		if ( block == 0u )
+		{
+			SparkMinimaxH3V4CompareStageF32("refv_b0_attn__33x2048.f32",hidden,
+				hidden_elements);
 			SparkMinimaxH3V4CompareStageF32("refv_b0__33x2048.f32",hidden,
 				hidden_elements);
+		}
 		free(query_weight); free(query_bias); free(key_weight); free(key_bias);
 		free(value_weight); free(value_bias); free(output_weight); free(output_bias);
 		free(gate_up); free(gate_bias); free(down); free(down_bias);
@@ -853,8 +857,13 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 		SparkMinimaxH3V4LoadWeight(&weight,weight_dir,"","dec_in_proj_weight",
 			2048u * SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS);
 		SparkMinimaxH3V4LoadWeight(&bias,weight_dir,"","dec_in_proj_bias",2048u);
-		SparkMinimaxH3V4Conv1d(x,latents,2048u,SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS,
-			SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,weight,bias,1u,1u,0u);
+		for (batch=0u; batch<SPARK_MINIMAX_H3_V4_AUDIO_BATCH; batch++)
+			SparkMinimaxH3V4Conv1d(x + (uint64_t)batch * 2048u *
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,latents + (uint64_t)batch *
+				SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS *
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,2048u,
+				SPARK_MINIMAX_H3_V4_AUDIO_CHANNELS,
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,weight,bias,1u,1u,0u);
 		free(weight); free(bias);
 		SparkMinimaxH3V4StageDirectory = fixture_dir;
 		SparkMinimaxH3V4CompareStageF32("refa_dec_in__2x2048x4.f32",x,
@@ -869,8 +878,11 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			1024u * 2048u * 7u);
 		SparkMinimaxH3V4LoadWeight(&bias,weight_dir,"","decoder_conv_pre_bias",1024u);
 		weight = SparkMinimaxH3V4WnCombine(1024u,2048u,7u,weight_g,weight_v);
-		SparkMinimaxH3V4Conv1d(next,x,1024u,2048u,SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,
-			weight,bias,7u,1u,3u);
+		for (batch=0u; batch<SPARK_MINIMAX_H3_V4_AUDIO_BATCH; batch++)
+			SparkMinimaxH3V4Conv1d(next + (uint64_t)batch * 1024u *
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,x + (uint64_t)batch * 2048u *
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,1024u,2048u,
+				SPARK_MINIMAX_H3_V4_AUDIO_LATENTS,weight,bias,7u,1u,3u);
 		free(bias); free(weight); free(weight_g); free(weight_v);
 	}
 	{
