@@ -535,30 +535,25 @@ static void SparkLingValKdaAttention(
 	{
 		float window[SPARK_LING_VAL_KDA_CONV];
 		float total;
-		for (uint32_t tap = 0u; tap < kernel; tap++)
-			window[tap] = SparkLingValFromBf16(q_window[index * kernel + tap]);
 		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
 			q_window[index * kernel + tap] = q_window[index * kernel + tap + 1u];
 		q_window[index * kernel + kernel - 1u] = SparkLingValBf16(q[index]);
-		window[kernel - 1u] = SparkLingValFromBf16(q_window[index * kernel + kernel - 1u]);
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = SparkLingValFromBf16(q_window[index * kernel + tap]);
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_q[(uint64_t)index * kernel + tap];
-		if ( index == 0u )
-			printf("oracle qconv ch0 raw %g taps %g %g %g %g total %g\n",
-				q[index],window[0],window[1],window[2],window[3],total);
 		q[index] = total * SparkLingValSigmoid(total);
 	}
 	for (index = 0u; index < qk; index++)
 	{
 		float window[SPARK_LING_VAL_KDA_CONV];
 		float total;
-		for (uint32_t tap = 0u; tap < kernel; tap++)
-			window[tap] = SparkLingValFromBf16(k_window[index * kernel + tap]);
 		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
 			k_window[index * kernel + tap] = k_window[index * kernel + tap + 1u];
 		k_window[index * kernel + kernel - 1u] = SparkLingValBf16(k[index]);
-		window[kernel - 1u] = SparkLingValFromBf16(k_window[index * kernel + kernel - 1u]);
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = SparkLingValFromBf16(k_window[index * kernel + tap]);
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_k[(uint64_t)index * kernel + tap];
@@ -568,12 +563,11 @@ static void SparkLingValKdaAttention(
 	{
 		float window[SPARK_LING_VAL_KDA_CONV];
 		float total;
-		for (uint32_t tap = 0u; tap < kernel; tap++)
-			window[tap] = SparkLingValFromBf16(v_window[index * kernel + tap]);
 		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
 			v_window[index * kernel + tap] = v_window[index * kernel + tap + 1u];
 		v_window[index * kernel + kernel - 1u] = SparkLingValBf16(v[index]);
-		window[kernel - 1u] = SparkLingValFromBf16(v_window[index * kernel + kernel - 1u]);
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = SparkLingValFromBf16(v_window[index * kernel + tap]);
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_v[(uint64_t)index * kernel + tap];
