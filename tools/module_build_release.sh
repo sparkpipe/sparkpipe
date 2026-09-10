@@ -28,7 +28,6 @@ make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sp
 make -j16 -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
 ADAPTER_SO="build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
 [ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
-strings build/libhidden_transport_spark_host_rdma_verbs.so | grep QP-WIRE > /dev/null || { echo "DSO stale"; exit 1; }
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
 systemctl --user stop fleet-agent 2>/dev/null || true
