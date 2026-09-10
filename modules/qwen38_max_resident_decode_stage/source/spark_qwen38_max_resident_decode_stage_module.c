@@ -527,10 +527,10 @@ static SparkStatus SparkQwen38MaxModuleBindLayer(SparkQwen38MaxModuleState *stat
 	{
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_ATTENTION_NORM: state->attention_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MLP_NORM: state->mlp_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].qkv,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].beta,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].decay,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_QKV: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].qkv,entry,payload,scale); fprintf(stderr,"%s DIAG bind qkv layer=%u in=%u out=%u payload=%p\n",SPARK_QWEN38_MAX_MODULE_TAG,layer,entry->columns,entry->rows,payload); return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_GATE: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].gate,entry,payload,scale); fprintf(stderr,"%s DIAG bind gate layer=%u in=%u out=%u payload=%p\n",SPARK_QWEN38_MAX_MODULE_TAG,layer,entry->columns,entry->rows,payload); return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_BETA: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].beta,entry,payload,scale); fprintf(stderr,"%s DIAG bind beta layer=%u in=%u out=%u payload=%p\n",SPARK_QWEN38_MAX_MODULE_TAG,layer,entry->columns,entry->rows,payload); return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_DECAY: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].decay,entry,payload,scale); fprintf(stderr,"%s DIAG bind decay layer=%u in=%u out=%u payload=%p\n",SPARK_QWEN38_MAX_MODULE_TAG,layer,entry->columns,entry->rows,payload); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_OUTPUT: SparkQwen38MaxModuleFillLinearView(&state->gdn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_CONV_WEIGHT: state->gdn_by_layer[layer].conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_GDN_A_LOG: state->gdn_by_layer[layer].a_log_f32 = (const float *)payload; return(SPARK_STATUS_OK);
