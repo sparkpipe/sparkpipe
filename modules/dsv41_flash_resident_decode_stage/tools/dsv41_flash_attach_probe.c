@@ -136,11 +136,6 @@ static void SparkDsv41FlashProbeInventoryDiagnose(
 		{
 			if ( SparkDsv41FlashStagePackKindIsGlobal(kind) != 0u )
 				continue;
-			if ( SparkDsv41FlashStagePackKindIsRouted(kind) != 0u &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS_VL )
-				continue;
 			if ( SparkDsv41FlashStagePackExpectedShape(kind,DSV41_FLASH_PROBE_EXPERT_WEIGHT_CODEC,DSV41_FLASH_PROBE_TP_DEGREE,&shape) == 0u )
 				continue;
 			if ( SparkDsv41FlashStagePackKindInLayer(kind,layer) != 0u )
@@ -237,6 +232,9 @@ int main(int argc,char **argv)
 	}
 	tp_rank = (uint32_t)strtoul(argv[2],0,10);
 	if ( sscanf(argv[5],"%u:%u",&expect_ok,&do_execute) != 2 || expect_ok > 1u || do_execute > 1u )
+		return(2);
+	if ( setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES",argv[3],1) != 0 ||
+		setenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES",argv[4],1) != 0 )
 		return(2);
 	status = SparkDsv41FlashProbeCensus(argv[1],&census);
 	if ( status != SPARK_STATUS_OK )
