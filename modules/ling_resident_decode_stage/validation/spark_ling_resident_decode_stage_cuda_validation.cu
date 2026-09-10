@@ -1929,6 +1929,37 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","mlp_sync"));
 		if ( probe != 0 )
+		{
+			static uint16_t device_mlp[SPARK_LING_VAL_HIDDEN];
+			static uint32_t device_route[SPARK_LING_VAL_TOP_K];
+			static float device_rw[SPARK_LING_VAL_TOP_K];
+			static float mlp_actual[SPARK_LING_VAL_HIDDEN];
+			SparkLingValMetrics m;
+			if ( cudaMemcpy(device_mlp,fixture->attention_out_dev,
+				sizeof(device_mlp),cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+					mlp_actual[index] = SparkLingValFromBf16(device_mlp[index]);
+				SparkLingValMeasure(&m,mlp_actual,walk->row_sublayer[0],
+					SPARK_LING_VAL_HIDDEN);
+				printf("mlp w%u l%u rel %.5f cos %.7f",wave_index,local,
+					m.max_relative_l2,m.cosine);
+			}
+			if ( cudaMemcpy(device_route,fixture->route_expert_dev,
+				sizeof(device_route),cudaMemcpyDeviceToHost) == cudaSuccess &&
+				cudaMemcpy(device_rw,fixture->route_weight_dev,
+					sizeof(device_rw),cudaMemcpyDeviceToHost) == cudaSuccess )
+			{
+				printf(" routes dev");
+				for (index = 0u; index < SPARK_LING_VAL_TOP_K; index++)
+					printf(" %u:%.4f",device_route[index],device_rw[index]);
+				printf(" | oracle");
+				for (index = 0u; index < SPARK_LING_VAL_TOP_K; index++)
+					printf(" %u:%.4f",walk->selected[index],walk->route_weights[index]);
+			}
+			printf("\n");
+		}
+		if ( probe != 0 )
 			fprintf(stderr,"drive w%u: l%u mlp synced\n",wave_index,local);
 	}
 	if ( probe != 0 )
