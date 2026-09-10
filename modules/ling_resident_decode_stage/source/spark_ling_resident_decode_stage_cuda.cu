@@ -461,6 +461,7 @@ static int32_t SparkLingRunLayerMlp(const SparkLingCudaWave *wave,uint32_t local
 	packed_rows = wave->row_count * LING_TOP_K;
 	stream = (cudaStream_t)wave->slot->stream;
 	SparkLingBindLayer(wave,local_layer,&buffers);
+	buffers.residual_bf16 = wave->slot->attention_out_bf16;
 	status = layer < LING_FIRST_ROUTED_LAYER ? LingLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : LingLayerMoe<LING_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
