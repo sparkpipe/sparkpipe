@@ -322,6 +322,7 @@ while true; do
     sync_core
     install_core
     self_update
+    ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
     for r in "${RA[@]}"; do sync_rendezvous "$r"; done
