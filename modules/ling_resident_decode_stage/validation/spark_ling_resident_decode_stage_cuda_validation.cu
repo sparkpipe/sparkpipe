@@ -591,7 +591,9 @@ static void SparkLingValKdaAttention(
 	for (index = 0u; index < v_dim; index++)
 		dump->v_conv[index] = v[index];
 	SparkLingValL2PerHead(q,heads,key,SPARK_LING_VAL_RMS_EPS);
+	SparkLingValBf16Array(q,qk);
 	SparkLingValL2PerHead(k,heads,key,SPARK_LING_VAL_RMS_EPS);
+	SparkLingValBf16Array(k,qk);
 	for (index = 0u; index < qk; index++)
 		dump->k_conv[index] = k[index];
 	for (index = 0u; index < qk; index++)
@@ -713,6 +715,7 @@ static void SparkLingValMlaAttention(
 	for (head = 0u; head < heads; head++)
 		SparkLingValRopeInterleaved(q + (uint64_t)head * SPARK_LING_VAL_HEAD_DIM + nope,
 			rope,(float)position,SPARK_LING_VAL_ROPE_THETA);
+	SparkLingValBf16Array(q,SPARK_LING_VAL_Q_ROWS);
 	for (index = 0u; index < SPARK_LING_VAL_KV_ROW; index++)
 	{
 		float sum = 0.0f;
