@@ -1680,13 +1680,14 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 }
 
 static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
-	SparkLingValWalk *walk,uint32_t layer,const float *hidden,float *sublayer_out)
+	SparkLingValWalk *walk,uint32_t layer,const float *hidden,
+	const float *residual,float *sublayer_out)
 {
 	if ( layer < SPARK_LING_MODEL_FIRST_ROUTED_LAYER )
 	{
 		SparkLingValDenseMlp(fixture->dense_post_norm.host,
 			fixture->dense_gate_up.host,fixture->dense_down.host,
-			hidden,0,sublayer_out);
+			hidden,residual,sublayer_out);
 	}
 	else
 	{
@@ -1701,7 +1702,7 @@ static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
 		moe.shared_gate_up = fixture->shared_gate_up.host;
 		moe.shared_down = fixture->shared_down.host;
 		moe.codec = SPARK_LING_VAL_CODEC;
-		SparkLingValMoe(&moe,hidden,0,sublayer_out,
+		SparkLingValMoe(&moe,hidden,residual,sublayer_out,
 			walk->selected,walk->route_weights);
 	}
 }
@@ -1955,7 +1956,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			fprintf(stderr,"drive w%u: l%u mlp launched\n",wave_index,local);
 		for (row = 0u; row < rows; row++)
 			SparkLingValRunMlpOracle(fixture,walk,layer,
-				walk->row_hidden[row],walk->row_sublayer[row]);
+				walk->row_hidden[row],walk->row_sublayer[row],
+				walk->row_sublayer[row]);
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","mlp_sync"));
 		if ( probe != 0 )
