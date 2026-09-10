@@ -2215,7 +2215,6 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 					snprintf(worst_label,sizeof(worst_label),
 						"%s boundary stream (row %u elem %u dev %.6g or %.6g)",
 						label,worst_row,worst_element,worst_device,worst_oracle);
-					snprintf(worst_label,sizeof(worst_label),"%s boundary stream",label);
 					failures += SparkLingValReport(worst_label,&worst,0.02,0.999);
 				}
 
