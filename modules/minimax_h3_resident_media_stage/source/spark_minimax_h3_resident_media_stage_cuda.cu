@@ -191,8 +191,8 @@ static __global__ void SparkMinimaxH3SiluMulKernel(const __nv_bfloat16 *gate_up,
 	uint32_t row = index / ffn;
 	uint32_t column = index - row * ffn;
 	uint64_t base = (uint64_t)row * (2u * ffn);
-	float gate = __bfloat162float(gate_up[base + column]);
-	float up = __bfloat162float(gate_up[base + ffn + column]);
+	float up = __bfloat162float(gate_up[base + column]);
+	float gate = __bfloat162float(gate_up[base + ffn + column]);
 	output[index] = __float2bfloat16(gate / (1.0f + expf(-gate)) * up);
 }
 

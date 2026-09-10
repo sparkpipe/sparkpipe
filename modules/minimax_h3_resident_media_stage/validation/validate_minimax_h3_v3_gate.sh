@@ -30,6 +30,7 @@ python3 "${repository_root}/tools/minimax_h3_extract_tensors.py" \
 	-I"${repository_root}/include" \
 	-I"${repository_root}/model-families/minimax_h3/include" \
 	-I"${repository_root}/model-families/common/include" \
+	-I"${repository_root}/src" \
 	-o "${work}/minimax_h3_v3_gate" \
 	"${module_directory}/source/spark_minimax_h3_resident_media_stage_cuda.cu" \
 	"${script_directory}/spark_minimax_h3_v3_gate.cu"

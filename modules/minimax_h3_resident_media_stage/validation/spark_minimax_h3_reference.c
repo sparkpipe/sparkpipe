@@ -257,8 +257,8 @@ void SparkH3RefSiluMul(const float *gate_up, uint32_t rows, uint32_t ffn, float 
 	{
 		for (column=0u; column<ffn; column++)
 		{
-			float gate = gate_up[(uint64_t)row * (2u * ffn) + column];
-			float up = gate_up[(uint64_t)row * (2u * ffn) + ffn + column];
+			float up = gate_up[(uint64_t)row * (2u * ffn) + column];
+			float gate = gate_up[(uint64_t)row * (2u * ffn) + ffn + column];
 			output[(uint64_t)row * ffn + column] = gate / (1.0f + expf(-gate)) * up;
 		}
 	}

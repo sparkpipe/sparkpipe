@@ -232,8 +232,9 @@ static void SparkMinimaxH3V4SelfAttention(float *attention_out, const float *inp
 			}
 		}
 	}
-	SparkMinimaxH3V4Gem(attention_out,tokens,hidden,hidden,attention_out,
+	SparkMinimaxH3V4Gem(value_buffer,tokens,hidden,hidden,attention_out,
 		output_weight,output_bias);
+	memcpy(attention_out,value_buffer,(uint64_t)tokens * hidden * 4u);
 }
 
 static void SparkMinimaxH3V4Swiglu(float *out, const float *input, const float *gate_up,
@@ -241,15 +242,15 @@ static void SparkMinimaxH3V4Swiglu(float *out, const float *input, const float *
 	uint32_t hidden, uint32_t ffn, float *scratch)
 {
 	uint32_t token,column;
-	SparkMinimaxH3V4Gem(scratch,tokens,ffn,hidden,input,gate_up,gate_bias);
+	SparkMinimaxH3V4Gem(scratch,tokens,ffn * 2u,hidden,input,gate_up,gate_bias);
 	for (token=0u; token<tokens; token++)
 	{
 		for (column=0u; column<ffn; column++)
 		{
-			float gate = scratch[(uint64_t)token * ffn + column];
-			float up = scratch[(uint64_t)token * ffn + ffn + column];
+			float up = scratch[(uint64_t)token * ffn + column];
+			float gate = scratch[(uint64_t)token * ffn + ffn + column];
 			scratch[(uint64_t)token * ffn + column] =
-				gate / (1.0f + expf(-gate)) * up;
+				up * (gate / (1.0f + expf(-gate)));
 		}
 	}
 	SparkMinimaxH3V4Gem(out,tokens,hidden,ffn,scratch,down,down_bias);
@@ -421,7 +422,7 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			SPARK_MINIMAX_H3_V4_VIDEO_EPS);
 		SparkMinimaxH3V4Swiglu(attention_out,normed,gate_up,gate_bias,down,down_bias,
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
-			SPARK_MINIMAX_H3_V4_VIDEO_FFN,ffn_scratch);
+			SPARK_MINIMAX_H3_V4_VIDEO_FFN / 2u,ffn_scratch);
 		for (index=0u; index<hidden_elements; index++)
 			hidden[index] += attention_out[index] * scale2[index %
 				SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN];
