@@ -107,6 +107,12 @@ static void SparkLingValFillNorm(uint16_t *packed,float *exact,uint64_t count)
 	}
 }
 
+static void SparkLingValBf16Array(float *values,uint64_t count)
+{
+	for (uint64_t index = 0u; index < count; index++)
+		values[index] = SparkLingValFromBf16(SparkLingValBf16(values[index]));
+}
+
 static int SparkLingValFail(const char *check,const char *detail)
 {
 	printf("FAIL %s: %s\n",check,detail);
@@ -500,6 +506,7 @@ static void SparkLingValKdaAttention(
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		normed[index] = hidden[index] + (residual != 0 ? residual[index] : 0.0f);
 	SparkLingValRmsNorm(normed,w->attn_norm,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_RMS_EPS);
+	SparkLingValBf16Array(normed,SPARK_LING_VAL_HIDDEN);
 	for (index = 0u; index < qk; index++)
 	{
 		float sum = 0.0f;
@@ -521,12 +528,16 @@ static void SparkLingValKdaAttention(
 			sum += w->qkv_beta[(2u * qk + (uint64_t)index) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
 		v[index] = sum;
 	}
+	SparkLingValBf16Array(q,qk);
+	SparkLingValBf16Array(k,qk);
+	SparkLingValBf16Array(v,v_dim);
 	for (head = 0u; head < heads; head++)
 	{
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->qkv_beta[(2u * qk + v_dim + (uint64_t)head) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		beta[head] = SparkLingValSigmoid(sum);
+		beta[head] = SparkLingValSigmoid(
+			SparkLingValFromBf16(SparkLingValBf16(sum)));
 	}
 	memcpy(dump->q_raw,q,sizeof(dump->q_raw));
 	memcpy(dump->k_raw,k,sizeof(dump->k_raw));
@@ -543,7 +554,8 @@ static void SparkLingValKdaAttention(
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_q[(uint64_t)index * kernel + tap];
-		q[index] = total * SparkLingValSigmoid(total);
+		q[index] = SparkLingValFromBf16(SparkLingValBf16(
+			total * SparkLingValSigmoid(total)));
 	}
 	for (index = 0u; index < qk; index++)
 	{
@@ -557,7 +569,8 @@ static void SparkLingValKdaAttention(
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_k[(uint64_t)index * kernel + tap];
-		k[index] = total * SparkLingValSigmoid(total);
+		k[index] = SparkLingValFromBf16(SparkLingValBf16(
+			total * SparkLingValSigmoid(total)));
 	}
 	for (index = 0u; index < v_dim; index++)
 	{
@@ -571,7 +584,8 @@ static void SparkLingValKdaAttention(
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_v[(uint64_t)index * kernel + tap];
-		v[index] = total * SparkLingValSigmoid(total);
+		v[index] = SparkLingValFromBf16(SparkLingValBf16(
+			total * SparkLingValSigmoid(total)));
 	}
 	memcpy(dump->q_conv,q,sizeof(dump->q_conv));
 	for (index = 0u; index < v_dim; index++)
@@ -585,7 +599,8 @@ static void SparkLingValKdaAttention(
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->decay_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		retention[index] = SparkLingValBoundedDecay(sum,
+		retention[index] = SparkLingValBoundedDecay(
+			SparkLingValFromBf16(SparkLingValBf16(sum)),
 			w->dt_bias[index],w->a_log[index / key],SPARK_LING_VAL_LOWER);
 	}
 	for (index = 0u; index < v_dim; index++)
@@ -593,7 +608,7 @@ static void SparkLingValKdaAttention(
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->gate_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		gate[index] = sum;
+		gate[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 	for (head = 0u; head < heads; head++)
 	{
@@ -647,15 +662,17 @@ static void SparkLingValKdaAttention(
 	{
 		float *row = core + (uint64_t)head * key;
 		SparkLingValRmsNorm(row,w->out_norm,key,SPARK_LING_VAL_RMS_EPS);
+		SparkLingValBf16Array(row,key);
 		for (uint32_t e = 0u; e < key; e++)
-			row[e] *= SparkLingValSigmoid(gate[(uint64_t)head * key + e]);
+			row[e] = SparkLingValFromBf16(SparkLingValBf16(
+				row[e] * SparkLingValSigmoid(gate[(uint64_t)head * key + e])));
 	}
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 	{
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < v_dim; j++)
 			sum += w->out_weight[(uint64_t)index * v_dim + j] * core[j];
-		output[index] = sum;
+		output[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 }
 
@@ -685,12 +702,13 @@ static void SparkLingValMlaAttention(
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		normed[index] = hidden[index] + (residual != 0 ? residual[index] : 0.0f);
 	SparkLingValRmsNorm(normed,w->attn_norm,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_RMS_EPS);
+	SparkLingValBf16Array(normed,SPARK_LING_VAL_HIDDEN);
 	for (index = 0u; index < SPARK_LING_VAL_Q_ROWS; index++)
 	{
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->q_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		q[index] = sum;
+		q[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 	for (head = 0u; head < heads; head++)
 		SparkLingValRopeInterleaved(q + (uint64_t)head * SPARK_LING_VAL_HEAD_DIM + nope,
@@ -700,7 +718,7 @@ static void SparkLingValMlaAttention(
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->kv_a[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		kv[index] = sum;
+		kv[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 	SparkLingValRmsNorm(kv,w->kv_a_norm,latent,SPARK_LING_VAL_RMS_EPS);
 	SparkLingValRopeInterleaved(kv + latent,rope,(float)position,SPARK_LING_VAL_ROPE_THETA);
@@ -774,7 +792,7 @@ static void SparkLingValMlaAttention(
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_ATTN_COLS; j++)
 			sum += w->o_proj[(uint64_t)index * SPARK_LING_VAL_ATTN_COLS + j] * values[j];
-		output[index] = sum;
+		output[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 }
 
@@ -835,6 +853,7 @@ static void SparkLingValMoe(
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		normed[index] = hidden[index] + (residual != 0 ? residual[index] : 0.0f);
 	SparkLingValRmsNorm(normed,w->post_norm,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_RMS_EPS);
+	SparkLingValBf16Array(normed,SPARK_LING_VAL_HIDDEN);
 	SparkLingValRouter(w->router,w->correction,normed,selected,weights);
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		routed[index] = 0.0f;
@@ -847,9 +866,10 @@ static void SparkLingValMoe(
 			for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 				sum += SparkLingValExpertWeight(w->w1_payload,w->w1_scales,w->codec,
 					SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN,expert,row,j) * normed[j];
-			scratch[row] = sum;
+			scratch[row] = SparkLingValFromBf16(SparkLingValBf16(sum));
 		}
 		SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER);
+		SparkLingValBf16Array(intermediate,SPARK_LING_VAL_EXPERT_INTER);
 		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		{
 			float sum = 0.0f;
@@ -857,7 +877,7 @@ static void SparkLingValMoe(
 				sum += SparkLingValExpertWeight(w->w2_payload,w->w2_scales,w->codec,
 					SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER,expert,index,j) *
 					intermediate[j];
-			routed[index] += weights[slot] * sum;
+			routed[index] += weights[slot] * SparkLingValFromBf16(SparkLingValBf16(sum));
 		}
 	}
 	for (index = 0u; index < SPARK_LING_VAL_W1_ROWS; index++)
@@ -865,15 +885,17 @@ static void SparkLingValMoe(
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
 			sum += w->shared_gate_up[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
-		scratch[index] = sum;
+		scratch[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
 	SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER);
+	SparkLingValBf16Array(intermediate,SPARK_LING_VAL_EXPERT_INTER);
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 	{
 		float sum = 0.0f;
 		for (uint32_t j = 0u; j < SPARK_LING_VAL_EXPERT_INTER; j++)
 			sum += w->shared_down[(uint64_t)index * SPARK_LING_VAL_EXPERT_INTER + j] * intermediate[j];
-		output[index] = routed[index] + sum;
+		output[index] = SparkLingValFromBf16(SparkLingValBf16(
+			routed[index] + SparkLingValFromBf16(SparkLingValBf16(sum))));
 	}
 	for (slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
 	{
@@ -909,6 +931,8 @@ static int SparkLingValAllocMatrix(SparkLingValMatrix *matrix,uint32_t rows,uint
 		SparkLingValFill(packed,matrix->host,count,scale);
 	if (cudaMemcpy(matrix->device,packed,count * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess)
 		return(SparkLingValFail("fixture","weight_upload"));
+	for (uint64_t i = 0u; i < count; i++)
+		matrix->host[i] = SparkLingValFromBf16(packed[i]);
 	free(packed);
 	return(0);
 }
