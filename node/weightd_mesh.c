@@ -466,6 +466,7 @@ void SparkWeightdMeshPoll(void)
     struct ibv_wc completions[16];
     int completed;
     int index;
+    uint32_t repair_needed = 0u;
 
     if (weightd_mesh.mesh_active == 0u)
         return;
@@ -490,6 +491,11 @@ void SparkWeightdMeshPoll(void)
         {
             if (completions[index].status == IBV_WC_SUCCESS)
                 weightd_mesh.send_ok++;
+            else if (completions[index].status == IBV_WC_WR_FLUSH_ERR)
+            {
+                weightd_mesh.send_err++;
+                repair_needed = 1u;
+            }
             else
             {
                 weightd_mesh.send_err++;
@@ -502,6 +508,8 @@ void SparkWeightdMeshPoll(void)
             }
         }
     }
+    if (repair_needed != 0u)
+        SparkWeightdMeshTryWire();
     if (weightd_mesh.send_ok - weightd_mesh.send_logged >= 2048ull)
     {
         weightd_mesh.send_logged = weightd_mesh.send_ok;
@@ -582,7 +590,12 @@ void SparkWeightdMeshDoorbellLoop(void)
                         weightd_mesh.qp_info[peer].rkey;
                     if (ibv_post_send(weightd_mesh.send_qps[peer],
                             &work_request,&bad) != 0)
-                        continue;
+                    {
+                        SparkWeightdMeshTryWire();
+                        if (ibv_post_send(weightd_mesh.send_qps[peer],
+                                &work_request,&bad) != 0)
+                            continue;
+                    }
                     memset(&scatter,0,sizeof(scatter));
                     scatter.addr = (uint64_t)(uintptr_t)
                         &weightd_mesh.seq_storage;
