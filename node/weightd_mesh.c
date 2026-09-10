@@ -342,39 +342,66 @@ SparkStatus SparkWeightdMeshInit(void)
         SPARK_WEIGHTD_MESH_PEERS);
     fflush(stdout);
     deadline = time(0) + 30;
-    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
-        peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
+        uint32_t found[SPARK_WEIGHTD_MESH_PEERS];
+        uint32_t found_count;
+        memset(found,0,sizeof(found));
         for (;;)
         {
-            if (SparkWeightdMeshReadPeerRecord(peer_rank,&peer_record) ==
-                    SPARK_STATUS_OK)
+            found_count = 0;
+            for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+            {
+                if (found[peer] != 0u)
+                {
+                    found_count++;
+                    continue;
+                }
+                peer_rank = peer < weightd_mesh.local_rank ?
+                    peer : peer + 1u;
+                if (SparkWeightdMeshReadPeerRecord(peer_rank,
+                        &peer_records[peer]) == SPARK_STATUS_OK)
+                {
+                    found[peer] = 1u;
+                    found_count++;
+                    printf("weightd-mesh: peer %u found\n",peer_rank);
+                    fflush(stdout);
+                }
+            }
+            if (found_count == SPARK_WEIGHTD_MESH_PEERS)
                 break;
             if (time(0) >= deadline)
             {
-                fprintf(stderr,"weightd-mesh: peer %u timeout\n",peer_rank);
+                fprintf(stderr,"weightd-mesh: %u/%u peers found, timeout\n",
+                    found_count,SPARK_WEIGHTD_MESH_PEERS);
                 return SPARK_STATUS_BUSY;
             }
             usleep(500000);
         }
+    }
+    printf("weightd-mesh: all peers found, transitioning QPs\n");
+    fflush(stdout);
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
         my_index_in_peer = weightd_mesh.local_rank < peer_rank ?
             weightd_mesh.local_rank : weightd_mesh.local_rank - 1u;
         if (SparkWeightdMeshTransitionQp(
                 weightd_mesh.send_qps[peer],
-                peer_record.recv_qpn[my_index_in_peer],
-                peer_record.lid,
-                peer_record.gid) != SPARK_STATUS_OK)
+                peer_records[peer].recv_qpn[my_index_in_peer],
+                peer_records[peer].lid,
+                peer_records[peer].gid) != SPARK_STATUS_OK)
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         if (SparkWeightdMeshTransitionQp(
                 weightd_mesh.recv_qps[peer],
-                peer_record.send_qpn[my_index_in_peer],
-                peer_record.lid,
-                peer_record.gid) != SPARK_STATUS_OK)
+                peer_records[peer].send_qpn[my_index_in_peer],
+                peer_records[peer].lid,
+                peer_records[peer].gid) != SPARK_STATUS_OK)
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         weightd_mesh.qp_info[peer].remote_qpn =
-            peer_record.recv_qpn[my_index_in_peer];
-        weightd_mesh.qp_info[peer].rkey = peer_record.rkey;
-        weightd_mesh.qp_info[peer].remote_addr = peer_record.recv_addr;
+            peer_records[peer].recv_qpn[my_index_in_peer];
+        weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
+        weightd_mesh.qp_info[peer].remote_addr =
+            peer_records[peer].recv_addr;
     }
     weightd_mesh.mesh_ready = 1u;
     printf("weightd-mesh: ready rank=%u peers=%u rkey=%u\n",
