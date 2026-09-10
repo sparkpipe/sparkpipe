@@ -580,13 +580,13 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		SparkMinimaxH3V4Stats("post_layernorm",proj_out,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN);
 		SparkMinimaxH3V4CompareStageF32("refv_layernorm__33x2048.f32",proj_out,
 			hidden_elements);
-		SparkMinimaxH3V4CompareStageF32("refv_pixels__33x3072.f32",pixels,
-			(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS *
-			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
 		SparkMinimaxH3V4Gem(pixels,SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,
 			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			proj_out,proj_weight,proj_bias);
 		SparkMinimaxH3V4Stats("pixels",pixels,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS * SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
+		SparkMinimaxH3V4CompareStageF32("refv_pixels__33x3072.f32",pixels,
+			(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_TOKENS *
+			SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT);
 		free(norm_weight); free(norm_bias); free(proj_weight); free(proj_bias);
 	}
 	for (frame=0u; frame<SPARK_MINIMAX_H3_V4_VIDEO_FRAMES; frame++)
