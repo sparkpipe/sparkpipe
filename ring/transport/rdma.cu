@@ -810,7 +810,11 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
         }
         status = SparkHiddenSparkHostRdmaSetNonblocking(state->listen_fd);
         if (status != SPARK_STATUS_OK)
+        {
+            state->listen_fd = SparkHiddenSparkHostRdmaCloseFd(
+                state->listen_fd);
             return status;
+        }
         for (;;)
         {
             now_ns = SparkHiddenSparkHostRdmaMonotonicNs();
@@ -821,6 +825,8 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
                     state->endpoint.route_name,
                     state->control_port_base,
                     state->open_timeout_milli);
+                state->listen_fd = SparkHiddenSparkHostRdmaCloseFd(
+                    state->listen_fd);
                 return SPARK_STATUS_BUSY;
             }
             memset(&listen_poll, 0, sizeof(listen_poll));
@@ -836,10 +842,14 @@ static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
                     break;
                 if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
                     continue;
+                state->listen_fd = SparkHiddenSparkHostRdmaCloseFd(
+                    state->listen_fd);
                 return SPARK_STATUS_IO_ERROR;
             }
             if (poll_result < 0 && errno != EINTR)
             {
+                state->listen_fd = SparkHiddenSparkHostRdmaCloseFd(
+                    state->listen_fd);
                 return SPARK_STATUS_IO_ERROR;
             }
         }
