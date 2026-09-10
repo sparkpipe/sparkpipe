@@ -185,6 +185,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     uint64_t ordinal;
     uint64_t deadline;
     uint64_t timeout_nanoseconds;
+    uint64_t slot_bytes;
     uint8_t *scratch;
     uint32_t peer;
 
@@ -206,35 +207,31 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     timeout_nanoseconds =
         (uint64_t)collective->operation_timeout_milli * 1000000ull;
     deadline = SparkTpDeviceCollectiveTimeNs() + timeout_nanoseconds;
-    scratch = implementation->mesh_buffer + implementation->band_base;
+    slot_bytes = SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    scratch = implementation->mesh_buffer + implementation->band_base +
+        (uint64_t)collective->tp_rank * slot_bytes;
     if ( cudaMemcpyAsync(scratch,submission->local_device,(size_t)bytes,
             SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     if ( cudaStreamSynchronize(submission->cuda_stream) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    *(uint64_t *)(scratch + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) =
-        ordinal + 1u;
-    for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
+    *(uint64_t *)(scratch + slot_bytes - 8u) = ordinal + 1u;
     {
-        uint32_t peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
-        uint64_t peer_index = collective->tp_rank < peer_rank ?
-            collective->tp_rank : (uint64_t)collective->tp_rank - 1u;
-        uint64_t remote_base = implementation->band_base +
-            (peer_index + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
-        SparkStatus write_status = SparkWeightdClientMeshWrite(
-            implementation->client,peer_rank,implementation->band_base,
-            remote_base,(uint32_t)bytes,timeout_nanoseconds);
+        uint64_t slot_base = implementation->band_base +
+            (uint64_t)collective->tp_rank * slot_bytes;
+        SparkStatus write_status = SparkWeightdClientMeshBroadcast(
+            implementation->client,0xFFFFu,slot_base,slot_base,
+            (uint32_t)bytes,timeout_nanoseconds);
         if ( write_status == SPARK_STATUS_OK )
-            write_status = SparkWeightdClientMeshWrite(
-                implementation->client,peer_rank,
-                implementation->band_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
-                remote_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+            write_status = SparkWeightdClientMeshBroadcast(
+                implementation->client,0xFFFFu,
+                slot_base + slot_bytes - 8u,slot_base + slot_bytes - 8u,
                 8u,timeout_nanoseconds);
         if ( write_status != SPARK_STATUS_OK )
         {
             if ( write_status == SPARK_STATUS_IO_ERROR )
             {
-                fprintf(stderr,"MESH-WRITE-IO peer=%u: exiting\n",peer_rank);
+                fprintf(stderr,"MESH-BROADCAST-IO: exiting\n");
                 _exit(1);
             }
             SPARK_RETURN(write_status);
@@ -242,10 +239,10 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     }
     for ( peer = 0u; peer < collective->tp_degree - 1u; peer++ )
     {
+        uint32_t peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
         volatile uint64_t *sequence = (volatile uint64_t *)
             (implementation->mesh_buffer + implementation->band_base +
-            (uint64_t)(peer + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
-            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
+            (uint64_t)peer_rank * slot_bytes + slot_bytes - 8u);
         while ( *sequence < ordinal + 1u )
         {
             struct timespec pause = {0,100000};
@@ -258,11 +255,12 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
                     (unsigned long long)*sequence,(unsigned long long)bytes);
                 for ( scan = 0u; scan < collective->tp_degree - 1u && scan < 4u; scan++ )
                 {
+                    uint32_t scan_rank =
+                        scan < collective->tp_rank ? scan : scan + 1u;
                     volatile uint64_t *probe = (volatile uint64_t *)
                         (implementation->mesh_buffer + implementation->band_base +
-                        (uint64_t)(scan + 1u) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
-                        SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
-                    fprintf(stderr," %u=%llu",scan < collective->tp_rank ? scan : scan + 1u,
+                        (uint64_t)scan_rank * slot_bytes + slot_bytes - 8u);
+                    fprintf(stderr," %u=%llu",scan_rank,
                         (unsigned long long)*probe);
                 }
                 fprintf(stderr,"\n");
