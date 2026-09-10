@@ -173,9 +173,11 @@ sync_rendezvous() {
     fi
     local mesh_dir="/tmp/weightd-mesh"
     if [ -d "$mesh_dir" ]; then
-        if [ ! -f "$mesh_dir/.shipped" ] || [ -n "$(find "$mesh_dir" -name 'mesh-*.rec' -newer "$mesh_dir/.shipped" 2>/dev/null | head -1)" ]; then
+        local own_rank="${host#spark}"
+        local own_rec="$mesh_dir/mesh-$own_rank.rec"
+        if [ -f "$own_rec" ] && { [ ! -f "$mesh_dir/.shipped" ] || [ -n "$(find "$own_rec" -newer "$mesh_dir/.shipped" 2>/dev/null)" ]; }; then
             $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
-            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$mesh_dir"/mesh-*.rec \
+            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$own_rec" \
                 "$HUB:release/qpn/$host/mesh/" 2>/dev/null
             touch "$mesh_dir/.shipped"
         fi
