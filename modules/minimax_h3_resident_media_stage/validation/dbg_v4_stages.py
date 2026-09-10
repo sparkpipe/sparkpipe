@@ -126,7 +126,16 @@ def main():
         if i == 0:
             dump("refv_b0_attn", x[0])
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm2.weight"), 1e-5).to(x.dtype)
-        ffn = gen.raw_s_ff(n, raw, p)
+        if i == 0:
+            dump("refv_b0_n2", n[0])
+        fused = gen.slab_linear_full(n, raw, p + "ff.net.0.proj.weight", p + "ff.net.0.proj.bias")
+        fm, fg = fused.chunk(2, dim=-1)
+        mid = fm * F.silu(fg)
+        if i == 0:
+            dump("refv_b0_fmid", mid[0])
+        ffn = gen.slab_linear_full(mid, raw, p + "ff.net.2.weight", p + "ff.net.2.bias")
+        if i == 0:
+            dump("refv_b0_ffn", ffn[0])
         x = x + ffn * gen.slab_vec(raw, p + "scale2")
         if i in (0, 1, 17, 35):
             dump("refv_b%d" % i, x[0])

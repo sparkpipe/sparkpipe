@@ -520,12 +520,21 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		for (index=0u; index<hidden_elements; index++)
 			hidden[index] += attention_out[index] * scale1[index %
 				SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN];
+		if ( block == 0u )
+			SparkMinimaxH3V4CompareStageF32("refv_b0_attn__33x2048.f32",hidden,
+				hidden_elements);
 		SparkMinimaxH3V4RmsNormWeighted(normed,hidden,norm2,
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			SPARK_MINIMAX_H3_V4_VIDEO_EPS);
+		if ( block == 0u )
+			SparkMinimaxH3V4CompareStageF32("refv_b0_n2__33x2048.f32",normed,
+				hidden_elements);
 		SparkMinimaxH3V4Swiglu(attention_out,normed,gate_up,gate_bias,down,down_bias,
 			SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,
 			SPARK_MINIMAX_H3_V4_VIDEO_FFN / 2u,ffn_scratch);
+		if ( block == 0u )
+			SparkMinimaxH3V4CompareStageF32("refv_b0_ffn__33x2048.f32",
+				attention_out,hidden_elements);
 		for (index=0u; index<hidden_elements; index++)
 			hidden[index] += attention_out[index] * scale2[index %
 				SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN];
