@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,6 +15,14 @@ extern int cudaMemcpyAsync(void *destination,const void *source,
     size_t bytes,int kind,void *stream);
 extern int cudaStreamSynchronize(void *stream);
 
+typedef struct SparkTpDeviceCollectiveCompletionNode
+{
+    struct SparkTpDeviceCollectiveCompletionNode *next;
+    SparkTpDeviceCollectiveSubmission submission;
+    uint64_t ordinal;
+    SparkStatus status;
+} SparkTpDeviceCollectiveCompletionNode;
+
 typedef struct SparkTpDeviceCollectiveImplementation
 {
     SparkWeightdClient *client;
@@ -21,10 +30,42 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t band_base;
     uint64_t slot_bytes;
     uint64_t round_timeout_ns;
+    pthread_mutex_t completion_lock;
+    pthread_cond_t completion_wake;
+    SparkTpDeviceCollectiveCompletionNode *completion_head;
+    SparkTpDeviceCollectiveCompletionNode *completion_tail;
     uint32_t tp_rank;
     uint32_t tp_degree;
     uint32_t local_hidden_dimension;
 } SparkTpDeviceCollectiveImplementation;
+
+static void SparkTpDeviceCollectiveInvokeCompletion(
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint64_t ordinal,
+    SparkStatus status);
+
+static void *SparkTpDeviceCollectiveCompletionThread(void *argument)
+{
+    SparkTpDeviceCollectiveImplementation *implementation =
+        (SparkTpDeviceCollectiveImplementation *)argument;
+    for (;;)
+    {
+        SparkTpDeviceCollectiveCompletionNode *node;
+        pthread_mutex_lock(&implementation->completion_lock);
+        while (implementation->completion_head == 0)
+            pthread_cond_wait(&implementation->completion_wake,
+                &implementation->completion_lock);
+        node = implementation->completion_head;
+        implementation->completion_head = node->next;
+        if (implementation->completion_head == 0)
+            implementation->completion_tail = 0;
+        pthread_mutex_unlock(&implementation->completion_lock);
+        SparkTpDeviceCollectiveInvokeCompletion(&node->submission,
+            node->ordinal,node->status);
+        free(node);
+    }
+    return 0;
+}
 
 static uint64_t SparkTpDeviceCollectiveTimeNs(void)
 {
@@ -308,6 +349,25 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         free(implementation);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    if ( pthread_mutex_init(&implementation->completion_lock,0) != 0 ||
+         pthread_cond_init(&implementation->completion_wake,0) != 0 )
+    {
+        (void)SparkWeightdClientClose(implementation->client);
+        free(implementation);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+    }
+    {
+        pthread_t completion_thread;
+        if ( pthread_create(&completion_thread,0,
+                SparkTpDeviceCollectiveCompletionThread,
+                implementation) != 0 )
+        {
+            (void)SparkWeightdClientClose(implementation->client);
+            free(implementation);
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        pthread_detach(completion_thread);
+    }
     collective_out->implementation = implementation;
     return SPARK_STATUS_OK;
 }
@@ -334,7 +394,23 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     round = *submission;
     status = SparkTpDeviceCollectiveRunRound(implementation,&round,
         operation_kind);
-    SparkTpDeviceCollectiveInvokeCompletion(&round,round.ordinal,status);
+    {
+        SparkTpDeviceCollectiveCompletionNode *node =
+            calloc(1u,sizeof(*node));
+        if ( node == 0 )
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+        node->submission = round;
+        node->ordinal = round.ordinal;
+        node->status = status;
+        pthread_mutex_lock(&implementation->completion_lock);
+        if ( implementation->completion_tail == 0 )
+            implementation->completion_head = node;
+        else
+            implementation->completion_tail->next = node;
+        implementation->completion_tail = node;
+        pthread_cond_signal(&implementation->completion_wake);
+        pthread_mutex_unlock(&implementation->completion_lock);
+    }
     return status;
 }
 
