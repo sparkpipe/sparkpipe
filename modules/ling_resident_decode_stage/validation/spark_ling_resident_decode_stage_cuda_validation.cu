@@ -1706,6 +1706,12 @@ static void SparkLingValCarryProbe(SparkLingValFixture *fixture,
 	SparkLingValWalk *walk,const uint32_t *layers,uint32_t wave_index,uint32_t rows)
 {
 	static float device_state[SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
+	printf("probe pools q=%p k=%p v=%p stride=%llu slot=%llu\n",
+		(const void *)fixture->wave.kda_q_window_pool,
+		(const void *)fixture->wave.kda_k_window_pool,
+		(const void *)fixture->wave.kda_v_window_pool,
+		(unsigned long long)fixture->wave.kda_window_layer_stride_bytes,
+		(unsigned long long)SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV * 2u);
 	static uint16_t packed_window[SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
 	static uint16_t packed_kv[4u * SPARK_LING_VAL_KV_ROW];
 	static float device_kv[4u * SPARK_LING_VAL_KV_ROW];

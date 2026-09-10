@@ -279,10 +279,9 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 		debug_total = total;
 	}
 	if ( sequence == 0u && channel == 0u )
-		printf("conv seq0 ch0 taps %04x %04x %04x %04x w %04x %04x %04x %04x out %04x\n",
+		printf("conv seq0 ch0 slot %p si %u taps %04x %04x %04x %04x out %04x\n",
+			(const void *)slot,state_index[0],
 			taps[0],taps[1],taps[2],taps[3],
-			((const uint16_t *)weight)[0],((const uint16_t *)weight)[1],
-			((const uint16_t *)weight)[2],((const uint16_t *)weight)[3],
 			LmFloatToBf16(debug_total));
 	if ( commit == 0u )
 		return;
