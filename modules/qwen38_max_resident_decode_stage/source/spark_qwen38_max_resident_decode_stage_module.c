@@ -341,6 +341,7 @@ static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *
 {
 	SparkQwen38MaxStagePackTensorShape shape;
 	uint32_t global = entry->layer_index == SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
+	fprintf(stderr,"%s DIAG entry kind=%u layer=%u rows=%u cols=%u fmt=%u bytes=%llu\n",SPARK_QWEN38_MAX_MODULE_TAG,entry->tensor_kind,entry->layer_index,entry->rows,entry->columns,entry->weight_format,(unsigned long long)entry->payload_bytes);
 	if ( SparkQwen38MaxStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 || entry->rows != shape.rows || entry->columns != shape.columns )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->weight_format != shape.natural_format )
