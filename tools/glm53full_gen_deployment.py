@@ -66,6 +66,10 @@ def tp_collective(collective_base):
         "peer_hosts": list(HOSTS),
         "peer_ports": [collective_base + r for r in range(TP)],
         "algorithms": ["tree"],
+        "direct_all_to_all_max_payload_bytes": 0,
+        "split_ring_min_payload_bytes": 0,
+        "rail_peer_hosts": [list(HOSTS) for _ in range(2)],
+        "step_rail_indices": [0] + [1] * (TP - 1),
         "session_ports": [
             [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
              for b in range(TP)] for a in range(TP)],
