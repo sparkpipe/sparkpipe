@@ -8773,8 +8773,8 @@
     },
     {
       "path": "tools/gemma4_stagepack.py",
-      "sha256": "0cf133e167f52d09b18638623369c65410b4128d4ac5764b954c2b130e919026",
-      "size_bytes": 33375
+      "sha256": "9eeaec82d516dd228f1352fd32bf369fcc9bb74977f6ed9e5eab51d0044649ef",
+      "size_bytes": 37137
     },
     {
       "path": "tools/gen_geometry_header.py",
@@ -9970,5 +9970,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32786382
+  "total_bytes": 32790144
 }
