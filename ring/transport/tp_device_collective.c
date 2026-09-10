@@ -233,8 +233,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         for (peer = 0u; peer < collective->tp_degree - 1u; peer++)
         {
             peer_rank = peer < collective->tp_rank ? peer : peer + 1u;
-            remote_base = (uint64_t)(collective->tp_rank < peer_rank ?
-                collective->tp_rank : collective->tp_rank - 1u) *
+            remote_base = ((uint64_t)(collective->tp_rank < peer_rank ?
+                collective->tp_rank : collective->tp_rank - 1u) + 1u) *
                 slot_stride;
             SparkStatus ws = SparkWeightdClientMeshWrite(
                 implementation->client,
