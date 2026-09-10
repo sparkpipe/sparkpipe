@@ -95,6 +95,23 @@ static void *SparkMinimaxH3V3DeviceUpload(const void *host, uint64_t bytes)
 static void SparkMinimaxH3V3Compare(const char *check, const float *actual,
 	const float *reference, uint64_t count)
 {
+	uint64_t reference_nonfinite = 0;
+	uint64_t scan;
+	for (scan=0u; scan<count; scan++)
+	{
+		if ( !isfinite(reference[scan]) )
+			reference_nonfinite++;
+	}
+	if ( reference_nonfinite != 0u )
+	{
+		printf("%-16s reference fixture carries %llu/%llu nonfinite values - "
+			"the anchor generator's diffusers run produced NaN; the gate "
+			"cannot bind until that lane regenerates the fixture\n",check,
+			(unsigned long long)reference_nonfinite,
+			(unsigned long long)count);
+		SparkMinimaxH3V3Failures++;
+		return;
+	}
 	SparkNumericalMetrics metrics = SparkNumericalMeasureF32(actual,reference,count);
 	uint32_t within = SparkNumericalMetricsWithin(&metrics,
 		SPARK_MINIMAX_H3_V3_MAX_REL,SPARK_MINIMAX_H3_V3_MIN_COSINE);

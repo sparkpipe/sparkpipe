@@ -655,20 +655,20 @@ static void SparkMinimaxH3V4ConvTranspose1d(float *out, const float *input,
 	}
 }
 
-static void SparkMinimaxH3V4ReplicatePad(float *out, const float *input,
-	uint32_t channels, uint32_t length, uint32_t pad)
+static void SparkMinimaxH3V4ReplicatePadAsymmetric(float *out, const float *input,
+	uint32_t channels, uint32_t length, uint32_t pad_left, uint32_t pad_right)
 {
 	uint32_t channel;
 	for (channel=0u; channel<channels; channel++)
 	{
 		const float *input_row = input + (uint64_t)channel * length;
-		float *out_row = out + (uint64_t)channel * (length + 2u * pad);
+		float *out_row = out + (uint64_t)channel * (length + pad_left + pad_right);
 		uint32_t position;
-		for (position=0u; position<pad; position++)
+		for (position=0u; position<pad_left; position++)
 			out_row[position] = input_row[0];
-		memcpy(out_row + pad,input_row,length * 4u);
-		for (position=0u; position<pad; position++)
-			out_row[pad + length + position] = input_row[length - 1u];
+		memcpy(out_row + pad_left,input_row,length * 4u);
+		for (position=0u; position<pad_right; position++)
+			out_row[pad_left + length + position] = input_row[length - 1u];
 	}
 }
 
@@ -681,7 +681,8 @@ static void SparkMinimaxH3V4Upsample1d(float *out, uint32_t output_length,
 	uint32_t padded_length = input_length + 2u * pad;
 	uint32_t stride_length = (padded_length - 1u) * ratio + kernel;
 	uint32_t channel,position;
-	SparkMinimaxH3V4ReplicatePad(padded,input,channels,input_length,pad);
+	SparkMinimaxH3V4ReplicatePadAsymmetric(padded,input,channels,input_length,
+		pad,pad);
 	memset(expanded,0,(uint64_t)channels * stride_length * 4u);
 	for (position=0u; position<padded_length; position++)
 	{
@@ -713,7 +714,8 @@ static void SparkMinimaxH3V4Lowpass(float *out, uint32_t output_length,
 	uint32_t pad_right = kernel / 2u;
 	uint32_t padded_length = input_length + pad_left + pad_right;
 	uint32_t channel;
-	SparkMinimaxH3V4ReplicatePad(padded,input,channels,input_length,pad_left);
+	SparkMinimaxH3V4ReplicatePadAsymmetric(padded,input,channels,input_length,
+		pad_left,pad_right);
 	#pragma omp parallel for schedule(static)
 	for (channel=0u; channel<channels; channel++)
 	{
