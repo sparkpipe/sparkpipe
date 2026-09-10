@@ -774,13 +774,19 @@ def main() -> int:
     parser.add_argument("--tp-all", type=int, default=0,
                         help="emit all N rank packs in one process")
     parser.add_argument("--expert-codec", default="bf16", choices=["bf16"])
+    parser.add_argument("--model", default="ling", choices=["ling", "lingfin"])
     parser.add_argument("--dry-plan", action="store_true")
     args = parser.parse_args()
 
-    name_map = json.loads(NAME_MAP.read_text())
+    family_dir = REPO_ROOT / "model-families" / "ling"
+    name_map = json.loads((NAME_MAP if args.model == "ling" else
+                           family_dir / f"name_map_{args.model}.json").read_text())
     source_revision = name_map["source_revision"]
     expected_census = name_map["checkpoint_census"]["tensor_count"]
-    contract_sha = sha256_bytes(CONTRACT.read_bytes()) if CONTRACT.is_file() else bytes(32)
+    contract_file = (CONTRACT if args.model == "ling" else
+                     REPO_ROOT / "model_contracts" / f"{args.model}_authoritative.json")
+    contract_sha = (sha256_bytes(contract_file.read_bytes())
+                    if contract_file.is_file() else bytes(32))
     codec_ids = {"bf16": CODEC_BF16}
     expert_codec = codec_ids[args.expert_codec]
 
@@ -802,12 +808,16 @@ def main() -> int:
             print(f"rank {rank}: {len(packer.plan)} pack tensors planned, "
                   f"census {census}")
             continue
-        path = out_dir / f"ling_stage.tp{args.tp_all or args.tp_degree}.rank{rank}.lspk"
+        tp = args.tp_all or args.tp_degree
+        arm = f"{args.model}.{args.expert_codec}.tp{tp}"
+        path = out_dir / f"{arm}.rank{rank:x}.sp"
         file_bytes = emit(packer, path, source_revision, contract_sha)
         digest = hashlib.sha256()
         with path.open("rb") as file:
             for block in iter(lambda: file.read(8 * 1024 * 1024), b""):
                 digest.update(block)
+        (out_dir / f"{path.name}.sha256").write_text(
+            f"{digest.hexdigest()}  {path.name}\n")
         spine_bytes = sum(item.entry.payload_bytes for item in packer.plan
                           if item.entry.kind not in (K_EXPERT_UP_GATE,
                                                      K_EXPERT_DOWN))
@@ -817,6 +827,7 @@ def main() -> int:
         manifest_ranges = write_expert_manifest(path, packer.plan)
         receipt = {
             "pack": path.name,
+            "arm": arm,
             "sha256": digest.hexdigest(),
             "file_bytes": file_bytes,
             "tensors": len(packer.plan),

@@ -1463,6 +1463,12 @@ CEILING = 233150
 # the coredev's 22 mesh/transport commits measure exact 241968. Re-pinned
 # from measured reality per the ratchet rule.
 CEILING = 241968
+# the same round aligns the ling packer/verifier/generator to main's
+# canonical pack naming (<model>.<quant>.<topo>, <arm>.rank<hex>.sp, the
+# weightd .sha256 digest sidecar, ROOT_NAME single source) and adds the
+# fin second-arm plumbing (--model lingfin, per-model name_map/contract
+# paths); +15 tooling lines. Measured exact: 241983.
+CEILING = 241983
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/

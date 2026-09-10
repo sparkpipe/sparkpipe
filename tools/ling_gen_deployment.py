@@ -25,7 +25,8 @@ HOSTS = [h for h in os.environ.get(
     "LING_TP_HOSTS",
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
-ARM = "ling.bf16.tp16"
+ROOT_NAME = os.environ.get("LING_ROOT_NAME", "ling.bf16.tp16")
+ARM = ROOT_NAME
 RUNTIME_ROOT = os.environ.get(
     "LING_RUNTIME_ROOT", "/home/{host}/sparkdata/" + ARM)
 CONTROL_BASE = int(os.environ.get("LING_CONTROL_BASE", "19590"))
@@ -36,8 +37,7 @@ SESSION_HC_BASE = os.environ.get("LING_SESSION_HC_BASE")
 COLLECTIVE_ID = 9911223344556680
 BACKEND = os.environ.get("LING_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
-    "LING_PACK_TEMPLATE",
-    "packs/ling_stage.tp%d.rank%%d.lspk" % TP)
+    "LING_PACK_TEMPLATE", "packs/" + ARM + ".rank%x.sp")
 MODEL_REVISION = "e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3"
 NODE_TARGET = "cuda.sm121.ling.resident_decode_stage.bf16.expert_bf16"
 

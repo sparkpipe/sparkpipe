@@ -233,8 +233,12 @@ def main() -> int:
     ranks = (sorted(int(r) for r in args.ranks.split(",") if r != "")
              if args.ranks else list(range(args.tp_degree)))
     summaries = []
+    receipt0 = pack_dir / "receipts" / "rank0.json"
+    if not receipt0.is_file():
+        fail("receipt", f"{receipt0}: the packer writes it per rank")
+    arm = json.loads(receipt0.read_text())["arm"]
     for rank in ranks:
-        path = pack_dir / f"ling_stage.tp{args.tp_degree}.rank{rank}.lspk"
+        path = pack_dir / f"{arm}.rank{rank:x}.sp"
         summary = verify_pack(path, args.tp_degree)
         receipt = pack_dir / "receipts" / f"rank{rank}.json"
         if receipt.is_file():
