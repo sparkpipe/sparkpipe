@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "modules/laguna_resident_decode_stage/source/cuda/unity.cu"
+#include "modules/laguna_resident_decode_stage/source/cuda/layer.cuh"
 #include "../source/spark_laguna_resident_decode_stage_internal.h"
 
 #define VALIDATION_HEADS LAGUNA_Q_HEADS_FULL
