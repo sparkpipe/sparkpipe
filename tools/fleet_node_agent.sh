@@ -282,6 +282,7 @@ install_core() {
     for p in $(pgrep -f bin/sparkpipe_model_residentd); do
         kill -9 "$p" 2>/dev/null
     done
+    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     sleep 1
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
@@ -306,6 +307,7 @@ ensure_weightd() {
     pgrep -f "sparkpipe_weightd" >/dev/null && return 0
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
+    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
