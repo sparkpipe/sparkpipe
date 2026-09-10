@@ -135,9 +135,17 @@ ensure_api() {
     ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
         "grep -l '\"state\":\"ready' current/*.json 2>/dev/null | wc -l" 2>/dev/null)
     [ "${ready_count:-0}" -ge 16 ] || return 0
-    local p
+    local p rpid
     for p in $(pgrep -f "bin/sparkpipe_model_api"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
+        rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
+        if [ -n "$rpid" ] && [ "$(stat -c %Y /proc/$rpid 2>/dev/null || echo 0)" -gt \
+             "$(stat -c %Y /proc/$p 2>/dev/null || echo 0)" ]; then
+            echo "$(date +%T) api: predates residentd; restarting"
+            kill -9 "$p" 2>/dev/null
+            return 0
+        fi
+        return 0
     done
     now=$(date +%s)
     [ $((now - LAST_API_START)) -lt 15 ] && return 0
