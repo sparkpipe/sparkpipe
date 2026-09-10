@@ -13,19 +13,10 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "modules/glm52_resident_decode_stage/source/cuda/config.h"
 
-struct Glm52Kv
+struct Glm52Kv : LmKvGeometry<GLM52_KV_SLOT_BYTES, GLM52_KV_PAGE_SLOTS, true>
 {
-    static constexpr uint32_t kSlotBytes = GLM52_KV_SLOT_BYTES;
-    static constexpr uint32_t kPageSlots = GLM52_KV_PAGE_SLOTS;
     static constexpr uint32_t kPageBytes =
         GLM52_KV_SLOT_BYTES * GLM52_KV_PAGE_SLOTS * GLM52_LAYERS;
-    static constexpr bool kGrows = true;
-    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
-    { return position / GLM52_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
-    { return position % GLM52_KV_PAGE_SLOTS; }
-    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
-    { return (tokens + GLM52_KV_PAGE_SLOTS - 1u) / GLM52_KV_PAGE_SLOTS; }
     static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
     { return pages * (uint64_t)kPageBytes; }
 };
