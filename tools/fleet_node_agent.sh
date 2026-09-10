@@ -13,7 +13,12 @@ START_SHA=$(sha16 "$0")
 AGENT_BLOCKED=""
 mkdir -p "$VIEW"
 
-sha16() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
+sha16() {
+    local s=""
+    [ -f "$1" ] && s=$(sha256sum < "$1" 2>/dev/null | cut -c1-16)
+    [ -n "$s" ] || s=none
+    echo "$s"
+}
 
 root_state() {
     local rr="$HOME/sparkdata/$1"
@@ -252,8 +257,9 @@ self_update() {
     [ -f "$new" ] || return 0
     local disk
     disk=$(sha16 "$new")
+    { [ "$disk" != none ] && [ -n "$START_SHA" ] && [ "$START_SHA" != none ]; } || return 0
     [ "$disk" != "$START_SHA" ] || return 0
-    echo "$(date +%T) agent: self-updating $START_SHA -> $disk"
+    echo "$(date +%T) agent: self-updating $START_SHA -> $disk ($0)"
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
