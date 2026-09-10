@@ -27,6 +27,7 @@ static double clock_gettime_mono_ns(void)
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_27b_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
@@ -1914,78 +1915,41 @@ static void SparkQwen38_27bServingComplete(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static SparkStatus SparkQwen38_27bServingPrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submissions,
-	uint32_t submission_count)
+static SparkServingCacheAdmission SparkQwen38_27bServingCacheContext(SparkQwen38_27bServingState *state,SparkModelDriverCacheLane *lanes)
 {
-	SparkQwen38_27bServingState *state;
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	uint32_t cache_lane_count,index;
-	SparkStatus status;
-	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || submissions == 0 || submission_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SPARK_STATUS_OK;
-	for (index=0u; status==SPARK_STATUS_OK && index<submission_count; index++)
-	{
-		status = SparkQwen38_27bServingValidateSubmission(state,&submissions[index]);
-		if ( status == SPARK_STATUS_OK && submissions[index].work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-			continue;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkModelServingAdapterBuildDriverCacheLanes(&submissions[index],
-				state->prefetch_lanes,
-				SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-				&cache_lane_count);
-		if ( status == SPARK_STATUS_OK )
-		{
-			status = SparkAdmissionRequestFromSubmission(state->program->program_id,
-				&submissions[index],state->prefetch_lanes,
-				SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&request);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkAdmissionEvaluate(state->driver.interface,
-					state->driver_instance,&request,&decision);
-		}
-	}
-	return(status);
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SparkQwen38_27bServingValidateSubmission;
+	cache.adapter_state = state;
+	return(cache);
 }
 
-static SparkStatus SparkQwen38_27bServingResolvePrefetch(
-	void *adapter_state,
-	const SparkModelServingSubmission *submission,
-	uint32_t resolution)
+static SparkStatus SparkQwen38_27bServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t submission_count)
 {
 	SparkQwen38_27bServingState *state;
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	uint32_t admission_flag,cache_lane_count;
-	SparkStatus status;
+	SparkServingCacheAdmission cache;
 	state = (SparkQwen38_27bServingState *)adapter_state;
-	if ( state == 0 || submission == 0 ||
-		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
-		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+	if ( state == 0 || state->program == 0 || submissions == 0 || submission_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkQwen38_27bServingValidateSubmission(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		return(SPARK_STATUS_OK);
-	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,
-		state->prefetch_lanes,
-		SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-		&cache_lane_count);
-	if ( status != SPARK_STATUS_OK || cache_lane_count != submission->active_sequence_count )
-		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR);
-	admission_flag = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	status = SparkAdmissionRequestFromSubmission(state->program->program_id,
-		submission,state->prefetch_lanes,admission_flag,&request);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkAdmissionEvaluate(state->driver.interface,
-		state->driver_instance,&request,&decision));
+	cache = SparkQwen38_27bServingCacheContext(state,state->prefetch_lanes);
+	return(SparkServingCacheAdmissionRun(&cache,submissions,submission_count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
+
+static SparkStatus SparkQwen38_27bServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
+{
+	SparkQwen38_27bServingState *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SparkQwen38_27bServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 || submission == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SparkQwen38_27bServingCacheContext(state,state->prefetch_lanes);
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
 
 static SparkStatus SparkQwen38_27bServingResetControl(
