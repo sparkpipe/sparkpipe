@@ -19,6 +19,26 @@ extern SparkStatus SparkWeightdClientDisconnect(void *client);
 extern SparkStatus SparkWeightdClientMeshBroadcast(void *client,
     uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
     uint32_t length, uint64_t timeout_nanoseconds);
+
+__attribute__((weak)) SparkStatus SparkWeightdClientConnect(const char *path,
+    void *client, uint64_t reserved)
+{
+    (void)path;(void)client;(void)reserved;
+    return SPARK_STATUS_UNSUPPORTED;
+}
+__attribute__((weak)) SparkStatus SparkWeightdClientDisconnect(void *client)
+{
+    (void)client;
+    return SPARK_STATUS_UNSUPPORTED;
+}
+__attribute__((weak)) SparkStatus SparkWeightdClientMeshBroadcast(void *client,
+    uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
+    uint32_t length, uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)peer_mask;(void)source_offset;
+    (void)remote_offset;(void)length;(void)timeout_nanoseconds;
+    return SPARK_STATUS_UNSUPPORTED;
+}
 extern uint32_t SparkWeightdMeshReady(void);
 
 typedef struct SparkTpDeviceCollectiveImplementation
