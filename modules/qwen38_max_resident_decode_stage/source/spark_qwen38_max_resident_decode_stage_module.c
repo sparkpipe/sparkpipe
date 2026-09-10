@@ -1215,7 +1215,7 @@ static SparkStatus SparkQwen38MaxModulePrepare(
 	{
 		SparkQwen38MaxModuleBuildOrdinals(state);
 		status = SparkQwen38MaxModuleLazyOpen(state,pack_path);
-		if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 )
+		if ( status == SPARK_STATUS_OK )
 			status = SparkQwen38MaxModuleLoadPack(state,pack_path);
 	}
 	if ( status == SPARK_STATUS_OK )
