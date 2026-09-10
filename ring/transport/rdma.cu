@@ -105,23 +105,23 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkHiddenSparkHostRdmaGetPollDescriptors(
+static SparkStatus SparkHiddenSparkHostRdmaGetPollDescriptors(
     void *transport_state,
     SparkHiddenTransportPollDescriptor *descriptors,
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count)
 {
+    (void)transport_state;(void)descriptors;(void)descriptor_capacity;
     if ( descriptor_count != 0 )
         *descriptor_count = 0;
-    return 0u;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     void *transport_state,
-    uint64_t bytes,
-    uint32_t credit_index)
+    SparkHiddenTransportPacket *packet)
 {
-    (void)transport_state;(void)bytes;(void)credit_index;
+    (void)transport_state;(void)packet;
     return SPARK_STATUS_OK;
 }
 
@@ -151,10 +151,10 @@ static SparkStatus SparkHiddenSparkHostRdmaSetFixedRemote(
 
 static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistent(
     void *transport_state,
-    void *buffer,
-    uint64_t bytes)
+    uint32_t credit_index,
+    SparkHiddenTransportPacket *packet_template)
 {
-    (void)transport_state;(void)buffer;(void)bytes;
+    (void)transport_state;(void)credit_index;(void)packet_template;
     return SPARK_STATUS_OK;
 }
 
@@ -204,9 +204,10 @@ static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
 static SparkStatus SparkHiddenSparkHostRdmaReservePersistent(
     void *transport_state,
     uint32_t credit_index,
-    uint64_t generation)
+    uint64_t generation,
+    const SparkHiddenTransportPacket *packet)
 {
-    (void)transport_state;(void)credit_index;(void)generation;
+    (void)transport_state;(void)credit_index;(void)generation;(void)packet;
     return SPARK_STATUS_OK;
 }
 
