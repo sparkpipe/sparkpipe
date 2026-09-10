@@ -24,6 +24,24 @@
 #define SPARK_MINIMAX_H3_V4_AUDIO_MAX_REL 5e-4
 #define SPARK_MINIMAX_H3_V4_AUDIO_STAGES 7u
 
+static void SparkMinimaxH3V4Stats(const char *label, const float *buffer,
+	uint64_t count)
+{
+	double maximum = 0.0;
+	uint64_t nonfinite = 0;
+	uint64_t index;
+	for (index=0u; index<count; index++)
+	{
+		double value = (double)buffer[index];
+		if ( isnan(value) || isinf(value) )
+			nonfinite++;
+		else if ( fabs(value) > maximum )
+			maximum = fabs(value);
+	}
+	printf("%-16s max=%.6g nonfinite=%llu\n",label,maximum,
+		(unsigned long long)nonfinite);
+}
+
 static uint32_t SparkMinimaxH3V4Failures;
 
 static void *SparkMinimaxH3V4ReadBin(const char *directory, const char *name,
@@ -341,6 +359,7 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		}
 	}
 	free(z);
+	SparkMinimaxH3V4Stats("post_quant",latent_rows,(uint64_t)SPARK_MINIMAX_H3_V4_VIDEO_PATCHES * 24u);
 	tokens = (float *)malloc(hidden_elements * 4u);
 	SparkMinimaxH3V4Gem(tokens,SPARK_MINIMAX_H3_V4_VIDEO_PATCHES,
 		SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,24u,latent_rows,proj_in_weight,proj_in_bias);
@@ -365,6 +384,8 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		SPARK_MINIMAX_H3_V4_VIDEO_PROJ_OUT * 4u);
 	hidden = (float *)malloc(hidden_elements * 4u);
 	SparkMinimaxH3V4VideoRope(cos_angles,sin_angles);
+	SparkMinimaxH3V4Stats("tokens_in",tokens,hidden_elements);
+	SparkMinimaxH3V4Stats("weights_postquant_w",post_quant_weight,576u);
 	memcpy(hidden,tokens,hidden_elements * 4u);
 	for (block=0u; block<SPARK_MINIMAX_H3_V4_VIDEO_BLOCKS; block++)
 	{
@@ -426,6 +447,12 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		for (index=0u; index<hidden_elements; index++)
 			hidden[index] += attention_out[index] * scale2[index %
 				SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN];
+		if ( block == 0u || block == 35u )
+		{
+			char stat[32];
+			snprintf(stat,sizeof(stat),"block_%u_hidden",block);
+			SparkMinimaxH3V4Stats(stat,hidden,hidden_elements);
+		}
 		free(query_weight); free(query_bias); free(key_weight); free(key_bias);
 		free(value_weight); free(value_bias); free(output_weight); free(output_bias);
 		free(gate_up); free(gate_bias); free(down); free(down_bias);
