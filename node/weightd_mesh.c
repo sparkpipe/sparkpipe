@@ -393,7 +393,7 @@ SparkStatus SparkWeightdMeshInit(void)
         prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
         prop.location.id = 0;
         result = cuMemGetAllocationGranularity(&granularity,&prop,
-            CU_MEM_ALLOC_GRANULARITY_RECOMMENDED);
+            CU_MEM_ALLOCATION_GRANULARITY_RECOMMENDED);
         if (result != CUDA_SUCCESS || granularity == 0u)
             granularity = 2097152u;
         result = cuMemCreate(&weightd_mesh.mesh_handle,
