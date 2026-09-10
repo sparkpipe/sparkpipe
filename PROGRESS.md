@@ -1,116 +1,122 @@
 # PROGRESS — gemma4 driver lane
 
-Branch `lane/gemma4-driver` @ origin/main 8f3a6f2. DESIGN.md untracked (per
-brief). NEVER pushed (manager owns GitHub). Working dir /Users/mac/batch-gemma4.
-Queue note: LIVE queue tool is
-/Users/mac/sparkpipe-qwen38-lane/tools/spark_queue.py (v2); the in-repo
-tools/spark_queue.py subcommand set is DEAD — use the v2 tool for every
-sparka task.
+Branch `lane/gemma4-driver`, rebased onto origin/main **50bd0d3** (PR #913,
+the E2E-proven platform). NEVER pushed (manager owns GitHub). Working dir
+/Users/mac/batch-gemma4. DESIGN.md untracked (per brief).
 
-## Commits (all on lane/gemma4-driver, in order)
+## REBASE RECORD (round 2)
 
-- 99b4b78 port_family.py mechanical port (qwen4_flash donor -> gemma4, all 12
-  files non-zero counts; tool copied byte-exact from batch-ling).
-- a13cddf shared kernels: muse LmHeadRmsNormKernel appended byte-exact to
-  inference/kernels/norm.cuh (weight_or_null + bf16-round-then-multiply);
-  inference/kernels/attn.cuh + project.cuh now byte-identical to
-  lane/laguna-driver (defaulted scale on LmRopePair/Rotate; LmRopePerHeadKernel
-  +3 trailing params). No existing call site changes (all defaults).
-  NOTE: DESIGN.md located the extended rope in attn.cuh; on the laguna branch
-  it lives in project.cuh:428 — coded against the real signature.
-- bba39c3 two-contract model headers (dense 31B defines + 26B MoE alias arm,
-  dsv4 flash/pro pattern; dense arm #errors if MOE_BLOCK set without MOE_BUILD).
-- c9ef0ea gemma stagepack format (family enum, 23 kinds, 120-byte common wire
-  layout proved field-by-field; kv replication law in NarrowShape; nvfp4 seam
-  = payload size math only; loader sentinels 100-103 keep the shared MTP hooks
-  fail-closed) + gemma firmware ABI (two-pool KV, per-layer norm tables).
-- 9b7ad5b cuda.cu carve 2587 -> ~470 lines: gqa.cuh triple consumption
-  (window 1024, store, decode, qk_scale 1.0), two-pool geometry dispatch
-  (sliding KV_HEADS 1|2, full 1 — covers every approved topology incl. TP16
-  replication), rope 6-arg theta / 8-arg inv_freq table, head
-  DirectArgmax+MaxLocPack (complement key = HF smallest-token tie-break)
-  +TpCombineU64Max, bf16 grouped experts (LmRouteBuild + GroupedScalarLinear),
-  family-local EmbeddingGatherShardedScaled (73.5/53.0) + GatedGelu.
-- fb77152 module.c carve/rewrite 2533 -> ~1380: gemma sandwich (post-norm on
-  sublayer OUTPUT before residual add), sliding/full attention bodies,
-  k_eq_v ordering (v_norm reads kraw before k_norm overwrites), FFN + MoE
-  router chain (router norm on the RESIDUAL, softmax temp 1, renormalising
-  top-8, per-expert scale folded at pack), head emit, PP hidden transport;
-  SPARK_FAIL at new host error sites; prefill fails closed (decode-only v1).
-- ccaf958 arm Makefiles (31B TP16xPP1 default; 26B MoE TP4xPP4 fallback with
-  stages {8,8,7,7}; GEMMA4_MODEL_REVISION defaults pending-warm-download and
-  the adapter #errors if unset) + serving adapter on the SHARED qwen38
-  template (arm-conditional ids/targets/stage tables; bf16 expert codec).
-- 6885cda standalone gemma4_pack_synthesize.c (the shared qwen synth template
-  hard-codes the donor lm_head+MTP tail); PER_EXPERT_SCALE reclassified
-  per-layer; donor-ported validator/oracle/shell DELETED (they extern the
-  deleted kernel set); AC1 grep clean (see gate below).
+Two rebases this session, both resolving toward main, family files kept:
+
+1. **14df85a** (intermediate, now obsolete): the 9 round-1 family commits
+   replayed clean; the manager's 20 mesh/transport commits
+   (origin/lane/gemma4-driver ec378a2, preserved locally on ref
+   `lane/gemma4-manager-mesh`) were DROPPED — they cherry-pick the glm53-p0
+   weightd-mesh experiment that main's own 5942464 then reverted, and
+   84edf57's gemma4 credit-binding strip predated the strip landing on main.
+2. **50bd0d3** (current base): all lane commits replayed clean (no
+   conflicts). Post-#913 the mesh dataflow IS the platform, so the manager's
+   direction landed after all — via glm53-p0's own rebase wave.
+
+**LIVE-SESSION HAZARD (standing rule):** a concurrent session works in the
+/Users/mac/lane-* worktrees; this lane never reads or writes those. Re-fetch
+before any future rebase; the manager's force-with-lease protects pushes.
+
+## Platform alignment to 50bd0d3 (4947ba6)
+
+The #913 engine made the module-side credit-binding machinery dead
+(RouteCount is a stub returning 1, ApplyTopology copies rank_count, Create
+opens the weightd mesh client and configuration.credit_bindings is never
+read). gemma4 module now matches the glm5_next E2E template: credit state
+fields, ProbeMemoryMode/RouteCount/CreditBytes block, device+mapped-host
+credit allocations, binding population loop, and the wiring are DELETED
+(module.c 1380 -> 1296 then 1333 with the oracle-era work; net -84); the
+glm5_next fail-closed validation (nonzero timeouts/identifier,
+hidden_transport backend) replaces them at Create. Both arm Makefiles drop
+the deleted tp_device_collective_nccl.c link and take the weightd source
+list via runtime/weightd_sources.mk (the new transport calls
+SparkWeightdClientConnect at Create).
+
+**Known gap (driver feature, unchanged):** mesh dataflow participation needs
+the weightd lazy attach (PrepareReceiveBf16 with attached.mesh_send_buffer_addr
+after Create). The gemma4 module has no lazy_pack yet, matching every
+non-glm5_next module at this tip; Tp submissions fail at the mesh_buffer==0
+guard until that lands. The eager pack load via spark_pack_load_common.h
+remains the majority template (qwen38_max uses it on 50bd0d3).
+
+## Deployment generator / session-port tables (briefing question, settled)
+
+KEPT, not obsolete: post-#913 main still carries session_ports in
+spark_tp_device_collective.h (topology + config), main's glm5_next module
+still memcpys them, and main's glm5_next deployment generator still emits
+explicit tables (env-driven bases). My env-driven fail-closed table
+(SPARK_GEMMA4_STAGE_TP_SESSION_PORTS) matches the current main shape. When
+the deeper strip (session matrices -> shared-memory coordination) lands on
+main, the gemma4 table dies with it — one commit.
+
+## Contract freeze (e148184)
+
+Warm checkpoints landed (/mnt/model-warm/gemma-4-{31b-it,26b-a4b-it},
+59G/49G, PUBLISHED). Warm config.json + model.safetensors.index.json are
+byte-identical to the anchor kit's publisher snapshots, so the HF commit
+pins carry over:
+
+- 31B: `842da3794eaa0b77d5f08bae87a17459d91ff475`
+- 26B: `4d7ae4984b7db7de8f8457170b3f1a419ee76d52`
+
+model_contracts/gemma4_31b_authoritative.json +
+gemma4_26b_a4b_authoritative.json: full geometry, rope (64 rotated pairs),
+eos {1,106,50}, topology (TP16xPP1 / TP4xPP4 stage lists {8,8,7,7}), pack
+folds, kv replication law, tensor census derived from the warm indexes
+(832/657 text-stack entries), digest_freeze (small files hashed twice,
+workstation + sparka, agreement; shards = HF LFS oid at the pinned revision
+with byte-exact warm size equality; the sparka local full-shard hash
+confirmation is running detached at /tmp/gemma4_shas.txt and lands with the
+lane report). Both Makefiles pin GEMMA4_MODEL_REVISION to the HF commits —
+pending-warm-download is GONE; the adapter's fail-closed #error stays for
+unset macros only.
+
+**Publisher finding folded in:** generation_config eos_token_id is
+[1,106,**50**] — headers bound only {1,106}. All three now bind
+(EOS_ALTERNATE_2_TOKEN_ID 50); the constants had no consumers yet, so this
+fixes a future stop list, not behavior.
 
 ## Acceptance criteria status
 
 | AC | status | evidence |
 |---|---|---|
-| 1 port + deletion | DONE | 99b4b78 + deletion commits; grep gate: zero Gdn\|Chunk\|Hc[A-Z]\|Indexer\|Ple\|Screened\|Mtp tokens in module+family code EXCEPT SparkGemma4ModuleBindMtp/ExpectedMtpBits (the shared spark_pack_load_common.h hook NAMES, required; implementations fail-closed) and the five gdn_* common wire field names in the header layout proof (shared SparkStagePackHeaderCommon field names) |
-| 2 both arms compile | DONE for host code | cc -std=c11 -Wall -Wextra -Werror -fsyntax-only vs cuda_stub: module.c + serving_adapter.c + stagepack_format.h green in BOTH arms (dense + -DSPARK_GEMMA4_MOE_BUILD); .cu compile is an nvcc item for the sparka session |
-| 3 header bindings test | NOT STARTED | test file pending (BINDINGS tables trivially derivable from spark_gemma4_model.h / contracts below) |
-| 4 stagepack + synth | MOSTLY DONE | format header compiles both arms with geometry asserts; standalone synth compiles both arms, count assertion passes (payload emission proven before GB-scale write stopped); full-pack runs land with the sparka session |
-| 5 oracle | NOT STARTED | spark_gemma4_reference.c was deleted with the donor port; rewrite per DESIGN section 7 (constants 73.5/53.0, qk 1.0, inv_freq 1e6**(-i/256) i<128 else 0, theta 1e4, eps 1e-6, window 1024, eos {1,106}) |
-| 6 CUDA validation tier | NOT STARTED | harness .cu + validate.sh need a gemma-specific rewrite + a sparka GPU job through the v2 queue (see queue note); boundary matrix list in DESIGN section 7 stands |
-| 7 offline gates | NOT RUN | dry-law/code-size/contract --check need contracts + test (AC3) first; manifest LAST |
-| 8 blocked-on-download | BLOCKED (by design) | warm dirs not landed at session end; revision pins still pending-warm-download |
+| 1 port + deletion | DONE (round 1) | commits 6cb165d..e400708; grep gate clean |
+| 2 both arms compile | DONE | host syntax-check green in BOTH arms on 50bd0d3 (module.c, serving adapter, stagepack format, synth tool; -Wall -Wextra -Werror vs cuda_stub); .cu compile is AC6's nvcc item |
+| 3 header bindings test | DONE | tests/test_gemma4_model_header.py: 58 bindings over both contracts — geometry, rope thetas, embed scales, eos set, rotated-pairs invariant = 64, digest structure, 40-hex revision pins. PASS locally + on sparka. Wired into Makefile PYTHON_TESTS (9390cd1). The test caught the table-elements(256)-vs-rotated-pairs(64) distinction before freeze |
+| 4 stagepack + synth | DONE (round 1, re-verified) | format header + synth compile both arms on 50bd0d3 |
+| 5 oracle | DONE | validation/spark_gemma4_reference.c (944754c): plain C11, zero driver imports; consumes raw-binary exports of the anchor fixtures (validation/anchors_export.py, 270 arrays). **121 check sites, ALL PASS, both models**: bf16 RNE self-vectors, embed 73.5/53.0, inv_freq tables BITWISE (64 nonzero 1e6**(-i/256) + 192 zeros — the ANCHORS finding-1 curve), identity region exact, cos/sin at 7 positions (6 counted 1-ulp libm entries), v_raw==k_raw BITWISE, weighted/scale-free norms, norm-then-rope exact, 1024-window leak-direction exact, softmax + out recompute, eager attention with probs rounded bf16 before p@v (anchor finding 4) worst rel 0.0000, KV cache stores BITWISE, layer_out identity, MoE top-8 lowest-index ties + zero-residual uniform 1/128 + branch sums bf16(b1+b2) |
+| 6 CUDA validation tier | NOT STARTED (harness rewrite needed) | the deleted donor validator (.cu, 1682 lines) externed the deleted kernel set; the gemma harness must be written against the carved cuda.cu entries, then queued on sparka GPU via the v2 queue tool (budgets: GPU <=10GB); V0 = synth-pack stage run vs the oracle. The oracle side of the comparison now EXISTS and is green, so the validator lands against a fixed reference |
+| 7 offline gates | DONE (sparka cpu-class) | on sparka under sparkcap (receipt GEMMA4-AC7-SPARKA-ALL-GREEN): dry-law PASS (196 files, model-neutral), code-size ratchet PASS at 236409 exact, header bindings 58 PASS, oracle build -Werror + 121-site run PASS. Locally: same green. **Complexity ceiling is RED on pristine 50bd0d3 itself** (qwen38_27b serving adapter CCN 88 > 75 — not this lane's code, verified on a pristine main tree); flagged for the manager, NOT absorbed here. Package manifest regen deferred to AC8/landing (LAST rule) |
+| 8 real-pack | UNBLOCKED, pending AC6 | revisions pinned, shard digests recorded, tools/gemma4_stagepack.py (real-weight packer: router-scale fold, per-expert fold, sliding k|v fusion, full-layer kv replication, layer_scalar assert-all-ones) is the next artifact; then HF-reference numerical comparison on a spark |
 
-## Data files still to land (next session, in order)
+## Code-size ceiling
 
-1. model_contracts/gemma4_31b_authoritative.json + gemma4_26b_a4b_authoritative.json
-   (serving adapter ids spark.gemma4.serving-adapter.tp16.v1 / .tp4pp4.v1;
-   tp_degree 16/4; source_revision "pending-warm-download"; softcap 30 inert;
-   embed scale 73.5/53.0; per-expert + router-scale pack folds; kv
-   replication law; PP4 stage lists {8,8,7,7} for 26B fallback)
-   + references/gemma4/ (config.json x2, modeling_gemma4.py,
-   modeling_rope_utils.py, index x2 — fetch from HF when network allows).
-2. tests/test_gemma4_model_header.py (two BINDINGS tables parameterised over
-   the contracts; qwen4_flash test is the pattern).
-3. model-families/gemma4/name_map.json + tensor_patterns.json (layer
-   dispatch: layer % 6 == 5 -> full; tensor census per DESIGN section 1).
-4. examples/model_descriptions/gemma4_31b / gemma4_26b_a4b firmware JSONs
-   (session-port table envs left UNSET: pending fleet renumber, fail-closed).
-5. validation/spark_gemma4_reference.c (oracle) +
-   validation/spark_gemma4_resident_decode_stage_cuda_validation.cu +
-   validate .sh; then sparka: offline gates cpu-class, validator GPU (v2
-   queue tool, budgets: node tooling <=1GB RSS, GPU <=10GB).
-6. tools/gemma4_stagepack.py real-weight packer (fires when
-   /mnt/model-warm/gemma-4-31b-it / gemma-4-26b-a4b-it land; poll with
-   short-timeout ssh stat, never blind-sleep): shard maps implement
-   router-scale fold into router proj, per-expert scale fold into expert
-   down rows, sliding k|v row fusion, full-layer kv-head replication
-   (rank r -> global head r/(tp/kv)), layer_scalar assert-all-ones
-   fail-closed, revision pin capture.
-7. PACKAGE_MANIFEST.json + SHA256SUMS regenerated LAST; code-size ratchet
-   re-measured EXACT (module.c ~1380 + cuda.cu ~470 vs donor 2533+2587 =
-   the ~62% net deletion; deleted subsystems listed in commit messages).
-
-## Topology (operator ruling chain, settled)
-
-31B: TP16 x PP1, single stage, 16 sparks — kv replication proven (muse
-precedent): sliding kv 16/16 exact, full kv 4 replicated x4, per-rank
-KV_HEADS=1; gqa.cuh static_asserts hold (2048B/1024B slots); v=v_norm(raw k)
-determinism chain safe (column-parallel kraw on identical post-reduce
-residual -> per-head-local norm/rope -> bitwise-identical replicas).
-26B: TP4 x PP4 stated default (16 sparks, experts 8/rank, uniform ~3.2GB);
-TP16 table ready (kv 8 x2 / 2 x8 replication — same proof) — one-table
-switch, module is topology-agnostic.
-Ports: ALL session bases env-driven, NO frozen defaults (fail-closed when
-unset) — pending the coredev fleet renumber (route-kind offsets +256/+512/
-+768 make the region above 64700 unusable for degree-16; width-aware ledger
-in earlier revision of this file; 26B TP4 fallback cells must also wait).
+Re-pinned EXACT twice this session (ratchet law: justification in-commit):
+241052 (2a46b8c) -> 244667 (14df85a-based tip) -> **236409** at the current
+tip after #913 deleted the old engine from main (main 50bd0d3 = 232148
+exact, -9179; gemma4 family = +4261 net incl. oracle/exporter/alignment).
 
 ## Blockers / flags for the manager
 
-- Warm download still absent at session end: real-pack validation, HF
-  numerical comparison, revision pins, fleet bring-up all BLOCKED (AC8).
-- Cross-lane: muse LmHeadRmsNormKernel + laguna rope hunks are copied
-  byte-exact into this tree; merge converges trivially. Neither lane
-  announced post-approval signature changes (DESIGN open question 2).
-- The ported validation harness deletion (6885cda) means AC5/AC6 start from
-  zero — deliberate: a donor harness externing deleted kernels cannot be
-  "finished", only replaced.
+- **Complexity ceiling red on main 50bd0d3 itself**: qwen38_27b
+  SparkQwen38_27bServingSubmitSpeculativeDecode CCN 88 vs ceiling 75 —
+  tests/test_complexity_ceiling.py fails on a pristine main tree. Owner is
+  the qwen38-27b lane (or a ceiling ledger entry), not gemma4.
+- **AC6 needs a GPU session**: validator .cu rewrite against the carved
+  kernel set + v2-queue GPU job. The oracle reference side is green and
+  fixture-backed, so the harness has a fixed target.
+- **Shard sha confirmation still hashing on sparka** (/tmp/gemma4_shas.txt,
+  slow warm mount); contracts already pin shards via HF LFS oid + byte-exact
+  size equality. Cross-check when the job completes.
+- **lazy_pack/mesh participation** is the platform-aligned feature gap
+  before bring-up (see above).
+- The manager's 20 dropped mesh commits remain on origin/lane/gemma4-driver
+  (ec378a2) and local ref lane/gemma4-manager-mesh — nothing lost.
+- Queue note: the v2 queue daemon did not claim a sparka job this session
+  ("claimed 0"); the AC7 receipt came from a direct sparkcap-wrapped ssh
+  run. Watch the dispatcher if queueing more sparka work.
