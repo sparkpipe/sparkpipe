@@ -237,7 +237,7 @@ SparkStatus SparkWeightdMeshInit(void)
         for (device_index = 0; device_index < device_count; device_index++)
         {
             const char *name = ibv_get_device_name(devices[device_index]);
-            if (name != 0 && strncmp(name,"rocep",5) == 0)
+            if (name != 0 && strcmp(name,"rocep1s0f1") == 0)
             {
                 weightd_mesh.context = ibv_open_device(devices[device_index]);
                 found = 1;
@@ -245,7 +245,12 @@ SparkStatus SparkWeightdMeshInit(void)
             }
         }
         if (found == 0)
-            weightd_mesh.context = ibv_open_device(devices[0]);
+        {
+            fprintf(stderr,"weightd-mesh: rocep1s0f1 not found (%d devices)\n",
+                device_count);
+            ibv_free_device_list(devices);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
     }
     ibv_free_device_list(devices);
     if (weightd_mesh.context == 0)
