@@ -524,6 +524,24 @@ int main(int argc, char **argv)
 		uint16_t *mods_gate_mlp = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
 			"mod_gate_mlp__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
 			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_shift_msa = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_shift_msa__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_scale_msa = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_scale_msa__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_gate_msa = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_gate_msa__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_shift_mlp = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_shift_mlp__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_scale_mlp = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_scale_mlp__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		uint16_t *b1_mods_gate_mlp = (uint16_t *)SparkMinimaxH3V3ReadFile(argv[1],
+			"ref_b1_mod_gate_mlp__6x5376.u16",(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS *
+			SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
 		float *rope_cos = (float *)SparkMinimaxH3V3ReadFile(argv[1],
 			"rope_cos__13x96.f32",(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
 			SPARK_MINIMAX_H3_V3_ROPE * 4u);
@@ -562,6 +580,18 @@ int main(int argc, char **argv)
 		void *device_shift_mlp = SparkMinimaxH3V3DeviceUpload(mods_shift_mlp,
 			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
 		void *device_gate_mlp = SparkMinimaxH3V3DeviceUpload(mods_gate_mlp,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_scale_msa = SparkMinimaxH3V3DeviceUpload(b1_mods_scale_msa,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_shift_msa = SparkMinimaxH3V3DeviceUpload(b1_mods_shift_msa,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_gate_msa = SparkMinimaxH3V3DeviceUpload(b1_mods_gate_msa,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_scale_mlp = SparkMinimaxH3V3DeviceUpload(b1_mods_scale_mlp,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_shift_mlp = SparkMinimaxH3V3DeviceUpload(b1_mods_shift_mlp,
+			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
+		void *device_b1_gate_mlp = SparkMinimaxH3V3DeviceUpload(b1_mods_gate_mlp,
 			(uint64_t)SPARK_MINIMAX_H3_V3_MOD_ROWS * SPARK_MINIMAX_H3_V3_HIDDEN * 2u);
 		cudaError_t error;
 		uint64_t count;
@@ -620,9 +650,9 @@ int main(int argc, char **argv)
 		first_run = (uint16_t *)malloc(rows_bytes * 2u);
 		cudaMemcpy(first_run,device_result,rows_bytes * 2u,cudaMemcpyDeviceToHost);
 		error = SparkMinimaxH3V3BlockForward(stream,&block1,device_result,
-			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
-			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			&scratch,device_result);
+			device_b1_scale_msa,device_b1_shift_msa,device_b1_gate_msa,
+			device_b1_scale_mlp,device_b1_shift_mlp,device_b1_gate_mlp,
+			device_cos,device_sin,device_row_of,&scratch,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block1 forward cuda error: %s FAIL\n",cudaGetErrorString(error));

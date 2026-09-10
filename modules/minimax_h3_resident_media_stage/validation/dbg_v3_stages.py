@@ -129,6 +129,11 @@ def main():
     if drift > 1e-6:
         raise SystemExit("SPARK_FAIL stage.selfcheck rel=%r" % drift)
 
+    mods1 = gen.slab_linear_full(t_in, raw, "transformer_blocks.1.adaln_proj.linear.weight",
+        "transformer_blocks.1.adaln_proj.linear.bias", chunk=8192).to(torch.bfloat16).view(-1, 6 * 5376).chunk(6, dim=-1)
+    for i, mod_name in enumerate(("shift_msa", "scale_msa", "gate_msa",
+            "shift_mlp", "scale_mlp", "gate_mlp")):
+        dump("ref_b1_mod_%s" % mod_name, mods1[i])
     path = os.path.join(OUT_DIR, "v3_block0_stages.npz")
     np.savez(path, **dumps)
     digest = hashlib.sha256()
