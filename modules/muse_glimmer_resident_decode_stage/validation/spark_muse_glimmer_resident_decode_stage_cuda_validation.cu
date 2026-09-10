@@ -589,7 +589,9 @@ static int SparkMuseGlimmerValCheckModule(void)
 int main(int argc, char **argv)
 {
 	int failures = 0;
+	int module_tier;
 	uint32_t view_bytes;
+	const char *module_tier_text;
 	if ( argc != 2 )
 	{
 		fprintf(stderr,"usage: %s CONFIGURATION_SHA256\n",argv[0]);
@@ -602,7 +604,12 @@ int main(int argc, char **argv)
 	failures += SparkMuseGlimmerValCheckNorms();
 	failures += SparkMuseGlimmerValCheckWindowWalk();
 	failures += SparkMuseGlimmerValCheckGateAndSilu();
-	failures += SparkMuseGlimmerValCheckModule();
+	module_tier_text = getenv("SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER");
+	module_tier = module_tier_text != 0 && strcmp(module_tier_text,"0") != 0;
+	if ( module_tier )
+		failures += SparkMuseGlimmerValCheckModule();
+	else
+		printf("muse_glimmer_validation skip=module_decode reason=platform_direct_pack_load_refused (stage_module_common requires weightd attach via model_residentd; set SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER=1 only where attach is provided)\n");
 	if ( failures != 0 )
 	{
 		fprintf(stderr,"muse_glimmer_validation FAIL failures=%d\n",failures);
