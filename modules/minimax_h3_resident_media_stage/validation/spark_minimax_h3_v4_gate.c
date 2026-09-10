@@ -1021,9 +1021,21 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 							(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
 							out_channels * output_length * 2u);
 						if ( pass == 0u )
+						{
+							FILE *dbg_file = fopen("/mnt/model-warm/staging/minimax-lane/refa_s0_m0__2x512x40.f32","rb");
+							float dbg_ref[8];
+							if ( dbg_file != 0 )
+							{
+								if ( fread(dbg_ref,4u,8u,dbg_file) == 8u )
+									printf("ref_m0[0..7]=%.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
+										dbg_ref[0],dbg_ref[1],dbg_ref[2],dbg_ref[3],
+										dbg_ref[4],dbg_ref[5],dbg_ref[6],dbg_ref[7]);
+								fclose(dbg_file);
+							}
 							printf("drv_m0[0..7]=%.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
 								upsampled[0],upsampled[1],upsampled[2],upsampled[3],
 								upsampled[4],upsampled[5],upsampled[6],upsampled[7]);
+						}
 					}
 					snprintf(act_prefix,sizeof(act_prefix),"%sconvs%u_%u_",prefix,
 						pass + 1u,dilation_index);
