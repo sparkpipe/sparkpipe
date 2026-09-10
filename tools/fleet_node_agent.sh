@@ -159,6 +159,9 @@ restart_root() {
 FLEET_SIZE=16
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
+    ssh-keyscan -H "$HUB" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+fi
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
 
 sync_rendezvous() {

@@ -2766,9 +2766,6 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     wire.expert_pool_bytes = request->expert_pool_bytes;
     memset(&wire_result, 0, sizeof(wire_result));
     {
-        /* the reply rides the mesh scratch memfd in its SCM_RIGHTS; the
-         * mapping replaces the daemon-side address so the consumer writes
-         * the shared pages under its own virtual address */
         uint64_t now = SparkWeightdMonotonicTimeNs();
         uint64_t deadline;
         int fds[1];

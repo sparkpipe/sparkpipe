@@ -224,9 +224,6 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
         {
             if ( write_status == SPARK_STATUS_IO_ERROR )
             {
-                /* the daemon died or the connection is gone: this process is
-                 * useless until it re-attaches, so die and let the agent
-                 * restart it with a fresh connection (the crash contract) */
                 fprintf(stderr,"MESH-WRITE-IO peer=%u: exiting\n",peer_rank);
                 _exit(1);
             }
