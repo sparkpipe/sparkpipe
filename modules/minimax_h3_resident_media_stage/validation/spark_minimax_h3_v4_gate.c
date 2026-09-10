@@ -945,6 +945,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 		SparkMinimaxH3V4LoadWeight(&weight_v,weight_dir,"","decoder_conv_post_weight_v",
 			8u * 7u);
 		weight = SparkMinimaxH3V4WnCombine(1u,8u,7u,weight_g,weight_v);
+		SparkMinimaxH3V4Stats("conv_post_weight",weight,56u);
 		for (batch=0u; batch<SPARK_MINIMAX_H3_V4_AUDIO_BATCH; batch++)
 			SparkMinimaxH3V4Conv1d(waveform + (uint64_t)batch *
 				SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,activation_buffer + (uint64_t)batch *
@@ -952,6 +953,8 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 				SPARK_MINIMAX_H3_V4_AUDIO_SAMPLES,weight,0,7u,1u,3u);
 		free(weight_g); free(weight_v); free(weight);
 	}
+	SparkMinimaxH3V4Stats("audio_before_clamp",waveform,wave_elements);
+	SparkMinimaxH3V4Stats("audio_expected_wave",expected,wave_elements);
 	for (index=0u; index<wave_elements; index++)
 	{
 		if ( waveform[index] > 1.0f )

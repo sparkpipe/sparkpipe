@@ -161,6 +161,21 @@ static void SparkMinimaxH3V3LoadWeight(void **device, const char *weights_direct
 	{
 		void *host = SparkMinimaxH3V3ReadFile(weights_directory,file,
 			(uint64_t)rows * columns * 2u);
+		uint64_t element,nonfinite = 0;
+		float maximum = 0.0f;
+		uint16_t *packed = (uint16_t *)host;
+		for (element=0u; element<(uint64_t)rows * columns; element++)
+		{
+			uint32_t bits = (uint32_t)packed[element] << 16u;
+			float value;
+			memcpy(&value,&bits,sizeof(value));
+			if ( !isfinite(value) )
+				nonfinite++;
+			else if ( fabsf(value) > maximum )
+				maximum = fabsf(value);
+		}
+		printf("weight %-52s rows=%u cols=%u max=%.6g nonfinite=%llu\n",name,
+			rows,columns,(double)maximum,(unsigned long long)nonfinite);
 		*device = SparkMinimaxH3V3DeviceUpload(host,(uint64_t)rows * columns * 2u);
 		free(host);
 	}
