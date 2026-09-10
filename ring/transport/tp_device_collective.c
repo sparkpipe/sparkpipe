@@ -261,7 +261,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     submission->cuda_stream) != SPARK_STATUS_OK )
                 return SPARK_STATUS_IO_ERROR;
         }
-        return SPARK_STATUS_PENDING_COMPLETION;
+        return SPARK_STATUS_PENDING;
     }
     if ( work->operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
@@ -340,7 +340,7 @@ static void *SparkTpDeviceCollectiveWorker(void *argument)
         if ( work == 0 )
             break;
         status = SparkTpDeviceCollectiveRunRound(implementation,work);
-        if ( status == SPARK_STATUS_PENDING_COMPLETION )
+        if ( status == SPARK_STATUS_PENDING )
         {
             (void)cudaEventDestroy(work->event);
             if ( cudaLaunchHostFunc(work->submission.cuda_stream,
