@@ -310,3 +310,26 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
   facts (MTP=0, expert pool 4GB, spine budget 8GB) in an unversioned per-node
   shell file that silently breaks foreground debug runs; fold into the
   deployment manifest + delete the file and the sourcing in start_root.
+
+
+## Iteration 10 (09-11 ~14:20, lane 088ee87+) — env.local GONE + segfault caught
+
+- env.local DELETED (file on all 16 nodes + the start_root sourcing): MTP now
+  defaults OFF when unset (adapter flip — it previously defaulted ON and
+  env.local was silently holding the no-speculation rule), expert pool 4GB and
+  spine budget 8GB are stated module defaults via the new
+  SparkStageModuleEnvironmentUnsigned64OrDefault. Module boots + reaches ready
+  WITHOUT env.local (verified).
+- SERVING BLOCKED by a request-time SEGFAULT in
+  SparkGlm5NextModuleReduceHiddenWide (gdb-caught live). Engine, weightd_mesh,
+  and header are BYTE-IDENTICAL to the last known-good (19d24ed, diff empty)
+  — the only deployed deltas are the spine receipts, the module env defaults,
+  and the adapter MTP flip. Suspicion ordering for the bisect:
+  (1) the new Unsigned64OrDefault path or the receipt code corrupting state
+  at pack-load that detonates in the reduce; (2) SAME ROOT as the rc=712
+  context corruption (register failed launch-class in the same boot path on
+  the previous module build — one memory-corruption bug, two symptoms);
+  (3) pre-existing map_import_lease issue. NEXT: revert ONLY the
+  module/common diff (keep receipts+env fold) to split the space, or printf
+  ladder in ReduceHiddenWide; also try COMPUTECHECK/cuda-gdb.
+- Fleet boots are fast now (receipts) so bisect cycles are ~90s each.
