@@ -78,8 +78,8 @@
     },
     {
       "path": "PROGRESS.md",
-      "sha256": "492985e8347417a140da4bdff0a5ffafabbbd546bfe7e93598def3fdbf85ee8f",
-      "size_bytes": 10383
+      "sha256": "e22170a4d9a314db32054e6011d693adc2bc6ab89de80cdf04c04a48c71aa5b8",
+      "size_bytes": 10960
     },
     {
       "path": "README.md",
@@ -9990,5 +9990,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32732927
+  "total_bytes": 32733504
 }
