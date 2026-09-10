@@ -3,7 +3,6 @@
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
-#include <vector>
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
@@ -149,7 +148,6 @@ typedef struct SparkK3RunnerState
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
 	SparkWeightdLazyPack *lazy_pack;
-	uint32_t lazy_experts;
 	uint64_t lease_identifier;
 	uint32_t lease_inflight;
 	void *lease_address;
@@ -206,15 +204,6 @@ typedef struct SparkK3RunnerState
 	uint32_t max_context;
 	uint32_t multiprocessors;
 	uint64_t kv_page_bytes;
-	struct
-	{
-		cudaGraphExec_t executable;
-		uint32_t rows;
-		uint32_t warm;
-		uint32_t live;
-	} graphs[4];
-	uint32_t graph_capture_enabled;
-	uint32_t graphs_broken;
 } SparkK3RunnerState;
 
 static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
@@ -224,97 +213,6 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
 	return SparkK3DispatchStep(&state->dispatch, in, rows, sequences, 1u,
 		packed_rows, state->max_context, state->multiprocessors, stream);
-}
-
-static uint32_t K3RunnerGraphsEligible(const SparkK3RunnerState *state,
-	cudaStream_t stream)
-{
-	if ( state->graph_capture_enabled == 0u || state->graphs_broken != 0u ||
-		stream == 0 )
-		return 0u;
-	if ( state->lazy_experts != 0u )
-		return 0u;
-	if ( state->device_collective_created != 0 )
-		return 0u;
-	return 1u;
-}
-
-static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
-	SparkK3StepInput *in, uint32_t rows, uint32_t sequences,
-	uint32_t packed_rows, cudaStream_t stream)
-{
-	SparkK3RunnerState *s = state;
-	uint32_t i;
-	for ( i = 0u; i < 4u; ++i )
-	{
-		if ( s->graphs[i].live != 0u && s->graphs[i].rows == rows )
-		{
-			if ( s->graphs[i].executable != 0 )
-			{
-				cudaError_t error = cudaGraphLaunch(s->graphs[i].executable,
-					stream);
-				return error == cudaSuccess ? SPARK_K3_DISPATCH_OK :
-					SPARK_K3_DISPATCH_ERR_CUDA;
-			}
-			break;
-		}
-	}
-	if ( i == 4u )
-	{
-		for ( i = 0u; i < 4u; ++i )
-			if ( s->graphs[i].live == 0u )
-			{
-				s->graphs[i].rows = rows;
-				s->graphs[i].warm = 1u;
-				s->graphs[i].live = 1u;
-				break;
-			}
-		return K3RunnerLaunchSliceDirect(s, in, rows, sequences,
-			packed_rows, stream);
-	}
-	cudaGraph_t graph = 0;
-	cudaError_t begin_error = cudaStreamBeginCapture(stream,
-		cudaStreamCaptureModeRelaxed);
-	if ( begin_error != cudaSuccess )
-		{ s->graphs_broken = 1u; return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream); }
-	int32_t status = K3RunnerLaunchSliceDirect(s, in, rows, sequences,
-		packed_rows, stream);
-	cudaError_t end_error = cudaStreamEndCapture(stream, &graph);
-	if ( end_error != cudaSuccess || status != SPARK_K3_DISPATCH_OK || graph == 0 )
-	{
-		if ( graph != 0 )
-			(void)cudaGraphDestroy(graph);
-		s->graphs_broken = 1u;
-		return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
-	}
-	cudaGraphExec_t executable = 0;
-	cudaError_t instantiate_error = cudaGraphInstantiate(&executable, graph, 0ull);
-	(void)cudaGraphDestroy(graph);
-	if ( instantiate_error != cudaSuccess )
-	{
-		s->graphs_broken = 1u;
-		return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
-	}
-	for ( i = 0u; i < 4u; ++i )
-		if ( s->graphs[i].live != 0u && s->graphs[i].rows == rows )
-		{
-			s->graphs[i].executable = executable;
-			return cudaGraphLaunch(executable, stream) == cudaSuccess ?
-				SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
-		}
-	for ( i = 0u; i < 4u; ++i )
-		if ( s->graphs[i].live == 0u )
-		{
-			s->graphs[i].executable = executable;
-			s->graphs[i].rows = rows;
-			s->graphs[i].warm = 1u;
-			s->graphs[i].live = 1u;
-			return cudaGraphLaunch(executable, stream) == cudaSuccess ?
-				SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
-		}
-	(void)cudaGraphExecDestroy(executable);
-	s->graphs_broken = 1u;
-	return K3RunnerLaunchSliceDirect(s, in, rows, sequences, packed_rows, stream);
 }
 
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
@@ -383,60 +281,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	return SPARK_STATUS_OK;
 }
 
-static const char *K3RunnerDumpPrefix(void)
-{
-	static const char *prefix = 0;
-	static int checked = 0;
-	if ( checked == 0 )
-	{
-		prefix = getenv("K3_HOOK_DUMP");
-		checked = 1;
-	}
-	return prefix;
-}
-
-static void K3RunnerDumpTensor(const char *prefix, uint32_t rank,
-	uint32_t layer, uint32_t phase, const char *stage, const char *name,
-	const uint16_t *device, uint32_t elements)
-{
-	char path[320];
-	FILE *file;
-	snprintf(path, sizeof(path), "%s_r%u_l%u_p%u_%s_%s.bin",
-		prefix, rank, layer, phase, stage, name);
-	file = fopen(path, "wb");
-	if ( file == 0 )
-		return;
-	{
-		std::vector<uint16_t> host(elements);
-		cudaMemcpy(host.data(), device, (uint64_t)elements * 2u,
-			cudaMemcpyDeviceToHost);
-		fwrite(host.data(), 2u, elements, file);
-	}
-	fclose(file);
-}
-
-static void K3RunnerHookDump(SparkK3RunnerState *state, uint32_t rank,
-	uint32_t layer, uint32_t phase, const char *stage, uint32_t elements)
-{
-	const char *prefix = K3RunnerDumpPrefix();
-	K3LayerBuffers *b;
-	if ( prefix == 0 || prefix[0] == '\0' )
-		return;
-	b = state->dispatch.buffers;
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "attn_out",
-		b->attention_out_bf16, elements);
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "hidden",
-		b->hidden_bf16, elements);
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "shared",
-		b->shared_out_bf16, elements);
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "partial",
-		b->attnres_partial_bf16, elements);
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "query",
-		b->query_bf16, state->rows * K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
-	K3RunnerDumpTensor(prefix, rank, layer, phase, stage, "value",
-		b->value_bf16, state->rows * K3_RANK_DIM(b, mla_out_input, K3_MLA_OUT_DIM));
-}
-
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
@@ -450,7 +294,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint16_t *phase0_source =
 		(K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT)
 			? b->hidden_bf16 : b->attention_out_bf16;
-	K3RunnerHookDump(state, state->tp_rank, layer, phase, "pre", elements);
 	if ( b->tp_sharded == 0u )
 		return;
 	if ( phase == 2u )
@@ -575,7 +418,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			if ( segments == 2u )
 				K3PartialAdd(b, b->shared_out_bf16, rows, stream);
 		}
-		K3RunnerHookDump(state, state->tp_rank, layer, phase, "post", elements);
 	}
 }
 typedef struct SparkK3ManifestCheckContext
@@ -785,9 +627,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
-	state->graph_capture_enabled =
-		(configuration->flags & SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS) != 0u ?
-		1u : 0u;
 	if ( configuration->kv_page_bytes == 0u )
 		state->kv_page_bytes = K3GlobalKv::kPageBytes;
 	else
@@ -813,13 +652,17 @@ SparkStatus SparkK3StageRunnerInitialize(
 		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
+	if ( status != SPARK_STATUS_OK )
 	{
-		state->lazy_experts = 0u;
-		if ( SparkK3DispatchRegisterPack(&state->module.pack) != SPARK_K3_DISPATCH_OK )
-			{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+		fprintf(stderr, "sparkpipe_k3: weightd attach not granted"
+			" (SPARK_WEIGHTD_SOCKET unset or attach switch invalid),"
+			" status=%d (fail-closed, no direct load)\n", (int)status);
+		SparkK3DispatchDestroy(&state->dispatch);
+		SparkK3ModuleDestroy(&state->module);
+		runner->private_state = 0;
+		delete state;
+		SPARK_FAIL(status);
 	}
-	else if ( status == SPARK_STATUS_OK )
 	{
 		SparkWeightdLazyAttachRequest request;
 		SparkK3ManifestCheckContext check;
@@ -875,25 +718,15 @@ SparkStatus SparkK3StageRunnerInitialize(
 			delete state;
 			SPARK_FAIL(status);
 		}
-		state->lazy_experts = 1u;
-	}
-	else
-	{
-		SparkK3DispatchDestroy(&state->dispatch);
-		SparkK3ModuleDestroy(&state->module);
-		runner->private_state = 0;
-		delete state;
-		SPARK_FAIL(status);
 	}
 	if ( SparkK3DispatchBindWeights(&state->dispatch,&state->module.pack,
 			state->module.bound,state->module.bound_count,
-			state->lazy_experts != 0u ? state->lazy_pack : 0) != SPARK_K3_DISPATCH_OK )
+			state->lazy_pack) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	cudaMemset(state->dispatch.page_table, 0,
 		(uint64_t)state->module.sizing.mla_layer_count *
 		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
-	if ( state->lazy_experts != 0u )
 	{
 		uint32_t routed;
 		state->group_offset_host =
@@ -946,14 +779,11 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_context = state;
-	if ( state->lazy_experts != 0u )
-	{
-		state->dispatch.slice_state->lazy_context = state;
-		state->dispatch.slice_state->lazy_acquire =
-			SparkK3RunnerLazyAcquire;
-		state->dispatch.slice_state->lazy_release =
-			SparkK3RunnerLazyRelease;
-	}
+	state->dispatch.slice_state->lazy_context = state;
+	state->dispatch.slice_state->lazy_acquire =
+		SparkK3RunnerLazyAcquire;
+	state->dispatch.slice_state->lazy_release =
+		SparkK3RunnerLazyRelease;
 	if ( configuration->tp_degree > 1u )
 	{
 		if ( configuration->tp_collective == 0 &&
@@ -1007,15 +837,34 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( status != SPARK_STATUS_OK )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 	}
-	if ( runner->owns_embedding != 0u &&
-		SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 )
-		state->embed_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
+	if ( runner->owns_embedding != 0u )
+	{
+		const void *embed_slice = 0;
+		if ( SparkK3PackLoadEntry(&state->module.pack,
+			"model.embed_tokens.weight",&entry) != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); }
+		if ( SparkWeightdLazyPackSlice(state->lazy_pack,
+			state->module.pack.payload_base + entry.payload_offset,
+			entry.bytes, &embed_slice) != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); }
+		state->embed_weight = (const uint16_t *)embed_slice;
+	}
 	if ( runner->owns_final_head != 0u )
 	{
-		if ( SparkK3PackLoadEntry(&state->module.pack,"model.norm.weight",&entry) == 0 )
-			state->head_norm_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
-		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) == 0 )
-			state->head_weight = (const uint16_t *)SparkK3PackPayload(&state->module.pack,&entry);
+		const void *norm_slice = 0;
+		const void *head_slice = 0;
+		if ( SparkK3PackLoadEntry(&state->module.pack,"model.norm.weight",&entry) != SPARK_STATUS_OK ||
+			SparkWeightdLazyPackSlice(state->lazy_pack,
+			state->module.pack.payload_base + entry.payload_offset,
+			entry.bytes, &norm_slice) != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); }
+		state->head_norm_weight = (const uint16_t *)norm_slice;
+		if ( SparkK3PackLoadEntry(&state->module.pack,"lm_head.weight",&entry) != SPARK_STATUS_OK ||
+			SparkWeightdLazyPackSlice(state->lazy_pack,
+			state->module.pack.payload_base + entry.payload_offset,
+			entry.bytes, &head_slice) != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); }
+		state->head_weight = (const uint16_t *)head_slice;
 	{
 		uint64_t shard_rows = (uint64_t)state->vocab_slice_rows;
 		uint64_t dim = K3_HIDDEN;
@@ -1161,7 +1010,6 @@ SparkStatus SparkK3StageRunnerSubmit(
 			return SPARK_STATUS_INTERNAL_ERROR;
 		if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
 			return SPARK_STATUS_INTERNAL_ERROR;
-		K3RunnerHookDump(state, runner->tp_rank, 0u, 0u, "embed", rows * K3_HIDDEN);
 	}
 	else
 	{
@@ -1190,12 +1038,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
 	(void)dense_offsets;
-	if ( K3RunnerGraphsEligible(state, stream) != 0u )
-		status = K3RunnerLaunchSliceGraph(state, &in, rows, sequences,
-			packed_rows, stream);
-	else
-		status = K3RunnerLaunchSliceDirect(state, &in, rows, sequences,
-			packed_rows, stream);
+	status = K3RunnerLaunchSliceDirect(state, &in, rows, sequences,
+		packed_rows, stream);
 	if ( status != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
@@ -1321,9 +1165,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		SparkTpCollectiveDestroy(&state->collective);
 	if ( state->device_collective_created != 0 )
 		SparkTpDeviceCollectiveDestroy(&state->device_collective);
-	for ( uint32_t i = 0u; i < 4u; ++i )
-		if ( state->graphs[i].live != 0u && state->graphs[i].executable != 0 )
-			(void)cudaGraphExecDestroy(state->graphs[i].executable);
 	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
 	if ( state->lease_inflight != 0u && state->lazy_pack != 0 &&
@@ -1334,8 +1175,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 			SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
 		state->lease_inflight = 0u;
 	}
-	if ( state->module.pack.mapping != 0 && state->lazy_experts == 0u )
-		SparkK3DispatchUnregisterPack(&state->module.pack);
 	SparkK3ModuleDestroy(&state->module);
 	if ( state->lazy_pack != 0 )
 	{

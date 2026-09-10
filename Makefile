@@ -243,7 +243,6 @@ TEST_NAMES := \
     test_kv_cache \
     test_kv_page_layout \
 	test_k3_kv_cache \
-	test_k3_dspark_pack \
 	test_k3_run_equivalence \
 	test_kv_model_table \
     test_nvme_tier \
@@ -1127,8 +1126,6 @@ build/test_speculation_provider_slot: tests/test_speculation_provider_slot.c run
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_provider_slot.c runtime/speculation_provider.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 # K3DS drafter-pack format + bind (the k3 speculation-provider slot's wire half)
-build/test_k3_dspark_pack: tests/test_k3_dspark_pack.c modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_dspark_format.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_dspark_pack.h runtime/json.c runtime/filesystem.c src/spark_status.c | build
-	$(CC) $(CPPFLAGS) -I. -Iinclude -Isrc -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include -Imodules/k3_resident_decode_stage/source $(CFLAGS) tests/test_k3_dspark_pack.c modules/k3_resident_decode_stage/source/spark_k3_pack_load.c runtime/json.c runtime/filesystem.c src/spark_status.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

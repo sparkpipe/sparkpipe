@@ -83,53 +83,13 @@ static const char *const k3_required_dense[] =
 	"dense_gate_up_weight", "dense_down_weight",
 };
 
-static int32_t k3_require(const SparkK3Pack *pack, const SparkK3BoundLayer *bound,
+static int32_t k3_require(const SparkK3BoundLayer *bound,
 	const char *const *names, uint32_t count)
 {
 	for ( uint32_t i = 0u; i < count; ++i )
-		if ( SparkK3BoundPayload(pack, bound, names[i]) == 0 )
+		if ( SparkK3BoundEntry(bound, names[i]) == 0 )
 			return SPARK_K3_DISPATCH_ERR_BIND;
 	return SPARK_K3_DISPATCH_OK;
-}
-
-#define SPARK_K3_REGISTER_CHUNK_BYTES (48ull << 30)
-
-int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack)
-{
-	uint64_t offset;
-	for ( offset = 0u; offset < pack->file_bytes;
-		offset += SPARK_K3_REGISTER_CHUNK_BYTES )
-	{
-		uint64_t bytes = pack->file_bytes - offset;
-		if ( bytes > SPARK_K3_REGISTER_CHUNK_BYTES )
-			bytes = SPARK_K3_REGISTER_CHUNK_BYTES;
-		cudaError_t err = cudaHostRegister((void *)(pack->mapping + offset),
-			(size_t)bytes, cudaHostRegisterDefault);
-		if ( err != cudaSuccess )
-		{
-			fprintf(stderr, "sparkpipe_k3: cudaHostRegister chunk %llu/%llu -> %s\n",
-				(unsigned long long)offset, (unsigned long long)pack->file_bytes,
-				cudaGetErrorString(err));
-			SparkK3DispatchUnregisterPack(pack);
-			return SPARK_K3_DISPATCH_ERR_REGISTER;
-		}
-	}
-	return SPARK_K3_DISPATCH_OK;
-}
-
-void SparkK3DispatchUnregisterPack(SparkK3Pack *pack)
-{
-	uint64_t offset;
-	if ( pack == 0 || pack->mapping == 0 )
-		return;
-	for ( offset = 0u; offset < pack->file_bytes;
-		offset += SPARK_K3_REGISTER_CHUNK_BYTES )
-	{
-		uint64_t bytes = pack->file_bytes - offset;
-		if ( bytes > SPARK_K3_REGISTER_CHUNK_BYTES )
-			bytes = SPARK_K3_REGISTER_CHUNK_BYTES;
-		(void)cudaHostUnregister((void *)(pack->mapping + offset));
-	}
 }
 
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
@@ -284,7 +244,8 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	SparkK3BoundLayer *bounds, uint32_t layer_count,
 	SparkWeightdLazyPack *lazy)
 {
-	if ( d == 0 || pack == 0 || bounds == 0 || layer_count != d->layer_count )
+	if ( d == 0 || pack == 0 || bounds == 0 || lazy == 0 ||
+		layer_count != d->layer_count )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	K3LayerWeights *host = new K3LayerWeights[layer_count];
 	memset(host, 0, (size_t)layer_count * sizeof(K3LayerWeights));
@@ -303,22 +264,17 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			if ( !is_expert && name_len >= 16u )
 				is_expert = strcmp(name + name_len - 16u,
 					"expert_w2_weight") == 0;
-			if ( lazy != 0 )
-			{
-				const SparkK3PackEntry *entry =
-					SparkK3BoundEntry(bound, name);
-				if ( entry == 0 )
-					continue;
-				if ( is_expert )
-					continue; /* leased per layer at dispatch */
-				status = SparkWeightdLazyPackSlice(lazy,
-					pack->payload_base + entry->payload_offset,
-					entry->bytes, &payload);
-				if ( status != SPARK_K3_DISPATCH_OK )
-					return status;
-			}
-			else
-				payload = SparkK3BoundPayload(pack, bound, name);
+			if ( is_expert )
+				continue;
+			const SparkK3PackEntry *entry =
+				SparkK3BoundEntry(bound, name);
+			if ( entry == 0 )
+				continue;
+			status = SparkWeightdLazyPackSlice(lazy,
+				pack->payload_base + entry->payload_offset,
+				entry->bytes, &payload);
+			if ( status != SPARK_K3_DISPATCH_OK )
+				return status;
 			if ( payload != 0 )
 				*(const void **)((char *)w + k3_weight_binds[i].offset) = payload;
 		}
@@ -334,23 +290,23 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 				(tile_k == 128u || tile_k == 32u) )
 				w->expert_tile_k = tile_k;
 		}
-		status = k3_require(pack, bound, k3_required_every,
+		status = k3_require(bound, k3_required_every,
 			(uint32_t)(sizeof(k3_required_every) / sizeof(k3_required_every[0])));
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( SparkK3LayerIsMla(d->first_layer + off) )
-			status = k3_require(pack, bound, k3_required_mla,
+			status = k3_require(bound, k3_required_mla,
 				(uint32_t)(sizeof(k3_required_mla) / sizeof(k3_required_mla[0])));
 		else
-			status = k3_require(pack, bound, k3_required_kda,
+			status = k3_require(bound, k3_required_kda,
 				(uint32_t)(sizeof(k3_required_kda) / sizeof(k3_required_kda[0])));
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( bound->layer_is_dense )
-			status = k3_require(pack, bound, k3_required_dense,
+			status = k3_require(bound, k3_required_dense,
 				(uint32_t)(sizeof(k3_required_dense) / sizeof(k3_required_dense[0])));
 		else
-			status = k3_require(pack, bound, k3_required_moe,
+			status = k3_require(bound, k3_required_moe,
 				(uint32_t)(sizeof(k3_required_moe) / sizeof(k3_required_moe[0])));
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
@@ -396,18 +352,40 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 #undef K3_FILL_RANK
 		SparkK3PackEntry entry;
 		if ( SparkK3PackLoadEntry(pack, "model.attnres_out_weight", &entry) == 0 )
-			d->buffers_host->attnres_out_weight = SparkK3PackPayload(pack, &entry);
+		{
+			const void *slice = 0;
+			status = SparkWeightdLazyPackSlice(lazy,
+				pack->payload_base + entry.payload_offset,
+				entry.bytes, &slice);
+			if ( status != SPARK_K3_DISPATCH_OK )
+			{
+				delete[] host;
+				return status;
+			}
+			d->buffers_host->attnres_out_weight = slice;
+		}
 		else
 			d->buffers_host->attnres_out_weight = 0;
 		d->buffers_host->router_bias = 0;
 		for ( uint32_t off = 0u; off < layer_count; ++off )
 		{
-			const void *bias = SparkK3BoundPayload(pack, &bounds[off], "router_bias");
-			if ( bias != 0 )
-			{
-				d->buffers_host->router_bias = (const float *)bias;
+			const SparkK3PackEntry *bias_entry =
+				SparkK3BoundEntry(&bounds[off], "router_bias");
+			const void *bias = 0;
+			if ( bias_entry == 0 )
+				continue;
+			status = SparkWeightdLazyPackSlice(lazy,
+				pack->payload_base + bias_entry->payload_offset,
+				bias_entry->bytes, &bias);
+			if ( status != SPARK_K3_DISPATCH_OK )
 				break;
-			}
+			d->buffers_host->router_bias = (const float *)bias;
+			break;
+		}
+		if ( status != SPARK_K3_DISPATCH_OK )
+		{
+			delete[] host;
+			return status;
 		}
 		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
