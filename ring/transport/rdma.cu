@@ -145,7 +145,7 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 } SparkHiddenSparkHostRdmaQueuePairWireInfo;
 
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR \
-    "/mnt/qpn"
+    "rendezvous"
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_TTL_SECONDS 900u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_AWAIT_SECONDS 180u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC \

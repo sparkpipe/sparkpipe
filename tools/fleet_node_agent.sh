@@ -152,8 +152,42 @@ restart_root() {
 }
 
 FLEET_SIZE=16
+FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
+
+sync_rendezvous() {
+    local name="$1" host rd peer line sum file
+    host=$(hostname -s)
+    rd="$HOME/sparkdata/$name/rendezvous"
+    [ -d "$rd" ] || return 0
+    if [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
+        $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null || return 0
+        scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
+            "$HUB:release/qpn/$host/$name/" 2>/dev/null || return 0
+        $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
+        touch "$rd/.shipped"
+    fi
+    for peer in $FLEET_HOSTS; do
+        [ "$peer" = "$host" ] && continue
+        curl -sf --max-time 4 "$RELEASE_HTTP/qpn/$peer/$name/index.txt" \
+            -o /tmp/qpn_idx.$$ 2>/dev/null || continue
+        while read -r sum file; do
+            [ -n "$file" ] || continue
+            if [ -f "$rd/$file" ] && \
+               [ "$(sha256sum < "$rd/$file" | cut -d' ' -f1)" = "$sum" ]; then
+                continue
+            fi
+            if curl -sf --max-time 8 "$RELEASE_HTTP/qpn/$peer/$name/$file" \
+                    -o "$rd/$file" 2>/dev/null; then
+                :
+            else
+                rm -f "$rd/$file"
+            fi
+        done < /tmp/qpn_idx.$$
+    done
+    rm -f /tmp/qpn_idx.$$
+}
 
 apply_manifest() {
     local name="$1" root="$2" manifest_cur manifest_applied
@@ -279,6 +313,19 @@ ensure_weightd
 ensure_root() {
     local name="$1"
     local st; st=$(root_state "$name")
+    [ "$st" = "down" ] || {
+        local rr="$HOME/sparkdata/$name" p exe_sha disk_sha
+        for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
+            exe_sha=$(sha16 "$(readlink /proc/$p/exe)")
+            disk_sha=$(sha16 "$rr/bin/sparkpipe_model_residentd")
+            if [ "$exe_sha" != "$disk_sha" ]; then
+                echo "$(date +%T) $name: running residentd $exe_sha != disk $disk_sha; recycling"
+                st="down"
+            fi
+            break
+        done
+    }
     [ "$st" = "down" ] || return 0
     local up
     up=$(awk '{printf "%d", $1}' /proc/uptime)
@@ -296,6 +343,7 @@ while true; do
     self_update
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
+    for r in "${RA[@]}"; do sync_rendezvous "$r"; done
     for r in "${RA[@]}"; do ensure_root "$r"; done
     ensure_api
     report_if_changed
