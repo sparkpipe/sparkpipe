@@ -246,16 +246,21 @@ SparkStatus SparkWeightdMeshInit(void)
         }
         if (found == 0)
         {
-            fprintf(stderr,"weightd-mesh: rocep1s0f1 not found (%d devices)\n",
-                device_count);
+            fprintf(stderr,"weightd-mesh: rocep1s0f1 (switch) not found\n");
             ibv_free_device_list(devices);
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
     }
     ibv_free_device_list(devices);
-    if (weightd_mesh.context == 0)
+    if (ibv_query_port(weightd_mesh.context,1,&port_attr) != 0)
     {
-        fprintf(stderr,"weightd-mesh: open failed\n");
+        fprintf(stderr,"weightd-mesh: port query failed\n");
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    if (port_attr.state != IBV_PORT_ACTIVE)
+    {
+        fprintf(stderr,"weightd-mesh: switch port not active (state=%d)\n",
+            port_attr.state);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     if (ibv_query_port(weightd_mesh.context,1,&port_attr) != 0)
