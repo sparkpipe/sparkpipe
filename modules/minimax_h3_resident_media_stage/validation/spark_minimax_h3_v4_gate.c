@@ -508,6 +508,8 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 			}
 		}
 	}
+		SparkMinimaxH3V4Stats("decoded",decoded,decoded_elements);
+		SparkMinimaxH3V4Stats("expected",expected,decoded_elements);
 	{
 		double sum_squared = 0.0;
 		double max_abs = 0.0;
