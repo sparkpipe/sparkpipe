@@ -51,6 +51,8 @@ import sys
 _TOOLS_DIR = str(Path(__file__).resolve().parent)
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+import numpy as np
+
 from spark_pack_common import (  # noqa: E402
     PackFailure,
     SafetensorsSource,
@@ -125,12 +127,8 @@ MOE_NORM_SOURCES = {
 
 
 def bf16_blocks_to_f32(packed: bytes) -> bytes:
-    count = len(packed) // 2
-    out = bytearray(count * 4)
-    for i in range(count):
-        bits = packed[2 * i] | (packed[2 * i + 1] << 8)
-        out[4 * i:4 * i + 4] = struct.pack("<I", bits << 16)
-    return bytes(out)
+    words = np.frombuffer(packed, dtype="<u2").astype("<u4") << 16
+    return words.tobytes()
 
 
 def read_matrix(source: SafetensorsSource, name: str, rows: int, columns: int,
@@ -389,21 +387,17 @@ def payload_for(source: SafetensorsSource, geometry: dict, entry: dict,
                            hidden, geometry["dense_inter"], 0, hidden,
                            tp_rank * columns, columns)
     if kind == KIND_ROUTER_PROJ:
-        proj = bytearray(read_matrix(source, f"{prefix}.{layer}.router.proj.weight",
-                                     geometry["experts"], hidden))
-        scale = read_vector(source, f"{prefix}.{layer}.router.scale", hidden)
-        factor = hidden ** -0.5
-        for column in range(hidden):
-            bits = scale[2 * column] | (scale[2 * column + 1] << 8)
-            word = bits << 16
-            value = struct.unpack("<f", struct.pack("<I", word))[0]
-            folded = value * factor
-            for row in range(geometry["experts"]):
-                base = (row * hidden + column) * 2
-                current = struct.unpack("<H", proj[base:base + 2])[0]
-                current_f = struct.unpack("<f", struct.pack("<I", current << 16))[0]
-                proj[base:base + 2] = struct.pack("<H", bf16_round(current_f * folded))
-        return bytes(proj)
+        proj = np.frombuffer(
+            read_matrix(source, f"{prefix}.{layer}.router.proj.weight",
+                        geometry["experts"], hidden), dtype="<u2").copy()
+        scale_words = np.frombuffer(
+            read_vector(source, f"{prefix}.{layer}.router.scale", hidden),
+            dtype="<u2").astype("<u4") << 16
+        scale = scale_words.view("<f4") * (hidden ** -0.5)
+        values = (proj.reshape(geometry["experts"], hidden).astype("<u4") << 16).view("<f4")
+        values *= scale[np.newaxis, :]
+        proj = bf16_round_array(values.reshape(-1)).tobytes()
+        return proj
     if kind == KIND_PER_EXPERT_SCALE:
         raw = read_vector(source, f"{prefix}.{layer}.router.per_expert_scale",
                           geometry["experts"])
@@ -423,6 +417,15 @@ def payload_for(source: SafetensorsSource, geometry: dict, entry: dict,
             raise PackFailure(f"layer {layer} expert down fold size mismatch")
         return scaled
     raise PackFailure(f"payload_for: unhandled kind {kind}")
+
+
+def bf16_round_array(values: "np.ndarray") -> "np.ndarray":
+    """Round-to-nearest-even bf16 bit patterns for an f32 array."""
+    bits = values.astype("<f4").view("<u4")
+    high = bits >> 16
+    low = bits & 0xFFFF
+    round_up = ((low > 0x8000) | ((low == 0x8000) & ((high & 1) == 1))).astype("<u4")
+    return ((high + round_up) & 0xFFFF).astype("<u2")
 
 
 def bf16_round(value: float) -> int:
@@ -454,15 +457,11 @@ def read_expert_down_folded(source: SafetensorsSource, geometry: dict, layer: in
         for local in range(experts_per_rank):
             expert = tp_rank * experts_per_rank + local
             file.seek(data_start + expert * block_bytes)
-            block = bytearray(file.read(block_bytes))
-            if len(block) != block_bytes:
+            block = np.frombuffer(file.read(block_bytes), dtype="<u2").astype("<u4") << 16
+            if block.size != hidden * expert_inter:
                 raise PackFailure(f"{name}: short read")
-            folded_scale = scales[expert]
-            for k in range(0, block_bytes, 2):
-                bits = block[k] | (block[k + 1] << 8)
-                value = struct.unpack("<f", struct.pack("<I", bits << 16))[0]
-                block[k:k + 2] = struct.pack("<H", bf16_round(value * folded_scale))
-            pieces.append(bytes(block))
+            values = block.view("<f4") * scales[expert]
+            pieces.append(bf16_round_array(values).tobytes())
     return b"".join(pieces)
 
 
