@@ -58,5 +58,9 @@ fi
 	-o "${work}/minimax_h3_v4_gate" \
 	"${script_directory}/spark_minimax_h3_v4_gate.c" -lm
 
-"${work}/minimax_h3_v4_gate" video "${video_fixtures}" "${work}/video_weights"
-"${work}/minimax_h3_v4_gate" audio "${audio_fixtures}" "${work}/audio_weights"
+video_status=0
+"${work}/minimax_h3_v4_gate" video "${video_fixtures}" "${work}/video_weights" || video_status=$?
+audio_status=0
+"${work}/minimax_h3_v4_gate" audio "${audio_fixtures}" "${work}/audio_weights" || audio_status=$?
+echo "V4_VIDEO_STATUS=$video_status V4_AUDIO_STATUS=$audio_status"
+[ "$video_status" -eq 0 ] && [ "$audio_status" -eq 0 ]
