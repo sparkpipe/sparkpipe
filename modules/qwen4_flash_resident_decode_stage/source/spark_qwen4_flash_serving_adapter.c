@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen4_flash_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN4_FLASH_MODEL_REVISION
@@ -228,6 +229,62 @@ static SparkStatus SparkQwen4FlashServingInitializeSeam(
 	return(SparkSpeculationSeamInitialize(&configuration,&state->seam));
 }
 
+static _Thread_local SparkModelDriverCacheLane SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheScratch)[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
+static SparkServingCacheAdmission SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheContext)(
+	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+	SparkModelDriverCacheLane *lanes)
+{
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = state->max_active_sequence_count;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission);
+	cache.adapter_state = state;
+	return(cache);
+}
+
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPrefetch)(
+	void *adapter_state,
+	const SparkModelServingSubmission *submissions,
+	uint32_t count)
+{
+	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SparkServingCacheAdmission cache;
+	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheContext)(state,SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheScratch));
+	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
+
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingResolvePrefetch)(
+	void *adapter_state,
+	const SparkModelServingSubmission *submission,
+	uint32_t resolution)
+{
+	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheContext)(state,SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCacheScratch));
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
+}
+
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReset)(
+	void *adapter_state,
+	uint64_t control_generation)
+{
+	(void)adapter_state;
+	(void)control_generation;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
@@ -277,9 +334,12 @@ static const SparkModelServingAdapterInterface SPARK_QWEN38_SERVING_ADAPTER_FN(S
 	.destroy = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam),
 	.validate_submission = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission),
 	.submit = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit),
+	.prefetch = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPrefetch),
+	.resolve_prefetch = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingResolvePrefetch),
 	.progress = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingProgress),
 	.quiesce = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce),
-	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot)
+	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot),
+	.reset = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReset)
 };
 
 __attribute__((visibility("default")))
