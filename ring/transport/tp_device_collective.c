@@ -367,14 +367,9 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     implementation = collective->implementation;
     if ( implementation->registered == 0u )
     {
-        cudaError_t register_error = cudaHostRegister(receive_device,
-            SPARK_WEIGHTD_MESH_REGION_BYTES,0u);
-        if ( register_error != cudaSuccess )
-        {
-            fprintf(stderr,"MESH-REGISTER-FAIL rc=%u ptr=%p\n",
-                (unsigned)register_error,receive_device);
+        if ( cudaHostRegister(receive_device,
+                SPARK_WEIGHTD_MESH_REGION_BYTES,0u) != 0 )
             SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
         implementation->registered = 1u;
     }
     implementation->mesh_buffer = receive_device;
