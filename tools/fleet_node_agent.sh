@@ -25,12 +25,11 @@ root_state() {
     local rr="$HOME/sparkdata/$1"
     if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null && \
        [ "$(readlink /proc/$(pgrep -f 'bin/sparkpipe_model_residentd' | head -1)/cwd 2>/dev/null)" = "$rr" ]; then
-        local last
-        last=$(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)
-        case "$last" in
-            *"model_residentd ready"*) echo "ready" ;;
-            *) echo "starting: $last" ;;
-        esac
+        if grep -q "model_residentd ready" "$rr/residentd.log" 2>/dev/null; then
+            echo "ready"
+        else
+            echo "starting: $(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)"
+        fi
     else
         echo "down"
     fi
