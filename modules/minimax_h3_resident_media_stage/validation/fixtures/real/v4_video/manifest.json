@@ -1,18 +1,6 @@
 [
  {
   "dtype": "f32",
-  "file": "z__1x24x7x2x2.f32",
-  "name": "z",
-  "shape": [
-   1,
-   24,
-   7,
-   2,
-   2
-  ]
- },
- {
-  "dtype": "f32",
   "file": "decoded__1x3x22x32x32.f32",
   "name": "decoded",
   "shape": [
@@ -37,6 +25,92 @@
   "name": "latents_std",
   "shape": [
    24
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_b0__33x2048.f32",
+  "name": "refv_b0",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_b17__33x2048.f32",
+  "name": "refv_b17",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_b1__33x2048.f32",
+  "name": "refv_b1",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_b35__33x2048.f32",
+  "name": "refv_b35",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_decoded__3x22x32x32.f32",
+  "name": "refv_decoded",
+  "shape": [
+   3,
+   22,
+   32,
+   32
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_in33__33x2048.f32",
+  "name": "refv_in33",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_layernorm__33x2048.f32",
+  "name": "refv_layernorm",
+  "shape": [
+   33,
+   2048
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refv_pixels__33x3072.f32",
+  "name": "refv_pixels",
+  "shape": [
+   33,
+   3072
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "z__1x24x7x2x2.f32",
+  "name": "z",
+  "shape": [
+   1,
+   24,
+   7,
+   2,
+   2
   ]
  }
 ]

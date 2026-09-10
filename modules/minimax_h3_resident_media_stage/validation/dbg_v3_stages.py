@@ -133,7 +133,12 @@ def main():
         "transformer_blocks.1.adaln_proj.linear.bias", chunk=8192).to(torch.bfloat16).view(-1, 6 * 5376).chunk(6, dim=-1)
     for i, mod_name in enumerate(("shift_msa", "scale_msa", "gate_msa",
             "shift_mlp", "scale_mlp", "gate_mlp")):
-        dump("ref_b1_mod_%s" % mod_name, mods1[i])
+        tensor = mods1[i]
+        if not torch.isfinite(tensor.float()).all():
+            raise SystemExit("SPARK_FAIL stage.nonfinite ref_b1_mod_%s" % mod_name)
+        dumps["ref_b1_mod_%s" % mod_name] = bits(tensor)
+        print("ref_b1_mod_%-10s shape=%s max=%.6g" % (mod_name, tuple(tensor.shape),
+            float(tensor.float().abs().max())), flush=True)
     path = os.path.join(OUT_DIR, "v3_block0_stages.npz")
     np.savez(path, **dumps)
     digest = hashlib.sha256()

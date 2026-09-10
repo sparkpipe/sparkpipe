@@ -11,6 +11,126 @@
  },
  {
   "dtype": "f32",
+  "file": "refa_conv_pre__2x1024x4.f32",
+  "name": "refa_conv_pre",
+  "shape": [
+   2,
+   1024,
+   4
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_dec_in__2x2048x4.f32",
+  "name": "refa_dec_in",
+  "shape": [
+   2,
+   2048,
+   4
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_b0__2x512x20.f32",
+  "name": "refa_s0_b0",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_b1__2x512x20.f32",
+  "name": "refa_s0_b1",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_b2__2x512x20.f32",
+  "name": "refa_s0_b2",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_d1__2x512x20.f32",
+  "name": "refa_s0_d1",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_d2__2x512x20.f32",
+  "name": "refa_s0_d2",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_d3__2x512x20.f32",
+  "name": "refa_s0_d3",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s0_mean__2x512x20.f32",
+  "name": "refa_s0_mean",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s1_b0__2x256x100.f32",
+  "name": "refa_s1_b0",
+  "shape": [
+   2,
+   256,
+   100
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_s1_b1__2x256x100.f32",
+  "name": "refa_s1_b1",
+  "shape": [
+   2,
+   256,
+   100
+  ]
+ },
+ {
+  "dtype": "f32",
+  "file": "refa_ups0__2x512x20.f32",
+  "name": "refa_ups0",
+  "shape": [
+   2,
+   512,
+   20
+  ]
+ },
+ {
+  "dtype": "f32",
   "file": "waveform__2x1x3200.f32",
   "name": "waveform",
   "shape": [

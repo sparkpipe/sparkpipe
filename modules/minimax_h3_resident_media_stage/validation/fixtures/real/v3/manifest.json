@@ -132,6 +132,60 @@
  },
  {
   "dtype": "u16",
+  "file": "ref_b1_mod_gate_mlp__6x5376.u16",
+  "name": "ref_b1_mod_gate_mlp",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_b1_mod_gate_msa__6x5376.u16",
+  "name": "ref_b1_mod_gate_msa",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_b1_mod_scale_mlp__6x5376.u16",
+  "name": "ref_b1_mod_scale_mlp",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_b1_mod_scale_msa__6x5376.u16",
+  "name": "ref_b1_mod_scale_msa",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_b1_mod_shift_mlp__6x5376.u16",
+  "name": "ref_b1_mod_shift_mlp",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
+  "file": "ref_b1_mod_shift_msa__6x5376.u16",
+  "name": "ref_b1_mod_shift_msa",
+  "shape": [
+   6,
+   5376
+  ]
+ },
+ {
+  "dtype": "u16",
   "file": "ref_s01_norm1__13x5376.u16",
   "name": "ref_s01_norm1",
   "shape": [
