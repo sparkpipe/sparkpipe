@@ -401,7 +401,7 @@ int main(int argc, char **argv)
 			return(1);
 		}
 		{
-			float *actual = SparkMinimaxH3V3ReadBf16(device_result,rows_bytes);
+			float *actual = (float *)SparkMinimaxH3V3ReadBf16(device_result,rows_bytes);
 			SparkMinimaxH3V3Compare("block0",actual,block0_reference,rows_bytes);
 			free(actual);
 		}
@@ -417,7 +417,7 @@ int main(int argc, char **argv)
 			return(1);
 		}
 		{
-			float *actual = SparkMinimaxH3V3ReadBf16(device_result,rows_bytes);
+			float *actual = (float *)SparkMinimaxH3V3ReadBf16(device_result,rows_bytes);
 			SparkMinimaxH3V3Compare("block1",actual,block1_reference,rows_bytes);
 			free(actual);
 		}

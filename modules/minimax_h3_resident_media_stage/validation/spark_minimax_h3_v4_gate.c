@@ -883,9 +883,12 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						activation_buffer = conv_out;
 						conv_out = swap;
 					}
-					for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
-						out_channels * output_length; index++)
-						residual[index] += activation_buffer[index];
+					if ( pass == 1u )
+					{
+						for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+							out_channels * output_length; index++)
+							residual[index] += activation_buffer[index];
+					}
 				}
 			}
 			for (index=0u; index<(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
