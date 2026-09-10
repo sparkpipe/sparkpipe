@@ -216,10 +216,20 @@ def verify_pack(path: Path, tp_degree: int) -> Dict[str, Any]:
 
 def verify_receipt(path: Path, summary: Dict[str, Any]) -> None:
     receipt = json.loads(path.read_text())
-    for field in ("sha256", "file_bytes", "tensors", "census"):
+    for field in ("sha256", "file_bytes", "tensors"):
         if receipt.get(field) != summary.get(field):
             fail("receipt", f"{path.name}: {field} {receipt.get(field)} != "
                             f"{summary.get(field)}")
+    census = receipt.get("census")
+    if not isinstance(census, dict):
+        fail("receipt", f"{path.name}: missing census")
+        return
+    if census.get("packed") != summary["tensors"]:
+        fail("receipt", f"{path.name}: census packed {census.get('packed')} != "
+                        f"pack tensors {summary['tensors']}")
+    if (census.get("checkpoint_tensors") !=
+            census.get("packed", 0) + census.get("omitted_mtp", 0)):
+        fail("receipt", f"{path.name}: census does not close: {census}")
 
 
 def main() -> int:
