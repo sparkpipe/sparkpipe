@@ -180,11 +180,16 @@ sync_rendezvous() {
     if [ -d "$mesh_dir" ]; then
         local own_rank="${host#spark}"
         local own_rec="$mesh_dir/mesh-$own_rank.rec"
-        if [ -f "$own_rec" ] && { [ ! -f "$mesh_dir/.shipped" ] || [ -n "$(find "$own_rec" -newer "$mesh_dir/.shipped" 2>/dev/null)" ]; }; then
-            $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
-            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$own_rec" \
-                "$HUB:release/qpn/$host/mesh/" 2>/dev/null
-            touch "$mesh_dir/.shipped"
+        if [ -f "$own_rec" ]; then
+            local sum
+            sum=$(sha256sum "$own_rec" | cut -d' ' -f1)
+            if [ ! -f "$mesh_dir/.shipped_sha" ] || \
+               [ "$(cat "$mesh_dir/.shipped_sha" 2>/dev/null)" != "$sum" ]; then
+                $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
+                scp -q -o BatchMode=yes -o ConnectTimeout=4 "$own_rec" \
+                    "$HUB:release/qpn/$host/mesh/" 2>/dev/null && \
+                    echo "$sum" > "$mesh_dir/.shipped_sha"
+            fi
         fi
         local pr pn fn now age
         now=$(date +%s)
