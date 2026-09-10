@@ -544,6 +544,9 @@ static void SparkLingValKdaAttention(
 		total = 0.0f;
 		for (uint32_t tap = 0u; tap < kernel; tap++)
 			total += window[tap] * w->conv_q[(uint64_t)index * kernel + tap];
+		if ( index == 0u )
+			printf("oracle qconv ch0 raw %g taps %g %g %g %g total %g\n",
+				q[index],window[0],window[1],window[2],window[3],total);
 		q[index] = total * SparkLingValSigmoid(total);
 	}
 	for (index = 0u; index < qk; index++)
