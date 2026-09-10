@@ -613,9 +613,30 @@ static SparkStatus SparkHiddenSparkHostRdmaReadPeerRecord(
     const char *slash;
     size_t body_bytes;
     SparkStatus status;
+    int fd;
 
     SparkHiddenSparkHostRdmaRendezvousPath(state,peer_rank,path,
         sizeof(path));
+    fd = open(path,O_RDONLY);
+    if ( fd >= 0 )
+    {
+        char *cursor = (char *)record;
+        size_t remaining = sizeof(*record);
+        while ( remaining > 0u )
+        {
+            ssize_t received = read(fd,cursor,remaining);
+            if ( received <= 0 )
+                break;
+            cursor += (size_t)received;
+            remaining -= (size_t)received;
+        }
+        (void)close(fd);
+        if ( remaining == 0u &&
+             record->magic == SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_MAGIC &&
+             record->lane_count == state->lane_count &&
+             record->lanes[0].qp_number != 0u)
+            return SPARK_STATUS_OK;
+    }
     peer_host = state->is_sender != 0u ? state->sink_host :
         state->source_host;
     if ( peer_host == 0 || peer_host[0] == '\0' )
@@ -640,6 +661,21 @@ static SparkStatus SparkHiddenSparkHostRdmaReadPeerRecord(
         record->lane_count != state->lane_count ||
         record->lanes[0].qp_number == 0u)
         return SPARK_STATUS_BUSY;
+    fd = open(path,O_WRONLY | O_CREAT | O_TRUNC,0644);
+    if ( fd >= 0 )
+    {
+        const char *cursor = (const char *)record;
+        size_t remaining = sizeof(*record);
+        while ( remaining > 0u )
+        {
+            ssize_t written = write(fd,cursor,remaining);
+            if ( written <= 0 )
+                break;
+            cursor += (size_t)written;
+            remaining -= (size_t)written;
+        }
+        (void)close(fd);
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -676,7 +712,7 @@ static SparkStatus SparkHiddenSparkHostRdmaAwaitPeerRecord(
                 SPARK_HIDDEN_SPARK_HOST_RDMA_RENDEZVOUS_DIR);
             return SPARK_STATUS_BUSY;
         }
-        (void)poll(0,0,100);
+        (void)poll(0,0,500);
     }
 }
 
