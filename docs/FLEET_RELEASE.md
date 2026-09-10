@@ -96,9 +96,14 @@ root, pack template, kv dir all derive from it.
    together.
 5. `ensure_root` — boots a down root. Restart discipline: TERM
    (cwd-scoped), wait for real exit, gate `MemAvailable >= pack + 8GB`,
-   start exactly one. The autospawn guard blocks only if **node uptime
+   start exactly one, inside a systemd user scope with `MemoryMax`
+   (default 32G — a weightd-mapped arena legitimately faults in up to
+   one full pack; the cap exists to kill a second full load, not the
+   first; `FLEET_RESIDENTD_MEMORY_MAX` overrides per node, `0`
+   disables). The autospawn guard blocks only if **node uptime
    < 15 min** (reboot-loop protection); it never blocks on failed
-   attempts — transient failures retry next loop so the fleet converges.
+   attempts — transient failures retry next loop so the fleet
+   converges.
 6. `ensure_api` (rank 0) — starts the model API once the fleet view
    reports 16 ready.
 
