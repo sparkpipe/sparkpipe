@@ -118,13 +118,29 @@
   "expected_skipped_vision_tensors": 809,
   "expected_text_pattern_classes": 12,
   "layer_classes": {
-   "global": ["embed_tokens", "final_norm", "lm_head"],
-   "every_layer": ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm", "q_proj", "k_proj", "v_proj", "gate_proj(attn out gate)", "o_proj", "gate_up_proj", "down_proj"]
+   "global": [
+    "embed_tokens",
+    "final_norm",
+    "lm_head"
+   ],
+   "every_layer": [
+    "input_layernorm",
+    "post_attention_layernorm",
+    "pre_feedforward_layernorm",
+    "post_feedforward_layernorm",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "gate_proj(attn out gate)",
+    "o_proj",
+    "gate_up_proj",
+    "down_proj"
+   ]
   }
  },
  "qualification": {
   "cuda_target": "sm_121a",
-  "status": "bring-up: synthesized-pack V0 on spark; real-pack anchors A1-A7 blocked on the warm download",
+  "status": "V1 real-weight verification on sparkc: packs rebuilt+audited (A7 PASS), kernel/reference GPU tiers PASS on the real rank00 pack, real goldens A1-A7 green (A6 real greedy 1418); module lifecycle E2E pending weightd lazy-pack attach plumbing, then fleet qualification under model_residentd",
   "production_ready": false
  }
 }

@@ -101,3 +101,76 @@ covers the lane-local DESIGN.md by intent; the file ships with the tree.
   operator directive; device-side stays on LmFrameError/LmKvReport paths.
 - Warm dir `/mnt/model-warm/muse-glimmer-30b` still ABSENT on sparkc as of
   this writing (polled via short-timeout ssh; no blind sleeps).
+
+## Round 2 (validation-debugger, 2026-09-11): V1 real-weight chain
+
+Branch state: rebased onto origin/main 14df85a via origin/lane/muse-driver
+845ee15 (coredev alignment) + repair commits. The lane delta vs main is now
+28 files, +7388/-0: the muse family tree, the two shared norm kernels
+(norm.cuh, purely additive), the muse tools/tests/contract, PROGRESS.md and
+the code-size ceiling. The first rebase had silently kept old-main/donor
+versions of ring/, node/, cache/, src/, sources.mk, the root Makefile, other
+families' module Makefiles, the legacy tp test suite and the deleted-on-main
+tp_device_collective_nccl.c (65 files, ±20K lines); 15aef76 restores every
+shared file to main's content. The muse module Makefile deliberately keeps
+the fad1fff nccl drop - main's tp_device_collective.c no longer dispatches
+to nccl.
+
+V1 evidence chain (sparkc, GB10, packs + warm copy):
+- Frozen synthetic fixtures A1-A7: PASS on the golden-freeze host env
+  (python 3.14.5, numpy 2.5.0, darwin arm64). A6 greedy token 191704,
+  runner-up 140134, gap 0.0469 - exactly the frozen values.
+- Real-weight goldens (expected_real/): A1-A7 built on sparkc against
+  /mnt/model-warm/muse-glimmer-30b with every internal cross-check green
+  (a6 full 52-layer prefill 86.7s). A6 real greedy token 1418; A5 real
+  drop0 delta 5.9e-4 recorded in meta. Provenance (host, numpy, shas)
+  frozen in each npz meta.
+- A7 real-pack audit (real_pack_audit.py, independent wire transcription):
+  PASS all checks on all rebuilt packs - rank 0/15 header+geometry+receipt
+  shas, kv-head replication law (ranks 0/2/7 cached-K bitwise equal; 7 vs 8
+  bitwise different), norm replication, and source spot-checks (embed,
+  lm_head, k, gate, up, o_proj vs the warm safetensors).
+- GPU module tier on the real audited rank00 pack: PASS - centered_norm
+  ulp1, qk_norm_3_87 ulp1, window_decode ulp2, full_decode ulp2,
+  window_walk boundary verified + decode bitwise, output_gate_and_silu
+  bitwise exact. Receipts: pack run 16/16 exit=0 (~67s/rank, maxrss 645MB),
+  index sha 7d817b4d, config sha 5a9df2d8 (PINS byte-identical).
+
+Gate fixes committed this round:
+- Packer wrote header.directory_offset = header+directory end; the frozen
+  wire semantic (C loader + synthesize tool) is the directory start. This
+  made the module reject every real pack with pack_geometry_mismatch.
+- Validator module_decode tier now opts in via
+  SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER (default skip with printed
+  platform reason): main refuses standalone direct pack loads - weightd
+  attach via model_residentd is mandatory, and main's own glm5_next
+  validator carries kernel tiers only. The module lifecycle E2E moves to
+  the residentd/serving qualification step (needs the weightd lazy-pack
+  attach plumbing; same platform-gap class as the credit-binding strip).
+- Code-size ceiling re-measured: 245992 (muse stack +4665 over main's
+  measured 241327 at 14df85a; main itself was +275 over its stale 241052
+  pin - landing debt outside this lane).
+- Contract: census RESOLVED 627 text / 809 vision (the pre-download 626/810
+  estimate was off by one; the patterns side was right), digest_freeze
+  filled (both shard shas + index/config/tokenizer files), modeling
+  reference mispin corrected (4177486a was the HF model revision; the
+  transformers commit is 4815a0a6, verified by sha256 against PINS).
+
+Validation-side (batch-muse-val tree, not the PR): three latent reader bugs
+fixed in the anchor tooling - muse_realweights/real_pack_audit resolved
+safetensors reads to the shard data start instead of the per-tensor
+data_offsets (mid-shard spot-checks compared the wrong bytes; first-tensor
+checks passed by coincidence), a stale 3-tuple unpack, and a missing *2
+(element vs byte) in the auditor's up-half offset. The A5 real-mode
+negative-control canary is now noise-relative (the synth-tuned absolute
+1e-3 threshold does not transfer to real weights; real drop0 delta 5.9e-4
+is recorded in the golden meta and sits below the driver atol - the
+boundary read-set checks carry the real-mode observability).
+
+Deployment generator: no change needed. Main's own glm5_next generator
+still emits session_ports tables post-rewrite; the muse generator already
+matches that shape.
+
+Next step for the lane: module lifecycle E2E (module_decode tier with
+SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER=1) once the weightd lazy-pack
+attach plumbing lands, then fleet qualification under model_residentd.
