@@ -8,7 +8,6 @@ PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
 LAST_REPORT=""
 LAST_PIDS=""
-LAST_START=0
 LAST_API_START=0
 mkdir -p "$VIEW"
 
@@ -272,16 +271,9 @@ ensure_root() {
     local name="$1"
     local st; st=$(root_state "$name")
     [ "$st" = "down" ] || return 0
-    local now=$(date +%s)
-    local stamp="$HOME/sparkdata/$name/.last_boot"
-    local last_boot
-    last_boot=$(cat "$stamp" 2>/dev/null || echo 0)
-    if [ $((now - last_boot)) -lt 900 ]; then
-        [ $((now - last_boot)) -gt 840 ] || echo "$(date +%T) $name: last boot $((now - last_boot))s ago (<15min); autospawn blocked"
-        return 0
-    fi
-    LAST_START=$now
-    date +%s > "$stamp" 2>/dev/null || true
+    local up
+    up=$(awk '{printf "%d", $1}' /proc/uptime)
+    [ "$up" -ge 900 ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; return 0; }
     echo "$(date +%T) $name: down; starting"
     restart_root "$name"
 }
