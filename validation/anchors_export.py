@@ -39,10 +39,10 @@ def main() -> int:
                 if code is None:
                     print(f"SPARK_FAIL dtype_unsupported: {path.name}:{key} {array.dtype}")
                     return 1
-                cols = array.shape[-1] if array.ndim >= 1 else 1
-                rows = array.size // cols
+                cols = int(np.prod(array.shape[1:])) if array.ndim >= 2 else (1 if array.ndim <= 1 else array.shape[-1])
+                rows = int(array.shape[0]) if array.ndim >= 1 else 1
                 name = f"{tag}__{group}__{key.replace('.', '_')}.bin"
-                array.astype(array.dtype.copy(order="<")).tofile(out / name)
+                array.astype(array.dtype.newbyteorder("<")).tofile(out / name)
                 lines.append(f"{name} {rows} {cols} {code}")
     (out / "manifest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"exported {len(lines)} arrays -> {out}")
