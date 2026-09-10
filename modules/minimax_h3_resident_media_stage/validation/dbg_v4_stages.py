@@ -94,13 +94,16 @@ def main():
         if i == 0:
             dump("refv_b0_n1", n[0])
             query = gen.slab_linear_full(n, raw, p + "attn.to_q.weight", p + "attn.to_q.bias")
+            dump("refv_b0_q", query[0])
             key = gen.slab_linear_full(n, raw, p + "attn.to_k.weight", p + "attn.to_k.bias")
             value = gen.slab_linear_full(n, raw, p + "attn.to_v.weight", p + "attn.to_v.bias")
             query = query.unflatten(2, (32, 64))
             key = key.unflatten(2, (32, 64))
             value = value.unflatten(2, (32, 64))
             query = ref.rms_norm(query.float(), None, 1e-5).to(query.dtype)
+            dump("refv_b0_qn", query.flatten(2, 3)[0])
             key = ref.rms_norm(key.float(), None, 1e-5).to(key.dtype)
+            dump("refv_b0_kn", key.flatten(2, 3)[0])
             c = cos.to(query.dtype)
             s_ = sin.to(query.dtype)
             rd = c.shape[-1]
@@ -156,25 +159,30 @@ def main():
         _resblock_kernel_sizes=(3, 7, 11),
         _resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5))))
 
-    def act1(t, prefix, mid_name=None):
+    def act1(t, prefix, mid_name=None, up_name=None):
         t = ref.audio_upsample1d(t, 2, 12, w["%s.upsample.filter" % prefix])
+        if up_name is not None:
+            dump_full(up_name, t)
         t = ref.audio_snake_beta(t, w["%s.act.alpha" % prefix],
             w["%s.act.beta" % prefix])
         if mid_name is not None:
             dump_full(mid_name, t)
         return ref.audio_lowpass(t, w["%s.downsample.lowpass.filter" % prefix], 2, 12)
 
-    def amp_block(t, w, prefix, kernel_size, dilation, marks, act_marks=(), mid_marks=()):
+    def amp_block(t, w, prefix, kernel_size, dilation, marks, act_marks=(), mid_marks=(), up_marks=()):
         for idx, dil in enumerate(dilation):
             a1 = act1(t, "%s.activations.%d" % (prefix, 2 * idx),
-                "refa_s0_m%d" % (2 * idx) if (2 * idx) in mid_marks else None)
+                "refa_s0_m%d" % (2 * idx) if (2 * idx) in mid_marks else None,
+                "refa_s0_u%d" % (2 * idx) if (2 * idx) in up_marks else None)
             if (2 * idx) in act_marks:
                 dump_full("refa_s0_a%d" % (2 * idx), a1)
             r = F.conv1d(a1, ref.wn_weight(w["%s.convs1.%d.weight_g" % (prefix, idx)],
                 w["%s.convs1.%d.weight_v" % (prefix, idx)]),
                 w["%s.convs1.%d.bias" % (prefix, idx)], dilation=dil,
                 padding=(kernel_size * dil - dil) // 2)
-            a2 = act1(r, "%s.activations.%d" % (prefix, 2 * idx + 1))
+            a2 = act1(r, "%s.activations.%d" % (prefix, 2 * idx + 1),
+                "refa_s0_m%d" % (2 * idx + 1) if (2 * idx + 1) in mid_marks else None,
+                "refa_s0_u%d" % (2 * idx + 1) if (2 * idx + 1) in up_marks else None)
             r = F.conv1d(a2, ref.wn_weight(w["%s.convs2.%d.weight_g" % (prefix, idx)],
                 w["%s.convs2.%d.weight_v" % (prefix, idx)]),
                 w["%s.convs2.%d.bias" % (prefix, idx)], dilation=1,
@@ -205,7 +213,7 @@ def main():
                 w["_resblock_dilation_sizes"][j],
                 (0, 1, 2) if i == 0 and j == 0 else (),
                 (0, 1) if i == 0 and j == 0 else (),
-                (0,) if i == 0 and j == 0 else ())
+                (0, 1) if i == 0 and j == 0 else ())
             if i == 0 and j in (0, 1, 2):
                 dump_full("refa_s0_b%d" % j, r)
             if i == 1 and j in (0, 1, 2):

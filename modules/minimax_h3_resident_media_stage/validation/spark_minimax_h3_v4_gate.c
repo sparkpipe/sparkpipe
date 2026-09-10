@@ -45,6 +45,8 @@ static void SparkMinimaxH3V4Stats(const char *label, const float *buffer,
 static uint32_t SparkMinimaxH3V4Failures;
 
 static const char *SparkMinimaxH3V4StageDirectory;
+static const char *SparkMinimaxH3V4PreSnakeCompare;
+static uint32_t SparkMinimaxH3V4VideoQInstrument;
 
 static void SparkMinimaxH3V4CompareStageF32(const char *name, const float *actual,
 	uint64_t count)
@@ -221,11 +223,20 @@ static void SparkMinimaxH3V4SelfAttention(float *attention_out, const float *inp
 {
 	uint32_t token,head,key_dim;
 	SparkMinimaxH3V4Gem(query_buffer,tokens,hidden,hidden,input,query_weight,query_bias);
+	if ( SparkMinimaxH3V4VideoQInstrument != 0u )
+		SparkMinimaxH3V4CompareStageF32("refv_b0_q__33x2048.f32",query_buffer,
+			(uint64_t)tokens * hidden);
 	SparkMinimaxH3V4Gem(key_buffer,tokens,hidden,hidden,input,key_weight,key_bias);
 	SparkMinimaxH3V4Gem(value_buffer,tokens,hidden,hidden,input,value_weight,value_bias);
 	SparkMinimaxH3V4RmsNormBare(query_buffer,query_buffer,tokens * heads,head_dim,
 		epsilon);
+	if ( SparkMinimaxH3V4VideoQInstrument != 0u )
+		SparkMinimaxH3V4CompareStageF32("refv_b0_qn__33x2048.f32",query_buffer,
+			(uint64_t)tokens * hidden);
 	SparkMinimaxH3V4RmsNormBare(key_buffer,key_buffer,tokens * heads,head_dim,epsilon);
+	if ( SparkMinimaxH3V4VideoQInstrument != 0u )
+		SparkMinimaxH3V4CompareStageF32("refv_b0_kn__33x2048.f32",key_buffer,
+			(uint64_t)tokens * hidden);
 	for (token=0u; token<tokens; token++)
 	{
 		for (head=0u; head<heads; head++)
@@ -489,12 +500,14 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		if ( block == 0u )
 			SparkMinimaxH3V4CompareStageF32("refv_b0_n1__33x2048.f32",normed,
 				hidden_elements);
+		SparkMinimaxH3V4VideoQInstrument = block == 0u;
 		SparkMinimaxH3V4SelfAttention(attention_out,normed,query_weight,query_bias,
 			key_weight,key_bias,value_weight,value_bias,output_weight,output_bias,
 			cos_angles,sin_angles,SPARK_MINIMAX_H3_V4_VIDEO_TOKENS,
 			SPARK_MINIMAX_H3_V4_VIDEO_HIDDEN,SPARK_MINIMAX_H3_V4_VIDEO_HEADS,
 			SPARK_MINIMAX_H3_V4_VIDEO_HEAD_DIM,48u,SPARK_MINIMAX_H3_V4_VIDEO_EPS,
 			query_buffer,key_buffer,value_buffer);
+		SparkMinimaxH3V4VideoQInstrument = 0u;
 		if ( block == 0u )
 		{
 			SparkMinimaxH3V4CompareStageF32("refv_b0_qr__33x2048.f32",
@@ -814,6 +827,12 @@ static void SparkMinimaxH3V4Activation1d(float *out, uint32_t output_length,
 	uint32_t channel,position;
 	SparkMinimaxH3V4Upsample1d(upsampled,mid_length,input,channels,input_length,
 		up_filter,12u,2u,padded,expanded);
+	if ( SparkMinimaxH3V4PreSnakeCompare != 0 )
+	{
+		SparkMinimaxH3V4CompareStageF32(SparkMinimaxH3V4PreSnakeCompare,
+			upsampled,(uint64_t)channels * mid_length);
+		SparkMinimaxH3V4PreSnakeCompare = 0;
+	}
 	for (channel=0u; channel<channels; channel++)
 	{
 		for (position=0u; position<mid_length; position++)
@@ -976,22 +995,23 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
+					if ( stage == 0u && block == 0u && dilation_index == 0u &&
+						pass == 0u )
+					{
+						char ref_tag[48];
+						snprintf(ref_tag,sizeof(ref_tag),
+							"refa_s0_u0__2x512x40.f32");
+						SparkMinimaxH3V4PreSnakeCompare = ref_tag;
+					}
 					if ( stage == 0u && block == 0u && dilation_index == 0u )
 					{
-						if ( pass == 0u )
-							SparkMinimaxH3V4CompareStageF32(
-								"refa_s0_a0__2x512x20.f32",activation_buffer,
-								(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
-								out_channels * output_length);
-						{
-							char ref_tag[48];
-							snprintf(ref_tag,sizeof(ref_tag),
-								"refa_s0_m%u__2x512x40.f32",
-								2u * dilation_index + pass);
-							SparkMinimaxH3V4CompareStageF32(ref_tag,upsampled,
-								(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
-								out_channels * output_length * 2u);
-						}
+						char ref_tag[48];
+						snprintf(ref_tag,sizeof(ref_tag),
+							"refa_s0_m%u__2x512x40.f32",
+							2u * dilation_index + pass);
+						SparkMinimaxH3V4CompareStageF32(ref_tag,upsampled,
+							(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+							out_channels * output_length * 2u);
 					}
 					snprintf(act_prefix,sizeof(act_prefix),"%sconvs%u_%u_",prefix,
 						pass + 1u,dilation_index);
