@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_error_site.h"
 #include <infiniband/verbs.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/stat.h>
 
 #define SPARK_WEIGHTD_MESH_PEERS 15
@@ -78,7 +80,7 @@ static SparkStatus SparkWeightdMeshWriteRecord(
     ssize_t written;
 
     (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
-    snprintf(path,sizeof(path),"%s/mesh-%u.rec",
+    snprintf(path,sizeof(path),"%s/mesh-%x.rec",
         SPARK_WEIGHTD_MESH_DIR,weightd_mesh.local_rank);
     snprintf(temp,sizeof(temp),"%s.tmp",path);
     fd = open(temp,O_WRONLY | O_CREAT | O_TRUNC,0644);
@@ -126,7 +128,7 @@ static SparkStatus SparkWeightdMeshReadPeerRecord(
     size_t remaining;
     ssize_t bytes_read;
 
-    snprintf(path,sizeof(path),"%s/mesh-%u.rec",
+    snprintf(path,sizeof(path),"%s/mesh-%x.rec",
         SPARK_WEIGHTD_MESH_DIR,peer_rank);
     fd = open(path,O_RDONLY);
     if (fd < 0)
@@ -292,13 +294,19 @@ SparkStatus SparkWeightdMeshInit(void)
     own_record.rkey = weightd_mesh.recv_mr->rkey;
     own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
     own_record.lid = (uint16_t)port_attr.lid;
-    memcpy(own_record.gid,port_attr.gid.raw,16);
+    {
+        union ibv_gid gid;
+        if (ibv_query_gid(weightd_mesh.context,1,3,&gid) != 0)
+        {
+            fprintf(stderr,"weightd-mesh: gid query failed\n");
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        }
+        memcpy(own_record.gid,gid.raw,16);
+    }
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
-        own_record.send_qpn[peer] =
-            (uint32_t)ibv_get_qp_num(weightd_mesh.send_qps[peer]);
-        own_record.recv_qpn[peer] =
-            (uint32_t)ibv_get_qp_num(weightd_mesh.recv_qps[peer]);
+        own_record.send_qpn[peer] = weightd_mesh.send_qps[peer]->qp_num;
+        own_record.recv_qpn[peer] = weightd_mesh.recv_qps[peer]->qp_num;
     }
     printf("weightd-mesh: rank=%u publishing %u QPs\n",
         weightd_mesh.local_rank,SPARK_WEIGHTD_MESH_PEERS * 2u);
