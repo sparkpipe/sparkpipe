@@ -831,9 +831,10 @@ static void SparkMinimaxH3V4Lowpass(float *out, uint32_t output_length,
 }
 
 static void SparkMinimaxH3V4Activation1d(float *out, uint32_t output_length,
-	const float *input, uint32_t channels, uint32_t input_length, const float *alpha,
-	const float *beta, const float *up_filter, const float *down_filter,
-	float *upsampled, float *padded, float *expanded)
+	const float *input, uint32_t channels, uint32_t param_channels,
+	uint32_t input_length, const float *alpha, const float *beta,
+	const float *up_filter, const float *down_filter, float *upsampled,
+	float *padded, float *expanded)
 {
 	uint32_t mid_length = input_length * 2u;
 	uint32_t channel,position;
@@ -850,8 +851,8 @@ static void SparkMinimaxH3V4Activation1d(float *out, uint32_t output_length,
 		for (position=0u; position<mid_length; position++)
 		{
 			float value = upsampled[(uint64_t)channel * mid_length + position];
-			float a = expf(alpha[channel]);
-			float b = expf(beta[channel]);
+			float a = expf(alpha[channel % param_channels]);
+			float b = expf(beta[channel % param_channels]);
 			float sine = sinf(a * value);
 			upsampled[(uint64_t)channel * mid_length + position] =
 				value + sine * sine / (b + 1e-9f);
@@ -1008,6 +1009,7 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						SparkMinimaxH3V4PreSnakeCompare =
 							"refa_s0_u0__2x512x40.f32";
 					SparkMinimaxH3V4Activation1d(activation_buffer,output_length,next,
+						(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * out_channels,
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
@@ -1112,8 +1114,9 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 			"decoder_activation_post_upsample_filter",12u);
 		SparkMinimaxH3V4LoadWeight(&down_filter,weight_dir,"",
 			"decoder_activation_post_downsample_lowpass_filter",12u);
-		SparkMinimaxH3V4Activation1d(activation_buffer,length,x,channels,length,alpha,
-			beta,up_filter,down_filter,upsampled,padded,expanded);
+		SparkMinimaxH3V4Activation1d(activation_buffer,length,x,
+			(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * channels,channels,length,
+			alpha,beta,up_filter,down_filter,upsampled,padded,expanded);
 		SparkMinimaxH3V4Stats("audio_after_activation_post",activation_buffer,
 			(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH * channels * length);
 		free(alpha); free(beta); free(up_filter); free(down_filter);
