@@ -196,11 +196,6 @@ static SparkStatus SparkDsv41FlashInventoryValidate(
 		{
 			if ( SparkDsv41FlashStagePackKindIsGlobal(kind) != 0u )
 				continue;
-			if ( SparkDsv41FlashStagePackKindIsRouted(kind) != 0u &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS &&
-				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS_VL )
-				continue;
 			if ( SparkDsv41FlashStagePackExpectedShape(kind,state->expert_weight_codec,state->tp_degree,&shape) == 0u )
 				continue;
 			if ( SparkDsv41FlashStagePackKindInLayer(kind,state->first_layer_index + layer) != 0u )

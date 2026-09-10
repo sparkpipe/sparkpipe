@@ -33,6 +33,8 @@ typedef struct SparkDsv41FlashProbePackCensus
 {
 	uint64_t spine_bytes;
 	uint64_t expert_bytes;
+	uint64_t layer_seen_bits[SPARK_DSV41_FLASH_MODEL_LAYER_COUNT];
+	uint64_t global_seen_bits;
 	uint32_t entries;
 } SparkDsv41FlashProbePackCensus;
 
@@ -84,16 +86,80 @@ static SparkStatus SparkDsv41FlashProbeCensus(const char *path,SparkDsv41FlashPr
 	census->spine_bytes = 0u;
 	census->expert_bytes = 0u;
 	census->entries = header.tensor_count;
+	census->global_seen_bits = 0u;
+	memset(census->layer_seen_bits,0,sizeof(census->layer_seen_bits));
 	for (index=0u; index<header.tensor_count; index++)
 	{
 		uint64_t bytes = entries[index].payload_bytes + entries[index].scale_bytes;
-		if ( SparkDsv41FlashStagePackKindIsExpert(entries[index].tensor_kind) != 0u )
+		if ( SparkDsv41FlashStagePackKindIsGlobal(entries[index].tensor_kind) != 0u )
+		{
+			census->global_seen_bits |= UINT64_C(1) << entries[index].tensor_kind;
+			census->spine_bytes += bytes;
+		}
+		else if ( SparkDsv41FlashStagePackKindIsExpert(entries[index].tensor_kind) != 0u )
 			census->expert_bytes += bytes;
 		else
 			census->spine_bytes += bytes;
+		if ( entries[index].layer_index != SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER &&
+			entries[index].layer_index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT )
+			census->layer_seen_bits[entries[index].layer_index] |= UINT64_C(1) << entries[index].tensor_kind;
 	}
 	free(entries);
 	return(SPARK_STATUS_OK);
+}
+
+static void SparkDsv41FlashProbeKindList(uint64_t bits,char *text,uint32_t bytes)
+{
+	uint32_t kind,used;
+	used = 0u;
+	text[0] = '\0';
+	for (kind=0u; kind<SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT && used<bytes; kind++)
+	{
+		if ( (bits & (UINT64_C(1) << kind)) == 0u )
+			continue;
+		used += (uint32_t)snprintf(text + used,bytes - used,"%s%u",used == 0u ? "" : ",",kind);
+	}
+}
+
+static void SparkDsv41FlashProbeInventoryDiagnose(
+	const SparkDsv41FlashProbePackCensus *census,
+	uint32_t tp_rank)
+{
+	SparkDsv41FlashStagePackTensorShape shape;
+	uint64_t expected_bits,seen_bits;
+	char seen_text[512],expected_text[512];
+	uint32_t kind,layer;
+	for (layer=0u; layer<SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++)
+	{
+		expected_bits = 0u;
+		for (kind=0u; kind<SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+		{
+			if ( SparkDsv41FlashStagePackKindIsGlobal(kind) != 0u )
+				continue;
+			if ( SparkDsv41FlashStagePackKindIsRouted(kind) != 0u &&
+				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER &&
+				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS &&
+				kind != SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER_BIAS_VL )
+				continue;
+			if ( SparkDsv41FlashStagePackExpectedShape(kind,DSV41_FLASH_PROBE_EXPERT_WEIGHT_CODEC,DSV41_FLASH_PROBE_TP_DEGREE,&shape) == 0u )
+				continue;
+			if ( SparkDsv41FlashStagePackKindInLayer(kind,layer) != 0u )
+				expected_bits |= UINT64_C(1) << kind;
+		}
+		seen_bits = census->layer_seen_bits[layer];
+		if ( seen_bits != expected_bits )
+		{
+			SparkDsv41FlashProbeKindList(expected_bits & ~seen_bits,expected_text,sizeof(expected_text));
+			SparkDsv41FlashProbeKindList(seen_bits & ~expected_bits,seen_text,sizeof(seen_text));
+			(void)printf("probe diag rank=%u layer=%u expected=0x%llx seen=0x%llx missing_kinds=%s extra_kinds=%s\n",
+				tp_rank,layer,(unsigned long long)expected_bits,(unsigned long long)seen_bits,
+				expected_text,seen_text);
+		}
+	}
+	if ( census->global_seen_bits != ((UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING) |
+		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM) |
+		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD)) )
+		(void)printf("probe diag rank=%u global_seen=0x%llx\n",tp_rank,(unsigned long long)census->global_seen_bits);
 }
 
 static SparkStatus SparkDsv41FlashProbeNodeContextPrepare(
@@ -178,6 +244,7 @@ int main(int argc,char **argv)
 		(void)fprintf(stderr,"probe census_status=%d\n",(int)status);
 		return(1);
 	}
+	SparkDsv41FlashProbeInventoryDiagnose(&census,tp_rank);
 	status = SparkDsv41FlashProbeCudaCheck(cudaFree(0),"context_ensure");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv41FlashProbeCudaCheck(cudaStreamCreate(&stream),"stream_create");
