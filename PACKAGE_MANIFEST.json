@@ -3918,8 +3918,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
-      "sha256": "c1cc5dd923ca123bf1a86aef9f99a18ce824b982f08e5f77953a44400fcd03f2",
-      "size_bytes": 65024
+      "sha256": "3e1ffc709f0a43876ddb1ad0568e14d2cba4fbde494532fb2bcb05000afd9ae6",
+      "size_bytes": 63910
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_sparse_attention_split.h",
@@ -4038,8 +4038,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
-      "sha256": "0fac73aa1b4a99ded1e261917c616a1e48f62cf08aefe579daf512fa681c6a64",
-      "size_bytes": 47860
+      "sha256": "4423754f1318c0941cc0b41e55df2c76a15e965c0e271a8e18951fbd53e78ace",
+      "size_bytes": 46770
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h",
@@ -4398,8 +4398,8 @@
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c",
-      "sha256": "65c1af86e7accd846f03205ba795f3a2ac7c64b0f95da3e10fd6ee05b95b6123",
-      "size_bytes": 111647
+      "sha256": "6dc4d212d5a56206c812b035983b2e6a879dc30eff0814fbc5618329d56ea16e",
+      "size_bytes": 110585
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
@@ -9870,5 +9870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32398266
+  "total_bytes": 32395000
 }
