@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -35,6 +36,11 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 			return(SPARK_STATUS_IO_ERROR);
 		pack->spine_allocation = 0;
 		pack->spine = 0;
+	}
+	if ( pack->attached.mesh_mapping != 0 )
+	{
+		(void)munmap(pack->attached.mesh_mapping,pack->attached.mesh_send_buffer_bytes);
+		pack->attached.mesh_mapping = 0;
 	}
 	if ( pack->client != 0 )
 		SparkWeightdClientClose(pack->client);

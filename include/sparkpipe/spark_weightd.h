@@ -54,6 +54,13 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RELEASE_RESULT 18u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE 19u
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT 20u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE 21u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT 22u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
+
+#define SPARK_WEIGHTD_MESH_SLOT_BYTES 1048576u
+#define SPARK_WEIGHTD_MESH_BUFFER_BYTES (SPARK_WEIGHTD_MESH_SLOT_BYTES * 16u)
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -199,9 +206,48 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint32_t expert_count;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
-    uint32_t reserved0;
+    uint32_t loaded_from_pack;
+    uint32_t mesh_ready;
+    uint64_t mesh_send_buffer_addr;
+    uint32_t mesh_send_buffer_bytes;
     uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
+
+typedef struct SparkWeightdIpcMeshWrite
+{
+    SparkWeightdIpcHeader header;
+    uint32_t peer_rank;
+    uint32_t reserved;
+    uint64_t source_offset;
+    uint64_t remote_offset;
+    uint32_t length;
+    uint32_t reserved2;
+} SparkWeightdIpcMeshWrite;
+
+typedef struct SparkWeightdIpcMeshWriteResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reserved;
+} SparkWeightdIpcMeshWriteResult;
+
+typedef struct SparkWeightdIpcMeshBroadcast
+{
+    SparkWeightdIpcHeader header;
+    uint32_t peer_mask;
+    uint32_t reserved;
+    uint64_t source_offset;
+    uint64_t remote_offset;
+    uint32_t length;
+    uint32_t reserved2;
+} SparkWeightdIpcMeshBroadcast;
+
+typedef struct SparkWeightdIpcMeshBroadcastResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t posted_count;
+} SparkWeightdIpcMeshBroadcastResult;
 
 typedef struct SparkWeightdIpcEnsure
 {
@@ -387,6 +433,11 @@ typedef struct SparkWeightdLazyAttachResult
     uint32_t refcount;
     uint32_t arena_count;
     uint32_t expert_count;
+    uint32_t loaded_from_pack;
+    uint32_t mesh_ready;
+    uint64_t mesh_send_buffer_addr;
+    uint32_t mesh_send_buffer_bytes;
+    void *mesh_mapping;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint8_t manifest_sha256[32];
@@ -406,6 +457,22 @@ typedef struct SparkWeightdEnsureResult
 SparkStatus SparkWeightdClientConnect(const char *socket_path,
     SparkWeightdClient **client,
     SparkWeightdHelloResult *hello_out);
+
+void SparkWeightdClientClose(SparkWeightdClient *client);
+
+SparkStatus SparkWeightdClientMeshWrite(SparkWeightdClient *client,
+    uint32_t peer_rank,
+    uint64_t source_offset,
+    uint64_t remote_offset,
+    uint32_t length,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
+    uint32_t peer_mask,
+    uint64_t source_offset,
+    uint64_t remote_offset,
+    uint32_t length,
+    uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
     const SparkWeightdAttachRequest *request,
