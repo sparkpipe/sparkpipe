@@ -190,14 +190,12 @@ int main(void)
 	assert(file != 0);
 	direct_pointer = 0;
 	assert(SparkStageModuleLoadDeviceRegion(&ledger,file,region_offset,
-		region_bytes,&direct_pointer) == SPARK_STATUS_OK);
-	assert(ledger.pack_arena == 0);
-	assert(cudaMemcpy(staging,direct_pointer,region_bytes,
-		cudaMemcpyDeviceToHost) == cudaSuccess);
-	assert(memcmp(staging,pack + region_offset,region_bytes) == 0);
+		region_bytes,&direct_pointer) == SPARK_STATUS_UNSUPPORTED);
+	assert(direct_pointer == 0 && ledger.pack_arena == 0 &&
+		ledger.device_allocation_count == 0u);
 	SparkStageModuleLedgerRelease(&ledger);
 	(void)fclose(file);
-	printf("stage_module_weightd: unconfigured direct path PASS\n");
+	printf("stage_module_weightd: detach refusal PASS\n");
 
 	__atomic_store_n(&TestStageStop,1,__ATOMIC_SEQ_CST);
 	pthread_join(server_thread,0);
