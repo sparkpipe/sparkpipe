@@ -579,10 +579,6 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
 {
 	SparkTpDeviceCollectiveConfig configuration;
-	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,route,route_count;
-	void *mapped_receive,*mapped_send;
-	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -632,117 +628,12 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 		configuration.local_host[0] == '\0' )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration.backend_kind !=
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT &&
-		configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkTpDeviceCollectiveProbeMemoryMode(
-		configuration.backend_kind,configuration.backend_module_path,
-		&memory_mode);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkTpDeviceCollectiveCreditBindingRouteCount(
-		&configuration,&route_count);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	total_bytes = 0u;
-	for (route=0u; route<route_count; route++)
-	{
-		hidden = configuration.local_hidden_dimension;
-		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
-		if ( credit_bytes == 0u || total_bytes > UINT64_MAX -
-			credit_bytes * configuration.credit_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		total_bytes += credit_bytes *
-			configuration.credit_count;
-	}
-	status = SPARK_STATUS_OK;
-	if ( total_bytes != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
-			&state->tp_credit_send_bf16);
-	if ( status == SPARK_STATUS_OK && total_bytes != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,
-			&state->tp_credit_receive_bf16);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( total_bytes != 0u && memory_mode ==
-		SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
-	{
-		mapped_receive = 0;
-		mapped_send = 0;
-		error = cudaHostAlloc(&state->tp_host_credit_send_bf16,total_bytes,
-			cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostAlloc(&state->tp_host_credit_receive_bf16,total_bytes,
-				cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&mapped_send,
-				state->tp_host_credit_send_bf16,0u);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&mapped_receive,
-				state->tp_host_credit_receive_bf16,0u);
-		if ( error != cudaSuccess )
-		{
-			if ( state->tp_host_credit_send_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-			if ( state->tp_host_credit_receive_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-			state->tp_host_credit_send_bf16 = 0;
-			state->tp_host_credit_receive_bf16 = 0;
-			return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
-				"tp_credit_alloc"));
-		}
-		state->tp_credit_send_bf16 = mapped_send;
-		state->tp_credit_receive_bf16 = mapped_receive;
-	}
-	offset = 0u;
-	state->tp_credit_binding_count = 0u;
-	for (route=0u; route<route_count; route++)
-	{
-		hidden = configuration.local_hidden_dimension;
-		credit_bytes = SparkTpDeviceCollectiveCreditBytes(configuration.max_active_sequence_count,hidden);
-		for (credit=0u; credit<configuration.credit_count;
-			credit++)
-		{
-			SparkTpDeviceCollectiveCreditBinding *binding =
-				&state->tp_credit_bindings[state->tp_credit_binding_count++];
-			binding->step_index = route;
-			binding->credit_index = credit;
-			binding->send_device =
-				(uint8_t *)state->tp_credit_send_bf16 + offset;
-			binding->receive_device =
-				(uint8_t *)state->tp_credit_receive_bf16 + offset;
-			binding->send_transport = memory_mode ==
-				SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-				(uint8_t *)state->tp_host_credit_send_bf16 + offset :
-				binding->send_device;
-			binding->receive_transport = memory_mode ==
-				SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-				(uint8_t *)state->tp_host_credit_receive_bf16 + offset :
-				binding->receive_device;
-			binding->flags = memory_mode ==
-				SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ?
-				SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
-			binding->reserved0 = 0u;
-			offset += credit_bytes;
-		}
-	}
-	if ( state->tp_credit_binding_count != 0u )
-	{
-		configuration.credit_bindings = state->tp_credit_bindings;
-		configuration.credit_binding_count = state->tp_credit_binding_count;
-	}
 	status = SparkTpDeviceCollectiveCreate(
 		&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state->tp_host_credit_send_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-		if ( state->tp_host_credit_receive_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-		state->tp_host_credit_send_bf16 = 0;
-		state->tp_host_credit_receive_bf16 = 0;
 		return(status);
-	}
 	state->tp_device_collective_initialized = 1u;
 	return(SPARK_STATUS_OK);
 }
