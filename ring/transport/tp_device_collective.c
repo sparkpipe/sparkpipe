@@ -355,7 +355,9 @@ static void *SparkTpDeviceCollectiveWorker(void *argument)
         status = SparkTpDeviceCollectiveRunRound(implementation,work);
         if ( status == SPARK_STATUS_PENDING )
         {
-            if ( cudaStreamSynchronize(work->submission.cuda_stream) != 0 )
+            if ( cudaEventRecord(work->event,
+                    work->submission.cuda_stream) != 0 ||
+                 cudaEventSynchronize(work->event) != 0 )
                 status = SPARK_STATUS_IO_ERROR;
             else
                 status = SPARK_STATUS_OK;
