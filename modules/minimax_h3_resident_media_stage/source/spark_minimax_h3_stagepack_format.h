@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_minimax_h3_kv_geometry.h"
 #include "sparkpipe/spark_stagepack_format.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_status.h"
 
 #define SPARK_MINIMAX_H3_STAGEPACK_MAGIC 0x50533348u
@@ -176,9 +177,9 @@ static inline int32_t SparkMinimaxH3StagePackShapeEncoderGlobal(
 	case SPARK_MINIMAX_H3_ENCODER_EMBEDDING:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_VOCAB_COUNT;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -191,37 +192,37 @@ static inline int32_t SparkMinimaxH3StagePackShapeEncoderLayer(
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_QUERY:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_QUERY_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_KEY:
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_VALUE:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_KV_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_OUTPUT:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_QUERY_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_QUERY_NORM:
 	case SPARK_MINIMAX_H3_ENCODER_ATTENTION_KEY_NORM:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HEAD_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_MLP_GATE:
 	case SPARK_MINIMAX_H3_ENCODER_MLP_UP:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_INTERMEDIATE_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_MLP_DOWN:
 		shape->rows = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_INTERMEDIATE_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_ENCODER_INPUT_NORM:
 	case SPARK_MINIMAX_H3_ENCODER_POST_NORM:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_ENCODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -234,41 +235,41 @@ static inline int32_t SparkMinimaxH3StagePackShapeDitGlobal(
 	case SPARK_MINIMAX_H3_DIT_CONTEXT_EMBEDDER:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_CONTEXT_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_TIME_EMBED_LINEAR_1:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_TIME_FREQ_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_TIME_EMBED_LINEAR_2:
 		shape->rows = SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_PROJ_IN:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_PATCH_ELEMENTS;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_PROJ_OUT:
 		shape->rows = SPARK_MINIMAX_H3_DIT_PATCH_ELEMENTS;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_AUDIO_PROJ_IN:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_AUDIO_PATCH_ELEMENTS;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_AUDIO_PROJ_OUT:
 		shape->rows = SPARK_MINIMAX_H3_DIT_AUDIO_PATCH_ELEMENTS;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_FINAL_NORM:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_NORM_OUT_LINEAR:
 		shape->rows = SPARK_MINIMAX_H3_DIT_NORM_OUT_ROWS;
 		shape->columns = SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -283,35 +284,35 @@ static inline int32_t SparkMinimaxH3StagePackShapeDitBlock(
 	case SPARK_MINIMAX_H3_DIT_ATTENTION_VALUE:
 		shape->rows = SPARK_MINIMAX_H3_DIT_QKV_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_ATTENTION_OUTPUT:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_QKV_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_ATTENTION_QUERY_NORM:
 	case SPARK_MINIMAX_H3_DIT_ATTENTION_KEY_NORM:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HEAD_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_FFN_GATE_UP:
 		shape->rows = SPARK_MINIMAX_H3_DIT_FFN_FUSED_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_FFN_DOWN:
 		shape->rows = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_DIT_FFN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_ADALN:
 		shape->rows = SPARK_MINIMAX_H3_DIT_ADALN_ROWS;
 		shape->columns = SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_DIT_NORM1:
 	case SPARK_MINIMAX_H3_DIT_NORM2:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_DIT_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -324,26 +325,26 @@ static inline int32_t SparkMinimaxH3StagePackShapeVideoGlobal(
 	case SPARK_MINIMAX_H3_VIDEO_PROJ_IN:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_LATENT_CHANNELS;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_REGISTER_TOKENS:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_REGISTER_TOKEN_COUNT *
 			SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_FINAL_NORM:
 		shape->rows = 2u;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_PROJ_OUT:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_PROJ_OUT_ELEMENTS;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_POST_QUANT_CONV:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_LATENT_CHANNELS;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_LATENT_CHANNELS;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -359,24 +360,24 @@ static inline int32_t SparkMinimaxH3StagePackShapeVideoBlock(
 	case SPARK_MINIMAX_H3_VIDEO_ATTENTION_OUTPUT:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_FFN_GATE_UP:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_FFN_FUSED_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_FFN_DOWN:
 		shape->rows = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_FFN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	case SPARK_MINIMAX_H3_VIDEO_NORM1:
 	case SPARK_MINIMAX_H3_VIDEO_NORM2:
 	case SPARK_MINIMAX_H3_VIDEO_SCALE1:
 	case SPARK_MINIMAX_H3_VIDEO_SCALE2:
 		shape->rows = 1u;
 		shape->columns = SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_HIDDEN_DIMENSION;
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -394,9 +395,9 @@ static inline int32_t SparkMinimaxH3StagePackShapeAudioGlobal(
 	case SPARK_MINIMAX_H3_AUDIO_CONV_POST:
 	case SPARK_MINIMAX_H3_AUDIO_POST_SNAKE:
 	case SPARK_MINIMAX_H3_AUDIO_POST_FILTER:
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -412,9 +413,9 @@ static inline int32_t SparkMinimaxH3StagePackShapeAudioBlock(
 	case SPARK_MINIMAX_H3_AUDIO_RESBLOCK_CONV2:
 	case SPARK_MINIMAX_H3_AUDIO_RESBLOCK_SNAKE:
 	case SPARK_MINIMAX_H3_AUDIO_RESBLOCK_FILTER:
-		return(0);
+		return(SPARK_STATUS_OK);
 	default:
-		return(-1);
+		return(SPARK_STATUS_NOT_FOUND);
 	}
 }
 
@@ -422,30 +423,30 @@ static inline int32_t SparkMinimaxH3StagePackTensorShapeOf(
 	uint32_t tensor_kind, SparkStagePackTensorShape *shape)
 {
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeEncoderGlobal(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeEncoderGlobal(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeEncoderLayer(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeEncoderLayer(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeDitGlobal(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeDitGlobal(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeDitBlock(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeDitBlock(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeVideoGlobal(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeVideoGlobal(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeVideoBlock(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeVideoBlock(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeAudioGlobal(tensor_kind,shape) == 0 )
-		return(0);
+	if ( SparkMinimaxH3StagePackShapeAudioGlobal(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
 	SparkStagePackShapeInit(shape);
-	if ( SparkMinimaxH3StagePackShapeAudioBlock(tensor_kind,shape) == 0 )
-		return(0);
-	return(-1);
+	if ( SparkMinimaxH3StagePackShapeAudioBlock(tensor_kind,shape) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	return(SPARK_STATUS_NOT_FOUND);
 }
 
 static inline int32_t SparkMinimaxH3StagePackResolvedShape(
@@ -453,32 +454,33 @@ static inline int32_t SparkMinimaxH3StagePackResolvedShape(
 	SparkStagePackTensorShape *shape)
 {
 	uint32_t section,layer;
-	if ( SparkMinimaxH3StagePackTensorShapeOf(tensor_kind,shape) < 0 )
-		return(-1);
+	if ( SparkMinimaxH3StagePackTensorShapeOf(tensor_kind,shape) !=
+		SPARK_STATUS_OK )
+		return(SPARK_STATUS_NOT_FOUND);
 	if ( SparkMinimaxH3StagePackSubOf(packed_layer) !=
 		SPARK_MINIMAX_H3_STAGEPACK_SUB_WEIGHT )
-		return(0);
+		return(SPARK_STATUS_OK);
 	section = SparkMinimaxH3StagePackSection(tensor_kind);
 	if ( (shape->layer_class == SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL) !=
 		(is_global != 0u) )
-		return(-2);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( is_global != 0u )
-		return(0);
+		return(SPARK_STATUS_OK);
 	layer = SparkMinimaxH3StagePackLayerOf(packed_layer);
 	if ( section == SPARK_MINIMAX_H3_STAGEPACK_SECTION_ENCODER &&
 		layer >= SPARK_MINIMAX_H3_ENCODER_LAYER_COUNT )
-		return(-3);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( section == SPARK_MINIMAX_H3_STAGEPACK_SECTION_DIT &&
 		layer >= SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT )
-		return(-4);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( section == SPARK_MINIMAX_H3_STAGEPACK_SECTION_VIDEO_VAE &&
 		layer >= SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_LAYER_COUNT )
-		return(-5);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( section == SPARK_MINIMAX_H3_STAGEPACK_SECTION_AUDIO_VAE &&
 		layer >= (SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCK_STAGE_COUNT *
 		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCKS_PER_STAGE) )
-		return(-6);
-	return(0);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
 }
 
 static inline uint32_t SparkMinimaxH3StagePackEncoderTensorCount(void)

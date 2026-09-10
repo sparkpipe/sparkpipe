@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "spark_minimax_h3_stagepack_format.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_error_site.h"
 
@@ -79,19 +80,19 @@ int main(int argc, char **argv)
 	if ( argc < 2 )
 	{
 		fprintf(stderr,"usage: %s <output.sp> [bf16|f32]\n",argv[0]);
-		SPARK_FAIL(-101);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state.lcg = UINT64_C(0x68333253504b5350);
 	memset(&state.buffer,0,sizeof(state.buffer));
 	file = fopen(argv[1],"wb");
 	if ( file == 0 )
-		SPARK_FAIL(-102);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	snprintf(directory_path,sizeof(directory_path),"%s.directory",argv[1]);
 	directory_scratch = fopen(directory_path,"wb+");
 	if ( directory_scratch == 0 )
 	{
 		fclose(file);
-		SPARK_FAIL(-103);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	state.file = file;
 	payload_offset = SPARK_MINIMAX_H3_STAGEPACK_HEADER_BYTES;
@@ -130,14 +131,14 @@ int main(int argc, char **argv)
 			SPARK_MINIMAX_H3_DIT_TIME_EMBED_DIMENSION,element);
 	}
 	if ( fflush(file) != 0 || fseek(directory_scratch,0,SEEK_SET) != 0 )
-		SPARK_FAIL(-104);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	{
 		char copy[8192];
 		size_t read;
 		while ( (read = fread(copy,1u,sizeof(copy),directory_scratch)) != 0u )
 		{
 			if ( fwrite(copy,1u,read,file) != read )
-				SPARK_FAIL(-105);
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 	}
 	SparkMinimaxH3StagePackExpectedGeometry(&header);

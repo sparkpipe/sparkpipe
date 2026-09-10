@@ -69,7 +69,8 @@ int main(void)
 	failures = 0;
 	for (index=0u; index<sizeof(kinds)/sizeof(kinds[0]); index++)
 	{
-		if ( SparkMinimaxH3StagePackTensorShapeOf(kinds[index],&shape) < 0 )
+		if ( SparkMinimaxH3StagePackTensorShapeOf(kinds[index],&shape) !=
+			SPARK_STATUS_OK )
 		{
 			failures++;
 			printf("FAIL unresolved kind=0x%04x\n",kinds[index]);
@@ -77,21 +78,21 @@ int main(void)
 	}
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_DIT_ATTENTION_QUERY,
-		SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT,0u,&shape) == 0 )
+		SPARK_MINIMAX_H3_DIT_TOTAL_BLOCK_COUNT,0u,&shape) == SPARK_STATUS_OK )
 	{
 		failures++;
 		printf("FAIL dit block out of range accepted\n");
 	}
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_ENCODER_ATTENTION_QUERY,
-		SPARK_MINIMAX_H3_ENCODER_LAYER_COUNT,0u,&shape) == 0 )
+		SPARK_MINIMAX_H3_ENCODER_LAYER_COUNT,0u,&shape) == SPARK_STATUS_OK )
 	{
 		failures++;
 		printf("FAIL encoder layer out of range accepted\n");
 	}
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_VIDEO_ATTENTION_QUERY,
-		SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_LAYER_COUNT,0u,&shape) == 0 )
+		SPARK_MINIMAX_H3_VIDEO_VAE_DECODER_LAYER_COUNT,0u,&shape) == SPARK_STATUS_OK )
 	{
 		failures++;
 		printf("FAIL video block out of range accepted\n");
@@ -99,7 +100,7 @@ int main(void)
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_AUDIO_RESBLOCK_CONV1,
 		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCK_STAGE_COUNT *
-		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCKS_PER_STAGE,0u,&shape) == 0 )
+		SPARK_MINIMAX_H3_AUDIO_VAE_RESBLOCKS_PER_STAGE,0u,&shape) == SPARK_STATUS_OK )
 	{
 		failures++;
 		printf("FAIL audio resblock out of range accepted\n");
@@ -112,7 +113,7 @@ int main(void)
 	}
 	if ( SparkMinimaxH3StagePackResolvedShape(
 		SPARK_MINIMAX_H3_DIT_ATTENTION_QUERY,
-		(7u << SPARK_MINIMAX_H3_STAGEPACK_SUB_SHIFT),0u,&shape) != 0 )
+		(7u << SPARK_MINIMAX_H3_STAGEPACK_SUB_SHIFT),0u,&shape) != SPARK_STATUS_OK )
 	{
 		failures++;
 		printf("FAIL sub-entry rejected\n");
