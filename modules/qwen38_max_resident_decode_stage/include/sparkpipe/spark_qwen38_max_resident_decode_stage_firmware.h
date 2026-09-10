@@ -160,6 +160,7 @@ typedef struct SparkQwen38MaxPipelineSlot
 	void *gdn_log_decay_f32;
 	void *gdn_beta_f32;
 	void *gdn_core_output_bf16;
+	void *moe_slot_up_bf16;
 	void *moe_slot_out_bf16;
 	void *moe_indices_u32;
 	float *moe_weights_f32;
