@@ -29,8 +29,9 @@ for _host in HOSTS:
     if not re.fullmatch(r"[a-z0-9]+", _host):
         raise SystemExit("invalid host name %r: must be [a-z0-9]+" % _host)
 TP = len(HOSTS)
-if TP < 2 or TP > 16:
-    raise SystemExit("qwen38_27b deploys 2..16 ranks; got %d" % TP)
+if TP != 4:
+    raise SystemExit("qwen38_27b deploys TP4 (the serving adapter compiles "
+                     "SPARK_QWEN38_27B_SERVING_TP_DEGREE=4); got %d hosts" % TP)
 
 ROOT_NAME = os.environ.get("QWEN38_27B_ROOT_NAME", "qwen38-27b.bf16.tp4")
 RUNTIME_ROOT = os.environ.get("QWEN38_27B_RUNTIME_ROOT",
