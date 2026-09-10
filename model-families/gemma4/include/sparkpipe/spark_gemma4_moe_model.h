@@ -48,6 +48,7 @@
 #define SPARK_GEMMA4_MOE_BOS_TOKEN_ID 2u
 #define SPARK_GEMMA4_MOE_EOS_TOKEN_ID 1u
 #define SPARK_GEMMA4_MOE_EOS_ALTERNATE_TOKEN_ID 106u
+#define SPARK_GEMMA4_MOE_EOS_ALTERNATE_2_TOKEN_ID 50u
 #define SPARK_GEMMA4_MOE_PAD_TOKEN_ID 0u
 #define SPARK_GEMMA4_MOE_MODULE_ID "spark.gemma4.26b-a4b.resident_decode_stage.bf16.linear_bf16.kv_bf16.h2816.l30.e128k8.v1"
 #define SPARK_GEMMA4_MOE_MODULE_TARGET "cuda.sm121.gemma4.26b-a4b.resident_decode_stage.bf16"
