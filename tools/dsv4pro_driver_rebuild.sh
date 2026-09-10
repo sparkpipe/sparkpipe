@@ -7,10 +7,13 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+mkdir -p /mnt/model-warm/packbuild/dsv4pro
+exec > /mnt/model-warm/packbuild/dsv4pro/driver_rebuild_$(date +%s).log 2>&1
 [[ -f Makefile ]] || { echo "NO-REPO-MAKEFILE at $REPO"; exit 1; }
 RR=/home/$(hostname)/sparkdata/dsv4_pro.tp4pp4
 PACK="$RR/packs/dsv4_pro_tp4_pp4_stage.spstage"
-[[ -s "$PACK" ]] || { echo "MISSING-RANK0-PACK $PACK"; exit 1; }
+[[ -s "$PACK" ]] || PACK="$RR/packs/dsv4_pro.tp4_pp4.rank00.spstage"
+[[ -s "$PACK" ]] || { echo "MISSING-RANK0-PACK under $RR/packs"; exit 1; }
 export PATH=/usr/local/cuda/bin:$PATH
 command -v nvcc >/dev/null || { echo "NO-NVCC"; exit 1; }
 sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' || true
@@ -27,7 +30,7 @@ make -C modules/dsv4_resident_decode_stage -f Makefile.pro publish \
   STAGE_COUNT=4 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=16 \
   MAX_ACTIVE_SEQUENCES=1024 MAX_SEQUENCE_POSITIONS=33024 \
   PIPELINE_SLOT_COUNT=13 PHYSICAL_PAGE_CAPACITY=1024 \
-  LOGICAL_PAGE_CAPACITY=16384 MTP_LAYER_COUNT=3 CUDA_GRAPH_COUNT=0 \
+  LOGICAL_PAGE_CAPACITY=16384 MTP_LAYER_COUNT=0 CUDA_GRAPH_COUNT=0 \
   || { echo PUBLISH-FAIL; exit 1; }
 
 echo "== driver compile =="

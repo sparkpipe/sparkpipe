@@ -279,13 +279,6 @@ def render_header(
             lines.append(f"#define {prefix}_DSPARK_KV_HEAD_COUNT {dspark['draft_kv_head_count']}u")
             lines.append(f"#define {prefix}_DSPARK_HEAD_DIMENSION {dspark['draft_head_dimension']}u")
             lines.append(f"#define {prefix}_DSPARK_INTERMEDIATE_DIMENSION {dspark['draft_intermediate_dimension']}u")
-        if variant == "flash" and suffix == "DSPARK_SPEC_STEP":
-            # Overridable per-build (-DSPARK_DSV4_MODEL_DSPARK_SPEC_STEP=<k>u) for
-            # the k-sweep (k=5/7/8/10); the header default stays serving_block_size.
-            lines.append(f"#ifndef {prefix}_DSPARK_SPEC_STEP")
-            lines.append(f"#define {prefix}_DSPARK_SPEC_STEP {value}u")
-            lines.append("#endif")
-            continue
         if variant == "flash" and suffix == "DSPARK_TARGET_LAYER_FIRST":
             lines.append(f"#define {prefix}_DSPARK_TARGET_LAYER_FIRST \\")
             lines.append(
@@ -406,6 +399,10 @@ def render_header(
             "}",
             "",
             "#endif /* SPARK_DSV4_PRO_BUILD */",
+            "",
+            "#ifndef SPARK_DSV4_MODEL_DSPARK_SPEC_STEP",
+            "#define SPARK_DSV4_MODEL_DSPARK_SPEC_STEP 7u",
+            "#endif",
             "",
         ])
     return "\n".join(lines)

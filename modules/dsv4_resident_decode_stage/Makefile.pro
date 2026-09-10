@@ -73,6 +73,18 @@ CUDA_GRAPH_COUNT ?= 0
 override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 := 9ef837975bc4ddbd3cf0de0ea19c59c2c4c8a3750a8b8f302a19df0e09f39fa3
 override DSV4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_dsv4_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
 override DSV4_REFERENCE_VERIFIER_SHA256 := $(shell sha256sum ../../tools/verify_dsv4_ga_reference_fixture.py | awk '{print $$1}')
+# The validator compiles the shared family header and must see the SAME
+# geometry the module was built with; without the Pro define it allocates
+# Flash-shape buffers (256x4096 gate) that the Pro module's argument
+# checks reject as cudaErrorInvalidValue before any launch.
+ifeq ($(PRO_EXPERT_CODEC),fp8_e4m3)
+DSV4_VALIDATION_DEFINES := -DSPARK_DSV4_PRO_BUILD=1 -DSPARK_DSV4_PRO_EXPERT_CODEC_FP8_E4M3=1
+else
+DSV4_VALIDATION_DEFINES := -DSPARK_DSV4_PRO_BUILD=1
+endif
+ifeq ($(PRO_KV_CODEC),fp8_e4m3)
+DSV4_VALIDATION_DEFINES += -DSPARK_DSV4_PRO_KV_CODEC_FP8_E4M3=1
+endif
 
 RUNTIME_CONFIGURATION := \
 	SPARK_DSV4_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
@@ -89,7 +101,8 @@ RUNTIME_CONFIGURATION := \
 	SPARK_DSV4_STAGE_GRAPHS=$(CUDA_GRAPH_COUNT) \
 	SPARK_DSV4_REFERENCE_MANIFEST_SHA256=$(DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256) \
 	SPARK_DSV4_CUDA_VALIDATOR_SHA256=$(DSV4_CUDA_VALIDATOR_SHA256) \
-	SPARK_DSV4_REFERENCE_VERIFIER_SHA256=$(DSV4_REFERENCE_VERIFIER_SHA256)
+	SPARK_DSV4_REFERENCE_VERIFIER_SHA256=$(DSV4_REFERENCE_VERIFIER_SHA256) \
+	SPARK_DSV4_VALIDATION_DEFINES="$(DSV4_VALIDATION_DEFINES)"
 
 GPU_VALIDATOR := validation/validate_dsv4_resident_decode_stage_cuda.sh
 
