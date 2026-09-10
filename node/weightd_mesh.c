@@ -416,6 +416,16 @@ uint32_t SparkWeightdMeshReady(void)
     return weightd_mesh.mesh_ready;
 }
 
+uint64_t SparkWeightdMeshBufferAddress(void)
+{
+    return (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
+}
+
+uint32_t SparkWeightdMeshBufferLkey(void)
+{
+    return weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->lkey : 0u;
+}
+
 SparkStatus SparkWeightdMeshPostWrite(
     uint32_t peer,
     uint64_t local_addr,
