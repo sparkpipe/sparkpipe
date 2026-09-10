@@ -248,3 +248,21 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
   trusting any perf deltas; then continue Stage A (GPU-resident mesh per the
   function-level order above — doorbell loop becomes the GPU-posting poller
   unchanged).
+
+
+## Stage A first attempt + revert (09-11 ~09:00, lane ca41b5d)
+
+- First GPU-move landed and WEDGED the fleet: ibv_reg_mr on a plain cudaMalloc
+  pointer fails EFAULT on all 16 nodes (errno 14, "gpu mr failed") — this NIC
+  stack cannot register ordinary cudaMalloc memory. Reverted within minutes;
+  serving restored on the doorbell+IPC engine (verified tokens, 16/16).
+- THE CORRECT GPU-DIRECT PATH (for the retry): allocate the mesh as CUDA VMM
+  (cuMemCreate + cuMemMap + cuMemSetAccess), export via
+  cuMemExportToShareableHandle(POSIX fd) — the exact machinery weightd already
+  uses for arena chunks — and register with ibv_reg_dmabuf_mr. The ENGINE side
+  imports the same way arenas do (cuMemImportFromShareableHandle + cuMemMap;
+  the residentd map_import path already exists). Everything else from the
+  attempt (doorbell publish/landed layout, MESH_INFO IPC import hook, engine
+  round shape) is in git history at 4d4808c to resurrect verbatim — only the
+  allocation/registration/import triple changes.
+- Iteration ledger: baseline back at the doorbell engine (~30s/32tok warm).
