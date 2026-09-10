@@ -47,6 +47,11 @@
       "size_bytes": 8250
     },
     {
+      "path": "DESIGN.md",
+      "sha256": "70739817c3631f54e4f158dd1b11def49a958bbd03f003b147e58f1bb7f5edf6",
+      "size_bytes": 23159
+    },
+    {
       "path": "DSV4_TP4_B1_HANDOFF.md",
       "sha256": "6d79dfc3115141d43ab88e81b9a73db22d74e67c65683a877f69e292c9572474",
       "size_bytes": 21370
@@ -70,6 +75,11 @@
       "path": "PERFORMANCE_STATUS.md",
       "sha256": "8d6fac3e1d6816152c77c7f4d4c9aff89061b51284b023f119f06a72d1ce22c6",
       "size_bytes": 37264
+    },
+    {
+      "path": "PROGRESS.md",
+      "sha256": "492985e8347417a140da4bdff0a5ffafabbbd546bfe7e93598def3fdbf85ee8f",
+      "size_bytes": 10383
     },
     {
       "path": "README.md",
@@ -2577,6 +2587,11 @@
       "size_bytes": 859
     },
     {
+      "path": "examples/model_descriptions/muse_glimmer_resident_decode_stage_firmware.json",
+      "sha256": "0a8cf53ac4e0cd0dbd80c3c6ccbc5ca1def3318b55dcaa31ecb9623aacd3efba",
+      "size_bytes": 3151
+    },
+    {
       "path": "examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json",
       "sha256": "75577caf499e37906c497babebab24a03a08092771f751aecc9d49766a17b7e4",
       "size_bytes": 5653
@@ -3308,8 +3323,8 @@
     },
     {
       "path": "inference/kernels/norm.cuh",
-      "sha256": "5cf50a6b77bc6acccd2e5888fa270c8b82b9bd4b2ff37b3e16818f7195d0077a",
-      "size_bytes": 18610
+      "sha256": "c7a7c45769b3453f5065791bfc52200f11203d8d7772d5f5d2696549d69eb418",
+      "size_bytes": 20719
     },
     {
       "path": "inference/kernels/project.cuh",
@@ -3657,6 +3672,31 @@
       "size_bytes": 2534
     },
     {
+      "path": "model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h",
+      "sha256": "114b189c416a3aa6be08753a4c6d1d6d6d32b7c870b837eddce8408410e7d24c",
+      "size_bytes": 4761
+    },
+    {
+      "path": "model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_work_control.h",
+      "sha256": "05e49b0b3d4c5737a8b31cea1e8a989568fdaa358574ae76d889453cdb1e01dc",
+      "size_bytes": 3497
+    },
+    {
+      "path": "model-families/muse_glimmer/name_map.json",
+      "sha256": "de6e056c921f67c1a6812993973a355b3c8108866e047335b896d609337a5d1d",
+      "size_bytes": 1836
+    },
+    {
+      "path": "model-families/muse_glimmer/src/spark_muse_glimmer_work_control.c",
+      "sha256": "589098234f1f1491de6841101c9f22cee3d722a6db6515a28699a67e2d312118",
+      "size_bytes": 326
+    },
+    {
+      "path": "model-families/muse_glimmer/tensor_patterns.json",
+      "sha256": "7cfe23153e0f2a2ac27f8e803220d7b4070f5248ba34ef752d4deef104c177f0",
+      "size_bytes": 4764
+    },
+    {
       "path": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
       "sha256": "bb295e5ab6497dc60d4dfb936f07241a9313bc5129159d70beb6867321030f91",
       "size_bytes": 3107
@@ -3777,6 +3817,11 @@
       "size_bytes": 2712
     },
     {
+      "path": "model_contracts/muse_glimmer_authoritative.json",
+      "sha256": "c63afb1dd92c4eef8430a6fac206ef5147e297703791bad438662fce526ff37d",
+      "size_bytes": 7140
+    },
+    {
       "path": "model_contracts/must_work_targets.json",
       "sha256": "c7c673b00f53ec97c437be41c572c9afa3e799b6fdb94b721aa65e151a53444c",
       "size_bytes": 3871
@@ -3810,6 +3855,11 @@
       "path": "model_contracts/references/hy4_preview_config.json",
       "sha256": "8f08e75af6c46578a6fc93883b4446189c67cc8b6ff47f20a51c43cd3dd9d6d4",
       "size_bytes": 22895
+    },
+    {
+      "path": "model_contracts/references/modeling_muse_glimmer.py",
+      "sha256": "e69eb21d6efd815a48499d4d0e4180afda2f443beb441a734d50efc2cf83f975",
+      "size_bytes": 53195
     },
     {
       "path": "model_contracts/references/modeling_qwen4_exp.py",
@@ -4350,6 +4400,61 @@
       "path": "modules/kv_mooncake/spark_kv_mooncake.cpp",
       "sha256": "047d7335e700de1343abd18a041b92e827039a980460a58e3efc89859a433b95",
       "size_bytes": 13046
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/Makefile",
+      "sha256": "e6569699c2a07b42a603ba194c399b948ca8b6a877e4462d9eabc5dccae1243f",
+      "size_bytes": 3243
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h",
+      "sha256": "f0873e181acfe66adaaa4146e46c087bf9a734f5a135c8a471249c5a36d1d608",
+      "size_bytes": 7136
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_serving_adapter.h",
+      "sha256": "2f7295d58b7576aa14d630ea3acd3171d5871fafe103ea47a2c886045339a0c4",
+      "size_bytes": 147
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_cuda.cu",
+      "sha256": "7df4f301f12d978894631f061e19d77793e16b03a1e412578c1d225f00ba50d2",
+      "size_bytes": 20035
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c",
+      "sha256": "228429909ad328dae7356abd5ca08d8abe25687780e1f1fb5c4d793875a7989d",
+      "size_bytes": 94444
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
+      "sha256": "2a6df57a8e107152986192da057318478d74f4943d8658de71ca3824da622aea",
+      "size_bytes": 15233
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_stagepack_format.h",
+      "sha256": "72c23c947ba76bf9942cddf08124e2cbb33cbd32907ce4afee96c241a379acf2",
+      "size_bytes": 11038
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/tools/muse_glimmer_pack_synthesize.c",
+      "sha256": "4c803174b3fa612e0dc0a9f366f4f91662fc49dcd10f6e70eb2cbbc7926628a4",
+      "size_bytes": 9553
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/validation/publish_validator_wrapper.sh",
+      "sha256": "f5d25c6129f6b136e9cf8f546c446fdf0bffffa0006bf66c1e24b854eb169648",
+      "size_bytes": 642
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu",
+      "sha256": "2e3614827082567a3ab4668fb9582a1acb48d94927524ad613f35a35d26d4835",
+      "size_bytes": 30776
+    },
+    {
+      "path": "modules/muse_glimmer_resident_decode_stage/validation/validate_muse_glimmer_resident_decode_stage_cuda.sh",
+      "sha256": "7dfd8f1735a2bc3b8efd8985283ba30d984f79f351ae3067ddecd7eea9f7952a",
+      "size_bytes": 3112
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/Makefile",
@@ -6763,8 +6868,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "400c7f82e5a972236ea2668a99f39504920160f23e172461a47d6a06b6b927a7",
-      "size_bytes": 100329
+      "sha256": "105c30d9015cc27d4e4dab202e1035ec64a8a2940dfd581078a3bbdd60beb5e8",
+      "size_bytes": 100779
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7612,6 +7717,11 @@
       "size_bytes": 15866
     },
     {
+      "path": "tests/test_muse_glimmer_model_header.py",
+      "sha256": "513dc789c8313f3521a1044806177582204399cef0ad6b5432b40772230e120a",
+      "size_bytes": 9559
+    },
+    {
       "path": "tests/test_must_work_targets.py",
       "sha256": "19510f7ab95552c6a2c113083546592ae756d7d60b4d0cf720751b1576ca0631",
       "size_bytes": 2180
@@ -8125,6 +8235,11 @@
       "path": "tools/decode_only_bench.py",
       "sha256": "2a19c994dddf2964e3acd605d87984e1783f60eb851e71d733f951f93ea4238e",
       "size_bytes": 2627
+    },
+    {
+      "path": "tools/dev/port_family.py",
+      "sha256": "5538416c0186457b845ef1b6b336f13a493244a79e52cb3f80578c2d8a065a2a",
+      "size_bytes": 2157
     },
     {
       "path": "tools/devcycle.sh",
@@ -9290,6 +9405,16 @@
       "path": "tools/mtp_strip_wave2.sh",
       "sha256": "8a2341dbfcde7eecf23fa6b5dc9120bd3ffd99c89c064cc28d6cddaec9e03af1",
       "size_bytes": 788
+    },
+    {
+      "path": "tools/muse_gen_deployment.py",
+      "sha256": "48db6d2a5b4eae0b7a88c2cace82262ec6bde5ae2f233111ebf51b5d15ca0ee6",
+      "size_bytes": 4318
+    },
+    {
+      "path": "tools/muse_glimmer_stagepack.py",
+      "sha256": "7b59ec10382d9d84321d01c392e7e0c920658e335b4d9540c923226f6293b814",
+      "size_bytes": 17765
     },
     {
       "path": "tools/nvfp4_tp8_audit.sh",
