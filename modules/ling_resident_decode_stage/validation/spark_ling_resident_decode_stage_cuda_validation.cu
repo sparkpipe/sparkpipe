@@ -467,6 +467,8 @@ typedef struct SparkLingValKdaDump
 	float k_raw[SPARK_LING_VAL_KDA_QK];
 	float v_raw[SPARK_LING_VAL_KDA_V];
 	float q_conv[SPARK_LING_VAL_KDA_QK];
+	float k_conv[SPARK_LING_VAL_KDA_QK];
+	float v_conv[SPARK_LING_VAL_KDA_V];
 	float retention[SPARK_LING_VAL_KDA_QK];
 	float beta[SPARK_LING_VAL_KDA_HEADS];
 	float o[SPARK_LING_VAL_KDA_V];
@@ -575,8 +577,12 @@ static void SparkLingValKdaAttention(
 		v[index] = total * SparkLingValSigmoid(total);
 	}
 	memcpy(dump->q_conv,q,sizeof(dump->q_conv));
+	for (index = 0u; index < v_dim; index++)
+		dump->v_conv[index] = v[index];
 	SparkLingValL2PerHead(q,heads,key,SPARK_LING_VAL_RMS_EPS);
 	SparkLingValL2PerHead(k,heads,key,SPARK_LING_VAL_RMS_EPS);
+	for (index = 0u; index < qk; index++)
+		dump->k_conv[index] = k[index];
 	for (index = 0u; index < qk; index++)
 	{
 		float sum = 0.0f;
@@ -1811,6 +1817,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				static uint16_t device_q[SPARK_LING_VAL_KDA_QK];
 				static float device_ret[SPARK_LING_VAL_KDA_QK];
 				static float device_beta[SPARK_LING_VAL_KDA_HEADS];
+				static uint16_t device_window[3u][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
+				static uint16_t device_vconv[SPARK_LING_VAL_KDA_V];
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
 					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
 					&oracle_dump);
@@ -1833,8 +1841,34 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 						cudaMemcpy(device_ret,fixture->kda_retention_dev,
 							sizeof(device_ret),cudaMemcpyDeviceToHost) == cudaSuccess &&
 						cudaMemcpy(device_beta,fixture->kda_write_gate_dev,
-							sizeof(device_beta),cudaMemcpyDeviceToHost) == cudaSuccess )
+							sizeof(device_beta),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_window[0],fixture->wave.kda_q_window_pool,
+							sizeof(device_window[0]),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_window[1],fixture->wave.kda_k_window_pool,
+							sizeof(device_window[1]),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_window[2],fixture->wave.kda_v_window_pool,
+							sizeof(device_window[2]),cudaMemcpyDeviceToHost) == cudaSuccess &&
+						cudaMemcpy(device_vconv,fixture->gate_up_dev,
+							sizeof(device_vconv),cudaMemcpyDeviceToHost) == cudaSuccess )
 					{
+						uint32_t first_q = SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV;
+						uint32_t first_w = SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV;
+						for (index = 0u; index < SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV; index++)
+							if ( device_window[0][index] != walk->kda_windows[0][0][index] )
+							{
+								if ( first_w == SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV )
+									first_w = index;
+							}
+						for (index = 0u; index < SPARK_LING_VAL_KDA_QK; index++)
+						{
+							float d = SparkLingValFromBf16(device_q[index]) - oracle_dump.q_conv[index];
+							if ( fabsf(d) > 0.002f * (fabsf(oracle_dump.q_conv[index]) + 0.001f) &&
+								first_q == SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV )
+								first_q = index;
+						}
+						printf(" win_first_diff %u (dev %04x or %04x) q_first_diff %u (dev %.5f or %.5f)",
+							first_w,device_window[0][first_w],walk->kda_windows[0][0][first_w],
+							first_q,SparkLingValFromBf16(device_q[first_q]),oracle_dump.q_conv[first_q]);
 						static float device_stage_f[SPARK_LING_VAL_KDA_FUSED];
 						static float device_q_f[SPARK_LING_VAL_KDA_QK];
 						SparkLingValMetrics m;
