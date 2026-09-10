@@ -106,6 +106,7 @@ def main():
         "transport": {"shared_object_path": "lib/libhidden_transport_spark_host_rdma_verbs.so",
                       "mode": "host-rdma",
                       "control_port_base": PP_TRANSPORT_PORT_BASE},
+        "weightd": {"socket_path": "/tmp/spark_weightd.sock"},
         "runtime_limits": {
             "max_inflight_submissions": 1,
             "max_active_sequences": 8,
