@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# muse_glimmer resident decode stage, retained-receipt GPU validation. The
-# mechanical skeleton is the shared validation driver; the admission gates
-# below are muse_glimmer's own tier policy.
-
 validation_label="MuseGlimmer"
 validation_digest_label="MuseGlimmer"
 validation_gate_label="muse_glimmer"
@@ -31,10 +27,6 @@ spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
 spark_cuda_validation_check_source_digests
 
-# V0 synthesize-pack policy: the module tier loads the pack this script
-# builds from the same enum/shape table the real packer implements
-# (muse_glimmer_pack_synthesize), so a pre-download V0 needs no warm copy.
-# An externally supplied pack (the future real rank-0 shard) wins.
 if [[ -z "${SPARK_MUSE_GLIMMER_STAGE_PACK_PATH:-}" ]]; then
     SPARK_MUSE_GLIMMER_STAGE_PACK_PATH="${validation_directory}/muse_v0.gsmu"
     export SPARK_MUSE_GLIMMER_STAGE_PACK_PATH
@@ -54,9 +46,6 @@ if [[ -z "${SPARK_MUSE_GLIMMER_STAGE_PACK_PATH:-}" ]]; then
         --output "${SPARK_MUSE_GLIMMER_STAGE_PACK_PATH}" --tp 16
 fi
 
-# The module tier drives decode frames through the module's own unqualified
-# smoke path (the serving adapter owns the qualified one), so the gate must
-# be open and the stage must be the slice-0 stage of its configuration.
 require_configuration_value SPARK_MUSE_GLIMMER_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_INDEX 0
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_FIRST_LAYER 0
@@ -67,13 +56,10 @@ case "${SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES:-8}" in
         exit 2
         ;;
 esac
-# A TP degree beyond 1 needs the live device collective and gates at the
-# fleet window, not here - the kernel tier covers the rank-local geometry.
 if [[ "${SPARK_MUSE_GLIMMER_TP_DEGREE:-1}" != "1" ]]; then
     echo "muse_glimmer hardware validation requires SPARK_MUSE_GLIMMER_TP_DEGREE=1 (tp>1 needs the live collective; see the lane report)" >&2
     exit 2
 fi
-# The whole stack in one stage: 52 layers, embedding through head, TP1.
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_COUNT 1
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_LAYER_COUNT 52
 if (( ${SPARK_MUSE_GLIMMER_STAGE_KV_BLOCKS:-0} < 8 )); then

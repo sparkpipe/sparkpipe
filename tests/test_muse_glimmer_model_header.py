@@ -22,7 +22,6 @@ CONTRACT = REPOSITORY / "model_contracts/muse_glimmer_authoritative.json"
 
 TP_DEGREE = 16
 
-# contract section/key -> header macro
 BINDINGS = {
     ("model", "hidden_dimension"): "SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION",
     ("model", "layer_count"): "SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT",
@@ -149,13 +148,9 @@ def main() -> int:
     for (section, key), name in BINDINGS.items():
         expected = contract[section][key]
         actual = macro(header, name)
-        # 1e-9 absorbs ulp-level derivation drift (attention_scale: the
-        # contract pins the python double, the header states sqrtf form);
-        # real geometry mistakes differ far above this.
         if not math.isclose(float(expected), actual, rel_tol=1e-9):
             print(f"MISMATCH {name}: header {actual} contract {expected}")
             failures += 1
-    # composed geometry the kernels and packer derive from the macros
     composed = {
         "SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION": 32 * 128,
         "SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION": 2 * 128,
@@ -177,7 +172,6 @@ def main() -> int:
         if not math.isclose(float(expected), actual, rel_tol=1e-9):
             print(f"MISMATCH composed {name}: header {actual} expected {expected}")
             failures += 1
-    # invariants the module's stagepack static asserts restate in C
     if 39 + 13 != 52 or 52 % 4 != 0:
         print("MISMATCH hybrid layer split does not cover the stack in whole periods")
         failures += 1

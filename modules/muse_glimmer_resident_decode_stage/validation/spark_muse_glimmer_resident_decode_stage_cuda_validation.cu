@@ -114,10 +114,6 @@ static void SparkMuseGlimmerValReferenceCenteredNorm(const uint16_t *input, cons
 		output[index] = SparkMuseGlimmerValBf16(SparkMuseGlimmerValFromBf16(input[index]) * scale * (1.0f + SparkMuseGlimmerValFromBf16(weight[index])));
 }
 
-/* The qk tier pins the closed form instead of a second C implementation:
- * a constant 0x3f3f input (0.74609 each) normed to 1.00002 and scaled by
- * 3.87 rounds to 0x4078, computed by hand and frozen here. */
-
 static void SparkMuseGlimmerValReferenceDecode(const uint16_t *query, const uint16_t *pool, const uint32_t *selected, uint32_t selected_count, uint16_t *output, uint64_t slot_elements)
 {
 	uint32_t head,element,step;

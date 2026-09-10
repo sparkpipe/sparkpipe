@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Module-publish validator wrapper for muse_glimmer (the dsv4 pattern).
-# sparkpipe_module_publish calls: wrapper CONFIGURATION_SHA ARCHIVE.
-# The pack and tier come from the environment (the publish recipe exports
-# the module's RUNTIME_CONFIGURATION), so one wrapper serves every tier.
 set -euo pipefail
 
 CONFIGURATION_SHA="${1:?usage: wrapper CONFIGURATION_SHA ARCHIVE}"

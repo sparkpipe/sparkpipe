@@ -405,10 +405,6 @@ def main() -> int:
         with open(arguments.output, "wb") as out:
             out.write(make_header(arguments.tp_degree, len(records), file_bytes))
             for record, payload_offset, _ in entries:
-                # Field order is the frozen SparkMuseGlimmerStagePackEntry
-                # wire layout (<6I4Q>): kind, layer, weight_format, rows,
-                # columns, scale_group_size, payload_offset, payload_bytes,
-                # scale_offset, scale_bytes.
                 out.write(ENTRY_STRUCT.pack(record.kind, record.layer,
                                             record.weight_format, record.rows,
                                             record.columns, 0,
