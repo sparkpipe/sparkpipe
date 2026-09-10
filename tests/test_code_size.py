@@ -1478,7 +1478,16 @@ CEILING = 233150
 # incl. the error-site SPARK_FAIL sweep (1583 sites) and the direct-pack-load
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
-CEILING = 241052
+# Re-merge 8f3a6f2..14df85a: glm53-p0 #912 (residentd scope release, transport
+# patient startup + route self-healing) + ceiling re-pin #911. Measured exact
+# on 14df85a: 241327 (+275).
+# The gemma4 lane #903 lands the family: two-contract model header, gemma
+# stagepack format + firmware ABI, the carved module (2533 -> 1380) and
+# kernel set (2587 -> 470) replacing the qwen4_flash donor body, arm
+# Makefiles, serving adapter, standalone pack synth tool: +3340 net. The
+# donor-body deletion is the point.
+# Measured exact: 244667 at the gemma4 tip.
+CEILING = 244667
 
 
 ROOT = Path(__file__).resolve().parent.parent
