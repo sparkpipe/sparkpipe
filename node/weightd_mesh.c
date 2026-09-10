@@ -268,6 +268,11 @@ static void SparkWeightdMeshTryWire(void)
             peer_records[peer].recv_addr;
     }
     weightd_mesh.mesh_ready = 1u;
+    {
+        FILE *marker = fopen(SPARK_WEIGHTD_MESH_DIR "/.ready","w");
+        if (marker != 0)
+            (void)fclose(marker);
+    }
     printf("weightd-mesh: ready rank=%u peers=%u rkey=%u\n",
         weightd_mesh.local_rank,SPARK_WEIGHTD_MESH_PEERS,
         weightd_mesh.recv_mr->rkey);
@@ -286,6 +291,7 @@ SparkStatus SparkWeightdMeshInit(void)
     memset(&weightd_mesh,0,sizeof(weightd_mesh));
     weightd_mesh.local_rank = SparkWeightdMeshRankFromHost();
     weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
+    (void)unlink(SPARK_WEIGHTD_MESH_DIR "/.ready");
 
     devices = ibv_get_device_list(&device_count);
     if (devices == 0 || device_count == 0)

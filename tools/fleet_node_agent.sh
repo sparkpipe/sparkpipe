@@ -112,6 +112,11 @@ start_root() {
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
     done
+    if [ "$(grep -c '"rank_index"' "$rr/model_resident.json" 2>/dev/null)" -gt 1 ] && \
+       [ ! -f /tmp/weightd-mesh/.ready ]; then
+        echo "$(date +%T) $name: waiting for weightd mesh"
+        return 0
+    fi
     cd "$rr" || return 1
     [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
@@ -181,14 +186,22 @@ sync_rendezvous() {
                 "$HUB:release/qpn/$host/mesh/" 2>/dev/null
             touch "$mesh_dir/.shipped"
         fi
-        local pr pn fn
+        local pr pn fn now age
+        now=$(date +%s)
         for pr in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
             pn="spark$pr"
             [ "$pn" = "$host" ] && continue
             fn="$mesh_dir/mesh-$pr.rec"
-            [ -f "$fn" ] && continue
-            curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$pn/mesh/mesh-$pr.rec" \
-                -o "$fn" 2>/dev/null || rm -f "$fn"
+            if [ -f "$fn" ]; then
+                age=$(( now - $(stat -c %Y "$fn" 2>/dev/null || echo "$now") ))
+                [ "$age" -lt 10 ] && continue
+            fi
+            if curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$pn/mesh/mesh-$pr.rec" \
+                -o "$fn.tmp" 2>/dev/null; then
+                mv "$fn.tmp" "$fn"
+            else
+                rm -f "$fn.tmp"
+            fi
         done
     fi
 }
