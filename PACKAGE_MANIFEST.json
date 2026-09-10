@@ -58,8 +58,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "d1193d7bcf77a4aa601a1b7cba521ee30804b6d913ea6b3a41f273328de95490",
-      "size_bytes": 93794
+      "sha256": "a2a13f88501a904891449b69a7695e969db6cc65c001397ec1fc2323a1ff753a",
+      "size_bytes": 93824
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -9865,5 +9865,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32396717
+  "total_bytes": 32396747
 }
