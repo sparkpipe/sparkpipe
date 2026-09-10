@@ -51,10 +51,17 @@ MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm52_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../src/spark_status.c \
+	../../src/spark_sha256.c \
+	../../src/spark_ck128.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
-	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES))
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
+	../../cache/kv_cache.c \
+	../../cache/kv_page_cache.c \
+	../../cache/kv_page_store.c \
+	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 
