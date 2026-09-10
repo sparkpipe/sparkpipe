@@ -159,7 +159,13 @@ static inline uint32_t SparkQwen4FlashStagePackExpectedTensorCount(uint32_t firs
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT )
+	{
+#if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT == 0
+		tensors += 4u + (first_layer_index != 0u ? 1u : 0u);
+#else
 		tensors += 2u + 4u + 4u + 25u + (first_layer_index != 0u ? 1u : 0u);
+#endif
+	}
 	return(tensors);
 }
 
