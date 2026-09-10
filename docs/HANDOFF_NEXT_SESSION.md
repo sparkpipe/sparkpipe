@@ -143,3 +143,21 @@ Receiver: spin on *(uint64_t*)(buffer + (peer+1)*(bytes+8) + bytes) >= ordinal+1
   unwedging.
 - Next levers unchanged: Stage A/B GPU-resident mesh + graphs for the launch
   tax; these two serving fixes are now first in the queue.
+
+
+## Hill-climb iteration 5 (09-11 ~06:20, lane 6855757) — dev-cycle reliability
+
+- Slot exhaustion FIXED: idle retained slots now evict on claim (binding +
+  continuation lease reset when a new sequence takes over an idle slot; BUSY
+  only if actively owned). Stress: 25/25 sequential requests served, zero
+  restarts, fleet 16/16 throughout.
+- API self-heals after residentd restarts (1s retry cadence to a 120s deadline;
+  each failed connect blocks ~22s against a booting residentd — acceptable, no
+  kill needed; just wait after a wave).
+- Warm baseline re-established with merged-IPC broadcast live: 20.3s/32 tok;
+  broadcast phase now 130-145us (was 160-950us). One 34s outlier right after
+  the 25-request stress (retained-KV state / background) — re-measure before
+  trusting any single reading.
+- Dev cycle now: module commit -> ~2min wave (weightd waves ~90s, module-only
+  ~30s) -> API self-heals -> unlimited requests. Next: Stage A GPU-resident
+  mesh, then graphs (launch tax is the proven 10x).
