@@ -12,9 +12,8 @@
 #define SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE 1
 #define SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST 2
 extern int cudaSetDevice(int device);
-extern int cudaHostRegister(void *pointer,size_t bytes,unsigned int flags);
-extern int cudaHostUnregister(void *pointer);
-extern int cudaHostGetDevicePointer(void **device_pointer,void *host_pointer,unsigned int flags);
+extern int cudaMalloc(void **pointer,size_t bytes);
+extern int cudaFree(void *pointer);
 extern int cudaMemcpyAsync(void *destination,const void *source,
     size_t bytes,int kind,void *stream);
 extern int cudaStreamSynchronize(void *stream);
@@ -37,7 +36,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
 {
     SparkWeightdClient *client;
     uint8_t *mesh_buffer;
-    uint8_t *mesh_device;
+    uint8_t *peer_stage;
+    uint64_t peer_stage_bytes;
     uint64_t band_base;
     uint64_t slot_bytes;
     SparkTpDeviceCollectiveCombineBf16Function combine;
@@ -242,8 +242,20 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 &&
          implementation->combine != 0 )
     {
-        uint8_t *peer_base = implementation->mesh_device != 0 ?
-            implementation->mesh_device : implementation->mesh_buffer;
+        uint64_t stage_bytes = bytes * (uint64_t)(implementation->tp_degree - 1u);
+        if ( implementation->peer_stage == 0 ||
+             stage_bytes > implementation->peer_stage_bytes )
+        {
+            if ( implementation->peer_stage != 0 )
+                (void)cudaFree(implementation->peer_stage);
+            if ( cudaMalloc((void **)&implementation->peer_stage,
+                    stage_bytes) != 0 )
+            {
+                implementation->peer_stage = 0;
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            implementation->peer_stage_bytes = stage_bytes;
+        }
         if ( cudaMemcpyAsync(submission->full_device,scratch,(size_t)bytes,
                 SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE,
                 submission->cuda_stream) != 0 )
@@ -252,10 +264,21 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         {
             uint32_t peer_rank =
                 peer < implementation->tp_rank ? peer : peer + 1u;
-            uint8_t *source = peer_base + implementation->band_base +
+            const uint8_t *source = implementation->mesh_buffer +
+                implementation->band_base +
                 (uint64_t)peer_rank * slot_bytes;
+            if ( cudaMemcpyAsync(
+                    implementation->peer_stage + (uint64_t)peer * bytes,
+                    source,(size_t)bytes,
+                    SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE,
+                    submission->cuda_stream) != 0 )
+                return SPARK_STATUS_IO_ERROR;
+        }
+        for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
+        {
             if ( implementation->combine(implementation->combine_context,
-                    submission->full_device,source,
+                    submission->full_device,
+                    implementation->peer_stage + (uint64_t)peer * bytes,
                     submission->active_sequence_count,
                     implementation->local_hidden_dimension,
                     submission->cuda_stream) != SPARK_STATUS_OK )
@@ -546,11 +569,6 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
          receive_device == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
-    if ( implementation->mesh_device == 0 &&
-         cudaHostRegister(receive_device,
-             SPARK_WEIGHTD_MESH_BUFFER_BYTES,1u) == 0 )
-        (void)cudaHostGetDevicePointer(
-            (void **)&implementation->mesh_device,receive_device,0u);
     implementation->mesh_buffer = receive_device;
     return SPARK_STATUS_OK;
 }
@@ -567,8 +585,8 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     pthread_cond_signal(&implementation->wake);
     pthread_mutex_unlock(&implementation->lock);
     pthread_join(implementation->worker,0);
-    if ( implementation->mesh_device != 0 && implementation->mesh_buffer != 0 )
-        (void)cudaHostUnregister(implementation->mesh_buffer);
+    if ( implementation->peer_stage != 0 )
+        (void)cudaFree(implementation->peer_stage);
     SparkWeightdClientClose(implementation->client);
     free(implementation);
     collective->implementation = 0;
