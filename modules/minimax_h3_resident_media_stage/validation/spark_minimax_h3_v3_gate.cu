@@ -428,7 +428,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block0,device_h,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			&scratch,device_segments,device_result);
+			&scratch,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block0 forward cuda error: %s FAIL\n",cudaGetErrorString(error));
@@ -444,7 +444,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block1,device_result,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			&scratch,device_segments,device_result);
+			&scratch,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block1 forward cuda error: %s FAIL\n",cudaGetErrorString(error));
@@ -459,7 +459,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block0,device_h,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			&scratch,device_segments,device_result);
+			&scratch,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block0 rerun cuda error: %s FAIL\n",cudaGetErrorString(error));
