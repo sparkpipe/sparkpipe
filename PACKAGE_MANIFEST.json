@@ -1063,8 +1063,8 @@
     },
     {
       "path": "docs/WEIGHTD_DESIGN.md",
-      "sha256": "14ca41deb3bb7ef6bda5d1ee7c313e2aa1024c82e9d112284b90b4db7bb81c5f",
-      "size_bytes": 6849
+      "sha256": "5bc88aff81c2671472d805d7e51a6a9514d9b570ddc7e7c023dc394424fedbe5",
+      "size_bytes": 7133
     },
     {
       "path": "docs/WEIGHTD_MESH.md",
@@ -8598,8 +8598,8 @@
     },
     {
       "path": "tools/fleet_serve.sh",
-      "sha256": "c868fcfcec21fdba1fc468a29adcd3b48a867e544b4403d60d30a1a680324a56",
-      "size_bytes": 5277
+      "sha256": "b760a341ae9e1d437b8852c147ed440f3b2ae75b2513f83ada0866e196be51c2",
+      "size_bytes": 5345
     },
     {
       "path": "tools/fleet_swap.sh",
@@ -9865,5 +9865,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32396546
+  "total_bytes": 32396898
 }
