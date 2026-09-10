@@ -1847,10 +1847,26 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
+	if ( state->lazy_pack != 0 &&
+	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(
+		    &state->tp_device_collective,
+		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+		    0u,0u,0u,0u);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkTpDeviceCollectiveCreate(&configuration_hc,&state->tp_device_collective_hc);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_hc_initialized = 1u;
+	if ( state->lazy_pack != 0 &&
+	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(
+		    &state->tp_device_collective_hc,
+		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+		    0u,0u,0u,0u);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	return(SPARK_STATUS_OK);
 }
 
