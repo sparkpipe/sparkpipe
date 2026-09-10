@@ -28,38 +28,10 @@ import torch
 from safetensors import safe_open
 from torch import nn
 
+from dsv4_ga_reference_profiles import PROFILES
 
-CHECKPOINT_INDEX_SHA256 = "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b"
-CHECKPOINT_CONFIG_SHA256 = "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023"
-CHECKPOINT_TOKENIZER_SHA256 = "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf"
-CHECKPOINT_REVISION = "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-REFERENCE_BATCH_JSON_SHA256 = "6f7836819a9ecdbca117b18cb4717aa8cb91c230af5961c5d025968cef34f8bb"
-REFERENCE_TOKEN_PAYLOAD_SHA256 = "f2f860f7843e755c4cdfcea408c647559ab604fde5c34a00bac314ba62289769"
-REFERENCE_MODEL_SHA256 = "c0c19e6c9fa439bac7fbb1c5bc1868232dfd5aa2f439a548d0e33dcc2a9edd3f"
-REFERENCE_KERNEL_SHA256 = "59b325083d7103975cba025bd0d60ea343bb82d8fff53088afb7c04bd380c0c2"
-REFERENCE_CONFIG_SHA256 = "c90861f3d10a9e4ef5954f8f1a34c529d480da1c5799f84660028f4e38e14e71"
-REFERENCE_FIRST_LAYER = 0
-REFERENCE_LAYER_COUNT = 3
-REFERENCE_PROMPT_TOKENS = 128
-REFERENCE_VOCABULARY_SIZE = 129280
-REFERENCE_SOURCE_SHARDS = {
-    "model-00001-of-00048.safetensors": (
-        1059061856,
-        "f3668ba4cccf1ca6a7eb84e888fb92c1cdc7204d472ba9db771e6fd3abf6b874",
-    ),
-    "model-00002-of-00048.safetensors": (
-        3566321192,
-        "77b26c939a0e25b3113c8d6bb04e1901a748bd4a7d2589e3bfdaabdf1e9bba14",
-    ),
-    "model-00003-of-00048.safetensors": (
-        3566321192,
-        "412abf4c906faadc221ef0cb50f90fe20bde8454a08ad4dc2364b6b79e7fda5c",
-    ),
-    "model-00004-of-00048.safetensors": (
-        3596229272,
-        "9610f56bc587fb0ff9a8b68a60299482ee8c433fe5b5587e4257aca98add4a2e",
-    ),
-}
+
+PROFILE = PROFILES["flash"]
 
 
 class VectorError(RuntimeError):
@@ -88,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="SparkPipe schema-v1 B1 batch supplying the exact prompt token IDs",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        default="flash",
+        help="checkpoint identity/geometry profile to generate against",
     )
     return parser.parse_args()
 
@@ -391,13 +369,13 @@ def load_source_batch(batch_json: Path) -> SourceBatch:
         isinstance(token, bool)
         or not isinstance(token, int)
         or token < 0
-        or token >= REFERENCE_VOCABULARY_SIZE
+        or token >= PROFILE["vocabulary_size"]
         for token in token_ids
     ):
         raise VectorError("--batch-json request has invalid prompt_token_ids")
-    if len(token_ids) < REFERENCE_PROMPT_TOKENS:
+    if len(token_ids) < PROFILE["prompt_tokens"]:
         raise VectorError(
-            f"prompt has {len(token_ids)} tokens, cannot select {REFERENCE_PROMPT_TOKENS}"
+            f"prompt has {len(token_ids)} tokens, cannot select {PROFILE["prompt_tokens"]}"
         )
     request_id = request.get("request_id")
     sequence_id = request.get("sequence_id")
@@ -405,24 +383,24 @@ def load_source_batch(batch_json: Path) -> SourceBatch:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise VectorError(f"--batch-json request has invalid {label}")
     return SourceBatch(
-        [token_ids[:REFERENCE_PROMPT_TOKENS]], request_id, sequence_id
+        [token_ids[:PROFILE["prompt_tokens"]]], request_id, sequence_id
     )
 
 
 def require_checkpoint_identity(model_dir: Path) -> list[dict[str, Any]]:
     expected = {
-        model_dir / "model.safetensors.index.json": CHECKPOINT_INDEX_SHA256,
-        model_dir / "config.json": CHECKPOINT_CONFIG_SHA256,
-        model_dir / "tokenizer.json": CHECKPOINT_TOKENIZER_SHA256,
-        model_dir / "inference" / "model.py": REFERENCE_MODEL_SHA256,
-        model_dir / "inference" / "kernel.py": REFERENCE_KERNEL_SHA256,
-        model_dir / "inference" / "config.json": REFERENCE_CONFIG_SHA256,
+        model_dir / "model.safetensors.index.json": PROFILE["index_sha256"],
+        model_dir / "config.json": PROFILE["config_sha256"],
+        model_dir / "tokenizer.json": PROFILE["tokenizer_sha256"],
+        model_dir / "inference" / "model.py": PROFILE["reference_model_sha256"],
+        model_dir / "inference" / "kernel.py": PROFILE["reference_kernel_sha256"],
+        model_dir / "inference" / "config.json": PROFILE["reference_config_sha256"],
     }
     for path, digest in expected.items():
         if not path.is_file() or sha256_file(path) != digest:
             raise VectorError(f"checkpoint identity mismatch: {path}")
     shard_records = []
-    for name, (expected_bytes, digest) in REFERENCE_SOURCE_SHARDS.items():
+    for name, (expected_bytes, digest) in PROFILE["source_shards"].items():
         path = model_dir / name
         if (
             not path.is_file()
@@ -464,11 +442,11 @@ def build_manifest(
     return {
         "format": "sparkpipe-dsv4-ga-reference-vectors-v1",
         "checkpoint": {
-            "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
-            "revision": CHECKPOINT_REVISION,
-            "index_sha256": CHECKPOINT_INDEX_SHA256,
-            "config_sha256": CHECKPOINT_CONFIG_SHA256,
-            "tokenizer_sha256": CHECKPOINT_TOKENIZER_SHA256,
+            "model": PROFILE["model"],
+            "revision": PROFILE["revision"],
+            "index_sha256": PROFILE["index_sha256"],
+            "config_sha256": PROFILE["config_sha256"],
+            "tokenizer_sha256": PROFILE["tokenizer_sha256"],
         },
         "generator": {
             "path": Path(__file__).name,
@@ -493,13 +471,13 @@ def build_manifest(
             "source_sequence_id": source_batch.sequence_id,
             "token_artifact": tokens,
             "token_ids": token_rows,
-            "positions": [list(range(REFERENCE_PROMPT_TOKENS))],
+            "positions": [list(range(PROFILE["prompt_tokens"]))],
             "validation_sequence_ids": [1],
             "tensor_order": "batch,sequence,hc,hidden",
         },
         "layer_range": {
-            "first": REFERENCE_FIRST_LAYER,
-            "count": REFERENCE_LAYER_COUNT,
+            "first": PROFILE["first_layer"],
+            "count": PROFILE["layer_count"],
         },
         "loaded_parameter_count": len(loaded),
         "loaded_parameter_names_sha256": hashlib.sha256(
@@ -515,13 +493,15 @@ def build_manifest(
 
 
 def main() -> int:
+    global PROFILE
     options = parse_args()
+    PROFILE = PROFILES[options.profile]
     model_dir = options.model_dir.resolve()
     output_dir = options.output_dir.resolve()
     batch_json = options.batch_json.resolve()
     if sys.byteorder != "little":
         raise VectorError("reference artifacts require a little-endian host")
-    if not batch_json.is_file() or sha256_file(batch_json) != REFERENCE_BATCH_JSON_SHA256:
+    if not batch_json.is_file() or sha256_file(batch_json) != PROFILE["batch_json_sha256"]:
         raise VectorError("reference batch identity mismatch")
     source_batch = load_source_batch(batch_json)
     shard_records = require_checkpoint_identity(model_dir)
@@ -539,7 +519,7 @@ def main() -> int:
     torch.cuda.set_device(0)
     index_path, sources = weight_map(model_dir)
     with torch.device("cuda"):
-        stage = ReferenceStage(reference, args, REFERENCE_FIRST_LAYER, REFERENCE_LAYER_COUNT)
+        stage = ReferenceStage(reference, args, PROFILE["first_layer"], PROFILE["layer_count"])
     loaded, consumed = load_stage(stage, sources)
     require_consumed_shards(consumed, sources, shard_records)
     torch.use_deterministic_algorithms(True)
@@ -549,13 +529,15 @@ def main() -> int:
     torch.cuda.synchronize()
     output_dir.mkdir(parents=True, exist_ok=True)
     tokens = token_record(output_dir / "prompt_tokens.u32le", token_rows)
-    if tokens["sha256"] != REFERENCE_TOKEN_PAYLOAD_SHA256:
+    if PROFILE["token_payload_sha256"] is None:
+        print("TOKEN-PAYLOAD-SHA256 %s" % tokens["sha256"])
+    elif tokens["sha256"] != PROFILE["token_payload_sha256"]:
         raise VectorError("reference prompt token payload identity mismatch")
-    final_layer = REFERENCE_FIRST_LAYER + REFERENCE_LAYER_COUNT - 1
+    final_layer = PROFILE["first_layer"] + PROFILE["layer_count"] - 1
     vectors = [
         tensor_record(output_dir / f"after_layer_{final_layer}.bf16le", outputs[-1])
     ]
-    if sha256_file(index_path) != CHECKPOINT_INDEX_SHA256:
+    if sha256_file(index_path) != PROFILE["index_sha256"]:
         raise VectorError("checkpoint index changed during generation")
     manifest = build_manifest(
         model_dir,

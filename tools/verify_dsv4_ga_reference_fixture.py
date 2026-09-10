@@ -13,35 +13,27 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dsv4_ga_reference_profiles import PROFILES
+
 
 FORMAT = "sparkpipe-dsv4-ga-reference-vectors-v1"
-MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
-REVISION = "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
-INDEX_SHA256 = "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b"
-CONFIG_SHA256 = "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023"
-TOKENIZER_SHA256 = "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf"
-REFERENCE_BATCH_JSON_SHA256 = "6f7836819a9ecdbca117b18cb4717aa8cb91c230af5961c5d025968cef34f8bb"
-REFERENCE_TOKEN_PAYLOAD_SHA256 = "f2f860f7843e755c4cdfcea408c647559ab604fde5c34a00bac314ba62289769"
-REFERENCE_MODEL_SHA256 = "c0c19e6c9fa439bac7fbb1c5bc1868232dfd5aa2f439a548d0e33dcc2a9edd3f"
-REFERENCE_KERNEL_SHA256 = "59b325083d7103975cba025bd0d60ea343bb82d8fff53088afb7c04bd380c0c2"
-REFERENCE_CONFIG_SHA256 = "c90861f3d10a9e4ef5954f8f1a34c529d480da1c5799f84660028f4e38e14e71"
 TOKEN_PATH = "prompt_tokens.u32le"
 VECTOR_PATH = "after_layer_2.bf16le"
-TOKEN_COUNT = 128
-HC_STREAM_COUNT = 4
-HIDDEN_DIMENSION = 4096
-VOCABULARY_SIZE = 129280
-TOKEN_BYTES = TOKEN_COUNT * 4
-VECTOR_BYTES = TOKEN_COUNT * HC_STREAM_COUNT * HIDDEN_DIMENSION * 2
-VECTOR_ELEMENTS = TOKEN_COUNT * HC_STREAM_COUNT * HIDDEN_DIMENSION
 MANIFEST_MAX_BYTES = 256 * 1024
 SHA256_HEX_LENGTH = 64
-SOURCE_SHARDS = {
-	"model-00001-of-00048.safetensors": (1059061856, "f3668ba4cccf1ca6a7eb84e888fb92c1cdc7204d472ba9db771e6fd3abf6b874"),
-	"model-00002-of-00048.safetensors": (3566321192, "77b26c939a0e25b3113c8d6bb04e1901a748bd4a7d2589e3bfdaabdf1e9bba14"),
-	"model-00003-of-00048.safetensors": (3566321192, "412abf4c906faadc221ef0cb50f90fe20bde8454a08ad4dc2364b6b79e7fda5c"),
-	"model-00004-of-00048.safetensors": (3596229272, "9610f56bc587fb0ff9a8b68a60299482ee8c433fe5b5587e4257aca98add4a2e"),
-}
+PROFILE = PROFILES["flash"]
+
+
+def token_bytes() -> int:
+	return PROFILE["token_count"] * 4
+
+
+def vector_bytes() -> int:
+	return PROFILE["token_count"] * PROFILE["hc_stream_count"] * PROFILE["hidden_dimension"] * 2
+
+
+def vector_elements() -> int:
+	return PROFILE["token_count"] * PROFILE["hc_stream_count"] * PROFILE["hidden_dimension"]
 
 
 class FixtureError(RuntimeError):
@@ -52,6 +44,12 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument("fixture_directory", type=Path)
 	parser.add_argument("expected_manifest_sha256")
+	parser.add_argument(
+		"--profile",
+		choices=sorted(PROFILES),
+		default="flash",
+		help="checkpoint identity/geometry profile the fixture was generated against",
+	)
 	return parser.parse_args()
 
 
@@ -164,11 +162,11 @@ def verify_checkpoint(value: Any) -> None:
 		{"model", "revision", "index_sha256", "config_sha256", "tokenizer_sha256"},
 		"checkpoint",
 	)
-	require_string(checkpoint["model"], MODEL, "checkpoint.model")
-	require_string(checkpoint["revision"], REVISION, "checkpoint.revision")
-	require_string(checkpoint["index_sha256"], INDEX_SHA256, "checkpoint.index_sha256")
-	require_string(checkpoint["config_sha256"], CONFIG_SHA256, "checkpoint.config_sha256")
-	require_string(checkpoint["tokenizer_sha256"], TOKENIZER_SHA256, "checkpoint.tokenizer_sha256")
+	require_string(checkpoint["model"], PROFILE["model"], "checkpoint.model")
+	require_string(checkpoint["revision"], PROFILE["revision"], "checkpoint.revision")
+	require_string(checkpoint["index_sha256"], PROFILE["index_sha256"], "checkpoint.index_sha256")
+	require_string(checkpoint["config_sha256"], PROFILE["config_sha256"], "checkpoint.config_sha256")
+	require_string(checkpoint["tokenizer_sha256"], PROFILE["tokenizer_sha256"], "checkpoint.tokenizer_sha256")
 
 
 def verify_provenance(generator_value: Any, reference_value: Any) -> None:
@@ -195,9 +193,9 @@ def verify_provenance(generator_value: Any, reference_value: Any) -> None:
 		},
 		"reference",
 	)
-	require_string(reference["model_py_sha256"], REFERENCE_MODEL_SHA256, "reference.model_py_sha256")
-	require_string(reference["kernel_py_sha256"], REFERENCE_KERNEL_SHA256, "reference.kernel_py_sha256")
-	require_string(reference["config_sha256"], REFERENCE_CONFIG_SHA256, "reference.config_sha256")
+	require_string(reference["model_py_sha256"], PROFILE["reference_model_sha256"], "reference.model_py_sha256")
+	require_string(reference["kernel_py_sha256"], PROFILE["reference_kernel_sha256"], "reference.kernel_py_sha256")
+	require_string(reference["config_sha256"], PROFILE["reference_config_sha256"], "reference.config_sha256")
 	require_string(reference["sparse_attention_fallback"], "torch-global-softmax-bf16-probability-v1", "reference.sparse_attention_fallback")
 	require_string(reference["hadamard_fallback"], "normalized-sylvester-hadamard-v1", "reference.hadamard_fallback")
 	require_string(reference["fp8_gemm_fallback"], "torch-block128-fp32-accumulation-v1", "reference.fp8_gemm_fallback")
@@ -209,19 +207,19 @@ def verify_provenance(generator_value: Any, reference_value: Any) -> None:
 def verify_token_record(value: Any, fixture: Path, token_ids: Any) -> None:
 	record = require_exact_keys(value, {"path", "sha256", "bytes", "dtype", "shape"}, "input.token_artifact")
 	require_string(record["path"], TOKEN_PATH, "input.token_artifact.path")
-	require_integer(record["bytes"], TOKEN_BYTES, "input.token_artifact.bytes")
+	require_integer(record["bytes"], token_bytes(), "input.token_artifact.bytes")
 	require_string(record["dtype"], "uint32_le", "input.token_artifact.dtype")
-	require(record["shape"] == [1, TOKEN_COUNT], "input.token_artifact.shape is not exact")
-	digest = require_string(record["sha256"], REFERENCE_TOKEN_PAYLOAD_SHA256, "input.token_artifact.sha256")
+	require(record["shape"] == [1, PROFILE["token_count"]], "input.token_artifact.shape is not exact")
+	digest = require_string(record["sha256"], PROFILE["token_payload_sha256"], "input.token_artifact.sha256")
 	path = fixture / TOKEN_PATH
-	require_regular_file(path, TOKEN_BYTES, "token artifact")
+	require_regular_file(path, token_bytes(), "token artifact")
 	require(sha256_file(path) == digest, "token artifact SHA-256 mismatch")
 	require(isinstance(token_ids, list) and len(token_ids) == 1, "input.token_ids must have one row")
 	row = token_ids[0]
-	require(isinstance(row, list) and len(row) == TOKEN_COUNT, "input.token_ids row is not B1x128")
+	require(isinstance(row, list) and len(row) == PROFILE["token_count"], "input.token_ids row is not B1x128")
 	for token in row:
 		require(not isinstance(token, bool) and isinstance(token, int), "input token must be an integer")
-		require(0 <= token < VOCABULARY_SIZE, "input token is outside the GA vocabulary")
+		require(0 <= token < PROFILE["vocabulary_size"], "input token is outside the GA vocabulary")
 	with path.open("rb") as handle:
 		payload_tokens = [value[0] for value in struct.iter_unpack("<I", handle.read())]
 	require(payload_tokens == row, "token artifact does not match manifest token_ids")
@@ -233,27 +231,27 @@ def verify_input(value: Any, fixture: Path) -> None:
 		{"batch_json_sha256", "source_request_id", "source_sequence_id", "token_artifact", "token_ids", "positions", "validation_sequence_ids", "tensor_order"},
 		"input",
 	)
-	require_string(input_record["batch_json_sha256"], REFERENCE_BATCH_JSON_SHA256, "input.batch_json_sha256")
+	require_string(input_record["batch_json_sha256"], PROFILE["batch_json_sha256"], "input.batch_json_sha256")
 	require_integer(input_record["source_request_id"], 76000, "input.source_request_id")
 	require_integer(input_record["source_sequence_id"], 76000, "input.source_sequence_id")
-	require(input_record["positions"] == [list(range(TOKEN_COUNT))], "input.positions is not exact")
+	require(input_record["positions"] == [list(range(PROFILE["token_count"]))], "input.positions is not exact")
 	require(input_record["validation_sequence_ids"] == [1], "input.validation_sequence_ids is not exact")
 	require_string(input_record["tensor_order"], "batch,sequence,hc,hidden", "input.tensor_order")
 	verify_token_record(input_record["token_artifact"], fixture, input_record["token_ids"])
 
 
 def verify_source_shards(value: Any) -> None:
-	require(isinstance(value, list) and len(value) == len(SOURCE_SHARDS), "source_shards inventory is not exact")
+	require(isinstance(value, list) and len(value) == len(PROFILE["source_shards"]), "source_shards inventory is not exact")
 	seen: set[str] = set()
 	for index, item in enumerate(value):
 		record = require_exact_keys(item, {"path", "bytes", "sha256"}, f"source_shards[{index}]")
 		path = require_string(record["path"], None, f"source_shards[{index}].path")
-		require(path in SOURCE_SHARDS and path not in seen, f"source_shards[{index}].path is not exact")
-		expected_bytes, expected_digest = SOURCE_SHARDS[path]
+		require(path in PROFILE["source_shards"] and path not in seen, f"source_shards[{index}].path is not exact")
+		expected_bytes, expected_digest = PROFILE["source_shards"][path]
 		require_integer(record["bytes"], expected_bytes, f"source_shards[{index}].bytes")
 		require_string(record["sha256"], expected_digest, f"source_shards[{index}].sha256")
 		seen.add(path)
-	require(seen == set(SOURCE_SHARDS), "source_shards inventory is incomplete")
+	require(seen == set(PROFILE["source_shards"]), "source_shards inventory is incomplete")
 
 
 def bf16_to_float(value: int) -> float:
@@ -281,7 +279,7 @@ def vector_payload_statistics(path: Path) -> tuple[float, float, float, float, i
 		nonzero += value != 0.0
 	require(nonfinite == 0, "vector payload contains non-finite BF16 values")
 	require(nonzero > 0, "vector payload is all zero")
-	return minimum, maximum, total / VECTOR_ELEMENTS, math.sqrt(total_squared), nonfinite, nonzero
+	return minimum, maximum, total / vector_elements(), math.sqrt(total_squared), nonfinite, nonzero
 
 
 def require_close(actual: float, claimed: float, label: str) -> None:
@@ -296,8 +294,8 @@ def verify_vector(value: Any, fixture: Path) -> None:
 		"vectors[0]",
 	)
 	require_string(record["path"], VECTOR_PATH, "vectors[0].path")
-	require_integer(record["bytes"], VECTOR_BYTES, "vectors[0].bytes")
-	require(record["shape"] == [1, TOKEN_COUNT, HC_STREAM_COUNT, HIDDEN_DIMENSION], "vectors[0].shape is not exact")
+	require_integer(record["bytes"], vector_bytes(), "vectors[0].bytes")
+	require(record["shape"] == [1, PROFILE["token_count"], PROFILE["hc_stream_count"], PROFILE["hidden_dimension"]], "vectors[0].shape is not exact")
 	require_string(record["dtype"], "torch.bfloat16", "vectors[0].dtype")
 	require_integer(record["nonfinite"], 0, "vectors[0].nonfinite")
 	claimed_minimum = require_finite_number(record["min"], "vectors[0].min")
@@ -308,7 +306,7 @@ def verify_vector(value: Any, fixture: Path) -> None:
 	require(claimed_l2 > 0.0, "vectors[0].l2 must be positive")
 	digest = require_sha256(record["sha256"], "vectors[0].sha256")
 	path = fixture / VECTOR_PATH
-	require_regular_file(path, VECTOR_BYTES, "vector artifact")
+	require_regular_file(path, vector_bytes(), "vector artifact")
 	require(sha256_file(path) == digest, "vector artifact SHA-256 mismatch")
 	minimum, maximum, mean, l2, nonfinite, _ = vector_payload_statistics(path)
 	require(minimum == claimed_minimum, "vectors[0].min does not match the vector payload")
@@ -343,7 +341,12 @@ def verify_fixture(fixture: Path, expected_manifest_sha256: str) -> None:
 
 
 def main() -> int:
+	global PROFILE
 	options = parse_args()
+	PROFILE = PROFILES[options.profile]
+	if PROFILE["token_payload_sha256"] is None:
+		print("DSV4 GA reference fixture invalid: profile token payload is not established", file=sys.stderr)
+		return 1
 	try:
 		verify_fixture(options.fixture_directory.absolute(), options.expected_manifest_sha256)
 	except FixtureError as error:
