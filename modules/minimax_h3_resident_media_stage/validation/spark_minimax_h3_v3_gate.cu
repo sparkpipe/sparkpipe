@@ -195,97 +195,114 @@ static void SparkMinimaxH3V3LoadBlock(struct SparkMinimaxH3V3Weights *weights,
 	#undef SPARK_MINIMAX_H3_V3_LOAD
 }
 
+struct SparkMinimaxH3V3Scratch
+{
+	void *normed,*adaln,*q,*k,*v,*q_rope,*k_rope,*attn_raw,*attn_out,
+		*ffn_fused,*ffn_mid,*ffn_out,*segments;
+};
+
+static cudaError_t SparkMinimaxH3V3Gemm(cudaStream_t stream, const void *a,
+	const void *w, uint32_t rows, uint32_t width, uint32_t depth, void *segments,
+	void *out)
+{
+	return(SparkMinimaxH3Gemm(stream,a,w,rows,width,depth,segments,out));
+}
+
 static cudaError_t SparkMinimaxH3V3BlockForward(cudaStream_t stream,
 	const struct SparkMinimaxH3V3Weights *weights, const void *input_bf16,
 	const void *scale_msa, const void *shift_msa, const void *gate_msa,
 	const void *scale_mlp, const void *shift_mlp, const void *gate_mlp,
 	const float *rope_cos, const float *rope_sin, const uint32_t *row_of,
-	void *scratch_a, void *scratch_b, void *segments, void *result_bf16)
+	struct SparkMinimaxH3V3Scratch *scratch, void *result_bf16)
 {
 	cudaError_t error;
 	error = SparkMinimaxH3RmsNorm(stream,input_bf16,weights->norm1,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch_a);
+		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch->normed);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3AdaLNIndexed(stream,scratch_a,scale_msa,shift_msa,row_of,
-		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch_a);
+	error = SparkMinimaxH3AdaLNIndexed(stream,scratch->normed,scale_msa,shift_msa,
+		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch->adaln);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_a,weights->query,
+	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->query,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
-		SPARK_MINIMAX_H3_V3_HIDDEN,segments,scratch_b);
+		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->q);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3RmsNorm(stream,scratch_b,weights->norm_q,
+	error = SparkMinimaxH3RmsNorm(stream,scratch->q,weights->norm_q,
 		SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HEADS,
-		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,scratch_b);
+		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,
+		scratch->q);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Rope3d(stream,scratch_b,rope_cos,rope_sin,
+	error = SparkMinimaxH3Rope3d(stream,scratch->q,rope_cos,rope_sin,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
-		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,scratch_b);
+		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,scratch->q_rope);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_a,weights->key,
+	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->key,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
-		SPARK_MINIMAX_H3_V3_HIDDEN,segments,result_bf16);
+		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->k);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3RmsNorm(stream,result_bf16,weights->norm_k,
+	error = SparkMinimaxH3RmsNorm(stream,scratch->k,weights->norm_k,
 		SPARK_MINIMAX_H3_V3_SEQ * SPARK_MINIMAX_H3_V3_HEADS,
-		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,result_bf16);
+		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_DIT_QK_NORM_EPSILON,
+		scratch->k);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Rope3d(stream,result_bf16,rope_cos,rope_sin,
+	error = SparkMinimaxH3Rope3d(stream,scratch->k,rope_cos,rope_sin,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
-		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,result_bf16);
+		SPARK_MINIMAX_H3_V3_HEAD_DIM,SPARK_MINIMAX_H3_V3_ROPE,scratch->k_rope);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_a,weights->value,
+	error = SparkMinimaxH3Gemm(stream,scratch->adaln,weights->value,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_QKV,
-		SPARK_MINIMAX_H3_V3_HIDDEN,segments,scratch_a);
+		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->v);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3DenseAttention(stream,scratch_b,result_bf16,scratch_a,
-		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
-		SPARK_MINIMAX_H3_V3_HEAD_DIM,scratch_b);
+	error = SparkMinimaxH3DenseAttention(stream,scratch->q_rope,scratch->k_rope,
+		scratch->v,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HEADS,
+		SPARK_MINIMAX_H3_V3_HEAD_DIM,scratch->attn_raw);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_b,weights->output_proj,
+	error = SparkMinimaxH3Gemm(stream,scratch->attn_raw,weights->output_proj,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-		SPARK_MINIMAX_H3_V3_QKV,segments,scratch_b);
+		SPARK_MINIMAX_H3_V3_QKV,scratch->segments,scratch->attn_out);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3GateResidualIndexed(stream,scratch_b,gate_msa,input_bf16,
-		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch_b);
+	error = SparkMinimaxH3GateResidualIndexed(stream,scratch->attn_out,gate_msa,
+		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
+		scratch->normed);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3RmsNorm(stream,scratch_b,weights->norm2,
+	error = SparkMinimaxH3RmsNorm(stream,scratch->normed,weights->norm2,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch_a);
+		SPARK_MINIMAX_H3_DIT_NORM_EPSILON,scratch->ffn_out);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3AdaLNIndexed(stream,scratch_a,scale_mlp,shift_mlp,row_of,
-		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch_a);
+	error = SparkMinimaxH3AdaLNIndexed(stream,scratch->ffn_out,scale_mlp,shift_mlp,
+		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,scratch->ffn_out);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_a,weights->gate_up,
+	error = SparkMinimaxH3Gemm(stream,scratch->ffn_out,weights->gate_up,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_FFN_FUSED,
-		SPARK_MINIMAX_H3_V3_HIDDEN,segments,scratch_a);
+		SPARK_MINIMAX_H3_V3_HIDDEN,scratch->segments,scratch->ffn_fused);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3SiluMul(stream,scratch_a,SPARK_MINIMAX_H3_V3_SEQ,
-		SPARK_MINIMAX_H3_V3_FFN,scratch_a);
+	error = SparkMinimaxH3SiluMul(stream,scratch->ffn_fused,
+		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_FFN,scratch->ffn_mid);
 	if ( error != cudaSuccess )
 		return(error);
-	error = SparkMinimaxH3Gemm(stream,scratch_a,weights->down,
+	error = SparkMinimaxH3Gemm(stream,scratch->ffn_mid,weights->down,
 		SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
-		SPARK_MINIMAX_H3_V3_FFN,segments,scratch_a);
+		SPARK_MINIMAX_H3_V3_FFN,scratch->segments,scratch->ffn_out);
 	if ( error != cudaSuccess )
 		return(error);
-	return(SparkMinimaxH3GateResidualIndexed(stream,scratch_a,gate_mlp,scratch_b,
-		row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,result_bf16));
+	return(SparkMinimaxH3GateResidualIndexed(stream,scratch->ffn_out,gate_mlp,
+		input_bf16,row_of,SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
+		result_bf16));
 }
 
 int main(int argc, char **argv)
@@ -348,8 +365,6 @@ int main(int argc, char **argv)
 		void *device_h = SparkMinimaxH3V3DeviceUpload(packed_h,rows_bytes * 2u);
 		void *device_h_saved = 0;
 		void *device_result = 0;
-		void *device_scratch_a = 0;
-		void *device_scratch_b = 0;
 		void *device_segments = 0;
 		void *device_partials = 0;
 		void *device_tp1 = 0;
@@ -382,10 +397,29 @@ int main(int argc, char **argv)
 			memcpy(&block0_reference[index],&bits0,sizeof(bits0));
 			memcpy(&block1_reference[index],&bits1,sizeof(bits1));
 		}
+		struct SparkMinimaxH3V3Scratch scratch;
+		cudaMalloc(&scratch.normed,rows_bytes * 2u);
+		cudaMalloc(&scratch.adaln,rows_bytes * 2u);
+		cudaMalloc(&scratch.q,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.k,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.v,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.q_rope,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.k_rope,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.attn_raw,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_QKV * 2u);
+		cudaMalloc(&scratch.attn_out,rows_bytes * 2u);
+		cudaMalloc(&scratch.ffn_fused,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_FFN_FUSED * 2u);
+		cudaMalloc(&scratch.ffn_mid,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+			SPARK_MINIMAX_H3_V3_FFN * 2u);
+		cudaMalloc(&scratch.ffn_out,rows_bytes * 2u);
 		cudaMalloc(&device_h_saved,rows_bytes * 2u);
 		cudaMalloc(&device_result,rows_bytes * 2u);
-		cudaMalloc(&device_scratch_a,rows_bytes * 2u);
-		cudaMalloc(&device_scratch_b,rows_bytes * 2u);
 		cudaMalloc(&device_segments,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
 			SPARK_MINIMAX_H3_V3_FFN_FUSED * 4u * 4u);
 		cudaMemcpy(device_h_saved,device_h,rows_bytes * 2u,cudaMemcpyDeviceToDevice);
@@ -394,7 +428,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block0,device_h,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			device_scratch_a,device_scratch_b,device_segments,device_result);
+			&scratch,device_segments,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block0 forward cuda error: %s FAIL\n",cudaGetErrorString(error));
@@ -410,7 +444,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block1,device_result,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			device_scratch_a,device_scratch_b,device_segments,device_result);
+			&scratch,device_segments,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block1 forward cuda error: %s FAIL\n",cudaGetErrorString(error));
@@ -425,7 +459,7 @@ int main(int argc, char **argv)
 		error = SparkMinimaxH3V3BlockForward(stream,&block0,device_h,
 			device_scale_msa,device_shift_msa,device_gate_msa,device_scale_mlp,
 			device_shift_mlp,device_gate_mlp,device_cos,device_sin,device_row_of,
-			device_scratch_a,device_scratch_b,device_segments,device_result);
+			&scratch,device_segments,device_result);
 		if ( error != cudaSuccess )
 		{
 			printf("block0 rerun cuda error: %s FAIL\n",cudaGetErrorString(error));
@@ -444,7 +478,11 @@ int main(int argc, char **argv)
 		cudaMalloc(&device_tp1,rows_bytes * 2u);
 		cudaMalloc(&device_tp4,rows_bytes * 2u);
 		{
-			const void *ffn_input = device_h;
+			const void *ffn_input = scratch.ffn_mid;
+			cudaMemset(scratch.ffn_mid,0,(uint64_t)SPARK_MINIMAX_H3_V3_SEQ *
+				SPARK_MINIMAX_H3_V3_FFN * 2u);
+			cudaMemcpy(scratch.ffn_mid,device_h,rows_bytes * 2u,
+				cudaMemcpyDeviceToDevice);
 			for (index=0u; index<4u; index++)
 				SparkMinimaxH3GemmSegment(stream,ffn_input,block1.down,
 					SPARK_MINIMAX_H3_V3_SEQ,SPARK_MINIMAX_H3_V3_HIDDEN,
