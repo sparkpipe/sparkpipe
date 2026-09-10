@@ -349,6 +349,13 @@ static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *
 /* Manifest pre-publication check (weightd lazy path): every MoE layer must
  * carry W1/W3/DOWN payload+scale ranges for all 512 experts, bounds-checked
  * inside the pack, with the expert kinds exactly covering the layer set. */
+#define SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_BITS(kind) \
+	((1u << ((kind) * 2u)) | (1u << ((kind) * 2u + 1u)))
+#define SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_MASK \
+	(SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_BITS(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1) | \
+	 SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_BITS(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3) | \
+	 SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_BITS(SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN))
+
 static SparkStatus SparkQwen38MaxModuleManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
 {
 	const SparkQwen38MaxModuleState *state = (const SparkQwen38MaxModuleState *)opaque;
@@ -359,28 +366,28 @@ static SparkStatus SparkQwen38MaxModuleManifestCheck(const SparkWeightdManifest 
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
-		uint32_t kind,expert;
-		for (kind = SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1; kind <= SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN; kind++)
+		uint32_t expert;
+		for (expert = 0u; expert < SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT; expert++)
 		{
-			for (expert = 0u; expert < SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT; expert++)
+			const SparkWeightdRangeGroup *group = SparkWeightdManifestFind(manifest,layer,expert);
+			uint32_t index,kind_bits = 0u;
+			if ( group == 0 || group->layer != layer || group->expert != expert ||
+				group->range_count == 0u || group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
+				return(SPARK_STATUS_VALIDATION_FAILED);
+			for (index = 0u; index < group->range_count; index++)
 			{
-				const SparkWeightdRangeGroup *group = SparkWeightdManifestFind(manifest,layer,expert);
-				(void)kind;
-				if ( group == 0 || group->layer != layer || group->expert != expert ||
-					group->range_count == 0u || group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
+				uint32_t kind = manifest->ranges[group->first_range + index].kind;
+				if ( kind >= 32u )
 					return(SPARK_STATUS_VALIDATION_FAILED);
+				kind_bits |= (1u << kind);
 			}
+			if ( kind_bits != SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_MASK )
+				return(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
 	return(SPARK_STATUS_OK);
 }
 
-/* Per-entry region source for the lazy deployment: every region resolves
- * to a stable arena address (map base + pack offset). Expert chunks are
- * only COMMITTED when RunMoe acquires the layer's routed-expert lease;
- * touching an uncommitted expert page without a lease is a programming
- * error and faults - which is the laziness, not a bug. Returns 1 when it
- * consumed the entry (payload/scale set), 0 to use the eager loader. */
 static int SparkQwen38MaxModuleRegionHook(
 	SparkQwen38MaxModuleState *state,
 	const SparkQwen38MaxStagePackEntry *entry,
@@ -389,16 +396,33 @@ static int SparkQwen38MaxModuleRegionHook(
 	void **scale)
 {
 	SparkWeightdLazyPack *pack = state->lazy_pack;
-	void *base = 0;
+	const void *slice;
+	SparkStatus status;
 
 	(void)file;
 	if ( pack == 0 || pack->ready == 0u )
 		return 0;
-	if ( SparkWeightdMapBase(pack->map,&base) != SPARK_STATUS_OK || base == 0 )
+	if ( entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1 ||
+		entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3 ||
+		entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN )
+	{
+		*payload = 0;
+		*scale = 0;
+		return 1;
+	}
+	status = SparkWeightdLazyPackSlice(pack,entry->payload_offset,entry->payload_bytes,&slice);
+	if ( status != SPARK_STATUS_OK )
 		return 0;
-	*payload = (void *)((uint8_t *)base + entry->payload_offset);
-	*scale = entry->scale_bytes != 0u
-		? (void *)((uint8_t *)base + entry->scale_offset) : 0;
+	*payload = (void *)slice;
+	if ( entry->scale_bytes == 0u )
+	{
+		*scale = 0;
+		return 1;
+	}
+	status = SparkWeightdLazyPackSlice(pack,entry->scale_offset,entry->scale_bytes,&slice);
+	if ( status != SPARK_STATUS_OK )
+		return 0;
+	*scale = (void *)slice;
 	return 1;
 }
 
@@ -456,9 +480,21 @@ static SparkStatus SparkQwen38MaxModuleBindMoe(SparkQwen38MaxMoeWeights *moe, co
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_GATE: SparkQwen38MaxModuleFillLinearView(&moe->gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1: SparkQwen38MaxModuleFillLinearView(&moe->experts_w1,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3: SparkQwen38MaxModuleFillLinearView(&moe->experts_w3,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN: SparkQwen38MaxModuleFillLinearView(&moe->experts_w2,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1:
+		SparkQwen38MaxModuleFillLinearView(&moe->experts_w1,entry,payload,scale);
+		moe->experts_w1_payload_offset = entry->payload_offset;
+		moe->experts_w1_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3:
+		SparkQwen38MaxModuleFillLinearView(&moe->experts_w3,entry,payload,scale);
+		moe->experts_w3_payload_offset = entry->payload_offset;
+		moe->experts_w3_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN:
+		SparkQwen38MaxModuleFillLinearView(&moe->experts_w2,entry,payload,scale);
+		moe->experts_w2_payload_offset = entry->payload_offset;
+		moe->experts_w2_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_GATE: SparkQwen38MaxModuleFillLinearView(&moe->shared_gate,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_UP: SparkQwen38MaxModuleFillLinearView(&moe->shared_up,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_SHARED_DOWN: SparkQwen38MaxModuleFillLinearView(&moe->shared_down,entry,payload,scale); return(SPARK_STATUS_OK);
@@ -1211,6 +1247,13 @@ static void SparkQwen38MaxModuleStateTeardown(void *module_state)
 {
 	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
 	SparkStageKvClientClose(&state->kv_client);
+	if ( state->lazy_pack != 0 )
+	{
+		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
+			fprintf(stderr,"%s lazy pack teardown incomplete; retaining resources\n",SPARK_QWEN38_MAX_MODULE_TAG);
+		else
+			state->lazy_pack = 0;
+	}
 	if ( state->tp_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	free(state->kv_logical_to_slot);
@@ -1409,12 +1452,32 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 			error = cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
 			error = SparkWeightdRouteKeys(layer_ordinal_arg,host_offsets,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,keys,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
-		if ( error == cudaSuccess && SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) != SPARK_STATUS_OK )
-			error = cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
 		{
-			state->lazy_lease_active = 1u;
+			error = SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+			state->lazy_lease_active = state->lazy_lease_identifier != 0u ? 1u : 0u;
+		}
+		if ( error == cudaSuccess )
 			error = SparkWeightdMapBeginUse(map,state->lazy_lease_identifier,&address) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+		if ( error == cudaSuccess )
+		{
+			weights->experts_w1.weight_payload = (uint8_t *)address + weights->experts_w1_payload_offset;
+			weights->experts_w3.weight_payload = (uint8_t *)address + weights->experts_w3_payload_offset;
+			weights->experts_w2.weight_payload = (uint8_t *)address + weights->experts_w2_payload_offset;
+			if ( weights->experts_w1.weight_scale_bytes != 0u )
+				weights->experts_w1.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w1_scale_offset;
+			if ( weights->experts_w3.weight_scale_bytes != 0u )
+				weights->experts_w3.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w3_scale_offset;
+			if ( weights->experts_w2.weight_scale_bytes != 0u )
+				weights->experts_w2.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w2_scale_offset;
+		}
+		if ( error != cudaSuccess && state->lazy_lease_active != 0u )
+		{
+			if ( SparkWeightdMapRelease(map,state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK )
+				state->lazy_lease_identifier = 0u;
+			else
+				fprintf(stderr,"%s lazy lease retained for teardown lease=%llu\n",SPARK_QWEN38_MAX_MODULE_TAG,(unsigned long long)state->lazy_lease_identifier);
+			state->lazy_lease_active = 0u;
 		}
 	}
 	if ( error == cudaSuccess )
@@ -1436,6 +1499,8 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 			if ( (sync = cudaStreamSynchronize(stream)) != cudaSuccess )
 				error = sync;
 			release = SparkWeightdMapRelease(state->lazy_pack->map,state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+			if ( release == SPARK_STATUS_OK )
+				state->lazy_lease_identifier = 0u;
 			state->lazy_lease_active = 0u;
 			if ( error == cudaSuccess && release != SPARK_STATUS_OK )
 				error = cudaErrorInvalidValue;
