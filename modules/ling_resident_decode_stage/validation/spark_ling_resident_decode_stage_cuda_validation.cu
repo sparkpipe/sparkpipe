@@ -1934,7 +1934,14 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			static uint32_t device_route[SPARK_LING_VAL_TOP_K];
 			static float device_rw[SPARK_LING_VAL_TOP_K];
 			static float mlp_actual[SPARK_LING_VAL_HIDDEN];
+			static const float *router_probe_m = 0;
+			static const float *router_probe_w = 0;
 			SparkLingValMetrics m;
+			if ( router_probe_m == 0 )
+			{
+				router_probe_m = fixture->router.host;
+				router_probe_w = fixture->dense_post_norm.host;
+			}
 			if ( cudaMemcpy(device_mlp,fixture->attention_out_dev,
 				sizeof(device_mlp),cudaMemcpyDeviceToHost) == cudaSuccess )
 			{
@@ -1948,8 +1955,50 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			if ( cudaMemcpy(device_route,fixture->route_expert_dev,
 				sizeof(device_route),cudaMemcpyDeviceToHost) == cudaSuccess &&
 				cudaMemcpy(device_rw,fixture->route_weight_dev,
-					sizeof(device_rw),cudaMemcpyDeviceToHost) == cudaSuccess )
+					sizeof(device_rw),cudaMemcpyDeviceToHost) == cudaSuccess &&
+					router_probe_w != 0 )
 			{
+				static float device_logits[SPARK_LING_VAL_EXPERTS];
+				float oracle_scores[SPARK_LING_VAL_EXPERTS];
+				uint32_t best;
+				float score_sum = 0.0f;
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+					mlp_actual[index] = SparkLingValFromBf16(
+						walk->row_hidden[0][index]);
+				SparkLingValRmsNorm(mlp_actual,router_probe_w,
+					SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_RMS_EPS);
+				for (uint32_t e = 0u; e < SPARK_LING_VAL_EXPERTS; e++)
+				{
+					float sum = 0.0f;
+					for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+						sum += router_probe_m[(uint64_t)e * SPARK_LING_VAL_HIDDEN + j] *
+							mlp_actual[j];
+					oracle_scores[e] = SparkLingValSigmoid(sum);
+				}
+				if ( cudaMemcpy(device_logits,fixture->router_logits_dev,
+					sizeof(device_logits),cudaMemcpyDeviceToHost) == cudaSuccess )
+				{
+					printf(" logits dev");
+					for (uint32_t n = 0u; n < 4u; n++)
+					{
+						best = 0u;
+						for (index = 1u; index < SPARK_LING_VAL_EXPERTS; index++)
+							if ( device_logits[index] > device_logits[best] )
+								best = index;
+						printf(" %u:%.4f",best,device_logits[best]);
+						device_logits[best] = -3.0e38f;
+					}
+					printf(" | oracle scores");
+					for (uint32_t n = 0u; n < 4u; n++)
+					{
+						best = 0u;
+						for (index = 1u; index < SPARK_LING_VAL_EXPERTS; index++)
+							if ( oracle_scores[index] > oracle_scores[best] )
+								best = index;
+						printf(" %u:%.4f",best,oracle_scores[best]);
+						oracle_scores[best] = 0.0f;
+					}
+				}
 				printf(" routes dev");
 				for (index = 0u; index < SPARK_LING_VAL_TOP_K; index++)
 					printf(" %u:%.4f",device_route[index],device_rw[index]);
