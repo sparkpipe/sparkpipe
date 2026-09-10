@@ -825,86 +825,6 @@ static SparkStatus SparkStageModulePackArenaSlice(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkStageModuleLoadRegionSynchronous(
-    SparkStageModuleLedger *ledger,
-    FILE *file,
-    uint64_t offset,
-    uint64_t bytes,
-    void **pointer)
-{
-    void *device;
-    void *staging;
-    uint64_t moved;
-    size_t staging_bytes;
-    SparkStatus status;
-
-    if (pointer == 0 || file == 0 || bytes == 0u ||
-        bytes > (uint64_t)SIZE_MAX || offset > UINT64_MAX - bytes)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    *pointer = 0;
-    device = 0;
-    status = SparkStageModuleDeviceAllocate(ledger, bytes, &device);
-    if (status != SPARK_STATUS_OK)
-    {
-        SPARK_RETURN(status);
-    }
-
-    staging_bytes = (size_t)(bytes < SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES
-        ? bytes
-        : SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES);
-    staging = malloc(staging_bytes);
-    if (staging == 0)
-    {
-        SparkStageModuleReleaseLastAllocation(ledger, device);
-        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-    }
-
-    status = SPARK_STATUS_OK;
-    moved = 0u;
-    while (moved < bytes)
-    {
-        uint64_t chunk = bytes - moved;
-        if (chunk > SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
-        {
-            chunk = SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES;
-        }
-        status = SparkStageModulePackRead(
-            ledger->module_tag,
-            file,
-            offset + moved,
-            staging,
-            chunk);
-        if (status == SPARK_STATUS_OK)
-        {
-            status = SparkStageModuleCudaStatus(
-                ledger->module_tag,
-                cudaMemcpy(
-                    (uint8_t *)device + moved,
-                    staging,
-                    (size_t)chunk,
-                    cudaMemcpyHostToDevice),
-                "cudaMemcpy_h2d");
-        }
-        if (status != SPARK_STATUS_OK)
-        {
-            break;
-        }
-        moved += chunk;
-    }
-
-    free(staging);
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkStageModuleReleaseLastAllocation(ledger, device);
-        SPARK_RETURN(status);
-    }
-
-    *pointer = device;
-    return SPARK_STATUS_OK;
-}
-
 #define SPARK_STAGE_MODULE_LOAD_PIPELINE_SLOTS 2u
 
 typedef struct SparkStageModuleLoadChunk
@@ -1217,6 +1137,12 @@ SparkStatus SparkStageModuleLoadPipelineRegion(
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *pointer = 0;
+    status = SparkWeightdAttachRequested();
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr,"stage-module direct pipeline load refused: weightd attach is mandatory\n");
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    }
     if (pipeline->failure != SPARK_STATUS_OK)
     {
         return pipeline->failure;
@@ -1356,7 +1282,6 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     uint64_t bytes,
     void **pointer)
 {
-    SparkStageModuleLoadPipeline *pipeline = 0;
     SparkStatus status;
 
     if (ledger == 0 || file == 0 || pointer == 0 || bytes == 0u)
@@ -1365,31 +1290,13 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     status = SparkWeightdAttachRequested();
     if (status == SPARK_STATUS_OK)
         return(SparkStageModulePackArenaSlice(ledger,file,offset,bytes,pointer));
-    if (status != SPARK_STATUS_BUSY)
+    if (status == SPARK_STATUS_BUSY)
     {
-        fprintf(stderr,"stage-module invalid weightd configuration: SPARK_WEIGHTD_ATTACH must be 0 or 1; a configured socket requires attach, and attach=1 requires a socket\n");
-        SPARK_RETURN(status);
+        fprintf(stderr,"stage-module direct pack load refused: weightd attach is mandatory (run under model_residentd, which prepares the socket and digest); full-pack loads by residentds kill shared nodes\n");
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
-    if (SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK &&
-        bytes >= SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES)
-    {
-        status = SparkStageModuleLoadPipelineCreate(
-            ledger->module_tag, file, &pipeline);
-        if (status == SPARK_STATUS_OK)
-        {
-            status = SparkStageModuleLoadPipelineRegion(
-                pipeline, ledger, offset, bytes, pointer);
-            if (status == SPARK_STATUS_OK)
-            {
-                status = SparkStageModuleLoadPipelineFinish(pipeline);
-            }
-            SparkStageModuleLoadPipelineDestroy(pipeline);
-            SPARK_RETURN(status);
-        }
-        SPARK_RETURN(status);
-    }
-    return SparkStageModuleLoadRegionSynchronous(
-        ledger, file, offset, bytes, pointer);
+    fprintf(stderr,"stage-module invalid weightd configuration: SPARK_WEIGHTD_ATTACH must be 0 or 1; a configured socket requires attach, and attach=1 requires a socket\n");
+    SPARK_RETURN(status);
 }
 
 static uint64_t SparkStageModuleMonotonicNanoseconds(void)
