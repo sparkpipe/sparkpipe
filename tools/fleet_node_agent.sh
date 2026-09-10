@@ -201,8 +201,8 @@ sync_root() {
     mkdir -p "$root"
     apply_manifest "$name" "$root" || return 0
     local refdir="release/$name"
+    $HUBSSH "$HUB" "test -f '$refdir/UPDATE'" || return 0
     upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    [ -n "$upd" ] || return 0
     if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
         unload_root "$name" || return 0
         $HUBSSH "$HUB" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
