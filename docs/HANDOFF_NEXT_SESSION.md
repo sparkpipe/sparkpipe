@@ -231,3 +231,20 @@ re-transition); engine must cudaIpcCloseMemHandle at Destroy.
   measure warm 32-tok (expect ~20.3s baseline), then START THE STAGE A/B BUILD
   per the function-level order above (GPU-resident mesh + stream-ordered
   rounds) — that is the operator directive.
+
+
+## Hill-climb iteration 7 (09-11 ~08:20, lane e1e4c52) — doorbell machinery landed
+
+- Engines now publish (seq,bytes) to a doorbell page appended to the mesh
+  region; weightd's mesh thread polls (20us) and posts payload+seq RDMA to all
+  peers. The unix socket is OFF the round path; the client broadcast call and
+  its IO-exit path are deleted from the engine. This is the Stage-B trigger
+  machinery (GPU-move reuses it verbatim).
+- Measurement: doorbell 30-31.6s vs TODAY'S pre-build baseline 30.9s — parity
+  (the ~130us IPC saving is noise). FLEET DRIFTED +10s vs last night's 20.3s
+  (d2h phase 304us today vs 120us then) — environmental, NOT the doorbell.
+  NEXT RUN FIRST: diagnose the drift (per-phase compare, check sparke
+  post-reboot state, GPU clocks/contention, concurrent actor builds) before
+  trusting any perf deltas; then continue Stage A (GPU-resident mesh per the
+  function-level order above — doorbell loop becomes the GPU-posting poller
+  unchanged).
