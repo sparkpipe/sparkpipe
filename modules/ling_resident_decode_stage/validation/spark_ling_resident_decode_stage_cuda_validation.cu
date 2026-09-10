@@ -1894,6 +1894,7 @@ int main(int argc,char **argv)
 	SparkLingValWavePlan prefill_plans[2];
 	uint32_t step;
 	int failures = 0;
+	setvbuf(stdout,0,_IOLBF,0);
 	if ( argc != 2 )
 	{
 		fprintf(stderr,"usage: %s VALIDATION_CONFIGURATION_SHA256\n",argv[0]);
