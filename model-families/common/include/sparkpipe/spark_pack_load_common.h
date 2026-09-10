@@ -140,6 +140,9 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 	SPARK_PACK_LOAD_SEEN_TYPE bit = SPARK_PACK_LOAD_SEEN_ONE << entry->tensor_kind;
 	SPARK_PACK_LOAD_SEEN_TYPE *seen;
 	void *payload = 0,*scale = 0;
+#ifdef SPARK_PACK_LOAD_REGION_HOOK
+	uint32_t hook_consumed = 0u;
+#endif
 	status = SPARK_PACK_LOAD_FN(ValidateEntry)(state,entry,file_bytes,&is_global);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -163,9 +166,10 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 		{
 			payload = hook_payload;
 			scale = hook_scale;
+			hook_consumed = 1u;
 		}
 	}
-	if ( payload == 0 )
+	if ( payload == 0 && hook_consumed == 0u )
 #endif
 	{
 	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
