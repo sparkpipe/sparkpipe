@@ -225,7 +225,7 @@ def make_header(tp_degree: int, tensor_count: int, file_bytes: int) -> bytes:
         ATTENTION_PERIOD, FULL_PHASE, 0, 0, 0, 0, 0,
         ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM, ATTN_HEAD_DIM,
         0, 0, INTERMEDIATE, VOCAB, 0, 0,
-        HEADER_BYTES + ENTRY_BYTES * tensor_count, file_bytes)
+        HEADER_BYTES, file_bytes)
 
 
 def read_matrix(source: SafetensorsSource, name: str):
