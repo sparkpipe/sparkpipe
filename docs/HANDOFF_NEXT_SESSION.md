@@ -124,3 +124,22 @@ Receiver: spin on *(uint64_t*)(buffer + (peer+1)*(bytes+8) + bytes) >= ordinal+1
   Stage B: GPU polling kernel for seqs + module combine kernel on mesh slots,
   then CUDA graph capture eligibility returns.
 - Also measured: 546 recvmsg/request = lease IPC is NOT the bottleneck at B1.
+
+
+## Hill-climb iteration 4 (09-11 ~05:20, lane bfcf16b)
+
+- Idle-control strace: ZERO ioctls in 10s idle -> the 151.7K ioctls/request are
+  all request-driven; launch-submission tax CONFIRMED (12.6K/token, ~160/layer).
+- Merged broadcast IPC landed: MESH_BROADCAST wire carries seq_value +
+  seq_remote_offset; the daemon posts the 8-byte seq RDMA from a dedicated
+  registered staging word alongside the payload fanout. One unix round trip per
+  round instead of two (second was 100-950us). Engine local seq stamp removed
+  (value rides the IPC). Functionally verified (tokens returned, 16/16).
+- Warm perf number BLOCKED by serving-reliability defects that now gate all
+  measurement: (1) after any residentd restart the API's engine_connect retries
+  ~22s x 5 (model_batch_engine.c:1090 status=4) and must be killed to recover;
+  (2) resident-slot exhaustion still wedges after ~16 requests. Fix these two
+  BEFORE the next perf iteration or every measurement costs 5+ minutes of
+  unwedging.
+- Next levers unchanged: Stage A/B GPU-resident mesh + graphs for the launch
+  tax; these two serving fixes are now first in the queue.
