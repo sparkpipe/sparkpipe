@@ -5,16 +5,19 @@
 #include <string.h>
 #include <unistd.h>
 
-extern SparkStatus SparkWeightdClientConnect(const char *path,
-    void *client, uint64_t reserved);
-extern SparkStatus SparkWeightdClientDisconnect(void *client);
-extern SparkStatus SparkWeightdClientMeshBroadcast(void *client,
+extern "C" {
+struct SparkWeightdClient;
+SparkStatus SparkWeightdClientConnect(const char *socket_path,
+    struct SparkWeightdClient **client, void *hello_out);
+void SparkWeightdClientClose(struct SparkWeightdClient *client);
+SparkStatus SparkWeightdClientMeshBroadcast(struct SparkWeightdClient *client,
     uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
     uint32_t length, uint64_t timeout_nanoseconds);
+}
 
 typedef struct SparkHiddenSparkHostRdmaState
 {
-    char client[4096];
+    SparkWeightdClient *client;
     void *mesh_buffer;
     uint32_t mesh_buffer_bytes;
 } SparkHiddenSparkHostRdmaState;
@@ -37,7 +40,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         char path[128];
         snprintf(path,sizeof(path),"%s",
             socket != 0 ? socket : "/tmp/spark_weightd.sock");
-        if ( SparkWeightdClientConnect(path,state->client,0) !=
+        if ( SparkWeightdClientConnect(path,&state->client,0) !=
                 SPARK_STATUS_OK )
         {
             free(state);
@@ -54,7 +57,7 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
         (SparkHiddenSparkHostRdmaState *)transport_state;
     if ( state == 0 )
         return;
-    (void)SparkWeightdClientDisconnect(state->client);
+    (void)SparkWeightdClientClose(state->client);
     free(state);
 }
 

@@ -157,6 +157,7 @@ set -euo pipefail
 dir="$(deploy_dir_for "$host")"
 mkdir -p "\$dir/runtime-$rank"
 cd "\$dir"
+export dir
 export SPARK_QWEN4_FLASH_TP_DEGREE=4
 export SPARK_QWEN4_FLASH_TP_RANK=$tp
 export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="\$dir/lib/libhidden_transport_spark_host_rdma_verbs.so"
@@ -167,8 +168,12 @@ export SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS="$session_ports"
 export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
-nohup "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir/deployment.json" --rank-index "$rank" > "\$dir/residentd-r$rank.log" 2>&1 < /dev/null &
-echo \$!
+nohup ${SPARK_FLEET_RUNNER:-} bash -c 'export SPARK_QWEN4_FLASH_TP_DEGREE=4 SPARK_QWEN4_FLASH_TP_RANK=$tp SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH=$(deploy_dir_for "$host")/lib/libhidden_transport_spark_host_rdma_verbs.so SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$identifier SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=64500 SPARK_QWEN4_FLASH_STAGE_TP_HOSTS="$tp_hosts" SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS="$session_ports" SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail" SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000 LD_LIBRARY_PATH=$(deploy_dir_for "$host")/lib; echo \$\$ > '"$(deploy_dir_for "$host")"'/residentd-r'"$rank"'.pid; exec '"$(deploy_dir_for "$host")"'/bin/sparkpipe_model_residentd --deployment '"$(deploy_dir_for "$host")"'/deployment.json --rank-index '"$rank"' > '"$(deploy_dir_for "$host")"'/residentd-r'"$rank"'.log' 2>&1 < /dev/null &
+for wait_index in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "$(deploy_dir_for "$host")/residentd-r$rank.pid" ]] && break
+  sleep 1
+done
+cat "$(deploy_dir_for "$host")/residentd-r$rank.pid"
 REMOTE
 )
   record_pid "$host" "$rank" "$pid" residentd
