@@ -1,10 +1,19 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_status.h"
-#include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+extern "C" {
+struct SparkWeightdClient;
+SparkStatus SparkWeightdClientConnect(const char *socket_path,
+    struct SparkWeightdClient **client, void *hello_out);
+void SparkWeightdClientClose(struct SparkWeightdClient *client);
+SparkStatus SparkWeightdClientMeshBroadcast(struct SparkWeightdClient *client,
+    uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
+    uint32_t length, uint64_t timeout_nanoseconds);
+}
 
 typedef struct SparkHiddenSparkHostRdmaState
 {
