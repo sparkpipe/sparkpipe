@@ -598,10 +598,10 @@ class Packer:
                 dtype = self.s.meta(bias_name)[0]
                 if dtype not in ("BF16", "F32"):
                     raise PackFailure(f"{bias_name}: dtype {dtype}, expected BF16 or F32")
-                if dtype == "F32":
-                    self.add_f32_slice(K_ROUTER_CORRECTION, layer, bias_name, axis="none")
-                else:
-                    self.add_spine_bf16(K_ROUTER_CORRECTION, layer, bias_name)
+                # the module reads the correction as f32 (router_correction_f32)
+                # and the resolver models it f32-replicated: BF16 checkpoint
+                # biases upcast exactly (bf16 -> f32 is lossless)
+                self.add_f32_slice(K_ROUTER_CORRECTION, layer, bias_name, axis="none")
                 self.add_experts(layer)
                 self.add_gate_up_fused(K_SHARED_GATE_UP, layer,
                     f"{m}shared_expert.gate_proj.weight", f"{m}shared_expert.up_proj.weight",
