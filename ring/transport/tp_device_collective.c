@@ -217,6 +217,7 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     if ( bytes > MESH_SLOT_BYTES )
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     ordinal = submission->ordinal;
+    fprintf(stderr,"MESH-SUBMIT rank=%u ordinal=%llu bytes=%llu\n",collective->tp_rank,(unsigned long long)ordinal,(unsigned long long)bytes);
     memcpy(implementation->mesh_buffer,submission->local_device,
         (size_t)bytes);
     {
