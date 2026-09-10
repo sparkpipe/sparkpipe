@@ -814,34 +814,14 @@ static int32_t Glm52LayerMoeValidate(
     (void)status;
     return LM_LAUNCH_OK;
 }
-
-template<uint32_t ExpertCodec>
-static int32_t Glm52LayerMoeRoute(
+static int32_t Glm52LayerMoeRouterLogits(
     const Glm52LayerBuffers *buffers,
     uint32_t rows,
-    uint32_t packed_rows,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
     LmGemmArguments gemm;
-    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,0u);
-    if (status != LM_LAUNCH_OK)
-        return status;
-
-    LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS, uint16_t>),
-        rows,
-        GLM52_LAYER_THREADS,
-        (GLM52_HIDDEN + 8u) * sizeof(float),
-        stream,
-        buffers->attention_out_bf16,
-        buffers->residual_bf16,
-        (const uint16_t *)buffers->mlp_norm_weight,
-        buffers->residual_bf16,
-        buffers->normed_bf16,
-        GLM52_HIDDEN,
-        GLM52_HIDDEN,
-        GLM52_RMS_EPSILON);
+    int32_t status;
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -872,6 +852,14 @@ static int32_t Glm52LayerMoeRoute(
         return status;
     }
 
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm52LayerMoeRouteSelect(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    cudaStream_t stream)
+{
     LM_LAUNCH(
         (LmTopkSmallKernel<
             GLM52_LAYER_THREADS,
@@ -891,6 +879,17 @@ static int32_t Glm52LayerMoeRoute(
         buffers->router_correction_bias,
         0,
         GLM52_ROUTED_SCALE);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm52LayerMoeRoutePack(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    cudaStream_t stream)
+{
+    int32_t status;
+
     status = LmRouteBuild<GLM52_LAYER_THREADS, GLM52_EXPERTS>(
         buffers->route_expert,
         rows,
@@ -914,7 +913,43 @@ static int32_t Glm52LayerMoeRoute(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm52LayerMoeExperts(
+static int32_t Glm52LayerMoeRoute(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,0u);
+    if (status != LM_LAUNCH_OK)
+        return status;
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM52_LAYER_THREADS,
+        (GLM52_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->attention_out_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)buffers->mlp_norm_weight,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM52_HIDDEN,
+        GLM52_HIDDEN,
+        GLM52_RMS_EPSILON);
+
+    status = Glm52LayerMoeRouterLogits(buffers,rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm52LayerMoeRouteSelect(buffers,rows,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm52LayerMoeRoutePack(buffers,rows,packed_rows,stream);
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm52LayerMoeExpertsGateUp(
     const Glm52LayerBuffers *buffers,
     uint32_t rows,
     uint32_t packed_rows,
@@ -923,76 +958,7 @@ static int32_t Glm52LayerMoeExperts(
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
     LmGemmArguments gemm;
-    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,1u);
-    if (status != LM_LAUNCH_OK)
-        return status;
-
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = buffers->dense_row_offset;
-    gemm.group_tile_prefix = buffers->dense_tile_prefix;
-    gemm.output_f32 = buffers->router_logits;
-    status = LmGemmLaunch<
-        LmBf16Format,
-        GLM52_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        GLM52_LAYER_STAGES,
-        GLM52_LAYER_WARPS>(
-            &gemm,
-            buffers->normed_bf16,
-            buffers->router_weight,
-            rows,
-            rows,
-            1u,
-            1u,
-            GLM52_HIDDEN,
-            GLM52_EXPERTS,
-            multiprocessors,
-            false,
-            stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
-    }
-
-    LM_LAUNCH(
-        (LmTopkSmallKernel<
-            GLM52_LAYER_THREADS,
-            GLM52_TOP_K,
-            true,
-            1u,
-            1u,
-            LM_TOPK_SCORE_SIGMOID>),
-        rows,
-        GLM52_LAYER_THREADS,
-        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
-        stream,
-        buffers->router_logits,
-        GLM52_EXPERTS,
-        buffers->route_expert,
-        buffers->route_weight,
-        buffers->router_correction_bias,
-        0,
-        GLM52_ROUTED_SCALE);
-    status = LmRouteBuild<GLM52_LAYER_THREADS, GLM52_EXPERTS>(
-        buffers->route_expert,
-        rows,
-        packed_rows,
-        GLM52_TOP_K,
-        buffers->group_row_offset,
-        buffers->route_packed_row,
-        buffers->route_source_token,
-        buffers->expert_w1_rows,
-        GLM52_HIDDEN,
-        GLM52_LAYER_TILE_N,
-        buffers->group_tile_prefix_w1,
-        buffers->group_tile_prefix_w2,
-        stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
-    }
+    int32_t status;
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -1027,17 +993,20 @@ static int32_t Glm52LayerMoeExperts(
     {
         return status;
     }
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
 
-    LM_LAUNCH(
-        (LmSiluMulKernel<GLM52_LAYER_THREADS>),
-        packed_rows,
-        GLM52_LAYER_THREADS,
-        0,
-        stream,
-        buffers->gate_up_bf16,
-        buffers->intermediate_bf16,
-        buffers->expert_intermediate,
-        false);
+template<uint32_t ExpertCodec>
+static int32_t Glm52LayerMoeExpertsDown(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status;
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -1062,15 +1031,46 @@ static int32_t Glm52LayerMoeExperts(
             rows,
             GLM52_TOP_K,
             GLM52_EXPERTS,
-            buffers->expert_intermediate,
-            GLM52_HIDDEN,
-            multiprocessors,
-            true,
-            stream);
+        buffers->expert_intermediate,
+        GLM52_HIDDEN,
+        multiprocessors,
+        true,
+        stream);
     if (status != LM_LAUNCH_OK)
     {
         return status;
     }
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm52LayerMoeRoutedExperts(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    status = Glm52LayerMoeExpertsGateUp<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+
+    LM_LAUNCH(
+        (LmSiluMulKernel<GLM52_LAYER_THREADS>),
+        packed_rows,
+        GLM52_LAYER_THREADS,
+        0,
+        stream,
+        buffers->gate_up_bf16,
+        buffers->intermediate_bf16,
+        buffers->expert_intermediate,
+        false);
+
+    status = Glm52LayerMoeExpertsDown<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
 
     LM_LAUNCH(
         (LmMoeFinalizeKernel<GLM52_LAYER_THREADS>),
@@ -1088,6 +1088,17 @@ static int32_t Glm52LayerMoeExperts(
         rows,
         GLM52_TOP_K,
         GLM52_HIDDEN);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm52LayerMoeSharedCombine(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
     status = Glm52LaunchBf16Linear(
         buffers->normed_bf16,
         buffers->shared_gate_up_weight,
@@ -1115,6 +1126,20 @@ static int32_t Glm52LayerMoeExperts(
         buffers->intermediate_bf16,
         buffers->shared_intermediate,
         false);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm52LayerMoeSharedExperts(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    status = Glm52LayerMoeSharedCombine(buffers,rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
     status = Glm52LaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
@@ -1146,11 +1171,34 @@ static int32_t Glm52LayerMoeExperts(
         buffers->hidden_bf16,
         rows,
         GLM52_HIDDEN);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
+template<uint32_t ExpertCodec>
+static int32_t Glm52LayerMoeExperts(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm52LayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,1u);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm52LayerMoeRouterLogits(buffers,rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm52LayerMoeRouteSelect(buffers,rows,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm52LayerMoeRoutePack(buffers,rows,packed_rows,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    status = Glm52LayerMoeRoutedExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm52LayerMoeSharedExperts(buffers,rows,multiprocessors,stream);
+}
 template<uint32_t ExpertCodec>
 static int32_t Glm52LayerMoe(
     const Glm52LayerBuffers *buffers,

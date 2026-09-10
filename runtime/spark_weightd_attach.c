@@ -130,13 +130,6 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
-    /* CONFIGURED LAZY ARENA: when SPARK_WEIGHTD_ATTACH_LAZY is set the
-     * pack MUST attach through KIND_ATTACH_LAZY (VMM reserve, no read;
-     * per-expert demand acquisition and reclaim) and requires a valid
-     * per-pack .experts manifest. A lazy failure is terminal for this
-     * attach: the caller's configured lazy load must never silently
-     * degrade to a whole-pack resident arena. Modules that do not
-     * implement the acquisition protocol must leave the env unset. */
     if (SparkWeightdAttachEnvText("SPARK_WEIGHTD_ATTACH_LAZY") != 0)
     {
         SparkWeightdLazyAttachRequest lazy_request;

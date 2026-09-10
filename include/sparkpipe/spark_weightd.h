@@ -66,11 +66,7 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
 
-/* Per-pack manifest entry budget. glm53full needs 75 routed layers x 256
- * experts x 2 kinds = 38400 entries; glm5.3-flash needs 24192. The
- * manifest load is a calloc of count * ~48B (~2MB at the cap). */
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 40960u
-/* Materialized-expert budget the lazy arena reclaims against. */
 #define SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT (8ull * 1024ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC UINT32_C(0x58504557)
@@ -421,7 +417,6 @@ typedef struct SparkWeightdReclaimResult
     uint32_t arena_count;
 } SparkWeightdReclaimResult;
 
-// Canonical identity of a successfully loaded, grouped manifest.
 SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32]);
 
 typedef struct SparkWeightdLazyAttachRequest
@@ -509,7 +504,6 @@ typedef struct SparkWeightdWorkingSetResult
 } SparkWeightdWorkingSetResult;
 
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *client,uint64_t arena_generation,const SparkWeightdExpertKey *keys,uint32_t count,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
-// The caller must establish GPU completion and unmap before releasing.
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
 
 typedef struct SparkWeightdExportBatch
@@ -527,8 +521,6 @@ typedef struct SparkWeightdExportBatch
     uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
 } SparkWeightdExportBatch;
 
-// batch_offset indexes the sorted union of this lease's physical chunks.
-// chunk_count remains the arena's total virtual chunk count.
 SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdExportBatch *batch,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
