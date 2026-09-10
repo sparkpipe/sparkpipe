@@ -8,7 +8,7 @@ work="${MINIMAX_H3_V3_WORK:-${TMPDIR:-/tmp}/minimax_h3_v3_gate}"
 warm="${MINIMAX_H3_V3_WARM:-/mnt/model-warm/minimax-h3}"
 fixtures="${module_directory}/validation/fixtures/real/v3"
 nvcc_bin="${MINIMAX_H3_NVCC:-$(command -v nvcc || echo /usr/local/cuda/bin/nvcc)}"
-arch="${MINIMAX_H3_CUDA_ARCH:-sm_121a}"
+arch="sm_121a"
 
 rm -rf "${work}"
 mkdir -p "${work}/weights"
