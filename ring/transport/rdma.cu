@@ -64,12 +64,15 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
 {
     SparkHiddenSparkHostRdmaState *state =
         (SparkHiddenSparkHostRdmaState *)transport_state;
-    if ( state == 0 || packet == 0 || state->mesh_buffer == 0 )
+    uint64_t bytes;
+    if ( state == 0 || packet == 0 || state->mesh_buffer == 0 ||
+         packet->hidden_bf16 == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    memcpy(state->mesh_buffer,packet->payload,
-        (size_t)packet->payload_bytes);
+    bytes = (uint64_t)packet->active_sequence_count *
+        packet->hidden_dimension * packet->bytes_per_sequence;
+    memcpy(state->mesh_buffer,packet->hidden_bf16,(size_t)bytes);
     return SparkWeightdClientMeshBroadcast(state->client,
-        0x7FFFu,0,0,(uint32_t)packet->payload_bytes,5000000000ull);
+        0x7FFFu,0,0,(uint32_t)bytes,5000000000ull);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
