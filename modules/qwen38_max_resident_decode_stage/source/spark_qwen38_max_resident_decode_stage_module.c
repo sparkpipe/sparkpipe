@@ -1431,6 +1431,7 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error;
 	SparkStatus status;
+	SparkQwen38MaxLinearView w1 = weights->experts_w1,w3 = weights->experts_w3,w2 = weights->experts_w2;
 	error = SparkQwen38MaxLaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->delta_bf16,mlp_norm_bf16,slot->normalized_bf16,rows,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,SPARK_QWEN38_MAX_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
@@ -1461,15 +1462,15 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 			error = SparkWeightdMapBeginUse(map,state->lazy_lease_identifier,&address) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
 		{
-			weights->experts_w1.weight_payload = (uint8_t *)address + weights->experts_w1_payload_offset;
-			weights->experts_w3.weight_payload = (uint8_t *)address + weights->experts_w3_payload_offset;
-			weights->experts_w2.weight_payload = (uint8_t *)address + weights->experts_w2_payload_offset;
-			if ( weights->experts_w1.weight_scale_bytes != 0u )
-				weights->experts_w1.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w1_scale_offset;
-			if ( weights->experts_w3.weight_scale_bytes != 0u )
-				weights->experts_w3.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w3_scale_offset;
-			if ( weights->experts_w2.weight_scale_bytes != 0u )
-				weights->experts_w2.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w2_scale_offset;
+			w1.weight_payload = (uint8_t *)address + weights->experts_w1_payload_offset;
+			w3.weight_payload = (uint8_t *)address + weights->experts_w3_payload_offset;
+			w2.weight_payload = (uint8_t *)address + weights->experts_w2_payload_offset;
+			if ( w1.weight_scale_bytes != 0u )
+				w1.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w1_scale_offset;
+			if ( w3.weight_scale_bytes != 0u )
+				w3.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w3_scale_offset;
+			if ( w2.weight_scale_bytes != 0u )
+				w2.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w2_scale_offset;
 		}
 		if ( error != cudaSuccess && state->lazy_lease_active != 0u )
 		{
@@ -1481,9 +1482,9 @@ static SparkStatus SparkQwen38MaxModuleRunMoe(SparkQwen38MaxModuleState *state, 
 		}
 	}
 	if ( error == cudaSuccess )
-		error = SparkQwen38MaxLaunchFusedExpertW13Act(stream,&weights->experts_w1,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_activated_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_SWIGLU_LIMIT,state->multiprocessor_count);
+		error = SparkQwen38MaxLaunchFusedExpertW13Act(stream,&w1,&w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_activated_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_SWIGLU_LIMIT,state->multiprocessor_count);
 	if ( error == cudaSuccess )
-		error = SparkQwen38MaxLaunchExpertDown(stream,&weights->experts_w2,slot->moe_activated_bf16,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
+		error = SparkQwen38MaxLaunchExpertDown(stream,&w2,slot->moe_activated_bf16,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,state->multiprocessor_count);
 	if ( error == cudaSuccess )
 		error = SparkQwen38MaxLaunchMoePairReduceOverwrite(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->delta_bf16,rows,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess && state->lazy_pack != 0 && state->lazy_lease_active != 0u )
