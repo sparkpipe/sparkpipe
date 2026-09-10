@@ -1937,9 +1937,6 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 					walk->row_hidden[row][index] = SparkLingValFromBf16(
 						SparkLingValBf16(walk->row_hidden[row][index] + prev_mlp[index]));
-			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-				walk->row_hidden[row][index] = SparkLingValFromBf16(
-					SparkLingValBf16(walk->row_hidden[row][index] + walk->row_sublayer[row][index]));
 		}
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","attn_sync"));
@@ -1955,9 +1952,14 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		if ( probe != 0 )
 			fprintf(stderr,"drive w%u: l%u mlp launched\n",wave_index,local);
 		for (row = 0u; row < rows; row++)
+		{
 			SparkLingValRunMlpOracle(fixture,walk,layer,
 				walk->row_hidden[row],walk->row_sublayer[row],
 				walk->row_sublayer[row]);
+			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				walk->row_hidden[row][index] = SparkLingValFromBf16(
+					SparkLingValBf16(walk->row_hidden[row][index] + walk->row_sublayer[row][index]));
+		}
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","mlp_sync"));
 		if ( probe != 0 )
