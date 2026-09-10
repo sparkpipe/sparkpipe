@@ -9,6 +9,8 @@ VIEW="$HOME/current"
 LAST_REPORT=""
 LAST_PIDS=""
 LAST_API_START=0
+START_SHA=$(sha16 "$0")
+AGENT_BLOCKED=""
 mkdir -p "$VIEW"
 
 sha16() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
@@ -246,12 +248,13 @@ install_core() {
 }
 
 self_update() {
-    local new="$HOME/sparkdata/core/bin/fleet_node_agent.sh" self="$0"
+    local new="$HOME/sparkdata/core/bin/fleet_node_agent.sh"
     [ -f "$new" ] || return 0
-    [ "$(sha16 "$new")" != "$(sha16 "$self")" ] || return 0
-    echo "$(date +%T) agent: self-updating"
-    cp "$new" "$self.new" && chmod 755 "$self.new" && mv "$self.new" "$self"
-    exec bash "$self" "$ROOTS" "$HUB"
+    local disk
+    disk=$(sha16 "$new")
+    [ "$disk" != "$START_SHA" ] || return 0
+    echo "$(date +%T) agent: self-updating $START_SHA -> $disk"
+    exec bash "$new" "$ROOTS" "$HUB"
 }
 
 ensure_weightd() {
@@ -273,7 +276,10 @@ ensure_root() {
     [ "$st" = "down" ] || return 0
     local up
     up=$(awk '{printf "%d", $1}' /proc/uptime)
-    [ "$up" -ge 900 ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; return 0; }
+    [ "$up" -ge 900 ] || {
+        [ -n "$AGENT_BLOCKED" ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; AGENT_BLOCKED=1; }
+        return 0
+    }
     echo "$(date +%T) $name: down; starting"
     restart_root "$name"
 }
