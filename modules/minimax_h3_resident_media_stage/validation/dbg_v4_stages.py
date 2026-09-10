@@ -86,8 +86,8 @@ def main():
     suffix = position_ids.new_zeros((b, 5, 3))
     position_ids = torch.cat([position_ids, suffix], dim=1)
     cos, sin = ref.vae_video_rope(position_ids, 48, 100.0)
-    dump("refv_rope_cos", cos[0])
-    dump("refv_rope_sin", sin[0])
+    dump("refv_rope_cos", cos.reshape(33, 48))
+    dump("refv_rope_sin", sin.reshape(33, 48))
     for i in range(VIDEO_BLOCKS):
         p = "decoder.transformer_blocks.%d." % i
         n = ref.rms_norm(x.float(), gen.slab_vec(raw, p + "norm1.weight"), 1e-5).to(x.dtype)
@@ -201,7 +201,8 @@ def main():
             r = amp_block(h, w, prefix, w["_resblock_kernel_sizes"][j],
                 w["_resblock_dilation_sizes"][j],
                 (0, 1, 2) if i == 0 and j == 0 else (),
-                (0, 1) if i == 0 and j == 0 else ())
+                (0, 1) if i == 0 and j == 0 else (),
+                (0,) if i == 0 and j == 0 else ())
             if i == 0 and j in (0, 1, 2):
                 dump_full("refa_s0_b%d" % j, r)
             if i == 1 and j in (0, 1, 2):

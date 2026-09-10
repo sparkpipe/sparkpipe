@@ -976,12 +976,23 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						out_channels,output_length,alpha,beta,up_filter,down_filter,
 						upsampled,padded,expanded);
 					free(alpha); free(beta); free(up_filter); free(down_filter);
-					if ( stage == 0u && block == 0u && dilation_index == 0u &&
-						pass == 0u )
-						SparkMinimaxH3V4CompareStageF32(
-							"refa_s0_a0__2x512x20.f32",activation_buffer,
-							(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
-							out_channels * output_length);
+					if ( stage == 0u && block == 0u && dilation_index == 0u )
+					{
+						if ( pass == 0u )
+							SparkMinimaxH3V4CompareStageF32(
+								"refa_s0_a0__2x512x20.f32",activation_buffer,
+								(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+								out_channels * output_length);
+						{
+							char ref_tag[48];
+							snprintf(ref_tag,sizeof(ref_tag),
+								"refa_s0_m%u__2x512x40.f32",
+								2u * dilation_index + pass);
+							SparkMinimaxH3V4CompareStageF32(ref_tag,upsampled,
+								(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
+								out_channels * output_length * 2u);
+						}
+					}
 					snprintf(act_prefix,sizeof(act_prefix),"%sconvs%u_%u_",prefix,
 						pass + 1u,dilation_index);
 					SparkMinimaxH3V4LoadWeight(&weight_bg,weight_dir,act_prefix,
