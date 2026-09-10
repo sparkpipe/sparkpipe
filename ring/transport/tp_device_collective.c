@@ -135,16 +135,14 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     socket = getenv("SPARK_WEIGHTD_SOCKET");
     if ( socket == 0 || socket[0] == '\0' )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    if ( config->collective_identifier == 0u ||
-         config->collective_identifier >= SPARK_WEIGHTD_MESH_BANDS )
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = calloc(1u,sizeof(*implementation));
     if ( implementation == 0 )
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     implementation->tp_rank = config->tp_rank;
     implementation->tp_degree = config->tp_degree;
     implementation->local_hidden_dimension = config->local_hidden_dimension;
-    implementation->band_base = (uint64_t)(config->collective_identifier - 1u) *
+    implementation->band_base = (uint64_t)(config->collective_identifier &
+        (SPARK_WEIGHTD_MESH_BANDS - 1u)) *
         SPARK_WEIGHTD_MESH_SLOT_BYTES *
         SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
     if ( SparkWeightdClientConnect(socket,&implementation->client,0) !=
