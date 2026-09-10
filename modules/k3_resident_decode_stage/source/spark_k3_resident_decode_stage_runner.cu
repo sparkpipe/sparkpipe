@@ -234,10 +234,9 @@ static uint32_t K3RunnerGraphsEligible(const SparkK3RunnerState *state,
 		return 0u;
 	if ( state->lazy_experts != 0u )
 		return 0u;
-	if ( state->device_collective_created == 0 )
-		return 1u;
-	return state->device_collective.backend_kind ==
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL ? 1u : 0u;
+	if ( state->device_collective_created != 0 )
+		return 0u;
+	return 1u;
 }
 
 static int32_t K3RunnerLaunchSliceGraph(SparkK3RunnerState *state,
@@ -342,9 +341,7 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 {
 	SparkStatus status;
 	uint32_t elements = rows * K3_HIDDEN;
-	if ( state->device_collective_created != 0 &&
-		state->device_collective.backend_kind ==
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+	if ( state->device_collective_created != 0 )
 	{
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
@@ -362,8 +359,9 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 		submission.cuda_stream = stream;
 		submission.completion_function = K3RunnerEmbedCompletion;
 		submission.completion_context = 0;
-		return SparkTpDeviceCollectiveSubmitBf16(&state->device_collective,
-			&submission);
+		return SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+			&submission,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 	}
 	if ( state->collective_created == 0 )
 		return SPARK_STATUS_OK;
@@ -490,7 +488,9 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			submission.cuda_stream = stream;
 			submission.completion_function = K3RunnerTpCompletion;
 			submission.completion_context = completion_context;
-			SparkTpDeviceCollectiveSubmitBf16(&state->device_collective, &submission);
+			SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+				&submission,
+				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 			return;
 		}
 		if ( state->collective_created != 0 )
@@ -535,7 +535,9 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		submission.cuda_stream = stream;
 		submission.completion_function = K3RunnerTpCompletion;
 		submission.completion_context = completion_context;
-		SparkTpDeviceCollectiveSubmitBf16(&state->device_collective, &submission);
+		SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+			&submission,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 		return;
 	}
 	if ( state->collective_created != 0 )
@@ -996,6 +998,14 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( status != SPARK_STATUS_OK )
 			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 		state->device_collective_created = 1;
+		if ( state->lazy_pack != 0 &&
+			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+			status = SparkTpDeviceCollectivePrepareReceiveBf16(
+				&state->device_collective,
+				(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+				0u,0u,0u,0u);
+		if ( status != SPARK_STATUS_OK )
+			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 	}
 	if ( runner->owns_embedding != 0u &&
 		SparkK3PackLoadEntry(&state->module.pack,"model.embed_tokens.weight",&entry) == 0 )
@@ -1217,8 +1227,10 @@ SparkStatus SparkK3StageRunnerSubmit(
 			submission.cuda_stream = stream;
 			submission.completion_function = K3RunnerEmbedCompletion;
 			submission.completion_context = 0;
-			if ( SparkTpDeviceCollectiveSubmitU64Max(&state->device_collective,
-				&submission) != SPARK_STATUS_OK )
+			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+					&submission,
+					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) !=
+				SPARK_STATUS_OK )
 				return SPARK_STATUS_INTERNAL_ERROR;
 			if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
 				state->output_score, rows, stream) != LM_LAUNCH_OK )
