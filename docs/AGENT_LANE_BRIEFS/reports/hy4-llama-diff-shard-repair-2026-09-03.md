@@ -924,3 +924,52 @@ BYTE-IDENTICAL (837 chunks, 33496 bytes, record-0 ck128
 src/spark_ck128.c — no second hash implementation exists. The interim
 python ck128 port and per-expert plan scaffolding are deleted; the
 deployed .experts files (sysadmin, 09-05) are correct as-is.
+
+## 09-10: ANCHOR COMPARE CLOSED — every position, every layer + cached decode; rung 1 green
+
+Resume point executed. Both legs now dump the post-FFN hc streams at
+EVERY layer for EVERY token (identical `_L<il>_t<tk>` naming), the GPU
+cell gained the greedy continuation 299 as a 5th token (cached-decode
+leg: position 4, rope nonzero, cross-boundary attention), and
+tools/hy4_gpu/anchor_compare.py pairs the slabs. Independent side: the
+committed CPU generator (own math, no driver code; loader+vendor
+dequant sha256-verified on the node pre-run).
+
+- DELTAS (max rel over 78 layers): t0 4.8e-05, t1 8.6e-06, t2 1.2e-05,
+  t3 1.2e-05, t4 1.7e-05. Smooth growth, no layer-localized jump (the
+  L76 abs rise to 2.5e-03 tracks the feature-scale expansion, rel
+  flat) — noise class at every nonzero position, 390/390 slabs, all
+  finite.
+- CACHED DECODE TOP1: GPU 269 @ 17.8445 vs CPU 269 @ 17.844484 —
+  5-decimal match at the new decode position; t3 reproduces 299 @
+  15.282612.
+- RUNS: hy4-agc01 / hy4-afc01 (queue v2, spark2), single sequential
+  pass each; UD-IQ1_M allranks; tip then d996170..1a2fb70.
+
+QUEUE LAW LEARNED: the repaired queue kills setsid-detached trees at
+wrapper exit (15-min systemd cgroup law, no daemonizing). Long cells
+are chunk jobs: both legs checkpoint per layer (tmp+rename, 660 s
+self-cutoff, .state.done marker), runners are foreground scripts with
+done-guards, chunks chain via --after. The old setsid runner is
+deleted. All 39 chunks drained green.
+
+RUNG 1 CLOSED: `make archive` on the module (receipt hy4-rung1-compile2-f,
+libhy4_resident_decode_stage.a 321,430 B from committed tree). The
+first real nvcc pass caught: HyperGates OOB (8 lanes into 4-float
+arrays) + wrong scale select + magnitude on pre (now mirrors the
+proven cell), duplicate `streams` params, E8M0 signed-vs-bias-127
+decode (pack convention: exp2f(b-127)), rope powf parity, and the
+Makefile needed the family-local MODULE_INCLUDE_FLAGS override
+(runtime/launch.h) plus -fmad=false for receipt parity.
+
+DEFECT FOUND BY THE CHUNKS: resume at (t, il>=LAYERS) re-embedded the
+token over its restored streams — the head then ran on the raw
+embedding (CPU side only; 20+ consistent repros; adjudicated by a
+standalone head-checker on the dumped L77 bytes). Fixed: embed only
+when the token's layer pass starts at 0. Done-guard name mismatch
+(.done vs .state.done) fixed too.
+
+NEXT: FP8-native kernel numerical rung (compile receipts only so far —
+needs the FP8 rank packs in a cell vs CPU expectations at nonzero
+positions), pack converter (Mimosa-blocked; inline-python stands),
+fail-closed lazy receipts on shared runtime, TP16 collectives.
