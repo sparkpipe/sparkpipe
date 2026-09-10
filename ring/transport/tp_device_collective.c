@@ -294,26 +294,43 @@ SparkStatus SparkTpDeviceCollectiveOperationPhase(
 }
 
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
+    SparkTpDeviceCollective *collective,
     const void *send_device,
     void *receive_device,
     uint32_t active_sequence_count,
     uint32_t hidden_dimension,
-    uint32_t bytes_per_sequence)
+    uint32_t step_index,
+    void *cuda_stream)
 {
-    (void)send_device;(void)receive_device;
-    (void)active_sequence_count;(void)hidden_dimension;
-    (void)bytes_per_sequence;
-    return SPARK_STATUS_OK;
+    SparkTpDeviceCollectiveImplementation *implementation;
+
+    (void)step_index;
+    if ( collective == 0 || collective->implementation == 0 ||
+         send_device == 0 || receive_device == 0 || cuda_stream == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    if ( implementation->mesh_buffer == 0 )
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    memcpy(implementation->mesh_buffer,send_device,
+        (size_t)active_sequence_count * hidden_dimension * 2u);
+    return SparkWeightdClientMeshBroadcast(implementation->client,
+        0x7FFFu,MESH_SCRATCH_OFFSET,MESH_SCRATCH_OFFSET,
+        active_sequence_count * hidden_dimension * 2u,
+        (uint64_t)collective->operation_timeout_milli * 1000000ull);
 }
 
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     SparkTpDeviceCollective *collective,
     void *receive_device,
-    uint64_t receive_bytes)
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    uint32_t step_index,
+    void *cuda_stream)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
 
-    (void)receive_bytes;
+    (void)active_sequence_count;(void)hidden_dimension;
+    (void)step_index;(void)cuda_stream;
     if ( collective == 0 || collective->implementation == 0 ||
          receive_device == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
