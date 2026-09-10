@@ -116,6 +116,38 @@ differ. They bind the kernels (criterion 4+).
 
 ## Work log
 
+- 2026-09-10 (round 4): ADOPTION + REBASE CHAIN. Adopted the coredev-aligned
+  origin/lane/minimax-driver 5462630 (reset onto it; family content verified intact —
+  audio-census 914 static assert + all v3/v4 anchor fixtures survived; the only family
+  delta was the module Makefile dropping the deleted nccl source). First rebased onto
+  the transport-rewrite main 14df85a, then SUPERSEDED: PR #913 landed main 50bd0d3
+  (E2E-proven mesh dataflow, direct-broadcast B1 allreduce, old-engine test deletions)
+  and the lane was rebased onto it (lane tip at rebase: 5d2bdca). Shared files toward
+  main; the aligned branch's mesh cherry-picks were skipped (main carries the proven
+  originals). Ceiling re-measured twice: 237412 on the aligned tip, 238164 on the
+  50bd0d3 rebase. TRANSPORT FINDING on the adopted tree: the collective data path is
+  weightd-owned mesh QPs over shared memfd slot bands — tp_device_collective.c no
+  longer dials session ports at all; the config parser still REQUIRES session_ports
+  matrices for the hidden_transport backend (serving_adapter_template.c treats an
+  absent member as SCHEMA_ERROR), so the deployment generator keeps the frozen official
+  block 17408-18431 but those ports are parse-compat only, not dialed. C7 root wiring
+  landed (Makefile contract/archive/publish hooks mirroring the glm52 flow). C8 V5
+  mini-DiT determinism gate written (2x same-seed LCG latents through 2 scheduler
+  steps x real blocks 0,1; TP1 vs TP4-segmented GEMM compared bitwise per step).
+  V3 GATE COMPILE REPAIR: r3's final scratch-struct refactor left device_segments in
+  three BlockForward call sites (nvcc: too many arguments) — fixed; the refactor was
+  never compile-verified in r3. V4 VIDEO BLOCKER (anchor-side, not ours): the anchor
+  lane's own vae_video_real.npz carries 67584/67584 nonfinite values in the decoded
+  tensor (verified against batch-minimax-val's npz, not a transfer artifact) — the
+  video gate cannot bind until that lane regenerates; the gate now fails closed
+  naming this attribution. V4 AUDIO: anchor waveform fixture is finite; last r3
+  receipt (v3gate13) showed rel=1.0 vs expected AFTER the convs2 residual fix was
+  already applied — the fix did not close the gap or was never exercised; re-run
+  pending on the repaired tree. QUEUE FINDING: spark_queue dispatch claims only
+  kind=run jobs — r3's kind=gate submissions (minimax-c5-v3gate1 et al.) sat queued
+  forever and were silently lost by the serving loop; all lane jobs from now on are
+  kind=run. Also: job cmds must end with the real gate status propagated (a trailing
+  echo masks the gate exit; read the Vx_EXIT line in the node log).
 - 2026-09-10 (round 3, coordinator directive): OPERATOR MEMORY MECHANISM — all heavy-IO
   node commands (gate validators, shard slice reads, pack runs) now run under
   `sudo -n sparkcap [--mem MB] cmd` (sysadmin /usr/local/sbin/sparkcap on all sparks;
