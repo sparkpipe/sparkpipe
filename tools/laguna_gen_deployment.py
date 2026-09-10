@@ -44,7 +44,6 @@ CONTROL_BASE = int(os.environ.get("LAGUNA_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("LAGUNA_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("LAGUNA_TRANSPORT_BASE", "60710"))
 COLLECTIVE_ID = 9911223344556679
-BACKEND = os.environ.get("LAGUNA_BACKEND", "nccl")
 PACK_TEMPLATE = os.environ.get(
     "LAGUNA_PACK_TEMPLATE",
     "packs/laguna-s-2.1.bf16.tp8pp2.stage%d.rank%d.lgsp")
@@ -52,20 +51,8 @@ MODEL_REVISION = "PRE-FREEZE"
 NODE_TARGET = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_bf16"
 
 TP_COLLECTIVE = {
-    # THE NCCL ACTIVATION: the backend (ring/transport/tp_device_collective_
-    # _nccl.c) is implemented + dispatched; in-process bootstrap (rank 0
-    # serves the unique-id over this same peer mesh - no files, no ssh).
-    # 16-rank receipts: 105.9us @8KB / 103.3us @14KB vs ~820us/hop on the
-    # host tier (NCCL_16WIDE_RECEIPTS.md). Env pins REQUIRED (the fabric
-    # has two RoCE ports; unpinned NCCL picks the wrong one):
-    # NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
-    # NCCL_IB_GID_INDEX=3 - the wave exports them.
-    # LAGUNA_BACKEND=hidden_transport selects the tree allreduce
-    # (algorithms [tree], explicit session port tables).
-    "backend": BACKEND,
-    "backend_module_path":
-        "lib/hidden_transport.so" if BACKEND == "hidden_transport"
-        else "lib/libnccl.so.2",
+    "backend": "hidden_transport",
+    "backend_module_path": "lib/hidden_transport.so",
     "algorithms": ["tree"],
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
@@ -76,8 +63,6 @@ TP_COLLECTIVE = {
     # d2a rides beside recursive doubling at TP16 (the ABI-13 transport
     # routes tp_degree-1 peers on step rows; 80KB is the lane's payload
     # bound from the d2d measurements) - #760's committed configs.
-    # hidden_transport only (stripped below for nccl: that backend
-    # validates the BASE member set - no algorithms/rails/d2a).
     "split_ring_min_payload_bytes": 0,
     "direct_all_to_all_max_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
@@ -98,13 +83,6 @@ TP_COLLECTIVE = {
         [SESSION_BASE + a * TP + b if a != b else 0
          for b in range(TP)] for a in range(TP)],
 }
-
-
-if TP_COLLECTIVE["backend"] == "nccl":
-    for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
-                        "split_ring_min_payload_bytes", "rail_peer_hosts",
-                        "step_rail_indices", "session_ports"):
-        TP_COLLECTIVE.pop(_nccl_extra, None)
 
 
 
