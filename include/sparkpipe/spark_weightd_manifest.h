@@ -4,7 +4,7 @@
 
 // Version 2 groups all ranges of a logical expert; version 1 is not inferred.
 #define SPARK_WEIGHTD_RANGE_MANIFEST_VERSION 2u
-#define SPARK_WEIGHTD_RANGE_COUNT_MAX 131072u
+#define SPARK_WEIGHTD_RANGE_COUNT_MAX 262144u
 #define SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX 16u
 
 typedef struct SparkWeightdRange
