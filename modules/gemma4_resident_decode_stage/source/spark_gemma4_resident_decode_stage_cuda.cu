@@ -301,7 +301,7 @@ extern "C" cudaError_t SparkGemma4LaunchRouterSoftmax(cudaStream_t stream, float
 
 extern "C" cudaError_t SparkGemma4LaunchRouterTopk(cudaStream_t stream, const float *scores_f32, uint32_t *indices_u32, float *weights_f32, uint32_t row_count)
 {
-	LmTopkSmallKernel<SPARK_GEMMA4_CUDA_THREADS,SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN,true,1u,1u,LM_TOPK_SCORE_IDENTITY><<<row_count,SPARK_GEMMA4_CUDA_THREADS,0,stream>>>(scores_f32,SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT,indices_u32,weights_f32,0,0,1.0f);
+	LmTopkSmallKernel<SPARK_GEMMA4_CUDA_THREADS,SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN,true,1u,1u,LM_TOPK_SCORE_IDENTITY><<<row_count,SPARK_GEMMA4_CUDA_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(scores_f32,SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT,indices_u32,weights_f32,0,0,1.0f);
 	return(cudaGetLastError());
 }
 

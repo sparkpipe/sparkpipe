@@ -41,7 +41,7 @@ TP_DEGREE ?= 1
 TP_RANK ?= 0
 TP_STANDALONE ?= 0
 override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
-override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
+override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum ../../validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \
 	SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
