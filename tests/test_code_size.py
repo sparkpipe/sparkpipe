@@ -1479,6 +1479,13 @@ CEILING = 233150
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
 CEILING = 241052
+# muse #902 round 2 rebased onto 14df85a: the muse glimmer family stack
+# (module + cuda tier + stagepack/deployment tooling + the two shared norm
+# kernels in inference/kernels/norm.cuh) adds 4665 authored lines over
+# main's measured 241327 at 14df85a - main itself sat 275 over its stale
+# 241052 pin at that merge (glm53-p0 #912 landing debt, not this lane's;
+# shrink-back tracked by the audit del:add). Measured exact: 245992.
+CEILING = 245992
 
 
 ROOT = Path(__file__).resolve().parent.parent
