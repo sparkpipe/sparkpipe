@@ -284,18 +284,6 @@ static int32_t LingLayerAttention(
     {
         return status;
     }
-    LM_LAUNCH(
-        (LmRopePerHeadKernel<LING_LAYER_THREADS, LM_ROPE_INTERLEAVED>),
-        dim3(rows, buffers->attn_heads),
-        LING_LAYER_THREADS,
-        0,
-        stream,
-        buffers->q_bf16,
-        buffers->positions,
-        buffers->attn_heads,
-        LING_QK_HEAD_DIM,
-        LING_ROPE_DIM,
-        LING_ROPE_THETA);
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kv_a_weight,
