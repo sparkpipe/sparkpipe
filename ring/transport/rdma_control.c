@@ -168,13 +168,6 @@ SparkStatus SparkHiddenTransportRdmaControlFenceSession(int fd)
     SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
-static uint32_t SparkHiddenTransportRdmaControlTextIsTerminated(
-    const char *text,
-    uint32_t bytes)
-{
-    return text != 0 && bytes != 0u && memchr(text,'\0',bytes) != 0;
-}
-
 SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
     const SparkHiddenTransportRdmaV4Identity *local,
     const SparkHiddenTransportRdmaV4Identity *peer)
