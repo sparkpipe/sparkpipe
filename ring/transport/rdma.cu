@@ -75,6 +75,23 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
         0x7FFFu,0,0,(uint32_t)bytes,5000000000ull);
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
+    void *transport_state,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint64_t remote_offset,
+    uint32_t sequence)
+{
+    SparkHiddenSparkHostRdmaState *state =
+        (SparkHiddenSparkHostRdmaState *)transport_state;
+    if ( state == 0 || local_buffer == 0 || bytes == 0u ||
+         state->mesh_buffer == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memcpy(state->mesh_buffer,local_buffer,(size_t)bytes);
+    return SparkWeightdClientMeshBroadcast(state->client,
+        0x7FFFu,0,remote_offset,(uint32_t)bytes,5000000000ull);
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
     void *transport_state,
     SparkHiddenTransportCompletion *completion)
@@ -85,6 +102,26 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     completion->descriptor_bytes = sizeof(*completion);
     completion->status = SPARK_STATUS_BUSY;
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkHiddenSparkHostRdmaGetPollDescriptors(
+    void *transport_state,
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count)
+{
+    if ( descriptor_count != 0 )
+        *descriptor_count = 0;
+    return 0u;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
+    void *transport_state,
+    uint64_t bytes,
+    uint32_t credit_index)
+{
+    (void)transport_state;(void)bytes;(void)credit_index;
     return SPARK_STATUS_OK;
 }
 
@@ -108,10 +145,77 @@ static SparkStatus SparkHiddenSparkHostRdmaSetFixedRemote(
     uint64_t remote_bytes,
     uint32_t rkey)
 {
-    (void)transport_state;
-    (void)remote_addr;
-    (void)remote_bytes;
-    (void)rkey;
+    (void)transport_state;(void)remote_addr;(void)remote_bytes;(void)rkey;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaRegisterPersistent(
+    void *transport_state,
+    void *buffer,
+    uint64_t bytes)
+{
+    (void)transport_state;(void)buffer;(void)bytes;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaCreditReady(
+    void *transport_state,
+    uint32_t credit_index)
+{
+    (void)transport_state;(void)credit_index;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaActivatePersistent(
+    void *transport_state,
+    uint32_t credit_index)
+{
+    (void)transport_state;(void)credit_index;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaCancelPersistent(
+    void *transport_state,
+    uint32_t credit_index)
+{
+    (void)transport_state;(void)credit_index;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaReleasePersistent(
+    void *transport_state,
+    uint32_t credit_index)
+{
+    (void)transport_state;(void)credit_index;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaSendPersistent(
+    void *transport_state,
+    const void *local_buffer,
+    uint64_t bytes,
+    uint64_t remote_offset,
+    uint32_t sequence)
+{
+    return SparkHiddenSparkHostRdmaSendFixed(transport_state,
+        local_buffer,bytes,remote_offset,sequence);
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaReservePersistent(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    (void)transport_state;(void)credit_index;(void)generation;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaCancelPersistentSend(
+    void *transport_state,
+    uint32_t credit_index,
+    uint64_t generation)
+{
+    (void)transport_state;(void)credit_index;(void)generation;
     return SPARK_STATUS_OK;
 }
 
@@ -133,11 +237,33 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaDestroy;
     spark_hidden_spark_host_rdma_interface.send =
         SparkHiddenSparkHostRdmaSend;
+    spark_hidden_spark_host_rdma_interface.send_fixed =
+        SparkHiddenSparkHostRdmaSendFixed;
     spark_hidden_spark_host_rdma_interface.poll =
         SparkHiddenSparkHostRdmaPoll;
+    spark_hidden_spark_host_rdma_interface.get_poll_descriptors =
+        SparkHiddenSparkHostRdmaGetPollDescriptors;
+    spark_hidden_spark_host_rdma_interface.post_receive =
+        SparkHiddenSparkHostRdmaPostReceive;
     spark_hidden_spark_host_rdma_interface.set_fixed_local =
         SparkHiddenSparkHostRdmaSetFixedLocal;
     spark_hidden_spark_host_rdma_interface.set_fixed_remote =
         SparkHiddenSparkHostRdmaSetFixedRemote;
+    spark_hidden_spark_host_rdma_interface.register_persistent_receive =
+        SparkHiddenSparkHostRdmaRegisterPersistent;
+    spark_hidden_spark_host_rdma_interface.persistent_remote_credit_ready =
+        SparkHiddenSparkHostRdmaCreditReady;
+    spark_hidden_spark_host_rdma_interface.activate_persistent_receive =
+        SparkHiddenSparkHostRdmaActivatePersistent;
+    spark_hidden_spark_host_rdma_interface.cancel_persistent_receive =
+        SparkHiddenSparkHostRdmaCancelPersistent;
+    spark_hidden_spark_host_rdma_interface.release_persistent_receive =
+        SparkHiddenSparkHostRdmaReleasePersistent;
+    spark_hidden_spark_host_rdma_interface.send_persistent =
+        SparkHiddenSparkHostRdmaSendPersistent;
+    spark_hidden_spark_host_rdma_interface.reserve_persistent_send =
+        SparkHiddenSparkHostRdmaReservePersistent;
+    spark_hidden_spark_host_rdma_interface.cancel_persistent_send =
+        SparkHiddenSparkHostRdmaCancelPersistentSend;
     return &spark_hidden_spark_host_rdma_interface;
 }
