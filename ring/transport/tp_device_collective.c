@@ -2506,56 +2506,94 @@ static SparkStatus SparkTpDeviceCollectiveReopenD2aRoute(
     return SparkTpDeviceCollectiveRegisterD2aRoute(implementation,route);
 }
 
+typedef struct SparkTpDeviceCollectiveRouteReopen
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint32_t route;
+    uint32_t is_tree;
+    SparkStatus status;
+} SparkTpDeviceCollectiveRouteReopen;
+
+static void *SparkTpDeviceCollectiveReopenRoute(void *context)
+{
+    SparkTpDeviceCollectiveRouteReopen *reopen =
+        (SparkTpDeviceCollectiveRouteReopen *)context;
+    if (reopen->is_tree != 0u)
+        reopen->status = SparkTpDeviceCollectiveReopenTreeRoute(
+            reopen->implementation,reopen->route);
+    else
+        reopen->status = SparkTpDeviceCollectiveReopenD2aRoute(
+            reopen->implementation,reopen->route);
+    return 0;
+}
+
 static void *SparkTpDeviceCollectiveRouteMaintainerMain(void *context)
 {
     SparkTpDeviceCollectiveImplementation *implementation =
         (SparkTpDeviceCollectiveImplementation *)context;
     struct timespec pause;
+    SparkTpDeviceCollectiveRouteReopen reopens[
+        SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS + D2A_ROUTE_COUNT];
+    pthread_t threads[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS + D2A_ROUTE_COUNT];
 
     pause.tv_sec = 0;
     pause.tv_nsec = 200000000L;
     for (;;)
     {
         uint32_t route;
-        uint32_t attempt_count = 0u;
+        uint32_t count = 0u;
         uint32_t recovered = 0u;
 
         if (atomic_load_explicit(&implementation->shutdown_requested,
                 memory_order_acquire) != 0u)
             break;
+        memset(reopens,0,sizeof(reopens));
         for (route = 0u; route < implementation->route_count; ++route)
         {
             if (implementation->tree_route_alive[route] != 0u)
                 continue;
-            if (SparkTpDeviceCollectiveReopenTreeRoute(implementation,
-                    route) == SPARK_STATUS_OK)
-            {
-                implementation->tree_route_alive[route] = 1u;
-                implementation->dead_route_count -= 1u;
-                recovered += 1u;
-                fprintf(stderr,"TREE-ROUTE-UP rank=%u route=%u\n",
-                    implementation->collective->tp_rank,route);
-            }
-            attempt_count += 1u;
+            reopens[count].implementation = implementation;
+            reopens[count].route = route;
+            reopens[count].is_tree = 1u;
+            if (pthread_create(&threads[count],0,
+                    SparkTpDeviceCollectiveReopenRoute,&reopens[count]) == 0)
+                count++;
         }
         for (route = 0u; route < implementation->d2a_route_count; ++route)
         {
             if (implementation->d2a_route_alive[route] != 0u)
                 continue;
-            if (SparkTpDeviceCollectiveReopenD2aRoute(implementation,
-                    route) == SPARK_STATUS_OK)
+            reopens[count].implementation = implementation;
+            reopens[count].route = route;
+            reopens[count].is_tree = 0u;
+            if (pthread_create(&threads[count],0,
+                    SparkTpDeviceCollectiveReopenRoute,&reopens[count]) == 0)
+                count++;
+        }
+        for (route = 0u; route < count; ++route)
+        {
+            pthread_join(threads[route],0);
+            if (reopens[route].status == SPARK_STATUS_OK)
             {
-                implementation->d2a_route_alive[route] = 1u;
+                if (reopens[route].is_tree != 0u)
+                {
+                    implementation->tree_route_alive[reopens[route].route] = 1u;
+                    fprintf(stderr,"TREE-ROUTE-UP rank=%u route=%u\n",
+                        implementation->collective->tp_rank,
+                        reopens[route].route);
+                }
+                else
+                {
+                    implementation->d2a_route_alive[reopens[route].route] = 1u;
+                    fprintf(stderr,"D2A-ROUTE-UP rank=%u route=%u\n",
+                        implementation->collective->tp_rank,
+                        reopens[route].route);
+                }
                 implementation->dead_route_count -= 1u;
                 recovered += 1u;
-                fprintf(stderr,"D2A-ROUTE-UP rank=%u route=%u\n",
-                    implementation->collective->tp_rank,route);
             }
-            attempt_count += 1u;
         }
-        if (attempt_count == 0u)
-            nanosleep(&pause,0);
-        else if (recovered == 0u)
+        if (count == 0u || recovered == 0u)
             nanosleep(&pause,0);
     }
     return 0;

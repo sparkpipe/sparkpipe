@@ -170,23 +170,22 @@ sync_rendezvous() {
     fi
     for peer in $FLEET_HOSTS; do
         [ "$peer" = "$host" ] && continue
-        curl -sf --max-time 4 "$RELEASE_HTTP/qpn/$peer/$name/index.txt" \
-            -o /tmp/qpn_idx.$$ 2>/dev/null || continue
-        while read -r sum file; do
-            [ -n "$file" ] || continue
-            if [ -f "$rd/$file" ] && \
-               [ "$(sha256sum < "$rd/$file" | cut -d' ' -f1)" = "$sum" ]; then
-                continue
-            fi
-            if curl -sf --max-time 8 "$RELEASE_HTTP/qpn/$peer/$name/$file" \
-                    -o "$rd/$file" 2>/dev/null; then
-                :
-            else
-                rm -f "$rd/$file"
-            fi
-        done < /tmp/qpn_idx.$$
+        (
+            curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$peer/$name/index.txt" \
+                -o /tmp/qpn_idx.$$.$peer 2>/dev/null || exit 0
+            while read -r sum file; do
+                [ -n "$file" ] || continue
+                if [ -f "$rd/$file" ] && \
+                   [ "$(sha256sum < "$rd/$file" | cut -d' ' -f1)" = "$sum" ]; then
+                    continue
+                fi
+                curl -sf --max-time 4 "$RELEASE_HTTP/qpn/$peer/$name/$file" \
+                    -o "$rd/$file" 2>/dev/null || rm -f "$rd/$file"
+            done < /tmp/qpn_idx.$$.$peer
+            rm -f /tmp/qpn_idx.$$.$peer
+        ) &
     done
-    rm -f /tmp/qpn_idx.$$
+    wait
 }
 
 apply_manifest() {
