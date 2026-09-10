@@ -72,7 +72,8 @@ MODULE_INCLUDE_FLAGS := \
 	-I../../model-families/glm5_next/include \
 	-I../../modules/glm5_next_resident_decode_stage/include \
 	-I../../modules/glm5_next_resident_decode_stage/source \
-	-I../..
+	-I../.. \
+	-I/usr/local/cuda/include
 
 STAGE_INDEX ?= 0
 MAX_ACTIVE_SEQUENCES ?= 64

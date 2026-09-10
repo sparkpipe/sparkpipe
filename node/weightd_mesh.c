@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
 #include <infiniband/verbs.h>
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,8 @@ typedef struct SparkWeightdMeshQpInfo
     uint8_t gid[16];
     uint32_t rkey;
     uint64_t remote_addr;
+    uint64_t doorbell_addr;
+    uint32_t doorbell_rkey;
 } SparkWeightdMeshQpInfo;
 
 typedef struct SparkWeightdMeshRecord
@@ -39,6 +42,9 @@ typedef struct SparkWeightdMeshRecord
     uint8_t gid[16];
     uint8_t reserved[4];
     uint64_t boot_ns;
+    uint64_t doorbell_addr;
+    uint32_t doorbell_rkey;
+    uint32_t reserved2;
 } SparkWeightdMeshRecord;
 
 typedef struct SparkWeightdMesh
@@ -50,8 +56,10 @@ typedef struct SparkWeightdMesh
     struct ibv_qp *send_qps[SPARK_WEIGHTD_MESH_PEERS];
     struct ibv_qp *recv_qps[SPARK_WEIGHTD_MESH_PEERS];
     SparkWeightdMeshQpInfo qp_info[SPARK_WEIGHTD_MESH_PEERS];
-    void *recv_buffer;
-    int memfd;
+    void *gpu_buffer;
+    void *doorbell_map;
+    int doorbell_fd;
+    uint64_t doorbell_addr;
     uint64_t boot_ns;
     uint64_t record_check_ns;
     uint64_t wired_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
@@ -60,6 +68,7 @@ typedef struct SparkWeightdMesh
     uint64_t send_logged;
     uint64_t seq_storage;
     struct ibv_mr *seq_mr;
+    struct ibv_mr *doorbell_mr;
     uint64_t doorbell_posted[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_SLOTS_PER_BAND];
     uint32_t mesh_active;
@@ -283,6 +292,10 @@ static void SparkWeightdMeshTryWire(void)
         weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
         weightd_mesh.qp_info[peer].remote_addr =
             peer_records[peer].recv_addr;
+        weightd_mesh.qp_info[peer].doorbell_addr =
+            peer_records[peer].doorbell_addr;
+        weightd_mesh.qp_info[peer].doorbell_rkey =
+            peer_records[peer].doorbell_rkey;
         weightd_mesh.wired_boot_ns[peer] = peer_records[peer].boot_ns;
     }
     if (weightd_mesh.mesh_ready == 0u)
@@ -367,33 +380,54 @@ SparkStatus SparkWeightdMeshInit(void)
         fprintf(stderr,"weightd-mesh: cq failed\n");
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    weightd_mesh.memfd = memfd_create("spark-mesh",0u);
-    if (weightd_mesh.memfd < 0)
+    weightd_mesh.gpu_buffer = 0;
+    if ( cudaMalloc(&weightd_mesh.gpu_buffer,
+            SPARK_WEIGHTD_MESH_BUFFER_BYTES) != 0 )
     {
-        fprintf(stderr,"weightd-mesh: memfd failed errno=%d\n",errno);
-        return SPARK_STATUS_IO_ERROR;
-    }
-    if (ftruncate(weightd_mesh.memfd,SPARK_WEIGHTD_MESH_REGION_BYTES) != 0)
-    {
-        fprintf(stderr,"weightd-mesh: ftruncate failed errno=%d\n",errno);
-        return SPARK_STATUS_IO_ERROR;
-    }
-    weightd_mesh.recv_buffer = mmap(0,SPARK_WEIGHTD_MESH_REGION_BYTES,
-        PROT_READ | PROT_WRITE,MAP_SHARED,weightd_mesh.memfd,0);
-    if (weightd_mesh.recv_buffer == MAP_FAILED)
-    {
-        fprintf(stderr,"weightd-mesh: mmap failed errno=%d\n",errno);
-        weightd_mesh.recv_buffer = 0;
-        return SPARK_STATUS_IO_ERROR;
+        fprintf(stderr,"weightd-mesh: gpu alloc failed\n");
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     weightd_mesh.recv_mr = ibv_reg_mr(weightd_mesh.protection_domain,
-        weightd_mesh.recv_buffer,SPARK_WEIGHTD_MESH_REGION_BYTES,
+        weightd_mesh.gpu_buffer,SPARK_WEIGHTD_MESH_BUFFER_BYTES,
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (weightd_mesh.recv_mr == 0)
     {
-        fprintf(stderr,"weightd-mesh: mr failed errno=%d\n",errno);
+        fprintf(stderr,"weightd-mesh: gpu mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
+    weightd_mesh.doorbell_fd = memfd_create("spark-mesh-doorbell",0u);
+    if (weightd_mesh.doorbell_fd < 0)
+    {
+        fprintf(stderr,"weightd-mesh: doorbell memfd failed errno=%d\n",errno);
+        return SPARK_STATUS_IO_ERROR;
+    }
+    if (ftruncate(weightd_mesh.doorbell_fd,
+            SPARK_WEIGHTD_MESH_DOORBELL_BYTES) != 0)
+    {
+        fprintf(stderr,"weightd-mesh: doorbell ftruncate failed errno=%d\n",
+            errno);
+        return SPARK_STATUS_IO_ERROR;
+    }
+    weightd_mesh.doorbell_map = mmap(0,
+        SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+        PROT_READ | PROT_WRITE,MAP_SHARED,weightd_mesh.doorbell_fd,0);
+    if (weightd_mesh.doorbell_map == MAP_FAILED)
+    {
+        fprintf(stderr,"weightd-mesh: doorbell mmap failed errno=%d\n",errno);
+        weightd_mesh.doorbell_map = 0;
+        return SPARK_STATUS_IO_ERROR;
+    }
+    weightd_mesh.doorbell_mr = ibv_reg_mr(
+        weightd_mesh.protection_domain,
+        weightd_mesh.doorbell_map,SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    if (weightd_mesh.doorbell_mr == 0)
+    {
+        fprintf(stderr,"weightd-mesh: doorbell mr failed errno=%d\n",errno);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    weightd_mesh.doorbell_addr =
+        (uint64_t)(uintptr_t)weightd_mesh.doorbell_map;
     weightd_mesh.seq_mr = ibv_reg_mr(weightd_mesh.protection_domain,
         &weightd_mesh.seq_storage,sizeof(weightd_mesh.seq_storage),
         IBV_ACCESS_LOCAL_WRITE);
@@ -429,7 +463,10 @@ SparkStatus SparkWeightdMeshInit(void)
     own_record.rank = weightd_mesh.local_rank;
     own_record.boot_ns = weightd_mesh.boot_ns;
     own_record.rkey = weightd_mesh.recv_mr->rkey;
-    own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
+    own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.gpu_buffer;
+    own_record.doorbell_addr = weightd_mesh.doorbell_addr;
+    own_record.doorbell_rkey = weightd_mesh.doorbell_mr != 0 ?
+        weightd_mesh.doorbell_mr->rkey : 0u;
     own_record.lid = (uint16_t)port_attr.lid;
     {
         union ibv_gid gid;
@@ -460,6 +497,20 @@ uint32_t SparkWeightdMeshReady(void)
 {
     return weightd_mesh.mesh_ready;
 }
+
+SparkStatus SparkWeightdMeshIpcHandle(unsigned char out[64])
+{
+    cudaError_t error;
+    cudaIpcMemHandle_t handle;
+    if (weightd_mesh.mesh_ready == 0u || weightd_mesh.gpu_buffer == 0)
+        return SPARK_STATUS_BUSY;
+    error = cudaIpcGetMemHandle(&handle,weightd_mesh.gpu_buffer);
+    if (error != cudaSuccess)
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    memcpy(out,&handle,sizeof(handle));
+    return SPARK_STATUS_OK;
+}
+
 
 void SparkWeightdMeshPoll(void)
 {
@@ -513,12 +564,12 @@ void SparkWeightdMeshPoll(void)
 
 uint64_t SparkWeightdMeshBufferAddress(void)
 {
-    return (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
+    return (uint64_t)(uintptr_t)weightd_mesh.gpu_buffer;
 }
 
 int SparkWeightdMeshBufferFd(void)
 {
-    return weightd_mesh.mesh_ready != 0u ? dup(weightd_mesh.memfd) : -1;
+    return weightd_mesh.mesh_ready != 0u ? dup(weightd_mesh.doorbell_fd) : -1;
 }
 
 void SparkWeightdMeshDoorbellLoop(void)
@@ -534,8 +585,7 @@ void SparkWeightdMeshDoorbellLoop(void)
         nanosleep(&pause,0);
     }
     entries = (volatile uint64_t *)
-        ((uint8_t *)weightd_mesh.recv_buffer +
-        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET);
+        (uint8_t *)weightd_mesh.doorbell_map;
     for (;;)
     {
         struct timespec pause = {0,20000};
@@ -567,7 +617,7 @@ void SparkWeightdMeshDoorbellLoop(void)
                     struct ibv_send_wr *bad;
                     memset(&scatter,0,sizeof(scatter));
                     scatter.addr = (uint64_t)(uintptr_t)
-                        weightd_mesh.recv_buffer + slot_base;
+                        weightd_mesh.gpu_buffer + slot_base;
                     scatter.length = (uint32_t)bytes;
                     scatter.lkey = weightd_mesh.recv_mr->lkey;
                     memset(&work_request,0,sizeof(work_request));
@@ -599,6 +649,19 @@ void SparkWeightdMeshDoorbellLoop(void)
                         SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
                     work_request.wr.rdma.rkey =
                         weightd_mesh.qp_info[peer].rkey;
+                    (void)ibv_post_send(weightd_mesh.send_qps[peer],
+                        &work_request,&bad);
+                    memset(&work_request,0,sizeof(work_request));
+                    work_request.wr_id = (uint64_t)peer;
+                    work_request.sg_list = &scatter;
+                    work_request.num_sge = 1;
+                    work_request.opcode = IBV_WR_RDMA_WRITE;
+                    work_request.send_flags = 0;
+                    work_request.wr.rdma.remote_addr =
+                        weightd_mesh.qp_info[peer].doorbell_addr +
+                        SPARK_WEIGHTD_MESH_DOORBELL_LANDED(band,rank);
+                    work_request.wr.rdma.rkey =
+                        weightd_mesh.qp_info[peer].doorbell_rkey;
                     (void)ibv_post_send(weightd_mesh.send_qps[peer],
                         &work_request,&bad);
                     (void)peer_rank;
@@ -654,7 +717,7 @@ uint32_t SparkWeightdMeshBroadcast(
         scatter[1].lkey = weightd_mesh.seq_mr->lkey;
     }
     memset(&scatter[0],0,sizeof(scatter[0]));
-    scatter[0].addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer +
+    scatter[0].addr = (uint64_t)(uintptr_t)weightd_mesh.gpu_buffer +
         source_offset;
     scatter[0].length = length;
     scatter[0].lkey = weightd_mesh.recv_mr->lkey;

@@ -58,6 +58,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT 22u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_INFO 25u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_INFO_RESULT 26u
 
 #define SPARK_WEIGHTD_MESH_SLOT_BYTES (32u * 1024u * 1024u)
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND 16u
@@ -66,12 +68,10 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
 #define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 4096u
-#define SPARK_WEIGHTD_MESH_REGION_BYTES \
-    (SPARK_WEIGHTD_MESH_BUFFER_BYTES + SPARK_WEIGHTD_MESH_DOORBELL_BYTES)
-#define SPARK_WEIGHTD_MESH_DOORBELL_OFFSET SPARK_WEIGHTD_MESH_BUFFER_BYTES
-#define SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,rank) \
-    (SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + \
-     (((band) * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + (rank)) * 16u))
+#define SPARK_WEIGHTD_MESH_DOORBELL_PUBLISH(band,rank) \
+    (((band) * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + (rank)) * 16u)
+#define SPARK_WEIGHTD_MESH_DOORBELL_LANDED(band,rank) \
+    (2048u + (((band) * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + (rank)) * 8u))
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -261,6 +261,14 @@ typedef struct SparkWeightdIpcMeshBroadcastResult
     uint32_t status;
     uint32_t posted_count;
 } SparkWeightdIpcMeshBroadcastResult;
+
+typedef struct SparkWeightdIpcMeshInfoResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t gpu_ready;
+    unsigned char ipc_handle[64];
+} SparkWeightdIpcMeshInfoResult;
 
 typedef struct SparkWeightdIpcEnsure
 {
@@ -487,6 +495,10 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
     uint32_t length,
     uint64_t seq_value,
     uint64_t seq_remote_offset,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientMeshInfo(SparkWeightdClient *client,
+    unsigned char ipc_handle[64],
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
