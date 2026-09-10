@@ -151,7 +151,8 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 				receipt_fd = open(receipt_path,O_WRONLY | O_CREAT | O_TRUNC,0644);
 				if ( receipt_fd >= 0 )
 				{
-					(void)write(receipt_fd,&receipt,sizeof(receipt));
+					ssize_t written = write(receipt_fd,&receipt,sizeof(receipt));
+					(void)written;
 					close(receipt_fd);
 				}
 			}
