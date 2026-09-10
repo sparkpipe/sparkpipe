@@ -325,6 +325,10 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(
     const SparkTpDeviceCollectiveSubmission *submission,
     uint32_t operation_kind);
 
+SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
+    SparkTpDeviceCollective *collective,
+    uint32_t timeout_milli);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);

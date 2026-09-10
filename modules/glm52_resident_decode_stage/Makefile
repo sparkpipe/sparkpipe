@@ -51,8 +51,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
-	../../ring/transport/tp_device_collective.c \
-	../../ring/transport/tp_device_collective_nccl.c
+	../../ring/transport/tp_device_collective.c
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 

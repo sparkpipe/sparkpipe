@@ -241,8 +241,9 @@ static void api_orphan_cancel_after_submit(ApiRequest *r)
 
 static void *api_worker(void *arg)
 {
-	SparkModelResidentClientPollDescriptor fds[4];
-	struct pollfd pfds[4];
+	SparkModelResidentClientPollDescriptor
+		fds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 	(void)arg;
 	while (S.running)
 	{
@@ -328,7 +329,9 @@ static void *api_worker(void *arg)
 			{
 				uint32_t n = 0;
 				if (SparkModelBatchEngineGetPollDescriptors(
-					S.engine, fds, 4u, &n) == SPARK_STATUS_OK && n > 0)
+					S.engine, fds,
+					SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,
+					&n) == SPARK_STATUS_OK && n > 0)
 				{
 					uint32_t i;
 					for (i = 0; i < n; i++)

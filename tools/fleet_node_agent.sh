@@ -85,9 +85,9 @@ report_if_changed() {
 unload_root() {
     local rr="$HOME/sparkdata/$1" p t gone
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -TERM "$p"
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -9 "$p"
     done
-    for t in $(seq 1 30); do
+    for t in $(seq 1 5); do
         gone=1
         for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
             [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && gone=0
@@ -112,6 +112,11 @@ start_root() {
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
     done
+    if [ "$(grep -c '"rank_index"' "$rr/model_resident.json" 2>/dev/null)" -gt 1 ] && \
+       [ ! -f /tmp/weightd-mesh/.ready ]; then
+        echo "$(date +%T) $name: waiting for weightd mesh"
+        return 0
+    fi
     cd "$rr" || return 1
     [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
@@ -152,8 +157,62 @@ restart_root() {
 }
 
 FLEET_SIZE=16
+FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
+    ssh-keyscan -H "$HUB" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+fi
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
+
+sync_rendezvous() {
+    local name="$1" host rd
+    host=$(hostname -s)
+    rd="$HOME/sparkdata/$name/rendezvous"
+    if [ -d "$rd" ]; then
+        if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
+            [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
+            touch "$rd/.upload_lock"
+            $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
+            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
+                "$HUB:release/qpn/$host/$name/" 2>/dev/null
+            $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
+            touch "$rd/.shipped"
+        fi
+    fi
+    local mesh_dir="/tmp/weightd-mesh"
+    if [ -d "$mesh_dir" ]; then
+        local own_rank="${host#spark}"
+        local own_rec="$mesh_dir/mesh-$own_rank.rec"
+        if [ -f "$own_rec" ]; then
+            local sum
+            sum=$(sha256sum "$own_rec" | cut -d' ' -f1)
+            if [ ! -f "$mesh_dir/.shipped_sha" ] || \
+               [ "$(cat "$mesh_dir/.shipped_sha" 2>/dev/null)" != "$sum" ]; then
+                $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
+                scp -q -o BatchMode=yes -o ConnectTimeout=4 "$own_rec" \
+                    "$HUB:release/qpn/$host/mesh/" 2>/dev/null && \
+                    echo "$sum" > "$mesh_dir/.shipped_sha"
+            fi
+        fi
+        local pr pn fn now age
+        now=$(date +%s)
+        for pr in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+            pn="spark$pr"
+            [ "$pn" = "$host" ] && continue
+            fn="$mesh_dir/mesh-$pr.rec"
+            if [ -f "$fn" ]; then
+                age=$(( now - $(stat -c %Y "$fn" 2>/dev/null || echo "$now") ))
+                [ "$age" -lt 10 ] && continue
+            fi
+            if curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$pn/mesh/mesh-$pr.rec" \
+                -o "$fn.tmp" 2>/dev/null; then
+                mv "$fn.tmp" "$fn"
+            else
+                rm -f "$fn.tmp"
+            fi
+        done
+    fi
+}
 
 apply_manifest() {
     local name="$1" root="$2" manifest_cur manifest_applied
@@ -195,35 +254,12 @@ apply_manifest() {
 }
 
 sync_root() {
-    local name="$1" upd
+    local name="$1"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
     apply_manifest "$name" "$root" || return 0
-    local refdir="release/$name"
-    $HUBSSH "$HUB" "test -f '$refdir/UPDATE'" || return 0
-    upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
-        unload_root "$name" || return 0
-        $HUBSSH "$HUB" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
-        upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
-    fi
-    local gate_wait=0
-    while [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -lt "$FLEET_SIZE" ] &&
-          [ "$gate_wait" -lt 120 ]; do
-        sleep 1
-        gate_wait=$((gate_wait + 1))
-        upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    done
-    [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
-    if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
-        start_root "$name" || return 0
-        $HUBSSH "$HUB" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
-        upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
-    fi
-    [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
-    local c
-    c=$($HUBSSH "$HUB" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
-    $HUBSSH "$HUB" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
+    unload_root "$name" || return 0
+    start_root "$name"
 }
 
 sync_core() {
@@ -243,6 +279,10 @@ install_core() {
     for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
         kill -9 "$p" 2>/dev/null
     done
+    for p in $(pgrep -f bin/sparkpipe_model_residentd); do
+        kill -9 "$p" 2>/dev/null
+    done
+    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     sleep 1
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
@@ -267,6 +307,7 @@ ensure_weightd() {
     pgrep -f "sparkpipe_weightd" >/dev/null && return 0
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
+    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
@@ -279,6 +320,19 @@ ensure_weightd
 ensure_root() {
     local name="$1"
     local st; st=$(root_state "$name")
+    [ "$st" = "down" ] || {
+        local rr="$HOME/sparkdata/$name" p exe_sha disk_sha
+        for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
+            exe_sha=$(sha16 "$(readlink /proc/$p/exe)")
+            disk_sha=$(sha16 "$rr/bin/sparkpipe_model_residentd")
+            if [ "$exe_sha" != "$disk_sha" ]; then
+                echo "$(date +%T) $name: running residentd $exe_sha != disk $disk_sha; recycling"
+                st="down"
+            fi
+            break
+        done
+    }
     [ "$st" = "down" ] || return 0
     local up
     up=$(awk '{printf "%d", $1}' /proc/uptime)
@@ -294,10 +348,12 @@ while true; do
     sync_core
     install_core
     self_update
+    ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
+    for r in "${RA[@]}"; do sync_rendezvous "$r"; done
     for r in "${RA[@]}"; do ensure_root "$r"; done
     ensure_api
     report_if_changed
-    sleep 5
+    sleep 1
 done

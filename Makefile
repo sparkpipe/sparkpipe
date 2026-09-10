@@ -104,6 +104,10 @@ RUNTIME_SOURCES := $(SPARKPIPE_RUNTIME_SOURCES)
 sp_objects = $(patsubst %.c,build/obj/%.o,$(1))
 
 CORE_OBJECTS := $(call sp_objects,$(CORE_SOURCES))
+TRANSPORT_SOURCES := $(SPARKPIPE_TRANSPORT_SOURCES)
+CACHE_SOURCES := $(SPARKPIPE_CACHE_SOURCES)
+TRANSPORT_OBJECTS := $(call sp_objects,$(TRANSPORT_SOURCES))
+CACHE_OBJECTS := $(call sp_objects,$(CACHE_SOURCES))
 MODEL_COMMON_OBJECTS := $(call sp_objects,$(MODEL_COMMON_SOURCES))
 DEPLOYMENT_OBJECTS := $(call sp_objects,$(DEPLOYMENT_SOURCES))
 GLM52_HOST_OBJECTS := $(call sp_objects,$(GLM52_HOST_SOURCES))
@@ -134,6 +138,7 @@ $(QWEN38_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN38_INCLUDE_FLAGS)
 $(DSV4_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(DSV4_INCLUDE_FLAGS)
 CORE_LIBRARY := build/libsparkpipe_core.a
 MODEL_COMMON_LIBRARY := build/libsparkpipe_model_common.a
+TRANSPORT_LIBRARY := build/libsparkpipe_transport.a
 DEPLOYMENT_LIBRARY := build/libsparkpipe_deployment.a
 GLM52_HOST_LIBRARY := build/libglm52_host.a
 QWEN38_27B_HOST_LIBRARY := build/libqwen38_27b_host.a
@@ -261,11 +266,6 @@ TEST_NAMES := \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
-    test_tp_device_collective \
-    test_tp_credit_flow \
-    test_tp_tree_fold \
-    test_tp_logical_batch \
-    test_tp_device_collective_nccl \
     test_glm52_stagepack \
     test_tokenizer \
     test_model_description \
@@ -441,10 +441,6 @@ TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
 TEST_HIDDEN_TRANSPORT_MODULE := \
     build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
-TEST_TP_DEVICE_COLLECTIVE_MODULE := \
-    build/test_modules/libtp_device_collective_module.$(SHARED_LIBRARY_EXT)
-TEST_TP_DEVICE_COLLECTIVE_NCCL_MODULE := \
-    build/test_modules/libtp_device_collective_nccl_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_MODULE := \
     build/test_modules/libmodel_serving_adapter_module.$(SHARED_LIBRARY_EXT)
 TEST_DSV4_SERVING_DRIVER_MODULE := \
@@ -560,6 +556,9 @@ $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(MODEL_COMMON_LIBRARY): $(MODEL_COMMON_OBJECTS)
+	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
+
+$(TRANSPORT_LIBRARY): $(TRANSPORT_OBJECTS)
 	$(AR) rcs $@.$$$$.tmp $^ && mv $@.$$$$.tmp $@
 
 $(DEPLOYMENT_LIBRARY): $(DEPLOYMENT_OBJECTS)
@@ -817,12 +816,6 @@ build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o bui
 $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-$(TEST_TP_DEVICE_COLLECTIVE_MODULE): tests/fixtures/tp_device_collective_module.c | build/test_modules
-	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-
-$(TEST_TP_DEVICE_COLLECTIVE_NCCL_MODULE): tests/fixtures/tp_device_collective_nccl_module.c | build/test_modules
-	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-
 $(TEST_MODEL_SERVING_ADAPTER_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1031,23 +1024,7 @@ build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_re
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
-build/test_tp_device_collective: tests/test_tp_device_collective.c include/sparkpipe/spark_tp_device_collective.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(TEST_TP_DEVICE_COLLECTIVE_MODULE)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -DSPARK_TEST_TP_DEVICE_COLLECTIVE_MODULE_PATH=\"$(TEST_TP_DEVICE_COLLECTIVE_MODULE)\" $(CFLAGS) $< $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(NVCC) -std=c++17 -O3 -arch=sm_121a $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@
-
-build/test_tp_credit_flow: tests/test_tp_credit_flow.c ring/transport/tp_device_collective.c include/sparkpipe/spark_tp_device_collective.h include/sparkpipe/spark_tp_chain_ordinal.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_tp_tree_fold: tests/test_tp_tree_fold.c ring/transport/tp_device_collective.c include/sparkpipe/spark_tp_device_collective.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_tp_logical_batch: tests/test_tp_logical_batch.c ring/transport/tp_device_collective.c include/sparkpipe/spark_tp_device_collective.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_tp_device_collective_nccl: tests/test_tp_device_collective_nccl.c include/sparkpipe/spark_tp_device_collective.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(TEST_TP_DEVICE_COLLECTIVE_NCCL_MODULE)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -DSPARK_TEST_TP_DEVICE_COLLECTIVE_NCCL_MODULE_PATH=\"$(TEST_TP_DEVICE_COLLECTIVE_NCCL_MODULE)\" $(CFLAGS) $< $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1092,8 +1069,8 @@ build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resi
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_qwen38_27b_tp_faults: tests/test_qwen38_27b_tp_faults.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.h ring/transport/tp_device_collective.c ring/transport/hidden_transport.c ring/transport/tp_device_collective_nccl.c tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_27b_resident_decode_stage/source -Iring/transport -Itests/cuda_stub $(CFLAGS) tests/test_qwen38_27b_tp_faults.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c ring/transport/tp_device_collective.c ring/transport/hidden_transport.c ring/transport/tp_device_collective_nccl.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) -ldl -pthread -o $@
+build/test_qwen38_27b_tp_faults: tests/test_qwen38_27b_tp_faults.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.h ring/transport/tp_device_collective.c ring/transport/hidden_transport.c tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_27b_resident_decode_stage/source -Iring/transport -Itests/cuda_stub $(CFLAGS) tests/test_qwen38_27b_tp_faults.c modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c ring/transport/tp_device_collective.c ring/transport/hidden_transport.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) -ldl -pthread -o $@
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) -o $@
@@ -1107,8 +1084,8 @@ build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/sp
 # library's import surface); the daemon links like model_residentd - real
 # cudart + libcuda where CUDA_HOME exists, the host stub where it does not -
 # and its tests are stub-pinned like test_stage_module_common.
-build/sparkpipe_weightd: node/weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
+build/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -o $@
 
 build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

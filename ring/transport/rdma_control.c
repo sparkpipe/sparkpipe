@@ -208,27 +208,7 @@ SparkStatus SparkHiddenTransportRdmaV4ValidatePeerIdentity(
         peer->memory_mode != local->memory_mode ||
         peer->capability_flags != local->capability_flags ||
         peer->max_packet_bytes != local->max_packet_bytes ||
-        peer->route_identifier != local->route_identifier ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            local->transport_module_id,sizeof(local->transport_module_id)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            peer->transport_module_id,sizeof(peer->transport_module_id)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            local->route_name,sizeof(local->route_name)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            peer->route_name,sizeof(peer->route_name)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            local->source_host,sizeof(local->source_host)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            peer->source_host,sizeof(peer->source_host)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            local->sink_host,sizeof(local->sink_host)) == 0u ||
-        SparkHiddenTransportRdmaControlTextIsTerminated(
-            peer->sink_host,sizeof(peer->sink_host)) == 0u ||
-        strcmp(peer->transport_module_id,local->transport_module_id) != 0 ||
-        strcmp(peer->route_name,local->route_name) != 0 ||
-        strcmp(peer->source_host,local->source_host) != 0 ||
-        strcmp(peer->sink_host,local->sink_host) != 0)
+        peer->route_identifier != local->route_identifier)
         SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     return SPARK_STATUS_OK;
 }
