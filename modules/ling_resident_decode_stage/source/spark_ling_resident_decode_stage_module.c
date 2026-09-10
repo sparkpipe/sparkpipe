@@ -700,19 +700,8 @@ static SparkStatus SparkLingPageCopy(
 	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_page_copy"));
 }
 
-static SparkStatus SparkLingKvInitialize(SparkLingModuleState *state)
+static SparkStatus SparkLingKvAllocateArrays(SparkLingModuleState *state,uint64_t block_bytes)
 {
-	SparkKvModelTable table;
-	uint64_t block_bytes;
-	uint64_t lane_page_entries;
-	SparkStatus status;
-	if ( state->kv_layer_count == 0u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	block_bytes = (uint64_t)SPARK_LING_KV_BLOCK_TOKEN_COUNT *
-		(uint64_t)state->kv_layer_count * SPARK_LING_KV_ARENA_HEAD_DIM *
-		SPARK_LING_KV_BYTES_PER_SCALAR;
-	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
-		state->pages_per_sequence;
 	state->kv_blocks = (SparkKvCacheBlock *)calloc(state->page_count,sizeof(*state->kv_blocks));
 	state->kv_resident_slot_logical_block_indices = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_resident_slot_logical_block_indices));
 	state->kv_entries = (SparkKvPageCacheEntry *)calloc(state->page_count,sizeof(*state->kv_entries));
@@ -720,67 +709,83 @@ static SparkStatus SparkLingKvInitialize(SparkLingModuleState *state)
 	state->kv_hash_bucket_heads = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_hash_bucket_heads));
 	state->kv_entry_indices_by_logical_page = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_entry_indices_by_logical_page));
 	state->kv_page_staging = (uint8_t *)malloc((size_t)block_bytes);
-	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)lane_page_entries,sizeof(*state->kv_lane_logical_pages));
+	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)state->resident_sequence_capacity * state->pages_per_sequence,sizeof(*state->kv_lane_logical_pages));
 	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
 	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
 	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
 	state->kv_lane_cache_lanes = (SparkModelDriverCacheLane *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_cache_lanes));
 	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 || state->kv_lane_cache_lanes == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
+}
 
-	memset(&table,0,sizeof(table));
-	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
-	table.descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
-	SparkLingKvFillCapacityRequest(&table.capacity_request);
-
-	table.arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	table.arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
-	table.arena_configuration.logical_block_count = state->page_count;
-	table.arena_configuration.block_token_count = SPARK_LING_KV_BLOCK_TOKEN_COUNT;
-	table.arena_configuration.resident_block_capacity = state->page_count;
-	table.arena_configuration.layer_count = state->kv_layer_count;
-	table.arena_configuration.kv_head_count = SPARK_LING_KV_ARENA_KV_HEAD_COUNT;
-	table.arena_configuration.head_dim = SPARK_LING_KV_ARENA_HEAD_DIM;
-	table.arena_configuration.bytes_per_scalar = SPARK_LING_KV_BYTES_PER_SCALAR;
-	table.arena_configuration.key_device_base = state->kv_cache;
-	table.arena_configuration.blocks = state->kv_blocks;
-	table.arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
-
-	table.page_store_config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
-	table.page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	table.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
-	table.page_store_config.logical_page_capacity = state->page_count;
-	table.page_store_config.transfer_capacity = 2u;
-	table.page_store_config.page_bytes = block_bytes;
+static void SparkLingKvFillTable(SparkLingModuleState *state,SparkKvModelTable *table,uint64_t block_bytes)
+{
+	memset(table,0,sizeof(*table));
+	table->abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
+	table->descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
+	SparkLingKvFillCapacityRequest(&table->capacity_request);
+	table->arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	table->arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	table->arena_configuration.logical_block_count = state->page_count;
+	table->arena_configuration.block_token_count = SPARK_LING_KV_BLOCK_TOKEN_COUNT;
+	table->arena_configuration.resident_block_capacity = state->page_count;
+	table->arena_configuration.layer_count = state->kv_layer_count;
+	table->arena_configuration.kv_head_count = SPARK_LING_KV_ARENA_KV_HEAD_COUNT;
+	table->arena_configuration.head_dim = SPARK_LING_KV_ARENA_HEAD_DIM;
+	table->arena_configuration.bytes_per_scalar = SPARK_LING_KV_BYTES_PER_SCALAR;
+	table->arena_configuration.key_device_base = state->kv_cache;
+	table->arena_configuration.blocks = state->kv_blocks;
+	table->arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
+	table->page_store_config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	table->page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	table->page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
+	table->page_store_config.logical_page_capacity = state->page_count;
+	table->page_store_config.transfer_capacity = 2u;
+	table->page_store_config.page_bytes = block_bytes;
 	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
-		table.page_store_config.backing_path = state->kv_backing_directory;
+		table->page_store_config.backing_path = state->kv_backing_directory;
 	else
 	{
 		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
 			"/tmp/sparkpipe_ling_kv_%s",state->model_revision);
 		mkdir(state->kv_backing_default,0700);
-		table.page_store_config.backing_path = state->kv_backing_default;
+		table->page_store_config.backing_path = state->kv_backing_default;
 	}
-	table.page_store_config.maximum_backing_bytes =
+	table->page_store_config.maximum_backing_bytes =
 		state->kv_backing_maximum_bytes >= block_bytes
 			? state->kv_backing_maximum_bytes
 			: block_bytes;
-	table.page_store_config.staging_address = state->kv_page_staging;
-	table.page_store_config.staging_bytes = block_bytes;
-	table.page_store_config.copy_function = SparkLingPageCopy;
-	table.page_store_config.copy_context = state;
+	table->page_store_config.staging_address = state->kv_page_staging;
+	table->page_store_config.staging_bytes = block_bytes;
+	table->page_store_config.copy_function = SparkLingPageCopy;
+	table->page_store_config.copy_context = state;
+	table->sequence_capacity = state->resident_sequence_capacity;
+	table->entry_capacity = state->page_count;
+	table->hash_bucket_count = state->page_count;
+	table->entries = state->kv_entries;
+	table->sequences = state->kv_sequences;
+	table->hash_bucket_heads = state->kv_hash_bucket_heads;
+	table->entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
+	table->model_id = "ling";
+	table->model_revision = state->model_revision;
+	table->cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
+}
 
-	table.sequence_capacity = state->resident_sequence_capacity;
-	table.entry_capacity = state->page_count;
-	table.hash_bucket_count = state->page_count;
-	table.entries = state->kv_entries;
-	table.sequences = state->kv_sequences;
-	table.hash_bucket_heads = state->kv_hash_bucket_heads;
-	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
-	table.model_id = "ling";
-	table.model_revision = state->model_revision;
-	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
-
+static SparkStatus SparkLingKvInitialize(SparkLingModuleState *state)
+{
+	SparkKvModelTable table;
+	uint64_t block_bytes;
+	SparkStatus status;
+	if ( state->kv_layer_count == 0u )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	block_bytes = (uint64_t)SPARK_LING_KV_BLOCK_TOKEN_COUNT *
+		(uint64_t)state->kv_layer_count * SPARK_LING_KV_ARENA_HEAD_DIM *
+		SPARK_LING_KV_BYTES_PER_SCALAR;
+	status = SparkLingKvAllocateArrays(state,block_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	SparkLingKvFillTable(state,&table,block_bytes);
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1411,16 +1416,110 @@ static void SparkLingTpChainFail(SparkLingTpChain *chain,SparkStatus status)
 	free(chain);
 }
 
+static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint32_t reduce_stage)
+{
+	SparkStatus launch_status;
+	int32_t launch;
+	if ( reduce_stage == SPARK_LING_CHAIN_STAGE_REDUCE_ATTENTION )
+		launch = SparkLingLaunchCudaLayerAttention(&chain->wave,chain->next_layer);
+	else
+		launch = SparkLingLaunchCudaLayerMlp(&chain->wave,chain->next_layer);
+	if ( launch != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	chain->stage = reduce_stage;
+	launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
+	if ( launch_status != SPARK_STATUS_OK )
+		SparkLingTpChainFail(chain,launch_status);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
+{
+	SparkLingBuildWave(chain);
+	if ( SparkLingLaunchCudaWaveBegin(&chain->wave) != 0 )
+	{
+		SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+		return;
+	}
+	chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
+	chain->next_layer = 0u;
+	SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+}
+
+static void SparkLingTpChainStageHead(SparkLingTpChain *chain)
+{
+	SparkStatus launch_status;
+	if ( SparkLingLaunchCudaWaveHead(&chain->wave) != 0 )
+	{
+		SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+		return;
+	}
+	chain->stage = SPARK_LING_CHAIN_STAGE_REDUCE_HEAD;
+	launch_status = SparkLingModuleReduceHeadMax(chain);
+	if ( launch_status != SPARK_STATUS_OK )
+		SparkLingTpChainFail(chain,launch_status);
+}
+
+static void SparkLingTpChainStageReduceHead(SparkLingTpChain *chain)
+{
+	SparkLingModuleState *state;
+	cudaError_t error;
+	uint32_t next_wave;
+	SparkStatus launch_status;
+	state = chain->state;
+	error = SparkLingLaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);
+	if ( error == cudaSuccess && state->owns_final_head != 0u )
+		error = cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
+	launch_status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"tp_head_unpack");
+	if ( launch_status != SPARK_STATUS_OK )
+	{
+		SparkLingTpChainFail(chain,launch_status);
+		return;
+	}
+	if ( chain->next_wave_row < chain->batch->row_count )
+	{
+		next_wave = SparkLingRoundMajorWaveRows(chain->batch,chain->next_wave_row);
+		if ( next_wave == 0u )
+		{
+			SparkLingTpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
+			return;
+		}
+		chain->first_row = chain->next_wave_row;
+		chain->wave_rows = next_wave;
+		chain->next_wave_row += next_wave;
+		chain->stage = SPARK_LING_CHAIN_STAGE_BEGIN;
+		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		return;
+	}
+	launch_status = SparkLingEnqueueAsyncCompletion(state,chain->slot,chain->slot_index);
+	if ( launch_status != SPARK_STATUS_OK )
+	{
+		SparkLingTpChainFail(chain,launch_status);
+		return;
+	}
+	chain->stage = SPARK_LING_CHAIN_STAGE_FINISH;
+	chain->active = 0u;
+	free(chain);
+}
+
+static void SparkLingTpChainTransition(SparkLingTpChain *chain,uint32_t next_stage)
+{
+	chain->stage = next_stage;
+	SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+}
+
+static void SparkLingTpChainRunLayerStage(SparkLingTpChain *chain,uint32_t reduce_stage)
+{
+	if ( SparkLingTpChainLaunchLayerStage(chain,reduce_stage) != SPARK_STATUS_OK )
+		SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+}
+
 static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 {
 	SparkLingTpChain *chain;
-	SparkLingModuleState *state;
-	SparkStatus launch_status;
-	cudaError_t error;
 	chain = (SparkLingTpChain *)chain_context;
 	if ( chain == 0 || chain->active == 0u )
 		return;
-	state = chain->state;
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkLingTpChainFail(chain,status);
@@ -1429,101 +1528,27 @@ static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 	switch ( chain->stage )
 	{
 	case SPARK_LING_CHAIN_STAGE_BEGIN:
-		SparkLingBuildWave(chain);
-		if ( SparkLingLaunchCudaWaveBegin(&chain->wave) != 0 )
-		{
-			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-			return;
-		}
-		chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
-		chain->next_layer = 0u;
-		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		SparkLingTpChainStageBegin(chain);
 		return;
 	case SPARK_LING_CHAIN_STAGE_ATTENTION:
-		if ( SparkLingLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
-		{
-			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-			return;
-		}
-		chain->stage = SPARK_LING_CHAIN_STAGE_REDUCE_ATTENTION;
-		launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
-		if ( launch_status != SPARK_STATUS_OK )
-			SparkLingTpChainFail(chain,launch_status);
+		SparkLingTpChainRunLayerStage(chain,SPARK_LING_CHAIN_STAGE_REDUCE_ATTENTION);
 		return;
 	case SPARK_LING_CHAIN_STAGE_REDUCE_ATTENTION:
-		chain->stage = SPARK_LING_CHAIN_STAGE_MLP;
-		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		SparkLingTpChainTransition(chain,SPARK_LING_CHAIN_STAGE_MLP);
 		return;
 	case SPARK_LING_CHAIN_STAGE_MLP:
-		if ( SparkLingLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
-		{
-			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-			return;
-		}
-		chain->stage = SPARK_LING_CHAIN_STAGE_REDUCE_MLP;
-		launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
-		if ( launch_status != SPARK_STATUS_OK )
-			SparkLingTpChainFail(chain,launch_status);
+		SparkLingTpChainRunLayerStage(chain,SPARK_LING_CHAIN_STAGE_REDUCE_MLP);
 		return;
 	case SPARK_LING_CHAIN_STAGE_REDUCE_MLP:
 		chain->next_layer++;
-		if ( chain->next_layer < chain->wave.layer_count )
-		{
-			chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
-			SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
-		}
-		else
-		{
-			chain->stage = SPARK_LING_CHAIN_STAGE_HEAD;
-			SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
-		}
+		SparkLingTpChainTransition(chain,chain->next_layer < chain->wave.layer_count
+			? SPARK_LING_CHAIN_STAGE_ATTENTION : SPARK_LING_CHAIN_STAGE_HEAD);
 		return;
 	case SPARK_LING_CHAIN_STAGE_HEAD:
-		if ( SparkLingLaunchCudaWaveHead(&chain->wave) != 0 )
-		{
-			SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-			return;
-		}
-		chain->stage = SPARK_LING_CHAIN_STAGE_REDUCE_HEAD;
-		launch_status = SparkLingModuleReduceHeadMax(chain);
-		if ( launch_status != SPARK_STATUS_OK )
-			SparkLingTpChainFail(chain,launch_status);
+		SparkLingTpChainStageHead(chain);
 		return;
 	case SPARK_LING_CHAIN_STAGE_REDUCE_HEAD:
-		error = SparkLingLaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);
-		if ( error == cudaSuccess && state->owns_final_head != 0u )
-			error = cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
-		launch_status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"tp_head_unpack");
-		if ( launch_status != SPARK_STATUS_OK )
-		{
-			SparkLingTpChainFail(chain,launch_status);
-			return;
-		}
-		if ( chain->next_wave_row < chain->batch->row_count )
-		{
-			uint32_t next_wave;
-			next_wave = SparkLingRoundMajorWaveRows(chain->batch,chain->next_wave_row);
-			if ( next_wave == 0u )
-			{
-				SparkLingTpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
-				return;
-			}
-			chain->first_row = chain->next_wave_row;
-			chain->wave_rows = next_wave;
-			chain->next_wave_row += next_wave;
-			chain->stage = SPARK_LING_CHAIN_STAGE_BEGIN;
-			SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
-			return;
-		}
-		launch_status = SparkLingEnqueueAsyncCompletion(state,chain->slot,chain->slot_index);
-		if ( launch_status != SPARK_STATUS_OK )
-		{
-			SparkLingTpChainFail(chain,launch_status);
-			return;
-		}
-		chain->stage = SPARK_LING_CHAIN_STAGE_FINISH;
-		chain->active = 0u;
-		free(chain);
+		SparkLingTpChainStageReduceHead(chain);
 		return;
 	default:
 		SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);

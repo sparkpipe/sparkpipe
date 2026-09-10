@@ -362,29 +362,13 @@ static SparkStatus SparkLingServingValidateTpCollectiveMembers(
 		member_count));
 }
 
-static SparkStatus SparkLingServingLoadTpCollective(
-	const SparkJsonDocument *document,
-	int32_t root,
-	const char *runtime_root,
-	SparkLingServingState *state,
-	uint32_t tp_degree)
+static SparkStatus SparkLingServingLoadTpBackend(
+	const SparkJsonDocument *document,int32_t object,
+	const char *runtime_root,SparkLingServingState *state)
 {
-	int32_t object,token,element;
-	uint32_t count,index,port;
-	uint64_t collective_identifier;
-	char *host,*relative_backend_path;
+	int32_t token;
+	char *relative_backend_path;
 	SparkStatus status;
-	if ( document == 0 || runtime_root == 0 || state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&state->tp_collective_topology,0,
-		sizeof(state->tp_collective_topology));
-	state->tp_collective_topology.abi_version =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	state->tp_collective_topology.descriptor_bytes =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	object = SparkLingServingJsonMember(document,root,"tp_collective");
-	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
 	token = SparkLingServingJsonMember(document,object,"backend");
 	if ( token < 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -409,8 +393,17 @@ static SparkStatus SparkLingServingLoadTpCollective(
 			state->tp_collective_backend_path,
 			sizeof(state->tp_collective_backend_path));
 	free(relative_backend_path);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
+	return(status);
+}
+
+static SparkStatus SparkLingServingLoadTpScalars(
+	const SparkJsonDocument *document,int32_t object,
+	SparkLingServingState *state)
+{
+	int32_t token;
+	uint32_t port;
+	uint64_t collective_identifier;
+	SparkStatus status;
 	token = SparkLingServingJsonMember(document,object,"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
 	if ( status != SPARK_STATUS_OK )
@@ -426,6 +419,17 @@ static SparkStatus SparkLingServingLoadTpCollective(
 	status = SparkLingServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
 	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkLingServingLoadTpPeers(
+	const SparkJsonDocument *document,int32_t object,
+	SparkLingServingState *state,uint32_t tp_degree)
+{
+	int32_t token,element;
+	uint32_t count,index,port;
+	char *host;
+	SparkStatus status;
 	token = SparkLingServingJsonMember(document,object,"peer_hosts");
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
@@ -468,44 +472,81 @@ static SparkStatus SparkLingServingLoadTpCollective(
 			(uint16_t)(state->tp_collective_control_port_base + index) )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	if ( state->tp_collective_backend_kind ==
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		status = SparkLingServingLoadTpAlgorithms(document,object,
-			&state->tp_collective_topology);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingLoadSessionPorts(document,object,
-				"session_ports",state->tp_collective_topology.session_ports,
-				tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingLoadSessionPorts(document,object,
-				"session_ports_hc",state->node_context.
-					tp_collective_session_ports_hc,tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingJsonUnsigned(document,object,
-				"direct_all_to_all_max_payload_bytes",
-				&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingJsonUnsigned(document,object,
-				"split_ring_min_payload_bytes",
-				&state->tp_collective_topology.split_ring_min_payload_bytes);
-		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.algorithm_mask &
-				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
-			state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.algorithm_mask &
-				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u &&
-			state->tp_collective_topology.split_ring_min_payload_bytes != 0u )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingLoadTpRailHosts(document,object,
-				&state->tp_collective_topology,tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkLingServingLoadTpStepRails(document,object,
-				tp_degree,&state->tp_collective_topology);
-	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkLingServingLoadTpHiddenTransportMembers(
+	const SparkJsonDocument *document,int32_t object,
+	SparkLingServingState *state,uint32_t tp_degree)
+{
+	SparkStatus status;
+	status = SparkLingServingLoadTpAlgorithms(document,object,
+		&state->tp_collective_topology);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadSessionPorts(document,object,
+			"session_ports",state->tp_collective_topology.session_ports,
+			tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadSessionPorts(document,object,
+			"session_ports_hc",state->node_context.
+				tp_collective_session_ports_hc,tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingJsonUnsigned(document,object,
+			"direct_all_to_all_max_payload_bytes",
+			&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingJsonUnsigned(document,object,
+			"split_ring_min_payload_bytes",
+			&state->tp_collective_topology.split_ring_min_payload_bytes);
+	if ( status == SPARK_STATUS_OK &&
+		(state->tp_collective_topology.algorithm_mask &
+			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
+		state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK &&
+		(state->tp_collective_topology.algorithm_mask &
+			SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u &&
+		state->tp_collective_topology.split_ring_min_payload_bytes != 0u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadTpRailHosts(document,object,
+			&state->tp_collective_topology,tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadTpStepRails(document,object,
+			tp_degree,&state->tp_collective_topology);
+	return(status);
+}
+
+static SparkStatus SparkLingServingLoadTpCollective(
+	const SparkJsonDocument *document,
+	int32_t root,
+	const char *runtime_root,
+	SparkLingServingState *state,
+	uint32_t tp_degree)
+{
+	int32_t object;
+	SparkStatus status;
+	if ( document == 0 || runtime_root == 0 || state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&state->tp_collective_topology,0,
+		sizeof(state->tp_collective_topology));
+	state->tp_collective_topology.abi_version =
+		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+	state->tp_collective_topology.descriptor_bytes =
+		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
+	object = SparkLingServingJsonMember(document,root,"tp_collective");
+	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkLingServingLoadTpBackend(document,object,runtime_root,state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadTpScalars(document,object,state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLingServingLoadTpPeers(document,object,state,tp_degree);
+	if ( status == SPARK_STATUS_OK &&
+		state->tp_collective_backend_kind ==
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+		status = SparkLingServingLoadTpHiddenTransportMembers(document,object,
+			state,tp_degree);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
 	return(status);
