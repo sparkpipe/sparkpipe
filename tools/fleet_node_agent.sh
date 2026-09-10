@@ -229,35 +229,12 @@ apply_manifest() {
 }
 
 sync_root() {
-    local name="$1" upd
+    local name="$1"
     local root="$HOME/sparkdata/$name"
     mkdir -p "$root"
     apply_manifest "$name" "$root" || return 0
-    local refdir="release/$name"
-    $HUBSSH "$HUB" "test -f '$refdir/UPDATE'" || return 0
-    upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    if ! printf '%s\n' "$upd" | grep -qx "down:$HOST"; then
-        unload_root "$name" || return 0
-        $HUBSSH "$HUB" "echo down:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
-        upd=$(printf '%s\ndown:%s\n' "$upd" "$HOST")
-    fi
-    local gate_wait=0
-    while [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -lt "$FLEET_SIZE" ] &&
-          [ "$gate_wait" -lt 120 ]; do
-        sleep 1
-        gate_wait=$((gate_wait + 1))
-        upd=$($HUBSSH "$HUB" "cat '$refdir/UPDATE' 2>/dev/null") || upd=""
-    done
-    [ "$(printf '%s\n' "$upd" | grep -c '^down:')" -ge "$FLEET_SIZE" ] || return 0
-    if ! printf '%s\n' "$upd" | grep -qx "up:$HOST"; then
-        start_root "$name" || return 0
-        $HUBSSH "$HUB" "echo up:$HOST >> '$refdir/UPDATE'" 2>/dev/null || return 0
-        upd=$(printf '%s\nup:%s\n' "$upd" "$HOST")
-    fi
-    [ "$(printf '%s\n' "$upd" | grep -c '^up:')" -ge "$FLEET_SIZE" ] || return 0
-    local c
-    c=$($HUBSSH "$HUB" "ls '$refdir' 2>/dev/null | sed -n 's/^UPDATE\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1")
-    $HUBSSH "$HUB" "mv '$refdir/UPDATE' '$refdir/UPDATE.$(( ${c:-0} + 1 ))'" 2>/dev/null || true
+    unload_root "$name" || return 0
+    start_root "$name"
 }
 
 sync_core() {
@@ -347,5 +324,5 @@ while true; do
     for r in "${RA[@]}"; do ensure_root "$r"; done
     ensure_api
     report_if_changed
-    sleep 5
+    sleep 1
 done
