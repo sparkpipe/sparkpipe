@@ -1663,13 +1663,101 @@ static int SparkLingValDeviceClean(const SparkLingValFixture *fixture)
 	return(error[0] == 0u);
 }
 
+static uint32_t SparkLingValHashBytes(const void *data,uint64_t bytes)
+{
+	const uint8_t *cursor = (const uint8_t *)data;
+	uint32_t hash = 2166136261u;
+	uint64_t index;
+	for (index = 0u; index < bytes; index++)
+	{
+		hash ^= cursor[index];
+		hash *= 16777619u;
+	}
+	return(hash);
+}
+static void SparkLingValCarryProbe(SparkLingValFixture *fixture,
+	SparkLingValWalk *walk,const uint32_t *layers,uint32_t wave_index,uint32_t rows)
+{
+	static float device_state[SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
+	static uint16_t packed_window[SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
+	static uint16_t packed_kv[4u * SPARK_LING_VAL_KV_ROW];
+	static float device_kv[4u * SPARK_LING_VAL_KV_ROW];
+	static uint16_t packed_boundary[SPARK_LING_VAL_HIDDEN];
+	static float device_boundary[SPARK_LING_VAL_HIDDEN];
+	uint64_t state_stride = (uint64_t)SPARK_LING_VAL_SEQUENCES * SPARK_LING_MODEL_KDA_STATE_BYTES_PER_LAYER;
+	uint64_t window_slot = (uint64_t)SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV * 2u;
+	uint64_t window_stride = window_slot * 3u * SPARK_LING_VAL_SEQUENCES;
+	uint32_t local,index;
+	SparkLingValMetrics metrics;
+	printf("carry wave=%u rows=%u",wave_index,rows);
+	for (local = 0u; local < 2u; local++)
+	{
+		if ( SPARK_LING_MODEL_LAYER_IS_KDA(layers[local]) )
+		{
+			const uint8_t *state_base = fixture->kda_state_pool_dev +
+				(uint64_t)local * state_stride;
+			const uint16_t *window_base = (const uint16_t *)
+				((const uint8_t *)fixture->wave.kda_q_window_pool +
+					(uint64_t)local * window_stride);
+			if ( cudaMemcpy(device_state,state_base,sizeof(device_state),cudaMemcpyDeviceToHost) != cudaSuccess )
+				return;
+			SparkLingValMeasure(&metrics,device_state,walk->kda_state[local],
+				SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY);
+			printf(" | l%u st rel %.3e cos %.7f",local,
+				metrics.max_relative_l2,metrics.cosine);
+			if ( cudaMemcpy(packed_window,window_base,sizeof(packed_window),cudaMemcpyDeviceToHost) != cudaSuccess )
+				return;
+			{
+				double total = 0.0;
+				for (index = 0u; index < SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV; index++)
+				{
+					double delta = (double)SparkLingValFromBf16(packed_window[index]) -
+						(double)SparkLingValFromBf16(walk->kda_windows[local][0][index]);
+					total += delta * delta;
+				}
+				printf(" win l2 %.3e",sqrt(total));
+			}
+		}
+		else
+		{
+			uint32_t positions = walk->mla_context < 4u ? walk->mla_context : 4u;
+			if ( cudaMemcpy(packed_kv,fixture->kv_cache_dev,
+				(uint64_t)positions * SPARK_LING_VAL_KV_ROW * 2u,cudaMemcpyDeviceToHost) != cudaSuccess )
+				return;
+			for (index = 0u; index < (uint64_t)positions * SPARK_LING_VAL_KV_ROW; index++)
+				device_kv[index] = (double)SparkLingValFromBf16(packed_kv[index]) -
+					(double)SparkLingValFromBf16(walk->mla_cache[0][index]);
+			{
+				double total = 0.0;
+				for (index = 0u; index < (uint64_t)positions * SPARK_LING_VAL_KV_ROW; index++)
+					total += device_kv[index] * device_kv[index];
+				printf(" | l%u kv[%u] l2 %.3e",local,positions,sqrt(total));
+			}
+		}
+	}
+	if ( cudaMemcpy(packed_boundary,fixture->boundary_out_dev,
+		sizeof(packed_boundary),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+		device_boundary[index] = (double)SparkLingValFromBf16(packed_boundary[index]) -
+			(double)walk->boundary_rows[0][index];
+	{
+		double total = 0.0;
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			total += device_boundary[index] * device_boundary[index];
+		printf(" | bd l2 %.3e\n",sqrt(total));
+	}
+}
+
 static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 	const uint32_t *layers,const uint32_t *positions,uint32_t rows,
-	uint32_t run_count,SparkLingValWalk *walk,int probe)
+	uint32_t run_count,SparkLingValWalk *walk,int probe,uint32_t wave_index)
 {
 	int32_t status;
 	uint32_t local,row,index;
 	SparkLingValBuildWave(fixture,layers,positions,rows,run_count);
+	if ( probe != 0 )
+		fprintf(stderr,"drive w%u: begin\n",wave_index);
 	status = SparkLingLaunchCudaWaveBegin(&fixture->wave);
 	if ( status != 0 )
 	{
@@ -1680,6 +1768,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 	for (local = 0u; local < 2u; local++)
 	{
 		uint32_t layer = layers[local];
+		if ( probe != 0 )
+			fprintf(stderr,"drive w%u: l%u attention launching\n",wave_index,local);
 		status = SparkLingLaunchCudaLayerAttention(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -1725,6 +1815,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		}
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","attn_sync"));
+		if ( probe != 0 )
+			fprintf(stderr,"drive w%u: l%u attention synced\n",wave_index,local);
 		status = SparkLingLaunchCudaLayerMlp(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -1732,17 +1824,25 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				status,local,cudaGetErrorString(cudaGetLastError()));
 			return(SparkLingValFail("drive","mlp"));
 		}
+		if ( probe != 0 )
+			fprintf(stderr,"drive w%u: l%u mlp launched\n",wave_index,local);
 		for (row = 0u; row < rows; row++)
 			SparkLingValRunMlpOracle(fixture,walk,layer,
 				walk->row_hidden[row],walk->row_sublayer[row]);
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","mlp_sync"));
+		if ( probe != 0 )
+			fprintf(stderr,"drive w%u: l%u mlp synced\n",wave_index,local);
 	}
+	if ( probe != 0 )
+		fprintf(stderr,"drive w%u: head launching\n",wave_index);
 	status = SparkLingLaunchCudaWaveHead(&fixture->wave);
 	if ( status != 0 )
 		return(SparkLingValFail("drive","head"));
 	if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 		return(SparkLingValFail("drive","head_sync"));
+	if ( probe != 0 )
+		fprintf(stderr,"drive w%u: head synced\n",wave_index);
 	walk->mla_context += rows;
 	for (row = 0u; row < rows; row++)
 	{
@@ -1755,6 +1855,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		memcpy(walk->row_hidden[row],walk->boundary_rows[row],
 			sizeof(walk->row_hidden[row]));
 	}
+	if ( probe != 0 )
+		SparkLingValCarryProbe(fixture,walk,layers,wave_index,rows);
 	return(0);
 }
 
@@ -1813,7 +1915,7 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 			for (index = 0u; index < rows; index++)
 				positions[index] = position + index;
 			if ( SparkLingValDriveWave(fixture,layers,positions,rows,
-				plans[plan].run_count,&walk,pass == 0u) != 0 )
+				plans[plan].run_count,&walk,pass == 0u,plan) != 0 )
 			{
 				free(first);
 				free(second);
