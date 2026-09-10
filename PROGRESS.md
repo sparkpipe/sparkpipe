@@ -86,3 +86,55 @@ what is blocked, and what the manager must serialize.
 - BLOCKED on sparkb: offline-gates, V0 synth validation, fixture-pack load,
   real-pack boundary-rank checks (warm download must complete; poll the
   marker, do not blind-sleep), contract freeze shas, manifest+sums regen.
+
+## Validation session (2026-09-10/11, validation-debugger)
+
+REBASE VERDICT (target recorded per coordinator): rebased lane/laguna-driver
+onto origin/main 50bd0d3 (PR #913, the E2E-proven mesh platform). Path:
+suspension tip 97f1aff -> coredev-aligned origin/lane/laguna-driver 5acf486
+(= main 8f3a6f2 + 24 laguna family + coredev mesh commits) -> 50bd0d3.
+- Patch-equivalent coredev mesh commits auto-skipped onto main's wave
+  (5acf486->aba22b2, ef6fcd0->feda24c, 78b07e1->99f42c0, ...); three
+  shared-file-only commits resolved toward origin (f6ce20a, 8b19353 + the
+  Makefile arm - content already on main, skipped as subsumed; bf85caf
+  skipped: shared-only, superseded by the E2E-proven wave). 6b9ffcc's
+  family hunk (laguna module.c credit-binding strip + mesh receive hook)
+  kept; its shared surface merged to main's (32MB slots, no duplicates).
+- Family files byte-kept (packer hash b782c8c4 identical pre/post rebase -
+  the in-flight sparkd pack is exactly what the rebased branch produces).
+- Ceiling re-measure: merged tree = 240779 authored lines, under main's
+  241052 pin (main's wave deleted the old-engine/nccl test surface); the
+  lane's interim 246010 pin removed as dead code (bc82860).
+- Post-rebase mac checks green: header bind test, make contract (module +
+  host sources vs main's transport), make adapter (dylib), synthesize tool
+  under real flags, code-size test.
+
+FINDINGS fixed en route (each fail-loud, exact-site):
+1. make contract was RED since 5c14a6f: SparkLagunaPackAssignLayer took
+   state it never used (-Wextra -Werror); dead parameter dropped (ae67d88).
+2. Packer never ran end-to-end; first real run exposed four breaks
+   (6d659b0): census regex re.escape ate the {layer}/{expert} braces so
+   EVERY checkpoint tensor was rejected; receipt() read nonexistent Entry
+   fields; pack header REVISION/CONTRACT_SHA256 were undefined names (now
+   required --revision/--contract-sha256 CLI threaded to assemble_header);
+   donor docstring replaced with actual behavior.
+3. Generator/deploy mismatch (6d659b0): pack template named packs the
+   packer never emits (laguna-s-2.1.bf16.tp8pp2.stage%d.rank%d vs the
+   packer's laguna_stage.tp8.pp2.stage%d.rank%d) and numbered stage-1
+   packs by global rank; fixed with rank%%TP.
+4. Adapter tp_rank check compared config tp_rank (0..7) against the GLOBAL
+   stage index (0..15): ranks 8..15 unservable - module validate rejects
+   tp_rank>=8; now stage_index %% TP_DEGREE (6d659b0).
+5. Expert W2 producer used tp_shard_range's (start, count) as
+   [c0, c1): rank 0 worked by accident, rank 1 emitted an empty region
+   (db84461) - found by the real pack at stage0/rank1.
+6. sparkcap over non-interactive ssh: systemd transient scope needs root
+   authorization - sudo -n sparkcap is the working form (worker fixed).
+
+REAL-PACK (sparkd, sparkcap --mem 4096, resumable per-shard markers):
+warm source verified complete (241G, 46 shards, HF tree id
+0f573140834b11cfac0c2af97a101a7a69a13e22 == the worker's --revision;
+--contract-sha256 == sha256 of model_contracts/laguna_authoritative.json
+354f559d...). census lock green on all 36769 real tensors. stage0 rank0-1
+packed (~14G/rank-stage, ~4min each), remainder running; receipts appended
+to /mnt/model-warm/packbuild/laguna/real_pack.log.
