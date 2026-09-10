@@ -47,6 +47,11 @@ ARMS = {
     },
 }
 
+CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "model_contracts", "glm52.json")
+with open(CONTRACT_PATH) as _contract_file:
+    EOS_TOKEN_IDS = sorted(json.load(_contract_file)["eos_token_ids"].values())
+
 RUNTIME_ROOT_TEMPLATE = os.environ.get(
     "GLM53FULL_RUNTIME_ROOT_TEMPLATE",
     "/home/{host}/sparkdata/glm53full.{codec}.tp16")
@@ -124,6 +129,7 @@ def resident_deployment(codec, runtime_root_template):
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": EOS_TOKEN_IDS,
         "coordinator_rank_index": 0,
         "weightd": {"socket_path": "/tmp/spark_weightd.sock"},
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
