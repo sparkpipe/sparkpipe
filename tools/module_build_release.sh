@@ -59,4 +59,5 @@ build/sparkpipe_model_compile \
     --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
 
 "$(dirname "$0")/publish_local.sh" "$FAMILY" "$CODEC" "$ROOT_NAME"
+systemctl --user start fleet-agent 2>/dev/null || true
 exec "$(dirname "$0")/publish_core.sh"
