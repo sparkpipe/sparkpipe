@@ -516,21 +516,41 @@ static void SparkMinimaxH3V4VideoGate(const char *fixture_dir, const char *weigh
 		double sum_squared_reference = 0.0;
 		uint32_t within;
 		double relative;
+		uint64_t expected_nonfinite = 0;
+		uint32_t expected_usable = 1;
 		for (index=0u; index<decoded_elements; index++)
 		{
-			double difference = (double)decoded[index] - (double)expected[index];
-			sum_squared += difference * difference;
-			sum_squared_reference += (double)expected[index] * (double)expected[index];
-			if ( fabs(difference) > max_abs )
-				max_abs = fabs(difference);
+			if ( !isfinite(expected[index]) )
+				expected_nonfinite++;
 		}
-		relative = sqrt(sum_squared / (sum_squared_reference + 1e-30));
-		within = relative <= SPARK_MINIMAX_H3_V4_VIDEO_MAX_REL &&
-			max_abs <= SPARK_MINIMAX_H3_V4_VIDEO_MAX_ABS;
-		printf("%-16s rel=%.3e max_abs=%.6f %s\n","video_vae",relative,max_abs,
-			within != 0u ? "OK" : "FAIL");
-		if ( within == 0u )
+		if ( expected_nonfinite != 0u )
+		{
+			printf("%-16s expected fixture carries %llu/%llu nonfinite values - "
+				"the anchor generator's diffusers decode produced NaN; the gate "
+				"cannot bind until that lane regenerates the fixture\n","video_vae",
+				(unsigned long long)expected_nonfinite,
+				(unsigned long long)decoded_elements);
 			SparkMinimaxH3V4Failures++;
+			expected_usable = 0u;
+		}
+		if ( expected_usable != 0u )
+		{
+			for (index=0u; index<decoded_elements; index++)
+			{
+				double difference = (double)decoded[index] - (double)expected[index];
+				sum_squared += difference * difference;
+				sum_squared_reference += (double)expected[index] * (double)expected[index];
+				if ( fabs(difference) > max_abs )
+					max_abs = fabs(difference);
+			}
+			relative = sqrt(sum_squared / (sum_squared_reference + 1e-30));
+			within = relative <= SPARK_MINIMAX_H3_V4_VIDEO_MAX_REL &&
+				max_abs <= SPARK_MINIMAX_H3_V4_VIDEO_MAX_ABS;
+			printf("%-16s rel=%.3e max_abs=%.6f %s\n","video_vae",relative,max_abs,
+				within != 0u ? "OK" : "FAIL");
+			if ( within == 0u )
+				SparkMinimaxH3V4Failures++;
+		}
 	}
 	free(expected); free(mean); free(std); free(post_quant_weight);
 	free(post_quant_bias); free(proj_in_weight); free(proj_in_bias); free(registers);
