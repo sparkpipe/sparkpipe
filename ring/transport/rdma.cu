@@ -5,34 +5,31 @@
 #include <string.h>
 #include <unistd.h>
 
-typedef struct SparkWeightdClient SparkWeightdClient;
-
 extern SparkStatus SparkWeightdClientConnect(const char *path,
-    SparkWeightdClient *client, uint64_t reserved);
-extern SparkStatus SparkWeightdClientDisconnect(SparkWeightdClient *client);
-extern SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
+    void *client, uint64_t reserved);
+extern SparkStatus SparkWeightdClientDisconnect(void *client);
+extern SparkStatus SparkWeightdClientMeshBroadcast(void *client,
     uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
     uint32_t length, uint64_t timeout_nanoseconds);
 
 typedef struct SparkHiddenSparkHostRdmaState
 {
-    SparkWeightdClient client;
+    char client[4096];
     void *mesh_buffer;
     uint32_t mesh_buffer_bytes;
 } SparkHiddenSparkHostRdmaState;
 
 static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     const SparkHiddenTransportEndpoint *endpoint,
-    const SparkHiddenTransportInterface *interface,
-    SparkHiddenTransportSession **session)
+    void **transport_state)
 {
     SparkHiddenSparkHostRdmaState *state;
     const char *socket;
 
-    if ( endpoint == 0 || interface == 0 || session == 0 )
+    if ( endpoint == 0 || transport_state == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    *session = 0;
-    state = calloc(1u,sizeof(*state));
+    *transport_state = 0;
+    state = (SparkHiddenSparkHostRdmaState *)calloc(1u,sizeof(*state));
     if ( state == 0 )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     socket = getenv("SPARK_WEIGHTD_SOCKET");
@@ -40,14 +37,14 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         char path[128];
         snprintf(path,sizeof(path),"%s",
             socket != 0 ? socket : "/tmp/spark_weightd.sock");
-        if ( SparkWeightdClientConnect(path,&state->client,0) !=
+        if ( SparkWeightdClientConnect(path,state->client,0) !=
                 SPARK_STATUS_OK )
         {
             free(state);
             return SPARK_STATUS_IO_ERROR;
         }
     }
-    *session = (SparkHiddenTransportSession *)state;
+    *transport_state = state;
     return SPARK_STATUS_OK;
 }
 
@@ -57,25 +54,22 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
         (SparkHiddenSparkHostRdmaState *)transport_state;
     if ( state == 0 )
         return;
-    (void)SparkWeightdClientDisconnect(&state->client);
+    (void)SparkWeightdClientDisconnect(state->client);
     free(state);
 }
 
-static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
+static SparkStatus SparkHiddenSparkHostRdmaSend(
     void *transport_state,
-    const void *local_buffer,
-    uint64_t bytes,
-    uint64_t remote_offset,
-    uint32_t sequence)
+    const SparkHiddenTransportPacket *packet)
 {
     SparkHiddenSparkHostRdmaState *state =
         (SparkHiddenSparkHostRdmaState *)transport_state;
-    if ( state == 0 || local_buffer == 0 || bytes == 0u ||
-         state->mesh_buffer == 0 )
+    if ( state == 0 || packet == 0 || state->mesh_buffer == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    memcpy((uint8_t *)state->mesh_buffer,local_buffer,(size_t)bytes);
-    return SparkWeightdClientMeshBroadcast(&state->client,
-        0x7FFFu,0,remote_offset,(uint32_t)bytes,5000000000ull);
+    memcpy(state->mesh_buffer,packet->payload,
+        (size_t)packet->payload_bytes);
+    return SparkWeightdClientMeshBroadcast(state->client,
+        0x7FFFu,0,0,(uint32_t)packet->payload_bytes,5000000000ull);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
@@ -85,20 +79,22 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     if ( transport_state == 0 || completion == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
     memset(completion,0,sizeof(*completion));
+    completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    completion->descriptor_bytes = sizeof(*completion);
     completion->status = SPARK_STATUS_BUSY;
     return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaSetFixedLocal(
     void *transport_state,
-    const void *buffer,
+    void *buffer,
     uint64_t bytes)
 {
     SparkHiddenSparkHostRdmaState *state =
         (SparkHiddenSparkHostRdmaState *)transport_state;
     if ( state == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    state->mesh_buffer = (void *)buffer;
+    state->mesh_buffer = buffer;
     state->mesh_buffer_bytes = (uint32_t)bytes;
     return SPARK_STATUS_OK;
 }
@@ -106,27 +102,39 @@ static SparkStatus SparkHiddenSparkHostRdmaSetFixedLocal(
 static SparkStatus SparkHiddenSparkHostRdmaSetFixedRemote(
     void *transport_state,
     uint64_t remote_addr,
+    uint64_t remote_bytes,
     uint32_t rkey)
 {
     (void)transport_state;
     (void)remote_addr;
+    (void)remote_bytes;
     (void)rkey;
     return SPARK_STATUS_OK;
 }
 
-extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void);
+static SparkHiddenTransportInterface spark_hidden_spark_host_rdma_interface;
 
 extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 {
-    static SparkHiddenTransportInterface interface;
-    interface.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-    interface.descriptor_bytes = sizeof(SparkHiddenTransportInterface);
-    interface.capability_flags = SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
-    interface.initialize = SparkHiddenSparkHostRdmaInitialize;
-    interface.destroy = SparkHiddenSparkHostRdmaDestroy;
-    interface.send = SparkHiddenSparkHostRdmaSendFixed;
-    interface.poll = SparkHiddenSparkHostRdmaPoll;
-    interface.set_fixed_local = SparkHiddenSparkHostRdmaSetFixedLocal;
-    interface.set_fixed_remote = SparkHiddenSparkHostRdmaSetFixedRemote;
-    return &interface;
+    memset(&spark_hidden_spark_host_rdma_interface,0,
+        sizeof(spark_hidden_spark_host_rdma_interface));
+    spark_hidden_spark_host_rdma_interface.abi_version =
+        SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    spark_hidden_spark_host_rdma_interface.descriptor_bytes =
+        sizeof(SparkHiddenTransportInterface);
+    spark_hidden_spark_host_rdma_interface.capability_flags =
+        SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
+    spark_hidden_spark_host_rdma_interface.initialize =
+        SparkHiddenSparkHostRdmaInitialize;
+    spark_hidden_spark_host_rdma_interface.destroy =
+        SparkHiddenSparkHostRdmaDestroy;
+    spark_hidden_spark_host_rdma_interface.send =
+        SparkHiddenSparkHostRdmaSend;
+    spark_hidden_spark_host_rdma_interface.poll =
+        SparkHiddenSparkHostRdmaPoll;
+    spark_hidden_spark_host_rdma_interface.set_fixed_local =
+        SparkHiddenSparkHostRdmaSetFixedLocal;
+    spark_hidden_spark_host_rdma_interface.set_fixed_remote =
+        SparkHiddenSparkHostRdmaSetFixedRemote;
+    return &spark_hidden_spark_host_rdma_interface;
 }
