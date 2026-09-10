@@ -449,8 +449,24 @@ uint32_t SparkWeightdMeshBufferLkey(void)
     return weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->lkey : 0u;
 }
 
+static uint32_t SparkWeightdMeshRankCount(void)
+{
+    return SPARK_WEIGHTD_MESH_PEERS + 1u;
+}
+
+/* QP arrays are indexed 0..14 by peer rank with the local rank spliced out;
+ * every IPC entry point speaks rank (0..15) and converts here. */
+static int32_t SparkWeightdMeshPeerIndexFromRank(uint32_t peer_rank)
+{
+    if (peer_rank >= SparkWeightdMeshRankCount() ||
+        peer_rank == weightd_mesh.local_rank)
+        return -1;
+    return (int32_t)(peer_rank > weightd_mesh.local_rank
+        ? peer_rank - 1u : peer_rank);
+}
+
 uint32_t SparkWeightdMeshBroadcast(
-    uint32_t peer_mask,
+    uint32_t peer_rank_mask,
     uint64_t source_offset,
     uint32_t length,
     uint64_t remote_offset)
@@ -458,7 +474,7 @@ uint32_t SparkWeightdMeshBroadcast(
     struct ibv_sge scatter;
     struct ibv_send_wr work_request;
     struct ibv_send_wr *bad;
-    uint32_t peer;
+    uint32_t rank;
     uint32_t posted = 0u;
 
     if (weightd_mesh.mesh_ready == 0u)
@@ -468,12 +484,16 @@ uint32_t SparkWeightdMeshBroadcast(
         source_offset;
     scatter.length = length;
     scatter.lkey = weightd_mesh.recv_mr->lkey;
-    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    for (rank = 0u; rank < SparkWeightdMeshRankCount(); rank++)
     {
-        if ((peer_mask & (1u << peer)) == 0u)
+        int32_t peer;
+        if ((peer_rank_mask & (1u << rank)) == 0u)
+            continue;
+        peer = SparkWeightdMeshPeerIndexFromRank(rank);
+        if (peer < 0)
             continue;
         memset(&work_request,0,sizeof(work_request));
-        work_request.wr_id = peer;
+        work_request.wr_id = (uint64_t)(uint32_t)peer;
         work_request.sg_list = &scatter;
         work_request.num_sge = 1;
         work_request.opcode = IBV_WR_RDMA_WRITE;
@@ -489,7 +509,7 @@ uint32_t SparkWeightdMeshBroadcast(
 }
 
 SparkStatus SparkWeightdMeshPostWrite(
-    uint32_t peer,
+    uint32_t peer_rank,
     uint64_t local_addr,
     uint32_t lkey,
     uint32_t length,
@@ -498,8 +518,12 @@ SparkStatus SparkWeightdMeshPostWrite(
     struct ibv_sge scatter;
     struct ibv_send_wr work_request;
     struct ibv_send_wr *bad;
+    int32_t peer;
 
-    if (weightd_mesh.mesh_ready == 0u || peer >= SPARK_WEIGHTD_MESH_PEERS)
+    if (weightd_mesh.mesh_ready == 0u)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    peer = SparkWeightdMeshPeerIndexFromRank(peer_rank);
+    if (peer < 0)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     memset(&scatter,0,sizeof(scatter));
     scatter.addr = local_addr;
