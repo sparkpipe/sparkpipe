@@ -222,6 +222,7 @@ def main():
                 w["_resblock_dilation_sizes"][j],
                 (0, 1, 2) if i == 0 and j == 0 else (),
                 (0, 1) if i == 0 and j == 0 else (),
+                (0, 1) if i == 0 and j == 0 else (),
                 (0, 1) if i == 0 and j == 0 else ())
             if i == 0 and j in (0, 1, 2):
                 dump_full("refa_s0_b%d" % j, r)
