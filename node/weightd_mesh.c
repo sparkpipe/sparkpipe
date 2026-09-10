@@ -426,6 +426,45 @@ uint32_t SparkWeightdMeshBufferLkey(void)
     return weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->lkey : 0u;
 }
 
+uint32_t SparkWeightdMeshBroadcast(
+    uint32_t peer_mask,
+    uint64_t source_offset,
+    uint32_t length,
+    uint64_t remote_offset)
+{
+    struct ibv_sge scatter;
+    struct ibv_send_wr work_request;
+    struct ibv_send_wr *bad;
+    uint32_t peer;
+    uint32_t posted = 0u;
+
+    if (weightd_mesh.mesh_ready == 0u)
+        return 0u;
+    memset(&scatter,0,sizeof(scatter));
+    scatter.addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer +
+        source_offset;
+    scatter.length = length;
+    scatter.lkey = weightd_mesh.recv_mr->lkey;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        if ((peer_mask & (1u << peer)) == 0u)
+            continue;
+        memset(&work_request,0,sizeof(work_request));
+        work_request.wr_id = peer;
+        work_request.sg_list = &scatter;
+        work_request.num_sge = 1;
+        work_request.opcode = IBV_WR_RDMA_WRITE;
+        work_request.send_flags = IBV_SEND_SIGNALED;
+        work_request.wr.rdma.remote_addr =
+            weightd_mesh.qp_info[peer].remote_addr + remote_offset;
+        work_request.wr.rdma.rkey = weightd_mesh.qp_info[peer].rkey;
+        if (ibv_post_send(weightd_mesh.send_qps[peer],
+                &work_request,&bad) == 0)
+            posted++;
+    }
+    return posted;
+}
+
 SparkStatus SparkWeightdMeshPostWrite(
     uint32_t peer,
     uint64_t local_addr,

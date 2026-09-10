@@ -52,6 +52,8 @@ extern uint32_t SparkWeightdMeshBufferLkey(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
     uint64_t remote_offset);
+extern uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
+    uint64_t source_offset, uint32_t length, uint64_t remote_offset);
 
 #include <cuda_runtime.h>
 #include <cuda.h>
@@ -290,6 +292,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcMeshWrite) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT:
             return sizeof(SparkWeightdIpcMeshWriteResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST:
+            return sizeof(SparkWeightdIpcMeshBroadcast) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT:
+            return sizeof(SparkWeightdIpcMeshBroadcastResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
             return sizeof(SparkWeightdIpcExportLease) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT:
@@ -357,6 +363,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
             return SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST:
+            return SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY:
             return SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ENSURE:
@@ -1866,6 +1874,25 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         return(sizeof(*result));
     }
 
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST)
+    {
+        SparkWeightdIpcMeshBroadcastResult *result =
+            (SparkWeightdIpcMeshBroadcastResult *)response;
+        const SparkWeightdIpcMeshBroadcast *broadcast =
+            (const SparkWeightdIpcMeshBroadcast *)request;
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        result->posted_count = SparkWeightdMeshBroadcast(
+            broadcast->peer_mask,
+            broadcast->source_offset,
+            broadcast->length,
+            broadcast->remote_offset);
+        result->status = result->posted_count != 0u ?
+            (uint32_t)SPARK_STATUS_OK :
+            (uint32_t)SPARK_STATUS_BUSY;
+        return(sizeof(*result));
+    }
+
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_DETACH)
     {
         SparkWeightdIpcDetachResult *result =
@@ -2741,6 +2768,42 @@ SparkStatus SparkWeightdClientMeshWrite(
         sizeof(wire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
     wire.header.request_id = ++client->next_request_id;
     wire.peer_rank = peer_rank;
+    wire.source_offset = source_offset;
+    wire.remote_offset = remote_offset;
+    wire.length = length;
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
+    if ( status != SPARK_STATUS_OK )
+        SPARK_RETURN(status);
+    if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
+        return SparkWeightdStatusFromWire(wire_result.status);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientMeshBroadcast(
+    SparkWeightdClient *client,
+    uint32_t peer_mask,
+    uint64_t source_offset,
+    uint64_t remote_offset,
+    uint32_t length,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcMeshBroadcast wire;
+    SparkWeightdIpcMeshBroadcastResult wire_result;
+    SparkStatus status;
+
+    if ( client == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST;
+    wire.header.body_bytes =
+        sizeof(wire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    wire.peer_mask = peer_mask;
     wire.source_offset = source_offset;
     wire.remote_offset = remote_offset;
     wire.length = length;

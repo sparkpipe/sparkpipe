@@ -56,6 +56,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT 20u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE 21u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT 22u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
@@ -225,6 +227,24 @@ typedef struct SparkWeightdIpcMeshWriteResult
     uint32_t status;
     uint32_t reserved;
 } SparkWeightdIpcMeshWriteResult;
+
+typedef struct SparkWeightdIpcMeshBroadcast
+{
+    SparkWeightdIpcHeader header;
+    uint32_t peer_mask;
+    uint32_t reserved;
+    uint64_t source_offset;
+    uint64_t remote_offset;
+    uint32_t length;
+    uint32_t reserved2;
+} SparkWeightdIpcMeshBroadcast;
+
+typedef struct SparkWeightdIpcMeshBroadcastResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t posted_count;
+} SparkWeightdIpcMeshBroadcastResult;
 
 typedef struct SparkWeightdIpcEnsure
 {
