@@ -73,7 +73,7 @@ static int32_t SparkWeightdFindDigest(DIR *directory,const char *root,char diges
 			return(-6);
 		status = SparkWeightdReadDigestPath(path,digest);
 		if ( status != 0 )
-			SPARK_RETURN(status);
+			continue;
 		found = 1u;
 		errno = 0;
 	}

@@ -35,7 +35,7 @@ COLLECTIVE_ID = 9911223344556679
 BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
-    "packs/" + ROOT_NAME + ".rank%d.sp")
+    "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
