@@ -1,0 +1,11 @@
+[Unit]
+Description=fleet release agent
+After=network-online.target
+
+[Service]
+ExecStart=%h/sparkdata/core/bin/fleet_node_agent.sh glm53flash.fp8.tp16 sparkf
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
