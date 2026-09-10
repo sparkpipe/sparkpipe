@@ -1020,6 +1020,10 @@ static void SparkMinimaxH3V4AudioGate(const char *fixture_dir, const char *weigh
 						SparkMinimaxH3V4CompareStageF32(ref_tag,upsampled,
 							(uint64_t)SPARK_MINIMAX_H3_V4_AUDIO_BATCH *
 							out_channels * output_length * 2u);
+						if ( pass == 0u )
+							printf("drv_m0[0..7]=%.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
+								upsampled[0],upsampled[1],upsampled[2],upsampled[3],
+								upsampled[4],upsampled[5],upsampled[6],upsampled[7]);
 					}
 					snprintf(act_prefix,sizeof(act_prefix),"%sconvs%u_%u_",prefix,
 						pass + 1u,dilation_index);
