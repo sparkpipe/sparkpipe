@@ -350,6 +350,8 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         return SPARK_STATUS_IO_ERROR;
     if ( cudaStreamSynchronize(submission->cuda_stream) != 0 )
         return SPARK_STATUS_IO_ERROR;
+    SparkTpDeviceCollectivePhase("cpu-tail",mark);
+    }
     return SPARK_STATUS_OK;
 }
 
