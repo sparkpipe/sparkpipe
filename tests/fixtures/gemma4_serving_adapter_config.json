@@ -1,0 +1,7 @@
+{
+  "schema_version": 3,
+  "model_revision": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+  "stage_pack_path": "tests/fixtures/gemma4_31b-stage.gemma4sp",
+  "max_sequence_positions": 4096,
+  "tp_degree": 16
+}
