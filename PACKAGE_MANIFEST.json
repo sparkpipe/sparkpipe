@@ -3528,8 +3528,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
-      "sha256": "ab1ff5d8a2aba78f683006a551df08013dbfa7dfa19d6f2e9e230f9d0c3297c0",
-      "size_bytes": 224504
+      "sha256": "2b493abe3890e775abebed7dca9abc584f62b66ea1f777d273f1e648dc3ec16b",
+      "size_bytes": 226769
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_pack_load_common.h",
@@ -3813,8 +3813,8 @@
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h",
-      "sha256": "e399c26958e501f33dddec811a82556d0c598990dcb022dd3054992db1abae3e",
-      "size_bytes": 4326
+      "sha256": "cfd22fb3c0495ce613440ccfe683eb8f90bb1f827ba9996c2a5bcfb439c4fbe3",
+      "size_bytes": 4380
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_work_control.h",
@@ -4948,8 +4948,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/Makefile",
-      "sha256": "f1cc4578766fe8fda9e921c57913931359685e2fdeb0ba3910499ee0827ad61c",
-      "size_bytes": 3413
+      "sha256": "a4627024b4c86287a7e4a9ede683edb336932f59a9f92141806302a8b4fad526",
+      "size_bytes": 3477
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h",
@@ -4963,8 +4963,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
-      "sha256": "0d4e6617a67a1976b5756246b39669179a9ac888d7830ce93b1ae47826a4f552",
-      "size_bytes": 75466
+      "sha256": "f5f34a7cc4ebd7e38bfc8a4d5f1c379b568e121536c9e0cf9360f4a8138827a0",
+      "size_bytes": 75497
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
@@ -4978,8 +4978,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_stagepack_format.h",
-      "sha256": "37814cb8771114290157debd7a9e95e2b131b353ba5ce9d35ca4129d209dae55",
-      "size_bytes": 16552
+      "sha256": "addf50a2ca9e62bf7d65c9ce641e54ee22eb122fd47e74ca9a29a6022fdf7721",
+      "size_bytes": 16674
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/tools/qwen38_max_pack_synthesize.c",
@@ -4998,8 +4998,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh",
-      "sha256": "bdc95353588fb7fcda4b469ef46efe6953e3171226cf4acc84783abef24ae972",
-      "size_bytes": 3391
+      "sha256": "0d11baf6e18d97d2e83e751ef8a3364f17fd8413d9ea684aae6c7e526a2bf422",
+      "size_bytes": 3486
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/Makefile",
@@ -10438,8 +10438,8 @@
     },
     {
       "path": "tools/qwen38_stagepack.py",
-      "sha256": "d5c2babcc33a5f48b121c7b45b8fa061f96065dbc8034df58a58e355e51cd02a",
-      "size_bytes": 51145
+      "sha256": "6e221017f6a5f0a65f31388aec7164cb25a3f7a4c11bfedcbd26aa2b04b55393",
+      "size_bytes": 51892
     },
     {
       "path": "tools/qwen38_stagepack_layout_audit.py",
@@ -10805,5 +10805,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35021693
+  "total_bytes": 35025071
 }

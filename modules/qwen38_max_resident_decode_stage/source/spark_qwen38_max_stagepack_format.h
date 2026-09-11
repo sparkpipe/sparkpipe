@@ -135,7 +135,13 @@ static inline uint32_t SparkQwen38MaxStagePackExpectedTensorCount(uint32_t first
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN38_MAX_MODEL_LAYER_COUNT )
+	{
+#if SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT == 0
+		tensors += 2u + (first_layer_index != 0u ? 1u : 0u);
+#else
 		tensors += 2u + 4u + 16u + (first_layer_index != 0u ? 1u : 0u);
+#endif
+	}
 	return(tensors);
 }
 
