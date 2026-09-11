@@ -1,5 +1,5 @@
 {
-  "file_count": 2123,
+  "file_count": 2124,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -4388,8 +4388,8 @@
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_cuda.cu",
-      "sha256": "62c95830e2576dc9afaec6f66b7fd3bb80da4095d179becb51cf9adc584187ef",
-      "size_bytes": 11009
+      "sha256": "260d886c730629edf22dac58e4b64dc0ec6f485aecc4681297bfbe45f50c7e27",
+      "size_bytes": 4853
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c",
@@ -9678,8 +9678,8 @@
     },
     {
       "path": "tools/hy4_gpu/run_fp8_rung.sh",
-      "sha256": "2ad0eff3536f23dccd5451e25a5aa98e5f8315c00ebd9917d8513b382e256c6b",
-      "size_bytes": 1165
+      "sha256": "5852408cc46b0a1f41dd710e5b8ce2e3fca74c08f7c98f9e53325ff28468c139",
+      "size_bytes": 1141
     },
     {
       "path": "tools/hy4_gpu/run_fp8_verify.sh",
@@ -10612,6 +10612,11 @@
       "size_bytes": 4938
     },
     {
+      "path": "validation/hy4/spark_hy4_ladder_kernels.cu",
+      "sha256": "4def2353fb93ee1825062a686870830f58709d526cf8a524881bd10361c6b43b",
+      "size_bytes": 8534
+    },
+    {
       "path": "validation/spark_gemma4_reference.c",
       "sha256": "791dbe16ea5917eff2c02a8710b9ec17a4f8f9a4e2e6640c5c1f99b6840ec997",
       "size_bytes": 31712
@@ -10620,5 +10625,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34392013
+  "total_bytes": 34394367
 }

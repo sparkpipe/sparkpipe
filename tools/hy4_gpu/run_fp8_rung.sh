@@ -12,12 +12,12 @@ for p in /proc/[0-9]*/exe; do
   case "$t" in */hy4_fp8_rung) echo "LIVE INSTANCE $t"; exit 1;; esac
 done
 if [ hy4_fp8_rung -nt hy4_fp8_rung.cu ] && \
-   [ hy4_fp8_rung -nt spark_hy4_resident_decode_stage_cuda.cu ]; then
+   [ hy4_fp8_rung -nt spark_hy4_ladder_kernels.cu ]; then
   echo "BIN FRESH"
 else
   export PATH=/usr/local/cuda/bin:$PATH
   nvcc -O2 -arch=sm_121 -fmad=false -o hy4_fp8_rung hy4_fp8_rung.cu \
-    spark_hy4_resident_decode_stage_cuda.cu -I "$M" 2> fp8rung_build_err.txt
+    spark_hy4_ladder_kernels.cu -I "$M" 2> fp8rung_build_err.txt
   if [ $? -ne 0 ]; then
     echo "BUILD FAIL"
     head -40 fp8rung_build_err.txt
