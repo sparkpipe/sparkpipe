@@ -12,6 +12,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static uint64_t spine_stat_mtime_ns(const struct stat *st)
+{
+#if defined(__APPLE__)
+	return (uint64_t)st->st_mtimespec.tv_sec * 1000000000ull + (uint64_t)st->st_mtimespec.tv_nsec;
+#else
+	return (uint64_t)st->st_mtim.tv_sec * 1000000000ull + (uint64_t)st->st_mtim.tv_nsec;
+#endif
+}
+
+static uint64_t spine_stat_ctime_ns(const struct stat *st)
+{
+#if defined(__APPLE__)
+	return (uint64_t)st->st_ctimespec.tv_sec * 1000000000ull + (uint64_t)st->st_ctimespec.tv_nsec;
+#else
+	return (uint64_t)st->st_ctim.tv_sec * 1000000000ull + (uint64_t)st->st_ctim.tv_nsec;
+#endif
+}
+
 static SparkStatus spine_read(int32_t fd,uint8_t *buffer,uint64_t offset,uint32_t bytes)
 {
 	uint32_t done = 0u;
@@ -106,8 +124,8 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 			read(receipt_fd,&receipt,sizeof(receipt)) == (ssize_t)sizeof(receipt) &&
 			receipt.magic == SPINE_RECEIPT_MAGIC &&
 			receipt.size == (uint64_t)st.st_size &&
-			receipt.mtime_ns == (uint64_t)st.st_mtim.tv_sec * 1000000000ull + (uint64_t)st.st_mtim.tv_nsec &&
-			receipt.ctime_ns == (uint64_t)st.st_ctim.tv_sec * 1000000000ull + (uint64_t)st.st_ctim.tv_nsec )
+			receipt.mtime_ns == spine_stat_mtime_ns(&st) &&
+			receipt.ctime_ns == spine_stat_ctime_ns(&st) )
 			have_receipt = 1;
 		close(receipt_fd);
 	}
@@ -144,8 +162,8 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 			if ( fstat(fd,&st) == 0 )
 			{
 				receipt.size = (uint64_t)st.st_size;
-				receipt.mtime_ns = (uint64_t)st.st_mtim.tv_sec * 1000000000ull + (uint64_t)st.st_mtim.tv_nsec;
-				receipt.ctime_ns = (uint64_t)st.st_ctim.tv_sec * 1000000000ull + (uint64_t)st.st_ctim.tv_nsec;
+				receipt.mtime_ns = spine_stat_mtime_ns(&st);
+				receipt.ctime_ns = spine_stat_ctime_ns(&st);
 				memcpy(receipt.sha,digest,32u);
 				memcpy(receipt.ck,ck,16u);
 				receipt_fd = open(receipt_path,O_WRONLY | O_CREAT | O_TRUNC,0644);
