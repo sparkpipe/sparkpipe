@@ -117,6 +117,7 @@ compile_cuda()
 compile_cuda "${output_directory}/probe.cu" probe
 
 translation_units=(
+	tools/mb_doorbell.cu
 	tools/hardware/spark_cuda_characterize.cu
 	tools/hardware/spark_nvme_characterize.cu
 	inference/llms/kimi_k3/bind.cu
@@ -154,6 +155,22 @@ compile_cuda \
 	qwen38_27b_resident_decode_stage \
 	-include "${qwen38_27b_model_header}" \
 	-DSPARK_QWEN38_27B_MODULE_BUILD=1
+
+# GLM 5.3 Flash uses the glm5_next implementation, separate from glm52.
+make -C "${repository_root}" -j2 build/glm5_next_driver_probe \
+	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
+	> "${output_directory}/logs/glm5-next-driver-probe.txt" 2>&1
+python3 "${repository_root}/tests/test_glm5_next_driver_probe.py"
+compile_cuda \
+	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu \
+	glm5_next_resident_decode_stage_fp8 \
+	-I"${repository_root}/model-families/glm5_next/include" \
+	-I"${repository_root}/modules/glm5_next_resident_decode_stage/include" \
+	-I"${repository_root}/modules/glm5_next_resident_decode_stage/source" \
+	-include "${repository_root}/model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h" \
+	-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
+	'-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"' \
+	-DSPARK_BATCH_BUCKET=1024u
 
 glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)

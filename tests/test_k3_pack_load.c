@@ -35,7 +35,6 @@ int main(int argc, char **argv)
 		entry.shape[0] == 163840u && entry.shape[1] == 7168u,
 		"embedding shape 163840x7168");
 	failures += expect(entry.kind == SPARK_K3_PACK_KIND_BF16, "embedding bf16");
-	failures += expect(SparkK3PackPayload(&pack, &entry) != 0, "embedding payload");
 	failures += expect(SparkK3PackLoadEntry(&pack,
 		"model.layers.0.kda_gate_weight", &entry) == SPARK_STATUS_OK,
 		"resolve kda_gate_weight (full-rank gate)");

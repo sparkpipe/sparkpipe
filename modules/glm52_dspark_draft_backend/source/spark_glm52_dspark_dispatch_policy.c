@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -13,7 +14,7 @@ SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
 
     if (model_contract == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(model_contract, 0, sizeof(*model_contract));
     model_contract->abi_version = SPARK_DSPARK_ABI_VERSION;
@@ -58,7 +59,7 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
 
     if (tap_plan == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     memset(tap_plan, 0, sizeof(*tap_plan));
@@ -106,7 +107,7 @@ SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
         tap_plan->reserved0 != 0u ||
         tap_plan->reserved1 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (tap_index = 0u;
@@ -128,7 +129,7 @@ SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
                 target_layer_index - tap_stage->stage_first_layer_index ||
             tap_stage->reserved != 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;

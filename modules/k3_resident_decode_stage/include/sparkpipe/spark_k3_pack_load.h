@@ -1,8 +1,6 @@
-#ifndef SPARKPIPE_SPARK_K3_PACK_LOAD_H
-#define SPARKPIPE_SPARK_K3_PACK_LOAD_H
+#pragma once
 
 #include <stdint.h>
-#include <sys/types.h>
 
 #include "sparkpipe/spark_status.h"
 
@@ -55,8 +53,6 @@ typedef struct SparkK3PackConfig
 
 typedef struct SparkK3Pack
 {
-	int fd;
-	uint8_t *mapping;
 	uint64_t file_bytes;
 	uint64_t payload_base;
 	uint32_t version;
@@ -70,11 +66,7 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name,
 	SparkK3PackEntry *entry);
 SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name,
 	uint32_t *tile_k);
-const void *SparkK3PackPayload(const SparkK3Pack *pack,
-	const SparkK3PackEntry *entry);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

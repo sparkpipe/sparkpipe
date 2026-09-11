@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_runtime_completion.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -21,7 +22,7 @@ static SparkStatus SparkRuntimeValidateParticipant(
         participant->commit == 0 ||
         participant->cancel == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -37,7 +38,7 @@ static SparkStatus SparkRuntimeValidateFinalEventQueue(
         queue->next_event_generation == 0u ||
         queue->events == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -53,7 +54,7 @@ static SparkStatus SparkRuntimeValidateTransmissionWindow(
         window->next_slot_generation == 0u ||
         window->slots == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -97,7 +98,7 @@ static SparkStatus SparkRuntimeEnqueueFinalEvent(
 
     if (event_generation_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *event_generation_out = 0u;
     if (SparkRuntimeValidateFinalEventQueue(queue) != SPARK_STATUS_OK ||
@@ -105,12 +106,12 @@ static SparkStatus SparkRuntimeEnqueueFinalEvent(
         payload_fingerprint == 0u ||
         queue->pending_count >= queue->capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     event = SparkRuntimeFindReusableFinalEvent(queue);
     if (event == 0)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     memset(event,0,sizeof(*event));
     event->magic = SPARK_RUNTIME_COMPLETION_FINAL_EVENT_MAGIC;
@@ -144,14 +145,14 @@ static SparkStatus SparkRuntimeFindFinalEvent(
 
     if (event_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *event_out = 0;
     if (SparkRuntimeValidateFinalEventQueue(queue) != SPARK_STATUS_OK ||
         SparkWorkTransactionValidateIdentity(identity) != SPARK_STATUS_OK ||
         payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (event_index = 0u; event_index < queue->capacity; ++event_index)
     {
@@ -168,7 +169,7 @@ static SparkStatus SparkRuntimeFindFinalEvent(
             return SPARK_STATUS_OK;
         }
     }
-    return SPARK_STATUS_NOT_FOUND;
+    SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 }
 
 static SparkStatus SparkRuntimeAcquireCredit(
@@ -228,7 +229,7 @@ SparkStatus SparkRuntimeInitializeFinalEventQueue(
 {
     if (queue == 0 || events == 0 || capacity == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(queue,0,sizeof(*queue));
     memset(events,0,(size_t)capacity * sizeof(events[0u]));
@@ -250,12 +251,12 @@ SparkStatus SparkRuntimePeekFinalEvent(
 
     if (event_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *event_out = 0;
     if (SparkRuntimeValidateFinalEventQueue(queue) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     oldest_event = 0;
     oldest_generation = UINT64_MAX;
@@ -273,7 +274,7 @@ SparkStatus SparkRuntimePeekFinalEvent(
     }
     if (oldest_event == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     *event_out = oldest_event;
     return SPARK_STATUS_OK;
@@ -292,7 +293,7 @@ SparkStatus SparkRuntimeAcknowledgeFinalEvent(
         event_generation == 0u ||
         payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (event_index = 0u; event_index < queue->capacity; ++event_index)
     {
@@ -306,23 +307,23 @@ SparkStatus SparkRuntimeAcknowledgeFinalEvent(
         {
             if (event->payload_fingerprint != payload_fingerprint)
             {
-                return SPARK_STATUS_VALIDATION_FAILED;
+                SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
             }
             if (event->state == SPARK_RUNTIME_FINAL_EVENT_STATE_ACKNOWLEDGED)
             {
-                return SPARK_STATUS_DUPLICATE;
+                SPARK_FAIL(SPARK_STATUS_DUPLICATE);
             }
             if (event->state != SPARK_RUNTIME_FINAL_EVENT_STATE_PENDING ||
                 queue->pending_count == 0u)
             {
-                return SPARK_STATUS_VALIDATION_FAILED;
+                SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
             }
             event->state = SPARK_RUNTIME_FINAL_EVENT_STATE_ACKNOWLEDGED;
             queue->pending_count -= 1u;
             return SPARK_STATUS_OK;
         }
     }
-    return SPARK_STATUS_NOT_FOUND;
+    SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 }
 
 SparkStatus SparkRuntimeAcknowledgeControllerFinalEvent(
@@ -337,7 +338,7 @@ SparkStatus SparkRuntimeAcknowledgeControllerFinalEvent(
         controller->abi_version != SPARK_RUNTIME_COMPLETION_ABI_VERSION ||
         controller->descriptor_bytes != SPARK_RUNTIME_CONTROLLER_BYTES)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkRuntimeAcknowledgeFinalEvent(
         &controller->final_event_queue,
@@ -367,7 +368,7 @@ SparkStatus SparkRuntimeInitializeTransmissionWindow(
 
     if (window == 0 || slots == 0 || capacity == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(window,0,sizeof(*window));
     memset(slots,0,(size_t)capacity * sizeof(slots[0u]));
@@ -394,7 +395,7 @@ SparkStatus SparkRuntimeReserveTransmissionSlot(
 
     if (slot_index_out == 0 || slot_generation_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *slot_index_out = SPARK_RUNTIME_COMPLETION_INVALID_INDEX;
     *slot_generation_out = 0u;
@@ -402,11 +403,11 @@ SparkStatus SparkRuntimeReserveTransmissionSlot(
         SparkWorkTransactionValidateIdentity(identity) != SPARK_STATUS_OK ||
         payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (window->in_use_count >= window->capacity)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     for (slot_index = 0u; slot_index < window->capacity; ++slot_index)
     {
@@ -436,7 +437,7 @@ SparkStatus SparkRuntimeReserveTransmissionSlot(
             return SPARK_STATUS_OK;
         }
     }
-    return SPARK_STATUS_INTERNAL_ERROR;
+    SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 SparkStatus SparkRuntimeMarkTransmissionSent(
@@ -450,20 +451,20 @@ SparkStatus SparkRuntimeMarkTransmissionSent(
         slot_index >= window->capacity ||
         slot_generation == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     slot = &window->slots[slot_index];
     if (slot->slot_generation != slot_generation)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     if (slot->state == SPARK_RUNTIME_TRANSMISSION_SLOT_STATE_SENT)
     {
-        return SPARK_STATUS_DUPLICATE;
+        SPARK_FAIL(SPARK_STATUS_DUPLICATE);
     }
     if (slot->state != SPARK_RUNTIME_TRANSMISSION_SLOT_STATE_RESERVED)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     window->send_epoch += 1u;
     if (window->send_epoch == 0u)
@@ -490,23 +491,23 @@ SparkStatus SparkRuntimeAcknowledgeTransmission(
         SparkWorkTransactionValidateIdentity(identity) != SPARK_STATUS_OK ||
         payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     slot = &window->slots[slot_index];
     if (slot->slot_generation != slot_generation ||
         SparkWorkTransactionIdentitiesMatch(&slot->identity,identity) == 0u ||
         slot->payload_fingerprint != payload_fingerprint)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     if (slot->state == SPARK_RUNTIME_TRANSMISSION_SLOT_STATE_ACKNOWLEDGED)
     {
-        return SPARK_STATUS_DUPLICATE;
+        SPARK_FAIL(SPARK_STATUS_DUPLICATE);
     }
     if (slot->state != SPARK_RUNTIME_TRANSMISSION_SLOT_STATE_SENT ||
         window->in_use_count == 0u)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     slot->state = SPARK_RUNTIME_TRANSMISSION_SLOT_STATE_ACKNOWLEDGED;
     window->in_use_count -= 1u;
@@ -524,13 +525,13 @@ SparkStatus SparkRuntimeNextReplayTransmission(
 
     if (slot_index_out == 0 || slot_generation_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *slot_index_out = SPARK_RUNTIME_COMPLETION_INVALID_INDEX;
     *slot_generation_out = 0u;
     if (SparkRuntimeValidateTransmissionWindow(window) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     oldest_slot = 0;
     oldest_epoch = UINT64_MAX;
@@ -548,7 +549,7 @@ SparkStatus SparkRuntimeNextReplayTransmission(
     }
     if (oldest_slot == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     window->send_epoch += 1u;
     if (window->send_epoch == 0u)
@@ -590,7 +591,7 @@ SparkStatus SparkRuntimeInitializeController(
             SPARK_WORK_TRANSACTION_CREDIT_DOMAIN_COMPLETION_OWNERSHIP] !=
             final_event_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (participant_index = 0u;
          participant_index < participant_count;
@@ -639,7 +640,7 @@ SparkStatus SparkRuntimeValidateTransactionRequest(
 
     if (payload_fingerprint_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *payload_fingerprint_out = 0u;
     if (controller == 0 ||
@@ -658,7 +659,7 @@ SparkStatus SparkRuntimeValidateTransactionRequest(
         request->payload_bytes == 0u ||
         request->reserved0 != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     {
         uint32_t participant_index;
@@ -670,7 +671,7 @@ SparkStatus SparkRuntimeValidateTransactionRequest(
             if (request->identity.control_generation <
                 controller->participants[participant_index].restart_epoch)
             {
-                return SPARK_STATUS_VALIDATION_FAILED;
+                SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
             }
         }
     }
@@ -679,7 +680,7 @@ SparkStatus SparkRuntimeValidateTransactionRequest(
         request->payload_bytes);
     if (payload_fingerprint == 0u)
     {
-        return SPARK_STATUS_VALIDATION_FAILED;
+        SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     *payload_fingerprint_out = payload_fingerprint;
     return SPARK_STATUS_OK;
@@ -705,7 +706,7 @@ SparkStatus SparkRuntimeRunTransaction(
 
     if (result == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(result,0,sizeof(*result));
     result->descriptor_bytes = SPARK_RUNTIME_TRANSACTION_RESULT_BYTES;
@@ -737,7 +738,7 @@ SparkStatus SparkRuntimeRunTransaction(
         if (observation == SPARK_WORK_TRANSACTION_OBSERVATION_REPLAY_ACTIVE)
         {
             result->status = SPARK_STATUS_BUSY;
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         result->status = (SparkStatus)transaction_entry->terminal_status;
         if (SparkRuntimeFindFinalEvent(
@@ -749,7 +750,7 @@ SparkStatus SparkRuntimeRunTransaction(
             result->final_event_generation =
                 existing_event->event_generation;
         }
-        return SPARK_STATUS_DUPLICATE;
+        SPARK_FAIL(SPARK_STATUS_DUPLICATE);
     }
 
     prepared_participant_count = 0u;
@@ -884,7 +885,7 @@ SparkStatus SparkRuntimeRunTransaction(
             controller,
             SPARK_WORK_TRANSACTION_CREDIT_DOMAIN_TRANSPORT_WINDOW,
             &transport_credit_held);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     status = SparkRuntimeEnqueueFinalEvent(
         &controller->final_event_queue,
@@ -907,7 +908,7 @@ SparkStatus SparkRuntimeRunTransaction(
             controller,
             SPARK_WORK_TRANSACTION_CREDIT_DOMAIN_TRANSPORT_WINDOW,
             &transport_credit_held);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     SparkRuntimeReleaseCreditIfHeld(

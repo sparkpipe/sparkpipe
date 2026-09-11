@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -27,7 +28,7 @@ static SparkStatus SparkHiddenTransportCopySessionText(
     uint64_t bytes;
     if (destination == 0 || destination_bytes == 0u ||
         (required != 0u && (source == 0 || source[0] == '\0')))
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (source == 0)
     {
         destination[0] = '\0';
@@ -35,7 +36,7 @@ static SparkStatus SparkHiddenTransportCopySessionText(
     }
     bytes = (uint64_t)strlen(source) + 1u;
     if (bytes > destination_bytes)
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     memcpy(destination,source,(size_t)bytes);
     return SPARK_STATUS_OK;
 }
@@ -238,12 +239,12 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
 
     if (endpoint == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (endpoint->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         endpoint->descriptor_bytes != SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (SparkHiddenTransportCapabilitiesAreSimulationOnly(
             endpoint->capability_flags))
@@ -253,7 +254,7 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
             SparkHiddenTransportCapabilitiesMeetProduction(
                 endpoint->capability_flags))
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     else if (!SparkHiddenTransportCapabilitiesMeetProduction(
@@ -261,7 +262,7 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
         !SparkHiddenTransportCapabilitiesMeetPipelineHostStaged(
             endpoint->capability_flags))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (endpoint->transport_module_id == 0 ||
         endpoint->transport_module_id[0] == '\0' ||
@@ -272,7 +273,7 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
         endpoint->max_active_sequence_count == 0u ||
         endpoint->max_packet_bytes == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((endpoint->configuration_flags &
             ~SPARK_HIDDEN_TRANSPORT_ENDPOINT_KNOWN_FLAGS) != 0u ||
@@ -280,7 +281,7 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
             SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT) != 0u) !=
             (endpoint->reserved0 != 0u)))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((endpoint->configuration_flags &
             SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_EXPLICIT_ROUTE_CONFIGURATION) != 0u)
@@ -297,7 +298,7 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
             SparkHiddenTransportRouteHostIsValid(endpoint->source_host) == 0u ||
             SparkHiddenTransportRouteHostIsValid(endpoint->sink_host) == 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     else if (endpoint->local_rank_index != 0u ||
@@ -306,21 +307,21 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
         endpoint->control_port_base != 0u || endpoint->source_host != 0 ||
         endpoint->sink_host != 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     bytes_per_sequence = (uint64_t)endpoint->hidden_dimension *
         SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
     if (bytes_per_sequence > UINT32_MAX ||
         endpoint->bytes_per_sequence != bytes_per_sequence)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     maximum_payload_bytes =
         (uint64_t)endpoint->bytes_per_sequence *
         (uint64_t)endpoint->max_active_sequence_count;
     if (maximum_payload_bytes > endpoint->max_packet_bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -330,7 +331,7 @@ SparkStatus SparkHiddenTransportConfigureEndpointOpenTimeout(
     uint32_t timeout_milli)
 {
     if (endpoint == 0 || timeout_milli == 0u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     endpoint->configuration_flags |=
         SPARK_HIDDEN_TRANSPORT_ENDPOINT_FLAG_OPEN_TIMEOUT;
     endpoint->reserved0 = timeout_milli;
@@ -355,12 +356,12 @@ SparkStatus SparkHiddenTransportValidatePacket(
     }
     if (packet == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (packet->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         packet->descriptor_bytes != SPARK_HIDDEN_TRANSPORT_PACKET_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
 
     known_packet_flags =
@@ -371,7 +372,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SUBRANGE_SHAPE;
     if ((packet->flags & ~known_packet_flags) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     required_packet_flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16;
@@ -385,7 +386,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
     }
     if ((packet->flags & required_packet_flags) != required_packet_flags)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((endpoint->capability_flags &
             SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED) != 0u &&
@@ -393,7 +394,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
     {
         fprintf(stderr,"G5N-TP validate-stream-zero caps=%x\n",
             endpoint->capability_flags);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (packet->hidden_bf16 == 0 ||
         packet->active_sequence_count == 0u ||
@@ -418,7 +419,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
             (unsigned long long)packet->bytes_per_sequence,
             (unsigned long long)endpoint->bytes_per_sequence,packet->flags,
             endpoint->hidden_dimension);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     hidden_transfer_bytes =
@@ -428,7 +429,7 @@ SparkStatus SparkHiddenTransportValidatePacket(
         hidden_transfer_bytes / packet->active_sequence_count !=
             (uint64_t)packet->bytes_per_sequence)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     sideband_transfer_bytes = 0u;
     if ((packet->flags &
@@ -443,23 +444,23 @@ SparkStatus SparkHiddenTransportValidatePacket(
             sideband_transfer_bytes / packet->active_sequence_count !=
                 (uint64_t)packet->sideband_bytes_per_sequence)
         {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     else if (packet->sideband_payload != 0 ||
              packet->sideband_kind != 0u ||
              packet->sideband_bytes_per_sequence != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     transfer_bytes = hidden_transfer_bytes + sideband_transfer_bytes;
     if (transfer_bytes < hidden_transfer_bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     if (transfer_bytes > endpoint->max_packet_bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -474,7 +475,7 @@ SparkStatus SparkHiddenTransportValidatePacketBatch(
 
     if (packets == 0 || packet_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
@@ -495,13 +496,13 @@ SparkStatus SparkHiddenTransportValidateInterface(
 {
     if (transport_interface == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (transport_interface->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         transport_interface->descriptor_bytes !=
             SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (SparkHiddenTransportCapabilitiesAreSimulationOnly(
             transport_interface->capability_flags) &&
@@ -509,7 +510,7 @@ SparkStatus SparkHiddenTransportValidateInterface(
             SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS) ==
             SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((transport_interface->capability_flags & required_capability_flags) !=
             required_capability_flags ||
@@ -520,7 +521,7 @@ SparkStatus SparkHiddenTransportValidateInterface(
         transport_interface->send == 0 ||
         transport_interface->poll == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (SparkHiddenTransportInterfaceRequiresBatchFunctions(
             transport_interface,
@@ -528,7 +529,7 @@ SparkStatus SparkHiddenTransportValidateInterface(
         (transport_interface->post_receive_batch == 0 ||
          transport_interface->send_batch == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((transport_interface->capability_flags &
             SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS) != 0u &&
@@ -541,7 +542,7 @@ SparkStatus SparkHiddenTransportValidateInterface(
          transport_interface->send_persistent == 0 ||
          transport_interface->release_persistent_receive == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -559,13 +560,13 @@ SparkStatus SparkHiddenTransportLoadInterfaceFromSharedObject(
     if (shared_object_path == 0 || shared_object_path[0] == '\0' ||
         library == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(library, 0, sizeof(*library));
     dynamic_library = dlopen(shared_object_path, RTLD_NOW | RTLD_LOCAL);
     if (dynamic_library == 0)
     {
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     }
     get_interface = (SparkHiddenTransportGetInterfaceFunction)dlsym(
         dynamic_library,
@@ -573,7 +574,7 @@ SparkStatus SparkHiddenTransportLoadInterfaceFromSharedObject(
     if (get_interface == 0)
     {
         dlclose(dynamic_library);
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+        SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
     }
     transport_interface = get_interface();
     status = SparkHiddenTransportValidateInterface(
@@ -617,7 +618,7 @@ SparkStatus SparkHiddenTransportOpen(
 
     if (session_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *session_out = 0;
 
@@ -646,13 +647,13 @@ SparkStatus SparkHiddenTransportOpen(
             effective_endpoint.capability_flags) !=
         effective_endpoint.capability_flags)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     session = (SparkHiddenTransportSession *)calloc(1u, sizeof(*session));
     if (session == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     status = SparkHiddenTransportOwnEndpointText(session,&effective_endpoint);
     if (status != SPARK_STATUS_OK)
@@ -672,7 +673,7 @@ SparkStatus SparkHiddenTransportOpen(
     if (session->transport_state == 0)
     {
         free(session);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     *session_out = session;
@@ -701,7 +702,7 @@ SparkStatus SparkHiddenTransportPostReceive(
 
     if (session == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint, packet);
     if (status != SPARK_STATUS_OK)
@@ -721,7 +722,7 @@ SparkStatus SparkHiddenTransportSend(
 
     if (session == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint, packet);
     if (status != SPARK_STATUS_OK)
@@ -742,7 +743,7 @@ SparkStatus SparkHiddenTransportPostReceiveBatch(
 
     if (session == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacketBatch(
         &session->endpoint,
@@ -753,7 +754,7 @@ SparkStatus SparkHiddenTransportPostReceiveBatch(
         return status;
     }
     if (SparkHiddenTransportSessionCanUseBatchSubmission(session) == 0u)
-        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+        SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
     return session->transport_interface.post_receive_batch(
         session->transport_state,
         packets,
@@ -769,7 +770,7 @@ SparkStatus SparkHiddenTransportSendBatch(
 
     if (session == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacketBatch(
         &session->endpoint,
@@ -780,7 +781,7 @@ SparkStatus SparkHiddenTransportSendBatch(
         return status;
     }
     if (SparkHiddenTransportSessionCanUseBatchSubmission(session) == 0u)
-        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+        SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
     return session->transport_interface.send_batch(
         session->transport_state,
         packets,
@@ -795,7 +796,7 @@ SparkStatus SparkHiddenTransportPoll(
 
     if (session == 0 || completion == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(completion, 0, sizeof(*completion));
     completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
@@ -810,13 +811,13 @@ SparkStatus SparkHiddenTransportPoll(
     if (completion->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         completion->descriptor_bytes != SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
     if (completion->active_sequence_count >
             session->endpoint.max_active_sequence_count ||
         completion->transfer_bytes > session->endpoint.max_packet_bytes)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SPARK_STATUS_OK;
 }
@@ -833,12 +834,12 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
     if (session == 0 || descriptor_count_out == 0 ||
         (descriptors == 0 && descriptor_capacity != 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *descriptor_count_out = 0u;
     if (SparkHiddenTransportSessionCanUsePollDescriptors(session) == 0u)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     status = session->transport_interface.get_poll_descriptors(
         session->transport_state,
@@ -851,7 +852,7 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
     }
     if (*descriptor_count_out > descriptor_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     for (descriptor_index = 0u;
          descriptor_index < *descriptor_count_out;
@@ -866,7 +867,7 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
                 ~(SPARK_HIDDEN_TRANSPORT_POLL_READ |
                   SPARK_HIDDEN_TRANSPORT_POLL_WRITE)) != 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;
@@ -882,7 +883,7 @@ SparkStatus SparkHiddenTransportRegisterPersistentReceive(
     if (session == 0 || packet_template == 0 ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(
         &session->endpoint,packet_template);
@@ -901,7 +902,7 @@ SparkStatus SparkHiddenTransportPersistentRemoteCreditReady(
     if (session == 0 ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.persistent_remote_credit_ready(
         session->transport_state,credit_index);
@@ -915,7 +916,7 @@ SparkStatus SparkHiddenTransportSetFixedLocal(
     if (session == 0 || local_buffer == 0 ||
         session->transport_interface.set_fixed_local == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.set_fixed_local(
         session->transport_state,local_buffer,local_bytes);
@@ -925,16 +926,17 @@ SparkStatus SparkHiddenTransportSendFixed(
     SparkHiddenTransportSession *session,
     const void *local_buffer,
     uint64_t bytes,
+    uint64_t remote_offset,
     uint32_t sequence)
 {
     if (session == 0 || local_buffer == 0 ||
         session->transport_interface.send_fixed == 0)
     {
         
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.send_fixed(
-        session->transport_state,local_buffer,bytes,sequence);
+        session->transport_state,local_buffer,bytes,remote_offset,sequence);
 }
 
 SparkStatus SparkHiddenTransportReservePersistentSend(
@@ -953,7 +955,7 @@ SparkStatus SparkHiddenTransportReservePersistentSend(
             (void *)session,(const void *)packet,
             (unsigned long long)generation,
             session != 0 ? session->transport_interface.capability_flags : 0u);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
     if (status != SPARK_STATUS_OK)
@@ -978,7 +980,7 @@ SparkStatus SparkHiddenTransportCancelPersistentSend(
     if (session == 0 || generation == 0u ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.cancel_persistent_send(
         session->transport_state,credit_index,generation);
@@ -999,7 +1001,7 @@ SparkStatus SparkHiddenTransportActivatePersistentReceive(
             "G5N-TP w-activate-guard session=%p gen=%llu caps=%x\n",
             (void *)session,(unsigned long long)generation,
             session != 0 ? session->transport_interface.capability_flags : 0u);
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
     if (status != SPARK_STATUS_OK)
@@ -1023,7 +1025,7 @@ SparkStatus SparkHiddenTransportCancelPersistentReceive(
     if (session == 0 || generation == 0u ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.cancel_persistent_receive(
         session->transport_state,credit_index,generation);
@@ -1040,7 +1042,7 @@ SparkStatus SparkHiddenTransportSendPersistent(
     if (session == 0 || packet == 0 || generation == 0u ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkHiddenTransportValidatePacket(&session->endpoint,packet);
     if (status != SPARK_STATUS_OK)
@@ -1060,7 +1062,7 @@ SparkStatus SparkHiddenTransportReleasePersistentReceive(
     if (session == 0 || generation == 0u || consumer_cuda_stream == 0 ||
         SparkHiddenTransportSessionCanUsePersistentReceiveCredits(session) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return session->transport_interface.release_persistent_receive(
         session->transport_state,credit_index,generation,
@@ -1087,11 +1089,11 @@ SparkStatus SparkHiddenTransportCompletionQueuePush(
 {
     uint32_t tail;
     if (queue == 0 || completion == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (SparkHiddenTransportCompletionQueueIsFull(queue) != 0u)
     {
         queue->dropped_count += 1u;
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     tail = (queue->head + queue->count) %
         SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH;
@@ -1110,7 +1112,7 @@ SparkStatus SparkHiddenTransportCompletionQueuePushPacket(
     SparkHiddenTransportCompletion completion;
     uint64_t transfer_bytes;
     if (queue == 0 || packet == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     transfer_bytes = (uint64_t)packet->bytes_per_sequence *
         (uint64_t)packet->active_sequence_count;
     if ((packet->flags &
@@ -1135,7 +1137,7 @@ SparkStatus SparkHiddenTransportCompletionQueuePop(
     SparkHiddenTransportCompletion *completion)
 {
     if (queue == 0 || completion == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (queue->count == 0u)
     {
         memset(completion,0,sizeof(*completion));
@@ -1166,7 +1168,7 @@ static SparkStatus SparkHiddenTransportPersistentRingPushCompletion(
 {
     if (state == 0 || packet == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkHiddenTransportCompletionQueuePushPacket(
         &state->completion_queue,
@@ -1183,12 +1185,12 @@ static SparkStatus SparkHiddenTransportPersistentRingInitialize(
 
     if (endpoint == 0 || transport_state == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     state = (SparkHiddenTransportPersistentRingState *)calloc(1u, sizeof(*state));
     if (state == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     state->endpoint = *endpoint;
     *transport_state = state;
@@ -1209,7 +1211,7 @@ static SparkStatus SparkHiddenTransportPersistentRingPostReceive(
 
     if (transport_state == 0 || packet == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
     fprintf(stderr,
@@ -1237,7 +1239,7 @@ static SparkStatus SparkHiddenTransportPersistentRingSend(
 
     if (transport_state == 0 || packet == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     fprintf(stderr,
         "STUB-SEND state=%p seq=%llu tok=%llu\n",
@@ -1266,7 +1268,7 @@ static SparkStatus SparkHiddenTransportPersistentRingPostReceiveBatch(
 
     if (transport_state == 0 || packets == 0 || packet_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
@@ -1291,7 +1293,7 @@ static SparkStatus SparkHiddenTransportPersistentRingSendBatch(
 
     if (transport_state == 0 || packets == 0 || packet_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
@@ -1314,7 +1316,7 @@ static SparkStatus SparkHiddenTransportPersistentRingPoll(
 
     if (transport_state == 0 || completion == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
     return SparkHiddenTransportCompletionQueuePop(
@@ -1326,7 +1328,7 @@ SparkStatus SparkHiddenTransportPersistentRingGetInterface(
 {
     if (transport_interface == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(transport_interface, 0, sizeof(*transport_interface));
     transport_interface->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
@@ -1356,13 +1358,13 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
 
     if (session == 0 || statistics == 0 || session->transport_state == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (session->transport_interface.initialize !=
             SparkHiddenTransportPersistentRingInitialize ||
         session->transport_interface.poll != SparkHiddenTransportPersistentRingPoll)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     state = (SparkHiddenTransportPersistentRingState *)session->transport_state;
@@ -1428,17 +1430,17 @@ static SparkStatus SparkHiddenTransportValidateRdmaEndpoint(
             endpoint->transport_module_id,
             transport_module_id))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((endpoint->capability_flags & required_capability_flags) !=
         required_capability_flags)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((endpoint->capability_flags &
             SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -1468,7 +1470,7 @@ static SparkStatus SparkHiddenTransportRdmaVerbsPreflight(
     }
     if (access(infiniband_path, F_OK) != 0)
     {
-        return SPARK_STATUS_ROUTE_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_ROUTE_NOT_FOUND);
     }
     return SPARK_STATUS_OK;
 }

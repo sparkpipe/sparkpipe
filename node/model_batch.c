@@ -1,4 +1,5 @@
 #include <errno.h>
+#include "sparkpipe/spark_error_site.h"
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -131,13 +132,13 @@ static SparkStatus SparkModelBatchParseTokenArray(
 	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	count = SparkJsonGetArrayElementCount(document,array);
 	if ( count == 0u || count > maximum_count )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	tokens = (uint32_t *)calloc(count,sizeof(*tokens));
 	if ( tokens == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
 	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<count; index++)
@@ -155,7 +156,7 @@ static SparkStatus SparkModelBatchParseTokenArray(
 		*tokens_out = tokens;
 		*count_out = count;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchParseRequest(
@@ -168,7 +169,7 @@ static SparkStatus SparkModelBatchParseRequest(
 	int32_t tokens;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelBatchRequestMembers,(uint32_t)(sizeof(SparkModelBatchRequestMembers) / sizeof(SparkModelBatchRequestMembers[0])));
 	request = &file_request->request;
 	memset(request,0,sizeof(*request));
@@ -188,7 +189,7 @@ static SparkStatus SparkModelBatchParseRequest(
 	request->prompt_token_ids = file_request->prompt_token_ids;
 	if ( status == SPARK_STATUS_OK && (request->request_id == 0u || request->sequence_id == 0u || request->output_token_budget == 0u || request->output_token_budget > max_context_tokens - request->prompt_token_count) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchValidateUniqueIds(
@@ -203,7 +204,7 @@ static SparkStatus SparkModelBatchValidateUniqueIds(
 	{
 		free(sequence_ids);
 		free(request_ids);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	for (index=0u; index<file->request_count; index++)
 	{
@@ -218,7 +219,7 @@ static SparkStatus SparkModelBatchValidateUniqueIds(
 			status = SPARK_STATUS_DUPLICATE;
 	free(sequence_ids);
 	free(request_ids);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchParseRequests(
@@ -230,13 +231,13 @@ static SparkStatus SparkModelBatchParseRequests(
 	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	file->request_count = SparkJsonGetArrayElementCount(document,array);
 	if ( file->request_count == 0u || file->request_count > file->engine.request_capacity )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	file->requests = (SparkModelBatchFileRequest *)calloc(file->request_count,sizeof(*file->requests));
 	if ( file->requests == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
 	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)
@@ -259,10 +260,10 @@ static SparkStatus SparkModelBatchParseStopTokens(
 	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	file->engine.stop_token_count = SparkJsonGetArrayElementCount(document,array);
 	if ( file->engine.stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SPARK_STATUS_OK;
 	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<file->engine.stop_token_count; index++)
@@ -277,7 +278,7 @@ static SparkStatus SparkModelBatchParseStopTokens(
 		for (left=0u; left<index; left++)
 			if ( file->engine.stop_token_ids[left] == file->engine.stop_token_ids[index] )
 				status = SPARK_STATUS_DUPLICATE;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchLoadFile(
@@ -321,7 +322,7 @@ static SparkStatus SparkModelBatchLoadFile(
 	SparkJsonDocumentDestroy(&document);
 	if ( status != SPARK_STATUS_OK )
 		SparkModelBatchFileDestroy(file);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static const char *SparkModelBatchEventName(uint32_t kind)
@@ -390,10 +391,12 @@ static void SparkModelBatchWriteEvent(
 	const SparkModelBatchEvent *event)
 {
 	SparkModelBatchOutput *output;
-	char line[512];
+	char line[768];
 	int32_t length;
 	output = (SparkModelBatchOutput *)event_context;
 	length = snprintf(line,sizeof(line),"{\"schema_version\":1,\"event\":\"%s\",\"status\":%u,\"request_id\":%llu,\"sequence_id\":%llu,\"request_handle\":%llu,\"token_id\":%u,\"token_index\":%u,\"generated_token_count\":%u,\"stop_token\":%s",SparkModelBatchEventName(event->kind),event->status,(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->request_handle,event->token_id,event->token_index,event->generated_token_count,(event->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u ? "true" : "false");
+	if ( length >= 0 && (size_t)length < sizeof(line) )
+		length += snprintf(line + length,sizeof(line) - (size_t)length,",\"monotonic_ns\":%llu,\"cached_prompt_tokens\":%u",(unsigned long long)event->monotonic_ns,event->cached_prompt_token_count);
 	if ( length >= 0 && event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED && (size_t)length < sizeof(line) )
 		length += snprintf(line + length,sizeof(line) - (size_t)length,",\"model_extension_kind\":%u,\"first_draft_miss\":%u,\"first_draft_policy\":%u",event->model_extension_kind,event->first_draft_miss_count,event->first_draft_policy);
 	if ( length >= 0 && (size_t)length < sizeof(line) )
@@ -445,7 +448,7 @@ static SparkStatus SparkModelBatchInitializeStageProfile(
 	if ( event_capacity > SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX )
 		event_capacity = SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX;
 	if ( event_capacity == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	output->stage_completion_capacity = (uint32_t)event_capacity;
 	output->stage_completions = (SparkModelPipelineStageCompletion *)calloc(output->stage_completion_capacity,sizeof(output->stage_completions[0]));
 	return(output->stage_completions != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -514,7 +517,7 @@ static SparkStatus SparkModelBatchSubmitAll(
 	status = SPARK_STATUS_OK;
 	for (index=first; status==SPARK_STATUS_OK && index<first+count; index++)
 		status = SparkModelBatchEngineSubmit(engine,&file->requests[index].request,&handle);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchContinuousInitialize(
@@ -533,7 +536,7 @@ static SparkStatus SparkModelBatchContinuousInitialize(
 	configuration.starvation_bound = SPARK_MODEL_BATCH_CONTINUOUS_STARVATION_BOUND;
 	output->released_ids = (uint64_t *)calloc(file->request_count,sizeof(*output->released_ids));
 	if ( output->released_ids == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SparkContinuousBatchInitialize(&configuration,&output->admission));
 }
 
@@ -551,7 +554,7 @@ static SparkStatus SparkModelBatchSubmitOne(
 		file->requests[index].submitted = 1u;
 		*submitted_count += 1u;
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchContinuousRequest(
@@ -560,7 +563,7 @@ static SparkStatus SparkModelBatchContinuousRequest(
 {
 	memset(continuous,0,sizeof(*continuous));
 	if ( request->request_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	continuous->abi_version = SPARK_CONTINUOUS_BATCH_ABI_VERSION;
 	continuous->descriptor_bytes = SPARK_CONTINUOUS_BATCH_REQUEST_BYTES;
 	continuous->request_id = request->request_id;
@@ -598,7 +601,7 @@ static SparkStatus SparkModelBatchOfferAll(
 				(void)SparkContinuousBatchWithdraw(output->admission,file->requests[index].request.request_id);
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelBatchReleaseReady(
@@ -621,7 +624,7 @@ static SparkStatus SparkModelBatchReleaseReady(
 			break;
 		}
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkModelBatchPoll(
@@ -700,7 +703,7 @@ static SparkStatus SparkModelBatchRun(
 		status = SparkModelBatchEngineGetView(engine,&view);
 	if ( status == SPARK_STATUS_OK && (view.live_request_count != 0u || view.inflight_submission_count != 0u) )
 		status = SPARK_STATUS_BUSY;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static int32_t SparkModelBatchParseArguments(

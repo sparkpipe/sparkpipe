@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_memlink.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +8,7 @@ SparkStatus SparkMemlinkValidateLaneCount(uint32_t lane_count)
 {
     if (lane_count == 0u || lane_count > SPARK_MEMLINK_MAX_LANE_COUNT)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     return SPARK_STATUS_OK;
@@ -25,7 +26,7 @@ SparkStatus SparkMemlinkBuildTransferPartition(
 
     if (partition == NULL || SparkMemlinkValidateLaneCount(lane_count) != SPARK_STATUS_OK || lane_index >= lane_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     base_bytes = total_bytes / (uint64_t)lane_count;
@@ -57,7 +58,7 @@ SparkStatus SparkMemlinkResolveNeighborRank(
 {
     if (neighbor_rank == NULL || rank_count == 0u || current_rank >= rank_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if (direction == SPARK_MEMLINK_NEIGHBOR_PREVIOUS)
@@ -72,7 +73,7 @@ SparkStatus SparkMemlinkResolveNeighborRank(
         return SPARK_STATUS_OK;
     }
 
-    return SPARK_STATUS_INVALID_ARGUMENT;
+    SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static int SparkMemlinkTemplatePlaceholder(
@@ -126,14 +127,14 @@ SparkStatus SparkMemlinkFormatHostFromTemplate(
 
     if (host_template == NULL || host == NULL || host_capacity == 0u)
     {
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     {
         int template_kind = SparkMemlinkTemplatePlaceholder(
             host_template,&placeholder);
         if (template_kind < 0)
         {
-            return(SPARK_STATUS_INVALID_ARGUMENT);
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         if (template_kind == 0)
         {
@@ -151,7 +152,7 @@ SparkStatus SparkMemlinkFormatHostFromTemplate(
 
     if (written < 0 || (size_t)written >= host_capacity)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 
     return SPARK_STATUS_OK;
@@ -171,7 +172,7 @@ SparkStatus SparkMemlinkResolveNeighborEndpoint(
 
     if (endpoint == NULL || host_template == NULL || SparkMemlinkValidateLaneCount(lane_count) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkMemlinkResolveNeighborRank(current_rank, rank_count, direction, &neighbor_rank);

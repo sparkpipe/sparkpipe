@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_kv_cache.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 #if defined(__unix__) || defined(__APPLE__)
@@ -20,7 +21,7 @@ static SparkStatus SparkKvCacheCheckedMulU64(
 {
     if (value_out == 0 || (right != 0u && left > UINT64_MAX / right))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *value_out = left * right;
     return SPARK_STATUS_OK;
@@ -33,7 +34,7 @@ static SparkStatus SparkKvCacheCheckedAddU64(
 {
     if (value_out == 0 || left > UINT64_MAX - right)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *value_out = left + right;
     return SPARK_STATUS_OK;
@@ -50,12 +51,12 @@ static SparkStatus SparkKvCacheAlignUpU64(
         (alignment & (alignment - 1u)) != 0u ||
         value > UINT64_MAX - ((uint64_t)alignment - 1u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     aligned_value = (value + alignment - 1u) & ~((uint64_t)alignment - 1u);
     if (aligned_value < value)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *value_out = aligned_value;
     return SPARK_STATUS_OK;
@@ -75,7 +76,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
 
     if (request == 0 || bytes_per_token_per_layer_out == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     switch (request->layout)
@@ -103,7 +104,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
         case SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE_FP8_E4M3:
             if (request->fp8_scale_block_size == 0u)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
             element_count =
                 (uint64_t)request->compressed_dimension +
@@ -118,7 +119,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
         case SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3:
             if (request->fp8_scale_block_size == 0u)
             {
-                return SPARK_STATUS_INVALID_ARGUMENT;
+                SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
             }
             element_count =
                 (uint64_t)request->compressed_dimension +
@@ -147,7 +148,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
             return SPARK_STATUS_OK;
 
         default:
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 }
 
@@ -158,9 +159,9 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     uint64_t attention_bytes_per_token_per_layer;
     uint64_t index_key_bytes_per_token_per_layer;
     uint64_t summary_bytes_per_index_layer_block;
-    uint64_t resident_token_bytes;
+    uint64_t resident_token_bytes = 0u;
     uint64_t payload_token_bytes;
-    uint64_t record_unaligned_bytes;
+    uint64_t record_unaligned_bytes = 0u;
     uint64_t active_token_capacity;
     uint64_t backing_token_capacity;
     uint64_t compact_selected_token_count;
@@ -204,7 +205,7 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
         (request->record_alignment_bytes &
             (request->record_alignment_bytes - 1u)) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     local_index_key_layer_count = 0u;
@@ -223,7 +224,7 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
         if (SparkKvCacheCalculateAttentionBytesPerTokenLayer(&geometry,
             &attention_bytes_per_token_per_layer) != SPARK_STATUS_OK)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     index_key_bytes_per_token_per_layer =
@@ -377,7 +378,7 @@ SparkStatus SparkKvCacheEstimateCapacity(
         request->bytes_per_scalar == 0u ||
         request->cache_bytes_per_rank == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (request->layout == SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE ||
         request->layout == SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE_FP8_E4M3)
@@ -385,14 +386,14 @@ SparkStatus SparkKvCacheEstimateCapacity(
         if (request->compressed_dimension == 0u ||
             request->position_dimension == 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     else if (request->head_count == 0u ||
         request->query_key_head_dimension == 0u ||
         request->value_head_dimension == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkKvCacheCalculateAttentionBytesPerTokenLayer(
@@ -412,7 +413,7 @@ SparkStatus SparkKvCacheEstimateCapacity(
             request->index_key_dimension == 0u ||
             request->index_key_bytes_per_scalar == 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         index_key_bytes_per_token =
             (uint64_t)request->index_key_layer_count *
@@ -434,7 +435,7 @@ SparkStatus SparkKvCacheEstimateCapacity(
          index_key_bytes_per_token);
     if (bytes_per_context_per_rank == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     memset(estimate, 0, sizeof(*estimate));
@@ -555,15 +556,15 @@ static SparkStatus SparkKvCacheArenaValidate(
             unassigned_resident_block_count >
             arena->resident_block_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (arena->value_device_base == 0u && arena->value_block_stride_bytes != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (arena->value_device_base != 0u && arena->value_block_stride_bytes == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -594,7 +595,7 @@ SparkStatus SparkKvCacheArenaInitialize(
 
     if (arena == 0 || !SparkKvCacheConfigurationIsValid(configuration))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     default_stride_bytes = SparkKvCacheDefaultBlockStrideBytes(configuration);
@@ -664,14 +665,14 @@ SparkStatus SparkKvCacheArenaReserveUnassignedResidentBlocks(
 			block_count > arena->resident_block_capacity - current ||
 			(uint64_t)arena->reserved_block_count + current + block_count >
 				arena->resident_block_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		target = arena->resident_block_capacity - arena->reserved_block_count -
 			current - block_count;
 		if ( arena->resident_block_count > target )
 		{
 			status = SparkKvCacheArenaTrimResidentBlocks(arena,0,0u,target,0);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		next = current + block_count;
 		if ( atomic_compare_exchange_weak(
@@ -694,7 +695,7 @@ static SparkStatus SparkKvCacheArenaRemoveUnassignedResidentBlocks(
 	for (;;)
 	{
 		if ( current < block_count )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		next = current - block_count;
 		if ( atomic_compare_exchange_weak(
 			&arena->unassigned_resident_block_count,&current,next) )
@@ -743,16 +744,16 @@ SparkStatus SparkKvCacheArenaAcquireBlock(
     if (logical_block_index == SPARK_KV_CACHE_NO_BLOCK)
     {
         *logical_block_index_out = SPARK_KV_CACHE_NO_BLOCK;
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     arena->free_logical_block_head = block->free_next;
     arena->epoch += 1u;
@@ -780,19 +781,19 @@ SparkStatus SparkKvCacheArenaRecycleBlock(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (block->reference_count != 0u ||
         block->residency_reference_count != 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     arena->epoch += 1u;
@@ -818,13 +819,13 @@ SparkStatus SparkKvCacheArenaRetainBlock(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block->reference_count += 1u;
@@ -848,14 +849,14 @@ SparkStatus SparkKvCacheArenaReleaseBlockReference(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
         block->reference_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block->reference_count -= 1u;
@@ -879,18 +880,18 @@ SparkStatus SparkKvCacheArenaPinResidentBlock(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if (block->residency_reference_count == UINT32_MAX)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     block->residency_reference_count += 1u;
     arena->epoch += 1u;
@@ -912,7 +913,7 @@ SparkStatus SparkKvCacheArenaUnpinResidentBlock(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
@@ -920,7 +921,7 @@ SparkStatus SparkKvCacheArenaUnpinResidentBlock(
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block->residency_reference_count -= 1u;
     arena->epoch += 1u;
@@ -942,14 +943,14 @@ SparkStatus SparkKvCacheArenaMarkBlockDirty(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
     arena->epoch += 1u;
@@ -974,7 +975,7 @@ static SparkStatus SparkKvCacheArenaReleaseResidentSlot(
         arena->resident_slot_logical_block_indices[resident_slot_index] !=
             block->logical_block_index)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     arena->resident_slot_logical_block_indices[resident_slot_index] =
         SPARK_KV_CACHE_NO_BLOCK;
@@ -1020,7 +1021,7 @@ static SparkStatus SparkKvCacheArenaAssignResidentSlot(
         return SPARK_STATUS_OK;
     }
     arena->resident_capacity_stall_count += 1u;
-    return SPARK_STATUS_CAPACITY_EXCEEDED;
+    SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
 
@@ -1179,7 +1180,7 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if (arena->evict_function != 0 &&
@@ -1254,7 +1255,7 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
          protected_logical_block_indices == 0) ||
         target_resident_block_count > arena->resident_block_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     evicted_block_count = 0u;
@@ -1274,7 +1275,7 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
             {
                 *evicted_block_count_out = evicted_block_count;
             }
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         status = SparkKvCacheArenaEvictResidentBlock(arena, victim);
         if (status != SPARK_STATUS_OK)
@@ -1326,7 +1327,7 @@ static SparkStatus SparkKvCacheArenaMakeRoomForResidentBlocks(
     if (new_resident_block_count > arena->resident_block_capacity)
     {
         arena->resident_capacity_stall_count += 1u;
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
 	if ((uint64_t)arena->resident_block_count + arena->reserved_block_count +
 			unassigned_resident_block_count +
@@ -1340,7 +1341,7 @@ static SparkStatus SparkKvCacheArenaMakeRoomForResidentBlocks(
 		new_resident_block_count > arena->resident_block_capacity )
 	{
 		arena->resident_capacity_stall_count += 1u;
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
     target_resident_block_count =
         arena->resident_block_capacity -
@@ -1371,24 +1372,24 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
     {
         if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u)
         {
-            return SPARK_STATUS_BUSY;
+            SPARK_FAIL(SPARK_STATUS_BUSY);
         }
         protected_logical_block_index = logical_block_index;
         status = SparkKvCacheArenaMakeRoomForResidentBlocks(
@@ -1429,19 +1430,19 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
         (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
     {
@@ -1511,7 +1512,7 @@ SparkStatus SparkKvCacheArenaFreeBlock(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
@@ -1521,12 +1522,12 @@ SparkStatus SparkKvCacheArenaFreeBlock(
     }
     if (block->reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
     {
@@ -1537,7 +1538,7 @@ SparkStatus SparkKvCacheArenaFreeBlock(
         }
         if (arena->resident_block_count == 0u)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         arena->resident_block_count -= 1u;
     }
@@ -1565,18 +1566,18 @@ SparkStatus SparkKvCacheArenaMarkBlockNonResident(
     }
     if (logical_block_index >= arena->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
         block->residency_reference_count != 0u)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
     {
@@ -1651,18 +1652,18 @@ static SparkStatus SparkKvCacheValidatePrefetchSourceBlock(
         (source_block->flags &
             ~SPARK_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) != 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((source_block->flags &
             SPARK_KV_CACHE_PREFETCH_BLOCK_FLAG_VALUE) != 0u &&
         SparkKvCacheArenaHasValuePayload(arena) == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (source_block->token_capacity != 0u &&
         source_block->token_count > source_block->token_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -1713,7 +1714,7 @@ static SparkStatus SparkKvCacheArenaReserveBlockResidency(
     }
     if (block->residency_reference_count == UINT32_MAX)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) == 0u)
     {
@@ -1758,7 +1759,7 @@ SparkStatus SparkKvCacheArenaBuildPrefetchPlanFromSourceBlocks(
         lane_count > SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT ||
         (source_block_count != 0u && source_blocks == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     SparkKvCachePrefetchPlanInitialize(
@@ -1846,11 +1847,11 @@ SparkStatus SparkKvCacheArenaBuildPrefetchPlan(
 
     if (logical_block_count > SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     if (logical_block_count != 0u && logical_block_indices == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (block_index = 0u; block_index < logical_block_count; ++block_index)
     {
@@ -1873,7 +1874,7 @@ SparkStatus SparkKvCachePrefetchCursorInitialize(
 {
     if (cursor == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(cursor, 0, sizeof(*cursor));
     cursor->abi_version = SPARK_KV_CACHE_ABI_VERSION;
@@ -1900,7 +1901,7 @@ SparkStatus SparkKvCacheArenaBuildNextPrefetchPlan(
         cursor->next_logical_block_index > cursor->logical_block_count ||
         (cursor->logical_block_count != 0u && logical_block_indices == 0))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     remaining_block_count = cursor->logical_block_count -
         cursor->next_logical_block_index;
@@ -1935,7 +1936,7 @@ static SparkStatus SparkKvCacheValidatePrefetchPlan(
         prefetch_plan->prefetch_block_count >
             SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (block_index = 0u;
          block_index < prefetch_plan->prefetch_block_count;
@@ -1957,7 +1958,7 @@ static SparkStatus SparkKvCacheValidatePrefetchPlan(
             (prefetch_block->flags &
                 ~SPARK_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) != 0u)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;
@@ -1972,16 +1973,16 @@ static SparkStatus SparkKvCacheArenaValidatePlanBlock(
     if (prefetch_block->logical_block_index >= arena->logical_block_count ||
         prefetch_block->resident_slot_index >= arena->resident_block_capacity)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     block = &arena->blocks[prefetch_block->logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     if (block->generation != prefetch_block->generation)
     {
-        return SPARK_STATUS_HASH_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
     }
     if (block->resident_slot_index != prefetch_block->resident_slot_index ||
         block->key_device_address != prefetch_block->key_device_address ||
@@ -1992,7 +1993,7 @@ static SparkStatus SparkKvCacheArenaValidatePlanBlock(
         ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u &&
          (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) == 0u))
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -2020,7 +2021,7 @@ SparkStatus SparkKvCacheArenaMarkPrefetchPlanResidentWithProtectedBlocks(
     if (protected_logical_block_count != 0u &&
         protected_logical_block_indices == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     for (block_index = 0u;
@@ -2045,7 +2046,7 @@ SparkStatus SparkKvCacheArenaMarkPrefetchPlanResidentWithProtectedBlocks(
         {
             if (arena->reserved_block_count == 0u)
             {
-                return SPARK_STATUS_INTERNAL_ERROR;
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
             arena->reserved_block_count -= 1u;
             arena->resident_block_count += 1u;
@@ -2114,7 +2115,7 @@ SparkStatus SparkKvCacheArenaCancelPrefetchPlan(
         {
             if (arena->reserved_block_count == 0u)
             {
-                return SPARK_STATUS_INTERNAL_ERROR;
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
             arena->reserved_block_count -= 1u;
             block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED;
@@ -2213,7 +2214,7 @@ SparkStatus SparkKvCacheArenaEvictResidentBlocksToLimit(
     if (protected_logical_block_count != 0u &&
         protected_logical_block_indices == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     evicted_block_count = 0u;
@@ -2262,13 +2263,13 @@ SparkStatus SparkKvCacheArenaResolveBlock(
     }
     if (logical_block_index >= arena->logical_block_count || block_view == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block = &arena->blocks[logical_block_index];
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     memset(block_view, 0, sizeof(*block_view));
@@ -2288,6 +2289,72 @@ SparkStatus SparkKvCacheArenaResolveBlock(
     block_view->key_device_address = block->key_device_address;
     block_view->value_device_address = block->value_device_address;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkKvCacheArenaUnpinResidentTable(
+	SparkKvCacheArena *arena,
+	const uint32_t *logical_block_indices,
+	uint32_t block_count)
+{
+	uint32_t page;
+	SparkStatus status,result;
+	result = SparkKvCacheArenaValidate(arena);
+	if ( result != SPARK_STATUS_OK )
+		return(result);
+	if ( block_count != 0u && logical_block_indices == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (page=0u; page<block_count; page++)
+	{
+		status = SparkKvCacheArenaUnpinResidentBlock(arena,logical_block_indices[page]);
+		if ( result == SPARK_STATUS_OK && status != SPARK_STATUS_OK )
+			result = status;
+	}
+	return(result);
+}
+
+SparkStatus SparkKvCacheArenaPinResidentTable(
+	SparkKvCacheArena *arena,
+	const uint32_t *logical_block_indices,
+	uint32_t block_count,
+	uint32_t *resident_slot_indices)
+{
+	SparkKvCacheBlockView view;
+	uint32_t page,pinned_count = 0u;
+	uint64_t bytes;
+	uintptr_t input,output;
+	SparkStatus status,rollback_status;
+	status = SparkKvCacheArenaValidate(arena);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( block_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( logical_block_indices == 0 || resident_slot_indices == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	input = (uintptr_t)logical_block_indices;
+	output = (uintptr_t)resident_slot_indices;
+	bytes = ((uint64_t)block_count * sizeof(uint32_t));
+	if ( (input <= output ? output - input : input - output) < bytes )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (page=0u; page<block_count; page++)
+	{
+		status = SparkKvCacheArenaPinResidentBlock(arena,logical_block_indices[page]);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		pinned_count++;
+		status = SparkKvCacheArenaResolveBlock(arena,logical_block_indices[page],&view);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		if ( view.resident_slot_index >= arena->resident_block_capacity )
+		{
+			status = SPARK_STATUS_INTERNAL_ERROR;
+			break;
+		}
+		resident_slot_indices[page] = view.resident_slot_index;
+	}
+	if ( status == SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	rollback_status = SparkKvCacheArenaUnpinResidentTable(arena,logical_block_indices,pinned_count);
+	return(rollback_status == SPARK_STATUS_OK ? status : rollback_status);
 }
 
 SparkStatus SparkKvCacheArenaReset(
@@ -2370,7 +2437,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidateConfiguration(
             SPARK_KV_CACHE_PREFETCH_BACKEND_INFLIGHT_CAPACITY ||
         configuration->logical_block_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if ((configuration->flags &
@@ -2379,7 +2446,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidateConfiguration(
          configuration->key_transfer_bytes == 0u ||
          configuration->key_transfer_bytes > configuration->key_source_stride_bytes))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((configuration->flags &
             SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
@@ -2387,7 +2454,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidateConfiguration(
          configuration->value_transfer_bytes == 0u ||
          configuration->value_transfer_bytes > configuration->value_source_stride_bytes))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((configuration->flags &
             SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_MEMORY_SOURCE) != 0u)
@@ -2399,7 +2466,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidateConfiguration(
                 SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
                 configuration->value_source_base == 0))
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     if ((configuration->flags &
@@ -2412,13 +2479,13 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidateConfiguration(
                 SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
                 configuration->value_file_descriptor < 0))
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     if (configuration->source_entry_count != 0u &&
         configuration->source_entries == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -2440,19 +2507,19 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendValidate(
         backend->logical_block_count == 0u ||
         backend->blocks_per_poll == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((backend->flags &
             SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_KEY_BLOCKS) != 0u &&
         (backend->key_source_stride_bytes == 0u || backend->key_transfer_bytes == 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((backend->flags &
             SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
         (backend->value_source_stride_bytes == 0u || backend->value_transfer_bytes == 0u))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SPARK_STATUS_OK;
 }
@@ -2634,7 +2701,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendResolveSource(
     if (memory_source_out == 0 || file_offset_out == 0 ||
         prefetch_block->logical_block_index >= backend->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     source_entry = SparkKvCacheAsyncPrefetchBackendFindSourceEntry(
@@ -2678,7 +2745,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendResolveSource(
     {
         if (base == 0)
         {
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         *memory_source_out = (const void *)((const unsigned char *)base + offset_bytes);
     }
@@ -2701,11 +2768,11 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendReadExact(
 
     if (file_descriptor < 0 || destination == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (lseek(file_descriptor, (off_t)offset_bytes, SEEK_SET) == (off_t)-1)
     {
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     cursor = (unsigned char *)destination;
@@ -2717,7 +2784,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendReadExact(
         read_bytes = read(file_descriptor, cursor, (size_t)remaining_bytes);
         if (read_bytes <= 0)
         {
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         cursor += (uint64_t)read_bytes;
         remaining_bytes -= (uint64_t)read_bytes;
@@ -2735,7 +2802,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendReadExact(
     (void)offset_bytes;
     (void)destination;
     (void)byte_count;
-    return SPARK_STATUS_IO_ERROR;
+    SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 #endif
 
@@ -2758,7 +2825,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendCopyOnePayload(
         : prefetch_block->value_device_address;
     if (destination_address == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     status = SparkKvCacheAsyncPrefetchBackendResolveSource(
@@ -2818,7 +2885,7 @@ static SparkStatus SparkKvCacheAsyncPrefetchBackendCopyOneBlock(
             SPARK_KV_CACHE_PREFETCH_BLOCK_DESCRIPTOR_BYTES ||
         prefetch_block->logical_block_index >= backend->logical_block_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     if ((backend->flags &
@@ -2868,18 +2935,18 @@ SparkStatus SparkKvCacheAsyncPrefetchBackendStart(
     if (prefetch_id == 0u ||
         SparkKvCacheValidatePrefetchPlan(prefetch_plan) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (SparkKvCacheAsyncPrefetchBackendFindRequest(
             backend,
             prefetch_id) != 0)
     {
-        return SPARK_STATUS_DUPLICATE;
+        SPARK_FAIL(SPARK_STATUS_DUPLICATE);
     }
     request = SparkKvCacheAsyncPrefetchBackendFindFreeRequest(backend);
     if (request == 0)
     {
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     memset(request, 0, sizeof(*request));
@@ -2913,7 +2980,7 @@ SparkStatus SparkKvCacheAsyncPrefetchBackendPoll(
     }
     if (prefetch_id == 0u || prefetch_plan == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     request = SparkKvCacheAsyncPrefetchBackendFindRequest(
@@ -2921,13 +2988,13 @@ SparkStatus SparkKvCacheAsyncPrefetchBackendPoll(
         prefetch_id);
     if (request == 0)
     {
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
     if (request->prefetch_plan.prefetch_block_count !=
             prefetch_plan->prefetch_block_count ||
         request->prefetch_plan.lane_count != prefetch_plan->lane_count)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
 
     block_budget = backend->blocks_per_poll;
@@ -2952,7 +3019,7 @@ SparkStatus SparkKvCacheAsyncPrefetchBackendPoll(
     if (request->completed_block_count < request->prefetch_plan.prefetch_block_count)
     {
         backend->busy_poll_count += 1u;
-        return SPARK_STATUS_BUSY;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     backend->completed_prefetch_count += 1u;

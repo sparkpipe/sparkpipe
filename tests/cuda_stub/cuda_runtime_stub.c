@@ -20,6 +20,7 @@ typedef struct cuda_stub_alloc_header
 {
     uint32_t magic;
     uint32_t tracked;
+    uint64_t bytes;
 } cuda_stub_alloc_header;
 
 static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
@@ -28,7 +29,23 @@ static uint32_t cuda_stub_alloc_calls;
 static int32_t cuda_stub_fail_alloc_at = -1;
 static uint32_t cuda_stub_host_map_calls;
 static int32_t cuda_stub_fail_host_map_at = -1;
+static uint32_t cuda_stub_export_calls;
+static uint32_t cuda_stub_fail_export_at;
 static pthread_mutex_t cuda_stub_ledger_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+CUresult cuCtxSetCurrent(CUcontext ctx)
+{
+    return ctx != 0 ? CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
+}
+
+CUresult cuCtxGetCurrent(CUcontext *pctx)
+{
+    static uint8_t context;
+    if (pctx == 0)
+        return CUDA_ERROR_INVALID_VALUE;
+    *pctx = (CUcontext)&context;
+    return CUDA_SUCCESS;
+}
 
 static void cuda_stub_ledger_lock(void)
 {
@@ -59,6 +76,7 @@ static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
         return cudaErrorMemoryAllocation;
     }
     header->magic = CUDA_STUB_ALLOC_MAGIC;
+    header->bytes = bytes;
     if (cuda_stub_tracked_count < CUDA_STUB_MAX_TRACKED)
     {
         header->tracked = 1u;
@@ -125,12 +143,33 @@ void spark_stub_cuda_reset_faults(void)
     cuda_stub_fail_alloc_at = -1;
     cuda_stub_host_map_calls = 0u;
     cuda_stub_fail_host_map_at = -1;
+    cuda_stub_export_calls = 0u;
+    cuda_stub_fail_export_at = 0u;
     cuda_stub_ledger_unlock();
 }
 
 void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index)
 {
     cuda_stub_fail_alloc_at = (int32_t)one_based_call_index;
+}
+
+void spark_stub_cuda_fail_next_alloc(void)
+{
+    cuda_stub_ledger_lock();
+    cuda_stub_fail_alloc_at = (int32_t)(cuda_stub_alloc_calls + 1u);
+    cuda_stub_ledger_unlock();
+}
+
+void spark_stub_cuda_fail_alloc_after(uint32_t calls)
+{
+    cuda_stub_ledger_lock();
+    cuda_stub_fail_alloc_at = (int32_t)(cuda_stub_alloc_calls + calls);
+    cuda_stub_ledger_unlock();
+}
+
+void spark_stub_cuda_fail_export_after(uint32_t calls)
+{
+    cuda_stub_fail_export_at = cuda_stub_export_calls + calls;
 }
 
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index)
@@ -298,20 +337,47 @@ cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags)
     return *event != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
 }
 
+static uint32_t cuda_stub_destroy_count,cuda_stub_destroy_fail_at;
+
+void spark_stub_cuda_fail_event_destroy_after(uint32_t calls)
+{
+    cuda_stub_destroy_fail_at = cuda_stub_destroy_count + calls;
+}
+
 cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
+    cuda_stub_destroy_count++;
+    if (cuda_stub_destroy_count == cuda_stub_destroy_fail_at)
+        return cudaErrorInvalidValue;
     free(event);
     return cudaSuccess;
+}
+
+static uint32_t cuda_stub_event_pending;
+static uint32_t cuda_stub_event_record_failure;
+
+void spark_stub_cuda_event_pending(uint32_t pending)
+{
+    cuda_stub_event_pending = pending;
+}
+
+void spark_stub_cuda_event_record_failure(uint32_t failure)
+{
+    cuda_stub_event_record_failure = failure;
 }
 
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
 {
     (void)stream;
+    if (cuda_stub_event_record_failure != 0u)
+        return cudaErrorInvalidValue;
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
 cudaError_t cudaEventQuery(cudaEvent_t event)
 {
+    if (event != 0 && cuda_stub_event_pending != 0u)
+        return cudaErrorNotReady;
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
@@ -436,7 +502,8 @@ const char *cudaGetErrorString(cudaError_t error)
 }
 
 cudaError_t cudaGetLastError(void)
-{    return cudaSuccess;
+{
+    return cudaSuccess;
 }
 
 cudaError_t cudaGetDevice(int *device)
@@ -452,6 +519,7 @@ cudaError_t cudaGetDevice(int *device)
 
 
 #define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31)
+#define CUDA_STUB_RESERVATION_MAGIC UINT32_C(0x564D4D32)
 #define CUDA_STUB_VMM_MAPPED_MAX 128
 
 typedef struct cuda_stub_vmm_phys
@@ -484,12 +552,13 @@ static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_at(
     cuda_stub_alloc_header *header =
         ((cuda_stub_alloc_header *)user_pointer) - 1;
     cuda_stub_vmm_reservation *reservation;
-    if (header->magic != CUDA_STUB_ALLOC_MAGIC)
+    if (header->magic != CUDA_STUB_ALLOC_MAGIC ||
+        header->bytes < sizeof(cuda_stub_vmm_reservation))
     {
         return 0;
     }
     reservation = (cuda_stub_vmm_reservation *)user_pointer;
-    return reservation->magic == CUDA_STUB_VMM_MAGIC ? reservation : 0;
+    return reservation->magic == CUDA_STUB_RESERVATION_MAGIC ? reservation : 0;
 }
 
 static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
@@ -586,6 +655,9 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     int fd;
     int written;
     (void)flags;
+    cuda_stub_export_calls++;
+    if (cuda_stub_export_calls == cuda_stub_fail_export_at)
+        return CUDA_ERROR_OUT_OF_MEMORY;
     if (shareable_handle == 0 || phys == 0 ||
         ((cuda_stub_alloc_header *)phys - 1)->magic != CUDA_STUB_ALLOC_MAGIC ||
         phys->magic != CUDA_STUB_VMM_MAGIC ||
@@ -670,6 +742,24 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     return CUDA_SUCCESS;
 }
 
+static uint32_t cuda_stub_import_count,cuda_stub_import_fail_at,cuda_stub_unmap_fail;
+static uint32_t cuda_stub_import_delay_us;
+
+void spark_stub_cuda_set_import_delay(uint32_t delay)
+{
+    cuda_stub_import_delay_us = delay;
+}
+
+void spark_stub_cuda_fail_import_after(uint32_t calls)
+{
+    cuda_stub_import_fail_at = cuda_stub_import_count + calls;
+}
+
+void spark_stub_cuda_fail_next_unmap(void)
+{
+    cuda_stub_unmap_fail = 1u;
+}
+
 CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     void *shareable_handle,
     CUmemAllocationHandleType handle_type)
@@ -683,6 +773,11 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     size_t remaining;
     int fd;
     int received;
+    if (cuda_stub_import_delay_us != 0u)
+        usleep(cuda_stub_import_delay_us);
+    cuda_stub_import_count++;
+    if (cuda_stub_import_count == cuda_stub_import_fail_at)
+        return CUDA_ERROR_OUT_OF_MEMORY;
     if (handle == 0 || shareable_handle == 0 ||
         handle_type != CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR)
     {
@@ -805,7 +900,7 @@ CUresult cuMemAddressReserve(CUdeviceptr *pointer,
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
     memset(reservation, 0, sizeof(*reservation) + bytes);
-    reservation->magic = CUDA_STUB_VMM_MAGIC;
+    reservation->magic = CUDA_STUB_RESERVATION_MAGIC;
     reservation->bytes = (uint64_t)bytes;
     *pointer = (CUdeviceptr)(reservation + 1);
     return CUDA_SUCCESS;
@@ -908,6 +1003,11 @@ CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
 
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
 {
+    if (cuda_stub_unmap_fail != 0u)
+    {
+        cuda_stub_unmap_fail = 0u;
+        return CUDA_ERROR_INVALID_VALUE;
+    }
     cuda_stub_vmm_reservation *reservation =
         cuda_stub_vmm_reservation_for_va(pointer);
     uint32_t mapping_index;
@@ -977,4 +1077,3 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     }
     return cuda_stub_free(reservation);
 }
-

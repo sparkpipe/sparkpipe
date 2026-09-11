@@ -1,3 +1,5 @@
+include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
+
 # Every host source, by the library it lands in, at the path it actually lives.
 #
 # This replaced four per-directory sources.mk files. They encoded the directory
@@ -41,8 +43,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_resident_ipc.c \
 	runtime/model_resident_client.c \
 	runtime/model_pipeline_client.c \
-	runtime/spark_weightd.c \
-	runtime/spark_weightd_attach.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
 	runtime/model_batch_engine.c \
 	runtime/pipeline_runtime.c
 
@@ -50,25 +51,29 @@ SPARKPIPE_RUNTIME_SOURCES := \
 # Formerly model-families/common/src, which is the directory the handoff records
 # as deleted twice with every gate green, because it was named for who shared it
 # rather than what it is.
-SPARKPIPE_MODEL_COMMON_SOURCES := \
-    runtime/spark_weightd.c \
-    runtime/spark_weightd_attach.c \
+SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
-    ring/transport/tp_device_collective.c \
-    ring/transport/tp_device_collective_nccl.c \
-    text/tokenizer.c \
-    text/tokenizer_sidecar.c \
+    ring/transport/tp_device_collective.c
+
+SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
-	cache/kv_page_cache.c \
-	cache/kv_page_store.c \
-	cache/kv_model_table.c \
+    cache/kv_page_cache.c \
+    cache/kv_page_store.c \
+    cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
-    cache/nvme_tier.c \
+    cache/nvme_tier.c
+
+SPARKPIPE_MODEL_COMMON_SOURCES := \
+    $(SPARKPIPE_WEIGHTD_SOURCES) \
+    $(SPARKPIPE_TRANSPORT_SOURCES) \
+    $(SPARKPIPE_CACHE_SOURCES) \
+    text/tokenizer.c \
+    text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
     runtime/serving_adapter_template.c \
     runtime/memory_buffer.c \

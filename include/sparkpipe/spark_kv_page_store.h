@@ -35,6 +35,53 @@ typedef SparkStatus (*SparkKvPageStoreCopyFunction)(
 	void *host_address,
 	uint64_t bytes);
 
+// A packed backing page contains one page slice from each native layer.
+// The device copy callback is the hardware boundary; this layout has no CUDA
+// dependency. Native layer slabs may have padding after their last page.
+typedef struct SparkKvLayeredPageLayout
+{
+	uintptr_t device_base;
+	uint64_t device_bytes;
+	uint64_t layer_stride_bytes;
+	uint64_t layer_page_bytes;
+	uint32_t layer_count;
+	uint32_t page_count;
+} SparkKvLayeredPageLayout;
+
+static inline SparkStatus SparkKvPageStoreCopyLayered(
+	const SparkKvLayeredPageLayout *layout,
+	uint32_t direction,
+	uint32_t physical_page,
+	void *host_address,
+	uint64_t bytes,
+	SparkKvPageStoreCopyFunction copy_function,
+	void *copy_context)
+{
+	uint64_t layer_bytes,last_layer_offset,page_offset;
+	uint32_t layer;
+	SparkStatus status;
+	if ( layout == 0 || host_address == 0 || copy_function == 0 || (direction != SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST && direction != SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( layout->device_base == 0u || layout->device_bytes == 0u || layout->layer_count == 0u || layout->page_count == 0u || physical_page >= layout->page_count || layout->layer_page_bytes == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( layout->layer_page_bytes > UINT64_MAX / layout->page_count || layout->layer_page_bytes > UINT64_MAX / layout->layer_count || bytes != layout->layer_page_bytes * layout->layer_count || bytes > UINTPTR_MAX - (uintptr_t)host_address )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	layer_bytes = layout->layer_page_bytes * layout->page_count;
+	if ( layout->layer_stride_bytes < layer_bytes || layout->layer_stride_bytes > UINT64_MAX / layout->layer_count )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	last_layer_offset = (layout->layer_count - 1u) * layout->layer_stride_bytes;
+	if ( last_layer_offset > layout->device_bytes || layer_bytes > layout->device_bytes - last_layer_offset || layout->device_bytes > UINTPTR_MAX - layout->device_base )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	page_offset = physical_page * layout->layer_page_bytes;
+	for (layer=0u; layer<layout->layer_count; layer++)
+	{
+		status = copy_function(copy_context,direction,layout->device_base + layer * layout->layer_stride_bytes + page_offset,(uint8_t *)host_address + layer * layout->layer_page_bytes,layout->layer_page_bytes);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 typedef struct SparkKvPageStoreConfiguration
 {
 	uint32_t abi_version;
@@ -91,6 +138,10 @@ SparkStatus SparkKvPageStoreBuildPath(
 	const char *node_id,
 	uint32_t stage_index);
 void SparkKvPageStoreDestroy(SparkKvPageStore *store);
+// Host-worker wait: finishes queued transfers without consuming their results.
+// Caller retains buffers and excludes destruction; poll the original operation
+// afterward to consume its terminal status. Not callable from a copy callback.
+SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
 SparkStatus SparkKvPageStoreWriteback(
 	void *context,
 	uint32_t logical_page_index,
@@ -104,12 +155,28 @@ SparkStatus SparkKvPageStorePrefetch(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t logical_page_index);
+// Repeat the identical request while BUSY; destination remains owned until a
+// terminal result or store destruction. Does not change KV arena residency.
+SparkStatus SparkKvPageStoreReadback(
+	SparkKvPageStore *store,
+	uint32_t logical_page_index,
+	uint64_t generation,
+	uintptr_t destination,
+	uint64_t bytes);
 SparkStatus SparkKvPageStoreProgress(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t maximum_job_count);
+// Requires a completed record of this generation; does not schedule a copy.
+SparkStatus SparkKvPageStoreValidateRecord(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
 SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
+	uint32_t logical_page_index,
+	uint64_t generation);
+// Validate both records under both worker locks before invalidating either.
+SparkStatus SparkKvPageStoreInvalidatePair(
+	SparkKvPageStore *first,
+	SparkKvPageStore *second,
 	uint32_t logical_page_index,
 	uint64_t generation);
 

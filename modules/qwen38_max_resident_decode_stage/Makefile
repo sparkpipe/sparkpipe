@@ -1,4 +1,5 @@
 MODULE_FAMILY := qwen38
+include ../../runtime/weightd_sources.mk
 MODULE_IDENTIFIER := spark.qwen38.resident_decode_stage.fp8.h8192.l92.gdn69.e512k10.v1
 MODULE_TARGET := cuda.sm121.qwen38.resident_decode_stage.fp8
 MODEL_HEADER := ../../model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h
@@ -6,14 +7,15 @@ MODULE_ENTRY_PREFIX := SparkQwen38MaxResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_qwen38_max_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(REPOSITORY_ROOT)/runtime/stagepack_format.c \
+	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/model-families/qwen38_max/src/spark_qwen38_max_work_control.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 # Adapter provenance pins: the vendor FP8 checkpoint revision and the exact
 # package contract, checked at adapter compile time.
 QWEN38_MODEL_REVISION := d2dc35658bcf77e66643428cb52e774cc3b5bd29

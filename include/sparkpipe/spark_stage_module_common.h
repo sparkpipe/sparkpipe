@@ -58,6 +58,51 @@ typedef cudaError_t (*SparkStageModuleCudaReadAheadLaunchFunction)(
 typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
     void *prepare_context);
 
+#define SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY 96u
+#define SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY 32u
+
+typedef struct SparkStageModuleStageTimingSample
+{
+    cudaEvent_t start;
+    cudaEvent_t stop;
+    uint32_t stage;
+} SparkStageModuleStageTimingSample;
+
+typedef struct SparkStageModuleStageTiming
+{
+    const char *record_tag;
+    const char *const *stage_names;
+    uint32_t stage_count;
+    uint32_t enabled;
+    uint32_t events_ready;
+    uint32_t sample_count;
+    SparkStageModuleStageTimingSample samples[SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY];
+    uint64_t frame_microseconds[SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY];
+    uint32_t frame_calls[SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY];
+    uint64_t total_microseconds[SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY];
+    uint64_t total_calls[SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY];
+    uint64_t frame_index;
+} SparkStageModuleStageTiming;
+
+SparkStatus SparkStageModuleStageTimingEnable(
+    SparkStageModuleStageTiming *timing,
+    const char *record_tag,
+    const char *const *stage_names,
+    uint32_t stage_count);
+SparkStatus SparkStageModuleStageTimingFrameBegin(
+    SparkStageModuleStageTiming *timing);
+void SparkStageModuleStageTimingBegin(
+    SparkStageModuleStageTiming *timing,
+    cudaStream_t stream,
+    uint32_t stage);
+void SparkStageModuleStageTimingEnd(
+    SparkStageModuleStageTiming *timing,
+    cudaStream_t stream);
+void SparkStageModuleStageTimingFold(
+    SparkStageModuleStageTiming *timing);
+void SparkStageModuleStageTimingShutdown(
+    SparkStageModuleStageTiming *timing);
+
 SparkStatus SparkStageModuleCudaStatus(
     const char *module_tag,
     cudaError_t error,
@@ -180,6 +225,25 @@ SparkStatus SparkStageModuleIndexClaimOrdinal(
     uint32_t index_capacity,
     uint32_t index,
     uint32_t *ordinal_out);
+
+typedef struct SparkStageModuleClaimedLaneContext
+{
+	const atomic_uint *index_states;
+	uint32_t index_capacity;
+} SparkStageModuleClaimedLaneContext;
+
+static inline SparkStatus SparkStageModuleClaimedLaneOrdinal(
+	void *context,
+	uint32_t lane_id,
+	uint32_t *ordinal_out)
+{
+	const SparkStageModuleClaimedLaneContext *lanes;
+	lanes = (const SparkStageModuleClaimedLaneContext *)context;
+	if ( lanes == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkStageModuleIndexClaimOrdinal(lanes->index_states,lanes->index_capacity,lane_id,ordinal_out));
+}
+
 SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
     atomic_uint *index_states,
     uint32_t index_capacity,

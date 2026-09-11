@@ -14,7 +14,7 @@ static void BuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
 	descriptor->stage_count = 13u;
 	descriptor->layer_count = 43u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -28,7 +28,6 @@ static void BuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->max_input_row_count = 256u;
 	descriptor->max_resident_sequence_count = 512u;
 	descriptor->max_output_token_count = BUCKET;
-	descriptor->resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO;
 	descriptor->minimum_efficient_submission_row_count = 16u;
 	descriptor->adapter_id = "spark.dsv4.flash.serving.v1";
 	descriptor->model_id = "deepseek-ai/DeepSeek-V4-Flash-0731";

@@ -1,4 +1,5 @@
 #include <string.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_admission.h"
 
@@ -11,7 +12,7 @@ SparkStatus SparkAdmissionRequestFromSubmission(
 {
     if (submission == 0 || request == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(request, 0, sizeof(*request));
     request->descriptor_bytes = (uint32_t)sizeof(*request);
@@ -51,7 +52,7 @@ SparkStatus SparkAdmissionRequestFromFrame(
 {
     if (frame == 0 || request == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(request, 0, sizeof(*request));
     request->descriptor_bytes = (uint32_t)sizeof(*request);
@@ -61,8 +62,7 @@ SparkStatus SparkAdmissionRequestFromFrame(
     request->sequence_position = frame->sequence_position;
     request->deadline_time_ns = frame->deadline_time_ns;
     request->active_slot_count = frame->active_slot_count;
-    request->new_token_count =
-        frame->new_token_count != 0u ? frame->new_token_count : 1u;
+    request->new_token_count = frame->new_token_count;
     request->priority = frame->priority;
     request->frame_flags = frame->flags;
     request->admission_flags = admission_flags;
@@ -139,7 +139,7 @@ SparkStatus SparkAdmissionMergeDecision(
         SparkModelDriverAdmissionDecisionIsValid(source) == 0u ||
         source->accepted == 0u)
     {
-        return SPARK_STATUS_ABI_MISMATCH;
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
 
     if (source->driver_dispatch_slot != SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
@@ -156,7 +156,7 @@ SparkStatus SparkAdmissionMergeDecision(
                  destination->driver_dispatch_cookie0 != source->driver_dispatch_cookie0 ||
                  destination->driver_dispatch_cookie1 != source->driver_dispatch_cookie1)
         {
-            return SPARK_STATUS_ABI_MISMATCH;
+            SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
         }
     }
 

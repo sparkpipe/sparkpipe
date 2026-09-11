@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 
@@ -8,11 +9,11 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	SparkStatus status;
 	uint32_t layer;
 	if ( state == 0 || pack_path == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(state, 0, sizeof(*state));
 	status = SparkK3PackOpen(pack_path, &state->pack);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( first_layer == SPARK_K3_MODULE_DERIVE_SLICE ||
 		layer_count == SPARK_K3_MODULE_DERIVE_SLICE )
 	{
@@ -24,12 +25,12 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 		state->pack.config.total_layers != 93u )
 	{
 		SparkK3ModuleDestroy(state);
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	if ( layer_count > SPARK_K3_MODULE_MAX_BOUND_LAYERS )
 	{
 		SparkK3ModuleDestroy(state);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	state->first_layer = first_layer;
 	state->layer_count = layer_count;
@@ -41,7 +42,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkK3ModuleDestroy(state);
-			return(status);
+			SPARK_RETURN(status);
 		}
 		state->bound_count++;
 	}

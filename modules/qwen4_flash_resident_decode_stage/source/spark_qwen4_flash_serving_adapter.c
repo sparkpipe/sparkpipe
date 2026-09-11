@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -172,7 +173,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 	.max_resident_sequence_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = 0u,
-	.resident_sequence_slot_reuse = SPARK_MODEL_SERVING_SLOT_REUSE_AT_POSITION_ZERO,
 	.stage_layer_counts = {SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT,SPARK_QWEN4_FLASH_SERVING_STAGE_LAYER_COUNT},
 	.minimum_efficient_submission_row_count = 0u
 };
@@ -192,7 +192,7 @@ static SparkStatus SparkQwen4FlashServingInitializeSeam(
 	status = SparkSpeculationSeamParseControl(control_value,
 		SPARK_QWEN4_FLASH_SERVING_SEAM_AVAILABLE_SOURCES,&enabled_source_mask);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	(void)enabled_source_mask;
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
@@ -235,13 +235,13 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
 	SparkStatus status;
 	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
 	status = SparkQwen4FlashServingInitializeSeam(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(state);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }

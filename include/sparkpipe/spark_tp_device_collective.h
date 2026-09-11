@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 13u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 14u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -27,6 +27,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES 96u
 #define SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES 64u
 #define SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES 8u
+
 #define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
@@ -34,6 +35,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -46,9 +48,11 @@ extern "C" {
      SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE)
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS 0x00000002u
+#define SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL 0x00000004u
 #define SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS \
     (SPARK_TP_DEVICE_COLLECTIVE_BINDING_SEND_MAPPED_ALIAS | \
-     SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS)
+     SPARK_TP_DEVICE_COLLECTIVE_BINDING_RECEIVE_MAPPED_ALIAS | \
+     SPARK_TP_DEVICE_COLLECTIVE_BINDING_DIRECT_ALL_TO_ALL)
 #define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION \
     0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS \
@@ -64,6 +68,14 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_TERMINAL_READY 7u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_CALLBACK_CLAIMED 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_PHASE_RELEASE_PENDING 9u
+
+static inline uint64_t SparkTpDeviceCollectiveCreditBytes(uint32_t rows,uint32_t width)
+{
+	uint64_t elements = (uint64_t)rows * width;
+	if ( elements == 0u || elements > (UINT64_MAX - SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES) / SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT )
+		return(0u);
+	return((elements * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT) + SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES);
+}
 
 typedef struct SparkTpDeviceCollectiveCreditBinding
 {
@@ -99,6 +111,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t slot_index;
     uint32_t active_sequence_count;
     uint32_t flags;
+    uint32_t logical_sequence_count;
     uint32_t reserved0;
     uint64_t ordinal;
     const void *local_device;
@@ -303,9 +316,28 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
 
+// Host-thread API. OK transfers submission ownership until completion, including
+// when a credit is temporarily occupied. One pending submission per slot_index;
+// buffers and callback context must remain alive. Pending work shares the
+// collective timeout/failure lifecycle. Never call from a CUDA host callback.
+SparkStatus SparkTpDeviceCollectiveEnqueue(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind);
+
+SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
+    SparkTpDeviceCollective *collective,
+    uint32_t timeout_milli);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
+
+SparkStatus SparkTpDeviceCollectiveOpWaitHandles(
+    SparkTpDeviceCollective *collective,
+    uint64_t ordinal,
+    void **flag_device,
+    uint64_t *wait_value);
 
 SparkStatus SparkTpDeviceCollectiveRequestFailure(
     SparkTpDeviceCollective *collective,

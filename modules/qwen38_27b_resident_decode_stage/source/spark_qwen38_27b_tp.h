@@ -28,11 +28,6 @@ typedef struct SparkQwen38_27bTpState
 	uint32_t attn_kv_heads;
 	uint32_t ffn_intermediate;
 	uint32_t head_rows;
-	void *credit_send_bf16;
-	void *credit_receive_bf16;
-	void *host_credit_send_bf16;
-	void *host_credit_receive_bf16;
-	uint32_t credit_device_allocated;
 	uint64_t next_ordinal;
 	void *cuda_stream;
 } SparkQwen38_27bTpState;
@@ -52,21 +47,19 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	void *registration_cuda_stream);
 
 void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp);
-SparkStatus SparkQwen38_27bTpAllocateCreditMemory(
-	SparkQwen38_27bTpState *tp,
-	uint64_t total_bytes,
-	uint32_t mapped_host);
 
 SparkStatus SparkQwen38_27bTpReduceHidden(
 	SparkQwen38_27bTpState *tp,
 	void *buffer,
 	uint32_t rows,
+	uint32_t logical_count,
 	void *cuda_stream);
 
 SparkStatus SparkQwen38_27bTpReduceU64Max(
 	SparkQwen38_27bTpState *tp,
 	uint64_t *buffer,
 	uint32_t count,
+	uint32_t logical_count,
 	void *cuda_stream);
 
 #ifdef __cplusplus

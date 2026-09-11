@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_k3_bind.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
 
 #include <stdio.h>
@@ -94,13 +95,13 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 	bound->layer_is_dense = (layer_index == 0u);
 	status = SparkK3BindEveryLayer(pack, bound);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( bound->layer_is_gdn )
 		status = SparkK3BindKda(pack, bound);
 	else
 		status = SparkK3BindMla(pack, bound);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	BIND_ONE(bound, pack, "mlp_norm_weight");
 	BIND_ONE(bound, pack, "attnres_mlp_weight");
 	if ( bound->layer_is_dense )
@@ -117,13 +118,4 @@ const SparkK3PackEntry *SparkK3BoundEntry(const SparkK3BoundLayer *bound,
 		if ( strcmp(bound->tensors[i].name, name) == 0 )
 			return(&bound->tensors[i].entry);
 	return(0);
-}
-
-const void *SparkK3BoundPayload(const SparkK3Pack *pack,
-	const SparkK3BoundLayer *bound, const char *name)
-{
-	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
-	if ( entry == 0 )
-		return(0);
-	return(SparkK3PackPayload(pack, entry));
 }

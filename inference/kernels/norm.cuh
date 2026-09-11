@@ -74,6 +74,30 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *output,uint32_t dimension,uint32_t row_stride,float epsilon)
+{
+	extern __shared__ float lm_norm_shared[];
+	float *row = lm_norm_shared,*reduction = lm_norm_shared + dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
+	uint32_t index;
+	float total = 0.0f,scale,value;
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(input[base + index]);
+		row[index] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(LmFloatToBf16(row[index] * scale));
+		output[base + index] = LmFloatToBf16(value * LmBf16ToFloat(weight[index]));
+	}
+}
+
 template<uint32_t THREADS, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, const Weight *__restrict__ bias, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
@@ -118,6 +142,45 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const uint16_t *__restrict__ gate_bf16,const float *__restrict__ weight,uint16_t *__restrict__ output_bf16,uint32_t dimension,float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	float value,total = 0.0f,inverse;
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	inverse = rsqrtf(LmBlockSum<THREADS>(total,reduction) / (float)dimension + epsilon);
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]) * inverse * weight[index];
+		value *= 1.0f / (1.0f + __expf(-LmBf16ToFloat(gate_bf16[base + index])));
+		output_bf16[base + index] = LmFloatToBf16(value);
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *__restrict__ output_bf16,uint32_t dimension,float limit)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u,out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	float gate,up;
+	for (index=threadIdx.x; index<dimension; index+=THREADS)
+	{
+		up = LmBf16ToFloat(up_gate_bf16[base + index]);
+		gate = LmBf16ToFloat(up_gate_bf16[base + dimension + index]);
+		gate = gate > limit ? limit : gate;
+		up = up > limit ? limit : (up < -limit ? -limit : up);
+		output_bf16[out_base + index] = LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
@@ -145,6 +208,19 @@ void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__rest
 	{
 		float value = LmBf16ToFloat(logits_bf16[base + index]);
 		scores[base + index] = 1.0f / (1.0f + __expf(-value));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmBf16SigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16,float *__restrict__ scores,uint32_t width)
+{
+	uint64_t base = (uint64_t)blockIdx.x * width;
+	uint32_t index;
+	for (index=threadIdx.x; index<width; index+=THREADS)
+	{
+		float value = LmBf16ToFloat(logits_bf16[base + index]);
+		scores[base + index] = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + __expf(-value))));
 	}
 }
 
@@ -391,4 +467,55 @@ __global__ void LmGatherRowsKernel(const uint16_t *__restrict__ source_bf16, con
 	from = ((uint64_t)source_row * dimension) + element;
 	to = ((uint64_t)row * dimension) + element;
 	destination_bf16[to] = source_bf16[from];
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCenteredRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
+{
+	extern __shared__ float lm_norm_shared[];
+	float *row = lm_norm_shared;
+	float *reduction = lm_norm_shared + dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
+	uint32_t index;
+	float total = 0.0f,scale;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float value = LmBf16ToFloat(input_bf16[base + index]);
+		row[index] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		output_bf16[base + index] =
+			LmFloatToBf16(row[index] * scale * (1.0f + LmBf16ToFloat(weight_bf16[index])));
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon, float head_multiply)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.y,head = blockIdx.x,index;
+	uint64_t base;
+	float total = 0.0f,scale,value,rounded;
+	if ( row >= rows || head >= heads )
+		return;
+	base = ((uint64_t)row * heads + head) * head_dimension;
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
+		if ( weight_bf16 != 0 )
+			value *= LmBf16ToFloat(weight_bf16[index]);
+		rounded = LmBf16ToFloat(LmFloatToBf16(value));
+		output_bf16[base + index] = LmFloatToBf16(rounded * head_multiply);
+	}
 }

@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_model_resident_deployment.h"
 
@@ -9,7 +11,7 @@ static void TestBuildDescriptor(
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
 	descriptor->stage_count = 3u;
 	descriptor->layer_count = 6u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -23,6 +25,7 @@ static void TestBuildDescriptor(
 	descriptor->max_input_row_count = 8u;
 	descriptor->max_resident_sequence_count = 16u;
 	descriptor->max_output_token_count = 4u;
+	descriptor->cache_block_token_count = 4u;
 	descriptor->adapter_id = "test.adapter";
 	descriptor->model_id = "test/model";
 	descriptor->model_revision = "revision";
@@ -33,12 +36,46 @@ static void TestBuildDescriptor(
 	descriptor->stage_layer_counts[2] = 2u;
 }
 
+static void TestEosMetadata(const char *members,SparkStatus expected)
+{
+	SparkModelResidentDeployment deployment;
+	char buffer[8192],path[256];
+	FILE *file;
+	uint32_t count;
+	file = fopen("tests/fixtures/model_resident_deployment.json","rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer),file);
+	assert(feof(file) != 0 && count > 1u && buffer[0] == '{');
+	assert(fclose(file) == 0);
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-eos-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fprintf(file,"{%s",members) > 0);
+	assert(fwrite(buffer + 1u,1,count - 1u,file) == count - 1u);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
+	if ( expected == SPARK_STATUS_OK )
+	{
+		assert(deployment.eos_token_count == 2u);
+		assert(deployment.eos_token_ids[0] == 0u);
+		assert(deployment.eos_token_ids[1] == 154820u);
+	}
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
 	SparkModelServingAdapterDescriptor descriptor;
 	const SparkModelResidentDeploymentNode *node;
 	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	TestEosMetadata("\"eos_token_ids\":[0,154820],",SPARK_STATUS_OK);
+	TestEosMetadata("\"eos_token_ids\":[],",SPARK_STATUS_SCHEMA_ERROR);
+	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
+	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
+	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 3u);
@@ -85,5 +122,14 @@ int main(void)
 		"/home/sparkc/kvcache/dsv4_flash/pp13.bf16") == 0);
 	assert(node->kv_backing_maximum_bytes == UINT64_C(274877906944));
 	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.tokenizer_asset_path != 0);
+	assert(deployment.tokenizer_vocabulary_size == 129280u);
+	assert(deployment.tokenizer_asset_sha256 != 0);
+	assert(strlen(deployment.tokenizer_asset_sha256) == 64u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_path_only.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_bad_sha.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_zero_vocab.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	return(0);
 }

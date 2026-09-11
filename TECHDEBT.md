@@ -91,6 +91,16 @@ retained as a progress diary.
 
 ## Resident TP4 x PP4 execution
 
+- GLM 5.3 Flash source audit at main `371ae9e`: the TP4xPP4 JSON generator
+  exists, but the shipped serving adapter hard-codes TP16, rejects other TP
+  degrees, requires `tp_rank == stage_index`, and declares parallel fanout.
+  Its node context starts at layer zero and the firmware defaults to all 45
+  layers. Complete the hybrid runtime topology, stage-local layer spans and
+  ownership, boundary forwarding, and grouped collectives before calling the
+  generated TP4xPP4 deployment runnable. Reuse the shared
+  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP` path in
+  `runtime/model_serving_adapter.c`; changing the collective degree alone is
+  insufficient. Prove token parity through all four pipeline stages.
 - Generate the sixteen-rank TP4 x PP4 deployment directly from the final
   hardware and model contracts.
 - Keep stage-local weights, KV, communicators, graphs, and workspaces stable
@@ -120,6 +130,18 @@ retained as a progress diary.
 
 ## Dynamic batching
 
+- GLM Flash's shared batch scheduler already selects arbitrary counts up to
+  its configured limit; a power-of-two kernel bucket is not an admission rule.
+  Both GLM deployment generators currently set active/resident capacity to 16.
+  Qualify explicit larger capacities with arrivals/completions and memory gates.
+  The current module reserves every sequence's full context in its internal KV
+  and index pools. At 32K context its allocation formulas reserve 10.685 GiB
+  for 16 sequences or 66.779 GiB for 100, per full-model rank, including KDA
+  state/windows but excluding weights, workspaces, transport and metadata.
+  These are code-derived sizes, not live memory measurements. See
+  `SparkGlm5NextBuildPageTable` and the cache allocation code in
+  `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
+  contracts to admit against resident demand; do not merely raise the limit.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
 - Select the smallest validated specialization for effective rows, including

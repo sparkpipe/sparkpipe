@@ -102,7 +102,7 @@ static int32_t TestModelResidentWriteBody(
 {
 	int32_t status;
 	uint32_t rank;
-	status = fprintf(stream,"{\"schema_version\":2,\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->coordinator_rank_index) < 0 ? -1 : 0;
+	status = fprintf(stream,"{\"schema_version\":2,\"eos_token_ids\":[0],\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->coordinator_rank_index) < 0 ? -1 : 0;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->adapter_shared_object_path);
 	if ( status == 0 && fputs("},\"driver\":{\"shared_object_path\":",stream) == EOF )
@@ -133,8 +133,12 @@ static int32_t TestModelResidentWriteBody(
 			status = -8;
 		else
 			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_path);
-		if ( status == 0 && fputc('}',stream) == EOF )
+		if ( status == 0 && fprintf(stream,",\"vocabulary_size\":%u,\"sha256\":",fixture->tokenizer_vocabulary_size) < 0 )
 			status = -9;
+		if ( status == 0 )
+			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_sha256);
+		if ( status == 0 && fputc('}',stream) == EOF )
+			status = -10;
 	}
 	if ( status == 0 && fputs("}",stream) == EOF )
 		status = -7;

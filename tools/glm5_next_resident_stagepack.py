@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -630,26 +632,21 @@ class Packer:
         self.plan.append(PlanItem(entry, produce))
 
     def add_experts(self, layer: int):
-        """288 experts' fp8 payloads (up-then-gate stacked, then down) +
-        f32 scales, expert-major slabs, per-expert TP slicing exactly as
-        glm52 shards: w1 rows-sharded, w2 cols-sharded (the grouped GEMM
-        computes partial rows and the TP chain reduces)."""
         prefix = f"model.language_model.layers.{layer}.mlp.experts"
-        tp = self.tp_degree
-        rank = self.tp_rank
-        w1_rows, w1_cols = 2 * EXPERT_INTER, HIDDEN      # stacked up|gate
-        w2_rows, w2_cols = HIDDEN, EXPERT_INTER
-        w1_r0 = w1_r1 = 0; w1_c0 = 0; w1_c1 = w1_cols
-        w2_c0 = w2_c1 = 0; w2_r0 = 0; w2_r1 = w2_rows
-        if tp > 1:
-            if w1_rows % tp or w2_cols % tp:
-                raise PackFailure(f"expert dims not divisible by tp{tp}")
-            w1_r0 = (w1_rows // tp) * rank; w1_r1 = w1_r0 + w1_rows // tp
-            w2_c0 = (w2_cols // tp) * rank; w2_c1 = w2_c0 + w2_cols // tp
-        w1_out_rows = w1_r1 - w1_r0
-        w2_out_cols = w2_c1 - w2_c0
-        # source-driven expert codec: BF16 sources pass through verbatim
-        # with no scale plane (the packer never quantizes either direction)
+        w1_cols = HIDDEN
+        w2_rows = HIDDEN
+        w1_r0,width = self._rows_slice(EXPERT_INTER)
+        w1_r1 = w1_r0+width
+        w1_c0,w1_c1 = 0,HIDDEN
+        w2_r0,w2_r1 = 0,HIDDEN
+        w2_c0,w2_c1 = w1_r0,w1_r1
+        w1_out_rows,w2_out_cols = 2*width,width
+
+        def w1_slices():
+            for expert in range(EXPERTS):
+                for projection in ("up","gate"):
+                    yield f"{prefix}.{expert}.{projection}_proj.weight",w1_r0,w1_r1
+
         probe_name = next(
             (n for n in self.s.weight_map
              if ".mlp.experts.0.up_proj.weight" in n), None)
@@ -661,12 +658,6 @@ class Packer:
                          and self.s.meta(probe_packed)[0] == "U8")
         source = self.s
         if experts_nvfp4:
-            # community nvfp4 release (redhatai/modelopt): packed e2m1 +
-            # UE4M3 per-16 planes + one F32 weight global per expert, ALL
-            # byte-verbatim (the packer never quantizes). Scale region =
-            # EXPERTS F32 globals first (up/gate share-checked per expert),
-            # then expert-major UE4M3 planes - the layout
-            # LmWeightCodecScaleTensor hands the MoE GEMMs (UE4M3_F32_GLOBAL).
             w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT,
                        CODEC_NVFP4, SCALE_UE4M3_F32_GLOBAL, EXPERTS,
                        w1_out_rows, w1_cols)
@@ -677,19 +668,6 @@ class Packer:
             w1.scale_bytes = EXPERTS * 4 + EXPERTS * w1_out_rows * (w1_cols // 16)
             w2.payload_bytes = EXPERTS * w2_rows * (w2_out_cols // 2)
             w2.scale_bytes = EXPERTS * 4 + EXPERTS * w2_rows * (w2_out_cols // 16)
-
-            def w1_slices():
-                # same stacked up|gate row-slice rule as the fp8 path: a
-                # rank's slice intersects exactly one half of the stack
-                up_rows = EXPERT_INTER
-                for expert in range(EXPERTS):
-                    up = f"{prefix}.{expert}.up_proj.weight"
-                    gate = f"{prefix}.{expert}.gate_proj.weight"
-                    for name, base in ((up, 0), (gate, up_rows)):
-                        lo = max(w1_r0, base) - base
-                        hi = min(w1_r1, base + up_rows) - base
-                        if hi > lo:
-                            yield name, lo, hi
 
             def produce_w1() -> Iterator[bytes]:
                 for name, lo, hi in w1_slices():
@@ -738,36 +716,30 @@ class Packer:
         source = self.s
 
         def produce_w1() -> Iterator[bytes]:
-            for expert in range(EXPERTS):
-                up = f"{prefix}.{expert}.up_proj.weight"
-                gate = f"{prefix}.{expert}.gate_proj.weight"
-                # stacked up|gate sliced to [w1_r0:w1_r1] across the STACK:
-                up_rows = EXPERT_INTER
-                # a rank's 2*inter/tp row slice intersects exactly ONE of
-                # the up|gate halves (ranks 0..tp/2-1 in up, the rest in
-                # gate) - the partial rows all-reduce before silu-mul.
-                for name, base in ((up, 0), (gate, up_rows)):
-                    lo = max(w1_r0, base) - base
-                    hi = min(w1_r1, base + up_rows) - base
-                    if hi > lo:
-                        yield source.expert_payload(name, lo, hi, w1_c0, w1_c1)
-                for name, base in ((up, 0), (gate, up_rows)):
-                    lo = max(w1_r0, base) - base
-                    hi = min(w1_r1, base + up_rows) - base
-                    if hi > lo:
-                        yield source.expert_scale(name, lo, hi, w1_c0, w1_c1)
+            for name,lo,hi in w1_slices():
+                yield source.expert_payload(name,lo,hi,w1_c0,w1_c1)
+
+        def produce_w1_scale() -> Iterator[bytes]:
+            if experts_bf16:
+                return
+            for name,lo,hi in w1_slices():
+                yield source.expert_scale(name,lo,hi,w1_c0,w1_c1)
 
         def produce_w2() -> Iterator[bytes]:
             for expert in range(EXPERTS):
                 down = f"{prefix}.{expert}.down_proj.weight"
                 yield source.expert_payload(down, w2_r0, w2_r1, w2_c0, w2_c1)
+
+        def produce_w2_scale() -> Iterator[bytes]:
+            if experts_bf16:
+                return
+            for expert in range(EXPERTS):
+                down = f"{prefix}.{expert}.down_proj.weight"
                 yield source.expert_scale(down, w2_r0, w2_r1, w2_c0, w2_c1)
 
-        def empty() -> Iterator[bytes]:
-            return iter(())
+        self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
+        self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
 
-        self.plan.append(PlanItem(w1, produce_w1, empty))
-        self.plan.append(PlanItem(w2, produce_w2, empty))
 
     # -- the plan -----------------------------------------------------------
 
@@ -897,7 +869,19 @@ def serialize_entry(entry: Entry) -> bytes:
     )
 
 
-def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> None:
+    out.seek(offset)
+    written = 0
+    for chunk in chunks:
+        if len(chunk) > expected - written:
+            raise PackFailure(f"region at {offset}: producer exceeds {expected} bytes")
+        out.write(chunk)
+        written += len(chunk)
+    if written != expected:
+        raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
+
+
+def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
     packer.build()
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
@@ -917,16 +901,51 @@ def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
         for item in packer.plan:
             out.write(serialize_entry(item.entry))
         for item in packer.plan:
-            out.seek(item.entry.payload_offset)
-            for chunk in item.produce_payload():
-                out.write(chunk)
-            if item.entry.scale_bytes and item.produce_scale:
-                out.seek(item.entry.scale_offset)
-                for chunk in item.produce_scale():
-                    out.write(chunk)
+            emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
+                        item.produce_payload())
+            emit_region(out, item.entry.scale_offset, item.entry.scale_bytes,
+                        item.produce_scale() if item.produce_scale else iter(()))
+    return file_bytes
+
+
+def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+    if path.exists():
+        raise PackFailure(f"output already exists; choose a new artifact path: {path}")
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
+    os.close(fd)
+    try:
+        file_bytes = _emit(packer, Path(temporary), header_extra)
+        with open(temporary, "rb") as source:
+            os.fsync(source.fileno())
+        # An exclusive link preserves an existing artifact even across a race.
+        os.link(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.unlink(temporary)
     print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
           f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers "
           f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")
+
+
+def validate_stage(stage_count, stage_index, first_layer, layer_count,
+                   owns_embedding, owns_head, mtp):
+    if not 1 <= stage_count <= LAYERS or not 0 <= stage_index < stage_count:
+        raise PackFailure("invalid pipeline stage count/index")
+    if first_layer < 0 or layer_count <= 0 or first_layer + layer_count > LAYERS:
+        raise PackFailure("pipeline layer span is outside the model")
+    if owns_embedding and (stage_index != 0 or first_layer != 0):
+        raise PackFailure("embedding ownership requires the first stage and layer")
+    if (owns_head or mtp) and (stage_index + 1 != stage_count or first_layer + layer_count != LAYERS):
+        raise PackFailure("head/MTP ownership requires the final stage and layer")
+
+
+def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
+    pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
+    return f"glm5_next_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.g5nsp"
 
 
 def main() -> int:
@@ -935,6 +954,8 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--first-layer", type=int, default=0)
     parser.add_argument("--layer-count", type=int, default=LAYERS)
+    parser.add_argument("--stage-count", type=int, default=1)
+    parser.add_argument("--stage-index", type=int, default=0)
     parser.add_argument("--mtp", action="store_true")
     parser.add_argument("--owns-embedding", action="store_true")
     parser.add_argument("--owns-head", action="store_true")
@@ -945,6 +966,8 @@ def main() -> int:
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
+    validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                   args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
 
     source = SourceReader(Path(args.source))
     out_dir = Path(args.output_dir)
@@ -958,9 +981,9 @@ def main() -> int:
             packer.build()
             print(f"rank {rank}: {len(packer.plan)} tensors planned")
             continue
-        emit(packer, out_dir / f"glm5_next_stage.tp{args.tp_all or args.tp_degree}"
-                              f".rank{rank}.g5nsp",
-             dict(stage_count=1, stage_index=0, first_layer=args.first_layer,
+        emit(packer, out_dir / stage_pack_name(args.tp_all or args.tp_degree,
+                                              rank, args.stage_count, args.stage_index),
+             dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
                   layer_count=args.layer_count,
                   flags=1 if args.mtp else 0))
     source.close()

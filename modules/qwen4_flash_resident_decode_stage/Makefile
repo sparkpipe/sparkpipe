@@ -12,8 +12,7 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/model-families/qwen4_flash/src/spark_qwen4_flash_work_control.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective_nccl.c
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 # Adapter provenance pins: the Qwen3.8-Flash-Next checkpoint revision and the
 # exact package contract, checked at adapter compile time.
 QWEN4_FLASH_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c

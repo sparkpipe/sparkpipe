@@ -1,0 +1,157 @@
+{
+ "schema_version": 1,
+ "family": "muse_glimmer",
+ "source_scope": "model.language_model.* + lm_head.weight only; vision_tower/vision_adapter/multi_modal_projector tensors are counted and skipped",
+ "dtype": "BF16",
+ "census": {
+  "status": "RESOLVED at V1 against the real warm index (sha256 7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba, 1436 entries): 627 text tensors match these patterns (624 = 12 classes x 52 layers, + embed_tokens + final norm + lm_head); 809 skipped (806 vision_tower + vision_adapter.fc1/fc2 + vision_projection). The patterns side was right; the contract's 626 was corrected to 627",
+  "expected_text_tensors_from_patterns": 627,
+  "contract_expected_text_tensors": 627,
+  "delta_note": "resolved: no delta. 52x12 kept layer tensors + 3 globals = 627, proven by the real index (per-suffix counts exactly 52 for each of the 12 classes; no persistent rotary inv_freq buffers in the checkpoint, confirming the pinned modeling source)"
+ },
+ "globals": {
+  "model.language_model.embed_tokens.weight": {
+   "count": 1,
+   "stagepack_kind": "EMBEDDING",
+   "shape": [
+    202048,
+    6656
+   ]
+  },
+  "model.language_model.norm.weight": {
+   "count": 1,
+   "stagepack_kind": "FINAL_NORM",
+   "shape": [
+    6656
+   ],
+   "note": "plain weighted RMS per the pinned modeling source (MuseGlimmerRMSNorm, with_scale=True), NOT centered"
+  },
+  "lm_head.weight": {
+   "count": 1,
+   "stagepack_kind": "LM_HEAD",
+   "shape": [
+    202048,
+    6656
+   ],
+   "note": "untied; vocab-parallel row sharding 12628 per tp16 rank"
+  }
+ },
+ "layer_patterns": {
+  "input_layernorm": {
+   "pattern": "model.language_model.layers.{layer}.input_layernorm.weight",
+   "count": 52,
+   "stagepack_kind": "INPUT_NORM",
+   "shape": [
+    6656
+   ],
+   "norm": "centered eps 1e-05"
+  },
+  "post_attention_layernorm": {
+   "pattern": "model.language_model.layers.{layer}.post_attention_layernorm.weight",
+   "count": 52,
+   "stagepack_kind": "POST_ATTENTION_NORM",
+   "shape": [
+    6656
+   ],
+   "norm": "centered eps 1e-08"
+  },
+  "pre_feedforward_layernorm": {
+   "pattern": "model.language_model.layers.{layer}.pre_feedforward_layernorm.weight",
+   "count": 52,
+   "stagepack_kind": "PRE_FFN_NORM",
+   "shape": [
+    6656
+   ],
+   "norm": "centered eps 1e-05"
+  },
+  "post_feedforward_layernorm": {
+   "pattern": "model.language_model.layers.{layer}.post_feedforward_layernorm.weight",
+   "count": 52,
+   "stagepack_kind": "POST_FFN_NORM",
+   "shape": [
+    6656
+   ],
+   "norm": "centered eps 1e-08"
+  },
+  "self_attn_q_proj": {
+   "pattern": "model.language_model.layers.{layer}.self_attn.q_proj.weight",
+   "count": 52,
+   "stagepack_kind": "QGKV",
+   "shape": [
+    4096,
+    6656
+   ],
+   "slice": "head-major q rows interleaved with the attention output gate rows inside the fused qgkv projection"
+  },
+  "self_attn_gate_proj": {
+   "pattern": "model.language_model.layers.{layer}.self_attn.gate_proj.weight",
+   "count": 52,
+   "stagepack_kind": "QGKV",
+   "shape": [
+    4096,
+    6656
+   ],
+   "note": "attention OUTPUT gate (sigmoid, elementwise over 32x128 dims), NOT an mlp gate; fused into qgkv; pattern corrected against the real warm index at V1 (the gate lives under self_attn., shape [4096, 6656] BF16)"
+  },
+  "self_attn_k_proj": {
+   "pattern": "model.language_model.layers.{layer}.self_attn.k_proj.weight",
+   "count": 52,
+   "stagepack_kind": "QGKV",
+   "shape": [
+    256,
+    6656
+   ],
+   "slice": "kv head h is replicated on ranks 8h..8h+7 at tp16"
+  },
+  "self_attn_v_proj": {
+   "pattern": "model.language_model.layers.{layer}.self_attn.v_proj.weight",
+   "count": 52,
+   "stagepack_kind": "QGKV",
+   "shape": [
+    256,
+    6656
+   ],
+   "slice": "same replication law as k_proj"
+  },
+  "self_attn_o_proj": {
+   "pattern": "model.language_model.layers.{layer}.self_attn.o_proj.weight",
+   "count": 52,
+   "stagepack_kind": "ATTN_OUTPUT",
+   "shape": [
+    6656,
+    4096
+   ],
+   "slice": "columns [2r*128, 2r*128+256) per rank"
+  },
+  "mlp_gate": {
+   "pattern": "model.language_model.layers.{layer}.mlp.gate_proj.weight",
+   "count": 52,
+   "stagepack_kind": "ATTN_GATE_UP",
+   "shape": [
+    19968,
+    6656
+   ],
+   "slice": "gate half of the fused stagepack gate_up rows, 1248 local rows per rank, gate_first"
+  },
+  "mlp_up": {
+   "pattern": "model.language_model.layers.{layer}.mlp.up_proj.weight",
+   "count": 52,
+   "stagepack_kind": "ATTN_GATE_UP",
+   "shape": [
+    19968,
+    6656
+   ],
+   "slice": "up half of the fused stagepack gate_up rows, 1248 local rows per rank"
+  },
+  "mlp_down": {
+   "pattern": "model.language_model.layers.{layer}.mlp.down_proj.weight",
+   "count": 52,
+   "stagepack_kind": "MLP_DOWN",
+   "shape": [
+    6656,
+    19968
+   ],
+   "slice": "K sharded to 1248 per rank"
+  }
+ }
+}

@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_driver_compiler.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -21,7 +22,7 @@
 #define SPARK_MODEL_PACKAGE_MANIFEST_NAME "model_package.json"
 #define SPARK_MODEL_PACKAGE_STAGE_DIRECTORY_NAME "stages"
 #define SPARK_MODEL_PACKAGE_SCHEMA_VERSION 3u
-#define SPARK_DRIVER_GENERATOR_ID "sparkpipe.driver.generator.v3"
+#define SPARK_DRIVER_GENERATOR_ID "sparkpipe.driver.generator.v4"
 static const uint8_t SparkDriverHashFieldTerminator = 0u;
 #if defined(__APPLE__)
 #define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-dynamiclib;-Wl,-undefined,error;-Wl,-exported_symbol,_SparkModelDriverGetInterface"
@@ -127,7 +128,7 @@ static SparkStatus SparkDriverBuildImageAddUniqueLinkUnit(
             if (strcmp(driver_image->unique_link_unit_paths[link_unit_index], artifact->link_unit_path) != 0 ||
                 driver_image->unique_link_unit_kinds[link_unit_index] != artifact->link_unit_kind)
             {
-                return SPARK_STATUS_HASH_MISMATCH;
+                SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
             }
             return SPARK_STATUS_OK;
         }
@@ -143,7 +144,7 @@ static SparkStatus SparkDriverBuildImageAddUniqueLinkUnit(
         driver_image->unique_link_unit_paths[driver_image->unique_link_unit_count] = 0;
         driver_image->unique_link_unit_hashes[driver_image->unique_link_unit_count] = 0;
         driver_image->unique_link_unit_kinds[driver_image->unique_link_unit_count] = 0;
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     driver_image->unique_link_unit_count += 1u;
     return SPARK_STATUS_OK;
@@ -196,7 +197,7 @@ static SparkStatus SparkComputeCompiledProgramHash(
 
     if (request == 0 || description == 0 || driver_image == 0 || compiled_program_sha256 == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     SparkSha256Initialize(&hash_context);
     SparkHashTextField(&hash_context, SPARK_DRIVER_GENERATOR_ID);
@@ -299,7 +300,7 @@ static SparkStatus SparkResolveDriverBuildImage(
     if (driver_image->operation_count == 0u || driver_image->operation_count == UINT32_MAX)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "stage '%s' has an invalid operation count", stage->name);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     driver_image->operations = (SparkDriverBuildOperation *)calloc(driver_image->operation_count, sizeof(*driver_image->operations));
     driver_image->unique_link_unit_paths = (char **)calloc(driver_image->operation_count, sizeof(*driver_image->unique_link_unit_paths));
@@ -309,7 +310,7 @@ static SparkStatus SparkResolveDriverBuildImage(
         driver_image->unique_link_unit_hashes == 0 || driver_image->unique_link_unit_kinds == 0)
     {
         SparkDriverBuildImageDestroy(driver_image);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     flattened_operation_index = 0u;
@@ -328,7 +329,7 @@ static SparkStatus SparkResolveDriverBuildImage(
                 program->name,
                 program->operation_count);
             SparkDriverBuildImageDestroy(driver_image);
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         for (operation_index = 0u; operation_index < program->operation_count; ++operation_index)
         {
@@ -372,7 +373,7 @@ static SparkStatus SparkResolveDriverBuildImage(
                     resolved_operation->artifact.module_abi_version,
                     SPARK_FIRMWARE_MODULE_ABI_VERSION);
                 SparkDriverBuildImageDestroy(driver_image);
-                return SPARK_STATUS_ABI_MISMATCH;
+                SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
             }
             status = SparkDriverBuildImageAddUniqueLinkUnit(driver_image, &resolved_operation->artifact);
             if (status != SPARK_STATUS_OK)
@@ -828,7 +829,7 @@ static void SparkWriteGeneratedAdmitFunction(
         fprintf(file, "            decision->available_dispatch_slot_count = %uu;\n", program->max_inflight);
         if (program->scheduling.max_active_slots != 0u)
         {
-            fputs("            if (request->active_slot_count == 0u)\n            {\n", file);
+            fputs("            if (request->active_slot_count == 0u && request->admission_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)\n            {\n", file);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
             fprintf(file, "            if (request->active_slot_count > %uu)\n            {\n", program->scheduling.max_active_slots);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
@@ -840,6 +841,7 @@ static void SparkWriteGeneratedAdmitFunction(
         }
         if (has_module_admission == 0)
         {
+            fputs("            if (request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET)\n            {\n                return SPARK_STATUS_UNSUPPORTED;\n            }\n", file);
             fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);
             fprintf(file, "            decision->device_memcpy_bytes = %lluull;\n", (unsigned long long)program->scheduling.device_memcpy_bytes_per_submit_ceiling);
             fprintf(file, "            decision->host_staging_bytes = %lluull;\n", (unsigned long long)program->scheduling.host_staging_bytes_per_submit_ceiling);
@@ -867,7 +869,7 @@ static void SparkWriteGeneratedAdmitFunction(
             }
         }
         fputs("            SparkGeneratedFinalizeAdmissionDecision(decision);\n", file);
-        fputs("            if (decision->available_dispatch_slot_count == 0u)\n            {\n", file);
+        fputs("            if (decision->available_dispatch_slot_count == 0u && request->admission_flags == 0u && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) == 0u)\n            {\n", file);
         fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_BUSY);\n            }\n", file);
         fputs("            return SPARK_STATUS_OK;\n        }\n", file);
     }
@@ -1018,7 +1020,7 @@ static SparkStatus SparkGenerateDriverSource(
     if (file == 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "cannot create generated driver source '%s'", source_path);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     fputs("#include <stdint.h>\n", file);
     fputs("#include <stdlib.h>\n", file);
@@ -1049,7 +1051,7 @@ static SparkStatus SparkGenerateDriverSource(
         if (flush_result != 0 || close_result != 0)
         {
             SparkSetError(error_buffer, error_buffer_bytes, "cannot finalize generated driver source '%s'", source_path);
-            return SPARK_STATUS_IO_ERROR;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
     return SPARK_STATUS_OK;
@@ -1106,7 +1108,7 @@ static SparkStatus SparkClearDriverLinkUnitDirectory(
     if (directory == 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "cannot open driver link unit directory '%s'", link_unit_directory);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     status = SPARK_STATUS_OK;
@@ -1171,7 +1173,7 @@ static SparkStatus SparkCollectValidatedLinkUnits(
 
     if (SparkJoinPath(output_directory, SPARK_DRIVER_LINK_UNIT_DIRECTORY_NAME, link_unit_directory, sizeof(link_unit_directory)) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     status = SparkCreateDirectories(link_unit_directory);
     if (status != SPARK_STATUS_OK)
@@ -1187,7 +1189,7 @@ static SparkStatus SparkCollectValidatedLinkUnits(
     paths = (char **)calloc(driver_image->unique_link_unit_count, sizeof(*paths));
     if (paths == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     for (link_unit_index = 0u; link_unit_index < driver_image->unique_link_unit_count; ++link_unit_index)
@@ -1288,13 +1290,13 @@ static SparkStatus SparkLinkGeneratedDriver(
 
     if (snprintf(include_argument, sizeof(include_argument), "-I%s", request->sparkpipe_include_directory) >= (int)sizeof(include_argument))
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     argument_capacity = 17u + request->extra_compiler_argument_count + driver_image->unique_link_unit_count;
     arguments = (char **)calloc(argument_capacity, sizeof(*arguments));
     if (arguments == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     argument_index = 0u;
@@ -1339,7 +1341,7 @@ static SparkStatus SparkLinkGeneratedDriver(
     if (exit_code != 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "driver compiler failed with exit code %d", exit_code);
-        return SPARK_STATUS_COMPILER_ERROR;
+        SPARK_FAIL(SPARK_STATUS_COMPILER_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -1421,12 +1423,12 @@ static SparkStatus SparkWriteCompiledModuleEntries(
 
     if (file == 0 || driver_image == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     target = SparkEscapeManifestString(driver_image->stage->target);
     if (target == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     fputs("[\n", file);
@@ -1564,7 +1566,7 @@ static SparkStatus SparkWriteCompiledManifest(
         free(model_revision);
         free(stage_name);
         free(target);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     file = fopen(manifest_path, "wb");
@@ -1575,7 +1577,7 @@ static SparkStatus SparkWriteCompiledManifest(
         free(stage_name);
         free(target);
         SparkSetError(error_buffer, error_buffer_bytes, "cannot create compiled manifest '%s'", manifest_path);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     fprintf(file, "{\n  \"schema_version\": 3,\n  \"driver_abi_version\": %u,\n", SPARK_MODEL_DRIVER_ABI_VERSION);
     fprintf(file, "  \"model_id\": \"%s\",\n  \"model_revision\": \"%s\",\n", model_id, model_revision);
@@ -1624,7 +1626,7 @@ static SparkStatus SparkRemoveDriverOutputFile(
         return SPARK_STATUS_OK;
     }
     SparkSetError(error_buffer, error_buffer_bytes, "cannot invalidate previous driver output '%s'", path);
-    return SPARK_STATUS_IO_ERROR;
+    SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static SparkStatus SparkInvalidatePreviousDriverOutput(
@@ -1674,7 +1676,7 @@ static SparkStatus SparkValidateCompilerArguments(
     if (extra_compiler_argument_count != 0u && extra_compiler_arguments == 0)
     {
         SparkSetError(error_buffer, error_buffer_bytes, "driver compiler arguments are missing");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     for (extra_argument_index = 0u; extra_argument_index < extra_compiler_argument_count;
          ++extra_argument_index)
@@ -1682,7 +1684,7 @@ static SparkStatus SparkValidateCompilerArguments(
         if (extra_compiler_arguments[extra_argument_index] == 0)
         {
             SparkSetError(error_buffer, error_buffer_bytes, "driver compiler argument %u is null", extra_argument_index);
-            return SPARK_STATUS_INVALID_ARGUMENT;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
     }
     return SPARK_STATUS_OK;
@@ -1697,14 +1699,14 @@ static SparkStatus SparkValidateDriverCompileRequest(
         request->module_library_root == 0 || request->output_directory == 0 ||
         request->compiler_path == 0 || request->sparkpipe_include_directory == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (request->model_description_path[0] == '\0' || request->stage_name[0] == '\0' ||
         request->module_library_root[0] == '\0' || request->output_directory[0] == '\0' ||
         request->compiler_path[0] == '\0' || request->sparkpipe_include_directory[0] == '\0')
     {
         SparkSetError(error_buffer, error_buffer_bytes, "driver compile request contains an empty required field");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkValidateCompilerArguments(
         request->extra_compiler_arguments,
@@ -1722,14 +1724,14 @@ static SparkStatus SparkValidateModelPackageCompileRequest(
         request->module_library_root == 0 || request->output_directory == 0 ||
         request->compiler_path == 0 || request->sparkpipe_include_directory == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (request->model_description_path[0] == '\0' ||
         request->module_library_root[0] == '\0' || request->output_directory[0] == '\0' ||
         request->compiler_path[0] == '\0' || request->sparkpipe_include_directory[0] == '\0')
     {
         SparkSetError(error_buffer, error_buffer_bytes, "model package compile request contains an empty required field");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkValidateCompilerArguments(
         request->extra_compiler_arguments,
@@ -1756,7 +1758,7 @@ static SparkStatus SparkPrepareDriverOutput(
         SparkJoinPath(output_directory, SPARK_DRIVER_SHARED_OBJECT_NAME, report->driver_path, sizeof(report->driver_path)) != SPARK_STATUS_OK ||
         SparkJoinPath(output_directory, SPARK_DRIVER_MANIFEST_NAME, report->manifest_path, sizeof(report->manifest_path)) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     return SparkInvalidatePreviousDriverOutput(output_directory, report, error_buffer, error_buffer_bytes);
 }
@@ -1876,7 +1878,7 @@ SparkStatus SparkCompileModelDriver(
 
     if (report == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(report, 0, sizeof(*report));
     if (error_buffer != 0 && error_buffer_bytes != 0u)
@@ -1900,7 +1902,7 @@ SparkStatus SparkCompileModelDriver(
     {
         SparkSetError(error_buffer, error_buffer_bytes, "model description does not contain stage '%s'", request->stage_name);
         SparkModelDescriptionDestroy(&description);
-        return SPARK_STATUS_NOT_FOUND;
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
 
     SparkDriverBuildImageReset(&driver_image);
@@ -1946,14 +1948,14 @@ static SparkStatus SparkWriteModelPackageManifest(
     if (snprintf(temporary_path, sizeof(temporary_path), "%s.tmp.%ld", manifest_path, (long)getpid()) >= (int)sizeof(temporary_path))
     {
         free(model_description_json);
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     file = fopen(temporary_path, "wb");
     if (file == 0)
     {
         free(model_description_json);
         SparkSetError(error_buffer, error_buffer_bytes, "cannot create model package manifest '%s'", manifest_path);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     model_id = SparkEscapeManifestString(description->model_id);
@@ -1965,7 +1967,7 @@ static SparkStatus SparkWriteModelPackageManifest(
         free(model_description_json);
         fclose(file);
         unlink(temporary_path);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     fprintf(
@@ -2072,7 +2074,7 @@ static SparkStatus SparkWriteModelPackageManifest(
     {
         unlink(temporary_path);
         SparkSetError(error_buffer, error_buffer_bytes, "cannot activate model package manifest '%s'", manifest_path);
-        return SPARK_STATUS_IO_ERROR;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     return SPARK_STATUS_OK;
 }
@@ -2084,11 +2086,11 @@ static SparkStatus SparkAddPackageCount(
 {
     if (result == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (UINT32_MAX - current_count < added_count)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *result = current_count + added_count;
     return SPARK_STATUS_OK;
@@ -2109,7 +2111,7 @@ SparkStatus SparkCompileModelPackage(
 
     if (report == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(report, 0, sizeof(*report));
     if (error_buffer != 0 && error_buffer_bytes != 0u)
@@ -2130,7 +2132,7 @@ SparkStatus SparkCompileModelPackage(
     if (SparkJoinPath(request->output_directory, SPARK_MODEL_PACKAGE_MANIFEST_NAME, report->package_manifest_path, sizeof(report->package_manifest_path)) != SPARK_STATUS_OK ||
         SparkJoinPath(request->output_directory, SPARK_MODEL_PACKAGE_STAGE_DIRECTORY_NAME, stages_directory, sizeof(stages_directory)) != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     status = SparkRemoveDriverOutputFile(report->package_manifest_path, error_buffer, error_buffer_bytes);
     if (status != SPARK_STATUS_OK)

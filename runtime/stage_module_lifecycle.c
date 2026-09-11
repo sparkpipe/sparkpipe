@@ -1,5 +1,6 @@
 
 #include <stdlib.h>
+#include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 
@@ -42,7 +43,7 @@ SparkStatus SparkStageModuleLifecycleInitialize(
     state = calloc(1u, (size_t)ops->state_bytes);
     if (state == 0)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     ops->describe(state, &lifecycle);
     lifecycle.ledger->module_tag = lifecycle.module_tag;
@@ -68,7 +69,7 @@ SparkStatus SparkStageModuleLifecycleExecute(
 {
     if (module_state == 0 || frame == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return ops->execute(module_state, frame);
 }
@@ -81,7 +82,7 @@ SparkStatus SparkStageModuleLifecycleAdmit(
 {
     if (module_state == 0 || request == 0 || decision == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return ops->admit(module_state, request, decision);
 }
@@ -96,7 +97,7 @@ SparkStatus SparkStageModuleLifecycleSnapshot(
 
     if (module_state == 0 || snapshot == 0 || program_id == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     ops->describe(module_state, &lifecycle);
     SparkStageModuleRuntimeSnapshotInitialize(

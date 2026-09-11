@@ -1,115 +1,157 @@
-# Fleet release & serving system
+# Fleet release & update system
 
-One hub, one reference tree, sixteen pull agents. Releasing a module means
-copying it into the reference — nothing else. This document is the contract.
+One channel delivers every artifact to the 16 sparks: binaries, configs,
+the weights daemon, and the agent itself. No ssh fanout, no rsync, no
+manual scp of binaries. Everything converges by itself after a publish;
+a node that reboots or drops off the network catches up unattended.
 
-## Concepts
+## Topology
 
-- **Hub**: the rtx5090 node (user `spec`). Two directories:
-  - `~/release/` — the reference tree. The single source of truth.
-  - `~/current/` — the fleet view: what every spark is running right now.
-- **The reference IS the manifest.** No version files, no build lockstep.
-  The sha256 of a binary is its version; the hub's copy is the current one.
-- **Pull, never push.** Every spark runs one fleet agent (systemd user unit,
-  `tools/fleet_node_agent.sh`) that rsyncs the parts it owns from the hub
-  every 5 seconds. Builds never fan out to nodes; they write to the hub once.
-- **Reload convention**: a file changed → TERM the daemon → start the new
-  one. This applies ONLY where a restart is cheap (see weightd below).
+- **Hub** = sparkf. `~/release/<root>/` holds each release root;
+  `fleet-release.service` serves `~/release` over HTTP on :8802
+  (`http://10.10.100.25:8802/<root>/...`). The hub is also the build
+  host, so publishing is a local `install`, not a network transfer.
+- **Agent** = one systemd user unit (`fleet-agent`) per node, running
+  `~/sparkdata/core/bin/fleet_node_agent.sh <roots> [hub]`. It is the
+  only thing that starts daemons on a node.
+- **Roots** = release directories. Driver roots (e.g.
+  `glm53flash.fp8.tp16`) carry a serving deployment; the `core` root
+  carries the model-generic node services: `bin/sparkpipe_weightd` and
+  `bin/fleet_node_agent.sh` itself.
+- **The MANIFEST is the version.** Each root has a `MANIFEST` (sha256
+  per file); a binary's sha is its version. Agents pull manifests,
+  fetch changed files over HTTP, verify every sha before applying.
+- **Telemetry** = each agent writes `~/current/<host>.json` (locally
+  and to the hub); `sparkf:8801` serves the aggregate
+  (`/summary`, `/host/<name>`). Per root the `state` field is
+  `ready | starting: <last log line> | down`, plus weightd / agent /
+  residentd / driver shas. **One read answers "what runs where."**
 
 ## Layout
 
 ```
 hub ~/release/
-  weightd/sparkpipe_weightd              shared, model-generic, ONE per node
-  <root>/                                one dir per model deployment, e.g.
-    lib/                                 hidden_transport.so, model_serving_adapter.so
-    bin/                                 sparkpipe_model_residentd, sparkpipe_model_api, ...
-    stages/stage_000/model_driver.so     the compiled model driver
-    config/stage_00..15.json             per-rank configs (stage.json symlink made per node)
+  core/bin/{sparkpipe_weightd, fleet_node_agent.sh}   shared, one per node
+  <root>/                          one dir per model deployment
+    lib/                           hidden_transport.so, model_serving_adapter.so
+    bin/                           sparkpipe_model_residentd, sparkpipe_model_api
+    stages/stage_000/model_driver.so
+    config/stage_00..15.json       per-rank configs (stage.json symlink per node)
     config/model_resident.json
+    MANIFEST, UPDATE.<n>           current manifest + archived ledgers
 
 node ~/sparkdata/
-  weightd/sparkpipe_weightd              synced from release/weightd/
-  <root>/{lib,bin,stages,config}         synced from release/<root>/
-  <root>/packs/*.sp                      NOT synced — placed by the pack pipeline
+  core/bin/fleet_node_agent.sh     the running agent (self-updated)
+  weightd/sparkpipe_weightd        installed from core/
+  <root>/{lib,bin,stages,config}   synced from release/<root>/
+  <root>/packs/*.sp                NOT synced — placed by the pack pipeline
 ```
 
-Each spark derives its rank from its hostname (`spark<c>` → 12). All
-identity/ports live in the configs as data (`session_ports` tables); the
-nodes compute nothing.
+Each spark derives its rank from its hostname (`spark<c>` → 12; pack
+names use **hex** ranks — `ranka..rankf`). All identity/ports live in
+the configs as data (`session_ports` tables); nodes compute nothing.
 
-## Updating a module
+## Publish (a dev's whole interaction)
 
-All updates are the same act: **build, then copy into the hub reference.**
-The agents converge the fleet within one 5-second cycle.
+```
+tools/module_build_release.sh <family> <codec> <root> <revision> <contract> [branch|sha]
+```
 
-| module | where it goes | reload |
-|---|---|---|
-| model driver (`model_driver.so`) | `release/<root>/stages/stage_000/` | automatic (residentd restart, ~15s fleet-wide) |
-| serving adapter, hidden transport (`lib/*.so`) | `release/<root>/lib/` | automatic (same) |
-| configs (`stage_*.json`, `model_resident.json`) | `release/<root>/config/` | automatic (a config change is a restart) |
-| api / residentd binaries (`bin/*`) | `release/<root>/bin/` | automatic (cheap) |
-| **weightd** | `release/weightd/` | **NEVER automatic. See below.** |
-| packs (`*.sp`) | not in this system | per-node data via the pack pipeline; weightd lazy-loads on attach |
+Run on sparkf. It fetches the ref, host-builds (residentd, api, weightd,
+model_compile, transport DSO), parks sparkf's local daemon, runs the GPU
+module publish with receipts, compiles the driver, then:
 
-## weightd is special
+1. `publish_local.sh` installs driver/DSO/adapter/residentd/api into
+   `~/release/<root>/`, regenerates the `MANIFEST`, touches `UPDATE`
+   (the restart trigger).
+2. `publish_core.sh` installs weightd + the agent into
+   `~/release/core/` with its own `MANIFEST`.
 
-weightd is the node's single model-generic weight daemon. It holds packs
-resident for every model at once (lazy expert tiers, true-LRU, kv-reserve).
-That residency is the entire point:
+A publish guard rejects a deployment whose `runtime_root` does not match
+the release root (a bf16-rooted JSON inside the fp8 release once cost a
+full day). Generator rule: `ROOT_NAME` is the single source — runtime
+root, pack template, kv dir all derive from it.
 
-- **Starting it is free** (lazy — it loads nothing until a model attaches).
-  Agents start it only if it is not running.
-- **Restarting it is expensive**: it drops every resident pack for every
-  model on the node. Agents therefore never TERM it. A new binary syncs
-  into place and takes effect at the next deliberate restart (manual
-  choice, or node reboot). Schedule that only when you accept a fleet-wide
-  cold load.
-- residentd must never load packs itself — the direct-load path is a
-  fallback seam for a missing weightd, and agents guarantee weightd is up
-  before any residentd starts, so the fallback never engages.
+## Agent convergence loop (every 5s)
 
-## Memory discipline on the sparks
+1. `sync_core` — fetch `core/MANIFEST`; if changed, curl each file,
+   sha256-verify, apply, `chmod 755 bin/*` (curl drops exec bits).
+2. `install_core` — if the shipped weightd sha differs from the
+   installed one: kill daemons **by /proc exe link** (never `pkill -f` —
+   it matches your own ssh), install, start exactly one. This deliberate
+   update restart is the only sanctioned weightd restart; it costs the
+   node a cold reload of resident packs (lazy tiers fault back in on
+   next attach, ~1-2 min/node).
+3. `self_update` — if the shipped agent differs from the sha captured
+   **at process start** (`START_SHA`), `exec bash` the new file. The
+   baseline must be the startup sha: sync_core applies the new file onto
+   the very path the process runs from, so comparing on-disk against
+   on-disk never fires. An unknown/empty baseline skips (never spins).
+4. `sync_root` per driver root — same fetch+verify+apply, then the
+   two-phase UPDATE ledger on the hub: every node appends `down:<host>`
+   after its daemon exits → the all-16 gate passes → every node starts
+   and appends `up:<host>` → ledger archived `UPDATE.<n>`. The gate
+   exists because a fresh sender wiring against a draining peer's
+   listener parks QPs forever; the fleet stops together and starts
+   together.
+5. `ensure_root` — boots a down root. Restart discipline: TERM
+   (cwd-scoped), wait for real exit, gate `MemAvailable >= pack + 8GB`,
+   start exactly one. No per-process memory caps: weights+KV legitimately
+   reach ~100GB per node — containment is structural (the framework seam
+   refuses direct pack loads; weightd's fail-closed budgets own node
+   memory). The autospawn guard blocks only if **node uptime
+   < 15 min** (reboot-loop protection); it never blocks on failed
+   attempts — transient failures retry next loop so the fleet
+   converges.
+6. `ensure_api` (rank 0) — starts the model API once the fleet view
+   reports 16 ready.
 
-The agent's restart protocol for a residentd, in order:
+## Laws (each one paid for)
 
-1. TERM the prior residentd (cwd-scoped to the root — never other models,
-   never weightd).
-2. Wait for the process to actually exit (up to 30s). If it does not, do
-   not start a new one. One instance per root, ever.
-3. Gate on memory: `MemAvailable >= pack_size + 8GB` before launching.
-   A node that cannot afford the daemon stays down and says why.
-4. Start exactly one; report versions.
+- weightd is never crash-restarted, never coupled to residentd; it
+  restarts only via `install_core` on a shipped binary change.
+- One daemon instance per node and per root; kills go by
+  `/proc/<pid>/exe` links.
+- The 15-minute autospawn guard reads `/proc/uptime` — node reboots,
+  not residentd attempts.
+- Every error-return site is macro-stamped: failures print
+  `ERRSITE file:line status=N`. Grep the log, read the line.
+- Lazy attach is the only load path. Direct pack loads by 14 parallel
+  drivers kill sparks; the module fails UNSUPPORTED without weightd.
+- Pack files are immutable on disk (`chattr +i` at deploy; clearing
+  needs `sudo chattr -i` — plain users cannot).
+- Sidecar debris (zero-byte `.sha256` from partial deploys) breaks the
+  digest scan; the scan skips unreadable sidecars, fleet hygiene
+  removes strays.
+- Write-tool edits drop executable bits — tool-script commits must
+  carry `git update-index --chmod=+x` or the publish breaks at the last
+  step.
+- `strings | grep -q` under pipefail SIGPIPEs (141) — redirect to
+  /dev/null instead.
 
-## Fleet view
+## Bootstrapping a new node (once)
 
-After any (re)start, the agent writes `~/current/<host>.json` on the hub:
-sha16 of weightd and, per root, of residentd / driver / adapter /
-transport. Reading one directory answers "what is running on every spark":
-
-    tools/fleet_sync.sh <ref> <roots> status
-
-## Commands
-
-    tools/fleet_sync.sh <ref> <roots> start|stop|status
-        install/control the per-node agents (systemd user units, survive
-        reboots). <ref> e.g. rtx5090:release ; <roots> comma-separated.
-
-    tools/fleet_serve.sh <root> stop|start|api|full
-        manual relaunch: TERM in parallel, same-second launch, ready-or-
-        error poll that fails in seconds (fail-fast prints the first
-        error line from any node).
-
-Build side (any capable host): produce artifacts in the runtime-root
-layout (module `make publish` + `sparkpipe_model_compile` + adapter make),
-then `rsync` the software parts into `hub:release/<root>/`.
+The unit points at `~/sparkdata/core/bin/fleet_node_agent.sh`; ship the
+agent + unit once (tar + scp + sha-verify + extract + `systemctl --user
+daemon-reload && systemctl --user restart fleet-agent`). After that the
+node updates itself forever through the channel. A reboot needs nothing:
+systemd starts the agent, the agent ensures weightd, syncs roots,
+converges. A node that loses the network is invisible in the view but
+keeps retrying locally and rejoins without manual catch-up.
 
 ## Deliberately absent
 
-- No registrar phase, no TIME_WAIT sleeps, no ready windows — the daemons
-  are load-order independent (background accepts, retrying connects,
-  SO_REUSEADDR listeners).
+- No registrar phase, no TIME_WAIT sleeps, no ready windows — daemons
+  are load-order independent (background accepts, retrying connects).
 - No derived ports — session port tables are data in the configs.
-- No build-provenance gates at runtime — build-time receipts (pack
-  validators, kernel tier tests) prove artifacts once; runtime checks
-  structural identity only (revision string, geometry, codecs).
+- No build-provenance gates at runtime — build-time receipts prove
+  artifacts once; runtime checks structural identity only.
+
+## Reading a stuck fleet
+
+1. `curl sparkf:8801/summary` → which hosts, which states.
+2. `starting: <line>` → the line is the residentd's last log line;
+   `ERRSITE` names the exact source site.
+3. `down` → `journalctl --user -u fleet-agent` shows the retry reason.
+4. weightd/agent shas must be uniform fleet-wide; a mismatch means the
+   node missed a core sync (check :8802 reachability).

@@ -7,9 +7,10 @@
 static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 {
 	memset(descriptor,0,sizeof(*descriptor));
+	descriptor->cache_block_token_count = 4u;
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RELEASE;
+	descriptor->capability_flags = 0u;
 	descriptor->stage_count = 2u;
 	descriptor->layer_count = 4u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -48,6 +49,8 @@ static void TestHello(void)
 	limits.max_active_sequence_count = 8u;
 	limits.max_input_row_count = 16u;
 	limits.resident_sequence_capacity = 64u;
+	limits.kv_logical_page_capacity = 256u;
+	limits.kv_physical_page_capacity = 8u;
 	assert(SparkModelResidentIpcInitializeHello(&hello,7u,1u,1u,&descriptor) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_OK);
 	hello.model_revision[0] = 'x';
@@ -61,8 +64,8 @@ static void TestHello(void)
 	assert(ack.max_active_sequence_count == 8u);
 	assert(ack.max_input_row_count == 16u);
 	assert(ack.resident_sequence_capacity == 64u);
-	assert(ack.kv_logical_page_capacity == 0u);
-	assert(ack.kv_physical_page_capacity == 0u);
+	assert(ack.kv_logical_page_capacity == 256u);
+	assert(ack.kv_physical_page_capacity == 8u);
 	assert(ack.boundary_format == SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16);
 	assert(ack.linear_weight_codec == SPARK_WEIGHT_CODEC_BF16);
 	assert(ack.expert_weight_codec == SPARK_WEIGHT_CODEC_INT8);

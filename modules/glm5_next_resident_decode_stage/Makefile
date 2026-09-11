@@ -1,3 +1,5 @@
+include ../../runtime/weightd_sources.mk
+
 ifndef EXPERT_CODEC
 $(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
@@ -47,15 +49,13 @@ MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
 	../../src/spark_speculation_policy.c \
-	../../runtime/spark_weightd.c \
-	../../runtime/spark_weightd_attach.c \
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
 	../../src/spark_ck128.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
-	../../ring/transport/tp_device_collective_nccl.c \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \

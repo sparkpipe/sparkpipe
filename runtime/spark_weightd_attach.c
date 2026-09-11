@@ -1,5 +1,6 @@
 
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -34,14 +35,15 @@ static const char *SparkWeightdAttachEnvText(const char *name)
 
 SparkStatus SparkWeightdAttachRequested(void)
 {
-    const char *socket = SparkWeightdAttachEnvText(
-        SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-    if (socket == 0 || SparkWeightdAttachEnvIsOff(
-        SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0)
-    {
-        return SPARK_STATUS_BUSY;
-    }
-    return SPARK_STATUS_OK;
+	const char *socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+	const char *setting = getenv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH);
+	if ( setting != 0 && strcmp(setting,"0") != 0 && strcmp(setting,"1") != 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( socket != 0 )
+		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
+	if ( setting != 0 && strcmp(setting,"1") == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAIL(SPARK_STATUS_BUSY);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -60,7 +62,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     if (outcome == 0 || slice == 0 || pack_path == 0 ||
         pack_path[0] == '\0')
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(outcome, 0, sizeof(*outcome));
     if (reason != 0)
@@ -68,22 +70,28 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         reason[0] = '\0';
     }
 
+    status = SparkWeightdAttachRequested();
+    if (status == SPARK_STATUS_INVALID_ARGUMENT)
+    {
+        SparkWeightdAttachSetReason(reason, "attach_config");
+        SPARK_RETURN(status);
+    }
     if (SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0)
     {
         SparkWeightdAttachSetReason(reason, "env_off");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
     if (socket == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_socket");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
     if (digest == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_identity");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(&identity, 0, sizeof(identity));
     {
@@ -97,7 +105,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         if (model == 0)
         {
             SparkWeightdAttachSetReason(reason, "no_identity");
-            return SPARK_STATUS_OK;
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         memcpy(identity.model, model,
             strlen(model) + 1u <= SPARK_WEIGHTD_ID_BYTES
@@ -119,6 +127,50 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     if (SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK)
     {
         SparkWeightdAttachSetReason(reason, "identity");
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+
+    if (SparkWeightdAttachEnvText("SPARK_WEIGHTD_ATTACH_LAZY") != 0)
+    {
+        SparkWeightdLazyAttachRequest lazy_request;
+        SparkWeightdLazyAttachResult lazy_result;
+
+        status = SparkWeightdClientConnect(socket, &outcome->client, 0);
+        if (status != SPARK_STATUS_OK)
+        {
+            outcome->client = 0;
+            SparkWeightdAttachSetReason(reason, "no_daemon");
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        memset(&lazy_request, 0, sizeof(lazy_request));
+        lazy_request.identity = identity;
+        memcpy(lazy_request.pack_path, pack_path,
+            strlen(pack_path) + 1u <= SPARK_WEIGHTD_PATH_BYTES
+                ? strlen(pack_path) + 1u
+                : SPARK_WEIGHTD_PATH_BYTES);
+        lazy_request.expert_pool_bytes = SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT;
+        memset(&lazy_result, 0, sizeof(lazy_result));
+        status = SparkWeightdClientAttachLazy(outcome->client,
+            &lazy_request, &lazy_result, timeout_nanoseconds);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkWeightdAttachSetReason(reason,
+                SparkStatusToString(status));
+            SparkWeightdAttachRelease(outcome);
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (lazy_result.status != SPARK_STATUS_OK)
+        {
+            SparkWeightdAttachSetReason(reason,
+                SparkStatusToString((SparkStatus)lazy_result.status));
+            SparkWeightdAttachRelease(outcome);
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        outcome->device_handle = lazy_result.device_handle;
+        outcome->arena_bytes = lazy_result.arena_bytes;
+        outcome->arena_generation = lazy_result.arena_generation;
+        outcome->refcount = lazy_result.refcount;
+        outcome->loaded_from_pack = 0u;
         return SPARK_STATUS_OK;
     }
 
@@ -127,7 +179,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     {
         outcome->client = 0;
         SparkWeightdAttachSetReason(reason, "no_daemon");
-        return SPARK_STATUS_OK;
+        SPARK_RETURN(status);
     }
     memset(&request, 0, sizeof(request));
     request.identity = identity;
@@ -142,14 +194,14 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, SparkStatusToString(status));
-        return SPARK_STATUS_OK;
+        SPARK_RETURN(status);
     }
     if (result.status != SPARK_STATUS_OK)
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason,
             SparkStatusToString(result.status));
-        return SPARK_STATUS_OK;
+        return result.status;
     }
     outcome->device_handle = result.device_handle;
     outcome->arena_bytes = result.arena_bytes;
@@ -222,18 +274,18 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
 
     if (outcome == 0 || reason == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     (void)SparkWeightdAttachDeviceId();
     if (outcome->client == 0)
     {
         SparkWeightdAttachSetReason(reason, "not_attached");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (outcome->map_base != 0)
     {
         SparkWeightdAttachSetReason(reason, "already_mapped");
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     memset(&batch, 0, sizeof(batch));
 
@@ -243,13 +295,13 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_exchange");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     if (batch.status != SPARK_STATUS_OK)
     {
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, SparkStatusToString(batch.status));
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     chunk_bytes = batch.chunk_bytes;
@@ -261,7 +313,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_shape");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     covered_bytes = chunk_bytes * (uint64_t)chunk_count;
     if (covered_bytes < expected_arena_bytes)
@@ -269,7 +321,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_short");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     outcome->map_handles = (void **)calloc(chunk_count, sizeof(void *));
@@ -278,7 +330,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachCloseBatchFds(&batch);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_shape");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     outcome->map_chunk_bytes = chunk_bytes;
     outcome->map_chunk_count = chunk_count;
@@ -296,7 +348,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_exchange");
-                return SPARK_STATUS_OK;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
         }
         if (batch.status != SPARK_STATUS_OK ||
@@ -310,7 +362,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
             SparkWeightdAttachMapUndo(outcome);
             SparkWeightdAttachRelease(outcome);
             SparkWeightdAttachSetReason(reason, "import_shape");
-            return SPARK_STATUS_OK;
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
         for (index = 0u; index < batch.batch_count; index++)
         {
@@ -321,18 +373,16 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                     CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
             if (import_rc != CUDA_SUCCESS)
             {
-                if (getenv("SPARK_WEIGHTD_IMPORT_DIAG") != 0)
-                    fprintf(stderr,
-                        "weightd import diag: fd=%d curesult=%d\n",
-                        batch.fds[index], (int)import_rc);
-                (void)close(batch.fds[index]);
+                fprintf(stderr,"weightd import failed: fd=%d curesult=%d\n",
+                    batch.fds[index], (int)import_rc);
                 SparkWeightdAttachCloseBatchFds(&batch);
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_handle");
-                return SPARK_STATUS_OK;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             (void)close(batch.fds[index]);
+            batch.fds[index] = -1;
             outcome->map_handles[outcome->map_handle_count] = (void *)handle;
             outcome->map_handle_count++;
         }
@@ -347,7 +397,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachMapUndo(outcome);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_map");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     outcome->map_base = (void *)(uintptr_t)base;
     {
@@ -362,7 +412,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
                 SparkWeightdAttachSetReason(reason, "import_map");
-                return SPARK_STATUS_OK;
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
             outcome->map_mapped_count++;
         }
@@ -376,12 +426,37 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         SparkWeightdAttachMapUndo(outcome);
         SparkWeightdAttachRelease(outcome);
         SparkWeightdAttachSetReason(reason, "import_access");
-        return SPARK_STATUS_OK;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     outcome->device_handle = (uint64_t)(uintptr_t)base;
     SparkWeightdAttachSetReason(reason, "");
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdAttachMappedPack(const SparkWeightdPackSlice *slice,
+    const char *pack_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdAttachOutcome *outcome,
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES])
+{
+	SparkStatus status;
+	status = SparkWeightdAttachPack(slice,pack_path,timeout_nanoseconds,outcome,reason);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( outcome->client == 0 || outcome->arena_bytes != slice->pack_bytes )
+	{
+		SparkWeightdAttachRelease(outcome);
+		SparkWeightdAttachSetReason(reason,"arena_mismatch");
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
+	}
+	status = SparkWeightdAttachImportMap(outcome,slice->pack_bytes,timeout_nanoseconds,reason);
+	if ( status != SPARK_STATUS_OK || outcome->client == 0 || outcome->map_base == 0 )
+	{
+		SparkWeightdAttachRelease(outcome);
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)

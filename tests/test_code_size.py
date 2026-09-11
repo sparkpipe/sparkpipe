@@ -1450,6 +1450,13 @@ CEILING = 238773
 # S4 the conv window carry. +11 tracked: the Makefile rule + GNU-C++
 # probe. Measured exact: 237507 on main 201ff6c + this stack.
 CEILING = 237507
+# glm5next-spec merge onto main 2ab9ec6 (lane/glm5next-spec landing): the
+# MTP chain speculation path (draft/verify/accept/fold, wave commit flag,
+# layer-45 weight load, controllability) re-applied onto the multi-row
+# module lineage; diag knobs (FORCE_WAVE_ROWS, LAYERDUMP, SYNC_EVERY,
+# PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
+# Re-pinned from measured reality per the ratchet rule.
+CEILING = 233150
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
@@ -1466,6 +1473,18 @@ CEILING = 237507
 # at degree 16), keepalive gains the optional tile_k pass-through for the
 # expert_tile_k=32 TP16 pack builds (+31/-18 with concurrent-lane in-flight
 # growth in the shared checkout). Measured exact: 233574.
+# batch landings 8f3a6f2..2a46b8c: muse #902 + gemma4 #903 + laguna #904 +
+# minimax #905 (driver WIP-early) + k3 adapter repair #907 + glm53-p0 #908,
+# incl. the error-site SPARK_FAIL sweep (1583 sites) and the direct-pack-load
+# purge. Growth is landing debt; shrink-back tracked by the audit del:add.
+# Measured exact: 241052 on 2a46b8c.
+CEILING = 241052
+# muse #902 round 2, second hop onto 167cde7 (main moved 190 commits under
+# the lane during validation): the muse glimmer family stack (module + cuda
+# tier + stagepack/deployment tooling + the two shared norm kernels in
+# inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
+# 233419 at 167cde7. Measured exact: 238091.
+CEILING = 238091
 
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -1,6 +1,7 @@
 #define _FILE_OFFSET_BITS 64
 
 #include <stdatomic.h>
+#include "sparkpipe/spark_error_site.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,8 +15,12 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
+#include "sparkpipe/spark_weightd_manifest.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 
@@ -39,6 +44,7 @@ typedef struct SparkGlm52PackRange
 } SparkGlm52PackRange;
 
 typedef struct SparkGlm52ModuleState SparkGlm52ModuleState;
+typedef struct SparkGlm52TpChain SparkGlm52TpChain;
 
 typedef struct SparkGlm52AsyncCompletion
 {
@@ -112,8 +118,10 @@ struct SparkGlm52ModuleState
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
+	SparkWeightdLazyPack *lazy_pack;
 	SparkGlm52ExecutionSlot slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm52AsyncCompletion completions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	SparkGlm52TpChain *lazy_retained[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint lane_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	atomic_uchar lane_bound[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -127,12 +135,6 @@ struct SparkGlm52ModuleState
 	atomic_ullong tokens_emitted;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_device_collective_initialized;
-	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
-	uint32_t tp_credit_binding_count;
-	void *tp_credit_send_bf16;
-	void *tp_credit_receive_bf16;
-	void *tp_host_credit_send_bf16;
-	void *tp_host_credit_receive_bf16;
 	atomic_ullong tp_next_ordinal;
 };
 
@@ -173,18 +175,18 @@ static SparkStatus SparkGlm52ModuleConfigure(
 {
 	const SparkGlm52ResidentDecodeStageNodeContext *context;
 	if ( state == 0 || configuration == 0 || host_services == 0 || pack_path == 0 || host_services->node_context == 0 || host_services->execution_stream == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( context->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkGlm52ResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > context->resident_sequence_capacity || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( context->tp_degree != 1u && (SPARK_GLM52_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->model_revision == 0 || strcmp(configuration->model_revision,context->model_revision) != 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	state->stage_index = context->stage_index;
 	state->first_layer_index = context->first_layer_index;
 	state->layer_count = context->layer_count;
@@ -211,10 +213,10 @@ static SparkStatus SparkGlm52PackFileSize(FILE *file,uint64_t *bytes)
 {
 	off_t end;
 	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	end = ftello(file);
 	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	*bytes = (uint64_t)end;
 	return(SPARK_STATUS_OK);
 }
@@ -232,28 +234,28 @@ static SparkStatus SparkGlm52PackValidateHeader(
 	uint8_t contract_sha256[SPARK_GLM52_STAGEPACK_SHA256_BYTES];
 	uint64_t directory_bytes,directory_end;
 	if ( state == 0 || header == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( header->magic != SPARK_GLM52_STAGEPACK_MAGIC || header->format_version != SPARK_GLM52_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_GLM52_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_GLM52_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( (header->flags & ~SPARK_GLM52_STAGEPACK_KNOWN_FLAGS) != 0u || (header->flags & SPARK_GLM52_STAGEPACK_FLAG_MTP) != 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( SparkGlm52StagePackHeaderTpDegree(header) == 0u || SparkGlm52StagePackHeaderTpDegree(header) != state->tp_degree || SparkGlm52StagePackHeaderTpRank(header) != state->tp_rank )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->tensor_count == 0u || header->tensor_count > SPARK_GLM52_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_COUNT || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_GLM52_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_GLM52_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_GLM52_MODEL_MOE_EXPERT_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	if ( SparkGlm52ContractHash(contract_sha256) < 0 )
 	{
 		fprintf(stderr,"glm52 pack gate: contract hash unreadable\n");
-		return(SPARK_STATUS_HASH_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( header->model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision,state->model_revision) != 0 )
 	{
 		fprintf(stderr,"glm52 pack gate: model_revision %.*s != expected %s\n",
 			SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES,header->model_revision,
 			state->model_revision);
-		return(SPARK_STATUS_HASH_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( memcmp(header->contract_sha256,contract_sha256,sizeof(contract_sha256)) != 0 )
 	{
@@ -265,24 +267,24 @@ static SparkStatus SparkGlm52PackValidateHeader(
 		for ( hash_index = 0u; hash_index < sizeof(contract_sha256); hash_index++ )
 			fprintf(stderr,"%02x",((const unsigned char *)contract_sha256)[hash_index]);
 		fprintf(stderr,"\n");
-		return(SPARK_STATUS_HASH_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( SparkGlm52BytesAreZero(header->source_config_sha256,sizeof(header->source_config_sha256)) != 0u )
 	{
 		fprintf(stderr,"glm52 pack gate: source_config_sha256 all zero\n");
-		return(SPARK_STATUS_HASH_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( SparkGlm52BytesAreZero(header->pack_recipe_sha256,sizeof(header->pack_recipe_sha256)) != 0u )
 	{
 		fprintf(stderr,"glm52 pack gate: pack_recipe_sha256 all zero\n");
-		return(SPARK_STATUS_HASH_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
 	}
 	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
 	directory_end = header->directory_offset + directory_bytes;
 	if ( directory_end < header->directory_offset || directory_end > file_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -295,32 +297,32 @@ static SparkStatus SparkGlm52PackValidateEntryGeometry(
 	uint64_t payload_bytes,scale_bytes;
 	uint32_t local_layer;
 	if ( SparkGlm52StagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( entry->layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER )
 	{
 		if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		local_layer = entry->layer_index - state->first_layer_index;
 		if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-			return(SPARK_STATUS_DUPLICATE);
+			SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	}
 	else if ( (state->global_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-		return(SPARK_STATUS_DUPLICATE);
+		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	if ( entry->payload_type != shape->payload_type || entry->weight_codec != shape->weight_codec || entry->scale_encoding != shape->scale_encoding || entry->group_count != shape->group_count || entry->rows != shape->rows || entry->columns != shape->columns )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	payload_bytes = SparkGlm52StagePackExpectedPayloadBytes(shape);
 	scale_bytes = SparkGlm52StagePackExpectedScaleBytes(shape);
 	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( entry->payload_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( scale_bytes == 0u )
 	{
 		if ( entry->scale_offset != 0u )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	else if ( entry->scale_offset % SPARK_GLM52_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset < header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes) || entry->scale_offset > header->file_bytes || entry->scale_bytes > header->file_bytes - entry->scale_offset )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -345,10 +347,10 @@ static SparkStatus SparkGlm52PackValidateRanges(
 			for (left_part=0u; left_part<2u; left_part++)
 				for (right_part=0u; right_part<2u; right_part++)
 					if ( SparkGlm52PackRangesOverlap(&left[left_part],&right[right_part]) != 0u )
-						return(SPARK_STATUS_SCHEMA_ERROR);
+						SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
 		if ( SparkGlm52PackRangesOverlap(&left[0],&left[1]) != 0u )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -365,10 +367,11 @@ static void SparkGlm52PackMarkSeen(
 
 static SparkStatus SparkGlm52PackAssignLayer(
 	SparkGlm52LayerWeights *weights,
-	uint32_t tensor_kind,
+	const SparkGlm52StagePackEntry *entry,
 	const void *payload,
 	const void *scale)
 {
+	uint32_t tensor_kind = entry->tensor_kind;
 	switch ( tensor_kind )
 	{
 	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
@@ -390,8 +393,8 @@ static SparkStatus SparkGlm52PackAssignLayer(
 	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
-	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; break;
-	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; weights->expert_up_gate_payload_offset = entry->payload_offset; weights->expert_up_gate_scale_offset = entry->scale_offset; break;
+	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; weights->expert_down_payload_offset = entry->payload_offset; weights->expert_down_scale_offset = entry->scale_offset; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
@@ -406,7 +409,7 @@ static SparkStatus SparkGlm52PackAssign(
 	const void *scale)
 {
 	if ( entry->layer_index != SPARK_GLM52_STAGEPACK_GLOBAL_LAYER )
-		return(SparkGlm52PackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
+		return(SparkGlm52PackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_GLM52_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
@@ -414,6 +417,100 @@ static SparkStatus SparkGlm52PackAssign(
 	case SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
 	default: return(SPARK_STATUS_SCHEMA_ERROR);
 	}
+}
+
+typedef struct SparkGlm52ManifestContext
+{
+	const SparkGlm52StagePackEntry *entries;
+	uint32_t count;
+} SparkGlm52ManifestContext;
+
+static SparkStatus SparkGlm52ManifestPlane(const SparkWeightdManifest *manifest,const SparkGlm52StagePackEntry *entry,uint32_t plane)
+{
+	const SparkWeightdRangeGroup *group;
+	const SparkWeightdRange *range;
+	uint32_t kind,expert,index;
+	uint64_t per,base;
+	kind = entry->tensor_kind * 2u + plane;
+	base = plane == 0u ? entry->payload_offset : entry->scale_offset;
+	per = (plane == 0u ? entry->payload_bytes : entry->scale_bytes) / entry->group_count;
+	if ( per == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (expert=0u; expert<entry->group_count; expert++)
+	{
+		group = SparkWeightdManifestFind(manifest,entry->layer_index,expert);
+		if ( group == 0 || group->range_count == 0u || group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		range = 0;
+		for (index=0u; index<group->range_count; index++)
+		{
+			if ( manifest->ranges[group->first_range + index].kind == kind )
+			{
+				range = &manifest->ranges[group->first_range + index];
+				break;
+			}
+		}
+		if ( range == 0 || range->layer != entry->layer_index || range->expert != expert ||
+			range->offset != (base + ((uint64_t)expert * per)) || range->bytes != per )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52ManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
+{
+	const SparkGlm52ManifestContext *context = (const SparkGlm52ManifestContext *)opaque;
+	const SparkGlm52StagePackEntry *entry;
+	SparkStatus status;
+	uint64_t expected = 0u;
+	uint32_t index,plane;
+	for (index=0u; index<context->count; index++)
+	{
+		entry = &context->entries[index];
+		if ( entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
+			continue;
+		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
+			return(SPARK_STATUS_UNSUPPORTED);
+		for (plane=0u; plane<2u; plane++)
+		{
+			status = SparkGlm52ManifestPlane(manifest,entry,plane);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			expected += entry->group_count;
+		}
+	}
+	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static SparkStatus SparkGlm52LazyOpen(SparkGlm52ModuleState *state,const char *path,uint64_t bytes,const SparkGlm52StagePackEntry *entries,uint32_t count)
+{
+	SparkWeightdLazyAttachRequest request;
+	SparkGlm52ManifestContext context = {entries,count};
+	SparkStatus status;
+	const char *digest;
+	uint64_t spine_budget;
+	status = SparkWeightdAttachRequested();
+	if ( status == SPARK_STATUS_BUSY )
+		return(SPARK_STATUS_OK);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&request,0,sizeof(request));
+	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memcpy(request.identity.pack_sha256,digest,65u);
+	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM52_MODULE_TAG);
+	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = bytes;
+	request.identity.topology = state->tp_degree;
+	memcpy(request.pack_path,path,strlen(path) + 1u);
+	status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm52ManifestCheck,&context,&state->lazy_pack);
+	return(status);
 }
 
 static SparkStatus SparkGlm52PackLoadEntry(
@@ -425,12 +522,23 @@ static SparkStatus SparkGlm52PackLoadEntry(
 	SparkStatus status;
 	payload = 0;
 	scale = 0;
+	if ( state->lazy_pack != 0 )
+	{
+		if ( entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry->tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
+			return(SparkGlm52PackAssign(state,entry,0,0));
+		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)&payload);
+		if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
+			status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->scale_offset,entry->scale_bytes,(const void **)&scale);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm52PackAssign(state,entry,payload,scale);
+		return(status);
+	}
 	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
 	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
 		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PackAssign(state,entry,payload,scale);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static uint64_t SparkGlm52ExpectedLayerMask(
@@ -462,10 +570,10 @@ static SparkStatus SparkGlm52PackValidateInventory(const SparkGlm52ModuleState *
 {
 	uint32_t local;
 	if ( state->global_seen != SparkGlm52ExpectedGlobalMask(state) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	for (local=0u; local<state->layer_count; local++)
 		if ( state->layer_seen[local] != SparkGlm52ExpectedLayerMask(state,state->first_layer_index + local) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
@@ -482,7 +590,7 @@ static SparkStatus SparkGlm52PackLoad(
 	SparkStatus status;
 	file = fopen(path,"rb");
 	if ( file == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
 	status = SparkGlm52PackFileSize(file,&file_bytes);
@@ -502,11 +610,13 @@ static SparkStatus SparkGlm52PackLoad(
 		status = SparkGlm52PackValidateRanges(entries,header.tensor_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PackValidateInventory(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52LazyOpen(state,path,file_bytes,entries,header.tensor_count);
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
 		status = SparkGlm52PackLoadEntry(state,file,&entries[index]);
 	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateBytes(
@@ -518,7 +628,7 @@ static SparkStatus SparkGlm52AllocateBytes(
 {
 	uint64_t bytes;
 	if ( state == 0 || pointer == 0 || count == 0u || width == 0u || element_bytes == 0u || count > UINT64_MAX / width || count * width > UINT64_MAX / element_bytes )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	bytes = count * width * element_bytes;
 	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
 }
@@ -538,7 +648,7 @@ static SparkStatus SparkGlm52AllocateSlotHost(SparkGlm52ExecutionSlot *slot)
 	uint64_t rows,words,bytes;
 	cudaError_t error;
 	if ( slot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	words = (rows * 4u) + SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT;
 	bytes = words * sizeof(uint32_t);
@@ -569,6 +679,12 @@ static void SparkGlm52ReleaseSlotHost(SparkGlm52ModuleState *state)
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
+		if ( state->slots[index].group_row_offset_host != 0 )
+			(void)cudaFreeHost(state->slots[index].group_row_offset_host);
+		state->slots[index].group_row_offset_host = 0;
+		if ( state->slots[index].route_ready_event != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
+		state->slots[index].route_ready_event = 0;
 	}
 }
 
@@ -584,7 +700,7 @@ static SparkStatus SparkGlm52AllocateSlotMetadata(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_tile_prefix);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,1u,sizeof(uint32_t) * 6u,1u,&slot->kv_access_error);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateSlotHidden(
@@ -608,7 +724,7 @@ static SparkStatus SparkGlm52AllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateSlotMlp(
@@ -634,7 +750,19 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_row_offset);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w1);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateBytes(state,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u,1u,sizeof(uint32_t),(void **)&slot->group_tile_prefix_w2);
-	return(status);
+	if ( status == SPARK_STATUS_OK )
+	{
+		cudaError_t error = cudaHostAlloc((void **)&slot->group_row_offset_host,(SPARK_GLM52_MODEL_MOE_EXPERT_COUNT + 1u) * sizeof(uint32_t),cudaHostAllocPortable);
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"group_row_offset_host");
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		cudaError_t error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
+		if ( error != cudaSuccess )
+			status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"route_ready_event");
+	}
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateSlotHead(
@@ -659,7 +787,7 @@ static SparkStatus SparkGlm52AllocateSlotHead(
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm52AllocateBytes(state,1u,1u,sizeof(uint32_t),(void **)&slot->head_screened_count);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateSlots(SparkGlm52ModuleState *state)
@@ -676,7 +804,7 @@ static SparkStatus SparkGlm52AllocateSlots(SparkGlm52ModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateSlotMlp(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm52AllocateSlotHead(state,&state->slots[index]);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
@@ -687,12 +815,12 @@ static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
 	cudaError_t error;
 	state->pages_per_sequence = SparkCeilDivU32(state->max_sequence_positions,64u);
 	if ( state->pages_per_sequence == 0u || state->resident_sequence_capacity > UINT32_MAX / state->pages_per_sequence )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->page_count = state->resident_sequence_capacity * state->pages_per_sequence;
 	entries = state->page_count;
 	host_table = (uint32_t *)malloc(entries * sizeof(uint32_t));
 	if ( host_table == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (index=0u; index<entries; index++)
 		host_table[index] = (uint32_t)index;
 	status = SparkGlm52AllocateBytes(state,entries,1u,sizeof(uint32_t),(void **)&state->page_table);
@@ -702,7 +830,7 @@ static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
 		status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"page_table");
 	}
 	free(host_table);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52PageCopy(
@@ -716,13 +844,13 @@ static SparkStatus SparkGlm52PageCopy(
 	cudaError_t error;
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
 	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
 		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
 	else
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_page_copy"));
 }
 
@@ -750,7 +878,7 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
 	state->kv_lane_cache_lanes = (SparkModelDriverCacheLane *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_cache_lanes));
 	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 || state->kv_lane_cache_lanes == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
@@ -805,7 +933,7 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
@@ -833,13 +961,13 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u )
 	{
 		if ( state->index_layer_stride_bytes > UINT64_MAX / state->index_layer_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		index_total = state->index_layer_stride_bytes * state->index_layer_count;
 		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52KvInitialize(state);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52AdmissionPredicate(
@@ -854,7 +982,7 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	SparkStatus status;
 	state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 || request == 0 || decision == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
 	{
 		lane = &request->cache_lanes[lane_index];
@@ -868,7 +996,7 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 		decision->accepted = 1u;
 		decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
@@ -881,7 +1009,7 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
@@ -892,7 +1020,7 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
 			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
@@ -902,7 +1030,7 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 			lane = &request->cache_lanes[lane_index];
 			status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,lane,state->kv_lane_mutation_flags[lane->resident_sequence_slot]);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 		}
 	}
 	decision->accepted = 1u;
@@ -911,66 +1039,33 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 }
 
 static uint32_t SparkGlm52RoundMajorWaveRows(
+	const SparkGlm52ModuleState *state,
 	const SparkGlm52ResidentDecodeStageBatchView *batch,
 	uint32_t first_row)
 {
-	uint32_t lane,current,count,next;
-	if ( batch == 0 || first_row >= batch->row_count || batch->active_sequence_count == 0u )
+	SparkStageModuleClaimedLaneContext lanes;
+	if ( state == 0 || batch == 0 || batch->active_sequence_count == 0u )
 		return(0u);
-	current = batch->active_sequence_count;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-		if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row] )
-			current = lane;
-	if ( current == batch->active_sequence_count )
-		return(0u);
-	count = 1u;
-	while ( first_row + count < batch->row_count )
-	{
-		next = batch->active_sequence_count;
-		for (lane=0u; lane<batch->active_sequence_count; lane++)
-			if ( batch->row_resident_slots[lane] == batch->row_resident_slots[first_row + count] )
-				next = lane;
-		if ( next == batch->active_sequence_count || next <= current )
-			break;
-		current = next;
-		count++;
-	}
-	return(count);
+	lanes.index_states = state->lane_states;
+	lanes.index_capacity = state->resident_sequence_capacity;
+	return(SparkRowLayoutRoundMajorWaveRowCount(first_row,batch->row_count,batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes));
 }
 
 static SparkStatus SparkGlm52ValidateRoundMajor(
 	const SparkGlm52ModuleState *state,
 	const SparkGlm52ResidentDecodeStageBatchView *batch)
 {
-	uint32_t counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,index,maximum,wave;
-	if ( batch->row_count < batch->active_sequence_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-	{
-		if ( batch->row_resident_slots[lane] >= state->resident_sequence_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		for (index=0u; index<lane; index++)
-			if ( batch->row_resident_slots[index] == batch->row_resident_slots[lane] )
-				return(SPARK_STATUS_DUPLICATE);
-	}
-	maximum = 0u;
-	for (row=0u; row<batch->row_count; row++)
-	{
-		for (lane=0u; lane<batch->active_sequence_count && batch->row_resident_slots[lane]!=batch->row_resident_slots[row]; lane++)
-			;
-		if ( lane == batch->active_sequence_count )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		counts[lane]++;
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	}
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<batch->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= batch->row_count || batch->row_resident_slots[row++] != batch->row_resident_slots[lane]) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == batch->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	uint32_t ordinals[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t last_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkRowLayoutDirectLaneContext lanes;
+	SparkStatus status;
+	if ( state == 0 || batch == 0 || batch->row_count < batch->active_sequence_count || state->resident_sequence_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkRowLayoutDirectLaneMapInitialize(&lanes,ordinals,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
 }
 
 static SparkStatus SparkGlm52ValidateSequenceContinuity(
@@ -988,7 +1083,7 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 	{
 		slot = batch->row_resident_slots[lane];
 		if ( slot >= state->resident_sequence_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
 		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
 		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
@@ -1000,11 +1095,11 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 		position = batch->row_positions[row];
 		sequence = batch->row_sequence_ids[row];
 		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( position == 0u )
 		{
 			if ( touched[lane] != 0u )
-				return(SPARK_STATUS_SCHEMA_ERROR);
+				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 			bound[lane] = 1u;
 			sequence_ids[lane] = sequence;
 			next_positions[lane] = 1u;
@@ -1012,7 +1107,7 @@ static SparkStatus SparkGlm52ValidateSequenceContinuity(
 		else
 		{
 			if ( bound[lane] == 0u || sequence_ids[lane] != sequence || next_positions[lane] != position )
-				return(SPARK_STATUS_SCHEMA_ERROR);
+				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 			next_positions[lane] = position + 1u;
 		}
 		touched[lane] = 1u;
@@ -1045,10 +1140,10 @@ static SparkStatus SparkGlm52ValidateFrameBuffers(
 	if ( state->owns_final_head == 0u )
 		return(frame->buffer_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffer_count != 1u || frame->buffers == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	buffer = &frame->buffers[0];
 	if ( buffer->flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || buffer->address == 0 || buffer->bytes < (uint64_t)row_count * sizeof(uint32_t) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1063,41 +1158,42 @@ static SparkStatus SparkGlm52ValidateFrame(
 	uint64_t boundary_bytes,sideband_bytes;
 	SparkStatus status;
 	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkGlm52ResidentDecodeStageFrameContext *)frame->user_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != sizeof(*context) || context->reserved0 != 0u || (context->flags & ~SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS) != 0u || context->batch == 0 )
-		return(SPARK_STATUS_ABI_MISMATCH);
+		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	batch = context->batch;
 	if ( batch->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != sizeof(*batch) || batch->row_count == 0u || batch->row_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || batch->active_sequence_count == 0u || batch->active_sequence_count > state->resident_sequence_capacity || batch->row_resident_slots == 0 || batch->row_positions == 0 || batch->row_sequence_ids == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
 	if ( prefill == 0u && batch->row_count != batch->active_sequence_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->active_slot_count != batch->active_sequence_count || frame->new_token_count != batch->row_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	expected_flags = prefill != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
 	expected_flags |= state->owns_final_head == 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
 	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT : 0u;
 	expected_flags |= SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT : 0u;
 	if ( context->flags != expected_flags )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	boundary_bytes = (uint64_t)batch->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
 	sideband_bytes = (uint64_t)batch->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW;
 	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) != 0u && (context->sideband_input == 0 || context->sideband_input_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) == 0u && (context->sideband_input != 0 || context->sideband_input_bytes != 0u)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) != 0u && (context->sideband_output == 0 || context->sideband_output_bytes < sideband_bytes)) || (SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) == 0u && (context->sideband_output != 0 || context->sideband_output_bytes != 0u)) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkGlm52ValidateRoundMajor(state,batch);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ValidateFrameBuffers(state,frame,batch->row_count);
 	*context_out = status == SPARK_STATUS_OK ? context : 0;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 #define SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+#define SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
 
 typedef enum SparkGlm52ChainStage
 {
@@ -1126,10 +1222,16 @@ typedef struct SparkGlm52TpChain
 	uint32_t stage;
 	uint32_t next_layer;
 	uint32_t active;
+	uint64_t expert_lease;
+	uint32_t expert_lease_begun;
+	uint32_t expert_lease_recorded;
+	SparkStatus retained_status;
 } SparkGlm52TpChain;
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm52CompleteAsync(void *context);
+static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain);
+static void SparkGlm52LazyRetryRetained(void *context);
 static SparkStatus SparkGlm52EnqueueAsyncCompletion(
 	SparkGlm52ModuleState *state,
 	SparkGlm52ExecutionSlot *slot,
@@ -1228,13 +1330,9 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	const SparkGlm52ResidentDecodeStageNodeContext *context)
 {
 	SparkTpDeviceCollectiveConfig configuration;
-	uint64_t credit_bytes,offset,total_bytes;
-	uint32_t credit,hidden,memory_mode,route,route_count;
-	void *mapped_receive,*mapped_send;
-	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
 	memset(&configuration,0,sizeof(configuration));
@@ -1254,104 +1352,29 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	configuration.registration_cuda_stream = state->execution_stream;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkGlm52ModuleCombineBf16;
 		configuration.combine_u64_max_function = SparkGlm52ModuleCombineU64Max;
 		configuration.combine_context = state;
+		configuration.algorithm_mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		configuration.direct_all_to_all_max_payload_bytes =
+			SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES;
 	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT && configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkTpDeviceCollectiveProbeMemoryMode(configuration.backend_kind,configuration.backend_module_path,&memory_mode);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkTpDeviceCollectiveCreditBindingRouteCount(&configuration,&route_count);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	total_bytes = 0u;
-	for (route=0u; route<route_count; route++)
-	{
-		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES;
-		if ( credit_bytes == 0u || total_bytes > UINT64_MAX - credit_bytes * configuration.credit_count )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		total_bytes += credit_bytes * configuration.credit_count;
-	}
-	status = SPARK_STATUS_OK;
-	if ( total_bytes != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_credit_send_bf16);
-	if ( status == SPARK_STATUS_OK && total_bytes != 0u )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,total_bytes,&state->tp_credit_receive_bf16);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( total_bytes != 0u && memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST )
-	{
-		mapped_receive = 0;
-		mapped_send = 0;
-		error = cudaHostAlloc(&state->tp_host_credit_send_bf16,total_bytes,cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostAlloc(&state->tp_host_credit_receive_bf16,total_bytes,cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&mapped_send,state->tp_host_credit_send_bf16,0u);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&mapped_receive,state->tp_host_credit_receive_bf16,0u);
-		if ( error != cudaSuccess )
-		{
-			if ( state->tp_host_credit_send_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-			if ( state->tp_host_credit_receive_bf16 != 0 )
-				(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-			state->tp_host_credit_send_bf16 = 0;
-			state->tp_host_credit_receive_bf16 = 0;
-			return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_credit_alloc"));
-		}
-		state->tp_credit_send_bf16 = mapped_send;
-		state->tp_credit_receive_bf16 = mapped_receive;
-	}
-	offset = 0u;
-	state->tp_credit_binding_count = 0u;
-	for (route=0u; route<route_count; route++)
-	{
-		hidden = configuration.local_hidden_dimension;
-		credit_bytes = (uint64_t)configuration.max_active_sequence_count * hidden * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES;
-		for (credit=0u; credit<configuration.credit_count; credit++)
-		{
-			SparkTpDeviceCollectiveCreditBinding *binding;
-			if ( state->tp_credit_binding_count >= SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT )
-				return(SPARK_STATUS_CAPACITY_EXCEEDED);
-			binding = &state->tp_credit_bindings[state->tp_credit_binding_count++];
-			binding->step_index = route;
-			binding->credit_index = credit;
-			binding->send_device = (uint8_t *)state->tp_credit_send_bf16 + offset;
-			binding->receive_device = (uint8_t *)state->tp_credit_receive_bf16 + offset;
-			binding->send_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_send_bf16 + offset : binding->send_device;
-			binding->receive_transport = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? (uint8_t *)state->tp_host_credit_receive_bf16 + offset : binding->receive_device;
-			binding->flags = memory_mode == SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST ? SPARK_TP_DEVICE_COLLECTIVE_BINDING_KNOWN_FLAGS : 0u;
-			binding->reserved0 = 0u;
-			offset += credit_bytes;
-		}
-	}
-	if ( state->tp_credit_binding_count != 0u )
-	{
-		configuration.credit_bindings = state->tp_credit_bindings;
-		configuration.credit_binding_count = state->tp_credit_binding_count;
-	}
+	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state->tp_host_credit_send_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_send_bf16);
-		if ( state->tp_host_credit_receive_bf16 != 0 )
-			(void)cudaFreeHost(state->tp_host_credit_receive_bf16);
-		state->tp_host_credit_send_bf16 = 0;
-		state->tp_host_credit_receive_bf16 = 0;
-		return(status);
-	}
+		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
-	return(SPARK_STATUS_OK);
+	if ( state->lazy_pack != 0 &&
+	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(
+		    &state->tp_device_collective,
+		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+		    0u,0u,0u,0u);
+	return(status);
 }
 
 static void SparkGlm52ModuleTpCompletion(
@@ -1377,13 +1400,14 @@ static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *d
 		return(SPARK_STATUS_OK);
 	}
 	if ( state->tp_device_collective_initialized == 0u )
-		return(SPARK_STATUS_INTERNAL_ERROR);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = device_bf16;
@@ -1406,13 +1430,14 @@ static SparkStatus SparkGlm52ModuleReduceHeadMax(SparkGlm52TpChain *chain)
 		return(SPARK_STATUS_OK);
 	}
 	if ( state->tp_device_collective_initialized == 0u )
-		return(SPARK_STATUS_INTERNAL_ERROR);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = chain->slot->head_maxloc_u64;
@@ -1434,6 +1459,108 @@ static void SparkGlm52TpChainFail(SparkGlm52TpChain *chain,SparkStatus status)
 	chain->active = 0u;
 	SparkGlm52CompleteAsync(async);
 	free(chain);
+}
+
+static SparkStatus SparkGlm52LazyRelease(SparkGlm52TpChain *chain)
+{
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	if ( chain->expert_lease == 0u )
+		return(SPARK_STATUS_OK);
+	if ( chain->expert_lease_begun != 0u )
+	{
+		if ( chain->expert_lease_recorded == 0u )
+		{
+			status = SparkWeightdMapRecordCompletion(map,chain->expert_lease,(cudaStream_t)chain->slot->stream);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
+			chain->expert_lease_recorded = 1u;
+			chain->wave.expert_lease_base = 0;
+		}
+		if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+			return(SPARK_STATUS_IO_ERROR);
+	}
+	status = SparkWeightdMapRelease(map,chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+	{
+		chain->expert_lease = 0u;
+		chain->expert_lease_begun = 0u;
+		chain->expert_lease_recorded = 0u;
+		chain->wave.expert_lease_base = 0;
+	}
+	return(status);
+}
+
+static SparkStatus SparkGlm52LazyRecoverLease(SparkGlm52ModuleState *state,uint32_t slot,SparkGlm52TpChain **out)
+{
+	SparkGlm52TpChain *chain;
+	SparkStatus status = SPARK_STATUS_OK;
+	*out = 0;
+	chain = __atomic_exchange_n(&state->lazy_retained[slot],0,__ATOMIC_ACQ_REL);
+	if ( chain == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( chain->expert_lease != 0u )
+		status = SparkGlm52LazyRelease(chain);
+	if ( status != SPARK_STATUS_OK )
+		__atomic_store_n(&state->lazy_retained[slot],chain,__ATOMIC_RELEASE);
+	else
+		*out = chain;
+	return(status);
+}
+
+static void SparkGlm52LazyRetryRetained(void *context)
+{
+	SparkGlm52ModuleState *state = (SparkGlm52ModuleState *)context;
+	SparkGlm52TpChain *chain;
+	uint32_t slot;
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+		if ( SparkGlm52LazyRecoverLease(state,slot,&chain) == SPARK_STATUS_OK )
+			SparkGlm52TpChainFail(chain,chain->retained_status);
+}
+
+static SparkStatus SparkGlm52LazyExperts(SparkGlm52TpChain *chain)
+{
+	SparkWeightdExpertKey keys[SPARK_GLM52_MODEL_MOE_EXPERT_COUNT];
+	SparkWeightdMap *map = chain->state->lazy_pack->map;
+	SparkStatus status;
+	void *address = 0;
+	uint32_t count = 0u;
+	if ( chain->slot->route_recorded == 0u || cudaEventSynchronize((cudaEvent_t)chain->slot->route_ready_event) != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
+	status = SparkWeightdRouteKeys(chain->wave.first_layer_index + chain->next_layer,chain->slot->group_row_offset_host,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,chain->wave.row_count * SPARK_GLM52_MODEL_MOE_TOP_K,keys,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,&count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapAcquire(map,keys,count,&chain->expert_lease,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdMapBeginUse(map,chain->expert_lease,&address);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	chain->expert_lease_begun = 1u;
+	chain->wave.expert_lease_base = (const uint8_t *)address;
+	chain->wave.expert_lease_local_layer = chain->next_layer;
+	if ( SparkGlm52LaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52LazyWork(void *context)
+{
+	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)context;
+	SparkStatus status,cleanup;
+	status = SparkGlm52LazyExperts(chain);
+	cleanup = SparkGlm52LazyRelease(chain);
+	if ( cleanup == SPARK_STATUS_IO_ERROR || cleanup == SPARK_STATUS_BUSY )
+		cleanup = SparkGlm52LazyRelease(chain);
+	if ( cleanup != SPARK_STATUS_OK )
+	{
+		chain->retained_status = status != SPARK_STATUS_OK ? status : cleanup;
+		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease for teardown retry\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		__atomic_store_n(&chain->state->lazy_retained[chain->slot_index],chain,__ATOMIC_RELEASE);
+		return;
+	}
+	if ( status != SPARK_STATUS_OK )
+		SparkGlm52TpChainFail(chain,status);
+	else
+		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 }
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
@@ -1482,6 +1609,18 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_MLP:
+		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER )
+		{
+			if ( SparkGlm52LaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
+			{
+				SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+				return;
+			}
+			launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52LazyWork,chain);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm52TpChainFail(chain,launch_status);
+			return;
+		}
 		if ( SparkGlm52LaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1529,7 +1668,7 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
 			uint32_t next_wave;
-			next_wave = SparkGlm52RoundMajorWaveRows(chain->batch,chain->next_wave_row);
+			next_wave = SparkGlm52RoundMajorWaveRows(chain->state,chain->batch,chain->next_wave_row);
 			if ( next_wave == 0u )
 			{
 				SparkGlm52TpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
@@ -1565,11 +1704,11 @@ static SparkStatus SparkGlm52StageHostBatch(
 {
 	uint32_t row;
 	if ( state == 0 || slot == 0 || batch == 0 || batch->row_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row=0u; row<batch->row_count; row++)
 	{
 		if ( batch->row_positions[row] >= UINT32_MAX )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		slot->host_resident_slots[row] = batch->row_resident_slots[row];
 		slot->host_positions[row] = (uint32_t)batch->row_positions[row];
 		if ( state->owns_embedding != 0u )
@@ -1709,13 +1848,13 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	continuity.next_positions = simulated_next;
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm52PrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	slot = &state->slots[slot_index];
 	slot->stream = frame->execution_stream;
@@ -1724,13 +1863,13 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	{
 		SparkStageModuleSlotRelease(state->slot_states,slot_index);
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	SparkGlm52PrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
 	error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
 	status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_access_reset");
-	wave_rows = status == SPARK_STATUS_OK ? SparkGlm52RoundMajorWaveRows(batch,0u) : 0u;
+	wave_rows = status == SPARK_STATUS_OK ? SparkGlm52RoundMajorWaveRows(state,batch,0u) : 0u;
 	if ( status == SPARK_STATUS_OK && wave_rows == 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
@@ -1746,7 +1885,7 @@ static SparkStatus SparkGlm52ExecuteBatch(
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 		SparkStageModuleSlotRelease(state->slot_states,slot_index);
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	chain->state = state;
 	chain->slot = slot;
@@ -1777,12 +1916,12 @@ static SparkStatus SparkGlm52ModuleExecuteFrame(
 	{
 		if ( state != 0 )
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	status = SparkGlm52ExecuteBatch(state,frame,context);
 	if ( status != SPARK_STATUS_OK )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkGlm52AdmissionCost(
@@ -1821,10 +1960,10 @@ static SparkStatus SparkGlm52ModuleAdmit(
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( decision->accepted == 0u )
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkGlm52ModuleSnapshotExtend(
@@ -1845,8 +1984,25 @@ static void SparkGlm52ModuleSnapshotExtend(
 static void SparkGlm52ModuleStateTeardown(void *module_state)
 {
 	SparkGlm52ModuleState *state;
+	uint32_t slot;
 	state = (SparkGlm52ModuleState *)module_state;
 	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+	{
+		SparkGlm52TpChain *chain = 0;
+		(void)SparkGlm52LazyRecoverLease(state,slot,&chain);
+	}
+	if ( state->lazy_pack != 0 )
+	{
+		if ( state->lazy_pack->worker != 0 )
+		{
+			if ( SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52LazyRetryRetained,state) == SPARK_STATUS_OK )
+				(void)SparkWeightdWorkerWaitIdle(state->lazy_pack->worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+		}
+		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
+			fprintf(stderr,"glm52 lazy pack teardown incomplete; retaining resources\n");
+		state->lazy_pack = 0;
+	}
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
@@ -1883,7 +2039,7 @@ static SparkStatus SparkGlm52BuildHeadShadow(SparkGlm52ModuleState *state)
 		status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,SparkGlm52LaunchHeadCertifiedQuantize(0,state->lm_head_bf16,state->head_certified_fp8_payload,state->head_certified_fp8_scale_f32,state->head_certified_fp8_norm_f32,(uint32_t)head_rows,(uint32_t)dim),"head_certified_quantize");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,cudaDeviceSynchronize(),"head_certified_sync");
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm52ModulePrepare(
@@ -1910,7 +2066,7 @@ static SparkStatus SparkGlm52ModulePrepare(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52BuildHeadShadow(state);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states,state->resident_sequence_capacity);
 	for (lane=0u; lane<state->resident_sequence_capacity; lane++)

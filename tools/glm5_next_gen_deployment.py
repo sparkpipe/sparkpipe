@@ -21,20 +21,21 @@ HOSTS = [h for h in os.environ.get(
     "GLM5_NEXT_TP_HOSTS",
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
+ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
-                              "/home/{host}/sparkdata/glm53flash.bf16.tp16")
+                              "/home/{host}/sparkdata/" + ROOT_NAME)
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
 COLLECTIVE_BASE = int(os.environ.get("GLM5_NEXT_COLLECTIVE_BASE", "63640"))
 TRANSPORT_BASE = int(os.environ.get("GLM5_NEXT_TRANSPORT_BASE", "60710"))
 COLLECTIVE_SESSION_BASE = int(os.environ.get(
     "GLM5_NEXT_SESSION_BASE", "61500"))
 COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
-    "GLM5_NEXT_SESSION_HC_BASE", "62500"))
+    "GLM5_NEXT_SESSION_HC_BASE", "62550"))
 COLLECTIVE_ID = 9911223344556679
-BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "nccl")
+BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
-    "packs/glm53flash.bf16-official.tp16.rank%d.sp")
+    "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
@@ -56,7 +57,7 @@ TP_COLLECTIVE = {
     "algorithms": ["tree"],
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
-    "connect_timeout_milli": 10000,
+    "connect_timeout_milli": 30000,
     "operation_timeout_milli": 30000,
     "peer_hosts": list(HOSTS),
     "peer_ports": [COLLECTIVE_BASE + r for r in range(TP)],
@@ -141,6 +142,8 @@ def stage_config(rank: int) -> dict:
 
 
 def resident_deployment() -> dict:
+    contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
+    page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
@@ -150,8 +153,8 @@ def resident_deployment() -> dict:
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": "/home/%s/kvcache/glm53flash.bf16.tp16" % host,
-            "kv_backing_maximum_bytes": 8589934592,
+            "kv_backing_directory": "/home/%s/kvcache/" % host + ROOT_NAME,
+            "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
@@ -160,6 +163,7 @@ def resident_deployment() -> dict:
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": contract["tokens"]["eos_token_ids"],
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
@@ -185,12 +189,8 @@ def resident_deployment() -> dict:
             "max_active_sequences": 16,
             "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
-            # The schema requires BOTH kv capacity members (exact-member
-            # validation) and the adapter (no JIT_KV) requires both ZERO;
-            # the module owns its KV pool internally (DRIVER_OWNS_KV).
-            # Adopting glm52's JIT_KV lane wiring is the follow-up.
-            "kv_logical_page_capacity": 0,
-            "kv_physical_page_capacity": 0,
+            "kv_logical_page_capacity": page_capacity,
+            "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
     }

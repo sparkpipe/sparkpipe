@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_error_site.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -54,14 +55,14 @@ static SparkStatus SparkJsonAllocateToken(
 
     if (parser == 0 || token_index == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (parser->token_count == parser->token_capacity)
     {
         if (parser->token_capacity >
             UINT32_MAX / SPARK_JSON_TOKEN_CAPACITY_GROWTH_FACTOR)
         {
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         resized_capacity = parser->token_capacity == 0u ?
             SPARK_JSON_INITIAL_TOKEN_CAPACITY :
@@ -69,7 +70,7 @@ static SparkStatus SparkJsonAllocateToken(
         resized_tokens = (SparkJsonToken *)realloc(parser->tokens, (size_t)resized_capacity * sizeof(*resized_tokens));
         if (resized_tokens == 0)
         {
-            return SPARK_STATUS_INTERNAL_ERROR;
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
         }
         parser->tokens = resized_tokens;
         parser->token_capacity = resized_capacity;
@@ -103,7 +104,7 @@ static SparkStatus SparkJsonParseStringToken(SparkJsonParser *parser, int32_t pa
 
     if (parser == 0 || token_index == 0 || parser->position >= parser->text_bytes || parser->text[parser->position] != '"')
     {
-        return SPARK_STATUS_PARSE_ERROR;
+        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
 
     parser->position += 1u;
@@ -126,14 +127,14 @@ static SparkStatus SparkJsonParseStringToken(SparkJsonParser *parser, int32_t pa
         }
         if ((unsigned char)character < 0x20u)
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         if (character == '\\')
         {
             parser->position += 1u;
             if (parser->position >= parser->text_bytes)
             {
-                return SPARK_STATUS_PARSE_ERROR;
+                SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
             }
             character = parser->text[parser->position];
             if (character == 'u')
@@ -142,25 +143,25 @@ static SparkStatus SparkJsonParseStringToken(SparkJsonParser *parser, int32_t pa
 
                 if (parser->position + 4u >= parser->text_bytes)
                 {
-                    return SPARK_STATUS_PARSE_ERROR;
+                    SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
                 }
                 for (hex_index = 1u; hex_index <= 4u; ++hex_index)
                 {
                     if (!SparkJsonCharacterIsHex(parser->text[parser->position + hex_index]))
                     {
-                        return SPARK_STATUS_PARSE_ERROR;
+                        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
                     }
                 }
                 parser->position += 4u;
             }
             else if (strchr("\"\\/bfnrt", character) == 0)
             {
-                return SPARK_STATUS_PARSE_ERROR;
+                SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
             }
         }
         parser->position += 1u;
     }
-    return SPARK_STATUS_PARSE_ERROR;
+    SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 }
 
 static bool SparkJsonPrimitiveDelimiter(char character)
@@ -240,7 +241,7 @@ static SparkStatus SparkJsonParsePrimitiveToken(SparkJsonParser *parser, int32_t
 
     if (parser == 0 || token_index == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     primitive_start = parser->position;
     while (parser->position < parser->text_bytes && !SparkJsonPrimitiveDelimiter(parser->text[parser->position]))
@@ -250,14 +251,14 @@ static SparkStatus SparkJsonParsePrimitiveToken(SparkJsonParser *parser, int32_t
     primitive_bytes = parser->position - primitive_start;
     if (primitive_bytes == 0u)
     {
-        return SPARK_STATUS_PARSE_ERROR;
+        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
     if (!((primitive_bytes == sizeof(SparkJsonTrue) - 1u && memcmp(parser->text + primitive_start, SparkJsonTrue, sizeof(SparkJsonTrue) - 1u) == 0) ||
           (primitive_bytes == sizeof(SparkJsonFalse) - 1u && memcmp(parser->text + primitive_start, SparkJsonFalse, sizeof(SparkJsonFalse) - 1u) == 0) ||
           (primitive_bytes == sizeof(SparkJsonNull) - 1u && memcmp(parser->text + primitive_start, SparkJsonNull, sizeof(SparkJsonNull) - 1u) == 0) ||
           SparkJsonValidateNumber(parser->text + primitive_start, primitive_bytes)))
     {
-        return SPARK_STATUS_PARSE_ERROR;
+        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
 
     status = SparkJsonAllocateToken(parser, SPARK_JSON_TOKEN_PRIMITIVE, (int32_t)primitive_start, parent, token_index);
@@ -278,7 +279,7 @@ static SparkStatus SparkJsonParseObject(SparkJsonParser *parser, int32_t parent,
 
     if (depth > SPARK_JSON_MAX_NESTING_DEPTH)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     status = SparkJsonAllocateToken(parser, SPARK_JSON_TOKEN_OBJECT, (int32_t)parser->position, parent, &object_token_index);
     if (status != SPARK_STATUS_OK)
@@ -302,7 +303,7 @@ static SparkStatus SparkJsonParseObject(SparkJsonParser *parser, int32_t parent,
 
         if (parser->text[parser->position] != '"')
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         status = SparkJsonParseStringToken(parser, object_token_index, &key_token_index);
         if (status != SPARK_STATUS_OK)
@@ -313,7 +314,7 @@ static SparkStatus SparkJsonParseObject(SparkJsonParser *parser, int32_t parent,
         SparkJsonSkipWhitespace(parser);
         if (parser->position >= parser->text_bytes || parser->text[parser->position] != ':')
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         parser->position += 1u;
         SparkJsonSkipWhitespace(parser);
@@ -326,7 +327,7 @@ static SparkStatus SparkJsonParseObject(SparkJsonParser *parser, int32_t parent,
         SparkJsonSkipWhitespace(parser);
         if (parser->position >= parser->text_bytes)
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         if (parser->text[parser->position] == '}')
         {
@@ -337,12 +338,12 @@ static SparkStatus SparkJsonParseObject(SparkJsonParser *parser, int32_t parent,
         }
         if (parser->text[parser->position] != ',')
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         parser->position += 1u;
         SparkJsonSkipWhitespace(parser);
     }
-    return SPARK_STATUS_PARSE_ERROR;
+    SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 }
 
 static SparkStatus SparkJsonParseArray(SparkJsonParser *parser, int32_t parent, uint32_t depth, int32_t *token_index)
@@ -352,7 +353,7 @@ static SparkStatus SparkJsonParseArray(SparkJsonParser *parser, int32_t parent, 
 
     if (depth > SPARK_JSON_MAX_NESTING_DEPTH)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     status = SparkJsonAllocateToken(parser, SPARK_JSON_TOKEN_ARRAY, (int32_t)parser->position, parent, &array_token_index);
     if (status != SPARK_STATUS_OK)
@@ -382,7 +383,7 @@ static SparkStatus SparkJsonParseArray(SparkJsonParser *parser, int32_t parent, 
         SparkJsonSkipWhitespace(parser);
         if (parser->position >= parser->text_bytes)
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         if (parser->text[parser->position] == ']')
         {
@@ -393,19 +394,19 @@ static SparkStatus SparkJsonParseArray(SparkJsonParser *parser, int32_t parent, 
         }
         if (parser->text[parser->position] != ',')
         {
-            return SPARK_STATUS_PARSE_ERROR;
+            SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
         }
         parser->position += 1u;
         SparkJsonSkipWhitespace(parser);
     }
-    return SPARK_STATUS_PARSE_ERROR;
+    SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 }
 
 static SparkStatus SparkJsonParseValue(SparkJsonParser *parser, int32_t parent, uint32_t depth, int32_t *token_index)
 {
     if (parser == 0 || token_index == 0 || parser->position >= parser->text_bytes)
     {
-        return SPARK_STATUS_PARSE_ERROR;
+        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
     switch (parser->text[parser->position])
     {
@@ -457,14 +458,14 @@ SparkStatus SparkJsonParseText(const char *text, size_t text_bytes, SparkJsonDoc
 
     if (text == 0 || document == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     SparkJsonDocumentDestroy(document);
 
     owned_text = (char *)malloc(text_bytes + 1u);
     if (owned_text == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     memcpy(owned_text, text, text_bytes);
     owned_text[text_bytes] = '\0';
@@ -504,7 +505,7 @@ SparkStatus SparkJsonLoadFile(const char *path, SparkJsonDocument *document)
 
     if (path == 0 || document == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkReadEntireFile(path, &file_text, &file_bytes);
     if (status != SPARK_STATUS_OK)
@@ -589,11 +590,11 @@ SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *documen
 
     if (!SparkJsonTokenIsType(document, object_token_index, SPARK_JSON_TOKEN_OBJECT) || member_names == 0 || member_count == 0u)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if (member_count > UINT32_MAX / 2u || document->tokens[object_token_index].child_count != member_count * 2u)
     {
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, object_token_index);
     matched_count = 0u;
@@ -605,7 +606,7 @@ SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *documen
         value_token_index = SparkJsonFindNextDirectChild(document, object_token_index, key_token_index);
         if (!SparkJsonTokenIsType(document, key_token_index, SPARK_JSON_TOKEN_STRING) || value_token_index < 0)
         {
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         for (member_index = 0u; member_index < member_count; ++member_index)
         {
@@ -616,7 +617,7 @@ SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *documen
         }
         if (member_index == member_count || SparkJsonFindObjectMember(document, object_token_index, member_names[member_index]) != value_token_index)
         {
-            return SPARK_STATUS_SCHEMA_ERROR;
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         }
         matched_count += 1u;
         key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, value_token_index);
@@ -732,7 +733,7 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
 
     if (!SparkJsonTokenIsType(document, token_index, SPARK_JSON_TOKEN_STRING) || text == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *text = 0;
     token = &document->tokens[token_index];
@@ -740,7 +741,7 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
     decoded_text = (char *)malloc((size_t)source_bytes + 1u);
     if (decoded_text == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
 
     source_offset = 0u;
@@ -782,13 +783,13 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
                         document->text[token->start + (int32_t)source_offset + 1] != 'u')
                     {
                         free(decoded_text);
-                        return SPARK_STATUS_PARSE_ERROR;
+                        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
                     }
                     low_surrogate = SparkJsonParseUnicodeEscape(document->text + token->start + (int32_t)source_offset + 2);
                     if (low_surrogate < 0xdc00u || low_surrogate > 0xdfffu)
                     {
                         free(decoded_text);
-                        return SPARK_STATUS_PARSE_ERROR;
+                        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
                     }
                     source_offset += 6u;
                     code_point = 0x10000u + (((code_point - 0xd800u) << 10u) | (low_surrogate - 0xdc00u));
@@ -796,7 +797,7 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
                 else if (code_point >= 0xdc00u && code_point <= 0xdfffu)
                 {
                     free(decoded_text);
-                    return SPARK_STATUS_PARSE_ERROR;
+                    SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
                 }
                 destination_offset = SparkJsonAppendUtf8(decoded_text, destination_offset, code_point);
                 break;
@@ -804,7 +805,7 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
             default:
             {
                 free(decoded_text);
-                return SPARK_STATUS_PARSE_ERROR;
+                SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
             }
         }
     }
@@ -835,20 +836,20 @@ SparkStatus SparkJsonCopyRawValue(const SparkJsonDocument *document, int32_t tok
 
     if (document == 0 || token_index < 0 || (uint32_t)token_index >= document->token_count || text == 0 || text_bytes == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     *text = 0;
     *text_bytes = 0u;
     token = &document->tokens[token_index];
     if (token->start < 0 || token->end < token->start)
     {
-        return SPARK_STATUS_PARSE_ERROR;
+        SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
     value_bytes = (uint32_t)(token->end - token->start);
     copied_text = (char *)malloc((size_t)value_bytes + 1u);
     if (copied_text == 0)
     {
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     memcpy(copied_text, document->text + token->start, value_bytes);
     copied_text[value_bytes] = '\0';
@@ -863,7 +864,7 @@ static SparkStatus SparkJsonCopyPrimitive(const SparkJsonDocument *document, int
 
     if (!SparkJsonTokenIsType(document, token_index, SPARK_JSON_TOKEN_PRIMITIVE))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     return SparkJsonCopyRawValue(document, token_index, primitive, &primitive_bytes);
 }
@@ -877,7 +878,7 @@ SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_
 
     if (value == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkJsonCopyPrimitive(document, token_index, &primitive);
     if (status != SPARK_STATUS_OK)
@@ -887,7 +888,7 @@ SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_
     if (primitive[0] == '-')
     {
         free(primitive);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     errno = 0;
     end = 0;
@@ -895,7 +896,7 @@ SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_
     if (errno != 0 || end == primitive || *end != '\0')
     {
         free(primitive);
-        return SPARK_STATUS_SCHEMA_ERROR;
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
     }
     free(primitive);
     *value = (uint64_t)parsed_value;
@@ -909,7 +910,7 @@ SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_
 
     if (value == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     status = SparkJsonGetUInt64(document, token_index, &parsed_value);
     if (status != SPARK_STATUS_OK)
@@ -918,7 +919,7 @@ SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_
     }
     if (parsed_value > UINT32_MAX)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     *value = (uint32_t)parsed_value;
     return SPARK_STATUS_OK;
@@ -931,7 +932,7 @@ SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token
 
     if (!SparkJsonTokenIsType(document, token_index, SPARK_JSON_TOKEN_PRIMITIVE) || value == 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     token = &document->tokens[token_index];
     primitive_bytes = (size_t)(token->end - token->start);
@@ -945,5 +946,5 @@ SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token
         *value = false;
         return SPARK_STATUS_OK;
     }
-    return SPARK_STATUS_SCHEMA_ERROR;
+    SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 }

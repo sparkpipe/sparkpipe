@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_SERVING_ADAPTER_TEMPLATE_H
-#define SPARKPIPE_SPARK_SERVING_ADAPTER_TEMPLATE_H
+#pragma once
 
 #include <stdint.h>
 
@@ -16,13 +15,8 @@ extern "C" {
 #endif
 
 
-#define SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN_BASE \
-	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DRIVER_OWNS_KV)
-
 #define SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(family_extras) \
-	(SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN_BASE | (family_extras))
+	(family_extras)
 
 #define SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(adapter_id_value, \
 	model_id_value, model_revision_value, program_name_value, \
@@ -153,6 +147,5 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 
 #ifdef __cplusplus
 }
-#endif
 
 #endif

@@ -76,7 +76,7 @@ int main(void)
 	uint64_t hidden_input_bytes;
 	char runtime_root[4096];
 	memset(&test_state,0,sizeof(test_state));
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFILL | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_DECODE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&library) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"deepseek-ai/DeepSeek-V4-Flash-0731") == 0);
 	assert(library.adapter_interface.descriptor->max_speculative_token_count == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);
@@ -86,8 +86,6 @@ int main(void)
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_RESIDENT_SEQUENCE_COUNT);
 	assert(library.adapter_interface.descriptor->stage_count == 13u);
 	assert(library.adapter_interface.descriptor->minimum_efficient_submission_row_count == 16u);
-	assert(library.adapter_interface.descriptor->resident_sequence_slot_reuse ==
-		SPARK_MODEL_SERVING_SLOT_REUSE_REQUIRES_RELEASE);
 	assert(library.adapter_interface.descriptor->cache_block_token_count ==
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_CACHE_BLOCK_TOKENS);
 	hidden_input_bytes = 4u * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;

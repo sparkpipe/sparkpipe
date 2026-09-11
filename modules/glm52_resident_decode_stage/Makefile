@@ -1,3 +1,5 @@
+include ../../runtime/weightd_sources.mk
+
 ifndef EXPERT_CODEC
 $(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
@@ -49,12 +51,21 @@ MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm52_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../src/spark_status.c \
+	../../src/spark_sha256.c \
+	../../src/spark_ck128.c \
 	../../ring/transport/hidden_transport.c \
 	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
-	../../ring/transport/tp_device_collective_nccl.c
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
+	../../cache/kv_cache.c \
+	../../cache/kv_page_cache.c \
+	../../cache/kv_page_store.c \
+	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
+MODEL_DESCRIPTION ?= ../../examples/model_descriptions/glm52_resident_decode_stage_$(EXPERT_CODEC)_firmware.json
+MODEL_DESCRIPTION_SHA256 ?= $(shell sha256sum "$(MODEL_DESCRIPTION)" | awk '{print $$1}')
+MODULE_COMPILE_FLAGS := -DGLM52_EXPERT_WEIGHT_CODEC=$(GLM52_EXPERT_CODEC_ID) -DGLM52_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM52_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM52_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\" -DGLM52_MODEL_DESCRIPTION_SHA256=\"$(MODEL_DESCRIPTION_SHA256)\"
 
 BUILD_DIRECTORY ?= ../../build/modules/glm52_resident_decode_stage/$(EXPERT_CODEC)
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/libglm52_resident_decode_stage_$(EXPERT_CODEC).a
