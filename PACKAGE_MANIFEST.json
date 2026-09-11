@@ -63,8 +63,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "34683d5b4fcc788c668c01110d282602999d673e2e5c29dc65d6acda05870e4c",
-      "size_bytes": 104781
+      "sha256": "49afe610563f6d54749f2926f9e54c985c0a5a23abd6d0e98aa362710c7aaa84",
+      "size_bytes": 106892
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -7308,7 +7308,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "75e3fa1c1969a4adef219983a573ce373cdec03cfe9ff2fdf918035da3343f42",
+      "sha256": "40885c03dd2f8fc5d39c6697a4a1f676ec5f874b66491e439cde6dd577a89bb4",
       "size_bytes": 103201
     },
     {
@@ -10805,5 +10805,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35019582
+  "total_bytes": 35021693
 }

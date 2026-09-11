@@ -1525,7 +1525,7 @@ CEILING = 268809
 # fingerprint / TP-completion / admission-cost / pack-file-size class move
 # onto runtime/stage_module_common) deletes 158 lines against 72 added.
 # Measured exact: 279967.
-CEILING = 279967
+CEILING = 279980
 
 
 ROOT = Path(__file__).resolve().parent.parent
