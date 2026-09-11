@@ -1082,18 +1082,14 @@ static __global__ void SparkQwen38ResidualAddKernel(void *hidden_bf16, const voi
 
 extern "C" cudaError_t SparkQwen38MaxLaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, dimension * sizeof(float), stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+	return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkQwen38MaxLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, dimension * sizeof(float), stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+	return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkQwen38MaxLaunchLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)

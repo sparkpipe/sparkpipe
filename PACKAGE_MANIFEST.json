@@ -3098,8 +3098,8 @@
     },
     {
       "path": "include/sparkpipe/spark_stage_module_common.h",
-      "sha256": "89955d828b78d695012ceb3aa575884c44c34f7fbafabcc1d7f82f29d2bc11f7",
-      "size_bytes": 8034
+      "sha256": "dc9d0f6412450d46d58ca65fc5ce6544cc6f5b773e698234bacf79a3d731325d",
+      "size_bytes": 9650
     },
     {
       "path": "include/sparkpipe/spark_stage_module_lifecycle.h",
@@ -4033,8 +4033,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
-      "sha256": "d23397dc3f303484215f4e2f2bcab22e9a70ac2b76091b43df2043452ed514cd",
-      "size_bytes": 101108
+      "sha256": "7eb196318dda639e6127daaa269acc43b9e82b9870099e897b17a3ceae26f6f5",
+      "size_bytes": 101063
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
@@ -4453,13 +4453,13 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
-      "sha256": "4dfa7714e2199ae9ab3fa7aa582af720de1b716a2469fd5dcdcdabc3b9c390e6",
-      "size_bytes": 75604
+      "sha256": "0d4e6617a67a1976b5756246b39669179a9ac888d7830ce93b1ae47826a4f552",
+      "size_bytes": 75466
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "987efb5dba7926a7b8aad4c694f6064e705aa711b7152debe12e3e3b95e671de",
-      "size_bytes": 122750
+      "sha256": "bbaf72558235b3477dba87fc40bb8c36b0a37de87975c5d4f9288e71bd577c1f",
+      "size_bytes": 119395
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -6148,8 +6148,8 @@
     },
     {
       "path": "runtime/stage_module_common.c",
-      "sha256": "0108f2d05a11e115ef058f6a3060fd78a83bdfd54cd12808c5c7c9c09a43f4af",
-      "size_bytes": 50597
+      "sha256": "cef925efc99f3f0fc60e23537c2bfbbf5d5634d0f54850de14a22383dbcc1a79",
+      "size_bytes": 55579
     },
     {
       "path": "runtime/stage_module_lifecycle.c",
@@ -8823,8 +8823,8 @@
     },
     {
       "path": "tools/glm53full_gen_deployment.py",
-      "sha256": "d3079c5aafeeefbb021c6fcc33af5ae0ab7bc1dfde99e2dd3ee90b74f3f69ac3",
-      "size_bytes": 7052
+      "sha256": "760b8482367e83ec4e483fb3016f532d2d0561b90fb3049aaf6cf4324fccd67e",
+      "size_bytes": 7358
     },
     {
       "path": "tools/glm53full_hf_fetch_resume.py",
@@ -9870,5 +9870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32401757
+  "total_bytes": 32405123
 }
