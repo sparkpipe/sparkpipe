@@ -669,7 +669,7 @@ static void SparkLingValKdaAttention(
 			float dot = 0.0f;
 			for (uint32_t c = 0u; c < key; c++)
 				dot += sh[(uint64_t)c * key + e] * lq[c];
-			oh[e] = dot;
+			oh[e] = SparkLingValFromBf16(SparkLingValBf16(dot));
 		}
 	}
 	for (head = 0u; head < heads; head++)
@@ -687,6 +687,207 @@ static void SparkLingValKdaAttention(
 		for (uint32_t j = 0u; j < v_dim; j++)
 			sum += w->out_weight[(uint64_t)index * v_dim + j] * core[j];
 		output[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
+	}
+}
+
+static uint16_t SparkLingValBf16OfDouble(double value)
+{
+	return(SparkLingValBf16((float)value));
+}
+
+static double SparkLingValDoubleOfBf16(uint16_t value)
+{
+	return((double)SparkLingValFromBf16(value));
+}
+
+static void SparkLingValKdaAttention64(const SparkLingValKdaWeights *w,
+	double *q_window,double *k_window,double *v_window,double *state,
+	const float *hidden,const float *residual,float *sublayer_out)
+{
+	const uint32_t heads = SPARK_LING_VAL_KDA_HEADS;
+	const uint32_t key = SPARK_LING_VAL_KDA_KEY;
+	const uint32_t qk = SPARK_LING_VAL_KDA_QK;
+	const uint32_t v_dim = SPARK_LING_VAL_KDA_V;
+	const uint32_t kernel = SPARK_LING_VAL_KDA_CONV;
+	static double normed[SPARK_LING_VAL_HIDDEN];
+	static double q[SPARK_LING_VAL_KDA_QK];
+	static double k[SPARK_LING_VAL_KDA_QK];
+	static double v[SPARK_LING_VAL_KDA_V];
+	static double core[SPARK_LING_VAL_KDA_V];
+	static double retention[SPARK_LING_VAL_KDA_QK];
+	static double gate[SPARK_LING_VAL_KDA_V];
+	double beta[SPARK_LING_VAL_KDA_HEADS];
+	uint32_t index,head;
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+	{
+		double value = (double)hidden[index] + (residual != 0 ? (double)residual[index] : 0.0);
+		normed[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(value));
+	}
+	{
+		double sum = 0.0;
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			sum += normed[index] * normed[index];
+		double inverse = 1.0 / sqrt(sum / (double)SPARK_LING_VAL_HIDDEN + (double)SPARK_LING_VAL_RMS_EPS);
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			normed[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+				normed[index] * inverse * (double)w->attn_norm[index]));
+	}
+	for (index = 0u; index < qk; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->qkv_beta[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		q[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	for (index = 0u; index < qk; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->qkv_beta[(qk + (uint64_t)index) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		k[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	for (index = 0u; index < v_dim; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->qkv_beta[(2u * qk + (uint64_t)index) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		v[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	for (head = 0u; head < heads; head++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->qkv_beta[(2u * qk + v_dim + (uint64_t)head) * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		beta[head] = 1.0 / (1.0 + exp(-SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum))));
+	}
+	for (index = 0u; index < qk; index++)
+	{
+		double window[SPARK_LING_VAL_KDA_CONV];
+		double total;
+		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
+			q_window[index * kernel + tap] = q_window[index * kernel + tap + 1u];
+		q_window[index * kernel + kernel - 1u] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(q[index]));
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = q_window[index * kernel + tap];
+		total = 0.0;
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			total += window[tap] * (double)w->conv_q[(uint64_t)index * kernel + tap];
+		q[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+			total * (1.0 / (1.0 + exp(-total)))));
+	}
+	for (index = 0u; index < qk; index++)
+	{
+		double window[SPARK_LING_VAL_KDA_CONV];
+		double total;
+		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
+			k_window[index * kernel + tap] = k_window[index * kernel + tap + 1u];
+		k_window[index * kernel + kernel - 1u] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(k[index]));
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = k_window[index * kernel + tap];
+		total = 0.0;
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			total += window[tap] * (double)w->conv_k[(uint64_t)index * kernel + tap];
+		k[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+			total * (1.0 / (1.0 + exp(-total)))));
+	}
+	for (index = 0u; index < v_dim; index++)
+	{
+		double window[SPARK_LING_VAL_KDA_CONV];
+		double total;
+		for (uint32_t tap = 0u; tap + 1u < kernel; tap++)
+			v_window[index * kernel + tap] = v_window[index * kernel + tap + 1u];
+		v_window[index * kernel + kernel - 1u] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(v[index]));
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			window[tap] = v_window[index * kernel + tap];
+		total = 0.0;
+		for (uint32_t tap = 0u; tap < kernel; tap++)
+			total += window[tap] * (double)w->conv_v[(uint64_t)index * kernel + tap];
+		v[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+			total * (1.0 / (1.0 + exp(-total)))));
+	}
+	for (index = 0u; index < qk; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->decay_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		{
+			double logit = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+			double scaled = exp((double)w->a_log[index / key]) * (logit + (double)w->dt_bias[index]);
+			retention[index] = exp((double)SPARK_LING_VAL_LOWER * (1.0 / (1.0 + exp(-scaled))));
+		}
+	}
+	for (index = 0u; index < v_dim; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->gate_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		gate[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	for (head = 0u; head < heads; head++)
+	{
+		const double *qh = q + (uint64_t)head * key;
+		const double *kh = k + (uint64_t)head * key;
+		const double *vh = v + (uint64_t)head * key;
+		const double *fh = retention + (uint64_t)head * key;
+		double *sh = state + (uint64_t)head * key * key;
+		double *oh = core + (uint64_t)head * key;
+		double key_norm = 0.0,query_norm = 0.0,nk,nq;
+		double predicted[SPARK_LING_VAL_KDA_KEY];
+		double lk[SPARK_LING_VAL_KDA_KEY];
+		double lq[SPARK_LING_VAL_KDA_KEY];
+		for (uint32_t c = 0u; c < key; c++)
+		{
+			key_norm += kh[c] * kh[c];
+			query_norm += qh[c] * qh[c];
+		}
+		nk = 1.0 / sqrt(key_norm + 1e-6);
+		nq = 1.0 / sqrt(query_norm + 1e-6) / sqrt((double)key);
+		for (uint32_t c = 0u; c < key; c++)
+		{
+			lk[c] = kh[c] * nk;
+			lq[c] = qh[c] * nq;
+		}
+		for (uint32_t e = 0u; e < key; e++)
+		{
+			double dot = 0.0;
+			for (uint32_t c = 0u; c < key; c++)
+				dot += sh[(uint64_t)c * key + e] * lk[c] * fh[c];
+			predicted[e] = dot;
+		}
+		for (uint32_t e = 0u; e < key; e++)
+		{
+			double delta = beta[head] * (vh[e] - predicted[e]);
+			for (uint32_t c = 0u; c < key; c++)
+				sh[(uint64_t)c * key + e] = fh[c] * sh[(uint64_t)c * key + e] + delta * lk[c];
+		}
+		for (uint32_t e = 0u; e < key; e++)
+		{
+			double dot = 0.0;
+			for (uint32_t c = 0u; c < key; c++)
+				dot += sh[(uint64_t)c * key + e] * lq[c];
+			oh[e] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(dot));
+		}
+	}
+	for (head = 0u; head < heads; head++)
+	{
+		double *row = core + (uint64_t)head * key;
+		double sum = 0.0;
+		for (uint32_t e = 0u; e < key; e++)
+			sum += row[e] * row[e];
+		double inverse = 1.0 / sqrt(sum / (double)key + (double)SPARK_LING_VAL_RMS_EPS);
+		for (uint32_t e = 0u; e < key; e++)
+			row[e] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+				row[e] * inverse * (double)w->out_norm[e]));
+		for (uint32_t e = 0u; e < key; e++)
+			row[e] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+				row[e] * (1.0 / (1.0 + exp(-gate[(uint64_t)head * key + e])))));
+	}
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < v_dim; j++)
+			sum += (double)w->out_weight[(uint64_t)index * v_dim + j] * core[j];
+		sublayer_out[index] = SparkLingValFromBf16(SparkLingValBf16OfDouble(sum));
 	}
 }
 
@@ -1688,12 +1889,15 @@ typedef struct SparkLingValWalk
 {
 	uint16_t kda_windows[2][3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
 	float kda_state[2][(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
+	double kda_windows64[2][3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
+	double kda_state64[2][(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
 	uint16_t mla_cache[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
 	uint32_t mla_context;
 	uint32_t selected[SPARK_LING_VAL_TOP_K];
 	float route_weights[SPARK_LING_VAL_TOP_K];
 	float row_hidden[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float row_sublayer[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	float row_sublayer64[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float boundary_rows[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 } SparkLingValWalk;
 
@@ -1720,6 +1924,10 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 			walk->kda_windows[local][0],walk->kda_windows[local][1],
 			walk->kda_windows[local][2],walk->kda_state[local],sublayer_out,
 			dump);
+		SparkLingValKdaAttention64(&kda,
+			walk->kda_windows64[local][0],walk->kda_windows64[local][1],
+			walk->kda_windows64[local][2],walk->kda_state64[local],
+			hidden,residual,walk->row_sublayer64[row]);
 	}
 	else
 	{
@@ -1933,6 +2141,17 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 					actual[index] = SparkLingValFromBf16(device_sublayer[index]);
 				SparkLingValMeasure(&metrics,actual,walk->row_sublayer[row],SPARK_LING_VAL_HIDDEN);
+				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
+				{
+					static float reference64[SPARK_LING_VAL_HIDDEN];
+					SparkLingValMetrics truth;
+					for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+						reference64[index] = walk->row_sublayer64[row][index];
+					SparkLingValMeasure(&truth,actual,reference64,SPARK_LING_VAL_HIDDEN);
+					printf(" | fp64 dev rel %.5f cos %.7f",truth.max_relative_l2,truth.cosine);
+					SparkLingValMeasure(&truth,walk->row_sublayer[row],reference64,SPARK_LING_VAL_HIDDEN);
+					printf(" or32 rel %.5f cos %.7f",truth.max_relative_l2,truth.cosine);
+				}
 				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 				{
 					int stage_fail = metrics.max_relative_l2 > 0.05 ||
