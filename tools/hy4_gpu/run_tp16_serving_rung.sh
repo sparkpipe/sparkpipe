@@ -43,10 +43,10 @@ g++ -O2 -Wl,--no-undefined tp16_serving_rung.o $MODULE_ARCHIVE \
   build/libsparkpipe_model_common.a build/libsparkpipe_core.a \
   -L $CUDA/lib64 -lcudart -lcuda -lpthread -ldl -lm -o hy4_tp16_serving_rung 2>> serving_build_err.txt || { echo "RUNG LINK FAIL"; head -40 serving_build_err.txt; exit 1; }
 echo "RUNG BUILD OK"
-cc -shared -fPIC -Wl,--no-undefined $MODULE_ARCHIVE \
+cc -shared -fPIC -Wl,--no-undefined -Wl,--whole-archive $MODULE_ARCHIVE -Wl,--no-whole-archive \
   build/libsparkpipe_transport.a build/libsparkpipe_runtime.a \
   build/libsparkpipe_model_common.a build/libsparkpipe_core.a \
-  -L $CUDA/lib64 -lcudart -lcuda -lpthread -ldl -lm \
+  -L $CUDA/lib64 -lcudart -lcuda -lstdc++ -lpthread -ldl -lm \
   -o build/hy4_resident_decode_stage.so 2>> serving_build_err.txt || { echo "MODULE SO LINK FAIL"; head -40 serving_build_err.txt; exit 1; }
 nm -D --defined-only build/hy4_resident_decode_stage.so > serving_so_symbols.txt 2>&1
 grep -q "T SparkHy4ResidentDecodeStageInitialize" serving_so_symbols.txt || { echo "MODULE SO MISSING INITIALIZE"; exit 1; }
