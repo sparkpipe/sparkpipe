@@ -85,7 +85,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		(void)cut;
 		__syncthreads();
 		for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
-			if ( index < n && group_key[index / per_group] != 0xffffffffu )
+			if ( index < n && group_key[index / per_group] == 0xffffffffu )
 				keys[index] = 0u;
 		__syncthreads();
 	}
