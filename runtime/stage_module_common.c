@@ -502,6 +502,44 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
         value);
 }
 
+SparkStatus SparkStageModuleEnvironmentUnsigned64OrDefault(
+    const char *module_tag,
+    const char *name,
+    uint64_t minimum,
+    uint64_t maximum,
+    uint64_t fallback,
+    uint64_t *value)
+{
+    const char *text;
+    SparkStatus status;
+    uint64_t parsed;
+
+    if (module_tag == 0 || name == 0 || name[0] == '\0' || value == 0 ||
+        minimum > maximum || fallback < minimum || fallback > maximum)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    text = getenv(name);
+    if (text == 0 || text[0] == '\0')
+    {
+        *value = fallback;
+        return SPARK_STATUS_OK;
+    }
+    status = SparkStageModuleParseUnsigned64(
+        module_tag,
+        name,
+        text,
+        minimum,
+        maximum,
+        &parsed);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *value = parsed;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkStageModuleEnvironmentUnsignedOrDefault(
     const char *module_tag,
     const char *name,
@@ -1684,4 +1722,167 @@ void SparkStageModuleCompleteAndReleaseClaims(
         indices,
         index_count);
     SparkStageModuleSlotRelease(slot_states, slot_index);
+}
+SparkStatus SparkStageModuleStageTimingEnable(
+    SparkStageModuleStageTiming *timing,
+    const char *record_tag,
+    const char *const *stage_names,
+    uint32_t stage_count)
+{
+    if (timing == 0 || record_tag == 0 || stage_names == 0 ||
+        stage_count == 0u ||
+        stage_count > SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    timing->record_tag = record_tag;
+    timing->stage_names = stage_names;
+    timing->stage_count = stage_count;
+    timing->enabled = getenv("SPARK_STAGE_MODULE_TIMING") != 0 ? 1u : 0u;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModuleStageTimingFrameBegin(
+    SparkStageModuleStageTiming *timing)
+{
+    cudaError_t error;
+    uint32_t index;
+    if (timing == 0 || timing->enabled == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (timing->events_ready == 0u)
+    {
+        for (index = 0u;
+             index < SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY;
+             index++)
+        {
+            error = cudaEventCreate(&timing->samples[index].start);
+            if (error != cudaSuccess)
+            {
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+            }
+            error = cudaEventCreate(&timing->samples[index].stop);
+            if (error != cudaSuccess)
+            {
+                SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+            }
+        }
+        timing->events_ready = 1u;
+    }
+    timing->sample_count = 0u;
+    return SPARK_STATUS_OK;
+}
+
+void SparkStageModuleStageTimingBegin(
+    SparkStageModuleStageTiming *timing,
+    cudaStream_t stream,
+    uint32_t stage)
+{
+    SparkStageModuleStageTimingSample *sample;
+    if (timing == 0 || timing->enabled == 0u ||
+        stage >= timing->stage_count ||
+        timing->sample_count >=
+            SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY)
+    {
+        return;
+    }
+    sample = &timing->samples[timing->sample_count];
+    sample->stage = stage;
+    cudaEventRecord(sample->start, stream);
+    timing->sample_count++;
+}
+
+void SparkStageModuleStageTimingEnd(
+    SparkStageModuleStageTiming *timing,
+    cudaStream_t stream)
+{
+    if (timing == 0 || timing->enabled == 0u || timing->sample_count == 0u)
+    {
+        return;
+    }
+    cudaEventRecord(timing->samples[timing->sample_count - 1u].stop, stream);
+}
+
+void SparkStageModuleStageTimingFold(
+    SparkStageModuleStageTiming *timing)
+{
+    const SparkStageModuleStageTimingSample *sample;
+    float milliseconds;
+    uint32_t index;
+    uint32_t stage;
+    if (timing == 0 || timing->enabled == 0u)
+    {
+        return;
+    }
+    memset(timing->frame_microseconds, 0,
+        sizeof(timing->frame_microseconds));
+    memset(timing->frame_calls, 0, sizeof(timing->frame_calls));
+    for (index = 0u; index < timing->sample_count; index++)
+    {
+        sample = &timing->samples[index];
+        stage = sample->stage;
+        if (cudaEventElapsedTime(&milliseconds, sample->start,
+                sample->stop) == cudaSuccess)
+        {
+            timing->frame_microseconds[stage] +=
+                (uint64_t)(milliseconds * 1000.0f);
+            timing->frame_calls[stage]++;
+        }
+    }
+    timing->frame_index++;
+    for (stage = 0u; stage < timing->stage_count; stage++)
+    {
+        if (timing->frame_calls[stage] == 0u)
+        {
+            continue;
+        }
+        timing->total_microseconds[stage] +=
+            timing->frame_microseconds[stage];
+        timing->total_calls[stage] += timing->frame_calls[stage];
+        (void)fprintf(stderr, "%s frame=%llu stage=%s us=%llu calls=%u\n",
+            timing->record_tag,
+            (unsigned long long)timing->frame_index,
+            timing->stage_names[stage],
+            (unsigned long long)timing->frame_microseconds[stage],
+            timing->frame_calls[stage]);
+    }
+    timing->sample_count = 0u;
+}
+
+void SparkStageModuleStageTimingShutdown(
+    SparkStageModuleStageTiming *timing)
+{
+    uint32_t index;
+    if (timing == 0)
+    {
+        return;
+    }
+    for (index = 0u; timing->stage_names != 0 && index < timing->stage_count;
+        index++)
+    {
+        if (timing->total_calls[index] == 0u)
+        {
+            continue;
+        }
+        (void)fprintf(stderr, "%s_total stage=%s us=%llu calls=%llu us_per_call=%.3f\n",
+            timing->record_tag,
+            timing->stage_names[index],
+            (unsigned long long)timing->total_microseconds[index],
+            (unsigned long long)timing->total_calls[index],
+            (double)timing->total_microseconds[index] /
+                (double)timing->total_calls[index]);
+    }
+    if (timing->events_ready != 0u)
+    {
+        for (index = 0u;
+             index < SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY;
+             index++)
+        {
+            cudaEventDestroy(timing->samples[index].start);
+            cudaEventDestroy(timing->samples[index].stop);
+        }
+        timing->events_ready = 0u;
+    }
+    timing->enabled = 0u;
 }

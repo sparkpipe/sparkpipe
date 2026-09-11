@@ -3,7 +3,22 @@ set -uo pipefail
 ROOTS="${1:?comma-separated runtime root names}"
 HUB="${2:-sparkf}"
 HOST=$(hostname)
-RANK=$((16#${HOST#spark}))
+FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+MESH_INTERFACE="rocep1s0f1"
+MESH_SGID_INDEX=3
+RANK=""
+_idx=0
+for _host in $FLEET_HOSTS; do
+    if [ "$_host" = "$HOST" ]; then
+        RANK=$_idx
+        break
+    fi
+    _idx=$((_idx + 1))
+done
+[ -n "$RANK" ] || {
+    echo "fleet agent: host '$HOST' is not in FLEET_HOSTS; refusing to start with a guessed rank" >&2
+    exit 2
+}
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
 LAST_REPORT=""
@@ -118,7 +133,6 @@ start_root() {
         return 0
     fi
     cd "$rr" || return 1
-    [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
@@ -135,9 +149,17 @@ ensure_api() {
     ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
         "grep -l '\"state\":\"ready' current/*.json 2>/dev/null | wc -l" 2>/dev/null)
     [ "${ready_count:-0}" -ge 16 ] || return 0
-    local p
+    local p rpid
+    proc_start() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null || echo 0; }
     for p in $(pgrep -f "bin/sparkpipe_model_api"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
+        rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
+        if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then
+            echo "$(date +%T) api: predates residentd; restarting"
+            kill -9 "$p" 2>/dev/null
+            return 0
+        fi
+        return 0
     done
     now=$(date +%s)
     [ $((now - LAST_API_START)) -lt 15 ] && return 0
@@ -157,7 +179,6 @@ restart_root() {
 }
 
 FLEET_SIZE=16
-FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
 if ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
     ssh-keyscan -H "$HUB" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
@@ -181,7 +202,8 @@ sync_rendezvous() {
     fi
     local mesh_dir="/tmp/weightd-mesh"
     if [ -d "$mesh_dir" ]; then
-        local own_rank="${host#spark}"
+        local own_rank
+        printf -v own_rank '%x' "$RANK"
         local own_rec="$mesh_dir/mesh-$own_rank.rec"
         if [ -f "$own_rec" ]; then
             local sum
@@ -288,6 +310,8 @@ install_core() {
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
     setsid nohup "$wd/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
     sleep 1
 }
@@ -310,6 +334,8 @@ ensure_weightd() {
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
+        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 

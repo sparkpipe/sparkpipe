@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -50,14 +51,62 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL)
 
-static int32_t SparkGlm5NextServingMtpEnvEnabled(void)
+#define SPARK_GLM5_NEXT_SERVING_MTP_ENV "SPARK_GLM5_NEXT_MTP"
+#define SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV "SPARK_GLM5_NEXT_SPECULATORS"
+#define SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES \
+	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
+	 SPARK_SPECULATION_SEAM_REMOTE_TAP_FREE_SOURCES)
+#define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_TIME_BUDGET_MS 20u
+#define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
+#define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_NODE_COUNT 64u
+#define SPARK_GLM5_NEXT_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
+#define SPARK_GLM5_NEXT_SERVING_SEAM_IO_TIMEOUT_MS 30000u
+#define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_LAYER_COUNT 1u
+
+static SparkStatus SparkGlm5NextServingResolveSpeculationControl(
+	uint32_t available_sources,
+	const char **control_value,
+	uint32_t *enabled_sources)
 {
-	const char *value = getenv("SPARK_GLM5_NEXT_MTP");
-	if ( value == 0 || (value[0] == '1' && value[1] == '\0') )
-		return(1);
-	if ( value[0] == '0' && value[1] == '\0' )
-		return(0);
-	return(-1);
+	const char *mtp_value,*mask_value;
+	SparkStatus status;
+	mtp_value = getenv(SPARK_GLM5_NEXT_SERVING_MTP_ENV);
+	mask_value = getenv(SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV);
+	if ( mtp_value != 0 && mask_value != 0 )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER %s and %s are both present: set only %s (speculation source mask)\n",SPARK_GLM5_NEXT_SERVING_MTP_ENV,SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV,SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( mtp_value != 0 )
+	{
+		if ( mtp_value[0] == '0' && mtp_value[1] == '\0' )
+		{
+			*control_value = "0";
+			*enabled_sources = 0u;
+			return(SPARK_STATUS_OK);
+		}
+		if ( mtp_value[0] == '1' && mtp_value[1] == '\0' )
+		{
+			*control_value = "0x1";
+			*enabled_sources = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+			return(SPARK_STATUS_OK);
+		}
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER %s must be exactly 0 or 1 (or use %s speculation source mask)\n",SPARK_GLM5_NEXT_SERVING_MTP_ENV,SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV);
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	*control_value = mask_value;
+	if ( mask_value == 0 || (mask_value[0] == '1' && mask_value[1] == '\0') )
+	{
+		*enabled_sources = 0u;
+		return(SPARK_STATUS_OK);
+	}
+	status = SparkSpeculationSeamParseControl(mask_value,available_sources,enabled_sources);
+	if ( status != SPARK_STATUS_OK )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER %s control value rejected: status=%d available=0x%x\n",SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV,(int)status,available_sources);
+		SPARK_RETURN(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static const char *const SparkGlm5NextServingConfigurationMembers[] =
@@ -69,6 +118,22 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 	"max_sequence_positions",
 	"execution_row_capacity",
 	"decode_split_context_threshold",
+	"tp_degree",
+	"tp_rank",
+	"tp_collective"
+};
+
+static const char *const SparkGlm5NextServingConfigurationMembersBridge[] =
+{
+	"schema_version",
+	"model_revision",
+	"expert_weight_codec",
+	"stage_pack_path",
+	"max_sequence_positions",
+	"execution_row_capacity",
+	"decode_split_context_threshold",
+	"draft_bridge_host",
+	"draft_bridge_port",
 	"tp_degree",
 	"tp_rank",
 	"tp_collective"
@@ -122,6 +187,10 @@ typedef struct SparkGlm5NextServingState
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
+	uint32_t tap_extraction;
+	SparkSpeculationSeam *speculation_seam;
+	char *bridge_host;
+	uint32_t bridge_port;
 	atomic_uint quiescing;
 	atomic_uint reset_active;
 	atomic_uint_fast64_t reset_generation;
@@ -552,6 +621,7 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	char *relative_stage_pack_path;
 	uint32_t schema_version;
 	int32_t root,token;
+	int32_t bridge_host_token,bridge_port_token;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
 	SparkJsonDocumentReset(&document);
@@ -559,8 +629,17 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	bridge_host_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_host") : -1;
+	bridge_port_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_port") : -1;
+	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SparkGlm5NextServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0])));
+		status = bridge_host_token >= 0 ?
+			SparkJsonValidateObjectMembersExact(&document,root,SparkGlm5NextServingConfigurationMembersBridge,(uint32_t)(sizeof(SparkGlm5NextServingConfigurationMembersBridge) / sizeof(SparkGlm5NextServingConfigurationMembersBridge[0]))) :
+			SparkJsonValidateObjectMembersExact(&document,root,SparkGlm5NextServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0])));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM5_NEXT_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -588,12 +667,87 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingLoadTpCollective(&document,root,runtime_root,state,*tp_degree);
+	if ( status == SPARK_STATUS_OK && bridge_host_token >= 0 )
+	{
+		status = SparkJsonCopyString(&document,bridge_host_token,&state->bridge_host);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonGetUInt32(&document,bridge_port_token,&state->bridge_port);
+	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadConfiguration rc=%d\n",(int)status);
 	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
+	SparkGlm5NextServingState *state,
+	uint32_t max_sequence_positions)
+{
+	SparkSpeculationSeamConfiguration seam_configuration;
+	const char *control_value;
+	uint32_t available_sources;
+	uint32_t enabled_sources;
+	SparkStatus status;
+	available_sources = SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES;
+	if ( state->bridge_host != 0 )
+		available_sources |= SPARK_SPECULATION_SEAM_SOURCE_DFLASH2;
+	if ( state->bridge_host == 0 )
+		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+	control_value = 0;
+	enabled_sources = 0u;
+	status = SparkGlm5NextServingResolveSpeculationControl(available_sources,&control_value,&enabled_sources);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->mtp_enabled = (enabled_sources & SPARK_SPECULATION_SEAM_SOURCE_MTP) != 0u ? 1u : 0u;
+	state->tap_extraction = (enabled_sources & SPARK_SPECULATION_SEAM_SOURCE_DFLASH2) != 0u ? 1u : 0u;
+	memset(&seam_configuration,0,sizeof(seam_configuration));
+	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
+	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
+	seam_configuration.available_source_mask = available_sources;
+	seam_configuration.default_source_mask = 0u;
+	seam_configuration.default_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
+	seam_configuration.lane_count = state->max_active_sequence_count;
+	seam_configuration.max_committed_token_count = max_sequence_positions;
+	seam_configuration.max_tap_row_count = state->tap_extraction != 0u ?
+		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS : 0u;
+	seam_configuration.draft_time_budget_ms = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
+	seam_configuration.draft_max_depth = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_DEPTH;
+	seam_configuration.draft_max_node_count = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
+	seam_configuration.connect_timeout_ms = SPARK_GLM5_NEXT_SERVING_SEAM_CONNECT_TIMEOUT_MS;
+	seam_configuration.io_timeout_ms = SPARK_GLM5_NEXT_SERVING_SEAM_IO_TIMEOUT_MS;
+	seam_configuration.control_value = control_value;
+	seam_configuration.bridge_host = state->bridge_host;
+	seam_configuration.bridge_port = state->bridge_port;
+	memcpy(seam_configuration.target_model,SPARK_GLM5_NEXT_SERVING_MODEL_ID,sizeof(SPARK_GLM5_NEXT_SERVING_MODEL_ID));
+	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	seam_configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	seam_configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	seam_configuration.model_contract.draft_layer_count = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_LAYER_COUNT;
+	seam_configuration.model_contract.block_size = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS;
+	seam_configuration.model_contract.hidden_dimension = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	seam_configuration.model_contract.intermediate_dimension = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION;
+	seam_configuration.model_contract.attention_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
+	seam_configuration.model_contract.kv_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
+	seam_configuration.model_contract.head_dimension = SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION;
+	seam_configuration.model_contract.vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	seam_configuration.model_contract.draft_vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	seam_configuration.model_contract.markov_rank = 0u;
+	seam_configuration.model_contract.maximum_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
+	seam_configuration.model_contract.verifier_accept_k = 1u;
+	seam_configuration.model_contract.aux_layer_count = state->tap_extraction != 0u ?
+		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT : 0u;
+	seam_configuration.model_contract.enable_confidence_head = 0u;
+	seam_configuration.model_contract.confidence_head_with_markov = 0u;
+	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
+	if ( status != SPARK_STATUS_OK )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER speculation seam init failed: status=%d\n",(int)status);
+		SPARK_RETURN(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkGlm5NextServingValidateRowOrder(
@@ -792,6 +946,8 @@ static void SparkGlm5NextServingDestroy(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
+	SparkSpeculationSeamDestroy(state->speculation_seam);
+	free(state->bridge_host);
 	free(state);
 }
 
@@ -886,21 +1042,13 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
-	{
-		int32_t mtp_env = SparkGlm5NextServingMtpEnvEnabled();
-		if ( mtp_env < 0 )
-		{
-			(void)fprintf(stderr,"GLM5_NEXT-ADAPTER SPARK_GLM5_NEXT_MTP must be exactly 0 or 1\n");
-			SparkGlm5NextServingDestroy(state);
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		state->mtp_enabled = (uint32_t)mtp_env;
-	}
 	status = SparkGlm5NextServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
 	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SPARK_GLM5_NEXT_SERVING_TP_DEGREE) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextServingInitializeSpeculationSeam(state,max_sequence_positions);
 	if ( status == SPARK_STATUS_OK )
 	{
 		state->node_context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
@@ -917,7 +1065,11 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.decode_split_context_threshold = decode_split_context_threshold;
 		state->node_context.tp_degree = tp_degree;
 		state->node_context.tp_rank = tp_rank;
-		state->node_context.flags = state->mtp_enabled != 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP : 0u;
+		state->node_context.flags = 0u;
+		if ( state->mtp_enabled != 0u )
+			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP;
+		if ( state->tap_extraction != 0u )
+			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;

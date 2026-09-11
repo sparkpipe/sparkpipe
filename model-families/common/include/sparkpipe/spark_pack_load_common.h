@@ -70,6 +70,19 @@ static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedMtpBits)(void);
 static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedLayerBits)(
 	const SPARK_PACK_LOAD_TYPE(ModuleState) *state,
 	uint32_t layer);
+// Optional per-entry region source override: return SPARK_STATUS_OK with
+// payload/scale set to skip eager H2D for this entry (lazy consumer-map
+// path). Absent or non-OK non-first returns use the eager loader. Set
+// SPARK_PACK_LOAD_REGION_HOOK to a family function with this signature
+// returning 1 when it consumed the entry, 0 to use the eager loader.
+#ifdef SPARK_PACK_LOAD_REGION_HOOK
+static int SPARK_PACK_LOAD_REGION_HOOK(
+	SPARK_PACK_LOAD_TYPE(ModuleState) *state,
+	const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry,
+	FILE *file,
+	void **payload,
+	void **scale);
+#endif
 
 static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) *state)
 {
@@ -127,6 +140,9 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 	SPARK_PACK_LOAD_SEEN_TYPE bit = SPARK_PACK_LOAD_SEEN_ONE << entry->tensor_kind;
 	SPARK_PACK_LOAD_SEEN_TYPE *seen;
 	void *payload = 0,*scale = 0;
+#ifdef SPARK_PACK_LOAD_REGION_HOOK
+	uint32_t hook_consumed = 0u;
+#endif
 	status = SPARK_PACK_LOAD_FN(ValidateEntry)(state,entry,file_bytes,&is_global);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -143,9 +159,23 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	*seen |= bit;
+#ifdef SPARK_PACK_LOAD_REGION_HOOK
+	{
+		void *hook_payload = 0,*hook_scale = 0;
+		if ( SPARK_PACK_LOAD_REGION_HOOK(state,entry,file,&hook_payload,&hook_scale) == 1u )
+		{
+			payload = hook_payload;
+			scale = hook_scale;
+			hook_consumed = 1u;
+		}
+	}
+	if ( payload == 0 && hook_consumed == 0u )
+#endif
+	{
 	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
 	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
 		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( entry->layer_index == SPARK_PACK_LOAD_CONST(STAGEPACK_MTP_LAYER) || entry->tensor_kind == SPARK_PACK_LOAD_CONST(STAGEPACK_TENSOR_MTP_FC) )

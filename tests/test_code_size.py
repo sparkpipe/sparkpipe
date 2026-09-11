@@ -1457,18 +1457,15 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
-CEILING = 233150
-# ling continuation round on the coredev-aligned branch cc49cf8 (lane base
-# 8f3a6f2 + the glm53-p0 mesh rebuild): the lane's 24 suspension commits +
-# the coredev's 22 mesh/transport commits measure exact 241968. Re-pinned
-# from measured reality per the ratchet rule.
-CEILING = 241968
-# the same round aligns the ling packer/verifier/generator to main's
-# canonical pack naming (<model>.<quant>.<topo>, <arm>.rank<hex>.sp, the
-# weightd .sha256 digest sidecar, ROOT_NAME single source) and adds the
-# fin second-arm plumbing (--model lingfin, per-model name_map/contract
-# paths); +15 tooling lines. Measured exact: 241983.
-CEILING = 241983
+# hy4 lane M1 (contract freeze) rebased onto this lineage: the family's
+# authoritative JSON, generator, generated header, host test and
+# references are MAIN-side since the #810 harvest; this rebase re-adds
+# only the Makefile PYTHON_TESTS registration (1 line). Ratchet rule:
+# re-pin from MEASURED reality on the rebased tree, never carry either
+# side's number. +1 exact (the ledger file itself is the ratchet and
+# does not double-count, per the prior conflict resolutions above).
+CEILING = 233151
+
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
@@ -1491,18 +1488,27 @@ CEILING = 241983
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
 CEILING = 241052
-# ling lane rebased onto main 50bd0d3 (PR #913, the E2E-proven mesh
-# dataflow): main alone grew over the 241052 pin; the lane's replayed
-# commits (family driver, module port, packer/verify/synth tooling) ride
-# on top. Measured exact on the rebased lane tip 53c66ed: 242163.
-# Re-pinned from measured reality per the ratchet rule.
-CEILING = 242163
-# the same round applies the S4 >50L ratchet to the ling lane's worst
-# functions (adapter LoadTpCollective 148L, module TpChainAdvance 119L,
-# KvInitialize 95L): folds add function signatures and dispatch, net +95
-# tooling-free lines; lingfin_authoritative.json added for the second
-# contract. Measured exact: 242258.
-CEILING = 242258
+# convergence-window landings 241052-window..dccf1ec: the async collective
+# engine (operator: GPU combine kernels, B1-inline submitter), qwen-max T2
+# instrumentation + exec fixes (#918), glm53full S4 + R2 fixes (#916/#922),
+# hy4 scale-row-offset contract + E4M3 decode + rung-6 (#826), admission DRY
+# (#920), k3 A-0023 strip (net-negative), norm.cuh orphan fix (#934), and
+# the max hill-climb instrumentation (#921/#923/#924). Measured exact:
+# 268809 on dccf1ec.
+CEILING = 268809
+# muse #902 round 2, second hop onto 167cde7 (main moved 190 commits under
+# the lane during validation): the muse glimmer family stack (module + cuda
+# tier + stagepack/deployment tooling + the two shared norm kernels in
+# inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
+# 233419 at 167cde7. Measured exact: 238091.
+CEILING = 238091
+# convergence-window landings after the muse pin: the async collective
+# engine (operator: GPU combine kernels, B1-inline submitter), qwen-max T2
+# instrumentation + exec fixes (#918/#921/#923/#924), glm53full S4 + R2
+# fixes (#916/#922), hy4 scale-row-offset contract + E4M3 decode + rung-6
+# (#826), admission DRY (#920), k3 A-0023 strip (net-negative), norm.cuh
+# orphan fix (#934). Measured exact: 268809 on dccf1ec.
+CEILING = 268809
 
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -1,0 +1,44 @@
+#ifndef SPARKPIPE_SPARK_LAGUNA_KV_GEOMETRY_H
+#define SPARKPIPE_SPARK_LAGUNA_KV_GEOMETRY_H
+
+#include "sparkpipe/spark_kv_cache.h"
+#include "sparkpipe/spark_laguna_model.h"
+
+
+#define SPARK_LAGUNA_KV_LAYOUT SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE
+#define SPARK_LAGUNA_KV_LAYER_COUNT SPARK_LAGUNA_MODEL_LAYER_COUNT
+#define SPARK_LAGUNA_KV_HEAD_COUNT SPARK_LAGUNA_MODEL_TP8_KV_HEAD_COUNT
+#define SPARK_LAGUNA_KV_KEY_DIMENSION SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION
+#define SPARK_LAGUNA_KV_VALUE_DIMENSION SPARK_LAGUNA_MODEL_ATTENTION_HEAD_DIMENSION
+#define SPARK_LAGUNA_KV_BYTES_PER_SCALAR 2u
+#define SPARK_LAGUNA_KV_FP8_SCALE_BLOCK_SIZE \
+	SPARK_LAGUNA_MODEL_FP8_SCALE_BLOCK
+#define SPARK_LAGUNA_KV_BLOCK_TOKEN_COUNT \
+	SPARK_LAGUNA_MODEL_KV_PAGE_SLOTS
+#define SPARK_LAGUNA_KV_SLOT_BYTES SPARK_LAGUNA_MODEL_KV_SLOT_BYTES
+#define SPARK_LAGUNA_KV_INDEX_KEY_LAYER_COUNT 0u
+#define SPARK_LAGUNA_KV_INDEX_KEY_DIMENSION 0u
+#define SPARK_LAGUNA_KV_INDEX_KEY_BYTES_PER_SCALAR 0u
+
+static inline void SparkLagunaKvFillCapacityRequest(
+	SparkKvCacheCapacityRequest *request)
+{
+	request->abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	request->descriptor_bytes =
+		SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
+	request->layout = SPARK_LAGUNA_KV_LAYOUT;
+	request->layer_count = SPARK_LAGUNA_KV_LAYER_COUNT;
+	request->head_count = SPARK_LAGUNA_KV_HEAD_COUNT;
+	request->query_key_head_dimension = SPARK_LAGUNA_KV_KEY_DIMENSION;
+	request->value_head_dimension = SPARK_LAGUNA_KV_VALUE_DIMENSION;
+	request->compressed_dimension = 0u;
+	request->position_dimension = 0u;
+	request->bytes_per_scalar = SPARK_LAGUNA_KV_BYTES_PER_SCALAR;
+	request->fp8_scale_block_size = SPARK_LAGUNA_KV_FP8_SCALE_BLOCK_SIZE;
+	request->index_key_layer_count = SPARK_LAGUNA_KV_INDEX_KEY_LAYER_COUNT;
+	request->index_key_dimension = SPARK_LAGUNA_KV_INDEX_KEY_DIMENSION;
+	request->index_key_bytes_per_scalar =
+		SPARK_LAGUNA_KV_INDEX_KEY_BYTES_PER_SCALAR;
+}
+
+#endif

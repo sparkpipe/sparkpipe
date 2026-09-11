@@ -59,14 +59,29 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
 
-#define SPARK_WEIGHTD_MESH_SLOT_BYTES (32u * 1024u * 1024u)
-#define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND 16u
+#define SPARK_WEIGHTD_MESH_SLOT_BYTES (16u * 1024u * 1024u)
+#define SPARK_WEIGHTD_MESH_RANKS_PER_BAND 16u
+#define SPARK_WEIGHTD_MESH_RANKS SPARK_WEIGHTD_MESH_RANKS_PER_BAND
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 2u
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
+    (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
 #define SPARK_WEIGHTD_MESH_BANDS 4u
 #define SPARK_WEIGHTD_MESH_BUFFER_BYTES \
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
+#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 4096u
+#define SPARK_WEIGHTD_MESH_REGION_BYTES \
+    (SPARK_WEIGHTD_MESH_BUFFER_BYTES + SPARK_WEIGHTD_MESH_DOORBELL_BYTES)
+#define SPARK_WEIGHTD_MESH_DOORBELL_OFFSET SPARK_WEIGHTD_MESH_BUFFER_BYTES
+#define SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,rank) \
+    (SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + \
+     (((band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * 24u))
+_Static_assert(SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND * \
+    24u <= SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+    "doorbell entries must fit the doorbell page");
 
-#define SPARK_WEIGHTD_EXPERT_COUNT_MAX 4096u
+#define SPARK_WEIGHTD_EXPERT_COUNT_MAX 40960u
+#define SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT (8ull * 1024ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_BYTES_MAX (64ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC UINT32_C(0x58504557)
 #define SPARK_WEIGHTD_EXPERT_MANIFEST_VERSION 1u
@@ -244,6 +259,8 @@ typedef struct SparkWeightdIpcMeshBroadcast
     uint64_t remote_offset;
     uint32_t length;
     uint32_t reserved2;
+    uint64_t seq_value;
+    uint64_t seq_remote_offset;
 } SparkWeightdIpcMeshBroadcast;
 
 typedef struct SparkWeightdIpcMeshBroadcastResult
@@ -416,7 +433,6 @@ typedef struct SparkWeightdReclaimResult
     uint32_t arena_count;
 } SparkWeightdReclaimResult;
 
-// Canonical identity of a successfully loaded, grouped manifest.
 SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32]);
 
 typedef struct SparkWeightdLazyAttachRequest
@@ -476,6 +492,8 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
     uint64_t source_offset,
     uint64_t remote_offset,
     uint32_t length,
+    uint64_t seq_value,
+    uint64_t seq_remote_offset,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,
@@ -504,7 +522,6 @@ typedef struct SparkWeightdWorkingSetResult
 } SparkWeightdWorkingSetResult;
 
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *client,uint64_t arena_generation,const SparkWeightdExpertKey *keys,uint32_t count,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
-// The caller must establish GPU completion and unmap before releasing.
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,SparkWeightdWorkingSetResult *result,uint64_t timeout_nanoseconds);
 
 typedef struct SparkWeightdExportBatch
@@ -522,8 +539,6 @@ typedef struct SparkWeightdExportBatch
     uint32_t chunk_indices[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
 } SparkWeightdExportBatch;
 
-// batch_offset indexes the sorted union of this lease's physical chunks.
-// chunk_count remains the arena's total virtual chunk count.
 SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdExportBatch *batch,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,

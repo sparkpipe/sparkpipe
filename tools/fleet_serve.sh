@@ -63,7 +63,7 @@ start() {
         return 1
     fi
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && mv residentd.log residentd.log.prev 2>/dev/null; LD_LIBRARY_PATH='$(rr "$h")'/lib SPARK_GLM5_NEXT_MTP='${SPARK_GLM5_NEXT_MTP:-1}' SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > residentd.log 2>&1 < /dev/null &" &
+        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && mv residentd.log residentd.log.prev 2>/dev/null; LD_LIBRARY_PATH='$(rr "$h")'/lib SPARK_GLM5_NEXT_MTP='${SPARK_GLM5_NEXT_MTP:-1}' SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' SPARK_GLM52_SERVING_FLAT_RANKS='${SPARK_GLM52_SERVING_FLAT_RANKS-}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > residentd.log 2>&1 < /dev/null &" &
         i=$((i+1))
     done
     wait

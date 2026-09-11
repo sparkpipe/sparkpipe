@@ -184,15 +184,15 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
             return False, {"verdict": "FAIL", "pack": str(pack),
                            "errors": [f"header truncated: {len(raw_header)} bytes"]}
         header = HEADER_STRUCT.unpack(raw_header)
-        # The 27B header layout (the packer's HEADER_STRUCT.pack order):
-        # ... ATTN_ROPE_DIM, FFN_INTERMEDIATE, VOCAB, MXFP4_GROUP,
-        # MTP_LAYERS, tp_degree, tp_rank, directory_offset, file_bytes —
-        # no expert fields (dense-FFN), tp fields where max packs carry them.
+        # The max-family header layout (the packer's HEADER_STRUCT.pack
+        # order, mirroring SparkQwen38MaxStagePackHeader): 26 u32 ending at
+        # mtp_layer_count, then directory_offset and file_bytes as u64.
+        # Topology rides the serving configuration, not the wire.
         (magic, version, header_bytes, entry_bytes, tensor_count, hidden,
          layer_count, first_layer, total_layers, period, full_phase,
          gdn_kh, gdn_vh, gdkd, gdvd, conv_k, qh, kvh, hd, rope_d,
-         moe_int, vocab, mxfp4_group, mtp_count, pack_tp_degree, pack_tp_rank,
-         directory_offset, file_bytes) = header
+         expert_count, experts_per_token, moe_int, vocab, mxfp4_group,
+         mtp_count, directory_offset, file_bytes) = header
 
         def want(field: str, got, expected) -> None:
             if got != expected:
@@ -215,18 +215,17 @@ def verify(pack: Path, checkpoint: Path | None, receipt_path: Path | None,
         want("attn_kv_head_count", kvh, _tables.ATTN_KV_HEADS)
         want("attn_head_dimension", hd, _tables.ATTN_HEAD_DIM)
         want("attn_rope_dimension", rope_d, _tables.ATTN_ROPE_DIM)
-        if hasattr(_tables, "EXPERT_COUNT"):  # max-family only; the 27B is dense-FFN
-            want("routed_expert_count", experts, _tables.EXPERT_COUNT)
-            want("experts_per_token", topk, _tables.EXPERTS_PER_TOKEN)
-            want("expert_intermediate_dimension", moe_int, _tables.EXPERT_INTERMEDIATE)
+        want("routed_expert_count", expert_count, _tables.EXPERT_COUNT)
+        want("experts_per_token", experts_per_token, _tables.EXPERTS_PER_TOKEN)
+        want("expert_intermediate_dimension", moe_int, _tables.EXPERT_INTERMEDIATE)
         want("output_vocab_count", vocab, _tables.VOCAB)
         want("mxfp4_group_size", mxfp4_group, _tables.MXFP4_GROUP)
         want("mtp_layer_count", mtp_count, _tables.MTP_LAYERS)
         want("directory_offset", directory_offset, HEADER_BYTES)
         if tp_degree > 1 and hasattr(locals().get("_nothing", None), "x"):
             pass
-        if pack_tp_degree != tp_degree:
-            fail(f"header tp_degree={pack_tp_degree}, invoked with {tp_degree}")
+        # tp fields are not on the wire: the rank slice is pack content
+        # (the tp-aware shape table), verified via the invoked geometry.
         want("file_bytes", file_bytes, file_bytes_actual)
         if layer_count <= 0 or first_layer < 0 or first_layer + layer_count > _tables.LAYER_COUNT:
             fail(f"invalid slice {first_layer}+{layer_count} of {_tables.LAYER_COUNT}")

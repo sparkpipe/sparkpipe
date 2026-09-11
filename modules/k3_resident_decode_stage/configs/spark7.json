@@ -7,7 +7,6 @@
   "max_rows": 16,
   "resident_capacity": 16,
   "kv_pages": 64,
-  "capture_graphs": 1,
   "hidden": 7168,
   "device_collective": {
     "backend": "nccl",
@@ -23,8 +22,7 @@
       "10.20.0.16",
       "10.20.0.17"
     ]
-  }
-  ,
+  },
   "tp_collective": {
     "listen_port": 61623,
     "connect_timeout_milli": 300000,
