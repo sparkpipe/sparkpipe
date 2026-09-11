@@ -542,5 +542,3 @@ void LmCenteredRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 		output_bf16[base + index] =
 			LmFloatToBf16(row[index] * scale * (1.0f + LmBf16ToFloat(weight_bf16[index])));
 }
-
-template<uint32_t THREADS>
