@@ -22,10 +22,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkK3StageRunner))
 
 #define SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000001u
-#define SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS 0x00000002u
 #define SPARK_K3_STAGE_RUNNER_KNOWN_FLAGS \
-    (SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL | \
-     SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS)
+    (SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
 
 typedef struct SparkK3StageRunnerConfiguration
 {
@@ -67,6 +65,7 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *context_length;
     const uint32_t *sequence_of_row;
     const uint32_t *kda_state_index;
+    const uint32_t *sequence_row_begin;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;

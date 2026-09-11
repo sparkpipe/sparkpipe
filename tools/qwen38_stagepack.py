@@ -113,7 +113,7 @@ def attn_kv_shards(tp_degree: int) -> int:
 def attn_rank_kv_head_base(tp_degree: int, tp_rank: int) -> int:
     return (tp_rank * ATTN_KV_HEADS) // tp_degree
 
-HEADER_STRUCT = struct.Struct("<28I2Q")
+HEADER_STRUCT = struct.Struct("<26I2Q")
 ENTRY_STRUCT = struct.Struct("<6I4Q")
 assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
 
@@ -177,7 +177,7 @@ def kind_shape(kind: int) -> tuple[int, int, int]:
     }
     if kind in table:
         return table[kind]
-    expert_format = EXPERT_FORMAT[0]  # set by main() from --source-format
+    expert_format = WEIGHT_FP8_F32B128  # full-width fp8 table; nvfp4 remaps in convert()
     if kind in (KIND_MOE_W1, KIND_MOE_W3):
         return (rows_sharded(EXPERT_COUNT * EXPERT_INTERMEDIATE), HIDDEN, expert_format)
     if kind == KIND_MOE_DOWN:
@@ -432,15 +432,6 @@ class SafetensorsSource(_BaseSafetensorsSource):
     def _full_shape(self, ref: TensorRef) -> tuple[int, int]:
         """The checkpoint-side (rows, columns) of a possibly-sharded ref:
         only the shard-axis kinds widen; replicated tensors are exact."""
-        if ref.tp_degree <= 1:
-            return ref.rows, ref.columns
-        if ref.kind in (KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT, KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
-            return ref.rows, ref.columns * ref.tp_degree
-        if ref.kind in (KIND_ATTN_KEY, KIND_ATTN_VALUE):
-            return ref.rows * attn_kv_shards(ref.tp_degree), ref.columns
-        if ref.kind in (KIND_GDN_QKV, KIND_GDN_CONV_WEIGHT, KIND_GDN_GATE,
-                        KIND_GDN_BETA, KIND_GDN_DECAY, KIND_ATTN_QUERY):
-            return ref.rows * ref.tp_degree, ref.columns
         return ref.rows, ref.columns
     def write(self, data) -> int:
         written = self.stream.write(data)
@@ -487,9 +478,7 @@ def sharded_bf16_plan(ref: TensorRef) -> tuple:
     full_cols) for the composed GDN q|k|v channel cut (the rank takes its
     whole-head slice of each third, kept contiguous in q|k|v order).
     """
-    tp = ref.tp_degree
-    rank = TP_RANK[0]
-    if tp <= 1:
+    if True:
         return ("plain", 0, ref.rows, 0, ref.columns, ref.columns)
     if ref.kind in (KIND_GDN_OUTPUT, KIND_ATTN_OUTPUT, KIND_GDN_A_LOG, KIND_GDN_DT_BIAS):
         # input/head-column cut: the full width is ref.columns * tp.
@@ -563,8 +552,8 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
     row-major (the FP8_E4M3_F32B128 kernel layout; scale_inv stored
     verbatim as the multiplier plane). The rank's expert slice only."""
     import numpy as np
-    experts = EXPERT_COUNT // ref.tp_degree
-    first_expert = TP_RANK[0] * experts
+    experts = EXPERT_COUNT
+    first_expert = 0
     rows_per_expert = ref.rows // experts
     scale_cols = ref.columns // 16
     scales = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
@@ -636,6 +625,71 @@ def copy_fp8_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
         scales.extend(((s16 << 16).astype(np.uint32)).view(np.float32)
                       .astype("<f4").tobytes())
     out.write(scales)
+
+
+class _HashingWriter:
+    """Write-through sha256: hashes every byte as it is written so the
+    receipt's whole-file digest needs no second read pass over a finished
+    multi-hundred-GiB pack (warm-storage read-back can be orders of
+    magnitude slower than the write)."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def write(self, data) -> int:
+        written = self.stream.write(data)
+        self.digest.update(data)
+        return written
+
+    def tell(self) -> int:
+        return self.stream.tell()
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def fileno(self) -> int:
+        return self.stream.fileno()
+
+
+
+
+def copy_nvfp4_experts(source: SafetensorsSource, ref: TensorRef, out) -> None:
+    """Stream per-expert NVFP4 payload [R, C/2] U8 expert-major, then the
+    F8_E4M3 scale plane [E*R, C/16] byte-per-scale (the codec-6 layout;
+    global + input F32 scales ride the manifest entry)."""
+    experts = EXPERT_COUNT
+    rows_per_expert = ref.rows // experts
+    scale_cols = ref.columns // 16
+    scales = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    for e in range(experts):
+        shard, meta, off = source.resolve(ref.name.replace("{e}", str(e)))
+        with (source.root / shard).open("rb") as f:
+            f.seek(off)
+            remaining = rows_per_expert * (ref.columns // 2)
+            while remaining > 0:
+                step = min(remaining, CHUNK_BYTES)
+                raw = f.read(step)
+                if len(raw) != step:
+                    raise PackFailure("short read on nvfp4 payload")
+                remaining -= step
+                out.write(raw)
+        s_shard, s_meta, s_off = source.resolve(
+            ref.name.replace("{e}", str(e))[:-len(".weight")] + ".weight_scale")
+        with (source.root / s_shard).open("rb") as f:
+            f.seek(s_off)
+            sraw = f.read(rows_per_expert * scale_cols)
+        if len(sraw) != rows_per_expert * scale_cols:
+            raise PackFailure("short read on nvfp4 scale plane")
+        scales.write(sraw)
+    scales.seek(0)
+    while True:
+        chunk = scales.read(CHUNK_BYTES)
+        if not chunk:
+            break
+        out.write(chunk)
+
+
 
 
 def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
@@ -994,10 +1048,6 @@ def main() -> int:
         parser.error("--first-layer and --layer-count are required")
     if args.output is None and not args.dry_run:
         parser.error("--output is required unless --dry-run")
-    EXPERT_FORMAT[0] = WEIGHT_MXFP4_E2M1 if args.source_format == "quark-mxfp4" else WEIGHT_FP8_F32B128
-    TP_RANK[0] = args.tp_rank
-    if args.tp_degree not in (1, 2, 4, 16) or args.tp_rank >= args.tp_degree:
-        parser.error(f"invalid tp {args.tp_rank}/{args.tp_degree}: degree in {{1,2,4,16}}, rank < degree")
     for axis in (EXPERT_COUNT, GDN_VALUE_HEADS, GDN_KEY_HEADS, ATTN_QUERY_HEADS):
         if axis % args.tp_degree != 0:
             parser.error(f"tp degree {args.tp_degree} does not shard {axis} evenly")

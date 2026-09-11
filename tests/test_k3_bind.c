@@ -32,8 +32,6 @@ int main(int argc, char **argv)
 	if ( entry != 0 )
 		failures += expect(entry->shape[0] == 12288u && entry->shape[1] == 7168u,
 			"gate shape 12288x7168");
-	failures += expect(SparkK3BoundPayload(&pack, &bound, "dense_gate_up_weight") != 0,
-		"dense payload resolves");
 	failures += expect(SparkK3BoundEntry(&bound, "expert_w1_weight") == 0,
 		"no expert tensors on the dense layer");
 	failures += expect(SparkK3BindLayer(&pack, 1u, &bound) == SPARK_STATUS_OK,

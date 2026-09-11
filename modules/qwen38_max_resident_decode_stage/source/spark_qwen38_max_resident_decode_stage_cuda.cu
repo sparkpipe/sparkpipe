@@ -1082,18 +1082,14 @@ static __global__ void SparkQwen38ResidualAddKernel(void *hidden_bf16, const voi
 
 extern "C" cudaError_t SparkQwen38MaxLaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, dimension * sizeof(float), stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+	return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkQwen38MaxLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, dimension * sizeof(float), stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
+	return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkQwen38MaxLaunchLinear(cudaStream_t stream, const SparkQwen38MaxLinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
@@ -1162,7 +1158,7 @@ static int SparkQwen38MaxAttnDegreeOk(uint32_t tp_degree)
 
 extern "C" cudaError_t SparkQwen38MaxLaunchAttnPrepare(cudaStream_t stream, void *q_fused_bf16, const void *k_bf16, const void *v_bf16, const SparkQwen38MaxAttnLayerWeights *weights, void *kv_cache_bf16, const uint32_t *slot_mapping, const uint64_t *row_positions, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, float epsilon, uint32_t tp_degree, uint32_t tp_rank)
 {
-	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || ((SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) % (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree)) != 0u )		return(cudaErrorInvalidValue);
+	if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || !SparkQwen38MaxAttnDegreeOk(tp_degree) )		return(cudaErrorInvalidValue);
 	dim3 grid(SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree,row_count,1u);
 	SparkQwen38AttnPrepareKernel<<<grid,SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,k_bf16,v_bf16,weights->query_norm_weight_bf16,weights->key_norm_weight_bf16,kv_cache_bf16,slot_mapping,row_positions,row_count,attn_layer_ordinal,cache_layer_stride,cache_block_stride,epsilon,tp_degree,tp_rank);
 	return(cudaGetLastError());
@@ -1170,7 +1166,7 @@ extern "C" cudaError_t SparkQwen38MaxLaunchAttnPrepare(cudaStream_t stream, void
 
 extern "C" cudaError_t SparkQwen38MaxLaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen38MaxKvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t tp_degree, uint32_t tp_rank)
 {
-    if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT % tp_degree) != 0u || ((SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / SPARK_QWEN38_MAX_MODEL_ATTN_KV_HEAD_COUNT) % (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree)) != 0u )        return(cudaErrorInvalidValue);
+    if ( tp_degree == 0u || tp_degree > SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT || tp_rank >= tp_degree || !SparkQwen38MaxAttnDegreeOk(tp_degree) )        return(cudaErrorInvalidValue);
     dim3 grid(
         (SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT / tp_degree) /
             SPARK_QWEN38_CUDA_ATTN_HEADS_PER_CTA,
@@ -1490,11 +1486,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchExpertDown(cudaStream_t stream, const
 	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
 		return(cudaErrorInvalidValue);
 	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,multiprocessor_count));
-}
-
-extern "C" cudaError_t SparkQwen38MaxLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));
 }
 
 extern "C" cudaError_t SparkQwen38MaxLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension)

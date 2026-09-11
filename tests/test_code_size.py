@@ -1479,6 +1479,12 @@ CEILING = 233150
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
 CEILING = 241052
+# muse #902 round 2, second hop onto 167cde7 (main moved 190 commits under
+# the lane during validation): the muse glimmer family stack (module + cuda
+# tier + stagepack/deployment tooling + the two shared norm kernels in
+# inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
+# 233419 at 167cde7. Measured exact: 238091.
+CEILING = 238091
 
 
 ROOT = Path(__file__).resolve().parent.parent

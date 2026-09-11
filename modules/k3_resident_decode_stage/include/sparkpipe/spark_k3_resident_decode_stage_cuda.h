@@ -1,5 +1,5 @@
-#ifndef SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_CUDA_H
-#define SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_CUDA_H
+#pragma once
+struct SparkWeightdLazyPack;
 
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -13,8 +13,7 @@
 #define SPARK_K3_DISPATCH_OK 0
 #define SPARK_K3_DISPATCH_ERR_ARGUMENT -1
 #define SPARK_K3_DISPATCH_ERR_CUDA -2
-#define SPARK_K3_DISPATCH_ERR_REGISTER -3
-#define SPARK_K3_DISPATCH_ERR_BIND -4
+#define SPARK_K3_DISPATCH_ERR_BIND -3
 
 typedef struct SparkK3StepInput
 {
@@ -72,14 +71,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	uint64_t kv_page_bytes, int device);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
 
-int32_t SparkK3DispatchRegisterPack(SparkK3Pack *pack);
-void SparkK3DispatchUnregisterPack(SparkK3Pack *pack);
-
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
-	SparkK3BoundLayer *bounds, uint32_t layer_count);
+	SparkK3BoundLayer *bounds, uint32_t layer_count,
+	SparkWeightdLazyPack *lazy);
 
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
 	uint32_t context, uint32_t multiprocessors, cudaStream_t stream);
 
-#endif
+

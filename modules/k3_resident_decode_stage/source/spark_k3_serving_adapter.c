@@ -5,12 +5,10 @@
 #include <string.h>
 
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_k3_dspark_pack.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
-#include "sparkpipe/spark_speculation_provider.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
 #include "spark_k3_dspark_format.h"
@@ -49,10 +47,6 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer seqslot_device;
 	SparkMemoryBuffer output_tokens;
 	SparkMemoryBuffer output_scores;
-	SparkK3DsparkPack drafter_pack;
-	uint32_t drafter_pack_bound;
-	char speculation_refusal[SPARK_K3_DSPARK_MAX_REFUSAL_BYTES];
-	SparkSpeculationProvider provider;
 	SparkSpeculationSeam *speculation_seam;
 } SparkK3ServingState;
 
@@ -107,8 +101,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		configuration->runtime_limits.resident_sequence_capacity);
 	state->runner_config.kv_pages_per_sequence =
 		K3ServingJsonU32(&doc, root, "kv_pages", 2u);
-	if ( K3ServingJsonU32(&doc, root, "capture_graphs", 0u) != 0u )
-		state->runner_config.flags |= SPARK_K3_STAGE_RUNNER_FLAG_CAPTURE_GRAPHS;
 	state->runner_config.kv_page_bytes = 0u;
 	{
 		int32_t dev = SparkJsonFindObjectMember(&doc, root, "device_collective");
@@ -277,103 +269,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 static void K3ServingDestroy(void *adapter_state);
 
 
-static SparkStatus K3DsparkProviderCapabilityQuery(
-	const SparkSpeculationGeometryQuery *geometry,
-	char *refusal_buffer, uint32_t refusal_buffer_bytes)
-{
-	if ( geometry == 0 || geometry->hidden_dimension != K3_HIDDEN ||
-		geometry->layer_count < 93u )
-	{
-		if ( refusal_buffer != 0 && refusal_buffer_bytes != 0u )
-			(void)snprintf(refusal_buffer, refusal_buffer_bytes,
-				"k3 dspark drafter requires the k3 target geometry "
-				"(hidden %u, 93 layers), got hidden %u layers %u",
-				(uint32_t)K3_HIDDEN,
-				geometry != 0 ? geometry->hidden_dimension : 0u,
-				geometry != 0 ? geometry->layer_count : 0u);
-		return(SPARK_STATUS_UNSUPPORTED);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus K3DsparkProviderDraftBegin(void *provider_state,
-	const SparkSpeculationDraftRequest *request)
-{
-	(void)provider_state;
-	(void)request;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static SparkStatus K3DsparkProviderDraftNext(void *provider_state,
-	SparkSpeculationDraft *draft)
-{
-	(void)provider_state;
-	(void)draft;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static void K3DsparkProviderDraftCancel(void *provider_state)
-{
-	(void)provider_state;
-}
-
-static SparkStatus K3DsparkProviderVerifyAccount(void *provider_state,
-	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
-{
-	(void)provider_state;
-	if ( contract_out == 0 || verified_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(contract_out, 0, sizeof(*contract_out));
-	contract_out->chain_width = verified_count;
-	contract_out->accepted_token_count = verified_count - 1u;
-	contract_out->tokens_per_sequence = contract_out->accepted_token_count;
-	contract_out->chain_live = 1u;
-	return(SPARK_STATUS_OK);
-}
-
-static const SparkSpeculationKvContract K3DsparkKvContract =
-{
-	.frame_flags = SPARK_SPECULATION_KV_FLAG_SCRATCH_FRAME |
-		SPARK_SPECULATION_KV_FLAG_TAIL_FRAME,
-	.block_history_depth = 0u
-};
-
-static const SparkSpeculationKvContract *K3DsparkProviderKvContract(
-	void *provider_state)
-{
-	(void)provider_state;
-	return(&K3DsparkKvContract);
-}
-
-static const SparkSpeculationProviderOps K3DsparkProviderOps =
-{
-	.capability_query = K3DsparkProviderCapabilityQuery,
-	.draft_begin = K3DsparkProviderDraftBegin,
-	.draft_next = K3DsparkProviderDraftNext,
-	.draft_cancel = K3DsparkProviderDraftCancel,
-	.verify_account = K3DsparkProviderVerifyAccount,
-	.kv_contract = K3DsparkProviderKvContract
-};
-
-static const char *const K3DsparkEnvironmentSchema[] =
-{
-	"SPEC_METHOD",
-	"DRAFT_COUNT",
-	"DSPARK_PACK_PATH"
-};
-
-static const SparkSpeculationProviderDescriptor K3DsparkProviderDescriptor =
-{
-	.abi_version = SPARK_SPECULATION_PROVIDER_ABI_VERSION,
-	.descriptor_bytes = SPARK_SPECULATION_PROVIDER_DESCRIPTOR_BYTES,
-	.kind = SPARK_SPECULATION_PROVIDER_DSPARK,
-	.provider_id = "k3.dspark-drafter.redhatai.v1",
-	.max_draft_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.default_draft_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.environment_schema = K3DsparkEnvironmentSchema,
-	.environment_schema_count = 3u
-};
-
 static SparkStatus K3ServingInitializeSpeculationSeam(SparkK3ServingState *state)
 {
 	SparkSpeculationSeamConfiguration seam_config;
@@ -434,52 +329,6 @@ static SparkStatus K3ServingInitializeSpeculationSeam(SparkK3ServingState *state
 			(int)status);
 		SPARK_RETURN(status);
 	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus K3ServingBindSpeculationProvider(SparkK3ServingState *state)
-{
-	const char *speculate = getenv("SPARK_K3_SERVING_SPECULATE");
-	const char *pack_path;
-	SparkStatus status;
-	if ( speculate == 0 || speculate[0] == '\0' || strcmp(speculate, "0") == 0 )
-		return(SPARK_STATUS_OK);
-	pack_path = getenv("SPARK_K3_DSPARK_PACK_PATH");
-	if ( pack_path == 0 || pack_path[0] == '\0' )
-	{
-		fprintf(stderr, "k3_serving speculation armed without a drafter: "
-			"set SPARK_K3_DSPARK_PACK_PATH\n");
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	}
-	status = SparkK3DsparkPackBind(pack_path, &state->drafter_pack,
-		state->speculation_refusal, sizeof(state->speculation_refusal));
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr, "k3_serving drafter pack refused: %s\n",
-			state->speculation_refusal);
-		SPARK_RETURN(status);
-	}
-	state->drafter_pack_bound = 1u;
-	state->provider.descriptor = &K3DsparkProviderDescriptor;
-	state->provider.ops = &K3DsparkProviderOps;
-	state->provider.provider_state = &state->drafter_pack;
-	status = SparkSpeculationProviderValidate(&state->provider);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr, "k3_serving speculation provider invalid: status=%d\n",
-			(int)status);
-		SPARK_RETURN(status);
-	}
-	fprintf(stderr, "k3_serving drafter bound pack=%s block=%u draft_depth=%u "
-		"taps=[%u,%u,%u,%u,%u] tensors=%u draft_forward=%s\n",
-		pack_path, state->drafter_pack.block_size,
-		state->drafter_pack.draft_token_count,
-		state->drafter_pack.target_tap_layers[0],
-		state->drafter_pack.target_tap_layers[1],
-		state->drafter_pack.target_tap_layers[2],
-		state->drafter_pack.target_tap_layers[3],
-		state->drafter_pack.target_tap_layers[4],
-		state->drafter_pack.tensor_count, "not_landed_fail_closed");
 	return(SPARK_STATUS_OK);
 }
 
@@ -572,8 +421,6 @@ static void K3ServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->seqslot_device);
 	SparkMemoryBufferFree(&state->output_tokens);
 	SparkMemoryBufferFree(&state->output_scores);
-	if ( state->drafter_pack_bound != 0u )
-		SparkK3DsparkPackRelease(&state->drafter_pack);
 	free(state->pack_path);
 	free(state);
 }
