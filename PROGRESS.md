@@ -1,185 +1,140 @@
-# PROGRESS — lane muse (driver), branch lane/muse-driver
+# PROGRESS.md — laguna lane (lane/laguna-driver)
 
-Coder stage output. Design contract: DESIGN.md (untracked, per criterion 9).
-Anchors/oracle live in /Users/mac/batch-muse-val (separate lane; untouched).
+Coder stage log. DESIGN.md is the contract; this file records what landed,
+what is blocked, and what the manager must serialize.
 
-## Per-criterion status (DESIGN.md section 9)
+## Ruling status
 
-1. **DONE** — `model-families/muse_glimmer/` + contract + pinned modeling
-   reference (commit 4177486a) exist; `python3 tests/test_muse_glimmer_model_header.py`
-   exits 0: 24 bindings + 14 composed (>= 20).
-2. **DONE** — `spark_muse_glimmer_stagepack_format.h` compiles standalone
-   `-std=c11 -Wall -Wextra -Werror` (mac, cc Apple clang): 120-byte header
-   proof, 56-byte entries, magic 0x47534D55 (grep of all STAGEPACK_MAGIC
-   values showed no collision), shape assertions incl. 512B slot,
-   768/2496/1248 per-rank rows, 12628 vocab rows.
-3. **DONE** — `inference/kernels/norm.cuh` gains exactly the two kernels
-   (`LmCenteredRmsNormKernel`, `LmHeadRmsNormKernel`), no model names;
-   both compile on sparkc under build-all and are exercised by V0.
-4. **DONE (V0)** — module builds on sparkc (aarch64, nvcc sm_121a, queue
-   jobs muse-v0-build-004/008: exit 0) and the V0 validator passes
-   end-to-end (queue job muse-v0-gpu-012, exit 0):
-   `muse_glimmer_validation PASS` — centered norm ulp1, qk 3.87 exact vs
-   hand-frozen constant, window walk at context 2049 (position 0 leaves
-   the read set), NoPE/full decode path, output gate + silu-mul bitwise,
-   module decode 8 steps x2 identical inputs -> identical tokens.
-5. **DONE** — audit greps: 0 private norm/rope/kv/decode/gate/silu kernels
-   in the module tree; 18 shared-kernel call sites; layer dispatch is
-   `LAYER_IS_FULL_ATTENTION(layer)` (pure function of layer index); the 12
-   GDN/MTP grep hits are shared-vtable constants (counts = 0) and the
-   kv-tier protocol placeholder, not logic.
-6. **READY-TO-RUN (blocked-on-download)** — `tools/muse_glimmer_stagepack.py`
-   (dry-run proven: rank0/rank15 receipts, 419 tensors,
-   3,639,537,920 bytes at tp16 = 3.4 GiB, kv heads 0 vs 1, two-pass
-   placement proof) fires on the warm copy; A7 audits run with it.
-7. **BLOCKED-ON-DOWNLOAD** — V1 anchors A1-A7: goldens frozen in
-   /Users/mac/batch-muse-val; the real-pack runner consumes
-   `tools/muse_glimmer_stagepack.py` + the anchor harness.
-8. **BLOCKED (fleet)** — V2 needs 16 live ranks + warm weights.
-9. **MANIFEST+SUMS** — regenerated in this commit (last tree change).
+- A (muse LmHeadRmsNormKernel): origin/lane/muse-driver DOES NOT EXIST on
+  origin (ls-remote empty) and muse's kernel is not on main. Fallback per
+  ruling: copied the kernel EXACTLY from the local batch-muse clone
+  (lane/muse-driver, inference/kernels/norm.cuh) into our norm.cuh —
+  separate in/out pointers, grid (head=x,row=y), optional weight, bf16
+  round-trip before the `head_multiply` epilogue. Laguna passes
+  head_multiply=1.0. Text is byte-identical to muse's; dedupes at merge.
+- B (LmRopePerHeadKernel + 3 trailing defaulted params): landed
+  (project.cuh + the attention_scale thread through attn.cuh
+  LmRopePair/LmRopeRotate). Existing-family verification: glm52 layer host,
+  dsv4 layer host, gqa host, k3 layer host all build and pass on the mac
+  (exit 0) after the edit.
+- C (LmHeadGateBroadcastKernel<SIGMOID|SOFTPLUS>): landed in norm.cuh.
+  ling's LmHeadWiseGateKernel is NOT on main (PR #830 open) — per the
+  ruling, laguna does NOT convert ling's call sites. MANAGER: whoever
+  merges second converts and deletes the older variant.
+- D: gqa.cuh untouched (git diff clean).
+- E: tools/dev/port_family.py copied from batch-ling, byte-identical.
+- F: TP8xPP2, stages {24,24}, session port base 64800.
 
-## V0 evidence
+## Criteria
 
-Queue (v2 tool) job muse-v0-gpu-012 on sparkc, exit 0:
+1. DONE — port executed, 22 files, all per-file counts nonzero (commit 201d100).
+2. in progress
+...
 
-```
-muse_stage tp_passive degree=16 rank=0 (single-rank replay of a tp-sliced pack)
-muse_stage initialize ok slice=0+52 tp=0/16 owns_embedding=1 owns_head=1
-muse_glimmer_validation check=centered_norm tolerance=ulp1 worst_distance=1
-muse_glimmer_validation check=qk_norm_3_87 tolerance=ulp1 worst_distance=0
-muse_glimmer_validation check=window_decode tolerance=ulp2 worst_distance=1
-muse_glimmer_validation check=full_decode tolerance=ulp2 worst_distance=0
-muse_glimmer_validation check=window_walk context=2049 window=2048 boundary_drop=verified
-muse_glimmer_validation check=output_gate_and_silu_mul bitwise=exact
-muse_glimmer_validation check=module_decode steps=8 deterministic=exact tokens=1382 x8
-muse_glimmer_validation PASS
-```
+## Criteria status at handoff (2026-09-09, coder handoff)
 
-## Design deltas found while coding (for the record)
+1. DONE — port executed, 22 files, all counts nonzero (201d100).
+2. DONE — family complete: model header (tables+asserts), GQA kv_geometry,
+   census 23/36769, firmware description (a7687e2, 40074e2, 25b06a9).
+3. DONE (pre-freeze) — contract + header bind test green on mac; reference
+   .py byte copies + revision/shard shas PIN AT FREEZE on sparkb.
+4. PARTIAL — all mac compile checks green under -Werror (module.c, adapter,
+   synthesize tool, format/kv/config headers, host tests glm52/layer/gqa/k3);
+   `make offline-gates` on sparkb NOT RUN (no sparkb queue access this
+   session) — manager must fire it.
+5. DONE — residue grep clean (remaining hits are KV_BITS/LmTpBf16 false
+   positives); MTP parity + flash-decode validation files deleted.
+6. DONE — layer.cuh defines ZERO private attention/router/norm kernels; the
+   path is gqa.cuh + project.cuh rope + split + norm.cuh kernels only
+   (qk-norm = muse's LmHeadRmsNormKernel head_multiply=1.0; gate =
+   LmHeadGateBroadcastKernel<SOFTPLUS>).
+7. BLOCKED (mac) — tests/host_cuda/laguna_layer_host.cu + python oracle
+   harness not yet written; oracle exists (tools/laguna_layer_reference.py).
+   The kernels themselves are verified by the existing host tests after the
+   Flag B/C edits, and the V0 validator dumps fixtures for the deep compare.
+8. MECHANISM DONE — oracle --dump-yarn (independent HF formula) vs the
+   validator's yarn dump; the <=1e-6 comparison runs at V0 on sparkb.
+9. MOSTLY — packer rewritten (census lock fail-closed, per-section whole-head
+   q|k|v rows, gate-first W1, expert intermediate slicing, receipts, .lgsp);
+   synthetic-fixture end-to-end pack load NOT exercised (needs a fixture
+   safetensors dir — sparkb task); real-pack BLOCKED on warm download.
+10. DONE — gen_deployment emits TP8xPP2 (16 rank-stages, stage_layer_counts
+    {24,24}, eos {2,24}); session base REQUIRED env (SPARK_LAGUNA_SESSION_BASE),
+    no frozen default — PENDING FLEET RENUMBER (64800+ unsafe with route-kind
+    offsets; the concrete 64800 must come from the renumber, not this lane).
+11. DONE — synthesize --dflash emits flags 0x2 + one ignored kind-19 section
+    (pack-level proof); module loader accepts/records/skips (code path
+    SparkLagunaPackValidateEntryGeometry/PackLoadEntry); end-to-end load
+    proof runs at V0 on sparkb.
+12. PENDING — PACKAGE_MANIFEST.json + SHA256SUMS regenerate LAST after the
+    sparkb gates; NOT done in this session (any earlier regen would go stale
+    with the pending sparkb runs).
 
-- DESIGN section 2 says the final norm is centered; the pinned publisher
-  source (line 467, MuseGlimmerRMSNorm) says PLAIN weighted RMS. The
-  contract + module follow the source (final norm = LmBf16RmsNormKernel),
-  matching the independent anchor finding.
-- DESIGN section 5's `LmKvHeads<16, 1, 128, 128, 64>` has one parameter too
-  many; the real template is `LmKvHeads<16, 1, 128, 64>` (slot 512 B, page
-  64 slots) — same numbers it intended.
-- Census: 52x12 kept layer tensors + 3 globals = 627 source tensors vs the
-  contract's 626. Packer asserts pattern counts and reports the delta;
-  resolve against the warm index at real-pack time. rotary inv_freq buffers
-  are non-persistent (absent from safetensors).
-- MLP is separate gate_proj/up_proj in HF (fused gate_up is a stagepack-side
-  fusion); the fused qgkv interleaves q|gate per head because the shared
-  LmSplitQueryGateKernel splits head-major.
-- Attention rounding (scores->bf16, probs->bf16) is inside the frozen shared
-  LmGqaAttentionDecodeKernel (fp32 unrounded); HF-exactness at those points
-  is delegated to the anchor oracle's fp32-unrounded variants per the
-  anchor report.
+## Manager notes
 
-## Offline-gates status (important)
+- Ruling A: muse branch absent on origin; kernel copied byte-exact from the
+  local batch-muse clone (lane/muse-driver). Dedupes at merge.
+- Ruling C: ling's LmHeadWiseGateKernel NOT on main → laguna did not convert
+  its call sites; whoever merges second converts + deletes the older variant.
+- Topology: TP8xPP2 default (operator exemption granted mid-session);
+  TP4xPP4 macros + stage validator support kept as the standard alternative.
+- Deviation from DESIGN §4 wording: "experts 32/rank" is implemented as the
+  donor grouped-GEMM slicing (all 256 experts resident per rank, W1 rows /
+  W2 cols sharded 8-way) — whole-expert partition would need cross-rank
+  dispatch machinery that does not exist in the tree; per-rank expert bytes
+  identical (211.5 GiB / 8).
+- BLOCKED on sparkb: offline-gates, V0 synth validation, fixture-pack load,
+  real-pack boundary-rank checks (warm download must complete; poll the
+  marker, do not blind-sleep), contract freeze shas, manifest+sums regen.
 
-`make offline-gates` (build-all) is RED at pristine origin/main 8f3a6f2,
-independent of this lane: `modules/k3_resident_decode_stage/source/
-spark_k3_serving_adapter.c` is a half-committed refactor (orphaned
-`if ( status == SPARK_STATUS_OK )` at line 516, undeclared
-`seqslot_device/seqslot_host/dispatch/rows/submission`) - reproduced on
-the untouched synced main checkout on sparkc (job muse-gates-001 and a
-direct pristine-tree make). The manager should bounce the k3 lane.
-Targeted gates on the muse tree all pass (job muse-gates-003, exit 0):
-verify_package_manifest (with the lane DESIGN.md present), the header
-bindings test, and the muse module archive (nvcc sm_121a). The manifest
-covers the lane-local DESIGN.md by intent; the file ships with the tree.
+## Validation session (2026-09-10/11, validation-debugger)
 
-## Environment notes
+REBASE VERDICT (target recorded per coordinator): rebased lane/laguna-driver
+onto origin/main 50bd0d3 (PR #913, the E2E-proven mesh platform). Path:
+suspension tip 97f1aff -> coredev-aligned origin/lane/laguna-driver 5acf486
+(= main 8f3a6f2 + 24 laguna family + coredev mesh commits) -> 50bd0d3.
+- Patch-equivalent coredev mesh commits auto-skipped onto main's wave
+  (5acf486->aba22b2, ef6fcd0->feda24c, 78b07e1->99f42c0, ...); three
+  shared-file-only commits resolved toward origin (f6ce20a, 8b19353 + the
+  Makefile arm - content already on main, skipped as subsumed; bf85caf
+  skipped: shared-only, superseded by the E2E-proven wave). 6b9ffcc's
+  family hunk (laguna module.c credit-binding strip + mesh receive hook)
+  kept; its shared surface merged to main's (32MB slots, no duplicates).
+- Family files byte-kept (packer hash b782c8c4 identical pre/post rebase -
+  the in-flight sparkd pack is exactly what the rebased branch produces).
+- Ceiling re-measure: merged tree = 240779 authored lines, under main's
+  241052 pin (main's wave deleted the old-engine/nccl test surface); the
+  lane's interim 246010 pin removed as dead code (bc82860).
+- Post-rebase mac checks green: header bind test, make contract (module +
+  host sources vs main's transport), make adapter (dylib), synthesize tool
+  under real flags, code-size test.
 
-- The shared spark_pack_load/synthesize commons are MTP/GDN-entangled past
-  their macro surface; muse uses standalone loader + synthesize tool with
-  identical wire behavior (muse is the first family with no GDN/MTP).
-- `runtime/stage_module_lifecycle.c` is in no library sources list; the
-  module links it family-side (pre-existing gap, qwen38_max inherits it).
-- Kernel host-side error reporting: module.c/synthesize use SPARK_FAIL per
-  operator directive; device-side stays on LmFrameError/LmKvReport paths.
-- Warm dir `/mnt/model-warm/muse-glimmer-30b` still ABSENT on sparkc as of
-  this writing (polled via short-timeout ssh; no blind sleeps).
+FINDINGS fixed en route (each fail-loud, exact-site):
+1. make contract was RED since 5c14a6f: SparkLagunaPackAssignLayer took
+   state it never used (-Wextra -Werror); dead parameter dropped (ae67d88).
+2. Packer never ran end-to-end; first real run exposed four breaks
+   (6d659b0): census regex re.escape ate the {layer}/{expert} braces so
+   EVERY checkpoint tensor was rejected; receipt() read nonexistent Entry
+   fields; pack header REVISION/CONTRACT_SHA256 were undefined names (now
+   required --revision/--contract-sha256 CLI threaded to assemble_header);
+   donor docstring replaced with actual behavior.
+3. Generator/deploy mismatch (6d659b0): pack template named packs the
+   packer never emits (laguna-s-2.1.bf16.tp8pp2.stage%d.rank%d vs the
+   packer's laguna_stage.tp8.pp2.stage%d.rank%d) and numbered stage-1
+   packs by global rank; fixed with rank%%TP.
+4. Adapter tp_rank check compared config tp_rank (0..7) against the GLOBAL
+   stage index (0..15): ranks 8..15 unservable - module validate rejects
+   tp_rank>=8; now stage_index %% TP_DEGREE (6d659b0).
+5. Expert W2 producer used tp_shard_range's (start, count) as
+   [c0, c1): rank 0 worked by accident, rank 1 emitted an empty region
+   (db84461) - found by the real pack at stage0/rank1.
+6. sparkcap over non-interactive ssh: systemd transient scope needs root
+   authorization - sudo -n sparkcap is the working form (worker fixed).
 
-## Round 2 (validation-debugger, 2026-09-11): V1 real-weight chain
-
-Branch state: rebased onto origin/main 14df85a via origin/lane/muse-driver
-845ee15 (coredev alignment) + repair commits. The lane delta vs main is now
-28 files, +7388/-0: the muse family tree, the two shared norm kernels
-(norm.cuh, purely additive), the muse tools/tests/contract, PROGRESS.md and
-the code-size ceiling. The first rebase had silently kept old-main/donor
-versions of ring/, node/, cache/, src/, sources.mk, the root Makefile, other
-families' module Makefiles, the legacy tp test suite and the deleted-on-main
-tp_device_collective_nccl.c (65 files, ±20K lines); 15aef76 restores every
-shared file to main's content. The muse module Makefile deliberately keeps
-the fad1fff nccl drop - main's tp_device_collective.c no longer dispatches
-to nccl.
-
-V1 evidence chain (sparkc, GB10, packs + warm copy):
-- Frozen synthetic fixtures A1-A7: PASS on the golden-freeze host env
-  (python 3.14.5, numpy 2.5.0, darwin arm64). A6 greedy token 191704,
-  runner-up 140134, gap 0.0469 - exactly the frozen values.
-- Real-weight goldens (expected_real/): A1-A7 built on sparkc against
-  /mnt/model-warm/muse-glimmer-30b with every internal cross-check green
-  (a6 full 52-layer prefill 86.7s). A6 real greedy token 1418; A5 real
-  drop0 delta 5.9e-4 recorded in meta. Provenance (host, numpy, shas)
-  frozen in each npz meta.
-- A7 real-pack audit (real_pack_audit.py, independent wire transcription):
-  PASS all checks on all rebuilt packs - rank 0/15 header+geometry+receipt
-  shas, kv-head replication law (ranks 0/2/7 cached-K bitwise equal; 7 vs 8
-  bitwise different), norm replication, and source spot-checks (embed,
-  lm_head, k, gate, up, o_proj vs the warm safetensors).
-- GPU module tier on the real audited rank00 pack: PASS - centered_norm
-  ulp1, qk_norm_3_87 ulp1, window_decode ulp2, full_decode ulp2,
-  window_walk boundary verified + decode bitwise, output_gate_and_silu
-  bitwise exact. Receipts: pack run 16/16 exit=0 (~67s/rank, maxrss 645MB),
-  index sha 7d817b4d, config sha 5a9df2d8 (PINS byte-identical).
-
-Gate fixes committed this round:
-- Packer wrote header.directory_offset = header+directory end; the frozen
-  wire semantic (C loader + synthesize tool) is the directory start. This
-  made the module reject every real pack with pack_geometry_mismatch.
-- Validator module_decode tier now opts in via
-  SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER (default skip with printed
-  platform reason): main refuses standalone direct pack loads - weightd
-  attach via model_residentd is mandatory, and main's own glm5_next
-  validator carries kernel tiers only. The module lifecycle E2E moves to
-  the residentd/serving qualification step (needs the weightd lazy-pack
-  attach plumbing; same platform-gap class as the credit-binding strip).
-- Code-size ceiling re-measured: 245992 (muse stack +4665 over main's
-  measured 241327 at 14df85a; main itself was +275 over its stale 241052
-  pin - landing debt outside this lane).
-- Contract: census RESOLVED 627 text / 809 vision (the pre-download 626/810
-  estimate was off by one; the patterns side was right), digest_freeze
-  filled (both shard shas + index/config/tokenizer files), modeling
-  reference mispin corrected (4177486a was the HF model revision; the
-  transformers commit is 4815a0a6, verified by sha256 against PINS).
-
-Validation-side (batch-muse-val tree, not the PR): three latent reader bugs
-fixed in the anchor tooling - muse_realweights/real_pack_audit resolved
-safetensors reads to the shard data start instead of the per-tensor
-data_offsets (mid-shard spot-checks compared the wrong bytes; first-tensor
-checks passed by coincidence), a stale 3-tuple unpack, and a missing *2
-(element vs byte) in the auditor's up-half offset. The A5 real-mode
-negative-control canary is now noise-relative (the synth-tuned absolute
-1e-3 threshold does not transfer to real weights; real drop0 delta 5.9e-4
-is recorded in the golden meta and sits below the driver atol - the
-boundary read-set checks carry the real-mode observability).
-
-Deployment generator: no change needed. Main's own glm5_next generator
-still emits session_ports tables post-rewrite; the muse generator already
-matches that shape.
-
-Next step for the lane: module lifecycle E2E (module_decode tier with
-SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER=1) once the weightd lazy-pack
-attach plumbing lands, then fleet qualification under model_residentd.
-
-Second hop (same round): main advanced 190 commits under the lane during
-validation (14df85a -> 167cde7, qwen38max-sota + k3 fleet wave merges). The
-branch was rebased again (-X ours: every shared-file conflict takes main;
-the muse family files are additions and apply clean), the lane delta vs
-167cde7 re-verified as muse-only + norm.cuh + ceiling, the code-size
-ceiling re-pinned to the measured exact 238091 (muse stack +4672 over
-main's measured 233419 at 167cde7), and the full GPU tier re-run GREEN on
-the final tree (ab8679b) against the same real audited rank00 pack.
+REAL-PACK (sparkd, sparkcap --mem 4096, resumable per-shard markers):
+warm source verified complete (241G, 46 shards, HF tree id
+0f573140834b11cfac0c2af97a101a7a69a13e22 == the worker's --revision;
+--contract-sha256 == sha256 of model_contracts/laguna_authoritative.json
+354f559d...). census lock green on all 36769 real tensors. stage0 rank0-1
+packed (~14G/rank-stage, ~4min each), remainder running; receipts appended
+to /mnt/model-warm/packbuild/laguna/real_pack.log.

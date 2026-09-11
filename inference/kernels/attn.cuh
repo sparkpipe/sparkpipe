@@ -5,9 +5,9 @@
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
 
-static __device__ __forceinline__ void LmRopePair(float *low, float *high, float angle)
+static __device__ __forceinline__ void LmRopePair(float *low, float *high, float angle, float scale = 1.0f)
 {
-	float c = __cosf(angle),s = __sinf(angle);
+	float c = __cosf(angle) * scale,s = __sinf(angle) * scale;
 	float a = *low,b = *high;
 	*low = (a * c) - (b * s);
 	*high = (a * s) + (b * c);
@@ -20,7 +20,7 @@ enum LmRopePairing
 };
 
 template<LmRopePairing PAIRING>
-static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle)
+static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle, float scale = 1.0f)
 {
 	uint32_t low_offset,high_offset;
 	float low,high;
@@ -28,7 +28,7 @@ static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_
 	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
 	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
 	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
-	LmRopePair(&low,&high,angle);
+	LmRopePair(&low,&high,angle,scale);
 	rows_bf16[base + low_offset] = LmFloatToBf16(low);
 	rows_bf16[base + high_offset] = LmFloatToBf16(high);
 }
