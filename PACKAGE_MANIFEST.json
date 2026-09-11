@@ -1,5 +1,5 @@
 {
-  "file_count": 2191,
+  "file_count": 2192,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -2802,6 +2802,11 @@
       "size_bytes": 5949
     },
     {
+      "path": "examples/release/dsv41_flash_tp8/m7_ladder0_receipt.json",
+      "sha256": "78f0ed476714790c3cb289cfcc2b3c63f60d3f7eb15d718d778f9fe4be06b9ed",
+      "size_bytes": 4705
+    },
+    {
       "path": "examples/release/dsv41_flash_tp8/rank0-3.sha256",
       "sha256": "421f134207c5707b061105215d1155e34648e9ce7c58a4c0305818c31a3060a3",
       "size_bytes": 320
@@ -3903,8 +3908,8 @@
     },
     {
       "path": "model_contracts/dsv41_flash_authoritative.json",
-      "sha256": "bb8adaf752c079374b8b1572ae3327ce69f1a23740e8685434900317df764921",
-      "size_bytes": 23352
+      "sha256": "cca1a8bf75016e880182777074cf0b4268e3cdb11b26a656cffc8b3d5f3b70e8",
+      "size_bytes": 24331
     },
     {
       "path": "model_contracts/dsv4_flash.json",
@@ -4088,8 +4093,8 @@
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h",
-      "sha256": "8fce4597ef13580bdf46e3fddea67f1b4b815532e4334d8584e6feb14c5e4f7e",
-      "size_bytes": 16859
+      "sha256": "acb5b88d46300644e568931894285a9d1b23618bed295bbb352b86c4578aa9ce",
+      "size_bytes": 16847
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_attach_probe.c",
@@ -9223,13 +9228,13 @@
     },
     {
       "path": "tools/dsv41_flash_pack_verify.py",
-      "sha256": "cebdf1253081fd0638e9f63812af228c2673d49c57914e2d8196d3909fe6f191",
-      "size_bytes": 19151
+      "sha256": "c48a843166450a1c9f20f381988f9a0625cd2a944502eae28b764c7f8cd0a21a",
+      "size_bytes": 19145
     },
     {
       "path": "tools/dsv41_flash_stagepack.py",
-      "sha256": "6e493e4e4993defa6074379af9e3ea62295e857cd231d7f1df224a455876803a",
-      "size_bytes": 26477
+      "sha256": "d58a0258b67ba0208794e3a6ea3fdf802e32703532f480b3c0b26ce2368a6f66",
+      "size_bytes": 26324
     },
     {
       "path": "tools/dsv41_spine_instrument.c",
@@ -10960,5 +10965,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 44684493
+  "total_bytes": 44690006
 }
