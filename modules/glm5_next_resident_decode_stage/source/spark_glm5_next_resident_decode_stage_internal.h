@@ -86,6 +86,10 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *hidden_bf16;
 	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
+	uint16_t *tap_stage_bf16;
+	void *tap_op_event;
+	void *tap_done_event;
+	uint32_t tap_capture_pending;
 	uint16_t *q_compressed_bf16;
 	uint16_t *q_bf16;
 	uint16_t *query_latent_bf16;
@@ -264,6 +268,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
+cudaError_t SparkGlm5NextLaunchHcMeanRows(cudaStream_t stream,const uint16_t *hidden_hc_bf16,uint16_t *out_bf16,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);

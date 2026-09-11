@@ -36,6 +36,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_speculation_policy.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "spark_glm5_next_stagepack_format.h"
+#include "spark_glm5_next_tap_ring.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -138,6 +139,8 @@ struct SparkGlm5NextModuleState
 	const void *mtp_hnorm_bf16;
 	const void *mtp_shared_norm_bf16;
 	uint32_t mtp_enabled;
+	uint32_t tap_enabled;
+	SparkGlm5NextTapRing *tap_ring;
 	uint16_t *mtp_lane_hidden_bf16;
 	uint8_t *mtp_lane_armed;
 	uint64_t kda_replay_layer_bytes;
@@ -250,6 +253,7 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->owns_embedding = context->stage_index == 0u ? 1u : 0u;
 	state->owns_final_head = context->stage_index + 1u == context->stage_count ? 1u : 0u;
 	state->mtp_enabled = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP) != 0u ? 1u : 0u;
+	state->tap_enabled = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION) != 0u ? 1u : 0u;
 	state->execution_stream = host_services->execution_stream;
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
 	*pack_path = context->stage_pack_path;
@@ -752,6 +756,13 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 			(void)cudaFreeHost(state->slots[index].host_run_begin);
 		state->slots[index].host_run_begin = 0;
 		state->slots[index].host_run_state_index = 0;
+		if ( state->slots[index].tap_op_event != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].tap_op_event);
+		state->slots[index].tap_op_event = 0;
+		if ( state->slots[index].tap_done_event != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].tap_done_event);
+		state->slots[index].tap_done_event = 0;
+		state->slots[index].tap_capture_pending = 0u;
 	}
 }
 
@@ -867,6 +878,23 @@ static SparkStatus SparkGlm5NextAllocateSlotHead(
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkGlm5NextAllocateSlotTap(
+	SparkGlm5NextModuleState *state,
+	SparkGlm5NextExecutionSlot *slot)
+{
+	SparkStatus status;
+	cudaError_t error;
+	if ( state->tap_enabled == 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkGlm5NextAllocateRows(state,state->execution_row_capacity,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WIDTH_ELEMENTS,(void **)&slot->tap_stage_bf16);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->tap_op_event,cudaEventDisableTiming);
+	if ( error == cudaSuccess )
+		error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->tap_done_event,cudaEventDisableTiming);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tap_slot_events"));
+}
+
 static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 {
 	uint32_t index;
@@ -880,6 +908,7 @@ static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHidden(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotMlp(state,&state->slots[index]);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHead(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotTap(state,&state->slots[index]);
 	}
 	SPARK_RETURN(status);
 }
@@ -2296,6 +2325,41 @@ static void SparkGlm5NextLazyWork(void *context)
 		SparkGlm5NextTpChainReduceMlp(chain);
 }
 
+static const uint32_t SparkGlm5NextTapLayers[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT] =
+	SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYERS;
+
+static SparkStatus SparkGlm5NextTapCapture(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state;
+	SparkGlm5NextExecutionSlot *slot;
+	SparkStatus status;
+	cudaError_t error;
+	uint32_t global_layer,tap_index;
+	state = chain->state;
+	slot = chain->slot;
+	global_layer = state->first_layer_index + chain->next_layer;
+	for (tap_index=0u; tap_index<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT; tap_index++)
+		if ( SparkGlm5NextTapLayers[tap_index] == global_layer )
+			break;
+	if ( tap_index == SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT )
+		return(SPARK_STATUS_OK);
+	if ( slot->tap_capture_pending != 0u )
+	{
+		error = cudaStreamWaitEvent((cudaStream_t)slot->stream,(cudaEvent_t)slot->tap_done_event,0u);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tap_stage_reuse"));
+	}
+	error = SparkGlm5NextLaunchHcMeanRows((cudaStream_t)slot->stream,slot->hidden_bf16,slot->tap_stage_bf16,chain->wave_rows);
+	if ( error == cudaSuccess )
+		error = cudaEventRecord((cudaEvent_t)slot->tap_op_event,(cudaStream_t)slot->stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tap_mean"));
+	status = SparkGlm5NextTapRingEnqueueCapture(state->tap_ring,slot->stream,slot->tap_op_event,slot->tap_done_event,slot->tap_stage_bf16,chain->wave_rows,slot->host_resident_slots + chain->first_row,slot->host_positions + chain->first_row,tap_index);
+	if ( status == SPARK_STATUS_OK )
+		slot->tap_capture_pending = 1u;
+	SPARK_RETURN(status);
+}
+
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 {
 	SparkGlm5NextTpChain *chain;
@@ -2371,6 +2435,15 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
+		}
+		if ( state->tap_enabled != 0u )
+		{
+			launch_status = SparkGlm5NextTapCapture(chain);
+			if ( launch_status != SPARK_STATUS_OK )
+			{
+				SparkGlm5NextTpChainFail(chain,launch_status);
+				return;
+			}
 		}
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
@@ -2575,6 +2648,13 @@ static SparkStatus SparkGlm5NextFinishCacheLanes(SparkGlm5NextAsyncCompletion *a
 		{
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
+			if ( state->tap_ring != 0 )
+			{
+				if ( async->lane_next_positions[lane] >= UINT32_MAX )
+					result = SPARK_STATUS_VALIDATION_FAILED;
+				else
+					result = SparkGlm5NextTapRingCommitAnchor(state->tap_ring,resident,(uint32_t)async->lane_next_positions[lane]);
+			}
 		}
 		else
 		{
@@ -2879,6 +2959,8 @@ static SparkStatus SparkGlm5NextResetExecutionState(SparkGlm5NextModuleState *st
 		atomic_store_explicit(&state->lane_next_positions[lane],0u,memory_order_release);
 		if ( state->mtp_lane_armed != 0 )
 			state->mtp_lane_armed[lane] = 0u;
+		if ( state->tap_ring != 0 )
+			(void)SparkGlm5NextTapRingCommitAnchor(state->tap_ring,lane,0u);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -3009,6 +3091,23 @@ SparkStatus SparkGlm5NextResidentDecodeStageSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkGlm5NextResidentDecodeStageTapRead(
+	void *module_state,
+	uint32_t lane,
+	uint64_t position,
+	const uint16_t **tap_row_bf16)
+{
+	SparkGlm5NextModuleState *state;
+	state = (SparkGlm5NextModuleState *)module_state;
+	if ( state == 0 || tap_row_bf16 == 0 || position >= UINT32_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->tap_ring == 0 )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( lane >= state->resident_sequence_capacity )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkGlm5NextTapRingRead(state->tap_ring,lane,(uint32_t)position,tap_row_bf16));
+}
+
 static void SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 {
 	if ( state->recurrent_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
@@ -3079,6 +3178,7 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	SparkGlm5NextReleaseCaches(state);
 	SparkGlm5NextReleaseSlotHost(state);
+	SparkGlm5NextTapRingDestroy(state->tap_ring);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state->mtp_lane_armed);
 	free(state);
@@ -3138,6 +3238,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SparkGlm5NextAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateSlots(state);
+	if ( status == SPARK_STATUS_OK && state->tap_enabled != 0u )
+		status = SparkGlm5NextTapRingCreate(state->resident_sequence_capacity,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WIDTH_ELEMENTS,&state->tap_ring);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateMtp(state);
 	if ( status == SPARK_STATUS_OK )
@@ -3155,6 +3257,7 @@ static SparkStatus SparkGlm5NextInitializeState(
 		}
 		SparkGlm5NextReleaseCaches(state);
 		SparkGlm5NextReleaseSlotHost(state);
+		SparkGlm5NextTapRingDestroy(state->tap_ring);
 		SparkStageModuleLedgerRelease(&state->ledger);
 		free(state->mtp_lane_armed);
 		free(state);

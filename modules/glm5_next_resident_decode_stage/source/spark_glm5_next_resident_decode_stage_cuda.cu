@@ -739,6 +739,14 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
 
+extern "C" cudaError_t SparkGlm5NextLaunchHcMeanRows(cudaStream_t stream,const uint16_t *hidden_hc_bf16,uint16_t *out_bf16,uint32_t row_count)
+{
+	if ( stream == 0 || hidden_hc_bf16 == 0 || out_bf16 == 0 || row_count == 0u )
+		return(cudaErrorInvalidValue);
+	Glm5NextHcHeadMeanKernel<<<row_count,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(hidden_hc_bf16,out_bf16,row_count,GLM5_NEXT_HC,GLM5_NEXT_HIDDEN);
+	return(cudaPeekAtLastError());
+}
+
 static int32_t SparkGlm5NextRunLayers(const SparkGlm5NextCudaWave *wave)
 {
 	uint32_t local;
