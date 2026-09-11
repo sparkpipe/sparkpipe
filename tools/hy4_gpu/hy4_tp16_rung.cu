@@ -723,11 +723,19 @@ int main(int argument_count,char **arguments)
 		}
 	}
 	memset(&rung_barrier,0,sizeof(rung_barrier));
-	if ( pthread_mutex_init(&rung_barrier.lock,0) != 0 ||
-		pthread_cond_init(&rung_barrier.condition,0) != 0 )
 	{
-		fprintf(stderr,"TP16RUNG barrier_init\n");
-		return(1);
+		pthread_condattr_t condition_attributes;
+		pthread_condattr_init(&condition_attributes);
+		pthread_condattr_setclock(&condition_attributes,
+			CLOCK_MONOTONIC);
+		if ( pthread_mutex_init(&rung_barrier.lock,0) != 0 ||
+			pthread_cond_init(&rung_barrier.condition,
+			&condition_attributes) != 0 )
+		{
+			fprintf(stderr,"TP16RUNG barrier_init\n");
+			return(1);
+		}
+		pthread_condattr_destroy(&condition_attributes);
 	}
 	rung_barrier.count = SPARK_HY4_TP16_RUNG_RANKS;
 	if ( SparkHy4Tp16RungMeshBase() == 0 )

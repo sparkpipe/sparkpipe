@@ -9648,8 +9648,8 @@
     },
     {
       "path": "tools/hy4_gpu/hy4_tp16_rung.cu",
-      "sha256": "b305d17eae488a8851a72261de2483aac0960d55cb5625ecbec095b775f1804e",
-      "size_bytes": 24058
+      "sha256": "fc478c976476ce5a6908927d516c6ccd2de960f8b6e653cbbe6d920af22c92ba",
+      "size_bytes": 24308
     },
     {
       "path": "tools/hy4_gpu/run_attn_test.sh",
@@ -10610,5 +10610,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34356383
+  "total_bytes": 34356633
 }
