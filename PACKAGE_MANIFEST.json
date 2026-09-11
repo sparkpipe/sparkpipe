@@ -9698,8 +9698,8 @@
     },
     {
       "path": "tools/hy4_gpu/run_tp16_rung.sh",
-      "sha256": "e55c972c8dfaedb9e739d7044b894101675af7a69b5920e5262f075b01964314",
-      "size_bytes": 2910
+      "sha256": "68ff4de842a677c01f02b444f5a30698b283d1c0bc86acd48bac6a29becf99d7",
+      "size_bytes": 2919
     },
     {
       "path": "tools/hy4_tp16_shard.py",
@@ -10610,5 +10610,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34356775
+  "total_bytes": 34356784
 }
