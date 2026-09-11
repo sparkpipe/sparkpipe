@@ -674,12 +674,31 @@ static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 				cudaMemcpyDeviceToHost) == cudaSuccess &&
 			cudaMemcpy(w2_scales,buffers.expert_w2_scale,sizeof(w2_scales),
 				cudaMemcpyDeviceToHost) == cudaSuccess )
-			fprintf(stderr,"G5N-MOEPROBE site=scales layer=%u w1=%g %g %g %g w2=%g %g %g %g\n",
+			fprintf(stderr,"G5N-MOEPROBE site=scales layer=%u lazy=%u lease=%p w1=%g %g %g %g w2=%g %g %g %g\n",
 				(unsigned)buffers.layer_index,
+				(unsigned)wave->lazy_experts,(void *)(uintptr_t)wave->expert_lease_base,
 				(double)w1_scales[0],(double)w1_scales[1],
 				(double)w1_scales[2],(double)w1_scales[3],
 				(double)w2_scales[0],(double)w2_scales[1],
 				(double)w2_scales[2],(double)w2_scales[3]);
+		{
+			float resident_scales[8];
+			const SparkGlm5NextLayerWeights *weight = &wave->layers[local_layer];
+			if ( weight->expert_up_gate_scale != 0 &&
+				cudaMemcpy(resident_scales,weight->expert_up_gate_scale,
+					sizeof(resident_scales),cudaMemcpyDeviceToHost) == cudaSuccess )
+				fprintf(stderr,"G5N-MOEPROBE site=resident_w1_scale layer=%u %g %g %g %g\n",
+					(unsigned)buffers.layer_index,
+					(double)resident_scales[0],(double)resident_scales[1],
+					(double)resident_scales[2],(double)resident_scales[3]);
+			if ( weight->expert_down_scale != 0 &&
+				cudaMemcpy(resident_scales,weight->expert_down_scale,
+					sizeof(resident_scales),cudaMemcpyDeviceToHost) == cudaSuccess )
+				fprintf(stderr,"G5N-MOEPROBE site=resident_w2_scale layer=%u %g %g %g %g\n",
+					(unsigned)buffers.layer_index,
+					(double)resident_scales[0],(double)resident_scales[1],
+					(double)resident_scales[2],(double)resident_scales[3]);
+		}
 	}
 	return(LM_LAUNCH_OK);
 }
