@@ -147,6 +147,8 @@ typedef struct SparkGlm5NextServingPending
 	uint32_t lane_count;
 	uint32_t active_sequence_count;
 	uint32_t work_kind;
+	uint32_t remote_draft_active;
+	uint32_t remote_draft_token_count;
 	uint64_t submission_id;
 	uint64_t request_id;
 	uint64_t sequence_id;
@@ -164,6 +166,7 @@ typedef struct SparkGlm5NextServingPending
 	uint32_t last_row_by_lane[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t input_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t remote_draft_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
 	uint64_t row_positions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint64_t row_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
@@ -188,6 +191,17 @@ typedef struct SparkGlm5NextServingState
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
 	uint32_t tap_extraction;
+	SparkGlm5NextResidentDecodeStageTapBridge tap_bridge;
+	uint32_t *committed_token_history;
+	uint16_t *tap_row_staging;
+	uint64_t lane_committed_counts[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_tap_generations[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_tap_sent_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_tap_sent_generations[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t lane_tap_watermarks[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t remote_draft_count;
+	uint64_t remote_draft_accepted_tokens;
+	uint64_t remote_draft_fallback_count;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -750,6 +764,147 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextServingRecordCommittedToken(
+	SparkGlm5NextServingState *state,
+	uint32_t slot,
+	uint64_t position,
+	uint32_t token_id)
+{
+	if ( slot >= state->resident_sequence_capacity || position >= state->node_context.max_sequence_positions )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER committed history overflow slot=%u position=%llu capacity=%llu\n",slot,(unsigned long long)position,(unsigned long long)state->node_context.max_sequence_positions);
+		return;
+	}
+	state->committed_token_history[(uint64_t)slot * state->node_context.max_sequence_positions + position] = token_id;
+	if ( position == state->lane_committed_counts[slot] )
+		state->lane_committed_counts[slot] = position + 1u;
+}
+
+static void SparkGlm5NextServingRecordSubmissionTokens(
+	SparkGlm5NextServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t row;
+	if ( state->tap_extraction == 0u )
+		return;
+	for (row=0u; row<submission->row_count; row++)
+		SparkGlm5NextServingRecordCommittedToken(state,
+			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot,
+			submission->row_positions[row],submission->token_ids[row]);
+}
+
+static void SparkGlm5NextServingReleaseLaneHistory(
+	SparkGlm5NextServingState *state,
+	uint32_t slot,
+	uint64_t sequence_id)
+{
+	if ( slot >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
+		return;
+	state->lane_committed_counts[slot] = 0u;
+	state->lane_tap_generations[slot] = 0u;
+	state->lane_tap_sent_sequence_ids[slot] = 0u;
+	state->lane_tap_sent_generations[slot] = 0u;
+	state->lane_tap_watermarks[slot] = 0u;
+	if ( state->tap_extraction != 0u && state->speculation_seam != 0 &&
+		SparkSpeculationSeamCancelSequence(state->speculation_seam,sequence_id) != SPARK_STATUS_OK )
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER seam cancel on lane release failed slot=%u sequence=%llu\n",slot,(unsigned long long)sequence_id);
+}
+
+static void SparkGlm5NextServingDriveRemoteDraft(
+	SparkGlm5NextServingState *state,
+	const SparkModelServingSubmission *submission,
+	SparkGlm5NextServingPending *pending)
+{
+	const uint16_t *tap_rows;
+	const uint16_t *row_tap;
+	uint64_t sequence,position,base,rows,row;
+	uint32_t lane,slot,count;
+	SparkStatus status;
+	if ( state->tap_extraction == 0u || submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE ||
+		submission->active_sequence_count != 1u || submission->row_count != 1u )
+		return;
+	lane = submission->row_lane_indices[0];
+	slot = submission->lanes[lane].resident_sequence_slot;
+	sequence = submission->row_sequence_ids[0];
+	position = submission->row_positions[0];
+	if ( position == 0u || position >= state->node_context.max_sequence_positions )
+		return;
+	if ( state->tap_bridge.tap_read == 0 || state->tap_bridge.module_state == 0 )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft: tap bridge absent slot=%u; local speculation only\n",slot);
+		state->remote_draft_fallback_count++;
+		return;
+	}
+	if ( state->lane_committed_counts[slot] != position + 1u )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft: lane history not contiguous slot=%u count=%llu position=%llu; local speculation only\n",
+			slot,(unsigned long long)state->lane_committed_counts[slot],(unsigned long long)position);
+		state->remote_draft_fallback_count++;
+		return;
+	}
+	if ( state->lane_tap_sent_sequence_ids[slot] != sequence || state->lane_tap_sent_generations[slot] != state->lane_tap_generations[slot] )
+		state->lane_tap_watermarks[slot] = position >= (uint64_t)SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS ?
+			position - SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS : 0u;
+	base = state->lane_tap_watermarks[slot];
+	if ( base + SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS < position )
+		base = position - SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS;
+	if ( base >= position )
+		return;
+	rows = position - base;
+	tap_rows = 0;
+	for (row=0u; row<rows; row++)
+	{
+		status = state->tap_bridge.tap_read(state->tap_bridge.module_state,slot,base + row,&row_tap);
+		if ( status != SPARK_STATUS_OK )
+		{
+			(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft: tap row unavailable slot=%u position=%llu status=%d; local speculation only\n",
+				slot,(unsigned long long)(base + row),(int)status);
+			state->remote_draft_fallback_count++;
+			return;
+		}
+		if ( (base % SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS) + rows <= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS )
+		{
+			if ( row == 0u )
+				tap_rows = row_tap;
+		}
+		else
+			memcpy(state->tap_row_staging + (uint64_t)row * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WIDTH_ELEMENTS,
+				row_tap,(uint64_t)SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WIDTH_ELEMENTS * sizeof(uint16_t));
+	}
+	if ( tap_rows == 0 )
+		tap_rows = state->tap_row_staging;
+	status = SparkSpeculationSeamDraftRemoteChain(state->speculation_seam,submission->request_id,sequence,position,
+		submission->token_ids[0],
+		state->committed_token_history + (uint64_t)slot * state->node_context.max_sequence_positions,
+		(uint32_t)(position + 1u),tap_rows,(uint32_t)rows,
+		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
+		pending->remote_draft_ids,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,&count);
+	if ( status != SPARK_STATUS_OK || count == 0u )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft failed slot=%u sequence=%llu position=%llu rows=%llu status=%d count=%u; local speculation only\n",
+			slot,(unsigned long long)sequence,(unsigned long long)position,(unsigned long long)rows,(int)status,count);
+		state->remote_draft_fallback_count++;
+		state->lane_tap_sent_sequence_ids[slot] = 0u;
+		if ( SparkSpeculationSeamCancelSequence(state->speculation_seam,sequence) == SPARK_STATUS_OK )
+			state->lane_tap_generations[slot]++;
+		else
+			(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft resync cancel failed slot=%u sequence=%llu\n",slot,(unsigned long long)sequence);
+		return;
+	}
+	pending->batch.draft_flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_FLAG_DRAFT_CHAIN;
+	pending->batch.draft_token_count = count;
+	memcpy(pending->batch.draft_token_ids,pending->remote_draft_ids,(uint64_t)count * sizeof(uint32_t));
+	pending->remote_draft_active = 1u;
+	pending->remote_draft_token_count = count;
+	state->lane_tap_watermarks[slot] = position;
+	state->lane_tap_sent_sequence_ids[slot] = sequence;
+	state->lane_tap_sent_generations[slot] = state->lane_tap_generations[slot];
+	state->remote_draft_count++;
+	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft slot=%u sequence=%llu position=%llu rows=%llu drafts=[%u,%u] count=%u\n",
+		slot,(unsigned long long)sequence,(unsigned long long)position,(unsigned long long)rows,
+		count > 0u ? pending->remote_draft_ids[0] : 0u,count > 1u ? pending->remote_draft_ids[1] : 0u,count);
+}
+
 static SparkStatus SparkGlm5NextServingValidateRowOrder(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -887,7 +1042,7 @@ static void SparkGlm5NextServingDriverCompletion(
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
 		if ( burst > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u ||
-			(burst > 1u && (pending->active_sequence_count != 1u || state->mtp_enabled == 0u)) )
+			(burst > 1u && (pending->active_sequence_count != 1u || (state->mtp_enabled == 0u && state->tap_extraction == 0u))) )
 		{
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
@@ -905,6 +1060,39 @@ static void SparkGlm5NextServingDriverCompletion(
 		else
 			for (index=0u; index<completion.token_count; index++)
 				completion.token_ids[index] = pending->output_token_ids[index];
+		if ( state->tap_extraction != 0u )
+		{
+			uint32_t lane;
+			for (lane=0u; lane<pending->active_sequence_count; lane++)
+			{
+				uint32_t slot = pending->resident_slots[pending->last_row_by_lane[lane]];
+				uint64_t position = pending->row_positions[pending->last_row_by_lane[lane]] + 1u;
+				uint32_t step;
+				for (step=0u; step<burst; step++)
+					SparkGlm5NextServingRecordCommittedToken(state,slot,position + step,
+						pending->output_token_ids[burst == 1u ? pending->last_row_by_lane[lane] : step]);
+			}
+			if ( pending->remote_draft_active != 0u )
+			{
+				SparkSpeculationPolicyVerifyResult verify_result;
+				SparkStatus accept_status;
+				uint32_t slot = pending->resident_slots[pending->last_row_by_lane[0]];
+				accept_status = SparkSpeculationSeamAcceptChain(state->speculation_seam,
+					pending->row_sequence_ids[pending->last_row_by_lane[0]],
+					pending->output_token_ids,burst,&verify_result);
+				if ( accept_status != SPARK_STATUS_OK )
+					(void)fprintf(stderr,"GLM5_NEXT-ADAPTER seam accept failed slot=%u status=%d\n",slot,(int)accept_status);
+				else
+				{
+					if ( verify_result.accepted_draft_token_count + 1u != burst )
+						(void)fprintf(stderr,"GLM5_NEXT-ADAPTER acceptance mismatch: seam %u module burst %u\n",
+							verify_result.accepted_draft_token_count + 1u,burst);
+					state->remote_draft_accepted_tokens += verify_result.accepted_draft_token_count;
+					if ( verify_result.accepted_draft_token_count < verify_result.proposed_token_count )
+						state->lane_tap_generations[slot]++;
+				}
+			}
+		}
 	}
 	atomic_store_explicit(&pending->active,0u,memory_order_release);
 	state->completion_function(state->completion_context,&completion);
@@ -945,8 +1133,13 @@ static void SparkGlm5NextServingDestroy(void *adapter_state)
 	}
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
+	if ( state->tap_extraction != 0u )
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER remote draft stats: drafts=%llu accepted_tokens=%llu fallbacks=%llu\n",
+			(unsigned long long)state->remote_draft_count,(unsigned long long)state->remote_draft_accepted_tokens,(unsigned long long)state->remote_draft_fallback_count);
 	SparkUnloadModelDriver(&state->driver);
 	SparkSpeculationSeamDestroy(state->speculation_seam);
+	free(state->committed_token_history);
+	free(state->tap_row_staging);
 	free(state->bridge_host);
 	free(state);
 }
@@ -1049,6 +1242,14 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingInitializeSpeculationSeam(state,max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && state->tap_extraction != 0u )
+	{
+		state->committed_token_history = (uint32_t *)calloc((uint64_t)state->resident_sequence_capacity * max_sequence_positions,sizeof(uint32_t));
+		state->tap_row_staging = (uint16_t *)malloc((uint64_t)SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS *
+			SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WIDTH_ELEMENTS * sizeof(uint16_t));
+		if ( state->committed_token_history == 0 || state->tap_row_staging == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		state->node_context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
@@ -1070,6 +1271,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP;
 		if ( state->tap_extraction != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION;
+		state->node_context.tap_bridge = state->tap_extraction != 0u ? &state->tap_bridge : 0;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;
@@ -1082,6 +1284,14 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
 		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 		status = SparkGlm5NextServingLoadDriver(state,configuration);
+	}
+	if ( status == SPARK_STATUS_OK && state->tap_extraction != 0u &&
+		(state->tap_bridge.abi_version != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_BRIDGE_ABI_VERSION ||
+		 state->tap_bridge.descriptor_bytes != SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_BRIDGE_BYTES ||
+		 state->tap_bridge.module_state == 0 || state->tap_bridge.tap_read == 0) )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER tap extraction requested but the driver provided no tap bridge\n");
+		status = SPARK_STATUS_ABI_MISMATCH;
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1200,8 +1410,10 @@ static void SparkGlm5NextServingBuildFrame(
 	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	buffer->address = pending->output_token_ids;
 	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
-	if ( state->mtp_enabled != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	if ( (state->mtp_enabled != 0u || state->tap_extraction != 0u) && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		buffer->bytes *= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
+	pending->remote_draft_active = 0u;
+	pending->remote_draft_token_count = 0u;
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
@@ -1257,7 +1469,10 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	pending = SparkGlm5NextServingReservePending(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	SparkGlm5NextServingRecordSubmissionTokens(state,submission);
 	SparkGlm5NextServingBuildFrame(state,submission,pending);
+	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		SparkGlm5NextServingDriveRemoteDraft(state,submission,pending);
 	status = SparkGlm5NextServingAdmit(state,submission,pending,&pending->frame);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
@@ -1265,6 +1480,10 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	{
 		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		{
+			uint32_t lane;
+			for (lane=0u; lane<submission->active_sequence_count; lane++)
+				SparkGlm5NextServingReleaseLaneHistory(state,
+					submission->lanes[lane].resident_sequence_slot,submission->lanes[lane].sequence_id);
 			released.request_id = pending->request_id;
 			released.sequence_id = pending->sequence_id;
 			released.sequence_position = pending->sequence_position;

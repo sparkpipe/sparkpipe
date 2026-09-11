@@ -174,9 +174,23 @@ The tap ring is allocated at module init when the node context carries the
 tap extraction flag (the serving adapter sets it when its speculation seam
 has DFlash2 enabled and a draft bridge configured): host-pinned, per lane,
 2048 positions deep, five 4096-wide bf16 taps per position. The adapter
-reads a row with `SparkGlm5NextResidentDecodeStageTapRead` (module state,
-lane, absolute position), which fails loudly unless the position is inside
-the lane's sliding window and was actually captured.
+reaches it through the tap bridge: when the adapter sets
+`node_context.tap_bridge` (an out-parameter struct), the module fills it
+with its module state and `SparkGlm5NextResidentDecodeStageTapRead`, which
+fails loudly unless the position is inside the lane's sliding window and
+was actually captured.
+
+Remote DFlash2 drafts enter the verify path through the batch view
+(ABI 2): the adapter fills `draft_flags =
+SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_FLAG_DRAFT_CHAIN`,
+`draft_token_count`, and `draft_token_ids` from the farm's DFT3 proposal,
+and the module consumes the chain exactly like an in-module MTP chain —
+same verify wave (committed-0 replay recording), same resolve accounting
+(accepted drafts advance the lane, the bonus token always commits) — the
+draft ids simply come from the batch field instead of the in-module draft
+drive. The verify/replay buffers are allocated when either the MTP or the
+tap extraction flag is set. When the flag is clear the frame is
+byte-identical to a frame without the field.
 
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 

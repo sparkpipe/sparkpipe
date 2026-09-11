@@ -782,6 +782,7 @@ def main():
                         *["-I" + p for p in includes], "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
                         str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c",
+                        "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_tap_ring.c",
                         "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context, cache transaction ownership, release, physical mapping and unchanged-map upload suppression")

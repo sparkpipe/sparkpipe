@@ -13,9 +13,9 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 8u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION UINT32_C(0x00000002)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS \
@@ -57,6 +57,12 @@ extern "C" {
 	 SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_INPUT | \
 	 SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT)
 
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_FLAG_DRAFT_CHAIN UINT32_C(0x00000001)
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_KNOWN_DRAFT_FLAGS \
+	SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_FLAG_DRAFT_CHAIN
+
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_BRIDGE_ABI_VERSION 1u
+
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS 16u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS \
 	(SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION + 2u)
@@ -67,6 +73,17 @@ extern "C" {
 	(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,heads) * \
 	 SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS * \
 	 (uint64_t)sizeof(float))
+
+typedef struct SparkGlm5NextResidentDecodeStageTapBridge
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	void *module_state;
+	SparkStatus (*tap_read)(void *module_state,uint32_t lane,uint64_t position,const uint16_t **tap_row_bf16);
+} SparkGlm5NextResidentDecodeStageTapBridge;
+
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_BRIDGE_BYTES \
+	((uint32_t)sizeof(SparkGlm5NextResidentDecodeStageTapBridge))
 
 typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 {
@@ -99,6 +116,7 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	uint64_t kv_backing_maximum_bytes;
 	uint32_t decode_split_context_threshold;
 	uint32_t flags;
+	SparkGlm5NextResidentDecodeStageTapBridge *tap_bridge;
 } SparkGlm5NextResidentDecodeStageNodeContext;
 
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
@@ -114,6 +132,9 @@ typedef struct SparkGlm5NextResidentDecodeStageBatchView
 	const uint32_t *row_resident_slots;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
+	uint32_t draft_flags;
+	uint32_t draft_token_count;
+	uint32_t draft_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
 } SparkGlm5NextResidentDecodeStageBatchView;
 
 typedef struct SparkGlm5NextResidentDecodeStageFrameContext
