@@ -1,4 +1,5 @@
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,16 +7,15 @@
 #include <cuda_runtime.h>
 
 #include "spark_filesystem.h"
+#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_muse_glimmer_model.h"
 #include "sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_muse_glimmer_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
-#include "sparkpipe/spark_speculation_provider.h"
-#include "sparkpipe/spark_speculation_seam.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 
 #ifndef MUSE_MODEL_REVISION
 #error "MUSE_MODEL_REVISION must name the exact source snapshot revision"
@@ -46,16 +46,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_SPECULATORS_ENV \
-	"SPARK_MUSE_GLIMMER_SPECULATORS"
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_AVAILABLE_SOURCES 0u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_BUDGET_MS 20u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_MAX_NODES 64u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_IO_TIMEOUT_MS 30000u
-#define SPARK_MUSE_GLIMMER_SERVING_SEAM_MAX_COMMITTED_TOKENS \
-	(SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT + 2u)
 
 #define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkMuseGlimmer##name
 #define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkMuseGlimmer##name
@@ -70,9 +60,13 @@
 	SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT
 #define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) (state)->stage_index
 #define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
-	SparkMuseGlimmerServingBindFamily(state)
-#define SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state) \
-	SparkMuseGlimmerServingUnbindFamily(state)
+	SparkMuseGlimmerServingInitializeFamilyState(state)
+#define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkMuseGlimmerServingPrefetch
+#define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH \
+	SparkMuseGlimmerServingResolvePrefetch
+#define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkMuseGlimmerServingReset
+#define SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) \
+	SparkMuseGlimmerServingSubmissionStale((state),(submission))
 
 typedef struct SparkMuseGlimmerServingPending
 {
@@ -144,201 +138,126 @@ typedef struct SparkMuseGlimmerServingState
 	void *gather_scratch;
 	SparkMuseGlimmerServingTransportShim shim;
 	SparkMuseGlimmerServingPending pending[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	SparkSpeculationProvider provider;
-	uint32_t provider_bound;
-	SparkSpeculationSeam *seam;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 } SparkMuseGlimmerServingState;
 
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
+	void *adapter_state,const SparkModelServingSubmission *submission);
+static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce)(
+	void *adapter_state,uint64_t deadline_time_ns);
 
-static SparkStatus SparkMuseGlimmerMtpCapabilityQuery(
-	const SparkSpeculationGeometryQuery *geometry,
-	char *refusal_buffer, uint32_t refusal_buffer_bytes)
+static _Thread_local SparkModelDriverCacheLane SparkMuseGlimmerServingCacheScratch[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
+static uint32_t SparkMuseGlimmerServingSubmissionStale(
+	const SparkMuseGlimmerServingState *state,
+	const SparkModelServingSubmission *submission)
 {
-	if ( geometry == 0 ||
-		geometry->hidden_dimension != SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION ||
-		geometry->layer_count < SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT )
-	{
-		if ( refusal_buffer != 0 && refusal_buffer_bytes != 0u )
-			(void)snprintf(refusal_buffer, refusal_buffer_bytes,
-				"muse speculation provider requires the muse geometry "
-				"(hidden %u, %u layers), got hidden %u layers %u",
-				SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,
-				SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT,
-				geometry != 0 ? geometry->hidden_dimension : 0u,
-				geometry != 0 ? geometry->layer_count : 0u);
-		return(SPARK_STATUS_UNSUPPORTED);
-	}
-	return(SPARK_STATUS_OK);
+	if ( submission == 0 )
+		return(0u);
+	return(submission->control_generation <
+		atomic_load_explicit(&state->reset_generation,memory_order_acquire) ?
+		1u : 0u);
 }
 
-static SparkStatus SparkMuseGlimmerMtpDraftBegin(void *provider_state,
-	const SparkSpeculationDraftRequest *request)
+static SparkStatus SparkMuseGlimmerServingInitializeFamilyState(
+	SparkMuseGlimmerServingState *state)
 {
-	(void)provider_state;
-	(void)request;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static SparkStatus SparkMuseGlimmerMtpDraftNext(void *provider_state,
-	SparkSpeculationDraft *draft)
-{
-	(void)provider_state;
-	(void)draft;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static void SparkMuseGlimmerMtpDraftCancel(void *provider_state)
-{
-	(void)provider_state;
-}
-
-static SparkStatus SparkMuseGlimmerMtpVerifyAccount(void *provider_state,
-	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
-{
-	(void)provider_state;
-	if ( contract_out == 0 || verified_count == 0u )
+	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(contract_out, 0, sizeof(*contract_out));
-	contract_out->chain_width = verified_count;
-	contract_out->accepted_token_count = verified_count - 1u;
-	contract_out->tokens_per_sequence = contract_out->accepted_token_count;
-	contract_out->chain_live = 1u;
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 	return(SPARK_STATUS_OK);
 }
 
-static const SparkSpeculationKvContract SparkMuseGlimmerMtpKvContract =
+static SparkServingCacheAdmission SparkMuseGlimmerServingCacheContext(
+	SparkMuseGlimmerServingState *state,SparkModelDriverCacheLane *lanes)
 {
-	.frame_flags = SPARK_SPECULATION_KV_FLAG_TAIL_FRAME,
-	.block_history_depth = 0u
-};
-
-static const SparkSpeculationKvContract *SparkMuseGlimmerMtpKvContractQuery(
-	void *provider_state)
-{
-	(void)provider_state;
-	return(&SparkMuseGlimmerMtpKvContract);
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission);
+	cache.adapter_state = state;
+	return(cache);
 }
 
-static const SparkSpeculationProviderOps SparkMuseGlimmerMtpProviderOps =
+static SparkStatus SparkMuseGlimmerServingPrefetch(void *adapter_state,
+	const SparkModelServingSubmission *submissions,uint32_t count)
 {
-	.capability_query = SparkMuseGlimmerMtpCapabilityQuery,
-	.draft_begin = SparkMuseGlimmerMtpDraftBegin,
-	.draft_next = SparkMuseGlimmerMtpDraftNext,
-	.draft_cancel = SparkMuseGlimmerMtpDraftCancel,
-	.verify_account = SparkMuseGlimmerMtpVerifyAccount,
-	.kv_contract = SparkMuseGlimmerMtpKvContractQuery
-};
+	SparkMuseGlimmerServingState *state;
+	SparkServingCacheAdmission cache;
+	state = (SparkMuseGlimmerServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SparkMuseGlimmerServingCacheContext(state,SparkMuseGlimmerServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submissions,count,
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
 
-static const char *const SparkMuseGlimmerMtpEnvironmentSchema[] =
+static SparkStatus SparkMuseGlimmerServingResolvePrefetch(void *adapter_state,
+	const SparkModelServingSubmission *submission,uint32_t resolution)
 {
-	"SPEC_METHOD",
-	"DRAFT_COUNT"
-};
+	SparkMuseGlimmerServingState *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SparkMuseGlimmerServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SparkMuseGlimmerServingCacheContext(state,SparkMuseGlimmerServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
+}
 
-static const SparkSpeculationProviderDescriptor SparkMuseGlimmerMtpProviderDescriptor =
+static SparkStatus SparkMuseGlimmerServingResetControl(void *adapter_state,
+	uint64_t control_generation)
 {
-	.abi_version = SPARK_SPECULATION_PROVIDER_ABI_VERSION,
-	.descriptor_bytes = SPARK_SPECULATION_PROVIDER_DESCRIPTOR_BYTES,
-	.kind = SPARK_SPECULATION_PROVIDER_MTP,
-	.provider_id = "muse.greedy.v0",
-	.max_draft_token_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT,
-	.default_draft_token_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT,
-	.environment_schema = SparkMuseGlimmerMtpEnvironmentSchema,
-	.environment_schema_count = 2u
-};
-
-static SparkStatus SparkMuseGlimmerServingBindMtpProvider(
-	SparkMuseGlimmerServingState *state)
-{
+	SparkMuseGlimmerServingState *state = (SparkMuseGlimmerServingState *)adapter_state;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
-	state->provider.descriptor = &SparkMuseGlimmerMtpProviderDescriptor;
-	state->provider.ops = &SparkMuseGlimmerMtpProviderOps;
-	state->provider.provider_state = 0;
-	status = SparkSpeculationProviderValidate(&state->provider);
+	if ( state == 0 || control_generation == 0u ||
+		control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce)(state,UINT64_MAX);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	state->provider_bound = 1u;
-	return(SPARK_STATUS_OK);
+	request.descriptor_bytes = (uint32_t)sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		state->quiescing = 0u;
+	}
+	return(status);
 }
 
-static void SparkMuseGlimmerServingWriteSeamModelContract(
-	SparkSpeculationModelContract *model_contract)
+static SparkStatus SparkMuseGlimmerServingReset(void *adapter_state,
+	uint64_t control_generation)
 {
-	memset(model_contract,0,sizeof(*model_contract));
-	model_contract->abi_version = SPARK_SPECULATION_ABI_VERSION;
-	model_contract->descriptor_bytes =
-		SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
-	model_contract->verifier_hidden_dtype =
-		SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
-	model_contract->draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
-	model_contract->draft_layer_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT;
-	model_contract->block_size =
-		SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	model_contract->hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
-	model_contract->intermediate_dimension =
-		SPARK_MUSE_GLIMMER_MODEL_INTERMEDIATE_DIMENSION;
-	model_contract->attention_head_count =
-		SPARK_MUSE_GLIMMER_MODEL_ATTENTION_HEAD_COUNT;
-	model_contract->kv_head_count = SPARK_MUSE_GLIMMER_MODEL_KV_HEAD_COUNT;
-	model_contract->head_dimension = SPARK_MUSE_GLIMMER_MODEL_HEAD_DIMENSION;
-	model_contract->vocab_size = SPARK_MUSE_GLIMMER_MODEL_VOCAB_COUNT;
-	model_contract->draft_vocab_size = SPARK_MUSE_GLIMMER_MODEL_VOCAB_COUNT;
-	model_contract->maximum_speculative_token_count =
-		SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT;
-	model_contract->verifier_accept_k = 1u;
-}
-
-static SparkStatus SparkMuseGlimmerServingBindSpeculationSeam(
-	SparkMuseGlimmerServingState *state)
-{
-	SparkSpeculationSeamConfiguration configuration;
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
-	configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
-	configuration.available_source_mask =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_AVAILABLE_SOURCES;
-	configuration.default_speculative_token_count =
-		SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT;
-	configuration.lane_count =
-		SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	configuration.max_committed_token_count =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_MAX_COMMITTED_TOKENS;
-	configuration.max_tap_row_count = 0u;
-	configuration.draft_time_budget_ms =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_BUDGET_MS;
-	configuration.draft_max_depth =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_MAX_DEPTH;
-	configuration.draft_max_node_count =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_DRAFT_MAX_NODES;
-	configuration.connect_timeout_ms =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_CONNECT_TIMEOUT_MS;
-	configuration.io_timeout_ms =
-		SPARK_MUSE_GLIMMER_SERVING_SEAM_IO_TIMEOUT_MS;
-	configuration.control_value =
-		getenv(SPARK_MUSE_GLIMMER_SERVING_SEAM_SPECULATORS_ENV);
-	configuration.bridge_host = 0;
-	configuration.bridge_port = 0u;
-	memcpy(configuration.target_model,SPARK_MUSE_GLIMMER_SERVING_MODEL_ID,
-		sizeof(SPARK_MUSE_GLIMMER_SERVING_MODEL_ID));
-	SparkMuseGlimmerServingWriteSeamModelContract(&configuration.model_contract);
-	return(SparkSpeculationSeamInitialize(&configuration,&state->seam));
-}
-
-static SparkStatus SparkMuseGlimmerServingBindFamily(
-	SparkMuseGlimmerServingState *state)
-{
+	SparkMuseGlimmerServingState *state = (SparkMuseGlimmerServingState *)adapter_state;
+	uint32_t expected = 0u;
 	SparkStatus status;
-	status = SparkMuseGlimmerServingBindMtpProvider(state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkMuseGlimmerServingBindSpeculationSeam(state));
-}
-
-static void SparkMuseGlimmerServingUnbindFamily(
-	SparkMuseGlimmerServingState *state)
-{
-	SparkSpeculationSeamDestroy(state->seam);
-	state->seam = 0;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
+		memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkMuseGlimmerServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
 }
 
 static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescriptor =
@@ -350,7 +269,6 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 		SPARK_MUSE_GLIMMER_SERVING_PROGRAM_NAME,
 		MUSE_CONTRACT_SHA256),
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT),
 	.stage_count = SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT,
@@ -366,8 +284,9 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 	.max_resident_sequence_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_MUSE_GLIMMER_MODEL_MTP_LAYER_COUNT,
-	.stage_layer_counts = {0u,0u,0u,0u},
-	.minimum_efficient_submission_row_count = 0u
+	.stage_layer_counts = {SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT,0u,0u,0u},
+	.minimum_efficient_submission_row_count = 0u,
+	.cache_block_token_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS
 };
 
 #define SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_GDN(layer) 0
