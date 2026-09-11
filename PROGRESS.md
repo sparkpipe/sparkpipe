@@ -592,3 +592,81 @@ reintroduction); the new prints are gate receipts only.
 
 PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree (r22
 receipts commit).
+
+## gemma4: serving-adapter contract completion (post-merge follow-up, A-0074 half)
+
+Closes gemma4's half of A-0074 (muse's half landed as #938 = the template):
+the qwen38-pp serving template now carries #ifdef seams for the three
+mandatory members, but gemma4's exported interface predated the seams and
+lacked prefetch / resolve_prefetch / reset, so the host refused it at
+load (SparkModelServingAdapterValidateInterface SPARK_REQUIRE_SERVING_OPERATION
+table, runtime/model_serving_adapter.c:271-280) — gemma4 could never load
+for serving. Implemented with REAL semantics over gemma4's state struct,
+following #938's proven shapes (one shared implementation; both family arms
+are compile-time configurations of the same source):
+
+- prefetch: CACHE_PREPARE admission over the loaded driver program
+  (program_id from state->program, 512-lane thread-local cache-lane
+  scratch, full validate_submission first) via spark_serving_cache_admission.h.
+- resolve_prefetch: COMMIT/ABORT mapped to CACHE_COMMIT/CACHE_ABORT on one
+  submission; other resolutions refused INVALID_ARGUMENT.
+- reset: single-flight atomic CAS (concurrent reset BUSY), generation-
+  monotonic (0 refused, <= current refused), quiesce + driver RESET
+  admission; applied generation makes stale submissions VALIDATION_FAILED
+  on validate/prefetch via the guarded template hook
+  (SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE). Family state inits
+  through SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY (atomics in the state
+  struct).
+
+Two adjacent blockers found and fixed in the same pass:
+- descriptor could never pass ValidateDescriptor: cache_block_token_count
+  was absent (mandatory non-zero) → added
+  SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS (64). stage geometry
+  violated SparkDescriptorCheckStageLayerTotals on BOTH arms: dense declared
+  stage_count 1 with hybrid group 16 (group_count 0, 16 > stage_count —
+  and the runtime pp division 1/16=0 would divide by zero in
+  ServingInitialize), MOE declared stage_count 4 with per-stage list
+  {8,8,7,7} (hybrid demands equal counts per TP group; runtime pp 4/4=1
+  gave every rank 30 layers). Fixed to the dsv4 hybrid convention:
+  descriptor stage_count = TP x PP world (16 both arms), group = TP width
+  (dense 16: all 16 entries 60; MOE 4: per-rank list
+  8x8,7x8), runtime pp now 16/16=1 and 16/4=4.
+- never-validatable bind (the #938 class): SparkGemma4ServingInitializeSeam
+  always failed — SparkSpeculationPolicyValidateModelContract refuses
+  draft_layer_count 0 and maximum_speculative_token_count 0, exactly what
+  gemma4's seam configuration pinned (available_source_mask 0). Deleted the
+  dead seam bind, the WithSeam initialize/destroy wrappers, the private
+  ServingSeamInterface table, and the template GetInterface rename; the
+  template's opt-in table IS the export now (muse end-state). The sidecar
+  bind returns when the lane has a real draft contract.
+
+New host gate: build/test_gemma4_serving_adapter (Makefile TEST_NAMES)
+builds BOTH arm dylibs (dense 31B tp16 + MoE 26B-A4B tp4pp4) plus a fixture
+driver (tests/fixtures/gemma4_serving_adapter_driver.c, arm-agnostic via
+the model-header aliases) and asserts: MoE load receipt through
+SparkModelServingAdapterLoadInterfaceFromSharedObject incl. descriptor
+identity/geometry (30 layers, 16 stages, group 4, per-rank 8/7 lists, cache
+block 64) + interface completeness; dense load receipt (60 layers, group
+16, capability HIDDEN|PARALLEL|HYBRID, no speculation bit with
+max_speculative_token_count 0); interface completeness — structurally
+derived member_count=10, all non-null, each nulled member refused
+INVALID_ARGUMENT (A-0074 unrepresentable); initialize; prefetch
+null/count guards, prepare, commit, abort; decode submit with 4200/4201
+receipt + snapshot counts; reset generation lifecycle (0 refused, 1
+accepted, stale validate+prefetch VALIDATION_FAILED, <= refused,
+quiesce→reset revival at generation 3, post-reset submit receipt); destroy.
+
+Mac gate receipts (exit 0): test_gemma4_serving_adapter (20 per-member-null
+refusal receipts on stderr = the 10x2 arms completeness probe),
+test_model_serving_adapter, test_serving_cache_admission,
+test_qwen38_27b_serving_adapter, test_muse_glimmer_serving_adapter.
+test_dry_law PASS (196 common files). Pre-existing main reds, not this
+lane's code, verified on pristine origin/main: test_code_size (main already
+286 lines over the 279620 ceiling via #830 ling; this change +46; ceiling
+not raised here — same-inheritance flag the muse lane raised),
+test_complexity_ceiling (qwen38_27b CCN 88 > 75, unchanged; no gemma4
+serving function appears in the hotspot report),
+test_dsv4_tp4_pp4_serving_adapter / test_dsv4_serving_adapter (hang on
+pristine main on this host too — dsv4 lane's follow-up per #938's note).
+
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
