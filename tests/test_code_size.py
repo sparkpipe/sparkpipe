@@ -1517,18 +1517,15 @@ CEILING = 268809
 # topk group-mask fix + LmHeadWiseGateKernel. Shared surface takes main
 # wholesale (k3/qwen38_27b/glm52 verified byte-identical post-merge).
 # Measured exact: 279620.
-<<<<<<< HEAD
-CEILING = 279906
-# the ling serving-adapter contract completion (lane/ling-driver follow-up,
-# A-0086, the muse #938 shape): prefetch/resolve_prefetch/reset with real
-# semantics over spark_serving_cache_admission.h (+~130 in the adapter), the
-# descriptor's required cache_block_token_count, and the top-level Makefile
-# adapter/driver/test wiring (+18). The test trio is tests/-excluded by
-# construction. Measured exact: 280042.
-CEILING = 280042
-=======
-CEILING = 279952
->>>>>>> origin/main
+# the ling landing follow-ups + gemma4 adapter (+46) + ling A-0086 adapter
+# contract (+90) raced through three pins (279906/279952/280042); the #944
+# merge committed unresolved conflict markers over this line and the gate
+# stopped parsing. Resolution keeps the last active pin, then the A-0072
+# donor-machinery lift (19 verbatim family copies of the stage-module
+# fingerprint / TP-completion / admission-cost / pack-file-size class move
+# onto runtime/stage_module_common) deletes 158 lines against 72 added.
+# Measured exact: 279967.
+CEILING = 279967
 
 
 ROOT = Path(__file__).resolve().parent.parent

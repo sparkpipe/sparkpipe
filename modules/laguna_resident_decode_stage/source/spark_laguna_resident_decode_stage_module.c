@@ -198,18 +198,6 @@ static SparkStatus SparkLagunaModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLagunaPackFileSize(FILE *file,uint64_t *bytes)
-{
-	off_t end;
-	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	end = ftello(file);
-	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	*bytes = (uint64_t)end;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkLagunaPackRangesOverlap(const SparkLagunaPackRange *left,const SparkLagunaPackRange *right)
 {
 	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
@@ -552,7 +540,7 @@ static SparkStatus SparkLagunaPackLoad(
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
-	status = SparkLagunaPackFileSize(file,&file_bytes);
+	status = SparkStageModulePackFileSize(file,&file_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_LAGUNA_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK )
@@ -1361,16 +1349,7 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkLagunaModuleTpCompletion(
-	void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
-{
-	SparkLagunaTpChain *chain;
-	chain = (SparkLagunaTpChain *)context;
-	if ( chain == 0 || chain->active == 0u || completion == 0 )
-		return;
-	SparkLagunaTpChainAdvance(chain,completion->status);
-}
+SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkLagunaModuleTpCompletion,SparkLagunaTpChain,SparkLagunaTpChainAdvance)
 
 static SparkStatus SparkLagunaChainOrdinal(SparkLagunaTpChain *chain,uint32_t operation,uint64_t *ordinal)
 {
@@ -2044,17 +2023,6 @@ SparkStatus SparkLagunaResidentDecodeStageExecute(
 	return(status);
 }
 
-static void SparkLagunaAdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	(void)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 static SparkStatus SparkLagunaResetExecutionState(SparkLagunaModuleState *state)
 {
 	cudaError_t drain;
@@ -2165,7 +2133,7 @@ SparkStatus SparkLagunaResidentDecodeStageAdmit(
 		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
 	table.predicate = SparkLagunaAdmissionPredicate;
 	table.predicate_context = state;
-	table.cost = SparkLagunaAdmissionCost;
+	table.cost = SparkStageModuleAdmissionCost;
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )

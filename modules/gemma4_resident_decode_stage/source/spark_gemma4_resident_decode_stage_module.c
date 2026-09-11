@@ -497,12 +497,6 @@ static SparkStatus SparkGemma4ModuleTpCombineU64Max(void *combine_context, uint6
 	return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchTpCombineU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count),"tp_combine_u64_max"));
 }
 
-static void SparkGemma4ModuleTpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
-{
-	atomic_uint *flag = (atomic_uint *)context;
-	atomic_store_explicit(flag,completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,memory_order_release);
-}
-
 static SparkStatus SparkGemma4ModuleInitializeTpCollective(SparkGemma4ModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
@@ -589,7 +583,7 @@ static SparkStatus SparkGemma4ModuleTpSubmitOrdered(SparkGemma4ModuleState *stat
 	submission.local_device = device_buffer;
 	submission.full_device = device_buffer;
 	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkGemma4ModuleTpCompletion;
+	submission.completion_function = SparkStageModuleTpCompletionFlag;
 	submission.completion_context = &state->tp_completion_flag;
 	status = u64_max != 0u
 		? SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission)

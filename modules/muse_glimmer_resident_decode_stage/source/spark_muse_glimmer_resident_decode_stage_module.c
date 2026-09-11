@@ -469,15 +469,6 @@ static SparkStatus SparkMuseGlimmerModuleAllocateSlot(SparkMuseGlimmerModuleStat
 static SparkStatus SparkMuseGlimmerModuleAllocateSlotHostMirrors(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 
 
-static uint64_t SparkMuseGlimmerModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
-{
-	const uint8_t *data = (const uint8_t *)bytes;
-	uint64_t hash = basis,index;
-	for (index = 0; index < count; index++)
-		hash = (hash ^ data[index]) * 1099511628211ull;
-	return(hash);
-}
-
 static SparkStatus SparkMuseGlimmerModuleOpenKvTier(SparkMuseGlimmerModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkMuseGlimmerStagePackHeader geometry;
@@ -507,12 +498,12 @@ static SparkStatus SparkMuseGlimmerModuleOpenKvTier(SparkMuseGlimmerModuleState 
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	SparkMuseGlimmerStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
-	model_fp = SparkMuseGlimmerModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	
 	block_record_elements = (uint64_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * state->layer_count;	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	layout_bits[2] = state->kv_block_count;
-	layout_fp = SparkMuseGlimmerModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES;
 	staging_bytes = block_record_bytes * SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS;
 	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
@@ -895,12 +886,6 @@ static SparkStatus SparkMuseGlimmerModuleTpCombineBf16(void *combine_context, vo
 	return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,SparkMuseGlimmerLaunchTpCombineAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension),"tp_combine"));
 }
 
-static void SparkMuseGlimmerModuleTpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
-{
-	atomic_uint *flag = (atomic_uint *)context;
-	atomic_store_explicit(flag,completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,memory_order_release);
-}
-
 static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmerModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
@@ -978,7 +963,7 @@ static SparkStatus SparkMuseGlimmerModuleTpAllReduceHidden(SparkMuseGlimmerModul
 	submission.local_device = device_bf16;
 	submission.full_device = device_bf16;
 	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkMuseGlimmerModuleTpCompletion;
+	submission.completion_function = SparkStageModuleTpCompletionFlag;
 	submission.completion_context = &state->tp_completion_flag;
 	status = SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 	if ( status != SPARK_STATUS_OK )
@@ -1020,7 +1005,7 @@ static SparkStatus SparkMuseGlimmerModuleTpMaxloc(SparkMuseGlimmerModuleState *s
 	submission.local_device = slot->head_maxloc_u64;
 	submission.full_device = slot->head_maxloc_u64;
 	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkMuseGlimmerModuleTpCompletion;
+	submission.completion_function = SparkStageModuleTpCompletionFlag;
 	submission.completion_context = &state->tp_completion_flag;
 	status = SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 	if ( status != SPARK_STATUS_OK )

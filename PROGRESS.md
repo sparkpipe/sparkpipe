@@ -670,3 +670,63 @@ Makefile wiring; the test trio is tests/-excluded by construction),
 ceiling re-pinned to the measured exact 280042 in the same change
 (A-0085's lesson applied: measured on the final tree, gate exit 0).
 PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
+
+## CODER (09-11) — module.c donor-machinery lift (A-0072)
+
+The resident-decode-stage module.c host machinery had 19 verbatim family
+copies across four function classes; all move onto the existing shared home
+runtime/stage_module_common.c + spark_stage_module_common.h (compiled into
+every module archive and the model_common library already; no new files):
+SparkStageModuleFingerprint (FNV-1a, was 4 copies: muse_glimmer,
+qwen38_27b, qwen38_max, qwen4_flash), SparkStageModuleTpCompletionFlag
+(atomic-flag TP completion, was 4 copies: gemma4, muse_glimmer, qwen38_max,
+qwen4_flash), SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION macro seam (chain
+trampoline, was 4 copies: glm52, glm5_next, laguna, ling),
+SparkStageModuleAdmissionCost (was 4 copies: glm52, glm5_next, laguna,
+ling), SparkStageModulePackFileSize (was 3 copies: glm52, glm5_next,
+laguna). 158 lines deleted, 72 added. Pure lift: zero behavioral change
+(ling's PackFileSize NOT converted — it uses bare return instead of
+SPARK_FAIL error-site reporting, i.e. drifted; recorded, not forced).
+Code-size ceiling re-pinned measured exact 280042 -> 279967 in-change; the
+#944 merge had committed unresolved conflict markers over the CEILING line
+(gate SyntaxError on main) — resolved to the last active pin first, then
+re-measured. MAC GATE RECEIPTS (all exit 0): per-family contract
+syntax-compile glm52/glm5_next/laguna/ling/muse_glimmer/gemma4/qwen38_max;
+qwen38_27b and qwen4_flash contracts fail with the SAME single pre-existing
+main error as baseline (cudaMemGetInfo stub gap / stagepack header 'u'),
+diagnostic sets identical before/after; test_stage_module_common;
+test_runtime_completion + test_model_runtime; the three adapter
+completeness tests test_qwen38_27b_serving_adapter /
+test_muse_glimmer_serving_adapter / test_gemma4_serving_adapter;
+tests/test_model_driver_contracts.py (0 failing); test_template_adoption;
+ling adapter build (make ling_serving_adapter, exit 0).
+tests/test_ling_serving_adapter.c is NOT wired into the Makefile on main;
+manual reproduction fails at the same assert (line 183, revision compare)
+on baseline and on this tree — pre-existing red, matched. dsv4 contract
+fails identically at baseline on macOS (_DARWIN_C_SOURCE redefinition).
+PRE-EXISTING MAIN BREAKAGE recorded, not fixed here:
+tools/hy4_tp16_shard.py carries committed conflict markers too.
+REPORTED, NOT CONVERTED THIS ROUND (family-typed verbatim — need the
+per-family ModuleState/TpChain/AsyncCompletion/PackRange struct
+definitions consolidated first; then they lift mechanically):
+PrepareAsyncCompletion 4x39 (glm52/glm5_next/laguna/ling),
+EnqueueAsyncCompletion 4x13, ModuleCombineBf16 4x13 + ModuleCombineU64Max
+4x12 (parameterize launcher+tag), ModuleDescribe 4+3 shapes,
+ExpectedGlobalMask 4x10, ExpectedLayerMask 3x13, AllocateBytes 3x13,
+AllocateRows 4x8, RoundMajorWaveRows 3x12, StageHostBatch 3x20,
+LazyRetryRetained 3x9, PackRangesOverlap 4x4, PackValidateRanges 3x28,
+PackValidateInventory 2x10, PackFileSize ling variant (drifted),
+ValidateFrameBuffers 2x15, PrepareClaimedContinuity 2x6,
+InvalidateClaimedLanes 2x9, AllocateSlotMetadata 2x14,
+ModuleReduceAttentionOut 2x4, PageCopy/DevicePageCopy 0.996 pairs,
+TpChainFail TWO SHAPES (glm52+ling vs glm5_next+laguna — behavioral
+drift between the two clusters). Near-dup >=0.90 <1.0 pairs measured:
+laguna~glm5_next 0.993 ValidateSequenceContinuity/ExpectedLayerMask/
+LazyExperts/ClaimCacheFrame, 0.991 ValidateRoundMajor/BuildPageTable,
+0.987 ExecuteBatch; glm52~glm5_next 0.996 PageCopy, 0.980 ManifestCheck,
+0.976 LazyExperts, 0.971 LazyRelease, 0.966 PackLoad; muse~gemma4 0.955
+EmitHiddenOutput, 0.952 ValidateFrameContext, 0.944 ConsumeHiddenInput,
+0.911 ReportReady, 0.904 InitializeTpCollective. DRIFT FLAG (I22):
+laguna carries glm5_next's "G5N-DBG" fprintf debug lines in
+TpChainFail/Execute/Admit production paths — ported debug residue.
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.

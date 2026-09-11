@@ -656,15 +656,6 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 static SparkStatus SparkQwen38MaxModuleAllocateSlotHostMirrors(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot);
 
 
-static uint64_t SparkQwen38MaxModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
-{
-	const uint8_t *data = (const uint8_t *)bytes;
-	uint64_t hash = basis,index;
-	for (index = 0; index < count; index++)
-		hash = (hash ^ data[index]) * 1099511628211ull;
-	return(hash);
-}
-
 static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkQwen38MaxStagePackHeader geometry;
@@ -694,12 +685,12 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	SparkQwen38MaxStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
-	model_fp = SparkQwen38MaxModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	
 	block_record_elements = (uint64_t)SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * SPARK_QWEN38_MAX_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * state->attn_layer_count;	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	layout_bits[2] = state->kv_block_count;
-	layout_fp = SparkQwen38MaxModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	staging_bytes = block_record_bytes * SPARK_QWEN38_MAX_MODULE_KV_STAGING_RECORDS;
 	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
@@ -1083,12 +1074,6 @@ static SparkStatus SparkQwen38MaxModuleTpCombineBf16(void *combine_context, void
 	return(SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,SparkQwen38MaxLaunchTpCombineAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension),"tp_combine"));
 }
 
-static void SparkQwen38MaxModuleTpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
-{
-	atomic_uint *flag = (atomic_uint *)context;
-	atomic_store_explicit(flag,completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,memory_order_release);
-}
-
 static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
@@ -1177,7 +1162,7 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	submission.local_device = device_bf16;
 	submission.full_device = device_bf16;
 	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkQwen38MaxModuleTpCompletion;
+	submission.completion_function = SparkStageModuleTpCompletionFlag;
 	submission.completion_context = &state->tp_completion_flag;
 	status = SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
 	if ( status != SPARK_STATUS_OK )

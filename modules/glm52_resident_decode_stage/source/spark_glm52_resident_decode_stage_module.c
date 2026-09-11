@@ -209,18 +209,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm52PackFileSize(FILE *file,uint64_t *bytes)
-{
-	off_t end;
-	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	end = ftello(file);
-	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	*bytes = (uint64_t)end;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkGlm52PackRangesOverlap(const SparkGlm52PackRange *left,const SparkGlm52PackRange *right)
 {
 	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
@@ -593,7 +581,7 @@ static SparkStatus SparkGlm52PackLoad(
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
-	status = SparkGlm52PackFileSize(file,&file_bytes);
+	status = SparkStageModulePackFileSize(file,&file_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_GLM52_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK )
@@ -1377,16 +1365,7 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	return(status);
 }
 
-static void SparkGlm52ModuleTpCompletion(
-	void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
-{
-	SparkGlm52TpChain *chain;
-	chain = (SparkGlm52TpChain *)context;
-	if ( chain == 0 || chain->active == 0u || completion == 0 )
-		return;
-	SparkGlm52TpChainAdvance(chain,completion->status);
-}
+SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkGlm52ModuleTpCompletion,SparkGlm52TpChain,SparkGlm52TpChainAdvance)
 
 static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *device_bf16)
 {
@@ -1924,17 +1903,6 @@ static SparkStatus SparkGlm52ModuleExecuteFrame(
 	SPARK_RETURN(status);
 }
 
-static void SparkGlm52AdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	(void)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 static SparkStatus SparkGlm52ModuleAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
@@ -1956,7 +1924,7 @@ static SparkStatus SparkGlm52ModuleAdmit(
 		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
 	table.predicate = SparkGlm52AdmissionPredicate;
 	table.predicate_context = state;
-	table.cost = SparkGlm52AdmissionCost;
+	table.cost = SparkStageModuleAdmissionCost;
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )

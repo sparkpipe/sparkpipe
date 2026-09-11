@@ -1945,15 +1945,6 @@ static SparkStatus SparkQwen38_27bModuleFinish(SparkQwen38_27bModuleState *state
 	SPARK_RETURN(status);
 }
 
-static uint64_t SparkQwen38_27bModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
-{
-	const uint8_t *data = (const uint8_t *)bytes;
-	uint64_t hash = basis,index;
-	for (index = 0; index < count; index++)
-		hash = (hash ^ data[index]) * 1099511628211ull;
-	return(hash);
-}
-
 static SparkStatus SparkQwen38_27bModuleOpenKvTier(SparkQwen38_27bModuleState *state)
 {
 	SparkQwen38_27bStagePackHeader geometry;
@@ -1977,11 +1968,11 @@ static SparkStatus SparkQwen38_27bModuleOpenKvTier(SparkQwen38_27bModuleState *s
 	SparkQwen38_27bStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
 	geometry.tp_degree = state->tp_degree;
 	geometry.tp_rank = state->tp_rank;
-	model_fp = SparkQwen38_27bModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	layout_bits[0] = state->cache_layer_stride;
 	layout_bits[1] = state->cache_block_stride;
 	layout_bits[2] = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	layout_fp = SparkQwen38_27bModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	return(SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN38_27B_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers));
 }
 
