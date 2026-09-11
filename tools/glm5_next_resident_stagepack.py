@@ -153,6 +153,18 @@ class SourceReader:
         self._cache_bytes = 0
         self._cache_byte_cap = cache_byte_cap
         self._lut = fp8_e4m3_lut()
+        # modelopt nvfp4 decode tables: E2M1 nibble values, and E4M3 bytes
+        # (weight_scale blocks) decoded through a 256-entry LUT
+        self._e2m1 = np.array(
+            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
+             -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0], dtype=np.float32)
+        _v = np.arange(256, dtype=np.uint32)
+        _s = (_v >> 7) & np.uint32(1)
+        _e = ((_v >> 3) & np.uint32(0xF)).astype(np.int32)
+        _m = (_v & np.uint32(7)).astype(np.float32)
+        _val = np.where(_e == 0, (_m / 8.0) * 2.0 ** -6,
+                        (1.0 + _m / 8.0) * 2.0 ** (_e - 7))
+        self._e4m3 = np.where(_s == 1, -_val, _val).astype(np.float32)
 
     def _header(self, shard: str) -> Tuple[dict, int]:
         if shard not in self._headers:
@@ -226,6 +238,27 @@ class SourceReader:
             expanded = np.repeat(expanded, 128, axis=1)[:, :cols]
             matrix = f32_to_bf16_u16(self._lut[codes] * expanded)
             del expanded
+        elif dtype == "U8":
+            # modelopt nvfp4 dense storage: packed E2M1 nibbles [rows, cols/2]
+            # (cols here is the PACKED width), E4M3 block scales per 16 real
+            # elements, and an F32 global. Dequantize to bf16 spine — same
+            # contract as the F8_E4M3 branch (the module spine is bf16).
+            scale_name = name + "_scale"
+            _dt, ss, _ = self.meta(scale_name)
+            real_cols = cols * 2
+            if tuple(ss) != (rows, real_cols // 16):
+                raise PackFailure(f"{scale_name}: shape {ss}, expected {(rows, real_cols // 16)}")
+            g_name = name + "_scale_2"
+            self.meta(g_name)  # must exist
+            global_f32 = float(self.raw(g_name).view(np.float32)[0])
+            packed = self.raw(name).reshape(rows, cols)
+            blocks = self._e4m3[self.raw(scale_name).view(np.uint8).reshape(rows, real_cols // 16)]
+            vals = np.empty((rows, real_cols), dtype=np.float32)
+            vals[:, 0::2] = self._e2m1[packed & np.uint8(0x0F)]
+            vals[:, 1::2] = self._e2m1[packed >> np.uint8(4)]
+            vals *= np.repeat(blocks, 16, axis=1)[:, :real_cols] * global_f32
+            matrix = f32_to_bf16_u16(vals)
+            del vals, blocks
         else:
             raise PackFailure(f"{name}: unexpected spine dtype {dtype}")
         self._cache[name] = matrix
@@ -367,7 +400,7 @@ class Packer:
     def add_spine_bf16(self, kind: int, layer: int, name: str, shard: str = ""):
         dtype, shape, _ = self.s.meta(name)
         rows, cols = shape if len(shape) == 2 else (1, shape[0])
-        if dtype not in ("BF16", "F8_E4M3"):
+        if dtype not in ("BF16", "F8_E4M3", "U8"):
             raise PackFailure(f"{name}: spine dtype {dtype}")
         s0 = s1 = 0
         if shard == "rows" and self.tp_degree > 1:
@@ -429,7 +462,7 @@ class Packer:
         layouts coincide, which is how this passed the M3 gates."""
         total = sum(checkpoint_rows)
         dtype, _, _ = self.s.meta(names[0])
-        if dtype not in ("BF16", "F8_E4M3"):
+        if dtype not in ("BF16", "F8_E4M3", "U8"):
             raise PackFailure(f"{names[0]}: fused dtype {dtype}")
         s0 = s1 = 0
         rows_out = total
