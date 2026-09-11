@@ -70,7 +70,12 @@ def main() -> int:
     require(
         r"SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION",
         rung, "rung stream-ordered completion")
-    require(r"SPARK_WEIGHTD_MESH_REGION_BYTES", rung, "rung mesh mapping")
+    require(r"SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES \(16u \* 1024u \* 1024u\)",
+            rung, "rung mesh slot bytes pin")
+    require(r"SPARK_HY4_TP16_RUNG_MESH_SLOTS_PER_BAND 32u", rung,
+            "rung mesh slots-per-band pin")
+    require(r"SPARK_HY4_TP16_RUNG_MESH_BANDS 4u", rung, "rung mesh band pin")
+    require(r"SPARK_HY4_TP16_RUNG_MESH_REGION_BYTES", rung, "rung mesh mapping")
     require(r"SparkHy4Tp16RungMeshSequencer", rung, "rung mesh sequencer")
     require(r"SPARK_HY4_TP16_RUNG_RANKS SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE",
             rung, "rung pinned to engine degree 16")

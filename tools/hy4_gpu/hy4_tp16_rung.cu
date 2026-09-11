@@ -10,7 +10,21 @@
 
 #include "sparkpipe/spark_hy4_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
-#include "sparkpipe/spark_weightd.h"
+
+#define SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES (16u * 1024u * 1024u)
+#define SPARK_HY4_TP16_RUNG_MESH_SLOTS_PER_BAND 32u
+#define SPARK_HY4_TP16_RUNG_MESH_BANDS 4u
+#define SPARK_HY4_TP16_RUNG_MESH_BUFFER_BYTES \
+	(SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES * \
+	SPARK_HY4_TP16_RUNG_MESH_SLOTS_PER_BAND * \
+	SPARK_HY4_TP16_RUNG_MESH_BANDS)
+#define SPARK_HY4_TP16_RUNG_MESH_REGION_BYTES \
+	(SPARK_HY4_TP16_RUNG_MESH_BUFFER_BYTES + 4096u)
+#define SPARK_HY4_TP16_RUNG_MESH_DOORBELL_ENTRY(band,rank) \
+	(SPARK_HY4_TP16_RUNG_MESH_BUFFER_BYTES + \
+	(((band) * 16u + (rank)) * 24u))
+static_assert(4u * 16u * 24u <= 4096u,
+	"doorbell entries must fit the doorbell page");
 
 #define SPARK_HY4_TP16_RUNG_RANKS SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE
 #define SPARK_HY4_TP16_RUNG_HIDDEN SPARK_HY4_MODEL_HIDDEN_DIMENSION
@@ -24,7 +38,7 @@
 #define SPARK_HY4_TP16_RUNG_BARRIER_TIMEOUT_NS UINT64_C(120000000000)
 #define SPARK_HY4_TP16_RUNG_IDENTIFIER UINT64_C(1001)
 #define SPARK_HY4_TP16_RUNG_BAND \
-	(SPARK_HY4_TP16_RUNG_IDENTIFIER & (SPARK_WEIGHTD_MESH_BANDS - 1u))
+	(SPARK_HY4_TP16_RUNG_IDENTIFIER & (SPARK_HY4_TP16_RUNG_MESH_BANDS - 1u))
 
 typedef struct SparkHy4Tp16RungRankContext
 {
@@ -84,8 +98,8 @@ static uint16_t SparkHy4Tp16RungBf16Sample(uint32_t *state,uint32_t salt)
 {
 	uint32_t raw;
 	raw = SparkHy4Tp16RungLcg(state);
-	return((uint16_t)(((raw >> 17u) & UINT32_C(0x0000007fu)) |
-		((raw >> 21u) & UINT32_C(0x00008000u)) |
+	return((uint16_t)(((raw >> 17u) & UINT32_C(0x0000007f)) |
+		((raw >> 21u) & UINT32_C(0x00008000)) |
 		((126u + (salt & 1u)) << 7u)));
 }
 
@@ -110,9 +124,9 @@ static void *SparkHy4Tp16RungMeshBase(void)
 	static void *mesh_base;
 	if ( mesh_base == 0 )
 	{
-		mesh_base = malloc(SPARK_WEIGHTD_MESH_REGION_BYTES);
+		mesh_base = malloc(SPARK_HY4_TP16_RUNG_MESH_REGION_BYTES);
 		if ( mesh_base != 0 )
-			memset(mesh_base,0,SPARK_WEIGHTD_MESH_REGION_BYTES);
+			memset(mesh_base,0,SPARK_HY4_TP16_RUNG_MESH_REGION_BYTES);
 	}
 	return(mesh_base);
 }
@@ -226,8 +240,8 @@ static void *SparkHy4Tp16RungMeshSequencer(void *argument)
 	(void)argument;
 	mesh = (uint8_t *)SparkHy4Tp16RungMeshBase();
 	band_base = (uint64_t)SPARK_HY4_TP16_RUNG_BAND *
-		SPARK_WEIGHTD_MESH_SLOT_BYTES *
-		SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+		SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES *
+		SPARK_HY4_TP16_RUNG_MESH_SLOTS_PER_BAND;
 	while ( rung_monitor_stop.load(std::memory_order_relaxed) == 0u )
 	{
 		uint32_t rank;
@@ -235,7 +249,7 @@ static void *SparkHy4Tp16RungMeshSequencer(void *argument)
 		{
 			volatile uint64_t *entry =
 				(volatile uint64_t *)(mesh +
-				SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(
+				SPARK_HY4_TP16_RUNG_MESH_DOORBELL_ENTRY(
 				SPARK_HY4_TP16_RUNG_BAND,rank));
 			volatile uint64_t *sequence_word;
 			uint64_t sequence,slot;
@@ -244,12 +258,12 @@ static void *SparkHy4Tp16RungMeshSequencer(void *argument)
 				sequence <= last_sequence[rank] )
 				continue;
 			slot = entry[2];
-			if ( slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND )
+			if ( slot >= SPARK_HY4_TP16_RUNG_MESH_SLOTS_PER_BAND )
 				continue;
 			sequence_word = (volatile uint64_t *)(mesh +
 				band_base + slot *
-				SPARK_WEIGHTD_MESH_SLOT_BYTES +
-				SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
+				SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES +
+				SPARK_HY4_TP16_RUNG_MESH_SLOT_BYTES - 8u);
 			__sync_synchronize();
 			*sequence_word = sequence;
 			last_sequence[rank] = sequence;
@@ -712,7 +726,7 @@ int main(int argument_count,char **arguments)
 	if ( SparkHy4Tp16RungMeshBase() == 0 )
 	{
 		fprintf(stderr,"TP16RUNG mesh_alloc %zu\n",
-			(size_t)SPARK_WEIGHTD_MESH_REGION_BYTES);
+			(size_t)SPARK_HY4_TP16_RUNG_MESH_REGION_BYTES);
 		return(1);
 	}
 	for (index=0u; index<SPARK_HY4_TP16_RUNG_RANKS; index++)
