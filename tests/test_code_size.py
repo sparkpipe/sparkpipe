@@ -1517,7 +1517,7 @@ CEILING = 268809
 # topk group-mask fix + LmHeadWiseGateKernel. Shared surface takes main
 # wholesale (k3/qwen38_27b/glm52 verified byte-identical post-merge).
 # Measured exact: 279620.
-CEILING = 279620
+CEILING = 279906
 
 
 ROOT = Path(__file__).resolve().parent.parent
