@@ -63,6 +63,8 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 #define SPARK_LING_VAL_LOWER SPARK_LING_MODEL_KDA_GATE_LOWER_BOUND
 #define SPARK_LING_VAL_ORACLE_TRUTH_BAND 0.0058
 #define SPARK_LING_VAL_ONE_BF16_ULP 0.00390625
+#define SPARK_LING_VAL_TOKEN_INCREMENT_BAND \
+	(SPARK_LING_VAL_ORACLE_TRUTH_BAND + SPARK_LING_VAL_ONE_BF16_ULP)
 #define SPARK_LING_VAL_TRUTH_COSINE_FLOOR 0.99998
 
 static uint32_t SparkLingValRandomState;
@@ -152,15 +154,6 @@ static void SparkLingValMeasure(SparkLingValMetrics *metrics,const float *actual
 	metrics->max_abs = max_abs;
 	metrics->cosine = (na > 0.0 && nr > 0.0) ? dot / (sqrt(na) * sqrt(nr)) : 1.0;
 	metrics->max_relative_l2 = nr > 0.0 ? sqrt(na > 0.0 ? (na - 2.0 * dot + nr) : nr) / sqrt(nr) : sqrt(na);
-}
-
-static double SparkLingValBf16Ulp(double value)
-{
-	int exponent;
-	if ( value == 0.0 )
-		return 0.0;
-	frexp(value,&exponent);
-	return(ldexp(1.0,exponent - 8));
 }
 
 static int SparkLingValReport(const char *check,const SparkLingValMetrics *metrics,double max_relative_l2,double minimum_cosine)
@@ -2010,6 +2003,13 @@ typedef struct SparkLingValWalk
 	double kda_state64[2][(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
 	uint16_t mla_cache[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
 	uint16_t mla_cache64[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
+	uint16_t mla_cache_cond[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
+	uint16_t kda_cond_windows[3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
+	double kda_cond_windows64[3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
+	float kda_cond_state[(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
+	double kda_cond_state64[(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
+	uint16_t kda_cond_packed[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	float kda_cond_hidden[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	uint32_t mla_context;
 	uint32_t selected[SPARK_LING_VAL_TOP_K];
 	float route_weights[SPARK_LING_VAL_TOP_K];
@@ -2017,9 +2017,36 @@ typedef struct SparkLingValWalk
 	float row_sublayer[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float row_sublayer64[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float boundary_rows[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
-	float sublayer_device_prev[SPARK_LING_VAL_HIDDEN];
-	float sublayer_truth_prev[SPARK_LING_VAL_HIDDEN];
 } SparkLingValWalk;
+
+static void SparkLingValFillKdaWeights(const SparkLingValFixture *fixture,
+	SparkLingValKdaWeights *kda)
+{
+	kda->attn_norm = fixture->dense_attn_norm.host;
+	kda->qkv_beta = fixture->kda_qkv_beta.host;
+	kda->conv_q = fixture->kda_conv_q.host;
+	kda->conv_k = fixture->kda_conv_k.host;
+	kda->conv_v = fixture->kda_conv_v.host;
+	kda->decay_proj = fixture->kda_decay_proj.host;
+	kda->gate_proj = fixture->kda_gate_proj.host;
+	kda->dt_bias = fixture->kda_dt_bias_host;
+	kda->a_log = fixture->kda_a_log_host;
+	kda->out_norm = fixture->kda_out_norm_host;
+	kda->out_weight = fixture->kda_out.host;
+}
+
+static void SparkLingValFillMlaWeights(const SparkLingValFixture *fixture,
+	SparkLingValMlaWeights *mla)
+{
+	mla->attn_norm = fixture->dense_attn_norm.host;
+	mla->q_proj = fixture->mla_q_proj.host;
+	mla->kv_a = fixture->mla_kv_a.host;
+	mla->kv_a_norm = fixture->mla_kv_a_norm.host;
+	mla->kv_b_key = fixture->mla_kv_b_key.host;
+	mla->kv_b_value = fixture->mla_kv_b_value.host;
+	mla->attn_gate = fixture->mla_attn_gate.host;
+	mla->o_proj = fixture->mla_o_proj.host;
+}
 
 static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 	SparkLingValWalk *walk,uint32_t layer,uint32_t local,const float *hidden,
@@ -2029,17 +2056,7 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
 	{
 		SparkLingValKdaWeights kda;
-		kda.attn_norm = fixture->dense_attn_norm.host;
-		kda.qkv_beta = fixture->kda_qkv_beta.host;
-		kda.conv_q = fixture->kda_conv_q.host;
-		kda.conv_k = fixture->kda_conv_k.host;
-		kda.conv_v = fixture->kda_conv_v.host;
-		kda.decay_proj = fixture->kda_decay_proj.host;
-		kda.gate_proj = fixture->kda_gate_proj.host;
-		kda.dt_bias = fixture->kda_dt_bias_host;
-		kda.a_log = fixture->kda_a_log_host;
-		kda.out_norm = fixture->kda_out_norm_host;
-		kda.out_weight = fixture->kda_out.host;
+		SparkLingValFillKdaWeights(fixture,&kda);
 		SparkLingValKdaAttention(&kda,hidden,residual,
 			walk->kda_windows[local][0],walk->kda_windows[local][1],
 			walk->kda_windows[local][2],walk->kda_state[local],sublayer_out,
@@ -2053,14 +2070,7 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 	{
 		SparkLingValMlaWeights mla;
 		SparkLingValMlaCache cache;
-		mla.attn_norm = fixture->dense_attn_norm.host;
-		mla.q_proj = fixture->mla_q_proj.host;
-		mla.kv_a = fixture->mla_kv_a.host;
-		mla.kv_a_norm = fixture->mla_kv_a_norm.host;
-		mla.kv_b_key = fixture->mla_kv_b_key.host;
-		mla.kv_b_value = fixture->mla_kv_b_value.host;
-		mla.attn_gate = fixture->mla_attn_gate.host;
-		mla.o_proj = fixture->mla_o_proj.host;
+		SparkLingValFillMlaWeights(fixture,&mla);
 		cache.slots = walk->mla_cache[0];
 		cache.context = walk->mla_context + row + 1u;
 		SparkLingValMlaAttention(&mla,hidden,residual,
@@ -2068,6 +2078,70 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 		cache.slots = walk->mla_cache64[0];
 		SparkLingValMlaAttention64(&mla,hidden,residual,
 			walk->mla_context + row,&cache,walk->row_sublayer64[row]);
+	}
+}
+
+static int SparkLingValSeedConditional(SparkLingValFixture *fixture,
+	SparkLingValWalk *walk,uint32_t layer,uint32_t rows)
+{
+	uint64_t state_count = (uint64_t)SPARK_LING_VAL_KDA_HEADS *
+		SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY;
+	uint32_t index,which,row;
+	if ( cudaMemcpy(walk->kda_cond_windows[0],fixture->wave.kda_q_window_pool,
+			sizeof(walk->kda_cond_windows[0]),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(walk->kda_cond_windows[1],fixture->wave.kda_k_window_pool,
+			sizeof(walk->kda_cond_windows[1]),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(walk->kda_cond_windows[2],fixture->wave.kda_v_window_pool,
+			sizeof(walk->kda_cond_windows[2]),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(walk->kda_cond_state,fixture->kda_state_pool_dev,
+			state_count * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(walk->kda_cond_packed,fixture->boundary_in_dev,
+			(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+			cudaMemcpyDeviceToHost) != cudaSuccess )
+		return(SparkLingValFail("drive","conditional_seed"));
+	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
+	{
+		for (which = 0u; which < 3u; which++)
+			for (index = 0u;
+				index < SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV; index++)
+				walk->kda_cond_windows64[which][index] =
+					SparkLingValDoubleOfBf16(walk->kda_cond_windows[which][index]);
+		for (index = 0u; index < state_count; index++)
+			walk->kda_cond_state64[index] = (double)walk->kda_cond_state[index];
+	}
+	for (row = 0u; row < rows; row++)
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			walk->kda_cond_hidden[row][index] = SparkLingValFromBf16(
+				walk->kda_cond_packed[row][index]);
+	return 0;
+}
+
+static int SparkLingValRunConditional(SparkLingValFixture *fixture,
+	SparkLingValWalk *walk,uint32_t layer,uint32_t row,float *output)
+{
+	if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
+	{
+		SparkLingValKdaWeights kda;
+		SparkLingValFillKdaWeights(fixture,&kda);
+		SparkLingValKdaAttention64(&kda,walk->kda_cond_windows64[0],
+			walk->kda_cond_windows64[1],walk->kda_cond_windows64[2],
+			walk->kda_cond_state64,walk->kda_cond_hidden[row],0,output);
+		return 0;
+	}
+	{
+		SparkLingValMlaWeights mla;
+		SparkLingValMlaCache cache;
+		uint32_t context = walk->mla_context + row + 1u;
+		SparkLingValFillMlaWeights(fixture,&mla);
+		if ( cudaMemcpy(walk->mla_cache_cond[0],fixture->kv_cache_dev,
+				(uint64_t)context * SPARK_LING_VAL_KV_ROW * sizeof(uint16_t),
+				cudaMemcpyDeviceToHost) != cudaSuccess )
+			return(SparkLingValFail("drive","conditional_cache"));
+		cache.slots = walk->mla_cache_cond[0];
+		cache.context = context;
+		SparkLingValMlaAttention64(&mla,walk->kda_cond_hidden[row],0,
+			walk->mla_context + row,&cache,output);
+		return 0;
 	}
 }
 
@@ -2220,6 +2294,9 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		uint32_t layer = layers[local];
 		if ( probe != 0 )
 			fprintf(stderr,"drive w%u: l%u attention launching\n",wave_index,local);
+		if ( probe != 0 && local == 0u &&
+			SparkLingValSeedConditional(fixture,walk,layer,rows) != 0 )
+			return(1);
 		status = SparkLingLaunchCudaLayerAttention(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -2236,12 +2313,9 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			if ( probe != 0 && local == 0u )
 			{
 				static float actual[SPARK_LING_VAL_HIDDEN];
-				static float device_increment[SPARK_LING_VAL_HIDDEN];
-				static float truth_increment[SPARK_LING_VAL_HIDDEN];
+				static float conditional[SPARK_LING_VAL_HIDDEN];
 				static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
 				SparkLingValMetrics metrics,truth,oracle_truth,step;
-				double worst_delta = 0.0,worst_bound = 0.0,worst_margin = -1.0;
-				uint32_t worst_element = 0u;
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
 					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
 					0);
@@ -2253,54 +2327,25 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 						cudaMemcpyDeviceToHost) != cudaSuccess )
 					return(SparkLingValFail("drive","attention_readback"));
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-				{
 					actual[index] = SparkLingValFromBf16(device_sublayer[index]);
-					device_increment[index] = actual[index] -
-						walk->sublayer_device_prev[index];
-					truth_increment[index] = walk->row_sublayer64[row][index] -
-						walk->sublayer_truth_prev[index];
-				}
+				if ( SparkLingValRunConditional(fixture,walk,layer,row,
+					conditional) != 0 )
+					return(1);
 				SparkLingValMeasure(&metrics,actual,walk->row_sublayer[row],SPARK_LING_VAL_HIDDEN);
 				SparkLingValMeasure(&truth,actual,walk->row_sublayer64[row],SPARK_LING_VAL_HIDDEN);
 				SparkLingValMeasure(&oracle_truth,walk->row_sublayer[row],
 					walk->row_sublayer64[row],SPARK_LING_VAL_HIDDEN);
-				SparkLingValMeasure(&step,device_increment,truth_increment,SPARK_LING_VAL_HIDDEN);
-				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-				{
-					double delta = fabs((double)device_increment[index] -
-						(double)truth_increment[index]);
-					double parent = fmax(
-						fabs((double)walk->row_sublayer64[row][index]),
-						fabs((double)walk->sublayer_truth_prev[index]));
-					double bound = SPARK_LING_VAL_ORACLE_TRUTH_BAND *
-						fabs((double)truth_increment[index]) +
-						SparkLingValBf16Ulp(parent);
-					if ( delta - bound > worst_margin )
-					{
-						worst_margin = delta - bound;
-						worst_delta = delta;
-						worst_bound = bound;
-						worst_element = index;
-					}
-				}
-				printf("w%u p%u dev-or %.5f dev-truth %.5f or-truth %.5f inc %.5f incmax %.3e\n",
+				SparkLingValMeasure(&step,actual,conditional,SPARK_LING_VAL_HIDDEN);
+				printf("w%u p%u dev-or %.5f dev-truth %.5f or-truth %.5f cond %.5f\n",
 					wave_index,positions[row],metrics.max_relative_l2,
 					truth.max_relative_l2,oracle_truth.max_relative_l2,
-					step.max_relative_l2,step.max_abs);
+					step.max_relative_l2);
 				if ( SparkLingValReport("oracle vs fp64 truth",&oracle_truth,
 					SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_TRUTH_COSINE_FLOOR) != 0 )
 					return(1);
-				printf("%s %-44s element %u delta %.3e bound %.3e rel_l2 %.5f cos %.7f\n",
-					worst_margin <= 0.0 ? "PASS" : "FAIL",
-					"token increment vs truth",worst_element,
-					worst_delta,worst_bound,step.max_relative_l2,step.cosine);
-				if ( worst_margin > 0.0 )
+				if ( SparkLingValReport("token increment vs truth",&step,
+					SPARK_LING_VAL_TOKEN_INCREMENT_BAND,0.0) != 0 )
 					return(1);
-				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-				{
-					walk->sublayer_device_prev[index] = actual[index];
-					walk->sublayer_truth_prev[index] = walk->row_sublayer64[row][index];
-				}
 			}
 			else
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
