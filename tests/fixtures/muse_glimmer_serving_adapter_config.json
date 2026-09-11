@@ -1,0 +1,7 @@
+{
+  "schema_version": 3,
+  "model_revision": "4177486a9f199bd7be520eff14431071d5d41ec5",
+  "stage_pack_path": "tests/fixtures/muse_glimmer-stage.museglimmersp",
+  "max_sequence_positions": 4096,
+  "tp_degree": 1
+}

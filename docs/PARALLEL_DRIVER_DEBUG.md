@@ -14,6 +14,7 @@ Remote developers submit through the controller; they must not start their own
 machine-local queue against the same Sparks.
 
 The durable state is state-v2.json, atomically replaced and fsynced under .lock.
+Read-only commands (list, status, doctor) take the shared lock and write nothing.
 On first use, v1 queue/reservation/result files in that directory are imported
 and retained unchanged as migration evidence. Stop the old dispatcher before
 starting v2. Old running entries become legacy-review and fence their nodes;
@@ -21,7 +22,8 @@ they are not assumed dead. An operator must inspect and stop their actual
 processes before migrating them. Reachability alone is not cleanup proof.
 
 Each queued command gets a unique attempt ID and a systemd unit on every
-participating node. Claims are durable before SSH. Lost launch acknowledgements
+participating node. Claims are durable before SSH; network operations must
+never occur inside the state transaction. Lost launch acknowledgements
 are reconciled using the retained unit, not by blindly launching another process.
 Local transactions never wait for SSH; remote operations run concurrently with
 bounded timeouts. CPU tasks may overlap within their summed declared memory
@@ -39,6 +41,7 @@ one failed build does not prevent verification of another node's successful buil
 Jobs have 3-minute default / 15-minute maximum deadlines. systemd enforces the
 deadline even if the controller disappears, with a 5-second termination grace.
 Cancellation remains stopping until each control group is confirmed stopped.
+A poll or launch reply racing the cancellation is not a stop acknowledgement.
 A disconnected peer keeps its claim; successfully stopped peers become available
 for assigned-node debugging. A fleet job waiting on an unresolved stopped peer
 does not reserve otherwise healthy nodes. release affects manual reservations
