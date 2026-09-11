@@ -7663,8 +7663,8 @@
     },
     {
       "path": "tests/test_hy4_tp16_source.py",
-      "sha256": "9f15e77e38806630e358f1e6a792b5c86578a71aef51b370cb0cba0839cc996b",
-      "size_bytes": 4503
+      "sha256": "56029e0e14283bfc7ca67eac2b381f66be34320e70eed85c82836b15d17f6c52",
+      "size_bytes": 4821
     },
     {
       "path": "tests/test_jit_kv_c3c4.c",
@@ -9648,8 +9648,8 @@
     },
     {
       "path": "tools/hy4_gpu/hy4_tp16_rung.cu",
-      "sha256": "ec9fe0756a68cff052d5c908f806c398ff8f87f6dd845bb857f179bc0a387f1d",
-      "size_bytes": 23083
+      "sha256": "0b955dd701b044e8d4f09e5708a97771e79eb6564103dd207b17735e5782d6e0",
+      "size_bytes": 23757
     },
     {
       "path": "tools/hy4_gpu/run_attn_test.sh",
@@ -10610,5 +10610,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34355381
+  "total_bytes": 34356373
 }
