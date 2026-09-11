@@ -602,8 +602,10 @@ static void SparkGlm5NextMoeNumProbe(const char *site,
 	}
 	else
 	{
-		const uint16_t *source = strcmp(site,"gateup") == 0 ?
-			buffers->gate_up_bf16 : buffers->expert_out_bf16;
+		const uint16_t *source =
+			strcmp(site,"gateup") == 0 ? buffers->gate_up_bf16 :
+			strcmp(site,"final") == 0 ? buffers->attention_out_bf16 :
+			buffers->expert_out_bf16;
 		uint32_t index;
 		if ( cudaMemcpy(bf16_words,source,sizeof(bf16_words),
 			cudaMemcpyDeviceToHost) != cudaSuccess )
@@ -662,7 +664,10 @@ static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 			return(status);
 	}
 	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
-		SparkGlm5NextMoeNumProbe("gateup",&buffers,(cudaStream_t)wave->slot->stream);
+	{
+		SparkGlm5NextMoeNumProbe("expert",&buffers,(cudaStream_t)wave->slot->stream);
+		SparkGlm5NextMoeNumProbe("final",&buffers,(cudaStream_t)wave->slot->stream);
+	}
 	return(LM_LAUNCH_OK);
 }
 
