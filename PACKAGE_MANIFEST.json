@@ -1,5 +1,5 @@
 {
-  "file_count": 2121,
+  "file_count": 2123,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -6097,6 +6097,16 @@
       "size_bytes": 559
     },
     {
+      "path": "qualification/hy4/tp16_collectives_20260911/receipt.json",
+      "sha256": "4e9222ffb6d362340fe0e28daf073ff5082c27f61ccc2b12b1aa8c8c9380cc63",
+      "size_bytes": 1220
+    },
+    {
+      "path": "qualification/hy4/tp16_collectives_20260911/tp16_rung.tsv",
+      "sha256": "125756fba4231b1a1a2664c1bbcf994d66213c6ff41a7f65396170f90ddbc2cf",
+      "size_bytes": 34160
+    },
+    {
       "path": "qualification/spark/configs/ring_13node_handoff/index.json",
       "sha256": "eabdbddabce6e2ad05b54b1ba8955e91e4aadd3a8ba6a270e5587462280f4076",
       "size_bytes": 2558
@@ -10610,5 +10620,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34356633
+  "total_bytes": 34392013
 }
