@@ -1333,16 +1333,7 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkLingModuleTpCompletion(
-	void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
-{
-	SparkLingTpChain *chain;
-	chain = (SparkLingTpChain *)context;
-	if ( chain == 0 || chain->active == 0u || completion == 0 )
-		return;
-	SparkLingTpChainAdvance(chain,completion->status);
-}
+SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkLingModuleTpCompletion,SparkLingTpChain,SparkLingTpChainAdvance)
 
 static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *device_bf16)
 {
@@ -1813,17 +1804,6 @@ SparkStatus SparkLingResidentDecodeStageExecute(
 	return(status);
 }
 
-static void SparkLingAdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	(void)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 SparkStatus SparkLingResidentDecodeStageAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
@@ -1847,7 +1827,7 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
 	table.predicate = SparkLingAdmissionPredicate;
 	table.predicate_context = state;
-	table.cost = SparkLingAdmissionCost;
+	table.cost = SparkStageModuleAdmissionCost;
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )

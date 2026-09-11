@@ -260,18 +260,6 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm5NextPackFileSize(FILE *file,uint64_t *bytes)
-{
-	off_t end;
-	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	end = ftello(file);
-	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	*bytes = (uint64_t)end;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkGlm5NextPackRangesOverlap(const SparkGlm5NextPackRange *left,const SparkGlm5NextPackRange *right)
 {
 	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
@@ -645,7 +633,7 @@ static SparkStatus SparkGlm5NextPackLoad(
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	memset(&header,0,sizeof(header));
 	memset(entries,0,sizeof(entries));
-	status = SparkGlm5NextPackFileSize(file,&file_bytes);
+	status = SparkStageModulePackFileSize(file,&file_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_GLM5_NEXT_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK )
@@ -1912,16 +1900,7 @@ static SparkStatus SparkGlm5NextModuleReduceAttentionOut(SparkGlm5NextTpChain *c
 	return(SparkGlm5NextModuleReduceHiddenWide(chain,device_bf16,0u));
 }
 
-static void SparkGlm5NextModuleTpCompletion(
-	void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
-{
-	SparkGlm5NextTpChain *chain;
-	chain = (SparkGlm5NextTpChain *)context;
-	if ( chain == 0 || chain->active == 0u || completion == 0 )
-		return;
-	SparkGlm5NextTpChainAdvance(chain,completion->status);
-}
+SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkGlm5NextModuleTpCompletion,SparkGlm5NextTpChain,SparkGlm5NextTpChainAdvance)
 
 static SparkStatus SparkGlm5NextChainOrdinal(SparkGlm5NextTpChain *chain,uint32_t hc_wide,uint32_t operation,uint64_t *ordinal)
 {
@@ -2922,17 +2901,6 @@ SparkStatus SparkGlm5NextResidentDecodeStageExecute(
 	SPARK_RETURN(status);
 }
 
-static void SparkGlm5NextAdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	(void)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 static SparkStatus SparkGlm5NextResetExecutionState(SparkGlm5NextModuleState *state)
 {
 	cudaError_t error = cudaSuccess,drain;
@@ -3055,7 +3023,7 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
 	table.predicate = SparkGlm5NextAdmissionPredicate;
 	table.predicate_context = state;
-	table.cost = SparkGlm5NextAdmissionCost;
+	table.cost = SparkStageModuleAdmissionCost;
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available,request,decision);
 	if ( status != SPARK_STATUS_OK )

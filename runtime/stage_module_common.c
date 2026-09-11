@@ -1886,3 +1886,50 @@ void SparkStageModuleStageTimingShutdown(
     }
     timing->enabled = 0u;
 }
+
+uint64_t SparkStageModuleFingerprint(
+    const void *bytes,
+    uint64_t count,
+    uint64_t basis)
+{
+    const uint8_t *data = (const uint8_t *)bytes;
+    uint64_t hash = basis,index;
+    for (index = 0; index < count; index++)
+        hash = (hash ^ data[index]) * 1099511628211ull;
+    return(hash);
+}
+
+SparkStatus SparkStageModulePackFileSize(
+    FILE *file,
+    uint64_t *bytes)
+{
+    off_t end;
+    if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    end = ftello(file);
+    if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    *bytes = (uint64_t)end;
+    return(SPARK_STATUS_OK);
+}
+
+void SparkStageModuleTpCompletionFlag(
+    void *context,
+    const SparkTpDeviceCollectiveCompletion *completion)
+{
+    atomic_uint *flag = (atomic_uint *)context;
+    atomic_store_explicit(flag,
+        completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,
+        memory_order_release);
+}
+
+void SparkStageModuleAdmissionCost(
+    void *context,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision)
+{
+    (void)context;
+    decision->host_staging_bytes = (uint64_t)request->new_token_count *
+        (sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
+    decision->device_memcpy_bytes = decision->host_staging_bytes;
+}

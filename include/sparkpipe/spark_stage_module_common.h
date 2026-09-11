@@ -8,6 +8,7 @@
 
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #define SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS 4096u
 #define SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES (64ull * 1024ull * 1024ull)
@@ -291,3 +292,28 @@ void SparkStageModuleCompleteAndReleaseClaims(
     uint32_t index_count,
     atomic_uint *slot_states,
     uint32_t slot_index);
+uint64_t SparkStageModuleFingerprint(
+    const void *bytes,
+    uint64_t count,
+    uint64_t basis);
+SparkStatus SparkStageModulePackFileSize(
+    FILE *file,
+    uint64_t *bytes);
+void SparkStageModuleTpCompletionFlag(
+    void *context,
+    const SparkTpDeviceCollectiveCompletion *completion);
+void SparkStageModuleAdmissionCost(
+    void *context,
+    const SparkModelDriverAdmissionRequest *request,
+    SparkModelDriverAdmissionDecision *decision);
+#define SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(function_name, chain_type, \
+    advance_function) \
+    static void function_name(void *context, \
+        const SparkTpDeviceCollectiveCompletion *completion) \
+    { \
+        chain_type *chain; \
+        chain = (chain_type *)context; \
+        if ( chain == 0 || chain->active == 0u || completion == 0 ) \
+            return; \
+        advance_function(chain,completion->status); \
+    }

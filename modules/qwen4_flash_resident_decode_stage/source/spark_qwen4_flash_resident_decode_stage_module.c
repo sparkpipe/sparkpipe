@@ -603,15 +603,6 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 static SparkStatus SparkQwen4FlashModuleAllocateSlotHostMirrors(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 
 
-static uint64_t SparkQwen4FlashModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
-{
-	const uint8_t *data = (const uint8_t *)bytes;
-	uint64_t hash = basis,index;
-	for (index = 0; index < count; index++)
-		hash = (hash ^ data[index]) * 1099511628211ull;
-	return(hash);
-}
-
 static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkQwen4FlashStagePackHeader geometry;
@@ -641,12 +632,12 @@ static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *s
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	SparkQwen4FlashStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count,1u);
-	model_fp = SparkQwen4FlashModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	block_record_elements = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * state->attn_layer_count;
 	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	layout_bits[2] = state->kv_block_count;
-	layout_fp = SparkQwen4FlashModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
 	staging_bytes = block_record_bytes * SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS;
 	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
@@ -1052,12 +1043,6 @@ static SparkStatus SparkQwen4FlashModuleTpCombineU64Max(void *combine_context, u
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchTpCombineU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count),"tp_combine_u64_max"));
 }
 
-static void SparkQwen4FlashModuleTpCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
-{
-	atomic_uint *flag = (atomic_uint *)context;
-	atomic_store_explicit(flag,completion != 0 && completion->status == SPARK_STATUS_OK ? 1u : 2u,memory_order_release);
-}
-
 static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
@@ -1197,7 +1182,7 @@ static SparkStatus SparkQwen4FlashModuleTpSubmitOrdered(SparkQwen4FlashModuleSta
 	submission.local_device = device_buffer;
 	submission.full_device = device_buffer;
 	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkQwen4FlashModuleTpCompletion;
+	submission.completion_function = SparkStageModuleTpCompletionFlag;
 	submission.completion_context = &state->tp_completion_flag;
 	status = u64_max != 0u
 		? SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission)
