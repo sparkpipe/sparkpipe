@@ -4648,8 +4648,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c",
-      "sha256": "81e01ba689d29a6d175b5b1d1cf59bc59f1f7bd678b7494357ad40a07015b80b",
-      "size_bytes": 109739
+      "sha256": "64d134461e7ba61fbd71a2fd79f9f43df49d688471bf1f8721de88e13036e1c3",
+      "size_bytes": 109656
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c",
@@ -7043,8 +7043,8 @@
     },
     {
       "path": "tests/rdma_syntax_stub/infiniband/verbs.h",
-      "sha256": "ae220f87a4dcc4de6736eeb8d78b9019d73b6209352445eda0341220e09c4385",
-      "size_bytes": 5071
+      "sha256": "9fff3021ea68b4e5b58ace0d26371b8be213271f8d7e133689f7812ce3475afe",
+      "size_bytes": 5101
     },
     {
       "path": "tests/rdma_syntax_stub/sys/eventfd.h",
@@ -9082,6 +9082,11 @@
       "size_bytes": 513
     },
     {
+      "path": "tools/gemma4/anchors_export.py",
+      "sha256": "3ae16fe55baf52fd4f0e988271d077de592f91e698656637d0814bfce971cbb8",
+      "size_bytes": 2108
+    },
+    {
       "path": "tools/gemma4_stagepack.py",
       "sha256": "9eeaec82d516dd228f1352fd32bf369fcc9bb74977f6ed9e5eab51d0044649ef",
       "size_bytes": 37137
@@ -10582,11 +10587,6 @@
       "size_bytes": 4938
     },
     {
-      "path": "validation/anchors_export.py",
-      "sha256": "3ae16fe55baf52fd4f0e988271d077de592f91e698656637d0814bfce971cbb8",
-      "size_bytes": 2108
-    },
-    {
       "path": "validation/spark_gemma4_reference.c",
       "sha256": "791dbe16ea5917eff2c02a8710b9ec17a4f8f9a4e2e6640c5c1f99b6840ec997",
       "size_bytes": 31712
@@ -10595,5 +10595,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34317262
+  "total_bytes": 34317209
 }

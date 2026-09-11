@@ -1865,7 +1865,6 @@ static void SparkLagunaCompleteOnWorker(void *context)
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
-	// Snapshot before releasing the slot: callback-driven reuse can overwrite async.
 	completion = async->completion;
 	complete = async->completion_function;
 	complete_context = async->completion_context;
