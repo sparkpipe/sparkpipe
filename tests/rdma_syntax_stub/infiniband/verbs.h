@@ -170,6 +170,7 @@ enum ibv_mtu
 #define IBV_WC_SEND 2
 #define IBV_WC_RECV 3
 #define IBV_WC_WITH_IMM 1
+#define IBV_WC_WR_FLUSH_ERR 5
 
 struct ibv_device **ibv_get_device_list(int *count);
 void ibv_free_device_list(struct ibv_device **list);
