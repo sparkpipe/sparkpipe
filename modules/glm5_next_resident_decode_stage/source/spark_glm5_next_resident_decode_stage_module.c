@@ -554,9 +554,9 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	request.identity.arena_bytes = bytes;
 	request.identity.topology = state->tp_degree;
 	memcpy(request.pack_path,path,strlen(path) + 1u);
-	status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
+	status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,UINT64_C(4294967296),&request.expert_pool_bytes);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
+		status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,UINT64_C(8589934592),&spine_budget);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
 	SPARK_RETURN(status);
@@ -1906,6 +1906,24 @@ static SparkStatus SparkGlm5NextChainOrdinal(SparkGlm5NextTpChain *chain,uint32_
 	return(SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,operation,ordinal));
 }
 
+static void SparkGlm5NextNumProbe(const char *kind,SparkGlm5NextTpChain *chain,
+	void *device,void *cuda_stream,uint32_t words)
+{
+	static uint64_t printed;
+	uint32_t host[8];
+	if ( printed >= 24ull )
+		return;
+	printed++;
+	if ( cudaMemcpyAsync(host,device,words * sizeof(uint32_t),
+		cudaMemcpyDeviceToHost,cuda_stream) != cudaSuccess )
+		return;
+	if ( cudaStreamSynchronize(cuda_stream) != cudaSuccess )
+		return;
+	fprintf(stderr,"G5N-NUMPROBE kind=%s layer=%u rows=%u w0=%08x w1=%08x w2=%08x w3=%08x w4=%08x w5=%08x w6=%08x w7=%08x\n",
+		kind,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,
+		host[0],host[1],host[2],host[3],host[4],host[5],host[6],host[7]);
+}
+
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
 	void *device_bf16,uint32_t hc_wide)
 {
@@ -1921,6 +1939,8 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
+	SparkGlm5NextNumProbe(hc_wide != 0u ? "attn" : "mlp",chain,device_bf16,
+		chain->slot->stream,8u);
 	if ( state->tp_device_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( hc_wide != 0u )
@@ -1980,6 +2000,8 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	SparkGlm5NextNumProbe("head",chain,chain->slot->head_maxloc_u64,
+		chain->slot->stream,2u);
 	status = SparkGlm5NextChainOrdinal(chain,0u,chain->tp_op_index,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
