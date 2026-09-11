@@ -66,6 +66,8 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 #define SPARK_LING_VAL_TOKEN_INCREMENT_BAND \
 	(SPARK_LING_VAL_ORACLE_TRUTH_BAND + SPARK_LING_VAL_ONE_BF16_ULP)
 #define SPARK_LING_VAL_TRUTH_COSINE_FLOOR 0.99998
+#define SPARK_LING_VAL_ROUTE_INCREMENT_BAND SPARK_LING_VAL_ONE_BF16_ULP
+#define SPARK_LING_VAL_BOUNDARY_INCREMENT_BAND SPARK_LING_VAL_ONE_BF16_ULP
 
 static uint32_t SparkLingValRandomState;
 
@@ -701,6 +703,104 @@ static uint16_t SparkLingValBf16OfDouble(double value)
 static double SparkLingValDoubleOfBf16(uint16_t value)
 {
 	return((double)SparkLingValFromBf16(value));
+}
+
+static void SparkLingValRouter64(const float *router,const float *post_norm,
+	const float *correction,const uint16_t *seed_hidden,const uint16_t *seed_sublayer,
+	uint32_t *selected,double *weights)
+{
+	static double normed[SPARK_LING_VAL_HIDDEN];
+	static double scores[SPARK_LING_VAL_EXPERTS];
+	static double biased[SPARK_LING_VAL_EXPERTS];
+	uint32_t expert,group,index;
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+	{
+		double merged = (double)SparkLingValFromBf16(seed_hidden[index]) +
+			(double)SparkLingValFromBf16(seed_sublayer[index]);
+		normed[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(merged));
+	}
+	{
+		double total = 0.0;
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			total += normed[index] * normed[index];
+		double inverse = 1.0 / sqrt(total / (double)SPARK_LING_VAL_HIDDEN +
+			(double)SPARK_LING_VAL_RMS_EPS);
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			normed[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+				normed[index] * inverse * (double)post_norm[index]));
+	}
+	for (expert = 0u; expert < SPARK_LING_VAL_EXPERTS; expert++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)router[(uint64_t)expert * SPARK_LING_VAL_HIDDEN + j] * normed[j];
+		scores[expert] = 1.0 / (1.0 + exp(-sum));
+		biased[expert] = scores[expert] + (double)correction[expert];
+	}
+	{
+		uint32_t per_group = SPARK_LING_VAL_EXPERTS / SPARK_LING_VAL_GROUPS;
+		double group_key[SPARK_LING_VAL_GROUPS];
+		uint8_t chosen[SPARK_LING_VAL_GROUPS];
+		for (group = 0u; group < SPARK_LING_VAL_GROUPS; group++)
+		{
+			double best = -3.0e38,second = -3.0e38;
+			for (uint32_t member = 0u; member < per_group; member++)
+			{
+				double value = biased[group * per_group + member];
+				if ( value > best ) { second = best; best = value; }
+				else if ( value > second ) second = value;
+			}
+			group_key[group] = best + second;
+			chosen[group] = 0u;
+		}
+		for (uint32_t round = 0u; round < SPARK_LING_VAL_TOP_GROUPS; round++)
+		{
+			uint32_t best = SPARK_LING_VAL_GROUPS;
+			for (group = 0u; group < SPARK_LING_VAL_GROUPS; group++)
+			{
+				if ( chosen[group] != 0u )
+					continue;
+				if ( best == SPARK_LING_VAL_GROUPS ||
+					group_key[group] > group_key[best] )
+					best = group;
+			}
+			chosen[best] = 1u;
+		}
+		for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+		{
+			uint32_t best = SPARK_LING_VAL_EXPERTS;
+			double best_key = -3.0e38;
+			for (expert = 0u; expert < SPARK_LING_VAL_EXPERTS; expert++)
+			{
+				uint32_t taken,prior;
+				if ( chosen[expert / per_group] == 0u )
+					continue;
+				taken = 0u;
+				for (prior = 0u; prior < slot; prior++)
+					if ( selected[prior] == expert )
+						taken = 1u;
+				if ( taken != 0u )
+					continue;
+				if ( best == SPARK_LING_VAL_EXPERTS || biased[expert] > best_key )
+				{
+					best = expert;
+					best_key = biased[expert];
+				}
+			}
+			selected[slot] = best;
+		}
+	}
+	{
+		double total = 0.0;
+		for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+		{
+			weights[slot] = scores[selected[slot]];
+			total += weights[slot];
+		}
+		for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+			weights[slot] = (weights[slot] / (total + 1e-20)) *
+				(double)SPARK_LING_VAL_ROUTED_SCALE;
+	}
 }
 
 static void SparkLingValKdaAttention64(const SparkLingValKdaWeights *w,
@@ -2010,6 +2110,8 @@ typedef struct SparkLingValWalk
 	double kda_cond_state64[(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
 	uint16_t kda_cond_packed[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float kda_cond_hidden[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	uint16_t route_seed_hidden[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	uint16_t route_seed_sublayer[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	uint32_t mla_context;
 	uint32_t selected[SPARK_LING_VAL_TOP_K];
 	float route_weights[SPARK_LING_VAL_TOP_K];
@@ -2275,7 +2377,8 @@ static void SparkLingValCarryProbe(SparkLingValFixture *fixture,
 
 static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 	const uint32_t *layers,const uint32_t *positions,uint32_t rows,
-	uint32_t run_count,SparkLingValWalk *walk,int probe,uint32_t wave_index)
+	uint32_t run_count,SparkLingValWalk *walk,int probe,uint32_t wave_index,
+	int route_gate)
 {
 	int32_t status;
 	uint32_t local,row,index;
@@ -2360,6 +2463,16 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			return(SparkLingValFail("drive","attn_sync"));
 		if ( probe != 0 )
 			fprintf(stderr,"drive w%u: l%u attention synced\n",wave_index,local);
+		if ( probe != 0 && route_gate != 0 )
+		{
+			if ( cudaMemcpy(walk->route_seed_hidden,fixture->hidden_dev,
+					(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+					cudaMemcpyDeviceToHost) != cudaSuccess ||
+				cudaMemcpy(walk->route_seed_sublayer,fixture->attention_out_dev,
+					(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+					cudaMemcpyDeviceToHost) != cudaSuccess )
+				return(SparkLingValFail("drive","route_seed"));
+		}
 		status = SparkLingLaunchCudaLayerMlp(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -2462,6 +2575,62 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		}
 		if ( probe != 0 )
 			fprintf(stderr,"drive w%u: l%u mlp synced\n",wave_index,local);
+		if ( probe != 0 && route_gate != 0 &&
+			layer >= SPARK_LING_MODEL_FIRST_ROUTED_LAYER )
+		{
+			static uint32_t device_route[SPARK_LING_VAL_ROWS * SPARK_LING_VAL_TOP_K];
+			static float device_weights[SPARK_LING_VAL_ROWS * SPARK_LING_VAL_TOP_K];
+			uint32_t conditional_selected[SPARK_LING_VAL_TOP_K];
+			double conditional_weights[SPARK_LING_VAL_TOP_K];
+			float reference[SPARK_LING_VAL_TOP_K];
+			SparkLingValMetrics metrics;
+			if ( cudaMemcpy(device_route,fixture->route_expert_dev,
+					(uint64_t)rows * SPARK_LING_VAL_TOP_K * sizeof(uint32_t),
+					cudaMemcpyDeviceToHost) != cudaSuccess ||
+				cudaMemcpy(device_weights,fixture->route_weight_dev,
+					(uint64_t)rows * SPARK_LING_VAL_TOP_K * sizeof(float),
+					cudaMemcpyDeviceToHost) != cudaSuccess )
+				return(SparkLingValFail("drive","route_readback"));
+			for (row = 0u; row < rows; row++)
+			{
+				int set_match = 1;
+				SparkLingValRouter64(fixture->router.host,
+					fixture->dense_post_norm.host,fixture->router_correction_host,
+					walk->route_seed_hidden[row],walk->route_seed_sublayer[row],
+					conditional_selected,conditional_weights);
+				for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+				{
+					int found = 0;
+					for (uint32_t other = 0u; other < SPARK_LING_VAL_TOP_K; other++)
+						if ( device_route[(uint64_t)row * SPARK_LING_VAL_TOP_K + other] ==
+							conditional_selected[slot] )
+							found = 1;
+					if ( found == 0 )
+						set_match = 0;
+					reference[slot] = (float)conditional_weights[slot];
+				}
+				SparkLingValMeasure(&metrics,
+					device_weights + (uint64_t)row * SPARK_LING_VAL_TOP_K,
+					reference,SPARK_LING_VAL_TOP_K);
+				printf("w%u p%u l%u r%u routes dev",wave_index,positions[row],layer,row);
+				for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+					printf(" %u:%.4f",
+						device_route[(uint64_t)row * SPARK_LING_VAL_TOP_K + slot],
+						device_weights[(uint64_t)row * SPARK_LING_VAL_TOP_K + slot]);
+				printf(" | cond");
+				for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
+					printf(" %u:%.4f",conditional_selected[slot],reference[slot]);
+				printf("\n");
+				printf("%s %-44s set_match %d\n",
+					set_match != 0 ? "PASS" : "FAIL",
+					"router selection vs conditional",set_match);
+				if ( set_match == 0 )
+					return(1);
+				if ( SparkLingValReport("router weight increment vs truth",&metrics,
+					SPARK_LING_VAL_ROUTE_INCREMENT_BAND,0.0) != 0 )
+					return(1);
+			}
+		}
 	}
 	if ( probe != 0 )
 		fprintf(stderr,"drive w%u: head launching\n",wave_index);
@@ -2472,6 +2641,41 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		return(SparkLingValFail("drive","head_sync"));
 	if ( probe != 0 )
 		fprintf(stderr,"drive w%u: head synced\n",wave_index);
+	if ( probe != 0 && route_gate != 0 )
+	{
+		static uint16_t device_hidden[SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN];
+		static uint16_t device_sublayer[SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN];
+		static uint16_t device_boundary[SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN];
+		static float actual[SPARK_LING_VAL_HIDDEN];
+		static float reference[SPARK_LING_VAL_HIDDEN];
+		if ( cudaMemcpy(device_hidden,fixture->hidden_dev,
+				(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+				cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(device_sublayer,fixture->attention_out_dev,
+				(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+				cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(device_boundary,fixture->boundary_out_dev,
+				(uint64_t)rows * SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+				cudaMemcpyDeviceToHost) != cudaSuccess )
+			return(SparkLingValFail("drive","boundary_readback"));
+		for (row = 0u; row < rows; row++)
+		{
+			SparkLingValMetrics metrics;
+			for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			{
+				uint64_t offset = (uint64_t)row * SPARK_LING_VAL_HIDDEN + index;
+				actual[index] = SparkLingValFromBf16(device_boundary[offset]);
+				reference[index] = (float)SparkLingValDoubleOfBf16(
+					SparkLingValBf16OfDouble(
+						(double)SparkLingValFromBf16(device_hidden[offset]) +
+						(double)SparkLingValFromBf16(device_sublayer[offset])));
+			}
+			SparkLingValMeasure(&metrics,actual,reference,SPARK_LING_VAL_HIDDEN);
+			if ( SparkLingValReport("boundary increment vs truth",&metrics,
+				SPARK_LING_VAL_BOUNDARY_INCREMENT_BAND,0.0) != 0 )
+				return(1);
+		}
+	}
 	walk->mla_context += rows;
 	for (row = 0u; row < rows; row++)
 	{
@@ -2545,7 +2749,7 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 			for (index = 0u; index < rows; index++)
 				positions[index] = position + index;
 			if ( SparkLingValDriveWave(fixture,layers,positions,rows,
-				plans[plan].run_count,&walk,pass == 0u,plan) != 0 )
+				plans[plan].run_count,&walk,pass == 0u,plan,compare_routes) != 0 )
 			{
 				free(first);
 				free(second);
@@ -2566,84 +2770,6 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 			free(first);
 			free(second);
 			return(SparkLingValFail(label,"readback"));
-		}
-		if ( pass == 0u && compare_routes != 0 )
-		{
-			uint32_t device_selected[SPARK_LING_VAL_TOP_K];
-			float device_weights[SPARK_LING_VAL_TOP_K];
-			if ( cudaMemcpy(device_selected,fixture->route_expert_dev,
-				SPARK_LING_VAL_TOP_K * sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess &&
-				cudaMemcpy(device_weights,fixture->route_weight_dev,
-					SPARK_LING_VAL_TOP_K * sizeof(float),cudaMemcpyDeviceToHost) == cudaSuccess )
-			{
-				int set_match = 1;
-				double weight_error_squared = 0.0;
-				double weight_reference_squared = 0.0;
-				for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
-				{
-					int found = 0;
-					for (uint32_t other = 0u; other < SPARK_LING_VAL_TOP_K; other++)
-						if ( device_selected[other] == walk.selected[slot] )
-						{
-							double delta = (double)device_weights[other] - (double)walk.route_weights[slot];
-							weight_error_squared += delta * delta;
-							weight_reference_squared += (double)walk.route_weights[slot] * (double)walk.route_weights[slot];
-							found = 1;
-						}
-					if ( found == 0 )
-						set_match = 0;
-				}
-				{
-					double weight_relative = weight_reference_squared > 0.0 ?
-						sqrt(weight_error_squared) / sqrt(weight_reference_squared) : 0.0;
-					printf("%s %-44s set_match %d weight_rel %.3e\n",
-						set_match != 0 && weight_relative <= 0.02 ? "PASS" : "FAIL",
-						"router selection and weights",set_match,weight_relative);
-					failures += set_match != 0 && weight_relative <= 0.02 ? 0 : 1;
-				}
-			}
-			{
-				static float actual[SPARK_LING_VAL_HIDDEN];
-				static float reference[SPARK_LING_VAL_HIDDEN];
-				SparkLingValMetrics metrics,worst;
-				uint32_t worst_row = 0u,worst_element = 0u;
-				float worst_device = 0.0f,worst_oracle = 0.0f;
-				memset(&worst,0,sizeof(worst));
-				worst.cosine = 2.0;
-				for (uint32_t row = 0u; row < SPARK_LING_VAL_ROWS; row++)
-				{
-					float row_abs = 0.0f;
-					uint32_t row_element = 0u;
-					for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-					{
-						actual[index] = SparkLingValFromBf16(
-							first[(uint64_t)row * SPARK_LING_VAL_HIDDEN + index]);
-						reference[index] = walk.boundary_rows[row][index];
-						if ( fabsf(actual[index] - reference[index]) > row_abs )
-						{
-							row_abs = fabsf(actual[index] - reference[index]);
-							row_element = index;
-						}
-					}
-					SparkLingValMeasure(&metrics,actual,reference,SPARK_LING_VAL_HIDDEN);
-					if ( metrics.max_relative_l2 > worst.max_relative_l2 )
-					{
-						worst = metrics;
-						worst_row = row;
-						worst_element = row_element;
-						worst_device = actual[row_element];
-						worst_oracle = reference[row_element];
-					}
-				}
-				{
-					char worst_label[160];
-					snprintf(worst_label,sizeof(worst_label),
-						"%s boundary stream (row %u elem %u dev %.6g or %.6g)",
-						label,worst_row,worst_element,worst_device,worst_oracle);
-					failures += SparkLingValReport(worst_label,&worst,0.02,0.999);
-				}
-
-			}
 		}
 	}
 	{
@@ -2679,9 +2805,11 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	printf("ling validator: configuration %s codec %s\n",argv[1],LING_EXPERT_CODEC_NAME);
-	printf("ling error model band %.4f ulp %.7f truth-cosine %.5f\n",
+	printf("ling error model band %.4f ulp %.7f truth-cosine %.5f\n"
+		"ling route band %.4f boundary band %.4f\n",
 		SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_ONE_BF16_ULP,
-		SPARK_LING_VAL_TRUTH_COSINE_FLOOR);
+		SPARK_LING_VAL_TRUTH_COSINE_FLOOR,
+		SPARK_LING_VAL_ROUTE_INCREMENT_BAND,SPARK_LING_VAL_BOUNDARY_INCREMENT_BAND);
 	if ( SparkLingValOracleSelftest() != 0 )
 		return(1);
 	if ( SparkLingValFixtureBuild(&fixture) != 0 )
