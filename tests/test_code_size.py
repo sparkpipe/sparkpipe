@@ -1524,7 +1524,7 @@ CEILING = 268809
 # donor-machinery lift (19 verbatim family copies of the stage-module
 # fingerprint / TP-completion / admission-cost / pack-file-size class move
 # onto runtime/stage_module_common) deletes 158 lines against 72 added.
-# Measured exact: 279967.
+# Measured exact: 279980 (post-#945/#946 merged tree).
 CEILING = 279980
 
 
