@@ -59,13 +59,26 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
 
-#define SPARK_WEIGHTD_MESH_RANKS 16u
-#define SPARK_WEIGHTD_MESH_SLOT_BYTES (32u * 1024u * 1024u)
-#define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND 16u
+#define SPARK_WEIGHTD_MESH_SLOT_BYTES (16u * 1024u * 1024u)
+#define SPARK_WEIGHTD_MESH_RANKS_PER_BAND 16u
+#define SPARK_WEIGHTD_MESH_RANKS SPARK_WEIGHTD_MESH_RANKS_PER_BAND
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 2u
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
+    (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
 #define SPARK_WEIGHTD_MESH_BANDS 4u
 #define SPARK_WEIGHTD_MESH_BUFFER_BYTES \
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
+#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 4096u
+#define SPARK_WEIGHTD_MESH_REGION_BYTES \
+    (SPARK_WEIGHTD_MESH_BUFFER_BYTES + SPARK_WEIGHTD_MESH_DOORBELL_BYTES)
+#define SPARK_WEIGHTD_MESH_DOORBELL_OFFSET SPARK_WEIGHTD_MESH_BUFFER_BYTES
+#define SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,rank) \
+    (SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + \
+     (((band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * 24u))
+_Static_assert(SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND * \
+    24u <= SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+    "doorbell entries must fit the doorbell page");
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 40960u
 #define SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT (8ull * 1024ull * 1024ull * 1024ull)
@@ -246,6 +259,8 @@ typedef struct SparkWeightdIpcMeshBroadcast
     uint64_t remote_offset;
     uint32_t length;
     uint32_t reserved2;
+    uint64_t seq_value;
+    uint64_t seq_remote_offset;
 } SparkWeightdIpcMeshBroadcast;
 
 typedef struct SparkWeightdIpcMeshBroadcastResult
@@ -477,6 +492,8 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client,
     uint64_t source_offset,
     uint64_t remote_offset,
     uint32_t length,
+    uint64_t seq_value,
+    uint64_t seq_remote_offset,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,

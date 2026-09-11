@@ -93,6 +93,10 @@ cudaError_t cudaEventDestroy(cudaEvent_t event);
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream);
 cudaError_t cudaEventQuery(cudaEvent_t event);
 cudaError_t cudaEventSynchronize(cudaEvent_t event);
+cudaError_t cudaHostRegister(
+    void *address,
+    size_t bytes,
+    unsigned int flags);
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,

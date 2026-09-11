@@ -133,7 +133,6 @@ start_root() {
         return 0
     fi
     cd "$rr" || return 1
-    [ -f "$rr/env.local" ] && set -a && . "$rr/env.local" && set +a
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     mv residentd.log residentd.log.prev 2>/dev/null
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
@@ -150,9 +149,17 @@ ensure_api() {
     ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
         "grep -l '\"state\":\"ready' current/*.json 2>/dev/null | wc -l" 2>/dev/null)
     [ "${ready_count:-0}" -ge 16 ] || return 0
-    local p
+    local p rpid
+    proc_start() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null || echo 0; }
     for p in $(pgrep -f "bin/sparkpipe_model_api"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
+        rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
+        if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then
+            echo "$(date +%T) api: predates residentd; restarting"
+            kill -9 "$p" 2>/dev/null
+            return 0
+        fi
+        return 0
     done
     now=$(date +%s)
     [ $((now - LAST_API_START)) -lt 15 ] && return 0

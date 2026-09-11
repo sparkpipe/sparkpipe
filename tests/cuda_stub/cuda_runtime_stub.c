@@ -386,6 +386,15 @@ cudaError_t cudaEventSynchronize(cudaEvent_t event)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaHostRegister(
+    void *address,
+    size_t bytes,
+    unsigned int flags)
+{
+    (void)address;(void)bytes;(void)flags;
+    return cudaSuccess;
+}
+
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,

@@ -12,6 +12,7 @@
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index);
 uint32_t SparkWeightdMeshReady(void);
+void SparkWeightdMeshDoorbellLoop(void);
 
 typedef struct SparkWeightdMeshLaunch
 {
@@ -28,7 +29,9 @@ static void *SparkWeightdMeshThread(void *argument)
     SparkStatus status;
     status = SparkWeightdMeshInit(launch->rank,launch->interface_name,
         launch->sgid_index);
-    if (status != SPARK_STATUS_OK)
+    if (status == SPARK_STATUS_BUSY)
+        SparkWeightdMeshDoorbellLoop();
+    else if (status != SPARK_STATUS_OK)
         fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
             SparkStatusToString(status));
     return 0;
