@@ -1,5 +1,5 @@
 {
-  "file_count": 2118,
+  "file_count": 2121,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -63,8 +63,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "3ba58d9a24405b3398be27f5e03983ae02fe93e3c424ea69bf98a89395cd92e5",
-      "size_bytes": 94278
+      "sha256": "a047600d344068cbda719d24d454b2c09f2ffd3fff8a86ccb04c988bc1e91837",
+      "size_bytes": 97815
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -78,8 +78,8 @@
     },
     {
       "path": "PROGRESS.md",
-      "sha256": "f3cbebff42031763d86990118198fb513397d3fdca7a8fa14776cb36c3220d58",
-      "size_bytes": 13604
+      "sha256": "d6cb40d8842099d96d72499851444ce26692fb3dbe0d21cf627109749ebc111e",
+      "size_bytes": 17468
     },
     {
       "path": "README.md",
@@ -3538,8 +3538,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h",
-      "sha256": "b5364b679b370597da5b7f93e6fd757bf4efad84bfc7faf11841e30d84a6a7b7",
-      "size_bytes": 38951
+      "sha256": "35666a155b9023ec787bf5ec1d8a39e9e51317716ef61c35b9f7500d1d543abf",
+      "size_bytes": 39398
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_qwen38_serving_adapter_common.h",
@@ -4703,8 +4703,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
-      "sha256": "2a6df57a8e107152986192da057318478d74f4943d8658de71ca3824da622aea",
-      "size_bytes": 15233
+      "sha256": "ed03d4aedd171513953772d57572b51af9c074137c153ace6987b0540f7098ef",
+      "size_bytes": 12814
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_stagepack_format.h",
@@ -6842,6 +6842,16 @@
       "size_bytes": 987
     },
     {
+      "path": "tests/fixtures/muse_glimmer_serving_adapter_config.json",
+      "sha256": "a509b09655de54115a1279abe1fc5ba42910e8c71bc001a3db8131b28898ebc0",
+      "size_bytes": 214
+    },
+    {
+      "path": "tests/fixtures/muse_glimmer_serving_adapter_driver.c",
+      "sha256": "505047561ed986483ea9a2aeb7a6ac80c9beb608c3b924aa60b8e9ef00e0e20f",
+      "size_bytes": 11491
+    },
+    {
       "path": "tests/fixtures/qwen38_27b_remote_spec_driver.c",
       "sha256": "c6c0a11d3c5ab9d690f58bd8dae91bc05e7f8752741433bef299466692d9c499",
       "size_bytes": 12214
@@ -8010,6 +8020,11 @@
       "path": "tests/test_muse_glimmer_model_header.py",
       "sha256": "513dc789c8313f3521a1044806177582204399cef0ad6b5432b40772230e120a",
       "size_bytes": 9559
+    },
+    {
+      "path": "tests/test_muse_glimmer_serving_adapter.c",
+      "sha256": "d51b364c73eeef127a93d137948c45100aba38d32558a4941a15e5b10adaae23",
+      "size_bytes": 12008
     },
     {
       "path": "tests/test_must_work_targets.py",
@@ -10595,5 +10610,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34317209
+  "total_bytes": 34346351
 }
