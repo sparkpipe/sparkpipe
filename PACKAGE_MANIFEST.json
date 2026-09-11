@@ -7298,7 +7298,7 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "68e63ca8d30ddc6d134fce63b667f32a2287d66a502f418c9457332ba4db7005",
+      "sha256": "ebbbb34bd411788f4ea90cfe99975a0f8ca2e983ef9782dba732f09030ae39e6",
       "size_bytes": 102661
     },
     {
