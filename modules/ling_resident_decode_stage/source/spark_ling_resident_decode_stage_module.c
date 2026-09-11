@@ -573,8 +573,16 @@ static SparkStatus SparkLingAllocateSlotHidden(
 	SparkLingExecutionSlot *slot)
 {
 	uint64_t rows;
+	uint32_t attention_width;
+	uint32_t kv_slot_width;
 	SparkStatus status;
 	rows = state->execution_row_capacity;
+	attention_width = SPARK_LING_MODEL_KDA_VALUE_DIMENSION / state->tp_degree;
+	if ( attention_width < SPARK_LING_MODEL_HIDDEN_DIMENSION )
+		attention_width = SPARK_LING_MODEL_HIDDEN_DIMENSION;
+	kv_slot_width = SPARK_LING_MODEL_KDA_QKV_DIMENSION / state->tp_degree;
+	if ( kv_slot_width < SPARK_LING_MODEL_MLA_KV_A_DIMENSION )
+		kv_slot_width = SPARK_LING_MODEL_MLA_KV_A_DIMENSION;
 	status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HIDDEN_DIMENSION,(void **)&slot->hidden_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HIDDEN_DIMENSION,(void **)&slot->residual_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HIDDEN_DIMENSION,(void **)&slot->normed_bf16);
@@ -589,10 +597,10 @@ static SparkStatus SparkLingAllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HIDDEN_DIMENSION,(void **)&slot->kda_output_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,SPARK_LING_MODEL_KDA_QKV_DIMENSION,sizeof(float),(void **)&slot->kda_retention);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,SPARK_LING_MODEL_KDA_HEAD_COUNT,sizeof(float),(void **)&slot->kda_write_gate);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_CACHE_TOKEN_ELEMENTS,(void **)&slot->kv_slot_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,kv_slot_width,(void **)&slot->kv_slot_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HEAD_COUNT * SPARK_LING_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HEAD_COUNT * SPARK_LING_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,SPARK_LING_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateRows(state,rows,attention_width,(void **)&slot->attention_out_bf16);
 	return(status);
 }
 

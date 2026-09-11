@@ -45,6 +45,12 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 #define SPARK_LING_VAL_KV_ROW SPARK_LING_MODEL_MLA_KV_A_DIMENSION
 #define SPARK_LING_VAL_VALUE SPARK_LING_MODEL_MLA_VALUE_HEAD_DIMENSION
 #define SPARK_LING_VAL_ATTN_COLS (SPARK_LING_VAL_HEADS * SPARK_LING_VAL_VALUE)
+#define SPARK_LING_VAL_ATTN_OUT_WIDTH \
+	(SPARK_LING_VAL_KDA_V > SPARK_LING_VAL_HIDDEN ? \
+	 SPARK_LING_VAL_KDA_V : SPARK_LING_VAL_HIDDEN)
+#define SPARK_LING_VAL_KV_SLOT_WIDTH \
+	(SPARK_LING_VAL_KDA_QK > SPARK_LING_VAL_KV_ROW ? \
+	 SPARK_LING_VAL_KDA_QK : SPARK_LING_VAL_KV_ROW)
 #define SPARK_LING_VAL_QK_SCALE SPARK_LING_MODEL_MLA_QK_SCALE
 #define SPARK_LING_VAL_ROPE_THETA SPARK_LING_MODEL_MLA_ROPE_THETA
 #define SPARK_LING_VAL_DENSE_INTER SPARK_LING_MODEL_DENSE_INTERMEDIATE_DIMENSION
@@ -1503,10 +1509,10 @@ static int SparkLingValFixtureBuild(SparkLingValFixture *fixture)
 		fixture->query_latent_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_HEADS * SPARK_LING_VAL_LATENT * 2u);
 		fixture->query_rope_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_HEADS * SPARK_LING_VAL_ROPE * 2u);
 		fixture->attn_gate_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_HEADS * 2u);
-		fixture->kv_slot_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_KV_ROW * 2u);
+		fixture->kv_slot_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_KV_SLOT_WIDTH * 2u);
 		fixture->attention_latent_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_HEADS * SPARK_LING_VAL_LATENT * 2u);
 		fixture->attention_value_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_ATTN_COLS * 2u);
-		fixture->attention_out_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_HIDDEN * 2u);
+		fixture->attention_out_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_ATTN_OUT_WIDTH * 2u);
 		fixture->gate_up_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_DENSE_GATE_UP_ROWS * 2u);
 		fixture->intermediate_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_DENSE_INTER * 2u);
 		fixture->expert_out_dev = (uint16_t *)SparkLingValAllocZeroed(rows_bytes * SPARK_LING_VAL_TOP_K * SPARK_LING_VAL_HIDDEN * 2u);
@@ -2146,7 +2152,7 @@ static void SparkLingValResetPools(SparkLingValFixture *fixture)
 	cudaMemset(fixture->kda_window_pool_dev,0,2u * window_slot * 3u * SPARK_LING_VAL_SEQUENCES);
 	cudaMemset(fixture->kv_cache_dev,0,(uint64_t)SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS * SPARK_LING_VAL_KV_ROW * 2u);
 	cudaMemset(fixture->boundary_out_dev,0,(uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
-	cudaMemset(fixture->attention_out_dev,0,(uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_HIDDEN * 2u);
+	cudaMemset(fixture->attention_out_dev,0,(uint64_t)SPARK_LING_VAL_ROWS * SPARK_LING_VAL_ATTN_OUT_WIDTH * 2u);
 }
 
 typedef struct SparkLingValWavePlan
