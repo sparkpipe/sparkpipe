@@ -154,13 +154,23 @@ differ. They bind the kernels (criterion 4+).
   rank0) MUST stay replicated: the post-to_out allreduce replicates the full
   hidden on every rank and modulate applies elementwise over all 5376
   channels locally; slicing would add per-block collectives (rejected). Full
-  16-rank set ≈ 500 GiB on /mnt/model-warm (11 T free). HOST EVENT: sparke
-  rebooted mid-emit (00:38, all net paths down ~7 min; ceph warm storage
-  survived, 4 receipts intact) and the warm pool then entered a long
-  contention stall (rank04 python D-state, 0 CPU, 17+ min) — the r3/ling
-  pattern. Resume is one command: rerun
+  16-rank set ≈ 500 GiB on /mnt/model-warm (11 T free). HOST EVENT (emit
+  HALTED deliberately at r7 close): sparke crashed REPEATEDLY — reboot 00:38
+  (all net paths down ~7 min; ceph warm storage survived, 4 receipts intact),
+  again 01:00, again ~01:36, and a fourth down at ~02:0x ("host is down" on
+  connect). Correlation flagged for the manager/sysadmin: ranks 00-03
+  emitted cleanly in the single healthy window (15:22-15:31Z, ~136 s/rank);
+  every post-crash rank04 restart (15:43:48Z, 16:21:34Z, 16:42:21Z) stalled
+  in D-state on the warm pool within the first tensors (progress frozen at
+  next_index 2-3 of 2842) and the host went down 7-20 minutes later — either
+  a failing ceph client/pool on a host that was already dying, or (less
+  likely but possible) the emit's ~33 GB/rank read+write with per-tensor
+  os.sync() exposure triggering a client hang. The chain is left DEAD (not
+  relaunched) to stop feeding a crash loop; resume when sparke is declared
+  healthy is one command: rerun
   /mnt/model-warm/staging/minimax-lane/13b410f/emit_tp16_chain.sh (skips
-  ranks with receipt+sha256, resumes partial ranks from progress files).
+  ranks with receipt+sha256, resumes partial ranks from progress files; the
+  rank04 partial carries resume signature v2).
   Receipts so far: minimax-r7-passA (16/16 dry-run), minimax-r7-pack00..03.
   C9 TABLES LANDED (commit f5c0b02): tools/minimax_h3_gen_deployment.py
   rewritten PP1-only (TP4xPP4 placement code deleted), 16 stage configs +
@@ -190,9 +200,14 @@ differ. They bind the kernels (criterion 4+).
   payload sha of 9 representative tensors vs fresh warm slices, rank07+08
   concat proof vs warm q [3584,4480) — fires when the pack set completes.
   QUEUE untouched this round (zero jobs; direct nohup sparkcap only, per the
-  ttl-min-5 contention concern). NOT DONE this round: ranks 04-15 (stalled
-  warm pool), boundary checks on the written set, cell bring-up — all gated
-  on the same resume command.
+  ttl-min-5 contention concern). BOUNDARY CHECK GREEN on the four written
+  packs (tools/minimax_h3_tp16_boundary_check.py --ranks 0,1,2,3): directory
+  extents correct on every entry (rank00 2842 entries / 4-head rows 512 kv
+  head 0; rank01-03 1928 entries; rank02/03 kv heads 1), and 9 representative
+  tensors per rank (DiT q/k/v/to_out blocks 0+49, encoder k/v, DiT ffn
+  gate_up/down) hash-match fresh warm-copy slices through the same plan
+  math. NOT DONE this round: ranks 04-15 (host halted, see above), the
+  rank07+08 concat proof (fires once those ranks exist), cell bring-up.
 
 - 2026-09-10 (round 6, PAUSED mid-round per operator): REBASE + TP16 PACK SUPPORT.
   REBASE landed and pushed: lane/minimax-driver e4af723 = old bc45d75 lineage rebased
@@ -386,7 +401,7 @@ differ. They bind the kernels (criterion 4+).
 | 6 | V4 VAE decode gates | **GREEN (r5)** — video_vae rel=1.293e-6 max_abs=0.000009 (gate: rel<=5e-4, abs<=2/255); audio_vae rel=2.129e-6 max_abs=0.000002 (before_clamp max 0.401314 vs anchor 0.401315). Audio root causes (bisected via refa_* per-op dumps): (1) r4-era AMP structure inverted -> r5 rewrote to per-dilation residual chain + one 3-block average per stage; (2) dec_in_proj/conv_pre ran single-batch -> second mono channel was stale zeros; (3) gate Conv1d ran the kernel FLIPPED vs cross-correlation (k1 ops masked it); (4) pass-1 activation must chain from conv1 output. Video root cause: rope applied IN-PLACE (second half rotated the already-rotated first half) + swiglu wrote the silu-mid at fused stride 2*ffn while down GEMM read it packed. Anchor-side fixture correction (documented, not driver-tuning): gen_v3_v4_real.raw_s_ff dropped the video VAE ff.net.0.proj/ff.net.2 biases (non-zero trained tensors; V2 bit-exact xcheck via h3_reference proves the pinned module applies them) -> decoded fixture regenerated ff-bias-inclusive; video fix6 rel went 3.735e-2 -> 1.293e-6 |
 | 7 | module build + offline-gates | **PARTIAL** — root Makefile wiring landed (contract/archive/publish hooks mirroring the glm52 flow); module archive builds through the repo flow on sparke; remaining: `make offline-gates` exit 0 on sparke cpu-class (deferred to the C10 landing because the package-manifest gate requires the final manifest regen LAST) |
 | 8 | V5 determinism | **DONE at mini-DiT scale** — spark_minimax_h3_v5_gate.cu on real weights: 2 scheduler steps x real blocks 0,1 from a fixed 64-bit LCG seed; same-seed rerun bit-identical at TP1 and at TP4-segmented GEMM, and TP4-vs-TP1 bit-identical per step (receipt minimax-r4-v5gate4, sparke GB10). Full-pipeline 2x same-seed latents across 16 ranks still needs the cell |
-| 9 | cell E2E | **TP16 PACK EMIT IN FLIGHT (r7)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack support landed r6; r7 pass-A placement proof 16/16 GREEN and the real emit fixed two driver bugs (tp16 tag dropped by match_name; blob reader had no column slicing so tp_rank>0 got rank-0 columns) before writing ranks 00-03 GREEN (33.57-33.83 GB, layout byte-exact vs computed); sizes ~31.5 GiB/rank FLAG (r5 8.4 GB figure refuted by the required- repl DIT_ADALN 24.2 GiB); ranks 04-15 stalled by a sparke reboot + warm-pool contention stall, resume = rerun emit_tp16_chain.sh; deployment tables TP16xPP1 + model_resident root regenerated; route matrix pinned DEAD PARSE-COMPAT (zero dialers) with 18431 = BLOCK_LIMIT zero-margin noted |
+| 9 | cell E2E | **TP16 PACK EMIT IN FLIGHT (r7)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack support landed r6; r7 pass-A placement proof 16/16 GREEN and the real emit fixed two driver bugs (tp16 tag dropped by match_name; blob reader had no column slicing so tp_rank>0 got rank-0 columns) before writing ranks 00-03 GREEN (33.57-33.83 GB, layout byte-exact vs computed); sizes ~31.5 GiB/rank FLAG (r5 8.4 GB figure refuted by the required- repl DIT_ADALN 24.2 GiB); ranks 04-15 halted deliberately after sparke crashed 4x (each post-crash restart D-stalled on the warm pool then the host died - flagged for sysadmin, chain left dead, resume = rerun emit_tp16_chain.sh); deployment tables TP16xPP1 + model_resident root regenerated; route matrix pinned DEAD PARSE-COMPAT (zero dialers) with 18431 = BLOCK_LIMIT zero-margin noted |
 | 10 | fail-closed tests + report + manifest | pending |
 
 ## ABI seam instrumentation (ruling 3) — plan ready to fire at the cell (r7)

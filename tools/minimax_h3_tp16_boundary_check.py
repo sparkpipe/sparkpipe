@@ -31,8 +31,8 @@ CHECK_TENSORS = (
     "transformer_blocks.49.attn.to_q.weight",
     "model.language_model.layers.0.self_attn.k_proj.weight",
     "model.language_model.layers.0.self_attn.v_proj.weight",
-    "transformer_blocks.0.mlp.gate_proj.weight",
-    "transformer_blocks.0.mlp.down_proj.weight",
+    "transformer_blocks.0.ff.net.0.proj.weight",
+    "transformer_blocks.0.ff.net.2.weight",
 )
 
 
