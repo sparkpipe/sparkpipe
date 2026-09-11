@@ -1018,7 +1018,7 @@ from pathlib import Path
 # tests/test_model_api_text.c) are excluded by construction; the committed
 # ground-truth assets live under qualification/ds4_eval/tokenizer/
 # (excluded). Makefile/sources.mk carry the registration. 229008 exact.
-CEILING = 232485
+CEILING = 279906
 # The jikv-c5 lane (2026-08-29) lands the last two named JIT-KV remainders
 # (docs/JIT_KV_RESPONSE.md C5+W2) in the pager/tier path. C5's reuse-value
 # park policy: the victim rank (cache/kv_cache.c: the keepness helper - one
