@@ -22,13 +22,10 @@ fi
 echo "DAEMON BUILD OK"
 GCCFLAGS="-O2 -std=c11 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -I $ROOT/include -I $CUDA/include"
 gcc $GCCFLAGS -c ring/transport/tp_device_collective.c -o tp16_tdc.o 2> tp16_build_err.txt || { echo "ENGINE BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
-gcc $GCCFLAGS -c runtime/spark_weightd.c -o tp16_wd.o 2>> tp16_build_err.txt || { echo "WEIGHTD BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
-gcc $GCCFLAGS -c src/spark_sha256.c -o tp16_sha.o 2>> tp16_build_err.txt || { echo "SHA BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
-gcc $GCCFLAGS -c src/spark_ck128.c -o tp16_ck.o 2>> tp16_build_err.txt || { echo "CK BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
 NVCCFLAGS="-O2 -arch=sm_121 -fmad=false -I $ROOT -I $ROOT/include -I $ROOT/model-families/hy4/include -I $ROOT/modules/hy4_resident_decode_stage/include -I $ROOT/modules/hy4_resident_decode_stage/source -I $CUDA/include"
 nvcc $NVCCFLAGS -c tools/hy4_gpu/hy4_tp16_rung.cu -o tp16_rung.o 2>> tp16_build_err.txt || { echo "RUNG BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
 nvcc $NVCCFLAGS -c modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_cuda.cu -o tp16_hy4cuda.o 2>> tp16_build_err.txt || { echo "HY4CUDA BUILD FAIL"; head -40 tp16_build_err.txt; exit 1; }
-g++ -O2 tp16_rung.o tp16_hy4cuda.o tp16_tdc.o tp16_wd.o tp16_sha.o tp16_ck.o -L $CUDA/lib64 -lcudart -lcuda -lpthread -o hy4_tp16_rung 2>> tp16_build_err.txt || { echo "LINK FAIL"; head -40 tp16_build_err.txt; exit 1; }
+g++ -O2 tp16_rung.o tp16_hy4cuda.o tp16_tdc.o build/libsparkpipe_runtime.a build/libsparkpipe_core.a -L $CUDA/lib64 -lcudart -lcuda -lpthread -o hy4_tp16_rung 2>> tp16_build_err.txt || { echo "LINK FAIL"; head -40 tp16_build_err.txt; exit 1; }
 echo "RUNG BUILD OK"
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv > tp16_gpu_before.txt 2>&1
 "$ROOT/build/sparkpipe_weightd" --socket "$SOCKET" --device-bytes-max 1073741824 > tp16_weightd.log 2>&1 &
