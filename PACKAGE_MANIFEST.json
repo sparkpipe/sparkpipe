@@ -1,5 +1,5 @@
 {
-  "file_count": 2153,
+  "file_count": 2156,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -63,8 +63,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7a53530130df4c4daba53395aa15a165819cd4fd0984f7437b4a27edc42ea6ce",
-      "size_bytes": 98890
+      "sha256": "017ff671a87e2868dd35f3c9bf958aca9de7fbe8a09e513df07f031780320d21",
+      "size_bytes": 101994
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -78,8 +78,8 @@
     },
     {
       "path": "PROGRESS.md",
-      "sha256": "602ca4fd1df67c711cca280a68b8421bb60837f6c68ddcbfcf381a4f7a260cf9",
-      "size_bytes": 35609
+      "sha256": "eb381478ca772c1cd121f2460763485f1f7fc4abd3a2d372e73f48bc386b91c5",
+      "size_bytes": 40399
     },
     {
       "path": "README.md",
@@ -4783,8 +4783,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
-      "sha256": "36ee0ea0bef62d1154098f056c33c194a7f04d8b51b336a0eb656beb4c111b5e",
-      "size_bytes": 49069
+      "sha256": "2a77f25d6f76c1588eccc8a52a64cebd0736815c7da33eefaf7d1cb56e663881",
+      "size_bytes": 53744
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_stagepack_format.h",
@@ -6867,6 +6867,16 @@
       "size_bytes": 3876
     },
     {
+      "path": "tests/fixtures/ling_serving_adapter_config.json",
+      "sha256": "cdf4c57486057b8e64c0df9d17a2f63314065bd9aac2eb7bd601eef276288773",
+      "size_bytes": 1278
+    },
+    {
+      "path": "tests/fixtures/ling_serving_adapter_driver.c",
+      "sha256": "a730a304f888af20f9da038ba65e03620ec10254f3e672dc2743dd75c917dd4e",
+      "size_bytes": 8102
+    },
+    {
       "path": "tests/fixtures/model_resident_deployment.json",
       "sha256": "beb8f589396066b85155936fc5c80ff67a813f5ed460b7d85bec7b0f4eeb3e83",
       "size_bytes": 1911
@@ -7283,8 +7293,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "d9a278a3d8137777286f7c3b637d2dce7fa9bf34e2c174ea411da4810f325962",
-      "size_bytes": 102661
+      "sha256": "5cebb12ca20a3571b0d2edc65b7febbf5c6ed7d468158116bfa40fc94888f1db",
+      "size_bytes": 103093
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -8035,6 +8045,11 @@
       "path": "tests/test_ling_model_header.py",
       "sha256": "f07faa5d7137696e3c16a6c76647a037ec9a1ce956c43a5f47baa6764346d2d0",
       "size_bytes": 8410
+    },
+    {
+      "path": "tests/test_ling_serving_adapter.c",
+      "sha256": "7237c2c1ee26c0aacd97463469c6d7ce174041268cd35a92e29b02b782a199e3",
+      "size_bytes": 11864
     },
     {
       "path": "tests/test_measured_status.py",
@@ -10770,5 +10785,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34956716
+  "total_bytes": 34990961
 }
