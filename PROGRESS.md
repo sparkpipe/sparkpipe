@@ -116,6 +116,29 @@ differ. They bind the kernels (criterion 4+).
 
 ## Work log
 
+- 2026-09-11 (round 8, HALT — SPARKE 6TH HOST EVENT): rank04 resume attempt on the
+  declared-healthy host reproduced the pre-crash signature and the host went down
+  again. Sequence, all receipted: (1) stability probe GREEN — up 1:51, load 0.38,
+  11T free, then a 2 GiB O_DIRECT cold-read probe from
+  minimax-h3/transformer/diffusion_pytorch_model-00001-of-00014.safetensors under
+  sudo -n sparkcap completed in 5.3 s at 407 MB/s, no stall — the DATA plane was
+  healthy; (2) chain resumed 18:51:19Z, rank04 restarted from progress next_index 2
+  (resume sig v2 intact); (3) within 5 min load climbed 1.38 -> 2.54 -> 4.35 and
+  stagepack pid 597756 stuck in D state with wchan ceph_mdsc_wait_request — ceph
+  MDS METADATA plane — while an unrelated `cat` of the rank04 progress.json on the
+  same mount hung concurrently; 8 min into the stall a kill attempt could not land
+  (ssh mux broken pipe, then fresh connects timing out) and ~9 min after the stall
+  began the host was gone ("sendto: Host is down" at ARP). DIAGNOSIS REFINED for
+  the sysadmin: 6/6 host events now follow the same rank04 restart within ~7-20
+  min; the data plane probes clean while metadata ops wedge (classic stale-cap /
+  sick kcephfs MDS client after repeated crashes) — this is NOT bulk read+write
+  load. Ranks 00-03 receipts + the rank04 partial survived on ceph (they survived
+  the four prior reboots). Chain NOT relaunched. RESUME unchanged — one command,
+  rerun emit_tp16_chain.sh — but ONLY after the ceph client/MDS state on sparke is
+  cleared (remount or client reboot recommended before the next rank04 attempt);
+  6 identical stalls is a deterministic trigger, not contention. No pack bytes
+  written this round; queue untouched; cell bring-up + C10 not reached.
+
 - 2026-09-11 (round 7): REAL TP16 PACK EMIT (in flight) + TWO EMIT-TIME DRIVER
   BUGS CAUGHT + C9 TABLES + FIRMWARE FLIP. Work dir moved back to
   /Users/mac/batch-minimax (r6 ran in /Users/mac/lane-minimax); lane branch
