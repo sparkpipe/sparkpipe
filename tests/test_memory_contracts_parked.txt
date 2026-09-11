@@ -26,11 +26,9 @@
 18 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpyAsync uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemset uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: fwrite uses a direct size/count literal
 2 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
 4 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
-2 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: malloc uses a raw byte-width multiplier
 8 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
 3 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpy uses a raw byte-width multiplier
 7 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpyAsync uses a raw byte-width multiplier
@@ -87,3 +85,6 @@
 1 tools/qwen4_flash_stagepack.py: GLM model literal 12288 is outside the model contract
 5 tools/qwen4_flash_stagepack.py: GLM model literal 6144 is outside the model contract
 1 tools/spark_kv_backing_test.c: fwrite uses a direct size/count literal
+11 validation/spark_gemma4_reference.c: gemma4_oracle_alloc uses a raw byte-width multiplier
+4 validation/spark_gemma4_reference.c: memcpy uses a direct size/count literal
+5 validation/spark_gemma4_reference.c: memcpy uses a raw byte-width multiplier
