@@ -146,7 +146,7 @@ def entry_shape(kind: int, tp: int):
     if kind == K_ATTN_SINK:
         return (1, 64 // tp)
     if kind == K_O_A:
-        return (8192 // tp, 4096 // tp)
+        return (8192 // tp, 4096)
     if kind == K_O_B:
         return (5120, 8192 // tp)
     if kind == K_IDX_Q_B:
@@ -226,7 +226,7 @@ def source_ref(kind: int, layer: int, plane: int):
     if kind == K_ATTN_SINK:
         return (a + "attn_sink", "cols")
     if kind == K_O_A:
-        return (a + "wo_a." + suffix, "diag")
+        return (a + "wo_a." + suffix, "rows")
     if kind == K_O_B:
         return (a + "wo_b." + suffix, "cols")
     if kind == K_IDX_Q_B:

@@ -133,7 +133,7 @@ def entry_shape(kind: int, tp: int):
     if kind == K_ATTN_SINK:
         return (1, 64 // tp, 1)
     if kind == K_O_A:
-        return (8192 // tp, 4096 // tp, 1)
+        return (8192 // tp, 4096, 1)
     if kind == K_O_B:
         return (5120, 8192 // tp, 1)
     if kind == K_IDX_Q_B:
@@ -211,7 +211,7 @@ def checkpoint_spec(kind: int, layer: int):
     if kind == K_O_A:
         shape = [8192, 4096]
         return (a + "wo_a.weight", a + "wo_a.scale", "F8_E4M3", shape,
-                fp8_scale_shape(shape), "diag")
+                fp8_scale_shape(shape), "rows")
     if kind == K_O_B:
         shape = [5120, 8192]
         return (a + "wo_b.weight", a + "wo_b.scale", "F8_E4M3", shape,
@@ -402,9 +402,6 @@ def rank_window(mode: str, rank: int, tp: int, rows: int, cols: int):
     if mode in ("sink", "ob"):
         c = cols // tp
         return 0, rows, rank * c, (rank + 1) * c
-    if mode == "diag":
-        return rank * (rows // tp), (rank + 1) * (rows // tp), \
-            rank * (cols // tp), (rank + 1) * (cols // tp)
     fail(f"unknown mode {mode}")
 
 
