@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <cuda_runtime.h>
+
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_hidden_transport.h"
@@ -27,6 +29,14 @@
  * implementation behind the same signatures. */
 
 #define SPARK_HY4_MODULE_TAG "hy4_stage"
+#define SPARK_HY4_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
+
+extern cudaError_t SparkHy4LaunchAccumAddBf16(cudaStream_t stream,
+	void *destination_bf16,const void *source_bf16,
+	uint32_t row_count,uint32_t width);
+extern cudaError_t SparkHy4LaunchAccumU64Max(cudaStream_t stream,
+	uint64_t *destination,const uint64_t *source,
+	uint32_t element_count);
 
 typedef struct SparkHy4ModuleState
 {
@@ -38,6 +48,10 @@ typedef struct SparkHy4ModuleState
 	uint32_t stage_layer_count;
 	uint32_t first_layer_index;
 	uint64_t arena_bytes;
+	void *execution_stream;
+	uint32_t tp_collective_disabled;
+	SparkTpDeviceCollective tp_device_collective;
+	uint32_t tp_device_collective_initialized;
 } SparkHy4ModuleState;
 
 static SparkStatus SparkHy4ModuleInitializeGate(void)
@@ -45,10 +59,111 @@ static SparkStatus SparkHy4ModuleInitializeGate(void)
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHy4ModuleInitializeTpCollective(
-	SparkHy4ModuleState *state)
+static SparkStatus SparkHy4ModuleCombineBf16(void *combine_context,
+	void *destination_device,const void *source_device,
+	uint32_t active_sequence_count,uint32_t hidden_dimension,
+	void *cuda_stream)
 {
-	(void)state;
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkHy4LaunchAccumAddBf16((cudaStream_t)cuda_stream,
+		destination_device,source_device,active_sequence_count,
+		hidden_dimension);
+	return SparkStageModuleCudaStatus(SPARK_HY4_MODULE_TAG,error,
+		"tp_all_reduce_sum");
+}
+
+static SparkStatus SparkHy4ModuleCombineU64Max(void *combine_context,
+	uint64_t *destination_device,const uint64_t *source_device,
+	uint32_t element_count,void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkHy4LaunchAccumU64Max((cudaStream_t)cuda_stream,
+		destination_device,source_device,element_count);
+	return SparkStageModuleCudaStatus(SPARK_HY4_MODULE_TAG,error,
+		"tp_all_reduce_max_u64");
+}
+
+static SparkStatus SparkHy4ModuleInitializeTpCollective(
+	SparkHy4ModuleState *state,
+	const SparkFirmwareModuleHostServices *host_services)
+{
+	const SparkHy4ResidentDecodeStageNodeContext *context;
+	SparkTpDeviceCollectiveConfig configuration;
+	SparkStatus status;
+	if ( state == 0 || host_services == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	context = (const SparkHy4ResidentDecodeStageNodeContext *)
+		host_services->node_context;
+	if ( context == 0 )
+		return SPARK_STATUS_OK;
+	state->execution_stream = host_services->execution_stream;
+	state->max_active_sequence_count = context->max_active_sequence_count;
+	state->pipeline_slot_count = context->pipeline_slot_count;
+	state->tp_degree = context->tp_degree;
+	state->tp_rank = context->tp_rank;
+	if ( context->tp_degree <= 1u ||
+	    context->tp_collective_identifier == 0u )
+	{
+		state->tp_collective_disabled = 1u;
+		return SPARK_STATUS_OK;
+	}
+	if ( context->tp_degree > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE ||
+	    context->tp_rank >= context->tp_degree ||
+	    host_services->execution_stream == 0 ||
+	    context->tp_collective_topology.rank_count !=
+	    context->tp_degree ||
+	    context->tp_collective_backend_kind !=
+	    SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ||
+	    context->tp_collective_mesh_addr == 0u ||
+	    context->tp_connect_timeout_milli == 0u ||
+	    context->tp_operation_timeout_milli == 0u ||
+	    context->tp_collective_backend_module_path == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration.backend_kind = context->tp_collective_backend_kind;
+	configuration.tp_degree = context->tp_degree;
+	configuration.tp_rank = context->tp_rank;
+	configuration.operation_kind =
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	configuration.credit_count = state->pipeline_slot_count *
+		SPARK_HY4_TP_COLLECTIVE_CREDITS_PER_SLOT;
+	configuration.local_hidden_dimension =
+		SPARK_HY4_MODEL_HIDDEN_DIMENSION;
+	configuration.max_active_sequence_count =
+		state->max_active_sequence_count;
+	configuration.connect_timeout_milli =
+		context->tp_connect_timeout_milli;
+	configuration.operation_timeout_milli =
+		context->tp_operation_timeout_milli;
+	configuration.control_port_base =
+		context->tp_collective_control_port_base;
+	configuration.collective_identifier =
+		context->tp_collective_identifier;
+	configuration.backend_module_path =
+		context->tp_collective_backend_module_path;
+	configuration.registration_cuda_stream = state->execution_stream;
+	status = SparkTpDeviceCollectiveApplyTopology(
+		&context->tp_collective_topology,&configuration);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	configuration.combine_bf16_function = SparkHy4ModuleCombineBf16;
+	configuration.combine_u64_max_function =
+		SparkHy4ModuleCombineU64Max;
+	configuration.combine_context = state;
+	status = SparkTpDeviceCollectiveCreate(&configuration,
+		&state->tp_device_collective);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	state->tp_device_collective_initialized = 1u;
+	status = SparkTpDeviceCollectivePrepareReceiveBf16(
+		&state->tp_device_collective,
+		(void *)(uintptr_t)context->tp_collective_mesh_addr,
+		0u,0u,0u,0u);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	return SPARK_STATUS_OK;
 }
 
@@ -119,6 +234,11 @@ static void SparkHy4ModuleDestroy(void *module_state)
 	SparkHy4ModuleState *state = (SparkHy4ModuleState *)module_state;
 	if ( state == 0 )
 		return;
+	if ( state->tp_device_collective_initialized != 0u )
+	{
+		state->tp_device_collective_initialized = 0u;
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+	}
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 }
@@ -135,7 +255,7 @@ static SparkStatus SparkHy4ModuleInitializeAdapter(
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	state = (SparkHy4ModuleState *)*module_state;
-	status = SparkHy4ModuleInitializeTpCollective(state);
+	status = SparkHy4ModuleInitializeTpCollective(state,host_services);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkHy4ModuleDestroy(state);

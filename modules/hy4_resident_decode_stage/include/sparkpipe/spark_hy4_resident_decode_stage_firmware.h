@@ -3,7 +3,9 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_hy4_model.h"
+#include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -172,6 +174,16 @@ typedef struct SparkHy4ResidentDecodeStageNodeContext
 	const SparkHy4HeadWeights *head_weights;
 	SparkHy4PipelineSlot *pipeline_slots;
 	uint64_t estimated_service_time_ns;
+	uint32_t tp_degree;
+	uint32_t tp_rank;
+	uint32_t tp_collective_backend_kind;
+	uint64_t tp_collective_identifier;
+	uint32_t tp_connect_timeout_milli;
+	uint32_t tp_operation_timeout_milli;
+	uint32_t tp_collective_control_port_base;
+	uint64_t tp_collective_mesh_addr;
+	SparkTpDeviceCollectiveTopology tp_collective_topology;
+	const char *tp_collective_backend_module_path;
 } SparkHy4ResidentDecodeStageNodeContext;
 
 typedef struct SparkHy4DecodeBatchView

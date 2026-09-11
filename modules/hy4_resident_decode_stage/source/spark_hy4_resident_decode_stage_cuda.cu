@@ -61,222 +61,74 @@ static __device__ __forceinline__ float SparkHy4DotFp8Grouped(
 	return total;
 }
 
-__global__ void SparkHy4GemvFp8GroupedKernel(const uint8_t *weights,
-	const uint8_t *scales, const float *x, float *y, int rows,
-	int columns, int scale_stride)
+static __device__ __forceinline__ float2 SparkHy4LoadBf16Pair(
+    const void *base, uint64_t element)
 {
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row >= rows )
-		return;
-	y[row] = SparkHy4DotFp8Grouped(
-	    weights + (size_t)row * (size_t)columns,
-	    scales + (size_t)row * (size_t)scale_stride,
-	    x, columns);
+	uint32_t packed = ((const uint32_t *)base)[element];
+	float2 pair;
+	pair.x = __int_as_float(
+	    (int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
+	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
+	return pair;
 }
 
-__global__ void SparkHy4GemvKernel(const float *weights, const float *x,
-	float *y, int rows, int columns)
+static __device__ __forceinline__ void SparkHy4StoreBf16Pair(
+    void *base, uint64_t element, float x, float y)
 {
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
-	if (row >= rows)
-		return;
-	const float *row_pointer = weights + (size_t)row * (size_t)columns;
-	float accumulator = 0.0f;
-	for (int index = 0; index < columns; ++index)
-		accumulator = fmaf(row_pointer[index], x[index], accumulator);
-	y[row] = accumulator;
+	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
+	    (__float_as_uint(x) >> 16u);
+	((uint32_t *)base)[element] = packed;
 }
 
-__global__ void SparkHy4RmsSquaredKernel(const float *x, float *sum_out,
-	int n)
+static __global__ void SparkHy4AccumAddBf16Kernel(void *destination_bf16,
+    const void *source_bf16, uint32_t row_count, uint32_t width)
 {
-	__shared__ float partial[256];
-	int tid = threadIdx.x;
-	float sum = 0.0f;
-	for (int k = tid; k < n; k += blockDim.x)
-		sum = fmaf(x[k], x[k], sum);
-	partial[tid] = sum;
-	__syncthreads();
-	for (int offset = blockDim.x / 2; offset > 0; offset >>= 1)
+	uint32_t row = blockIdx.x;
+	uint64_t offset = ((uint64_t)row * width) >> 1u;
+	float2 destination_pair;
+	float2 source_pair;
+	uint32_t element;
+	if ( row >= row_count )
+		return;
+	for (element = threadIdx.x; element < (width >> 1u);
+	    element += blockDim.x)
 	{
-		__syncthreads();
-		if (tid < offset)
-			partial[tid] += partial[tid + offset];
-	}
-	if (tid == 0)
-		sum_out[0] = partial[0];
-}
-
-__global__ void SparkHy4RmsScaleKernel(const float *x, const float *weight,
-	float *y, int n, float epsilon, const float *sum_in)
-{
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	float inverse = rsqrtf(sum_in[0] / (float)n + epsilon);
-	if (index >= n)
-		return;
-	y[index] = x[index] * inverse * (weight != 0 ? weight[index] : 1.0f);
-}
-
-__global__ void SparkHy4RopeKernel(float *v, int rot, float position)
-{
-	int pair = threadIdx.x;
-	if (pair * 2 + 1 >= rot)
-		return;
-	float angle = position * powf(10000000.0f,
-	    -(float)(2 * pair) / (float)rot);
-	float cos_value = cosf(angle);
-	float sin_value = sinf(angle);
-	float a = v[pair * 2];
-	float b = v[pair * 2 + 1];
-	v[pair * 2] = a * cos_value - b * sin_value;
-	v[pair * 2 + 1] = a * sin_value + b * cos_value;
-}
-
-__global__ void SparkHy4HyperGatesKernel(const float *mixes,
-	const float *scale, const float *base, float epsilon,
-	float magnitude, float *pre, float *post)
-{
-	int index = threadIdx.x;
-	if (index < SPARK_HY4_CUDA_HC)
-		pre[index] = 1.0f / (1.0f +
-		    expf(-(mixes[index] * scale[0] + base[index]))) + epsilon;
-	else
-	{
-		int j = index - SPARK_HY4_CUDA_HC;
-		post[j] = magnitude / (1.0f +
-		    expf(-(mixes[SPARK_HY4_CUDA_HC + j] * scale[1] +
-		    base[SPARK_HY4_CUDA_HC + j]))) + epsilon;
+		destination_pair =
+		    SparkHy4LoadBf16Pair(destination_bf16, offset + element);
+		source_pair =
+		    SparkHy4LoadBf16Pair(source_bf16, offset + element);
+		SparkHy4StoreBf16Pair(destination_bf16, offset + element,
+		    destination_pair.x + source_pair.x,
+		    destination_pair.y + source_pair.y);
 	}
 }
 
-__global__ void SparkHy4HyperReduceKernel(const float *streams,
-	const float *pre, float *out, int hidden, int hc)
+static __global__ void SparkHy4AccumU64MaxKernel(uint64_t *destination,
+    const uint64_t *source, uint32_t element_count)
 {
-	int element = blockIdx.x * blockDim.x + threadIdx.x;
-	float accumulator = 0.0f;
-	if (element >= hidden)
-		return;
-	for (int s = 0; s < hc; ++s)
-		accumulator += streams[(size_t)s * (size_t)hidden + element] *
-		    pre[s];
-	out[element] = accumulator;
+	uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element < element_count && source[element] > destination[element] )
+		destination[element] = source[element];
 }
 
-__global__ void SparkHy4HyperDistributeKernel(float *streams,
-	const float *branch, const float *post, int hidden, int hc)
+extern "C" cudaError_t SparkHy4LaunchAccumAddBf16(cudaStream_t stream,
+    void *destination_bf16, const void *source_bf16, uint32_t row_count,
+    uint32_t width)
 {
-	int element = blockIdx.x * blockDim.x + threadIdx.x;
-	if (element >= hidden)
-		return;
-	for (int s = 0; s < hc; ++s)
-		streams[(size_t)s * (size_t)hidden + element] +=
-		    branch[element] * post[s];
+	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u ||
+	    width == 0u || (width & 1u) != 0u )
+		return cudaErrorInvalidValue;
+	SparkHy4AccumAddBf16Kernel<<<row_count, 256u, 0u, stream>>>(
+	    destination_bf16, source_bf16, row_count, width);
+	return cudaPeekAtLastError();
 }
 
-__global__ void SparkHy4SwigluClampedKernel(const float *gate,
-	const float *up, float *out, int n, float limit)
+extern "C" cudaError_t SparkHy4LaunchAccumU64Max(cudaStream_t stream,
+    uint64_t *destination, const uint64_t *source, uint32_t element_count)
 {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index >= n)
-		return;
-	float g = gate[index];
-	float u = up[index];
-	if (g > limit)
-		g = limit;
-	if (u > limit)
-		u = limit;
-	if (u < -limit)
-		u = -limit;
-	out[index] = g / (1.0f + expf(-g)) * u;
-}
-
-__global__ void SparkHy4SigmoidKernel(float *v, int n)
-{
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < n)
-		v[index] = 1.0f / (1.0f + expf(-v[index]));
-}
-
-__global__ void SparkHy4AxpyKernel(float *acc, const float *h, float w,
-	int n)
-{
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < n)
-		acc[index] += h[index] * w;
-}
-
-__global__ void SparkHy4AttnHeadKernel(const float *q_absorbed,
-	const float *q_pe, const float *k_latent, const float *k_pe,
-	float sink, int context, float scale, float *value_latent)
-{
-	float scores[SPARK_HY4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS];
-	float maximum = sink;
-	for (int t = 0; t < context; ++t)
-	{
-		float s = 0.0f;
-		for (int i = 0; i < SPARK_HY4_CUDA_KV_LORA; ++i)
-			s = fmaf(q_absorbed[i],
-			    k_latent[(size_t)t * SPARK_HY4_CUDA_KV_LORA + i],
-			    s);
-		for (int i = 0; i < SPARK_HY4_CUDA_ROPE; ++i)
-			s = fmaf(q_pe[i],
-			    k_pe[(size_t)t * SPARK_HY4_CUDA_ROPE + i], s);
-		scores[t] = s * scale;
-		if (scores[t] > maximum)
-			maximum = scores[t];
-	}
-	float denominator = expf(sink - maximum);
-	for (int t = 0; t < context; ++t)
-		denominator += expf(scores[t] - maximum);
-	for (int i = 0; i < SPARK_HY4_CUDA_KV_LORA; ++i)
-	{
-		float accumulator = 0.0f;
-		for (int t = 0; t < context; ++t)
-			accumulator += expf(scores[t] - maximum) /
-			    denominator *
-			    k_latent[(size_t)t * SPARK_HY4_CUDA_KV_LORA + i];
-		value_latent[i] = accumulator;
-	}
-}
-
-__global__ void SparkHy4RouteKernel(const float *router_logits,
-	const float *router_bias, uint32_t *selected, float *weights,
-	int routed_experts, int experts_per_token)
-{
-	extern __shared__ float keys[];
-	float *probabilities = keys + routed_experts;
-	int index = threadIdx.x;
-	if (index < routed_experts)
-	{
-		float probability =
-		    1.0f / (1.0f + expf(-router_logits[index]));
-		probabilities[index] = probability;
-		keys[index] = probability + router_bias[index];
-	}
-	__syncthreads();
-	if (index != 0)
-		return;
-	float weight_sum = 0.0f;
-	for (int k = 0; k < experts_per_token; ++k)
-	{
-		int best = -1;
-		float best_value = -3.4e38f;
-		for (int e = 0; e < routed_experts; ++e)
-		{
-			if (keys[e] > best_value)
-			{
-				best_value = keys[e];
-				best = e;
-			}
-		}
-		keys[best] = -3.4e38f;
-		selected[k] = (uint32_t)best;
-		weights[k] = probabilities[best];
-		weight_sum += probabilities[best];
-	}
-	if (weight_sum < 6.1e-5f)
-		weight_sum = 6.1e-5f;
-	for (int k = 0; k < experts_per_token; ++k)
-		weights[k] = weights[k] / weight_sum *
-		    SPARK_HY4_MODEL_ROUTED_SCALING_FACTOR;
+	if ( destination == 0 || source == 0 || element_count == 0u )
+		return cudaErrorInvalidValue;
+	SparkHy4AccumU64MaxKernel<<<(element_count + 255u) / 256u, 256u, 0u,
+	    stream>>>(destination, source, element_count);
+	return cudaPeekAtLastError();
 }

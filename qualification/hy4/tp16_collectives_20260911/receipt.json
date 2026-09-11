@@ -1,0 +1,39 @@
+{
+  "cell": "hy4-tp16-r7",
+  "branch": "lane/hy4-tp16",
+  "commit": "24325e4",
+  "node": "spark2",
+  "date": "2026-09-11",
+  "verdict": "GREEN 16/16 ranks",
+  "engine": "ring/transport/tp_device_collective.c @ 94cb950 (0b590ff+161b5fb+80dbecc)",
+  "method": "16 ranks in one process, production engine + weightd daemon (private socket); mesh sequencer stands in for the single-host RDMA fanout; CPU double oracle at nonzero oracle positions, rel tol 0.06; u64 max exact",
+  "rounds_per_rank": {
+    "bf16_allreduce_sum": 12,
+    "u64_allreduce_max": 4
+  },
+  "per_rank": {
+    "nonzero_checked": 276480,
+    "max_rel_worst": 0.043478,
+    "exact_matches_min": 76,
+    "green_ranks": 16
+  },
+  "gpu_time_per_collective": {
+    "bf16_allreduce_sum": {
+      "count": 192,
+      "median_us": 1437.0,
+      "mean_us": 2270.2,
+      "min_us": 513.6,
+      "max_us": 25240.0
+    },
+    "u64_allreduce_max": {
+      "count": 64,
+      "median_us": 1189.5,
+      "mean_us": 1224.8,
+      "min_us": 698.5,
+      "max_us": 1838.8
+    }
+  },
+  "gpu_memory": "16 CUDA contexts, co-resident T1/T2 with the resident stage; nvidia-smi csv reported N/A on this driver (noted)",
+  "wall_s": 0.7,
+  "per_collective_tsv": "tp16_rung.tsv"
+}
