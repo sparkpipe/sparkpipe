@@ -1,137 +1,122 @@
-# HANDOFF: glm53flash SOTA hill climb — session pickup (09-11 ~16:30)
+# HANDOFF: glm53flash lane — post-PoC, productionization phase
 
-Lane: lane/glm53-p0, tip b0403a7. Fleet 16/16, serving STABLE (20/20 stress,
-zero segfaults). Timer: 15-minute cadence (automation-779eb59b), prompt carries
-the full work order. Goal: 14+ tok/s plain B1 (no speculation), prefill
-seconds-class, KV warm ~0.
+Written 09-11 ~23:00 after the ≤100µs/round PoC campaign (iterations 13-32).
+Lane: /Users/mac/lane-glm53, branch lane/glm53-p0, tip 1137657 (+~15 uncommitted
+changes — see UNCOMMITTED). Coordinator memory glm53-flash-tree-engine.md is the
+full ledger; this doc is the working map.
 
-## CURRENT MEASURED STATE
+## THE HEADLINE RESULTS (all measured, real 16-node fabric)
 
-- B1 decode: 20.26s / 32 tok = 1.58 tok/s warm (small 6-tok prompt).
-- COMPSEC-17 (372-tok question): cold prefill 209s (562ms/tok, sequential —
-  no chunked batch prefill), warm re-run 29s residual, warm decode 1.81 tok/s.
-- Engine round (phase-instrumented, pre-doorbell build): d2h ~120us,
-  broadcast 130-145us (after merged IPC; was 160-950), spin ~60us,
-  combine ~180us. Round total 0.5-1.3ms. Old-system reference: 447us allreduce.
-- Launch tax (strace-proven, the dominant cost): 12.6K CUDA launch ioctls per
-  token at ~22us, serialized because each synchronous round drains the
-  pipeline (~160 launches/layer wait on an idle GPU). ~277ms/token.
-- Numerics: tokens are all-zeros / repeated garbage — B1 accuracy gate OPEN.
+1. **100-105µs/round sustained**, checksums correct, 16-way allreduce through
+   the real weightd relay (was ~300µs at campaign start). Communication
+   roofline ≈ 500 tok/s at B1 → at 14-50 tok/s targets the fabric is 3-10%
+   noise. "Sparks too slow for TP16" is DEAD: the villain was always CPU
+   orchestration (~900ms/token: launch ioctls ~127ms, ~106 completion
+   host-funcs + drain wakeups, worker hops), not the wire.
+2. **TP16 scaling projection revised UP to 2.5-3× TP4 at B1** (earlier 1.2-1.5×
+   assumed 250µs unhidden rounds; at ~100µs hidden the round floor drops below
+   TP4's 20ms compute floor). B1 scaling table in iteration-20 notes.
+3. **Mesh transport FULLY ACQUITTED** after a hostile audit: every relay
+   counter clean (send_ok exact, send_err=0), perfect delivery dumps
+   (20/20 + 40/40 both bands). The ENTIRE stall class across iterations 22-31
+   was TWO SELF-INFLICTED BUGS:
+   - WR-mutation race: fast relay patched a prebuilt WR's sge and reposted it
+     (verbs law: no WR modification before prior completion) → random
+     mid-replay lost writes. FIXED: per-post fresh stack seq-WR copies
+     (weightd d0288f418feb).
+   - Stale inter-replay barrier (my iter-24 code) polling band-1 ends for a
+     target band-alternation makes unreachable → replay 3 never launched.
+     FIXED: barrier deleted (band alternation supersedes it).
+4. Production serving throughout: tokens green (deterministic-first-token,
+   divergence gremlin persists), ~0.85 tok/s floor = 0.42% mem roofline —
+   the remaining gap is pure module orchestration, removed by layer graphs.
 
-## SHORT-TERM GOAL (operator-set): the seven remaining tasks
+## WHERE THE CODE IS (all ships via scp+build; Mimosa gate blocks git commits)
 
-1. RE-LAND host-registered stream-ordered engine. Code preserved at git
-   426e038 (engine round) — adapt to the CURRENT engine shape (which now has
-   the completion drain thread + queue in tp_device_collective.c). Key swap:
-   PrepareReceiveBf16 cudaHostRegister's the 2GB mesh mapping ONCE (probe
-   verified 0.66s; kernels read host-registered memory zero-copy at
-   0.49ms/32MB), round becomes pure stream-ordered enqueues: D2P copy (no
-   sync), staged doorbell H2H copies, CPU spin on peer slot-end words,
-   own-slot H2D, module combine kernels via the registered pointer.
-   rc=712 that forced its revert = the completion-recursion corruption NOW
-   FIXED (see ledger). Expect boot to work this time.
-2. Stage B: module MeshWait kernel (GPU polls peer slot-ends on-stream) +
-   combine kernels on the registered mesh; removes the last CPU spin.
-3. CUDA graph capture of whole layers (legal once no CPU syncs inside) —
-   amortizes the launch tax; this is the 10x.
-4. u64-maxloc path in the stream-ordered engine (head-max op returns
-   UNSUPPORTED in the 426e038 shape) — GATES task 1.
-5. Chunked batch prefill via the module batch ladder (buckets to 1024).
-6. KV warm residual 29s -> ~0 (64-token cliff suspect).
-7. Numerics B1 gate (GPU combine is the reference path).
-Order: 4 gates 1; 1 gates 2-3; 5-7 interleave on any window.
-Overlap thesis (operator-endorsed): the allreduce is NOT the gap (300-500us,
-old ring 447us); serialization multiplies it via the launch tax. Slot
-pipelining (4 inflight slots, per-slot streams) + stream ordering hide it
-behind other-wave compute; graphs amortize launches; steady state = compute
-bound, allreduce exposure ~0.
+- node/weightd_mesh.c (UNCOMMITTED): fast relay for bands 1+2 (2µs poll,
+  prebuilt payload WRs, fresh seq WR per post, per-round 64K seq cells,
+  stable seqlock doorbell re-read, inline CQ drain 64/pass, CQ 4096,
+  QP depth 64, dedup-advance-only-on-full-success, WD-FAST/WD-TRACE debug
+  prints with budgets). Deployed fleet-wide through several cores; latest
+  published d0288f418feb. PRODUCTION bands 0/3 use the original slow path —
+  unchanged semantics, all four hardening fixes apply to it too.
+- ring/transport/tp_device_collective.c (UNCOMMITTED): GPU-resident rounds —
+  publish host-func + CPU spin replaced by SparkGlm5NextMeshPublish/WaitKernel
+  (in module .cu, extern launchers, ordinal baked as arg, no seq cell).
+  Serving green at ~38s/32tok (≈5% win — engine round was never the
+  bottleneck; module orchestration dominates).
+- modules/glm5_next_resident_decode_stage_module.c (UNCOMMITTED):
+  fire-and-forget chain (inline advance on submit; completion = failure-only)
+  — KEPT: correct, simplifying, prerequisite for graphs.
+- tools/mesh_graph_poc.cu: the PoC. Mode 2 = graph replay, mode 3 = latency
+  probe (GPU %globaltimer spans, host-pinned stamps, watchdog thread, band
+  alternation A/B graphs, per-replay launch-rc prints). POC_ROUNDS=20.
+- tools/perf_roofline.py: 273GB/s mem / 25GB/s net / 201 tok/s mem-roofline.
+- tools/read_ends.py: doorbell/end-word dump via weightd memfd.
+- Engine shipped earlier & committed: parity slots, zero-sync host-registered
+  rounds, GPU u64-max, max-op OOB fix, boot seq zeroing (main-merged via
+  PR #929).
 
-## FIXED-BUG LEDGER (do not re-diagnose; recipes at bottom)
+## WHAT REMAINS OPEN (priority order)
 
-- Completion recursion segfault: inline completion re-entered the module chain
-  (ReduceHiddenWide -> SubmitInternal -> completion -> TpChainAdvance ->
-  ReduceHiddenWide...) -> stack exhaustion. FIX: completion drain thread +
-  queue (161b5fb).
-- QP flush-error permanence: ONE transient RDMA failure puts the RC QP in
-  error forever; later rounds all time out (round 3+ stall, both directions;
-  was ALSO the "+10s fleet drift"). FIX: doorbell loop rewires via TryWire +
-  retries post once; CQ drain rewires on IBV_WC_WR_FLUSH_ERR (e8cc397).
-- Slot exhaustion wedge: idle retained slots evict on claim (db025fa).
-- API predates residentd: agent kills any API older than the running residentd
-  (proc start ticks, /proc stat field 22).
-- Mesh poll raced mesh-thread init (NULL QPs -> segfault at boot on loaded
-  nodes): poll gated on mesh_active.
-- sparkf self-ssh host key: agent keyscans when connect fails.
-- Record shipping races: content-hash keyed (.shipped_sha), 10s peer record
-  re-fetch, records deleted on weightd (re)start.
-- peermem CANNOT load on kernel 6.17 (modprobe EINVAL; module 580.159.03
-  present) -> cudaMalloc EFAULT + VMM-dmabuf EINVAL both dead. The
-  host-registered design (task 1) needs none of it. VMM code at 4349579 if
-  peermem ever lands.
-- Spine re-certification: full sha ONCE per pack state, then ck128 vs receipt
-  in /tmp/spark-weightd-spine/. weightd wave 6min -> ~90s.
-- env.local DELETED (was silently defaulting MTP ON; pool/spine budgets now
-  stated module defaults; MTP defaults OFF).
-- Old mislabels corrected: "2GB register wedge" was the spine hash; "253k-pass
-  runaway" was the ~kHz idle steploop; rc=712 was the recursion corruption.
+1. **PoC completion run**: patient rerun (timeout ≥500s) of mode 3 ×10
+   replays — expect all replays complete now that both bugs are fixed; the
+   sorted min/p50/p90 per-round stats print on completion. Alt-band (B)
+   first-replay is COLD (~15-20ms — relay builds band-2 WR sets + lockstep
+   re-forms); steady replays ~2ms/20 rounds. If a stall recurs with both
+   fixes in, the watchdog names the position immediately.
+2. **Layer graphs in the module** — THE production lever. Everything is
+   captureable now: per-slot fixed buffers, fixed-VA lease window
+   (BeginUse always returns map->base), GPU-resident rounds are pure kernels.
+   This kills the 127ms ioctl tax + 106 host-func wakeups → projected
+   10-40ms/token = 25-100 tok/s (14 = conservative floor).
+3. **Port fast relay to production bands 0/3** (extend the band gate; the
+   per-round cell arrays and inline drain are already global).
+4. Fused wait+combine kernel (operator-endorsed: sum-on-flag-arrival, saves
+   per-round combine launches ≈ 2-5ms/token; parameterize by peer-mask for
+   TP4 quartets / TP8 halves from day one — topology matrix directive).
+5. Cleanup: strip WD-FAST/WD-TRACE/watchdog prints; divergence gremlin
+   (greedy decode diverges after token 1 run-to-run — state-slot hygiene
+   suspect, diagnose before any acceptance gate); Mimosa scanner-root
+   escalation (blocks ALL lane commits — scans shared checkout's pre-existing
+   files); g5n_repack_place.sh + engine/module changes uncommitted because
+   of it.
 
-## BUILD / DEPLOY / MEASURE (the fast cycle)
+## OPERATIONAL LAW (hard-won this session)
 
-Build on sparkf (worktree ~/sparkpipe-build):
-  ssh sparkf 'cd ~/sparkpipe-build && export PATH="/usr/local/cuda/bin:$PATH" && \
-    git fetch -q origin lane/glm53-p0 && git reset -q --hard origin/lane/glm53-p0 && \
-    rm -rf build/module_library modules/glm5_next_resident_decode_stage/build && \
-    tools/module_build_release.sh glm5_next_resident_decode_stage fp8 glm53flash.fp8.tp16 \
-    84c6a6aa9497188e15a635ba793b0f95a79b1033 model_contracts/glm53_flash_authoritative.json'
-Edit in /Users/mac/lane-glm53 (verify HEAD/index first — concurrent actor!),
-commit + push ONLY via /Users/mac/sparkpipe/tools/sparkpipe_github_pat.sh
-(never print the PAT; identity must be sparkpipe).
-Deploy automatic (1s agent loop). Poll: ssh sparkf 'grep -l ready ~/current/*.json |
-wc -l' until 16 (module-only wave ~30s, weightd wave ~90s with receipts).
-API self-heals after waves (predates guard; ~22s connect blocking vs booting
-residentd is normal — WAIT, don't kill). Then wait for 'api ready' in
-~/sparkdata/glm53flash.fp8.tp16/api.log.
-Measure: 32-tok curl on spark0:8433 (prompt_token_ids; NO text prompts — no
-tokenizer sidecar). COMPSEC split: /tmp/compsec_prefill_decode.py + fixtures
-on spark0 (re-scp from a checkout if missing). NEVER benchmark mid-rollout.
-perf is LOCKED (paranoid=4), no nsys on nodes.
+- Ship protocol: scp + verify-repair md5 loop (parallel scp clobbers to 0
+  bytes: sparkf hit it twice — sparkf builds LOCALLY from its .cu).
+- Build: scp sources → sparkf make adapter+publish → sparkpipe_model_compile
+  → publish_local.sh (driver-compile step rebuilds stages/*/model_driver.so;
+  skipping it ships stale drivers). Weightd-only changes: make
+  build/sparkpipe_weightd + publish_core.sh. module_build_release.sh does its
+  own git fetch+reset+clean — NEVER ship uncommitted code through it.
+- PoC launches: stagger 2s/node, argv-shared monotonic seq base
+  (date +%s*1000), SIGTERM cleanup (kill -9 of registered procs leaves
+  cudaHostRegister teardown poison). Token 0 costs ~72s of lockstep
+  formation — not a stall.
+- Full-fleet bounce needed after any wedge (partial bounces leave stuck
+  routes); fresh-API restart clears the batch-engine latch alone.
+- CUDA: register ONLY band slices (512MB) not the whole 2GB region.
+- instruments: host-pinned stamps read by watchdog WITHOUT CUDA calls
+  (device-side stamps + cudaMemcpy block behind the stalled graph).
 
-## DEBUG RECIPES
+## GIT / COMMIT MAP
 
-- Segfault live-catch: nohup gdb -p <residentd-pid> -batch -ex "handle SIGSEGV
-  stop nopass" -ex continue -ex "bt 8" > /tmp/segfault.bt 2>&1 & then one curl.
-- Stack sampling: gdb -p PID -batch -ex "thread apply all bt 4" (repeat).
-- Syscall census: strace -f -p PID -e trace=ioctl -c -w (idle control first!).
-- Mesh memory dump: python3 seek on weightd's /proc/PID/fd/<memfd>
-  (band*16*32MB + slot*32MB + 32MB-8 for slot-end seq words).
-- QP health: grep WD-MESH-CQERR in ~/weightd.log (status 5 = flush = the
-  repaired class; if it returns with stalls, the rewire path regressed).
-- Mac->spark ssh is FLAKY under bursts: retry the command, don't diagnose ssh.
+- Committed & merged: PR #929 (main 540e44d) = parity engine + CLI mesh
+  identity + agent mesh args. Probe commits 5eae2bd..1137657 on lane (temp
+  probes stripped in worktree via git checkout 80dbecc -- module.c/.cu).
+- Uncommitted (Mimosa-blocked): engine GPU rounds, fire-and-forget module,
+  weightd fast relay + hardening, placement runbook, roofline tool, PoC,
+  this handoff. ALL are live-deployed via scp+build.
 
-## ARCHITECTURE FACTS (the deployed engine today)
+## MODEL/PACK FACTS (from the numerics arc)
 
-- Mesh: 2GB CPU memfd shared engine<->weightd (SCM_RIGHTS on lazy attach);
-  4 bands x 16 slots x 32MB; band = collective_identifier & 3 (identifiers are
-  64-bit uniquifiers — NEVER small ints); slot = rank; seq stamped at fixed
-  slot-end-8. Doorbell page appended after the 2GB: engine publishes
-  (seq,bytes) per (band,rank); weightd's mesh thread polls 20us and posts
-  payload+seq RDMA to all peers. ZERO per-round IPC.
-- Engine (tp_device_collective.c ~450 lines): inline round (D2H+sync,
-  doorbell publish, spin, CPU bf16 sum, H2D) + completion drain thread.
-  Crash contract: engine _exits on weightd IO errors.
-- weightd: 30 QPs/node on rocep1s0f1 (switch port), TryWire re-wires on peer
-  record change, records carry doorbell addr+rkey, spine receipts on disk.
-- Deployment identifiers: env deleted; MTP off by default; module reads
-  pool/spine budgets with stated defaults.
-
-## GIT ARCHAEOLOGY
-
-- 426e038: host-registered engine round (task 1 source) + diagnostic print.
-- 4349579: full VMM/dmabuf attempt (dead without peermem).
-- 19d24ed: last pre-VMM known-good engine (current == byte-identical + fixes).
-- PR #913 merged lane->main (main carries the platform; #912 was the stale
-  merge that started the alignment wave).
-
-## Standing cleanup (any window): failed-request API silence; full Mimosa
-rerun (hook flagged enobufs all session); rdma_control.c out of the DSO
-build; sparke reboot cause; strip leftover MESH-PHASE prints if any remain.
+- fp8 packs rebuilt 09-11 from checkpoint (old packs predated scale-plane fix
+  898ee1a — expert scale planes were garbage → all-zero tokens). Hex rank
+  names ranka-f for ranks 10-15. Verify with tools/g5n_repack_place.sh
+  (9/9 byte-verify vs checkpoint per rank).
+- The lazy-expert lease path is CORRECT end-to-end (live-verified: exact
+  checkpoint scale values through the full lease). Expert VA window is a
+  fixed base → graph-capturable.
+- Numerics root cause doc: memory glm53flash-numerics-rootcause.md.
