@@ -106,7 +106,7 @@ def match_name(name: str, patterns: list[dict], codes: dict, excluded: list[re.P
             if base is not None:
                 index = base + index
             packed_layer = index | (sub << 16)
-        return {
+        matched = {
             "kind": entry["kind"],
             "section": entry["section"],
             "code": codes[(entry["section"], entry["kind"])],
@@ -115,6 +115,9 @@ def match_name(name: str, patterns: list[dict], codes: dict, excluded: list[re.P
             "tp": entry["tp"],
             "stage": entry.get("stage"),
         }
+        if "tp16" in entry:
+            matched["tp16"] = entry["tp16"]
+        return matched
     return None
 
 
