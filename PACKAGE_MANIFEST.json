@@ -1,5 +1,5 @@
 {
-  "file_count": 2192,
+  "file_count": 2193,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -2807,6 +2807,11 @@
       "size_bytes": 4705
     },
     {
+      "path": "examples/release/dsv41_flash_tp8/m7_ladder_triage_receipt.json",
+      "sha256": "168b6c7e6f40a5e9d38b7b64fb6cb86df8cecac5e73cfc2c2de3db711fdbe36c",
+      "size_bytes": 4834
+    },
+    {
       "path": "examples/release/dsv41_flash_tp8/rank0-3.sha256",
       "sha256": "421f134207c5707b061105215d1155e34648e9ce7c58a4c0305818c31a3060a3",
       "size_bytes": 320
@@ -3908,8 +3913,8 @@
     },
     {
       "path": "model_contracts/dsv41_flash_authoritative.json",
-      "sha256": "cca1a8bf75016e880182777074cf0b4268e3cdb11b26a656cffc8b3d5f3b70e8",
-      "size_bytes": 24331
+      "sha256": "5d9a14d8c6aad02af2491e298f0303bccd928237808a7346555f78632363a5ff",
+      "size_bytes": 27424
     },
     {
       "path": "model_contracts/dsv4_flash.json",
@@ -7498,8 +7503,8 @@
     },
     {
       "path": "tests/test_dsv41_flash_layer0_anchor.c",
-      "sha256": "48da2ac96f7024f288aa19b335cc0143bf916170667b1c5f24fdafa23e608ac9",
-      "size_bytes": 41800
+      "sha256": "d2f862dd99b6ef3b99bcec53395fac94883e633c33a29b8385b1642242194b89",
+      "size_bytes": 45036
     },
     {
       "path": "tests/test_dsv41_flash_layer0_anchor.py",
@@ -9223,8 +9228,8 @@
     },
     {
       "path": "tools/dsv41_flash_layer0_oracle.py",
-      "sha256": "9d7cebe0b200306c01b4b79ff816b959adf367da9e57e8e080318c259461c5ca",
-      "size_bytes": 52148
+      "sha256": "54f5fe2b9b84d194d978611920468a356890fa2c13733a0cf3a1083ef84be994",
+      "size_bytes": 53447
     },
     {
       "path": "tools/dsv41_flash_pack_verify.py",
@@ -10965,5 +10970,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 44690006
+  "total_bytes": 44702468
 }

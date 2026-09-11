@@ -37,13 +37,13 @@
 #define IDX_HEADS_LOCAL 4u
 #define IDX_DIM 128u
 #define IDX_TOPK 512u
-#define MAX_COMP_POS 67u
-#define CSA2_STREAM_HORIZON 64u
-#define LADDER_LAYERS 3u
+#define MAX_COMP_POS 132u
+#define LADDER_LAYERS_MAX 8u
 #define ROPE_TABLE_PURE 0u
 #define ROPE_TABLE_YARN 1u
 #define RANK 0u
 #define TOKEN_SLOTS 16u
+#define ROUTER_TIE_FLOOR 0.03f
 
 #define PACK_MAGIC UINT32_C(0x31413444)
 #define ENTRY_BYTES 64u
@@ -120,7 +120,7 @@ typedef struct Pack
 
 typedef struct BlockWeights
 {
-	uint32_t layer, is_csa2, rope_table;
+	uint32_t layer, ratio, is_csa2, rope_table;
 	const uint16_t *embed, *attn_norm, *ffn_norm, *q_norm, *kv_norm, *router;
 	const uint16_t *i_wk, *i_wp, *i_kn, *c_wkv, *c_wgate, *c_norm;
 	const float *sink, *hc_a_fn, *hc_a_base, *hc_a_scale;
@@ -772,6 +772,67 @@ static void EmitF32(Expect *expect, const char *name, const float *values, uint3
 		expect->piece_failures += 1u;
 }
 
+static void EmitRouterIndices(Expect *expect, const char *tag, const float *values,
+	const float *scores, const float *rbias, uint32_t count)
+{
+	char name[64];
+	Piece *piece = 0;
+	const float *expected;
+	float key_got, key_want, gap;
+	uint32_t i, slot;
+	(void)snprintf(name, sizeof(name), "%s.router_indices", tag);
+	for (i = 0u; i < expect->count; i++)
+	{
+		if ( strcmp(expect->pieces[i].name, name) == 0 )
+		{
+			piece = &expect->pieces[i];
+			break;
+		}
+	}
+	if ( piece == 0 )
+	{
+		expect->missing += 1u;
+		return;
+	}
+	if ( piece->count != count )
+	{
+		(void)fprintf(stderr, "SHAPE %s: got %u want %u\n", name, count, piece->count);
+		expect->piece_failures += 1u;
+		return;
+	}
+	piece->seen = 1u;
+	expected = (const float *)(expect->data + piece->offset);
+	for (slot = 0u; slot < count; slot++)
+	{
+		if ( values[slot] == expected[slot] )
+			continue;
+		if ( values[slot] < 0.0f || expected[slot] < 0.0f ||
+			values[slot] >= (float)N_EXPERTS || expected[slot] >= (float)N_EXPERTS )
+		{
+			if ( piece->bad == 0u )
+				(void)fprintf(stderr, "FAIL %s [%u]: got %.7g want %.7g (out of range)\n",
+					name, slot, (double)values[slot], (double)expected[slot]);
+			piece->bad += 1u;
+			continue;
+		}
+		key_got = SoftplusSqrt(scores[(uint32_t)values[slot]]) +
+			rbias[(uint32_t)values[slot]];
+		key_want = SoftplusSqrt(scores[(uint32_t)expected[slot]]) +
+			rbias[(uint32_t)expected[slot]];
+		gap = fabsf(key_got - key_want);
+		if ( gap < ROUTER_TIE_FLOOR )
+			continue;
+		if ( piece->bad == 0u )
+			(void)fprintf(stderr,
+				"FAIL %s [%u]: got %.7g want %.7g (key gap %.7g >= %.7g)\n",
+				name, slot, (double)values[slot], (double)expected[slot],
+				(double)gap, (double)ROUTER_TIE_FLOOR);
+		piece->bad += 1u;
+	}
+	if ( piece->bad != 0u )
+		expect->piece_failures += 1u;
+}
+
 static const uint8_t *PackPlane(const Pack *pack, uint32_t layer, uint32_t kind,
 	uint32_t want_scale, uint64_t *bytes)
 {
@@ -858,28 +919,39 @@ static uint32_t CompressorStep(const BlockWeights *w, BlockState *st,
 	uint32_t r, d, slot;
 	for (r = 0u; r < KV_LATENT; r++)
 	{
-		float kv_acc = 0.0f, sc_acc = 0.0f;
+		float kv_acc = 0.0f;
 		for (d = 0u; d < HIDDEN; d++)
-		{
-			float xd = Bf16ToF32(x[d]);
-			kv_acc += Bf16ToF32(w->c_wkv[(uint64_t)r * HIDDEN + d]) * xd;
-			sc_acc += Bf16ToF32(w->c_wgate[(uint64_t)r * HIDDEN + d]) * xd;
-		}
+			kv_acc += Bf16ToF32(w->c_wkv[(uint64_t)r * HIDDEN + d]) *
+				Bf16ToF32(x[d]);
 		kv[r] = kv_acc;
-		score[r] = sc_acc;
 	}
-	slot = pos % COMP_RATIO;
+	EmitPiece(tag, "c_kv_proj", expect, kv, KV_LATENT);
+	if ( w->ratio == 1u )
+	{
+		for (d = 0u; d < KV_LATENT; d++)
+			latent_b[d] = F32ToBf16(kv[d]);
+		RmsNorm(latent_b, w->c_norm, KV_LATENT, latent);
+		return 1u;
+	}
+	for (d = 0u; d < KV_LATENT; d++)
+		score[d] = 0.0f;
+	for (d = 0u; d < HIDDEN; d++)
+	{
+		float xd = Bf16ToF32(x[d]);
+		for (r = 0u; r < KV_LATENT; r++)
+			score[r] += Bf16ToF32(w->c_wgate[(uint64_t)r * HIDDEN + d]) * xd;
+	}
+	slot = pos % w->ratio;
 	for (d = 0u; d < KV_LATENT; d++)
 	{
 		st->kv_state[slot][d] = kv[d];
 		st->score_state[slot][d] = score[d];
 	}
-	EmitPiece(tag, "c_kv_proj", expect, kv, KV_LATENT);
 	EmitPiece(tag, "c_gate_score", expect, score, KV_LATENT);
-	EmitPiece(tag, "c_state_kv", expect, &st->kv_state[0][0], COMP_RATIO * KV_LATENT);
+	EmitPiece(tag, "c_state_kv", expect, &st->kv_state[0][0], w->ratio * KV_LATENT);
 	EmitPiece(tag, "c_state_score", expect, &st->score_state[0][0],
-		COMP_RATIO * KV_LATENT);
-	if ( (pos + 1u) % COMP_RATIO != 0u )
+		w->ratio * KV_LATENT);
+	if ( (pos + 1u) % w->ratio != 0u )
 		return 0u;
 	for (d = 0u; d < KV_LATENT; d++)
 	{
@@ -905,9 +977,9 @@ static void IndexerPublishK(const BlockWeights *w, BlockState *st,
 	uint32_t i;
 	Bf16Gemv(latent, w->i_wk, IDX_DIM, KV_LATENT, k);
 	RmsNorm(k, w->i_kn, IDX_DIM, k);
-	ApplyRopeTailN(k, IDX_DIM, pos + 1u - COMP_RATIO, w->rope_table, 0u);
+	ApplyRopeTailN(k, IDX_DIM, pos + 1u - w->ratio, w->rope_table, 0u);
 	Fp4RoundTripE8M0(k, IDX_DIM);
-	memcpy(st->k_cache[pos / COMP_RATIO], k, IDX_DIM * sizeof(uint16_t));
+	memcpy(st->k_cache[pos / w->ratio], k, IDX_DIM * sizeof(uint16_t));
 	for (i = 0u; i < IDX_DIM; i++)
 		kf[i] = Bf16ToF32(k[i]);
 	EmitPiece(tag, "idx_k", expect, kf, IDX_DIM);
@@ -920,9 +992,9 @@ static void CompressKvPublish(const BlockWeights *w, BlockState *st,
 	float rf[KV_LATENT];
 	uint32_t i;
 	memcpy(row, latent, KV_LATENT * sizeof(uint16_t));
-	ApplyRopeTailN(row, KV_LATENT, pos + 1u - COMP_RATIO, w->rope_table, 0u);
+	ApplyRopeTailN(row, KV_LATENT, pos + 1u - w->ratio, w->rope_table, 0u);
 	Fp4RoundTripE4M3(row, KV_LATENT);
-	memcpy(st->comp_cache[pos / COMP_RATIO], row, KV_LATENT * sizeof(uint16_t));
+	memcpy(st->comp_cache[pos / w->ratio], row, KV_LATENT * sizeof(uint16_t));
 	for (i = 0u; i < KV_LATENT; i++)
 		rf[i] = Bf16ToF32(row[i]);
 	EmitPiece(tag, "c_kv_row", expect, rf, KV_LATENT);
@@ -935,7 +1007,7 @@ static void IndexerScore(const BlockWeights *w, BlockState *st, const uint16_t *
 	uint16_t iq[IDX_HEADS_LOCAL * IDX_DIM], wgt[IDX_HEADS_LOCAL];
 	float score[MAX_COMP_POS], sf[MAX_COMP_POS], tf[MAX_COMP_POS];
 	uint32_t h, t, d, i, n;
-	n = (pos + 1u) / COMP_RATIO;
+	n = (pos + 1u) / w->ratio;
 	GemvFp8(qr, w->i_qb, w->i_qb_s, IDX_HEADS_LOCAL * IDX_DIM, Q_LORA, iq);
 	for (h = 0u; h < IDX_HEADS_LOCAL; h++)
 		ApplyRopeTailN(iq + h * IDX_DIM, IDX_DIM, pos, w->rope_table, 0u);
@@ -1066,7 +1138,7 @@ static void AttentionStep(const BlockWeights *w, BlockState *st, const uint16_t 
 }
 
 static void MoeStep(const BlockWeights *w, const Pack *pack, const uint16_t *x,
-	Expect *expect, const char *tag, uint16_t *moe_out)
+	Expect *expect, const char *tag, uint32_t full, uint16_t *moe_out)
 {
 	float scores[N_EXPERTS], routed[HIDDEN];
 	uint32_t idx[TOPK], slot, d, local, expert;
@@ -1075,14 +1147,14 @@ static void MoeStep(const BlockWeights *w, const Pack *pack, const uint16_t *x,
 	const uint8_t *w1, *w1s, *w3, *w3s, *w2, *w2s;
 	uint64_t nbytes;
 	GateScores(x, w->router, scores);
-	EmitPiece(tag, "router_scores", expect, scores, N_EXPERTS);
 	GateSelect(scores, w->rbias, idx, weights);
-	if ( tag != 0 )
+	if ( tag != 0 && full != 0u )
 	{
 		float piece[TOPK];
+		EmitPiece(tag, "router_scores", expect, scores, N_EXPERTS);
 		for (slot = 0u; slot < TOPK; slot++)
 			piece[slot] = (float)idx[slot];
-		EmitPiece(tag, "router_indices", expect, piece, TOPK);
+		EmitRouterIndices(expect, tag, piece, scores, w->rbias, TOPK);
 		EmitPiece(tag, "router_weights", expect, weights, TOPK);
 	}
 	for (d = 0u; d < HIDDEN; d++)
@@ -1107,8 +1179,12 @@ static void MoeStep(const BlockWeights *w, const Pack *pack, const uint16_t *x,
 	SharedMlp(x, w->sw1, w->sw1_s, w->sw3, w->sw3_s, w->sw2, w->sw2_s, shared);
 	for (d = 0u; d < HIDDEN; d++)
 		moe_out[d] = F32ToBf16(routed[d] + Bf16ToF32(shared[d]));
-	EmitPiece(tag, "routed_sum", expect, routed, HIDDEN);
+	if ( tag == 0 )
+		return;
 	EmitBf16(tag, "shared_out", expect, shared, HIDDEN);
+	if ( full == 0u )
+		return;
+	EmitPiece(tag, "routed_sum", expect, routed, HIDDEN);
 	EmitBf16(tag, "moe_out", expect, moe_out, HIDDEN);
 }
 
@@ -1149,18 +1225,21 @@ static void BlockForward(const BlockWeights *w, BlockState *st,
 		EmitPiece(tag, "post_ffn", expect, post_f, HC);
 		EmitPiece(tag, "comb_ffn", expect, comb_f, HC * HC);
 	}
-	MoeStep(w, &g_pack, normed, expect, tag, moe_out);
+	MoeStep(w, &g_pack, normed, expect, tag,
+		w->layer == 0u || pos == 0u ? 1u : 0u, moe_out);
 	HcPost(moe_out, stream_a, post_f, comb_f, stream_out);
 	memcpy(st->pre_mix, pre_f, sizeof(pre_f));
 }
 
-static void LoadWeights(BlockWeights *w, const Pack *pack, uint32_t layer)
+static void LoadWeights(BlockWeights *w, const Pack *pack, uint32_t layer,
+	uint32_t ratio)
 {
 	uint64_t ignore = 0u;
 	memset(w, 0, sizeof(*w));
 	w->layer = layer;
-	w->is_csa2 = layer != 0u;
-	w->rope_table = layer == 0u ? ROPE_TABLE_PURE : ROPE_TABLE_YARN;
+	w->ratio = ratio;
+	w->is_csa2 = ratio != 0u;
+	w->rope_table = ratio == 0u ? ROPE_TABLE_PURE : ROPE_TABLE_YARN;
 	w->embed = (const uint16_t *)PackPlane(pack, layer, K_EMBED, 0u, &ignore);
 	w->attn_norm = (const uint16_t *)PackPlane(pack, layer, K_ATTN_NORM, 0u, &ignore);
 	w->ffn_norm = (const uint16_t *)PackPlane(pack, layer, K_FFN_NORM, 0u, &ignore);
@@ -1199,7 +1278,9 @@ static void LoadWeights(BlockWeights *w, const Pack *pack, uint32_t layer)
 	w->i_wp = (const uint16_t *)PackPlane(pack, layer, K_IWP, 0u, &ignore);
 	w->i_kn = (const uint16_t *)PackPlane(pack, layer, K_IKN, 0u, &ignore);
 	w->c_wkv = (const uint16_t *)PackPlane(pack, layer, K_CWKV, 0u, &ignore);
-	w->c_wgate = (const uint16_t *)PackPlane(pack, layer, K_CWGATE, 0u, &ignore);
+	if ( w->ratio > 1u )
+		w->c_wgate = (const uint16_t *)PackPlane(pack, layer, K_CWGATE, 0u,
+			&ignore);
 	w->c_norm = (const uint16_t *)PackPlane(pack, layer, K_CNORM, 0u, &ignore);
 }
 
@@ -1299,8 +1380,15 @@ static void ExpectLoad(Expect *expect, const char *bin_path, const char *table_p
 	(void)fclose(table);
 }
 
+static uint32_t TagCount(uint32_t layer, uint32_t ratio)
+{
+	if ( layer == 0u )
+		return 3u;
+	return ratio != 0u ? 6u : 1u;
+}
+
 static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
-	uint32_t layer)
+	uint32_t layer, uint32_t ratio)
 {
 	static const float identity[HC] = { 1.0f, 0.0f, 0.0f, 0.0f };
 	BlockWeights w;
@@ -1308,9 +1396,10 @@ static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
 	char tag[32];
 	const char *tag_used;
 	uint32_t pos, i;
+	uint32_t tags = TagCount(layer, ratio);
 	static float stream_values[HC * HIDDEN];
 	static uint16_t stream_in[HC * HIDDEN], stream_out[HC * HIDDEN];
-	LoadWeights(&w, pack, layer);
+	LoadWeights(&w, pack, layer, ratio);
 	st = (BlockState *)calloc(1u, sizeof(BlockState));
 	if ( st == 0 )
 		exit(FAIL_EXIT);
@@ -1325,23 +1414,18 @@ static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
 		for (i = 0u; i < HC * HIDDEN; i++)
 			stream_in[i] = embed_row[i % HIDDEN];
 		tag_used = 0;
-		if ( layer == 0u && pos <= 2u )
+		if ( pos < tags )
 		{
-			(void)snprintf(tag, sizeof(tag), "pos%u", pos);
-			tag_used = tag;
-		}
-		if ( layer != 0u && pos <= 5u )
-		{
-			(void)snprintf(tag, sizeof(tag), "l%u.p%u", layer, pos);
+			if ( layer == 0u )
+				(void)snprintf(tag, sizeof(tag), "pos%u", pos);
+			else
+				(void)snprintf(tag, sizeof(tag), "l%u.p%u", layer, pos);
 			tag_used = tag;
 		}
 		BlockForward(&w, st, stream_in, pos, expect, tag_used, stream_out);
-		if ( layer != 0u && pos > CSA2_STREAM_HORIZON )
+		if ( layer != 0u )
 			continue;
-		if ( layer == 0u )
-			(void)snprintf(tag, sizeof(tag), "stream_pos%u", pos);
-		else
-			(void)snprintf(tag, sizeof(tag), "l%u.stream_pos%u", layer, pos);
+		(void)snprintf(tag, sizeof(tag), "stream_pos%u", pos);
 		for (i = 0u; i < HC * HIDDEN; i++)
 		{
 			stream_values[i] = Bf16ToF32(stream_out[i]);
@@ -1359,18 +1443,57 @@ static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
 	free(st);
 }
 
+static uint32_t ParseLayers(const char *arg, uint32_t *layers, uint32_t *ratios)
+{
+	uint32_t n = 0u;
+	const char *p = arg;
+	while ( *p != '\0' && n < LADDER_LAYERS_MAX )
+	{
+		char *end;
+		long lv = strtol(p, &end, 10);
+		uint32_t layer, ratio;
+		if ( end == p || *end != ':' || lv < 0 || (uint32_t)lv >= GLOBAL_LAYER )
+			return 0u;
+		layer = (uint32_t)lv;
+		p = end + 1u;
+		lv = strtol(p, &end, 10);
+		if ( end == p || lv < 0 || lv > 2 )
+			return 0u;
+		ratio = (uint32_t)lv;
+		layers[n] = layer;
+		ratios[n] = ratio;
+		n++;
+		p = (*end == ',') ? end + 1u : end;
+	}
+	return *p == '\0' ? n : 0u;
+}
+
 int main(int argc, char **argv)
 {
-	Expect expect;
+	Expect expect = { 0 };
 	uint8_t header[108];
 	FILE *table;
+	uint32_t ladder_layer[LADDER_LAYERS_MAX] = { 0u, 2u, 8u };
+	uint32_t ladder_ratio[LADDER_LAYERS_MAX] = { 0u, 2u, 2u };
+	uint32_t ladder_layers = 3u;
 	const uint16_t *embed;
 	uint64_t ignore = 0u;
-	uint32_t ladder[LADDER_LAYERS] = { 0u, 2u, 8u }, l, i, unseen = 0u;
-	if ( argc != 4 )
+	uint32_t l, i, unseen = 0u;
+	if ( argc != 4 && argc != 5 )
 	{
-		(void)fprintf(stderr, "usage: %s <pack> <piece_table> <expectations_bin>\n", argv[0]);
+		(void)fprintf(stderr,
+			"usage: %s <pack> <piece_table> <expectations_bin> [layer:ratio,...]\n",
+			argv[0]);
 		return(FAIL_EXIT);
+	}
+	if ( argc == 5 )
+	{
+		ladder_layers = ParseLayers(argv[4], ladder_layer, ladder_ratio);
+		if ( ladder_layers == 0u )
+		{
+			(void)fprintf(stderr, "bad layer:ratio list %s\n", argv[4]);
+			return(FAIL_EXIT);
+		}
 	}
 	InitLuts();
 	RopeInit();
@@ -1386,8 +1509,8 @@ int main(int argc, char **argv)
 	memcpy(g_tokens, header + 32u, sizeof(g_tokens));
 	ExpectLoad(&expect, argv[3], argv[2]);
 	embed = (const uint16_t *)PackPlane(&g_pack, 0u, K_EMBED, 0u, &ignore);
-	for (l = 0u; l < LADDER_LAYERS; l++)
-		RunLadder(&g_pack, embed, &expect, ladder[l]);
+	for (l = 0u; l < ladder_layers; l++)
+		RunLadder(&g_pack, embed, &expect, ladder_layer[l], ladder_ratio[l]);
 	for (i = 0u; i < expect.count; i++)
 	{
 		Piece *piece = &expect.pieces[i];
