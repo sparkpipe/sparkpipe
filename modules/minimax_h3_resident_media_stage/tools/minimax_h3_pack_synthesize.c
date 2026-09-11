@@ -9,8 +9,6 @@
 #include "spark_minimax_h3_stagepack_format.h"
 #include "sparkpipe/spark_error_site.h"
 
-#include "sparkpipe/spark_error_site.h"
-
 #define SPARK_SYNTH_LCG_MULTIPLIER UINT64_C(6364136223846793005)
 #define SPARK_SYNTH_LCG_INCREMENT UINT64_C(1442695040888963407)
 #define SPARK_SYNTH_CHUNK_TENSORS 64
