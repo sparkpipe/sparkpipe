@@ -1509,6 +1509,15 @@ CEILING = 238091
 # (#826), admission DRY (#920), k3 A-0023 strip (net-negative), norm.cuh
 # orphan fix (#934). Measured exact: 268809 on dccf1ec.
 CEILING = 268809
+# the ling driver lane (lane/ling-driver, PR #830) merged onto main
+# 94cb950: the Ling 3.0 Flash/Fin family contract + registry, the resident
+# decode stage (bf16/fp8 arms; KDA + latent-attention layers over the
+# shared kernels), packer/verifier/synthesize/deployment tooling, the GPU
+# validator with its double-precision KDA truth arbiter, and the shared
+# topk group-mask fix + LmHeadWiseGateKernel. Shared surface takes main
+# wholesale (k3/qwen38_27b/glm52 verified byte-identical post-merge).
+# Measured exact: 279620.
+CEILING = 279620
 
 
 ROOT = Path(__file__).resolve().parent.parent
