@@ -1,5 +1,5 @@
 {
-  "file_count": 2185,
+  "file_count": 2191,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -2797,6 +2797,11 @@
       "size_bytes": 3002
     },
     {
+      "path": "examples/release/dsv41_flash_tp8/m7_attach_receipt.json",
+      "sha256": "386e36bbd59283a86acc8c1310a64deda6f1aefafe3096ea0605fac47cbfaf2e",
+      "size_bytes": 5949
+    },
+    {
       "path": "examples/release/dsv41_flash_tp8/rank0-3.sha256",
       "sha256": "421f134207c5707b061105215d1155e34648e9ce7c58a4c0305818c31a3060a3",
       "size_bytes": 320
@@ -3898,8 +3903,8 @@
     },
     {
       "path": "model_contracts/dsv41_flash_authoritative.json",
-      "sha256": "3793af2cc014f942cf5b49c9ee921b1cd3ddcc83adc19cbd2008479e45f07827",
-      "size_bytes": 17053
+      "sha256": "bb8adaf752c079374b8b1572ae3327ce69f1a23740e8685434900317df764921",
+      "size_bytes": 23352
     },
     {
       "path": "model_contracts/dsv4_flash.json",
@@ -4078,13 +4083,18 @@
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_resident_decode_stage_module.c",
-      "sha256": "b698c1f7d26f2c0c02a992c9125d0b512d3c8e489ac972e20281ab4ca72f778e",
-      "size_bytes": 19792
+      "sha256": "48fd555d621d3ce8d81c489aaf1533c757a28b4b76c54913b1516f5677262fb1",
+      "size_bytes": 19535
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h",
       "sha256": "8fce4597ef13580bdf46e3fddea67f1b4b815532e4334d8584e6feb14c5e4f7e",
       "size_bytes": 16859
+    },
+    {
+      "path": "modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_attach_probe.c",
+      "sha256": "28a195ff71354a3b0d28e112f97139803da6537563f2a2931ab5a0408ee8f4ac",
+      "size_bytes": 13327
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c",
@@ -6893,8 +6903,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "076c13e6440ae76018be5a9e99bf3d34f552d89c6547975c78e72c61a8d10b85",
-      "size_bytes": 29270
+      "sha256": "e7b6f21e31603de9eef69cddff5a2e67492a795cc70c94ec1ed5f6954967fadb",
+      "size_bytes": 29271
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -7480,6 +7490,16 @@
       "path": "tests/test_dspark_drafter_pin.c",
       "sha256": "4e99d299411d4b1edd61ecd4d0b567a812bc2ae594d4215b522e89d3ed3e1a7a",
       "size_bytes": 1510
+    },
+    {
+      "path": "tests/test_dsv41_flash_layer0_anchor.c",
+      "sha256": "48da2ac96f7024f288aa19b335cc0143bf916170667b1c5f24fdafa23e608ac9",
+      "size_bytes": 41800
+    },
+    {
+      "path": "tests/test_dsv41_flash_layer0_anchor.py",
+      "sha256": "37b3e069dc96bc969010bf7f77799a848c357e79cf94b56949f8560097f12e78",
+      "size_bytes": 2166
     },
     {
       "path": "tests/test_dsv41_flash_pack_contract.c",
@@ -9197,6 +9217,11 @@
       "size_bytes": 4549
     },
     {
+      "path": "tools/dsv41_flash_layer0_oracle.py",
+      "sha256": "9d7cebe0b200306c01b4b79ff816b959adf367da9e57e8e080318c259461c5ca",
+      "size_bytes": 52148
+    },
+    {
       "path": "tools/dsv41_flash_pack_verify.py",
       "sha256": "cebdf1253081fd0638e9f63812af228c2673d49c57914e2d8196d3909fe6f191",
       "size_bytes": 19151
@@ -9205,6 +9230,11 @@
       "path": "tools/dsv41_flash_stagepack.py",
       "sha256": "6e493e4e4993defa6074379af9e3ea62295e857cd231d7f1df224a455876803a",
       "size_bytes": 26477
+    },
+    {
+      "path": "tools/dsv41_spine_instrument.c",
+      "sha256": "4e149994915efe1a3359e31762155ecf91e0582ed4afdb179b05dbec41a16a0a",
+      "size_bytes": 4442
     },
     {
       "path": "tools/dsv4_ga_reference_vector.py",
@@ -10848,8 +10878,8 @@
     },
     {
       "path": "tools/stagepack_naming.json",
-      "sha256": "3603c2f6bfdb1d7602f25ff22de6bbbf0e826d0921173cc6373149919f3772a5",
-      "size_bytes": 2014
+      "sha256": "ab8619b157c827e179b78a61fac79acda4ef4a67cbda7d99381c40fd8ed0c443",
+      "size_bytes": 2041
     },
     {
       "path": "tools/staging_manifest.py",
@@ -10930,5 +10960,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 44558591
+  "total_bytes": 44684493
 }
