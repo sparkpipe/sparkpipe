@@ -26,6 +26,13 @@
 static_assert(4u * 16u * 24u <= 4096u,
 	"doorbell entries must fit the doorbell page");
 
+extern "C" cudaError_t SparkHy4LaunchAccumAddBf16(cudaStream_t stream,
+	void *destination_bf16,const void *source_bf16,
+	uint32_t row_count,uint32_t width);
+extern "C" cudaError_t SparkHy4LaunchAccumU64Max(cudaStream_t stream,
+	uint64_t *destination,const uint64_t *source,
+	uint32_t element_count);
+
 #define SPARK_HY4_TP16_RUNG_RANKS SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE
 #define SPARK_HY4_TP16_RUNG_HIDDEN SPARK_HY4_MODEL_HIDDEN_DIMENSION
 #define SPARK_HY4_TP16_RUNG_MAX_ROWS 8u
