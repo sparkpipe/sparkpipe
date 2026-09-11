@@ -1,0 +1,111 @@
+{
+ "schema_version": 3,
+ "model_revision": "42ed227ee7df40d41602854ae760620d6eb651fe",
+ "diffusers_commit": "3c22124636a332a0df02910f609315d4c2898f57",
+ "stage_pack_path": "packs/h3.bf16.tp4pp4.rank6.sp",
+ "max_sequence_positions": 16384,
+ "execution_row_capacity": 16384,
+ "tp_degree": 4,
+ "tp_rank": 2,
+ "pp_stage": 1,
+ "pp_stage_count": 4,
+ "dit_block_count": 13,
+ "tp_collective": {
+  "backend": "hidden_transport",
+  "backend_module_path": "lib/hidden_transport.so",
+  "algorithms": [
+   "tree",
+   "direct_all_to_all"
+  ],
+  "collective_identifier": 21754173389820724,
+  "listen_port": 64218,
+  "connect_timeout_milli": 30000,
+  "operation_timeout_milli": 30000,
+  "peer_hosts": [
+   "spark4",
+   "spark5",
+   "spark6",
+   "spark7"
+  ],
+  "peer_ports": [
+   64216,
+   64217,
+   64218,
+   64219
+  ],
+  "split_ring_min_payload_bytes": 0,
+  "direct_all_to_all_max_payload_bytes": 81920,
+  "rail_peer_hosts": [
+   [
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7"
+   ],
+   [
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7"
+   ]
+  ],
+  "step_rail_indices": [
+   0,
+   1,
+   1,
+   1
+  ],
+  "session_ports": [
+   [
+    0,
+    17473,
+    17474,
+    17475
+   ],
+   [
+    17476,
+    0,
+    17478,
+    17479
+   ],
+   [
+    17480,
+    17481,
+    0,
+    17483
+   ],
+   [
+    17484,
+    17485,
+    17486,
+    0
+   ]
+  ],
+  "session_ports_hc": [
+   [
+    0,
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0
+   ]
+  ]
+ }
+}
