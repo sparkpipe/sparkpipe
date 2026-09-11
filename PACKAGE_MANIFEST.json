@@ -4453,13 +4453,13 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
-      "sha256": "942f1e8d679a29f8a480e024d4cdf7d9f1571432a70737c3495f7db856df791a",
-      "size_bytes": 76010
+      "sha256": "4dfa7714e2199ae9ab3fa7aa582af720de1b716a2469fd5dcdcdabc3b9c390e6",
+      "size_bytes": 75604
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "59d3440b4728a5ee7f0a9837d056227788c695f50bf494903a38b8b674db020c",
-      "size_bytes": 116106
+      "sha256": "987efb5dba7926a7b8aad4c694f6064e705aa711b7152debe12e3e3b95e671de",
+      "size_bytes": 122750
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -4588,8 +4588,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "a1a41551ac255ab062c5858fbf040f707e8c3c8dd88541e9767c21bb6583bd9f",
-      "size_bytes": 20727
+      "sha256": "36a078dd47e5ade5510594db3198b909cb0cc2ce11f7268234bbfae5207be8d2",
+      "size_bytes": 20856
     },
     {
       "path": "node/weightd_spawn.c",
@@ -6103,8 +6103,8 @@
     },
     {
       "path": "runtime/spark_weightd.c",
-      "sha256": "b756a22bba217c16fadbea5779cb3123bcd664fd47133d3003ba4293d3928fbe",
-      "size_bytes": 126903
+      "sha256": "af3791ec663984b12fd32a64810d4159642ba473ee9dd4e276095106fe395fec",
+      "size_bytes": 127293
     },
     {
       "path": "runtime/spark_weightd_attach.c",
@@ -9870,5 +9870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 32395000
+  "total_bytes": 32401757
 }

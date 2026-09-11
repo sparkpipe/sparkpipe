@@ -59,6 +59,7 @@ typedef struct SparkWeightdMesh
     uint64_t send_err;
     uint64_t send_logged;
     uint32_t mesh_ready;
+    uint32_t resources_ready;
     uint32_t local_rank;
     uint8_t sgid_index;
 } SparkWeightdMesh;
@@ -229,6 +230,8 @@ static void SparkWeightdMeshTryWire(void)
     uint32_t my_index_in_peer;
     uint32_t changed;
 
+    if (weightd_mesh.resources_ready == 0u)
+        return;
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
@@ -431,6 +434,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
     }
+    weightd_mesh.resources_ready = 1u;
     memset(&own_record,0,sizeof(own_record));
     own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
     own_record.rank = weightd_mesh.local_rank;
