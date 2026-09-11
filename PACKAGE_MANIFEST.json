@@ -1,5 +1,5 @@
 {
-  "file_count": 2052,
+  "file_count": 2118,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -63,8 +63,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7c21e68ad1944d40e658161fec04dac4368c0007b6113d627d2fbd7f812a1abe",
-      "size_bytes": 94244
+      "sha256": "3ba58d9a24405b3398be27f5e03983ae02fe93e3c424ea69bf98a89395cd92e5",
+      "size_bytes": 94278
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -322,6 +322,11 @@
       "size_bytes": 2680
     },
     {
+      "path": "docs/AGENT_LANE_BRIEFS/hy4-fp8-scale-contract.md",
+      "sha256": "0942a386acb726e7313ea393b8a3af6ee2cdb9105d6328e52a60f9183a0fd53e",
+      "size_bytes": 10384
+    },
+    {
       "path": "docs/AGENT_LANE_BRIEFS/k3_pack_layout_fix.md",
       "sha256": "e111e76340f1883e53840dd165f29da99e580cacb350c50130113cb81b6f13fc",
       "size_bytes": 3512
@@ -510,6 +515,21 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/glm5next-multirow-handoff-2026-09-01.md",
       "sha256": "d4e0a9af420dd8243f312718aabaabcfd0245015fe7c9fd8c169bceeaaf26fb8",
       "size_bytes": 6142
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/hy4-fp8-rung-2026-09-10.md",
+      "sha256": "4df7013ec3b7b41169031c97db9556e777a7ecf76778fa8352e76e9f371fe0b1",
+      "size_bytes": 8141
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/hy4-llama-diff-shard-repair-2026-09-03.md",
+      "sha256": "9d598788c425a759a82d4c2bbe7d869d77c0caee98e44372d41c0d422cbc9bf6",
+      "size_bytes": 53907
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/hy4-tp16-shards-2026-09-01.md",
+      "sha256": "e8b6733288b46c5f323434a734a149d3b77df7ab84d6e0628295ae518e68f143",
+      "size_bytes": 31083
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/hygiene-2026-08-28.md",
@@ -3663,8 +3683,8 @@
     },
     {
       "path": "model-families/hy4/include/sparkpipe/spark_hy4_model.h",
-      "sha256": "1b0fbac879288109f5f9ceddd168c738486e554a1d202c1f83cc5c297896a0df",
-      "size_bytes": 2580
+      "sha256": "1882136c9a97ead084ad404f7b8af4784468ec011a4f4acb777d08ae76e4df13",
+      "size_bytes": 3660
     },
     {
       "path": "model-families/k3/include/sparkpipe/spark_k3_kv_geometry.h",
@@ -4350,6 +4370,46 @@
       "path": "modules/glm5_next_resident_decode_stage/validation/validate_glm5_next_resident_decode_stage_tap_ring.sh",
       "sha256": "52718f45137dc7651a72dfc185cbcfef82bb800def58f655109a47703ca5f019",
       "size_bytes": 2632
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/Makefile",
+      "sha256": "a4cfd893b5459b512a8db37bcad7901ca6f89bb7888c10015b3bb6fd0aa45d85",
+      "size_bytes": 1832
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/include/sparkpipe/spark_hy4_resident_decode_stage_firmware.h",
+      "sha256": "a8a3b3025118f0dcff3de9d48509cca682e836e58607b3ead800ebeceb66fa93",
+      "size_bytes": 7554
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/source/spark_hy4_fp8_scale_contract.h",
+      "sha256": "fb63772ce39aeb06f793236befd0c774af3ad1aa97a31a42780ae820738b3f9a",
+      "size_bytes": 5300
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_cuda.cu",
+      "sha256": "6c00bbe1e74c2f4b674e3ebddae67244009464292d154f8aef8150c8e9b086b3",
+      "size_bytes": 8533
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c",
+      "sha256": "69a9da4d22ec310512a95189e4dfc5223af065f4760b7a7dfbc6683076806845",
+      "size_bytes": 5766
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/source/spark_hy4_stagepack_format.h",
+      "sha256": "6a698ede9ff69db222ae4370325ab91113f16c86b3a6060601273b632befdaa9",
+      "size_bytes": 18985
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/source/spark_hy4_stagepack_format_check.c",
+      "sha256": "afaa60ecc4cf6386c331369e79c2a9accf2389cdddfe248721bccd751a6d943b",
+      "size_bytes": 1338
+    },
+    {
+      "path": "modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c",
+      "sha256": "852d23c7185cb54fb4ff380c9674e576dd2af0396dcbe9b0ac9e9cffabf97ba4",
+      "size_bytes": 8483
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/model_resident.json",
@@ -7083,8 +7143,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "3d9e45f608493593087992d25fcc618010985fb3c1af916c7f6c89c5938a5eff",
-      "size_bytes": 100689
+      "sha256": "71fbf463805d132eb77d8ee74225fbcb1762ac5bd417998f367366ae82e96e46",
+      "size_bytes": 101193
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -7590,6 +7650,11 @@
       "path": "tests/test_hidden_transport_rdma_source.py",
       "sha256": "0bc51a5bf7b8559aaa70d5ff477e5aa1488c73d4f2041eb042913bc7486c87db",
       "size_bytes": 7257
+    },
+    {
+      "path": "tests/test_hy4_fp8_scale_contract.py",
+      "sha256": "405bc3f4d413e4a2e5524e071d5bdf037af20255dbf48d49848bfca9b4f42af9",
+      "size_bytes": 7781
     },
     {
       "path": "tests/test_hy4_model_header.py",
@@ -8407,6 +8472,11 @@
       "size_bytes": 1071
     },
     {
+      "path": "tools/apply_header_repair.sh",
+      "sha256": "ebe30eada4396798bc5c3af8676b61441c48ef2b06711f5f04f0c7c60c084173",
+      "size_bytes": 1344
+    },
+    {
       "path": "tools/audit_core_boundaries.py",
       "sha256": "69b1e0e343712c9ebbae4269d467ffc5c7d86f6f8732427e8c79b8dad5142d8d",
       "size_bytes": 10218
@@ -8812,6 +8882,11 @@
       "size_bytes": 1595
     },
     {
+      "path": "tools/dist_experts.sh",
+      "sha256": "d58eea9b27add430c22998ab0a4fb9180a94fc843a51a0f9f9ab3dbbbf4e6747",
+      "size_bytes": 993
+    },
+    {
       "path": "tools/dsv4_ga_reference_vector.py",
       "sha256": "46507f103446e7aaccc99787fddf2b5b672d29d49fb8c3589bb2af453d95298a",
       "size_bytes": 23084
@@ -9028,8 +9103,8 @@
     },
     {
       "path": "tools/generate_hy4_contracts.py",
-      "sha256": "bdab4dc909e888e983c66ddd22b869a24ed0788fa4352df5a9085f137ecdcbfa",
-      "size_bytes": 9208
+      "sha256": "1d65dfd1f3048017034be2efd7ff16a174a892ec44428cb43f7e53cc5dfc0cf4",
+      "size_bytes": 10405
     },
     {
       "path": "tools/generate_k3_contract.py",
@@ -9377,9 +9452,249 @@
       "size_bytes": 3141
     },
     {
+      "path": "tools/hy4_dequant/hy4_generate.c",
+      "sha256": "df5a153ed36afd833af7bf7a7288adb4062042bb8a33d129917f45902d3082b6",
+      "size_bytes": 31197
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_indexer_forward.c",
+      "sha256": "db5b34be4c4bd0eab407a8eaa27b0533944a5ab1f8c0958fd3ef5033ec86a18c",
+      "size_bytes": 9403
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_iq_dequant_ref.c",
+      "sha256": "d428e928f6752d5391d11ca6f08d0a29d2f08e27ae2f2fe8073acd6f3bdc4456",
+      "size_bytes": 2131
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_iq_dequant_vendor.h",
+      "sha256": "ae52d8de321e583a55c5c46b10c27c5b5d95e6bcf2b2728c3dd8591d032b20f8",
+      "size_bytes": 62864
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_layer_forward.c",
+      "sha256": "e07fd98a7a69209ed1c90a5f26969ebe54b749a3833251a99142cc707213f51d",
+      "size_bytes": 14245
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_layer_semantics.md",
+      "sha256": "5d06b09b4cf523006156d0bf61749c4cead7dc98cd8feb008257dd91efa0f3fe",
+      "size_bytes": 2823
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_moe_forward.c",
+      "sha256": "f89cf7ce7a5fdcbd63f2f687200d309aec234d2f27c23c50bfd9d280e6ba2213",
+      "size_bytes": 10858
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_rank_loader.c",
+      "sha256": "9293c486c6f3c9e7d5e55afb7efdb747d9fb79cec0e03baf1d348d25bc7e6f60",
+      "size_bytes": 10818
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_rank_loader.h",
+      "sha256": "f9c13e9fe234f48830e24c613ece4d261b48d69beed8dd86a26da88b69e7da66",
+      "size_bytes": 1683
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_rank_loader_test.c",
+      "sha256": "2bb7f6a4ccb504684cf73cae5d1646be43f90e85995e61d8648236ee228614cb",
+      "size_bytes": 2683
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_reassemble.c",
+      "sha256": "6aa6bafabbacf53c6b19b0b02799f0b1f8d4a251077c3d36ac3c4d6dd0302523",
+      "size_bytes": 4405
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_stack_forward.c",
+      "sha256": "f19dd27ac24661ed43712d3a7c372ebc83168debfc55261900529473c74d36ef",
+      "size_bytes": 18611
+    },
+    {
+      "path": "tools/hy4_dequant/hy4_tokenize.py",
+      "sha256": "8f0a33bc76965179d42806261bfa10a91733f668ea98c0c7c491e2fac0eb7877",
+      "size_bytes": 5777
+    },
+    {
+      "path": "tools/hy4_dequant/ref/hyv4_reference.cpp",
+      "sha256": "5b09e04fe91dec4f02af4ff3d6186123776078991ec7d33a554cb0b85bd421b2",
+      "size_bytes": 29968
+    },
+    {
+      "path": "tools/hy4_dequant/run_gen_anchor.sh",
+      "sha256": "2d18f7020f37de4ea292298123cfbf0a6a95197a95d8828042bf2bb7743af230",
+      "size_bytes": 869
+    },
+    {
+      "path": "tools/hy4_dequant/vendor/hyv4_reference.cpp",
+      "sha256": "514ef62ae147171d5675229de59e8e6d3b8e1f84f20680056df8708601fe52fd",
+      "size_bytes": 30140
+    },
+    {
+      "path": "tools/hy4_experts_manifest.c",
+      "sha256": "2253020512a1a2a0dbe4beb5efe89a42a24dbfdd6f70bf985ffb83349f006eb3",
+      "size_bytes": 2679
+    },
+    {
+      "path": "tools/hy4_experts_manifest_v2.c",
+      "sha256": "95b1b04e1b255a20e714f573fd8a31313f8b304667bcf36a083676148b7cbdd9",
+      "size_bytes": 8640
+    },
+    {
+      "path": "tools/hy4_fp8_chain.sh",
+      "sha256": "e70bef8cd4cfee6bcc41e915449fa272671cef6ff8ace29eef08b623b47aabd4",
+      "size_bytes": 1638
+    },
+    {
+      "path": "tools/hy4_fp8_header_repair2.py",
+      "sha256": "930a9459ae96af8d0147b3d75e9d9bb777db17b45aa8e1a8635c116db3089c29",
+      "size_bytes": 5841
+    },
+    {
+      "path": "tools/hy4_fp8_pack_verify.py",
+      "sha256": "e21866feb665a77f49860b49787433f27dd72267427582926345f737c4e672fe",
+      "size_bytes": 4989
+    },
+    {
+      "path": "tools/hy4_fp8_rank_rebuild.py",
+      "sha256": "2a551360983de7157b104884f5ac9fefcdfda74a0ff3036f0cc8a28a34e79dcb",
+      "size_bytes": 7509
+    },
+    {
+      "path": "tools/hy4_fp8_scale_contract.py",
+      "sha256": "07c0e2ab0573d8720eafcb73f26ba99ed7e7606d6ef531c7fd78fd8eeac3d4f5",
+      "size_bytes": 7320
+    },
+    {
+      "path": "tools/hy4_fp8_stagepack.py",
+      "sha256": "826829d156bac526aed1e653c20745658a0c077b44c0a4dfbd21f58781fa59cd",
+      "size_bytes": 15234
+    },
+    {
+      "path": "tools/hy4_fp8_stagepack_fanout.py",
+      "sha256": "5dde82ee977c9cd3d8b2701c2b505ae855596ba18f69f098cdb9b7088af7542f",
+      "size_bytes": 7466
+    },
+    {
+      "path": "tools/hy4_gpu/anchor_compare.py",
+      "sha256": "561420544bda5dc416e70926c1e8a7a033c1f7cf0bca961593c91c719e5415fc",
+      "size_bytes": 2040
+    },
+    {
+      "path": "tools/hy4_gpu/build_and_run_fwd.sh",
+      "sha256": "39cf25c155239cb1bac95ab583638c8ef49f7e3b4b2042df6ad76e057e1fca0e",
+      "size_bytes": 909
+    },
+    {
+      "path": "tools/hy4_gpu/experts_ck128_check.c",
+      "sha256": "6031b07fe6c7972677f4de72777c3f64ca042a9768ec72f646a2b9e0e737df57",
+      "size_bytes": 3388
+    },
+    {
+      "path": "tools/hy4_gpu/fp8_rung_manifest.py",
+      "sha256": "b6b7995ef442bf9ccf642475256f11df8ad8fb0668a48180e9c02a6de2c1b12c",
+      "size_bytes": 5499
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_attn_test.cu",
+      "sha256": "031baf0b48ca6469aa2cd1f489b1e78bbaa001bcb93926a68db2321c8ee00dc8",
+      "size_bytes": 20119
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_dequant_test.cu",
+      "sha256": "9267f20295a459e7023baa1b44c347fc17b72d1db5114497f3e1606a47b48289",
+      "size_bytes": 17723
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_forward_test.cu",
+      "sha256": "e81165034dd536b8f2e9e9a18db517fdef1b9211914a92e7c5e1e8fbf226a5d0",
+      "size_bytes": 44058
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_fp8_rung.cu",
+      "sha256": "d7439a05c7f2a0ccd84a9cd8a86207d4d30ca0ec4abcc3bcaf88832aa5b9768f",
+      "size_bytes": 10211
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_hc_test.cu",
+      "sha256": "96bcc7f80f1ac26818e582483406c45468cdce1acbadf8372bd79a87559dcc1c",
+      "size_bytes": 16023
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_layer_test.cu",
+      "sha256": "66658b25831b266b92169d610cea2cd7491bacd13ab098141bb518369bf8d82e",
+      "size_bytes": 32315
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_moe_test.cu",
+      "sha256": "6846f6a1022f84ba3a7c1fd41d919fa91554ad68d4ff3f8525e6836d014b0c7a",
+      "size_bytes": 17135
+    },
+    {
+      "path": "tools/hy4_gpu/hy4_qchain_test.cu",
+      "sha256": "8dd9319e41994d5b7c925b137d0954ee36f1e029b59eb7c92a33c461a2ee6aea",
+      "size_bytes": 14019
+    },
+    {
+      "path": "tools/hy4_gpu/run_attn_test.sh",
+      "sha256": "44a09e0b6afd5997a0619426483673b88609e4c8f96a184a520e60f119ef7153",
+      "size_bytes": 390
+    },
+    {
+      "path": "tools/hy4_gpu/run_dequant_test.sh",
+      "sha256": "c636c12cbe1adbb612daf199d7cb9b520397eb299f222a29ce54f75f7ed336cc",
+      "size_bytes": 408
+    },
+    {
+      "path": "tools/hy4_gpu/run_fp8_fanout.sh",
+      "sha256": "fe2e64171bf17fb0e5453478712555270ea9f2becb8451e14ec5ab8d0f1da9c4",
+      "size_bytes": 421
+    },
+    {
+      "path": "tools/hy4_gpu/run_fp8_rung.sh",
+      "sha256": "2ad0eff3536f23dccd5451e25a5aa98e5f8315c00ebd9917d8513b382e256c6b",
+      "size_bytes": 1165
+    },
+    {
+      "path": "tools/hy4_gpu/run_fp8_verify.sh",
+      "sha256": "b0b5e6eab01b27919cc71409a40acc4c75f9fe7e71f5ae377aa790c1a042ba52",
+      "size_bytes": 450
+    },
+    {
+      "path": "tools/hy4_gpu/run_hc_test.sh",
+      "sha256": "3cb0eeb3533f1d00f2bebc5f882e692045f566e89296cca9291c3fcb4421e634",
+      "size_bytes": 380
+    },
+    {
+      "path": "tools/hy4_gpu/run_layer_test.sh",
+      "sha256": "80c471d46fb64c91a734523877e4a77b7a5449dd252e12dd84f869dc376cc9c0",
+      "size_bytes": 392
+    },
+    {
+      "path": "tools/hy4_gpu/run_moe_test.sh",
+      "sha256": "edd3f62dca82fa890f2ee3ddd37c1d93093d98e5c275071cebf97dd6f0d3cad8",
+      "size_bytes": 385
+    },
+    {
+      "path": "tools/hy4_gpu/run_qchain_test.sh",
+      "sha256": "2a6ce244812f08bc2c6c4ff07ee56658b636015bfd219fd6fed7509e4b5cc108",
+      "size_bytes": 400
+    },
+    {
       "path": "tools/hy4_tp16_shard.py",
-      "sha256": "cb3639454cda3e0fd51c3cba2b5a4b2c7a43010b9896a80a22b46e1dca8995ae",
-      "size_bytes": 25755
+      "sha256": "b381d9483436fa2f8f99d2d97852c0465f62cc30c297e1bbf8ef22275c705cdb",
+      "size_bytes": 30287
+    },
+    {
+      "path": "tools/hy4_wo_fleet_apply.c",
+      "sha256": "4ee8746b48722009767368fe4eb4bf2bb294895d0ca2dcc440e84e20d0d1e860",
+      "size_bytes": 8725
+    },
+    {
+      "path": "tools/hy4_wo_patch.py",
+      "sha256": "ad1bf5fe3323e41802299a6fef65fff02cde2b9273cedf821db23be535cb1ec7",
+      "size_bytes": 5924
     },
     {
       "path": "tools/install_cuda13_compile_only_debian13.sh",
@@ -9737,6 +10052,11 @@
       "size_bytes": 2205
     },
     {
+      "path": "tools/place_fp8_packs.sh",
+      "sha256": "1c87bc61f986279d13955136d158f60c46bab4c00cfeeeaf0bfab1d32f216cc3",
+      "size_bytes": 2022
+    },
+    {
       "path": "tools/prefill_cliff_probe.py",
       "sha256": "5b60635240141fe7dd142f7a9d6d7396b61fd9ae63c991437c3b7885e8be624d",
       "size_bytes": 812
@@ -10032,6 +10352,11 @@
       "size_bytes": 1321
     },
     {
+      "path": "tools/rebuild_batch.sh",
+      "sha256": "76752ae5134c1532f65b0389dcfe50e64faf3bc690e9d5ebc3a8948d19a65896",
+      "size_bytes": 993
+    },
+    {
       "path": "tools/registrar_stage.sh",
       "sha256": "2fc58f6fedfe241fa85cbc79a17b2c99559e0e049172869ee133a64399853495",
       "size_bytes": 1868
@@ -10045,6 +10370,11 @@
       "path": "tools/rtx5090_spec_node.py",
       "sha256": "b31964c60dc4ebc38480347ee03e9daa6acbe095df1f05a4276d2ae6a97952a3",
       "size_bytes": 14123
+    },
+    {
+      "path": "tools/run_fox_simple.sh",
+      "sha256": "99288a8752bed4fa2deef76c2d2e8e3721b0e7fa240e129361cb3776186a8ac2",
+      "size_bytes": 138
     },
     {
       "path": "tools/runtime/apply_runtime_completion_overlay.py",
@@ -10265,5 +10595,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 33632144
+  "total_bytes": 34316338
 }

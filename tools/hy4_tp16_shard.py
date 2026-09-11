@@ -323,6 +323,10 @@ def write_all_ranks(out_root: Path, source: GgufReader, metadata: list,
         if len(data) != nbytes:
             die(f"short read at {tensor['name']}")
         for rank, entry in sorted(per_rank.items()):
+<<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
             gather = entry.get("gather")
             if gather is None:
                 rel = entry["src_byte_offset"] - tensor["offset"]
@@ -342,6 +346,20 @@ def write_all_ranks(out_root: Path, source: GgufReader, metadata: list,
                     files[rank].write(piece)
                     manifests[rank]["digest"].update(piece)
                     manifests[rank]["size"] += len(piece)
+<<<<<<< HEAD
+=======
+            rel = entry["src_byte_offset"] - tensor["offset"]
+            piece = data[rel:rel + entry["nbytes"]]
+            if len(piece) != entry["nbytes"]:
+                die(f"slice out of range at {tensor['name']} rank {rank}: "
+                    f"dims={tensor['dims']} type={tensor['type']} "
+                    f"data={len(data)} rel={rel} want={entry['nbytes']}")
+            files[rank].write(piece)
+            manifests[rank]["digest"].update(piece)
+            manifests[rank]["size"] += len(piece)
+>>>>>>> hy4: TP16 GGUF sharder + placement report (16x18.72GB deployed, 16/16 remote sha verified)
+=======
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
         pad = (alignment - nbytes % alignment) % alignment
         if pad:
             for rank in sorted(per_rank):
@@ -377,11 +395,16 @@ def slice_entry(tensor: dict, action: str, rank: int, ranks: int,
     if action == "split0":
         if len(dims) != 2:
             die(f"{tensor['name']}: split0 needs a 2D tensor")
+<<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
         in_dim, out_rows = dims[0], dims[1]
         if in_dim % ranks:
             die(f"{tensor['name']}: dim0 {in_dim} not divisible by {ranks}")
         chunk = in_dim // ranks
         if chunk % blck or in_dim % blck:
+<<<<<<< HEAD
             die(f"{tensor['name']}: dim0 chunk {chunk} not block aligned "
                 f"(block {blck})")
         blocks_per_row = in_dim // blck
@@ -395,6 +418,34 @@ def slice_entry(tensor: dict, action: str, rank: int, ranks: int,
                            "rows": out_rows,
                            "src_row_offset": rank * chunk // blck
                            * bytes_per_block},
+=======
+        rows = dims[0]
+        if rows % ranks:
+            die(f"{tensor['name']}: dim0 {rows} not divisible by {ranks}")
+        chunk = rows // ranks
+        if chunk % blck:
+            die(f"{tensor['name']}: dim0 chunk {chunk} not block aligned "
+                f"(block {blck})")
+        bytes_per_block = nbytes // (rows // blck)
+        return {"tensor": tensor, "dims": [chunk, dims[1]],
+                "src_byte_offset": tensor["offset"] + rank * chunk // blck * bytes_per_block,
+                "nbytes": chunk // blck * bytes_per_block,
+>>>>>>> hy4: TP16 GGUF sharder + placement report (16x18.72GB deployed, 16/16 remote sha verified)
+=======
+            die(f"{tensor['name']}: dim0 chunk {chunk} not block aligned "
+                f"(block {blck})")
+        blocks_per_row = in_dim // blck
+        bytes_per_block = nbytes // (blocks_per_row * out_rows)
+        src_row_bytes = blocks_per_row * bytes_per_block
+        row_piece_bytes = chunk // blck * bytes_per_block
+        return {"tensor": tensor, "dims": [chunk, out_rows],
+                "nbytes": row_piece_bytes * out_rows,
+                "gather": {"src_row_bytes": src_row_bytes,
+                           "row_piece_bytes": row_piece_bytes,
+                           "rows": out_rows,
+                           "src_row_offset": rank * chunk // blck
+                           * bytes_per_block},
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
                 "slice": {"dim": 0, "start": rank * chunk, "count": chunk}}
     if action == "split2":
         if len(dims) != 3:
@@ -498,6 +549,8 @@ def main() -> int:
             if len(rank_gguf.tensors) != len(source.tensors):
                 die(f"rank {rank}: tensor count mismatch")
             infos = {t["name"]: t for t in rank_gguf.tensors}
+<<<<<<< HEAD
+<<<<<<< HEAD
             for tensor in source.tensors:
                 if tensor["name"] not in infos:
                     die(f"rank {rank}: missing {tensor['name']}")
@@ -528,6 +581,46 @@ def main() -> int:
                         die(f"rank {rank}: byte mismatch at {tensor['name']}")
             print(f"rank {rank:02d}: verify OK "
                   f"({len(rank_gguf.tensors)} tensors, boundary-sampled)")
+=======
+            checked = 0
+=======
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
+            for tensor in source.tensors:
+                if tensor["name"] not in infos:
+                    die(f"rank {rank}: missing {tensor['name']}")
+                info = infos[tensor["name"]]
+                plan_entry = next(e for e in plan[rank]
+                                  if e["tensor"]["name"] == tensor["name"])
+                base = source.data_offset + tensor["offset"]
+                g = plan_entry.get("gather")
+                if g is None:
+                    rel = plan_entry["src_byte_offset"] - tensor["offset"]
+                    ln = min(512, plan_entry["nbytes"])
+                    probes = ((rel, ln),
+                              (rel + plan_entry["nbytes"] - ln, ln))
+                else:
+                    rows = (0, g["rows"] - 1)
+                    probes = tuple(
+                        (row * g["src_row_bytes"] + g["src_row_offset"],
+                         g["row_piece_bytes"], row * g["row_piece_bytes"])
+                        for row in rows)
+                for probe in probes:
+                    src_off, ln = probe[0], probe[1]
+                    rank_off = probe[2] if len(probe) > 2 else src_off
+                    source.file.seek(base + src_off)
+                    expected = source.file.read(ln)
+                    rank_gguf.file.seek(
+                        rank_gguf.data_offset + info["offset"] + rank_off)
+                    if expected != rank_gguf.file.read(ln):
+                        die(f"rank {rank}: byte mismatch at {tensor['name']}")
+            print(f"rank {rank:02d}: verify OK "
+<<<<<<< HEAD
+                  f"({len(rank_gguf.tensors)} tensors, "
+                  f"4 byte-sampled)")
+>>>>>>> hy4: TP16 GGUF sharder + placement report (16x18.72GB deployed, 16/16 remote sha verified)
+=======
+                  f"({len(rank_gguf.tensors)} tensors, boundary-sampled)")
+>>>>>>> hy4: split0 shard gather fix + forward semantics fixes vs llama.cpp diff
         return 0
 
     if args.dry_census or args.out is None:

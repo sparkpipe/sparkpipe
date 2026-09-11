@@ -1,0 +1,44 @@
+MODULE_FAMILY := hy4
+MODULE_IDENTIFIER := spark.hy4.resident_decode_stage.fp8.tp16.v1
+MODULE_TARGET := cuda.sm121.hy4.resident_decode_stage.fp8
+MODEL_HEADER := ../../model-families/hy4/include/sparkpipe/spark_hy4_model.h
+MODULE_ENTRY_PREFIX := SparkHy4ResidentDecodeStage
+MODULE_HOST_SOURCE := $(CURDIR)/source/spark_hy4_resident_decode_stage_module.c
+MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_hy4_resident_decode_stage_cuda.cu
+MODULE_ADDITIONAL_HOST_SOURCES =
+HY4_MODEL_REVISION := 779242edccdedc2109a0b36b164263a88f015bfa
+HY4_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/hy4_authoritative.json | awk '{print $$1}')
+MODULE_COMPILE_FLAGS := \
+	-DSPARK_HY4_MODULE_BUILD=1 \
+	-DHY4_MODEL_REVISION=\"$(HY4_MODEL_REVISION)\" \
+	-DHY4_CONTRACT_SHA256=\"$(HY4_CONTRACT_SHA256)\"
+MODULE_INCLUDE_FLAGS = \
+	-I"$(REPOSITORY_ROOT)/include" \
+	-I"$(REPOSITORY_ROOT)/src" \
+	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/$(MODULE_FAMILY)/include" \
+	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/$(MODULE_FAMILY)_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)"
+
+STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/hy4_stage.qwen4sp
+TP_DEGREE ?= 16
+TP_RANK ?= 0
+MAX_ACTIVE_SEQUENCES ?= 8
+PIPELINE_SLOT_COUNT ?= 2
+KV_BLOCK_COUNT ?= 4096
+MTP_LAYER_COUNT ?= 0
+
+RUNTIME_CONFIGURATION := \
+	SPARK_HY4_TP_DEGREE=$(TP_DEGREE) \
+	SPARK_HY4_TP_RANK=$(TP_RANK) \
+	SPARK_HY4_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
+	SPARK_HY4_STAGE_MAX_ACTIVE_SEQUENCES=$(MAX_ACTIVE_SEQUENCES) \
+	SPARK_HY4_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT) \
+	SPARK_HY4_STAGE_KV_BLOCKS=$(KV_BLOCK_COUNT) \
+	SPARK_HY4_STAGE_MTP=$(MTP_LAYER_COUNT)
+
+GPU_VALIDATOR ?=
+
+include ../resident_decode_stage_rules.mk
+NVCCFLAGS += -fmad=false

@@ -1457,6 +1457,15 @@ CEILING = 237507
 # PACER_KB) and glm5_next_wave.sh deleted with main's own stripping.
 # Re-pinned from measured reality per the ratchet rule.
 CEILING = 233150
+# hy4 lane M1 (contract freeze) rebased onto this lineage: the family's
+# authoritative JSON, generator, generated header, host test and
+# references are MAIN-side since the #810 harvest; this rebase re-adds
+# only the Makefile PYTHON_TESTS registration (1 line). Ratchet rule:
+# re-pin from MEASURED reality on the rebased tree, never carry either
+# side's number. +1 exact (the ledger file itself is the ratchet and
+# does not double-count, per the prior conflict resolutions above).
+CEILING = 233151
+
 # coordinator merge #757 (kimi-k3 TP16 wave): +286 exact at merge over
 # #755's tree. Prior lane note:
 # kimi-k3: the head exchange moves to the device tier (inference/llms/
