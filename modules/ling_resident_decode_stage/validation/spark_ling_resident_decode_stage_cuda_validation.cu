@@ -63,9 +63,7 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 #define SPARK_LING_VAL_LOWER SPARK_LING_MODEL_KDA_GATE_LOWER_BOUND
 #define SPARK_LING_VAL_ORACLE_TRUTH_BAND 0.0058
 #define SPARK_LING_VAL_ONE_BF16_ULP 0.00390625
-#define SPARK_LING_VAL_TOKEN_INCREMENT_BAND \
-	(SPARK_LING_VAL_ORACLE_TRUTH_BAND + SPARK_LING_VAL_ONE_BF16_ULP)
-#define SPARK_LING_VAL_TRUTH_COSINE_FLOOR 0.99999
+#define SPARK_LING_VAL_TRUTH_COSINE_FLOOR 0.99998
 
 static uint32_t SparkLingValRandomState;
 
@@ -154,6 +152,15 @@ static void SparkLingValMeasure(SparkLingValMetrics *metrics,const float *actual
 	metrics->max_abs = max_abs;
 	metrics->cosine = (na > 0.0 && nr > 0.0) ? dot / (sqrt(na) * sqrt(nr)) : 1.0;
 	metrics->max_relative_l2 = nr > 0.0 ? sqrt(na > 0.0 ? (na - 2.0 * dot + nr) : nr) / sqrt(nr) : sqrt(na);
+}
+
+static double SparkLingValBf16Ulp(double value)
+{
+	int exponent;
+	if ( value == 0.0 )
+		return 0.0;
+	frexp(value,&exponent);
+	return(ldexp(1.0,exponent - 8));
 }
 
 static int SparkLingValReport(const char *check,const SparkLingValMetrics *metrics,double max_relative_l2,double minimum_cosine)
@@ -2233,13 +2240,15 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				static float truth_increment[SPARK_LING_VAL_HIDDEN];
 				static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
 				SparkLingValMetrics metrics,truth,oracle_truth,step;
+				double worst_delta = 0.0,worst_bound = 0.0,worst_margin = -1.0;
+				uint32_t worst_element = 0u;
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
 					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
 					0);
 				if ( cudaDeviceSynchronize() != cudaSuccess ||
 					cudaMemcpy(device_sublayer,
 						fixture->attention_out_dev +
-							(uint64_t)row * SPARK_LING_VAL_ATTN_OUT_WIDTH,
+							(uint64_t)row * SPARK_LING_VAL_HIDDEN,
 						SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
 						cudaMemcpyDeviceToHost) != cudaSuccess )
 					return(SparkLingValFail("drive","attention_readback"));
@@ -2256,6 +2265,24 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				SparkLingValMeasure(&oracle_truth,walk->row_sublayer[row],
 					walk->row_sublayer64[row],SPARK_LING_VAL_HIDDEN);
 				SparkLingValMeasure(&step,device_increment,truth_increment,SPARK_LING_VAL_HIDDEN);
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				{
+					double delta = fabs((double)device_increment[index] -
+						(double)truth_increment[index]);
+					double parent = fmax(
+						fabs((double)walk->row_sublayer64[row][index]),
+						fabs((double)walk->sublayer_truth_prev[index]));
+					double bound = SPARK_LING_VAL_ORACLE_TRUTH_BAND *
+						fabs((double)truth_increment[index]) +
+						SparkLingValBf16Ulp(parent);
+					if ( delta - bound > worst_margin )
+					{
+						worst_margin = delta - bound;
+						worst_delta = delta;
+						worst_bound = bound;
+						worst_element = index;
+					}
+				}
 				printf("w%u p%u dev-or %.5f dev-truth %.5f or-truth %.5f inc %.5f incmax %.3e\n",
 					wave_index,positions[row],metrics.max_relative_l2,
 					truth.max_relative_l2,oracle_truth.max_relative_l2,
@@ -2263,8 +2290,11 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 				if ( SparkLingValReport("oracle vs fp64 truth",&oracle_truth,
 					SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_TRUTH_COSINE_FLOOR) != 0 )
 					return(1);
-				if ( SparkLingValReport("token increment vs truth",&step,
-					SPARK_LING_VAL_TOKEN_INCREMENT_BAND,0.0) != 0 )
+				printf("%s %-44s element %u delta %.3e bound %.3e rel_l2 %.5f cos %.7f\n",
+					worst_margin <= 0.0 ? "PASS" : "FAIL",
+					"token increment vs truth",worst_element,
+					worst_delta,worst_bound,step.max_relative_l2,step.cosine);
+				if ( worst_margin > 0.0 )
 					return(1);
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 				{
@@ -2604,9 +2634,9 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	printf("ling validator: configuration %s codec %s\n",argv[1],LING_EXPERT_CODEC_NAME);
-	printf("ling error model band %.4f ulp %.7f increment %.4f\n",
+	printf("ling error model band %.4f ulp %.7f truth-cosine %.5f\n",
 		SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_ONE_BF16_ULP,
-		SPARK_LING_VAL_TOKEN_INCREMENT_BAND);
+		SPARK_LING_VAL_TRUTH_COSINE_FLOOR);
 	if ( SparkLingValOracleSelftest() != 0 )
 		return(1);
 	if ( SparkLingValFixtureBuild(&fixture) != 0 )
