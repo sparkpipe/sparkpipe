@@ -188,6 +188,14 @@ MUSE_GLIMMER_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mus
 MUSE_GLIMMER_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DMUSE_MODEL_REVISION=\"$(MUSE_GLIMMER_MODEL_REVISION)\" -DMUSE_CONTRACT_SHA256=\"$(MUSE_GLIMMER_CONTRACT_SHA256)\"
 TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE := \
     build/test_modules/libmuse_glimmer_serving_driver_module.$(SHARED_LIBRARY_EXT)
+LING_SERVING_ADAPTER := build/libling_serving_adapter.$(SHARED_LIBRARY_EXT)
+LING_MODEL_REVISION ?= e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3
+LING_CONTRACT_SOURCE := model_contracts/ling_authoritative.json
+LING_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LING_CONTRACT_SOURCE)"; else shasum -a 256 "$(LING_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
+LING_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/ling/include -Imodules/ling_resident_decode_stage/include
+LING_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DLING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(LING_CONTRACT_SHA256)\" -DLING_EXPERT_WEIGHT_CODEC=1 -DLING_EXPERT_CODEC_NAME=\"bf16\"
+TEST_LING_SERVING_DRIVER_MODULE := \
+    build/test_modules/libling_serving_driver_module.$(SHARED_LIBRARY_EXT)
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -236,6 +244,7 @@ TEST_NAMES := \
 	test_dsv4_tp4_pp4_serving_adapter \
     test_qwen38_27b_serving_adapter \
     test_muse_glimmer_serving_adapter \
+    test_ling_serving_adapter \
     test_model_resident_end_to_end \
     test_distributed_work \
 	    test_json \
@@ -780,6 +789,9 @@ $(QWEN38_27B_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/s
 $(MUSE_GLIMMER_SERVING_ADAPTER): modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_serving_adapter.h modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h model-families/common/include/sparkpipe/spark_qwen38_serving_adapter_common.h $(MUSE_GLIMMER_CONTRACT_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(MUSE_GLIMMER_INCLUDE_FLAGS) $(CFLAGS) $(MUSE_GLIMMER_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+$(LING_SERVING_ADAPTER): modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_serving_adapter.h modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h $(LING_CONTRACT_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(LING_INCLUDE_FLAGS) $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
@@ -853,6 +865,9 @@ $(TEST_QWEN38_27B_SERVING_DRIVER_MODULE): tests/fixtures/qwen38_27b_serving_adap
 $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE): tests/fixtures/muse_glimmer_serving_adapter_driver.c modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(MUSE_GLIMMER_CONTRACT_SOURCE) | build/test_modules
 	$(CC) $(CPPFLAGS) $(MUSE_GLIMMER_INCLUDE_FLAGS) $(CFLAGS) $(MUSE_GLIMMER_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+$(TEST_LING_SERVING_DRIVER_MODULE): tests/fixtures/ling_serving_adapter_driver.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LING_CONTRACT_SOURCE) | build/test_modules
+	$(CC) $(CPPFLAGS) $(LING_INCLUDE_FLAGS) $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -919,6 +934,9 @@ build/test_qwen38_27b_serving_adapter: tests/test_qwen38_27b_serving_adapter.c t
 
 build/test_muse_glimmer_serving_adapter: tests/test_muse_glimmer_serving_adapter.c tests/fixtures/muse_glimmer_serving_adapter_config.json $(MUSE_GLIMMER_SERVING_ADAPTER) $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(MUSE_GLIMMER_INCLUDE_FLAGS) -DMUSE_MODEL_REVISION=\"$(MUSE_GLIMMER_MODEL_REVISION)\" -DTEST_MUSE_GLIMMER_SERVING_ADAPTER_PATH=\"$(MUSE_GLIMMER_SERVING_ADAPTER)\" -DTEST_MUSE_GLIMMER_SERVING_DRIVER_PATH=\"$(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE)\" -DTEST_MUSE_GLIMMER_SERVING_CONFIG_PATH=\"tests/fixtures/muse_glimmer_serving_adapter_config.json\" -DTEST_MUSE_GLIMMER_MODEL_REVISION=\"$(MUSE_GLIMMER_MODEL_REVISION)\" $(CFLAGS) tests/test_muse_glimmer_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_ling_serving_adapter: tests/test_ling_serving_adapter.c tests/fixtures/ling_serving_adapter_config.json $(LING_SERVING_ADAPTER) $(TEST_LING_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(LING_INCLUDE_FLAGS) -DLING_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LING_SERVING_ADAPTER_PATH=\"$(LING_SERVING_ADAPTER)\" -DTEST_LING_SERVING_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIVER_MODULE)\" -DTEST_LING_SERVING_CONFIG_PATH=\"tests/fixtures/ling_serving_adapter_config.json\" -DTEST_LING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" $(CFLAGS) tests/test_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 # The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
 # nvcc, so the rule is the single-spark gate's link line plus the shared libs.
