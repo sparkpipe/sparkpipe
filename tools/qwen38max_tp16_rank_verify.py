@@ -52,6 +52,7 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
            receipt_path: Path | None, recompute_file_hash: bool) -> tuple[bool, dict]:
     findings: list[str] = []
 
+
     def fail(message: str) -> None:
         findings.append(message)
 
@@ -285,10 +286,14 @@ def main() -> int:
     parser.add_argument("--tp-degree", type=int, default=16)
     parser.add_argument("--tp-rank", type=int, required=True)
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--structure-only", action="store_true",
+                        help="skip the per-entry content pass against the checkpoint")
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--recompute-file-hash", action="store_true")
     parser.add_argument("--json-out", type=Path)
     args = parser.parse_args()
+    if args.structure_only:
+        args.checkpoint = None
 
     ok, verdict = verify(args.pack, args.tp_degree, args.tp_rank, args.checkpoint,
                          args.receipt, args.recompute_file_hash)
