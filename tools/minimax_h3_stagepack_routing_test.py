@@ -35,6 +35,24 @@ def plan_for(patterns, codes, excluded, name, tp_degree):
     return packer.plan_of(item, tp_degree)
 
 
+def blob_slice_unit() -> None:
+    import io
+    shape = [4, 8]
+    payload = bytes(range(64))
+    file = io.BytesIO(payload)
+    offsets = (0, 64)
+    full = packer.read_tensor_blob(file, shape, "BF16", offsets, 0, 4)
+    assert full == payload, "full-tensor fast path"
+    rows = packer.read_tensor_blob(file, shape, "BF16", offsets, 2, 2)
+    assert rows == payload[32:64], "row slice"
+    cols = packer.read_tensor_blob(file, shape, "BF16", offsets, 0, 4, 2, 4)
+    want = b"".join(payload[r * 16 + 4:r * 16 + 12] for r in range(4))
+    assert cols == want, "column slice"
+    mid = packer.read_tensor_blob(file, shape, "BF16", offsets, 1, 2, 6, 2)
+    want_mid = b"".join(payload[r * 16 + 12:r * 16 + 16] for r in range(1, 3))
+    assert mid == want_mid, "row+column slice"
+
+
 def main() -> int:
     patterns, codes, excluded, tp16 = load()
     failures = []
@@ -64,6 +82,12 @@ def main() -> int:
         print(f"FAIL kv rank15 slice {kv}")
     else:
         print(f"PASS kv rank15 slice rows[{kv[0]},{kv[0] + kv[1]})")
+    try:
+        blob_slice_unit()
+        print("PASS blob column slicing (full/rows/cols/rows+cols)")
+    except AssertionError as error:
+        failures.append(f"blob slicing: {error}")
+        print(f"FAIL blob slicing: {error}")
     if failures:
         print(f"ROUTING TEST FAIL ({len(failures)})")
         return 1

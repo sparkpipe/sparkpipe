@@ -213,7 +213,8 @@ def component_inventory(component: str, warm: Path, patterns: list[dict], codes:
 
 
 def read_tensor_blob(file, shape: list[int], dtype: str, offsets: tuple[int, int],
-                     row_start: int, row_count: int) -> bytes:
+                     row_start: int, row_count: int, col_start: int = 0,
+                     col_count: int | None = None) -> bytes:
     _, columns = flat_rows_columns(shape)
     esize = DTYPE_BYTES[dtype]
     base, end = offsets
@@ -221,15 +222,24 @@ def read_tensor_blob(file, shape: list[int], dtype: str, offsets: tuple[int, int
     length = row_count * columns * esize
     if start + length > end:
         raise SystemExit("slice out of bounds")
+    if col_start == 0 and (col_count is None or col_count == columns):
+        file.seek(start)
+        blob = file.read(length)
+        if len(blob) != length:
+            raise SystemExit(f"short read {len(blob)} != {length}")
+        return blob
     file.seek(start)
-    blob = file.read(length)
-    if len(blob) != length:
-        raise SystemExit(f"short read {len(blob)} != {length}")
-    return blob
+    span = file.read(length)
+    parts = []
+    for row in range(row_count):
+        row_base = row * columns * esize
+        parts.append(span[row_base + col_start * esize:
+                          row_base + (col_start + col_count) * esize])
+    return b"".join(parts)
 
 
 def args_signature(sections: list[str], rank: int, tp_degree: int, pp_degree: int) -> str:
-    return "|".join(sections) + f"|{rank}|{tp_degree}|{pp_degree}"
+    return "v2|" + "|".join(sections) + f"|{rank}|{tp_degree}|{pp_degree}"
 
 
 def plan_of(item: dict, tp_degree: int) -> str:
@@ -306,7 +316,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
                 "columns": col_count,
                 "payload_bytes": row_count * col_count * DTYPE_BYTES[item["dtype"]],
                 "item": item,
-                "slice": (row_start, row_count),
+                "slice": (row_start, row_count, col_start, col_count),
             })
             per_section[section] += 1
 
@@ -348,9 +358,10 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
             shard_path = warm / COMPONENT_DIRS[item["section"]] / item["shard"]
             if item["shard"] not in by_shard:
                 by_shard[item["shard"]] = shard_path.open("rb")
-            row_start, row_count = entry["slice"]
+            row_start, row_count, col_start, col_count = entry["slice"]
             blob = read_tensor_blob(by_shard[item["shard"]], item["shape"], item["dtype"],
-                                    item["data_offsets"], row_start, row_count)
+                                    item["data_offsets"], row_start, row_count,
+                                    col_start, col_count)
             sources.add(f"{COMPONENT_DIRS[item['section']]}/{item['shard']}")
             aligned = (len(blob) + PAYLOAD_ALIGNMENT - 1) // PAYLOAD_ALIGNMENT * PAYLOAD_ALIGNMENT
             entry["payload_offset"] = payload_offset
