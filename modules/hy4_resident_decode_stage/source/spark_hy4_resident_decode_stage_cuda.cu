@@ -280,3 +280,75 @@ __global__ void SparkHy4RouteKernel(const float *router_logits,
 		weights[k] = weights[k] / weight_sum *
 		    SPARK_HY4_MODEL_ROUTED_SCALING_FACTOR;
 }
+
+static __device__ __forceinline__ float2 SparkHy4LoadBf16Pair(
+    const void *base, uint64_t element)
+{
+	uint32_t packed = ((const uint32_t *)base)[element];
+	float2 pair;
+	pair.x = __int_as_float(
+	    (int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
+	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
+	return pair;
+}
+
+static __device__ __forceinline__ void SparkHy4StoreBf16Pair(
+    void *base, uint64_t element, float x, float y)
+{
+	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
+	    (__float_as_uint(x) >> 16u);
+	((uint32_t *)base)[element] = packed;
+}
+
+static __global__ void SparkHy4AccumAddBf16Kernel(void *destination_bf16,
+    const void *source_bf16, uint32_t row_count, uint32_t width)
+{
+	uint32_t row = blockIdx.x;
+	uint64_t offset = ((uint64_t)row * width) >> 1u;
+	float2 destination_pair;
+	float2 source_pair;
+	uint32_t element;
+	if ( row >= row_count )
+		return;
+	for (element = threadIdx.x; element < (width >> 1u);
+	    element += blockDim.x)
+	{
+		destination_pair =
+		    SparkHy4LoadBf16Pair(destination_bf16, offset + element);
+		source_pair =
+		    SparkHy4LoadBf16Pair(source_bf16, offset + element);
+		SparkHy4StoreBf16Pair(destination_bf16, offset + element,
+		    destination_pair.x + source_pair.x,
+		    destination_pair.y + source_pair.y);
+	}
+}
+
+static __global__ void SparkHy4AccumU64MaxKernel(uint64_t *destination,
+    const uint64_t *source, uint32_t element_count)
+{
+	uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element < element_count && source[element] > destination[element] )
+		destination[element] = source[element];
+}
+
+extern "C" cudaError_t SparkHy4LaunchAccumAddBf16(cudaStream_t stream,
+    void *destination_bf16, const void *source_bf16, uint32_t row_count,
+    uint32_t width)
+{
+	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u ||
+	    width == 0u || (width & 1u) != 0u )
+		return cudaErrorInvalidValue;
+	SparkHy4AccumAddBf16Kernel<<<row_count, 256u, 0u, stream>>>(
+	    destination_bf16, source_bf16, row_count, width);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkHy4LaunchAccumU64Max(cudaStream_t stream,
+    uint64_t *destination, const uint64_t *source, uint32_t element_count)
+{
+	if ( destination == 0 || source == 0 || element_count == 0u )
+		return cudaErrorInvalidValue;
+	SparkHy4AccumU64MaxKernel<<<(element_count + 255u) / 256u, 256u, 0u,
+	    stream>>>(destination, source, element_count);
+	return cudaPeekAtLastError();
+}
