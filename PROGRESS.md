@@ -195,3 +195,66 @@ exact, -9179; gemma4 family = +4261 net incl. oracle/exporter/alignment).
 - Queue note: the v2 queue daemon did not claim a sparka job this session
   ("claimed 0"); the AC7 receipt came from a direct sparkcap-wrapped ssh
   run. Watch the dispatcher if queueing more sparka work.
+
+## muse: serving-adapter contract completion (post-merge follow-up, d7ebb16)
+
+Audit finding A-0074 class: the qwen38-pp serving template exported an
+interface missing the mandatory prefetch / resolve_prefetch / reset members,
+so `SparkModelServingAdapterValidateInterface` refused the muse module at
+load (runtime/model_serving_adapter.c:251 via the SPARK_REQUIRE_SERVING_OPERATION
+table; the ABI_MISMATCH paths are :526/:543). Fixed in the same shape the
+glm5_next/laguna references use (~10 lines per member over the shared
+spark_serving_cache_admission.h helper):
+
+- prefetch: CACHE_PREPARE admission over the muse state (program_id from the
+  loaded driver program, 512-lane thread-local scratch, full validate first).
+- resolve_prefetch: COMMIT/ABORT mapped to CACHE_COMMIT/CACHE_ABORT on one
+  submission; invalid resolution → INVALID_ARGUMENT.
+- reset: generation-monotonic (0 refused, `<= current` refused), single-flight
+  atomic CAS (concurrent reset → BUSY), quiesce + driver RESET admission, and
+  the applied generation makes stale submissions VALIDATION_FAILED on
+  validate/prefetch via a guarded template hook (SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE).
+
+Shared-template seams are #ifdef-guarded; siblings that do not opt in
+preprocess to the identical table (verified: qwen38_max preprocessed
+interface table diff = trailing comma only; `-fsyntax-only` green). Their
+three-member completion stays with their own follow-ups.
+
+Two adjacent load/initialize blockers found and fixed in the same pass:
+- descriptor was refused by ValidateDescriptor: added cache_block_token_count
+  (64) and stage_layer_counts[0] (52), and dropped CAPABILITY_SPECULATION —
+  muse is dense with MTP_LAYER_COUNT 0, so the bit contradicted
+  max_speculative_token_count 0 (SpeculationPairing refusal).
+- the speculation family bind could never succeed: provider validate refuses
+  default_draft_token_count 0 and the seam contract refuses draft_layer_count
+  0, so initialize always failed. Deleted the dead bind (DFlash2 sidecar
+  bind returns when the lane has a real draft contract). The muse lane's
+  example JSON `examples/model_descriptions/muse_glimmer_resident_decode_stage_firmware.json`
+  still carries qwen38-derived text (purpose/revision/mtp fields) — flagged,
+  not absorbed here.
+
+New host gate: `build/test_muse_glimmer_serving_adapter` (Makefile TEST_NAMES)
+builds the real adapter .c into a dylib against the cuda stub plus a fixture
+driver (tests/fixtures/muse_glimmer_serving_adapter_driver.c + config json)
+and asserts, in order: load through
+`SparkModelServingAdapterLoadInterfaceFromSharedObject` with
+CAPABILITY_HIDDEN_TRANSPORT required (the runtime check path); descriptor
+identity/geometry; interface-table completeness — all 10 mandatory members
+non-null and each nulled member refused INVALID_ARGUMENT (A-0074 made
+unrepresentable); initialize; prefetch null/count guards, prepare,
+commit, abort; decode submit with 4200/4201 token receipt + snapshot
+counts; reset generation semantics (0 refused, 1 accepted, stale
+validate+prefetch → VALIDATION_FAILED, `<=` refused, quiesce→reset revival
+at generation 3, post-reset submit receipt); destroy.
+
+Mac gate receipts (all run to exit 0): test_model_serving_adapter,
+test_serving_cache_admission, test_qwen38_27b_serving_adapter,
+test_muse_glimmer_serving_adapter, test_code_size (268756/268809, no
+growth), test_dry_law PASS. test_complexity_ceiling remains red on the
+pre-existing main offender (qwen38_27b SubmitSpeculativeDecode CCN 88 >
+75) — inherited, not this lane's code, same flag the gemma4 lane raised.
+
+dsv4 note: modules/dsv4_resident_decode_stage still exports an interface
+without `.reset` (prefetch/resolve_prefetch present) — its own load test
+will refuse it under the current ValidateInterface; that is the dsv4
+lane's follow-up, same class as this fix.
