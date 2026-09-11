@@ -46,10 +46,11 @@
    ],
    "digest_note": "all 48 LFS oids pinned in the HF tree API at revision dba1be0a; index.json weight_map maps every tensor to its shard",
    "reference_implementation": {
-    "files": "inference/model.py, inference/engram.py at the pinned revision (warm copy .cache/huggingface/download metadata records revision dba1be0a40aa45a94ad051997016db3960a90277)",
+    "files": "inference/model.py, inference/kernel.py, inference/engram.py at the pinned revision (warm copies under cache/dsv41_warm/ref/; kernel.py was previously thought unreleased - it is a tilelang kernel module present in the repo at dba1be0a and is now the pinned source for hc_split_sinkhorn, sparse_attn, act_quant, fp8_gemm and fp4_gemm)",
     "sha256": {
      "inference/model.py": "4e9ae23620edc8028ccc5d5fef552ab7fdc7dcd6f79608754fe9f67644056f65",
-     "inference/engram.py": "11f35ecbead8150c35aa002b3d180ef290b05a25afe883a11884f94d476d3897"
+     "inference/engram.py": "11f35ecbead8150c35aa002b3d180ef290b05a25afe883a11884f94d476d3897",
+     "inference/kernel.py": "1236c3507019ed176f5dba5e04bcea58867cf654818c6cf138ed4845398c2455"
     },
     "note": "warm copy cross-checks: config.json, model.safetensors.index.json and DeepSeek_V41_Tech_Report.pdf sha256 == pinned LFS oids (receipt in PR #914)"
    }
@@ -276,7 +277,7 @@
   "mult": 4,
   "sinkhorn_iters": 20,
   "sinkhorn_eps": 1e-06,
-  "coefficient_layout": "A[1x4] + B[4x4] + C[4x1] = 24 coefficients; hc_attn_base F32 [24]; hc_attn_fn F32 [24, 20480] (4 streams x 5120); hc_attn_scale F32 [3]; same triple for ffn"
+  "coefficient_layout": "Pinned from kernel.py hc_split_sinkhorn_kernel: mixes [24] = fn.x_normed (fp32); pre[j] = sigmoid(mixes[j]*scale[0] + base[j]) + eps; post[j] = 2*sigmoid(mixes[4+j]*scale[1] + base[4+j]) (NO eps); comb[j][k] = mixes[8 + j*4 + k]*scale[2] + base[8 + j*4 + k]; comb = row_softmax(comb) + eps, then col-norm/(sum+eps), then (sinkhorn_iters-1) x (row-norm, col-norm), every denominator + eps. Sinkhorn order verified identical to the glm5-dsa lane oracle (independent corroboration)"
  },
  "engram": {
   "layer_ids": [
@@ -351,7 +352,9 @@
   "router_dtype": "BF16 weight + F32 bias",
   "norm_dtype": "BF16",
   "attention_sink": "layers.N.attn.attn_sink F32 [64] per head",
-  "qk_norm": "q_norm BF16 [1280] on q_lora, kv_norm BF16 [512] on kv latent"
+  "qk_norm": "q_norm BF16 [1280] on q_lora, kv_norm BF16 [512] on kv latent",
+  "swiglu_limit": 10.0,
+  "attention_window_kv_runtime": "act_quant inplace semantics: window-KV cache rows are bf16 of the fp8 round trip (per-32-channel ue8m0 scale = 2^ceil(log2(amax/448)), amax floored 1e-4, clamp +/-448); attention denominators add exp(sink - max) per head with no sink value term"
  },
  "tensor_census": {
   "index_entries": 96085,
@@ -416,5 +419,34 @@
   "open_facts": "RESOLVED 2026-09-10 from the pinned reference implementation + hash-verified real index: o_groups TP ceiling, wq_b 448+64 rope split, compressor m=1 vs m=2 semantics, engram hash addressing, and the real-index census corrections (wgate absent on layer 20; indexer wk+k_norm only on kv_source layers 2/8/14/20 - reindex layers 24/28/32/36 carry query-side wq_b+weights_proj only, matching reference Indexer owns_k; stagepack kind map + validator literals + census tests corrected). Remaining OPEN (operator/architecture): engram host-residency engine seam; TP16 o_groups exemption design",
   "next": "M7 decode hill climb on the TP8 set (successor); DSpark sidecar LAST; TP16 pack set after the operator topology ruling; engram host-residency seam decision consumes packs/engram_report.json",
   "pack_build": "PASSED 2026-09-11: real-source TP8 stagepack set at spark6 /home/spark6/dsv41-flash-tp8/packs (rank0..rank7.spstage, 39,011,930,624 B each; spine 2,914,592,448 B + expert 36,097,228,800 B per rank; expert codec MXFP4 as-checkpoint). Chain: warm config+index hash-verified; headers==weight_map 96,085; census PASS on node; layout byte-identical to C packer (1038/1038 records); .experts v2 manifests 8x11520 records; host contract validator PASS rank0..7 incl boundary; byte verify 312,094,569,984 B == checkpoint; sha256 8/8 OK. Engram 12 tensors (203,073,076,240 B) EXCLUDED from packs and reported (operator-seam input). TP8 is the reference-faithful set; TP16 packs await the o-path ruling."
+ },
+ "m7_decode": {
+  "status": "layer-0 host-oracle anchor GREEN (synth TP8, 204 pieces, 132 positions)",
+  "tools": "tools/dsv41_flash_layer0_oracle.py + tests/test_dsv41_flash_layer0_anchor.c + CI wrapper tests/test_dsv41_flash_layer0_anchor.py",
+  "method": "python oracle recomputes the layer-0 block from pack bytes per the pinned reference semantics and emits per-piece expectations; the C anchor recomputes the same pieces independently from the same pack and compares (NO driver code on either side)",
+  "pieces": "hc mixes/pre/post/comb, collapse+norm both sublayers, q_lora, per-head q, window kv row (fp8 round trip), attention out + inverse rope, wo_a/wo_b, router scores/indices/weights, routed expert sum (mxfp4), shared expert (fp8), moe out, hc stream per position",
+  "engram_seam": "layer 1 fail-closed UNSUPPORTED at the engram access - the operator seam question shape",
+  "real_pack_receipt": {
+   "cell": "dsv5m7f-anchor5 on spark6 (2026-09-11)",
+   "result": "PASS: 204 pieces agree, 132 positions, zero failures against the REAL rank0 TP8 pack; checkpoint cross-check byte-equal on 5 planes (wq_a, wq_b rank slice, router, shared w1, expert0 w1)",
+   "note": "o-path consumed AS-PACK ([1024,512] diag slice, scale [32,16]) - see o_path_pack_layout escalation; parity instrument only until that ruling"
+  },
+  "o_path_pack_layout": {
+   "status": "ESCALATED (operator/second-merger): converter o_a diag col-window vs pinned reference",
+   "pack_has": "o_a per rank [1024, 512] fp8 + scale [32,16] (rank_window 'diag': rows [r*1024..], cols [r*512..])",
+   "reference_requires": "pinned model.py at TP8: wo_a = ColumnParallelLinear(4096, 8192) -> rank slice is checkpoint ROWS [r*1024..] x FULL 4096 cols (heads_per_group 8 x head_dim 512); einsum d=4096. The diag col window (512 = heads x value_head_dim 64) drops 7/8 of each rank's o_a row block",
+   "evidence": "real rank0 pack o_a scale plane is 512 bytes = [32,16]; reference-faithful would be [32,128]",
+   "affects": "tools/dsv41_flash_stagepack.py rank_window diag mode for O_A, module ExpectedShape O_A cols, staged packs (rebuild), TP16 o-path question",
+   "not_affects": "attention/rope/kv/hc/router/expert pieces (anchored reference-faithful on real pack)"
+  }
+ },
+ "spine_load_instrumentation": {
+  "receipt": "dsv5m7f-spine4 on spark6 (2026-09-11), LD_PRELOAD interposer tools/dsv41_spine_instrument.c on weightd+probe, rank0 real pack",
+  "pread": "595,275 calls, 39,011,930,624 B (whole 39 GB pack), 5.068 s = 7.34 GB/s",
+  "h2d": "44,515 cudaMemcpy calls, 2,914,701,824 B (spine only), 0.138 s = 20.2 GB/s",
+  "init_wall_ms": 25726.9,
+  "unaccounted": "~20.5 s (79%) = scalar sha256 over the whole 39 GB pack at ~1.9 GB/s",
+  "finding": "session-5 '71 MB/s nvme' framing was wrong: pread and H2D run at GB/s rates. SparkWeightdSpineLoad preads + hashes the ENTIRE pack (spine_stream over pack_bytes) to verify one sha256 but serves only 2.9 GB of spine spans. Fix belongs to weightd (runtime/spark_weightd_spine.c): pread + hash ONLY the spine spans (0.6 s read + 1.5 s hash), hash the expert region lazily on first expert fetch (or trust staged sha256sum receipts), keep 64KiB+ streaming. Expected init after fix ~3 s vs 26-41 s.",
+  "owner": "weightd domain (mgr1); this lane contributes evidence only"
  }
 }
