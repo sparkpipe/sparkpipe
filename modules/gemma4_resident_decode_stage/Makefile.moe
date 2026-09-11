@@ -1,0 +1,68 @@
+MODULE_FAMILY := gemma4
+MODULE_IDENTIFIER := spark.gemma4.26b-a4b.resident_decode_stage.bf16.linear_bf16.kv_bf16.h2816.l30.e128k8.v1
+MODULE_TARGET := cuda.sm121.gemma4.26b-a4b.resident_decode_stage.bf16
+MODEL_HEADER := ../../model-families/gemma4/include/sparkpipe/spark_gemma4_model.h
+MODULE_ENTRY_PREFIX := SparkGemma4ResidentDecodeStage
+MODULE_HOST_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_module.c
+MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_gemma4_resident_decode_stage_cuda.cu
+include ../../runtime/weightd_sources.mk
+MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
+	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
+	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
+	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
+GEMMA4_MODEL_REVISION ?= 4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+GEMMA4_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/gemma4_26b_a4b_authoritative.json | awk '{print $$1}')
+MODULE_COMPILE_FLAGS := \
+	-DSPARK_GEMMA4_MODULE_BUILD=1 \
+	-DSPARK_GEMMA4_MOE_BUILD=1 \
+	-DSPARK_GEMMA4_MODEL_MOE_BLOCK=1 \
+	-DGEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" \
+	-DGEMMA4_CONTRACT_SHA256=\"$(GEMMA4_CONTRACT_SHA256)\"
+MODULE_INCLUDE_FLAGS = \
+	-I"$(REPOSITORY_ROOT)/include" \
+	-I"$(REPOSITORY_ROOT)/src" \
+	-I"$(REPOSITORY_ROOT)/model-families/common/include" \
+	-I"$(REPOSITORY_ROOT)/model-families/gemma4/include" \
+	-I"$(REPOSITORY_ROOT)/modules/gemma4_resident_decode_stage/include" \
+	-I"$(REPOSITORY_ROOT)/modules/gemma4_resident_decode_stage/source" \
+	-I"$(REPOSITORY_ROOT)"
+
+STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/gemma4_26b_a4b_stage.gemma4sp
+STAGE_COUNT ?= 4
+STAGE_INDEX ?= 0
+STAGE_FIRST_LAYER ?= 0
+STAGE_LAYER_COUNT ?= 8
+MAX_ACTIVE_SEQUENCES ?= 32
+PIPELINE_SLOT_COUNT ?= 2
+KV_BLOCK_COUNT ?= 4096
+KV_PROVIDER ?= none
+ALLOW_UNQUALIFIED_EXECUTION ?= 0
+TP_DEGREE ?= 4
+TP_RANK ?= 0
+TP_STANDALONE ?= 0
+override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum ../../validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
+
+RUNTIME_CONFIGURATION := \
+	SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
+	SPARK_GEMMA4_TP_DEGREE=$(TP_DEGREE) \
+	SPARK_GEMMA4_TP_RANK=$(TP_RANK) \
+	SPARK_GEMMA4_TP_STANDALONE=$(TP_STANDALONE) \
+	SPARK_GEMMA4_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
+	SPARK_GEMMA4_STAGE_COUNT=$(STAGE_COUNT) \
+	SPARK_GEMMA4_STAGE_INDEX=$(STAGE_INDEX) \
+	SPARK_GEMMA4_STAGE_FIRST_LAYER=$(STAGE_FIRST_LAYER) \
+	SPARK_GEMMA4_STAGE_LAYER_COUNT=$(STAGE_LAYER_COUNT) \
+	SPARK_GEMMA4_STAGE_MAX_ACTIVE_SEQUENCES=$(MAX_ACTIVE_SEQUENCES) \
+	SPARK_GEMMA4_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT) \
+	SPARK_GEMMA4_STAGE_KV_BLOCKS=$(KV_BLOCK_COUNT) \
+	SPARK_GEMMA4_STAGE_KV_STORE=none \
+	SPARK_GEMMA4_VALIDATION_MOE_BUILD=1 \
+	SPARK_GEMMA4_CUDA_VALIDATOR_SHA256=$(GEMMA4_CUDA_VALIDATOR_SHA256) \
+	SPARK_GEMMA4_CPU_ORACLE_SHA256=$(GEMMA4_CPU_ORACLE_SHA256)
+
+GPU_VALIDATOR := validation/validate_gemma4_resident_decode_stage_cuda.sh
+
+include ../resident_decode_stage_rules.mk

@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "lane": "gemma4",
+  "model_id": "google/gemma-4-26B-A4B-it",
+  "architecture": "Gemma4ForConditionalGeneration (text_config; MoE block enabled; vision tower and embedding_projection out of scope by contract)",
+  "source_revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+  "revision_note": "HF repo commit pinned by the independent anchor kit (batch-gemma4-val ANCHORS.md); warm config.json and model.safetensors.index.json are byte-identical to the publisher snapshots at that commit",
+  "scope": {
+    "text_decode_path_only": true,
+    "vision_tower": "model.vision_tower.* + model.embed_vision.embedding_projection.weight out of scope by contract",
+    "decode_only_v1": "prefill fails closed in the v1 module; boundaries per DESIGN section 7"
+  },
+  "sources": {
+    "warm_path": "/mnt/model-warm/gemma-4-26b-a4b-it",
+    "model_files": 11,
+    "model_bytes": 51644310215,
+    "shard_count": 2,
+    "verification": "HF LFS sha256 oid equality at the pinned revision plus byte-exact size equality on warm; config.json and model.safetensors.index.json sha256 computed twice (workstation + sparka); full shard sha256 confirmation on sparka"
+  },
+  "model": {
+    "hidden_dimension": 2816,
+    "layer_count": 30,
+    "vocabulary_size": 262144,
+    "maximum_context_tokens": 262144,
+    "sliding_query_head_count": 16,
+    "sliding_kv_head_count": 8,
+    "sliding_head_dimension": 256,
+    "full_query_head_count": 16,
+    "full_kv_head_count": 2,
+    "full_head_dimension": 512,
+    "attention_k_eq_v": true,
+    "sliding_window_tokens": 1024,
+    "full_layer_period": 6,
+    "full_layer_phase": 5,
+    "sliding_rope_theta": 10000.0,
+    "full_rope_base": 1000000.0,
+    "partial_rotary_factor": 0.25,
+    "full_rotated_pair_count": 64,
+    "qk_scale": 1.0,
+    "rms_norm_epsilon": 1e-06,
+    "embed_scale": 53.0,
+    "embed_scale_note": "bf16(sqrt(2816)); fp32 buffer cast to bf16 at multiply, the rounding is load-bearing",
+    "dense_intermediate_dimension": 2112,
+    "hidden_activation": "gelu_pytorch_tanh",
+    "final_logit_softcapping": 30.0,
+    "softcap_note": "inert for v1: logits-only, monotone under greedy argmax",
+    "tie_word_embeddings": true,
+    "bos_token_id": 2,
+    "eos_token_ids": [1, 106, 50],
+    "eos_note": "generation_config.json eos_token_id; the header binds all three",
+    "pad_token_id": 0,
+    "layer_types": "5 sliding_attention : 1 full_attention, full at index 5 mod 6 (config layer_types, 30 entries)"
+  },
+  "moe": {
+    "routed_expert_count": 128,
+    "experts_per_token": 8,
+    "expert_intermediate_dimension": 704,
+    "parallel_dense_mlp": true,
+    "parallel_note": "experts.* AND mlp.* present in all 30 layers; ffn = dense branch + MoE branch",
+    "router": {
+      "norm": "scale-free RMS (no weight, no tensor)",
+      "scale_tensor": "router.scale x H**-0.5 applied before proj",
+      "proj": "router.proj.weight H x 128",
+      "softmax": "fp32 over 128 logits, no epsilon anywhere (uniform 1/128 on a zero residual is the pinned degenerate case)",
+      "selection": "top-8 descending, ties -> lowest index (torch.topk CPU semantics, pinned by the zero-input anchor)",
+      "weighting": "renormalise sum-to-1 THEN multiply per_expert_scale[selected]",
+      "accumulation": "expert-index order with bf16 adds (pinned by the anchor engine)"
+    },
+    "expert_tensor_shape": "fused gate_up [128, 1408, 2816] + down [128, 2816, 704]"
+  },
+  "attention": {
+    "sliding": {
+      "type": "default rope, theta 10000, whole-head rotation (128 pairs of 256 dims)",
+      "query_heads": 16,
+      "kv_heads": 8,
+      "head_dimension": 256,
+      "window_tokens": 1024
+    },
+    "full": {
+      "type": "proportional rope, base 1e6, partial_rotary_factor 0.25 -> 64 rotated pairs, inv_freq[i] = 1e6**(-i/256) for i < 64 then 0",
+      "query_heads": 16,
+      "global_kv_heads": 2,
+      "head_dimension": 512,
+      "k_eq_v": "no v_proj tensor; v = scale-free per-head RMS of the raw k projection, taken before k_norm/rope"
+    },
+    "scaling": "qk_scale exactly 1.0; softcap none in attention",
+    "norms": "q_norm/k_norm per-head with weight; v_norm per-head without weight",
+    "extra_norms": "26B carries pre_feedforward_2, post_feedforward_1, post_feedforward_2 (7 per-layer norms vs 4 on 31B)"
+  },
+  "topology": {
+    "serving_adapter_id": "spark.gemma4.serving-adapter.tp4pp4.v1",
+    "tp_degree": 4,
+    "pp_degree": 4,
+    "stage_layer_lists": [[0, 7], [8, 15], [16, 22], [23, 29]],
+    "stage_note": "stages of 8/8/7/7 layers; stage boundaries are explicit data; experts 32 per rank, uniform ~3.2GB",
+    "tp16_alternative": "TP16 table ready (sliding kv 8 x2 / full kv 2 x8 replication); one-table switch, the module is topology-agnostic",
+    "kv_replication": "TP4: sliding kv 8/8 exact per rank, full kv 2 global heads replicated x2, rank r reads head r/2",
+    "vocab_shard": 65536,
+    "session_ports": "env-driven fail-closed (SPARK_GEMMA4_STAGE_TP_SESSION_PORTS), no frozen defaults"
+  },
+  "pack_folds": {
+    "router_scale_fold": "router.scale folded into router proj at pack time",
+    "per_expert_scale_fold": "per_expert_scale folded into expert down rows at pack time",
+    "sliding_kv_row_fusion": "k|v rows fused per DESIGN section 6",
+    "full_kv_replication": "rank r -> global head r/(tp/kv) at pack time",
+    "layer_scalar": "emitted per layer and applied by the module at the layer output (warm payload carries non-trivial learned scalars, e.g. 26B layers 0/16/29 = 0.0703/0.5547/0.1953 bf16; the freeze-time all-ones assertion was falsified by the warm payload and the fail-closed check removed)"
+  },
+  "precision": {
+    "source": "bf16 unquantized",
+    "lane_pack_policy": {
+      "weights": "bf16 (experts bf16 grouped; .experts v2 manifest 48B records with spine/expert byte split when the MoE arm packer runs)",
+      "kv_cache": "bf16",
+      "activations": "bf16",
+      "nvfp4_seam": "payload size math only in v1; never quantize"
+    }
+  },
+  "digest_freeze": {
+    "files": {
+      "config.json": {
+        "bytes": 3815,
+        "sha256": "ed0c1eb3633de771906e9ba004a44cc5635bcc06ee2062077c3d2e88a50707d3"
+      },
+      "model.safetensors.index.json": {
+        "bytes": 103196,
+        "sha256": "907826a6e46ff454272bd6db1fee629d5531a2303be22986d825a0871d7dc7a7"
+      },
+      "model-00001-of-00002.safetensors": {
+        "bytes": 49907246508,
+        "sha256": "1127684971bbca40465435a5cad69d67ad603bf5e61c6dfd5561fae4a3bcfdb3"
+      },
+      "model-00002-of-00002.safetensors": {
+        "bytes": 1704763408,
+        "sha256": "aab47033e1e8a492ef8e581efae1cf36478d0433567e7729b3c1728bc8970db7"
+      },
+      "tokenizer.json": {
+        "bytes": 32169626,
+        "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+      }
+    },
+    "policy": "small files hashed on workstation and sparka (agreement); shard sha256 = HF LFS oid at the pinned revision with byte-exact warm size equality, local sparka hash confirmation recorded in the lane report",
+    "shard_indices": [1, 2],
+    "total_shard_count": 2
+  },
+  "tensor_census": {
+    "index_entries": 1013,
+    "text_stack_entries": 657,
+    "vision_entries": 356,
+    "text_patterns": {
+      "model.language_model.embed_tokens.weight": 1,
+      "model.language_model.norm.weight": 1,
+      "model.language_model.layers.N.experts.down_proj": 30,
+      "model.language_model.layers.N.experts.gate_up_proj": 30,
+      "model.language_model.layers.N.input_layernorm.weight": 30,
+      "model.language_model.layers.N.layer_scalar": 30,
+      "model.language_model.layers.N.mlp.down_proj.weight": 30,
+      "model.language_model.layers.N.mlp.gate_proj.weight": 30,
+      "model.language_model.layers.N.mlp.up_proj.weight": 30,
+      "model.language_model.layers.N.post_attention_layernorm.weight": 30,
+      "model.language_model.layers.N.post_feedforward_layernorm.weight": 30,
+      "model.language_model.layers.N.post_feedforward_layernorm_1.weight": 30,
+      "model.language_model.layers.N.post_feedforward_layernorm_2.weight": 30,
+      "model.language_model.layers.N.pre_feedforward_layernorm.weight": 30,
+      "model.language_model.layers.N.pre_feedforward_layernorm_2.weight": 30,
+      "model.language_model.layers.N.router.per_expert_scale": 30,
+      "model.language_model.layers.N.router.proj.weight": 30,
+      "model.language_model.layers.N.router.scale": 30,
+      "model.language_model.layers.N.self_attn.k_norm.weight": 30,
+      "model.language_model.layers.N.self_attn.k_proj.weight": 30,
+      "model.language_model.layers.N.self_attn.o_proj.weight": 30,
+      "model.language_model.layers.N.self_attn.q_norm.weight": 30,
+      "model.language_model.layers.N.self_attn.q_proj.weight": 30,
+      "model.language_model.layers.N.self_attn.v_proj.weight": 25,
+      "model.embed_vision.embedding_projection.weight": 1
+    },
+    "v_proj_note": "x25: the 5 full layers carry no v_proj (attention_k_eq_v); sliding layers are 25",
+    "no_lm_head": "tied embeddings; no router.norm.weight tensor (scale-free); PLE dead"
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "driver aligned to the 50bd0d3 platform; oracle + validator consuming the anchor fixtures; bring-up pending",
+    "production_ready": false
+  }
+}
