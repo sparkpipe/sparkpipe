@@ -61,6 +61,11 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 #define SPARK_LING_VAL_W1_ROWS (2u * SPARK_LING_VAL_EXPERT_INTER)
 #define SPARK_LING_VAL_ROUTED_SCALE SPARK_LING_MODEL_MOE_ROUTED_SCALING_FACTOR
 #define SPARK_LING_VAL_LOWER SPARK_LING_MODEL_KDA_GATE_LOWER_BOUND
+#define SPARK_LING_VAL_ORACLE_TRUTH_BAND 0.0058
+#define SPARK_LING_VAL_ONE_BF16_ULP 0.00390625
+#define SPARK_LING_VAL_TOKEN_INCREMENT_BAND \
+	(SPARK_LING_VAL_ORACLE_TRUTH_BAND + SPARK_LING_VAL_ONE_BF16_ULP)
+#define SPARK_LING_VAL_TRUTH_COSINE_FLOOR 0.99999
 
 static uint32_t SparkLingValRandomState;
 
@@ -1010,6 +1015,162 @@ static void SparkLingValMlaAttention(
 	}
 }
 
+static void SparkLingValRopeInterleaved64(double *section,uint32_t rope_dim,
+	double position,double theta)
+{
+	uint32_t half = rope_dim / 2u,index;
+	for (index = 0u; index < half; index++)
+	{
+		double angle = position * pow(theta,-2.0 * (double)index / (double)rope_dim);
+		double c = cos(angle),s = sin(angle);
+		double a = section[index * 2u],b = section[index * 2u + 1u];
+		section[index * 2u] = a * c - b * s;
+		section[index * 2u + 1u] = a * s + b * c;
+	}
+}
+
+static void SparkLingValMlaAttention64(const SparkLingValMlaWeights *w,
+	const float *hidden,const float *residual,uint32_t position,
+	SparkLingValMlaCache *cache,float *output)
+{
+	const uint32_t heads = SPARK_LING_VAL_HEADS;
+	const uint32_t nope = SPARK_LING_VAL_NOPE;
+	const uint32_t rope = SPARK_LING_VAL_ROPE;
+	const uint32_t latent = SPARK_LING_VAL_LATENT;
+	static double normed[SPARK_LING_VAL_HIDDEN];
+	static double q[SPARK_LING_VAL_Q_ROWS];
+	static double kv[SPARK_LING_VAL_KV_ROW];
+	static double query_latent[SPARK_LING_VAL_HEADS * SPARK_LING_VAL_LATENT];
+	static double attention_latent[SPARK_LING_VAL_HEADS * SPARK_LING_VAL_LATENT];
+	static double values[SPARK_LING_VAL_ATTN_COLS];
+	uint32_t index,head;
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+		normed[index] = (double)hidden[index] +
+			(residual != 0 ? (double)residual[index] : 0.0);
+	{
+		double sum = 0.0;
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			sum += normed[index] * normed[index];
+		double inverse = 1.0 / sqrt(sum / (double)SPARK_LING_VAL_HIDDEN +
+			(double)SPARK_LING_VAL_RMS_EPS);
+		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+			normed[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(
+				normed[index] * inverse * (double)w->attn_norm[index]));
+	}
+	for (index = 0u; index < SPARK_LING_VAL_Q_ROWS; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->q_proj[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] *
+				normed[j];
+		q[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	for (head = 0u; head < heads; head++)
+		SparkLingValRopeInterleaved64(
+			q + (uint64_t)head * SPARK_LING_VAL_HEAD_DIM + nope,rope,
+			(double)position,(double)SPARK_LING_VAL_ROPE_THETA);
+	for (index = 0u; index < SPARK_LING_VAL_Q_ROWS; index++)
+		q[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(q[index]));
+	for (index = 0u; index < SPARK_LING_VAL_KV_ROW; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			sum += (double)w->kv_a[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] *
+				normed[j];
+		kv[index] = SparkLingValDoubleOfBf16(SparkLingValBf16OfDouble(sum));
+	}
+	{
+		double sum = 0.0;
+		for (index = 0u; index < latent; index++)
+			sum += kv[index] * kv[index];
+		double inverse = 1.0 / sqrt(sum / (double)latent +
+			(double)SPARK_LING_VAL_RMS_EPS);
+		for (index = 0u; index < latent; index++)
+			kv[index] = kv[index] * inverse * (double)w->kv_a_norm[index];
+	}
+	SparkLingValRopeInterleaved64(kv + latent,rope,(double)position,
+		(double)SPARK_LING_VAL_ROPE_THETA);
+	for (index = 0u; index < SPARK_LING_VAL_KV_ROW; index++)
+		cache->slots[(uint64_t)position * SPARK_LING_VAL_KV_ROW + index] =
+			SparkLingValBf16OfDouble(kv[index]);
+	for (head = 0u; head < heads; head++)
+	{
+		const double *qh = q + (uint64_t)head * SPARK_LING_VAL_HEAD_DIM;
+		for (uint32_t l = 0u; l < latent; l++)
+		{
+			double sum = 0.0;
+			for (uint32_t j = 0u; j < nope; j++)
+				sum += (double)w->kv_b_key[
+					((((uint64_t)head * latent) + l) * nope) + j] * qh[j];
+			query_latent[(uint64_t)head * latent + l] = sum;
+		}
+	}
+	for (head = 0u; head < heads; head++)
+	{
+		const double *q_latent = query_latent + (uint64_t)head * latent;
+		const double *q_rope = q + (uint64_t)head * SPARK_LING_VAL_HEAD_DIM + nope;
+		double scores[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS];
+		double maximum = -3.0e308,total = 0.0;
+		uint32_t position_index;
+		for (position_index = 0u; position_index < cache->context; position_index++)
+		{
+			const uint16_t *slot = cache->slots +
+				(uint64_t)position_index * SPARK_LING_VAL_KV_ROW;
+			double dot = 0.0;
+			for (uint32_t l = 0u; l < latent; l++)
+				dot += q_latent[l] * SparkLingValDoubleOfBf16(slot[l]);
+			for (uint32_t r = 0u; r < rope; r++)
+				dot += q_rope[r] * SparkLingValDoubleOfBf16(slot[latent + r]);
+			scores[position_index] = dot * (double)SPARK_LING_VAL_QK_SCALE;
+			if ( scores[position_index] > maximum )
+				maximum = scores[position_index];
+		}
+		for (position_index = 0u; position_index < cache->context; position_index++)
+		{
+			scores[position_index] = exp(scores[position_index] - maximum);
+			total += scores[position_index];
+		}
+		for (uint32_t l = 0u; l < latent; l++)
+		{
+			double sum = 0.0;
+			for (position_index = 0u; position_index < cache->context; position_index++)
+			{
+				const uint16_t *slot = cache->slots +
+					(uint64_t)position_index * SPARK_LING_VAL_KV_ROW;
+				sum += (scores[position_index] / total) *
+					SparkLingValDoubleOfBf16(slot[l]);
+			}
+			attention_latent[(uint64_t)head * latent + l] = sum;
+		}
+	}
+	for (head = 0u; head < heads; head++)
+	{
+		double gate_logit = 0.0;
+		double gate;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_HIDDEN; j++)
+			gate_logit += (double)w->attn_gate[(uint64_t)head * SPARK_LING_VAL_HIDDEN + j] *
+				normed[j];
+		gate = 1.0 / (1.0 + exp(-gate_logit));
+		for (uint32_t e = 0u; e < SPARK_LING_VAL_VALUE; e++)
+		{
+			double sum = 0.0;
+			for (uint32_t l = 0u; l < latent; l++)
+				sum += (double)w->kv_b_value[
+					((((uint64_t)head * SPARK_LING_VAL_VALUE) + e) * latent) + l] *
+					attention_latent[(uint64_t)head * latent + l];
+			values[(uint64_t)head * SPARK_LING_VAL_VALUE + e] = sum * gate;
+		}
+	}
+	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+	{
+		double sum = 0.0;
+		for (uint32_t j = 0u; j < SPARK_LING_VAL_ATTN_COLS; j++)
+			sum += (double)w->o_proj[(uint64_t)index * SPARK_LING_VAL_ATTN_COLS + j] *
+				values[j];
+		output[index] = SparkLingValFromBf16(SparkLingValBf16OfDouble(sum));
+	}
+}
+
 static void SparkLingValDenseMlp(
 	const float *post_norm,const float *gate_up_weight,const float *down_weight,
 	const float *hidden,const float *residual,float *output)
@@ -1841,6 +2002,7 @@ typedef struct SparkLingValWalk
 	double kda_windows64[2][3][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
 	double kda_state64[2][(uint64_t)SPARK_LING_VAL_KDA_HEADS * SPARK_LING_VAL_KDA_KEY * SPARK_LING_VAL_KDA_KEY];
 	uint16_t mla_cache[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
+	uint16_t mla_cache64[SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS][SPARK_LING_VAL_KV_ROW];
 	uint32_t mla_context;
 	uint32_t selected[SPARK_LING_VAL_TOP_K];
 	float route_weights[SPARK_LING_VAL_TOP_K];
@@ -1848,6 +2010,8 @@ typedef struct SparkLingValWalk
 	float row_sublayer[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float row_sublayer64[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
 	float boundary_rows[SPARK_LING_VAL_ROWS][SPARK_LING_VAL_HIDDEN];
+	float sublayer_device_prev[SPARK_LING_VAL_HIDDEN];
+	float sublayer_truth_prev[SPARK_LING_VAL_HIDDEN];
 } SparkLingValWalk;
 
 static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
@@ -1894,6 +2058,9 @@ static void SparkLingValRunAttentionOracle(SparkLingValFixture *fixture,
 		cache.context = walk->mla_context + row + 1u;
 		SparkLingValMlaAttention(&mla,hidden,residual,
 			walk->mla_context + row,&cache,sublayer_out);
+		cache.slots = walk->mla_cache64[0];
+		SparkLingValMlaAttention64(&mla,hidden,residual,
+			walk->mla_context + row,&cache,walk->row_sublayer64[row]);
 	}
 }
 
@@ -2059,104 +2226,51 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			float prev_mlp[SPARK_LING_VAL_HIDDEN];
 			if ( residual != 0 )
 				memcpy(prev_mlp,residual,sizeof(prev_mlp));
-			if ( probe != 0 && local == 0u && row == 0u )
+			if ( probe != 0 && local == 0u )
 			{
 				static float actual[SPARK_LING_VAL_HIDDEN];
+				static float device_increment[SPARK_LING_VAL_HIDDEN];
+				static float truth_increment[SPARK_LING_VAL_HIDDEN];
 				static uint16_t device_sublayer[SPARK_LING_VAL_HIDDEN];
-				SparkLingValMetrics metrics;
-				static SparkLingValKdaDump oracle_dump;
-				static uint16_t device_stage[SPARK_LING_VAL_KDA_FUSED];
-				static uint16_t device_q[SPARK_LING_VAL_KDA_QK];
-				static float device_ret[SPARK_LING_VAL_KDA_QK];
-				static float device_beta[SPARK_LING_VAL_KDA_HEADS];
-				static uint16_t device_window[3u][SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV];
-				static uint16_t device_vconv[SPARK_LING_VAL_KDA_V];
+				SparkLingValMetrics metrics,truth,oracle_truth,step;
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
 					walk->row_hidden[row],residual,row,walk->row_sublayer[row],
-					&oracle_dump);
+					0);
 				if ( cudaDeviceSynchronize() != cudaSuccess ||
-					cudaMemcpy(device_sublayer,fixture->attention_out_dev,
-						SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+					cudaMemcpy(device_sublayer,
+						fixture->attention_out_dev +
+							(uint64_t)row * SPARK_LING_VAL_ATTN_OUT_WIDTH,
+						SPARK_LING_VAL_HIDDEN * sizeof(uint16_t),
+						cudaMemcpyDeviceToHost) != cudaSuccess )
 					return(SparkLingValFail("drive","attention_readback"));
 				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				{
 					actual[index] = SparkLingValFromBf16(device_sublayer[index]);
+					device_increment[index] = actual[index] -
+						walk->sublayer_device_prev[index];
+					truth_increment[index] = walk->row_sublayer64[row][index] -
+						walk->sublayer_truth_prev[index];
+				}
 				SparkLingValMeasure(&metrics,actual,walk->row_sublayer[row],SPARK_LING_VAL_HIDDEN);
-				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
-				{
-					static float reference64[SPARK_LING_VAL_HIDDEN];
-					SparkLingValMetrics truth;
-					for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
-						reference64[index] = walk->row_sublayer64[row][index];
-					SparkLingValMeasure(&truth,actual,reference64,SPARK_LING_VAL_HIDDEN);
-					printf(" | fp64 dev rel %.5f cos %.7f",truth.max_relative_l2,truth.cosine);
-					SparkLingValMeasure(&truth,walk->row_sublayer[row],reference64,SPARK_LING_VAL_HIDDEN);
-					printf(" or32 rel %.5f cos %.7f",truth.max_relative_l2,truth.cosine);
-				}
-				if ( SPARK_LING_MODEL_LAYER_IS_KDA(layer) )
-				{
-					int stage_fail = metrics.max_relative_l2 > 0.05 ||
-						metrics.cosine < 0.995;
-					if ( cudaDeviceSynchronize() == cudaSuccess &&
-						cudaMemcpy(device_stage,fixture->fused_qkvb_dev,
-							sizeof(device_stage),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_q,fixture->q_dev,
-							sizeof(device_q),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_ret,fixture->kda_retention_dev,
-							sizeof(device_ret),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_beta,fixture->kda_write_gate_dev,
-							sizeof(device_beta),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_window[0],fixture->wave.kda_q_window_pool,
-							sizeof(device_window[0]),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_window[1],fixture->wave.kda_k_window_pool,
-							sizeof(device_window[1]),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_window[2],fixture->wave.kda_v_window_pool,
-							sizeof(device_window[2]),cudaMemcpyDeviceToHost) == cudaSuccess &&
-						cudaMemcpy(device_vconv,fixture->gate_up_dev,
-							sizeof(device_vconv),cudaMemcpyDeviceToHost) == cudaSuccess )
-					{
-						uint32_t first_q = SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV;
-						uint32_t first_w = SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV;
-						for (index = 0u; index < SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV; index++)
-							if ( device_window[0][index] != walk->kda_windows[0][0][index] )
-							{
-								if ( first_w == SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV )
-									first_w = index;
-							}
-						for (index = 0u; index < SPARK_LING_VAL_KDA_QK; index++)
-						{
-							float d = SparkLingValFromBf16(device_q[index]) - oracle_dump.q_l2[index];
-							if ( fabsf(d) > 0.002f * (fabsf(oracle_dump.q_l2[index]) + 0.001f) &&
-								first_q == SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV )
-								first_q = index;
-						}
-						printf(" win_first_diff %u (dev %04x or %04x) q_first_diff %u (dev %.5f or %.5f)",
-							first_w,device_window[0][first_w],walk->kda_windows[0][0][first_w],
-							first_q,SparkLingValFromBf16(device_q[first_q]),oracle_dump.q_l2[first_q]);
-						static float device_stage_f[SPARK_LING_VAL_KDA_FUSED];
-						static float device_q_f[SPARK_LING_VAL_KDA_QK];
-						SparkLingValMetrics m;
-						for (index = 0u; index < SPARK_LING_VAL_KDA_FUSED; index++)
-							device_stage_f[index] = SparkLingValFromBf16(device_stage[index]);
-						for (index = 0u; index < SPARK_LING_VAL_KDA_QK; index++)
-							device_q_f[index] = SparkLingValFromBf16(device_q[index]);
-						SparkLingValMeasure(&m,device_stage_f,oracle_dump.q_raw,SPARK_LING_VAL_KDA_QK);
-						printf("stage w%u q_raw rel %.4f cos %.6f",wave_index,m.max_relative_l2,m.cosine);
-						SparkLingValMeasure(&m,device_stage_f + 2u * SPARK_LING_VAL_KDA_QK,oracle_dump.v_raw,SPARK_LING_VAL_KDA_V);
-						printf(" v_raw rel %.4f",m.max_relative_l2);
-						SparkLingValMeasure(&m,device_q_f,oracle_dump.q_l2,SPARK_LING_VAL_KDA_QK);
-						printf(" q_l2 rel %.4f cos %.6f",m.max_relative_l2,m.cosine);
-						SparkLingValMeasure(&m,device_ret,oracle_dump.retention,SPARK_LING_VAL_KDA_QK);
-						printf(" ret rel %.4f",m.max_relative_l2);
-						SparkLingValMeasure(&m,device_beta,oracle_dump.beta,SPARK_LING_VAL_KDA_HEADS);
-						printf(" beta rel %.4f | sublayer",m.max_relative_l2);
-					}
-					if ( SparkLingValReport("kda attention sublayer",&metrics,0.05,0.995) != 0 && !stage_fail )
-						return(1);
-					if ( stage_fail )
-						return(1);
-				}
-				else if ( SparkLingValReport("mla attention sublayer",&metrics,0.02,0.999) != 0 )
+				SparkLingValMeasure(&truth,actual,walk->row_sublayer64[row],SPARK_LING_VAL_HIDDEN);
+				SparkLingValMeasure(&oracle_truth,walk->row_sublayer[row],
+					walk->row_sublayer64[row],SPARK_LING_VAL_HIDDEN);
+				SparkLingValMeasure(&step,device_increment,truth_increment,SPARK_LING_VAL_HIDDEN);
+				printf("w%u p%u dev-or %.5f dev-truth %.5f or-truth %.5f inc %.5f incmax %.3e\n",
+					wave_index,positions[row],metrics.max_relative_l2,
+					truth.max_relative_l2,oracle_truth.max_relative_l2,
+					step.max_relative_l2,step.max_abs);
+				if ( SparkLingValReport("oracle vs fp64 truth",&oracle_truth,
+					SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_TRUTH_COSINE_FLOOR) != 0 )
 					return(1);
+				if ( SparkLingValReport("token increment vs truth",&step,
+					SPARK_LING_VAL_TOKEN_INCREMENT_BAND,0.0) != 0 )
+					return(1);
+				for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
+				{
+					walk->sublayer_device_prev[index] = actual[index];
+					walk->sublayer_truth_prev[index] = walk->row_sublayer64[row][index];
+				}
 			}
 			else
 				SparkLingValRunAttentionOracle(fixture,walk,layer,local,
@@ -2490,6 +2604,9 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	printf("ling validator: configuration %s codec %s\n",argv[1],LING_EXPERT_CODEC_NAME);
+	printf("ling error model band %.4f ulp %.7f increment %.4f\n",
+		SPARK_LING_VAL_ORACLE_TRUTH_BAND,SPARK_LING_VAL_ONE_BF16_ULP,
+		SPARK_LING_VAL_TOKEN_INCREMENT_BAND);
 	if ( SparkLingValOracleSelftest() != 0 )
 		return(1);
 	if ( SparkLingValFixtureBuild(&fixture) != 0 )
