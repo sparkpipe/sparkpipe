@@ -1,14 +1,17 @@
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_ling_kv_geometry.h"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_ling_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
 
 #ifndef LING_EXPERT_WEIGHT_CODEC
 #error "LING_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -103,6 +106,8 @@ typedef struct SparkLingServingState
 	uint32_t resident_sequence_capacity;
 	uint32_t quiescing;
 	uint64_t orphan_completion_count;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 	uint16_t tp_listen_port;
 	uint16_t tp_peer_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	uint32_t tp_connect_timeout_milli;
@@ -143,7 +148,8 @@ static const SparkModelServingAdapterDescriptor SparkLingServingDescriptor =
 	.artifact_sha256 = LING_CONTRACT_SHA256,
 	.stage_layer_counts = SPARK_LING_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds = {0u},
-	.boundary_sideband_bytes_per_sequence = {0u}
+	.boundary_sideband_bytes_per_sequence = {0u},
+	.cache_block_token_count = SPARK_LING_KV_BLOCK_TOKEN_COUNT
 };
 
 static int32_t SparkLingServingJsonMember(
@@ -859,6 +865,8 @@ static SparkStatus SparkLingServingInitialize(
 	state = (SparkLingServingState *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 	state->stage_index = configuration->stage_index;
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
@@ -926,6 +934,17 @@ static SparkStatus SparkLingServingValidateBoundaries(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkLingServingSubmissionStale(
+	const SparkLingServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	if ( submission == 0 )
+		return(0u);
+	return(submission->control_generation <
+		atomic_load_explicit(&state->reset_generation,memory_order_acquire) ?
+		1u : 0u);
+}
+
 static SparkStatus SparkLingServingValidateSubmission(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
@@ -937,6 +956,8 @@ static SparkStatus SparkLingServingValidateSubmission(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
+	if ( SparkLingServingSubmissionStale(state,submission) != 0u )
+		return(SPARK_STATUS_VALIDATION_FAILED);
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkLingServingDescriptor,&state->runtime_limits,submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingServingValidateBoundaries(state,submission);
@@ -947,6 +968,53 @@ static SparkStatus SparkLingServingValidateSubmission(
 		status = SPARK_STATUS_UNSUPPORTED;
 	}
 	return(status);
+}
+
+static _Thread_local SparkModelDriverCacheLane SparkLingServingCacheScratch[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+
+static SparkServingCacheAdmission SparkLingServingCacheContext(
+	SparkLingServingState *state,SparkModelDriverCacheLane *lanes)
+{
+	SparkServingCacheAdmission cache;
+	cache.program_id = state->program->program_id;
+	cache.lane_capacity = SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	cache.lanes = lanes;
+	cache.driver = state->driver.interface;
+	cache.driver_instance = state->driver_instance;
+	cache.validate = SparkLingServingValidateSubmission;
+	cache.adapter_state = state;
+	return(cache);
+}
+
+static SparkStatus SparkLingServingPrefetch(void *adapter_state,
+	const SparkModelServingSubmission *submissions,uint32_t count)
+{
+	SparkLingServingState *state;
+	SparkServingCacheAdmission cache;
+	state = (SparkLingServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submissions,count,
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
+}
+
+static SparkStatus SparkLingServingResolvePrefetch(void *adapter_state,
+	const SparkModelServingSubmission *submission,uint32_t resolution)
+{
+	SparkLingServingState *state;
+	SparkServingCacheAdmission cache;
+	uint32_t flags;
+	state = (SparkLingServingState *)adapter_state;
+	if ( state == 0 || state->program == 0 ||
+		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
+	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
 
 static void SparkLingServingBuildFrame(
@@ -1074,6 +1142,53 @@ static SparkStatus SparkLingServingQuiesce(
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
+static SparkStatus SparkLingServingResetControl(void *adapter_state,
+	uint64_t control_generation)
+{
+	SparkLingServingState *state;
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	state = (SparkLingServingState *)adapter_state;
+	if ( state == 0 || control_generation == 0u ||
+		control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkLingServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = (uint32_t)sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		state->quiescing = 0u;
+	}
+	return(status);
+}
+
+static SparkStatus SparkLingServingReset(void *adapter_state,
+	uint64_t control_generation)
+{
+	SparkLingServingState *state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	state = (SparkLingServingState *)adapter_state;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
+		memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkLingServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
+}
+
 static SparkStatus SparkLingServingSnapshot(
 	void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
@@ -1117,9 +1232,12 @@ static const SparkModelServingAdapterInterface SparkLingServingInterface =
 	.destroy = SparkLingServingDestroy,
 	.validate_submission = SparkLingServingValidateSubmission,
 	.submit = SparkLingServingSubmit,
+	.prefetch = SparkLingServingPrefetch,
+	.resolve_prefetch = SparkLingServingResolvePrefetch,
 	.progress = SparkLingServingProgress,
 	.quiesce = SparkLingServingQuiesce,
-	.snapshot = SparkLingServingSnapshot
+	.snapshot = SparkLingServingSnapshot,
+	.reset = SparkLingServingReset
 };
 
 __attribute__((visibility("default")))
