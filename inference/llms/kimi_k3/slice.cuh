@@ -76,6 +76,9 @@ struct K3SliceState
 	void (*layer_collective)(void *context, void *stream, uint32_t layer,
 		uint32_t phase);
 	void *collective_context;
+	void *lazy_context;
+	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
+	void (*lazy_release)(void *context, uint32_t layer);
 };
 
 static_assert(K3_KDA_LAYER_COUNT + K3_MLA_LAYER_COUNT == K3_LAYERS,
@@ -221,6 +224,18 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
+		else if ( state->lazy_acquire != 0 )
+		{
+			status = K3LayerMoeRoute<Format>(buffers,rows,packed_rows,multiprocessors,stream);
+			if ( status == LM_LAUNCH_OK )
+				status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+			if ( status == LM_LAUNCH_OK )
+				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
+			if ( status == LM_LAUNCH_OK && state->layer_collective != 0 )
+				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
+			if ( status == LM_LAUNCH_OK )
+				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+		}
 		else
 		{
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
@@ -233,6 +248,8 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			return(status);
 		if ( state->layer_collective != 0 )
 			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,1u);
+		if ( state->lazy_release != 0 )
+			state->lazy_release(state->lazy_context,layer);
 		if ( state->dspark_aux != 0 )
 		{
 			static const uint32_t aux_ids[K3_DSPARK_AUX_LAYER_COUNT] = K3_DSPARK_AUX_LAYER_IDS_INITIALIZER;

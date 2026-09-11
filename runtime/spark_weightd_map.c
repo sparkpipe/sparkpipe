@@ -373,6 +373,17 @@ SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,voi
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkWeightdMapBase(const SparkWeightdMap *map,void **address)
+{
+	if ( map == 0 || address == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*address = 0;
+	if ( map->base == 0u )
+		return(SPARK_STATUS_NOT_FOUND);
+	*address = (void *)(uintptr_t)map->base;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream)
 {
 	SparkWeightdMapSlot *slot;

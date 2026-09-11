@@ -1,0 +1,146 @@
+{
+ "schema_version": 1,
+ "lane": "muse",
+ "model_id": "meta-models/Muse-Glimmer-30B",
+ "architecture": "MuseGlimmerForConditionalGeneration (text_config model_type muse_glimmer_text); dense GQA with per-layer sliding/full dispatch",
+ "source_revision": "4177486a9f199bd7be520eff14431071d5d41ec5",
+ "scope": {
+  "text_decode_path_only": true,
+  "vision_tower": "model.vision_tower/model.vision_adapter/model.vision_projection out of scope by contract (809 tensors; not served)",
+  "speculation_note": "docs/archive/DFLASH2_ADOPTION_SPEC.md names muse as a DFlash2 sidecar target; this contract covers greedy decode only and keeps the embedding norm a runtime step (unmergable) so a draft module stays possible"
+ },
+ "sources": {
+  "warm_path": "/mnt/model-warm/muse-glimmer-30b",
+  "status": "warm copy complete on sparkc (56G, PUBLISHED marker, verified 2026-09-10); digests frozen in digest_freeze",
+  "modeling_reference": {
+   "path": "model_contracts/references/modeling_muse_glimmer.py",
+   "upstream": "https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/muse_glimmer/modeling_muse_glimmer.py",
+   "commit": "4815a0a6a064214f2d8208c094464a5a6b76ca8d",
+   "sha256": "e69eb21d6efd815a48499d4d0e4180afda2f443beb441a734d50efc2cf83f975",
+   "pin_note": "commit was mispinned as the HF model revision 4177486a; corrected to the transformers commit the file sha256 verifies against (validation PINS.txt, byte-identical on fetch 2026-09-09); local copy re-hashed identical at V1",
+   "fetched_at": "2026-09-09",
+   "config_transformers_version": "5.15.0.dev0",
+   "diff_before_V1_law": "satisfied at V1: local copy sha256 equals the PINS-verified upstream sha256"
+  }
+ },
+ "model": {
+  "hidden_dimension": 6656,
+  "layer_count": 52,
+  "vocabulary_size": 202048,
+  "attention_head_count": 32,
+  "kv_head_count": 2,
+  "head_dimension": 128,
+  "mtp_layer_count": 0,
+  "maximum_context_tokens": 131072,
+  "full_attention_interval": 4,
+  "rms_norm_epsilon": 1e-05,
+  "post_norm_epsilon": 1e-08,
+  "intermediate_dimension": 19968,
+  "sliding_window": 2048,
+  "qk_scale_factor": 3.87,
+  "output_multiplier": 0.19611613513818404,
+  "final_logit_softcapping": 20.0,
+  "bos_token_id": 200000,
+  "eos_token_id": 200001,
+  "pad_token_id": null
+ },
+ "hybrid_attention": {
+  "period": 4,
+  "full_phase": 3,
+  "sliding_layer_count": 39,
+  "full_layer_count": 13,
+  "layer_pattern": "3 sliding_attention : 1 full_attention, full at i%4==3",
+  "rope_rule": "theta 5e5 on sliding layers only; all 13 full-attention layers are NoPE (layer_rope_theta[i]==0 iff layer_types[i]==full_attention)"
+ },
+ "attention": {
+  "query_rows": 4096,
+  "query_rows_note": "fused per-rank qgkv carries q(256)+sigmoid output gate(256) rank-local; output gate is elementwise over (head,dim), NOT per-head scalar",
+  "kv_rows": 256,
+  "rope_dimension": 128,
+  "rope_theta": 500000.0,
+  "partial_rotary_factor": 1.0,
+  "rope_pairing": "half-split (transformers rotate_half)",
+  "qk_norm": "scale-less per-head RMS over 128 dims, eps 1e-05, no weight",
+  "qk_scale_factor_order": "q = bf16(qk_norm(q)) * 3.87 rounded to bf16 BEFORE rope; k unscaled; softmax scale is head_dim**-0.5 applied to q.k",
+  "attention_scale": 0.08838834764831845
+ },
+ "mlp": {
+  "shape": "dense SwiGLU",
+  "intermediate_dimension": 19968,
+  "activation": "silu",
+  "gate_up_layout": "gate_first",
+  "source_precision": "bf16 unquantized gate_up_proj [19968,6656] + down_proj [6656,19968]"
+ },
+ "norms": {
+  "per_layer": [
+   "input_layernorm centered eps 1e-05",
+   "post_attention_layernorm centered eps 1e-08",
+   "pre_feedforward_layernorm centered eps 1e-05",
+   "post_feedforward_layernorm centered eps 1e-08"
+  ],
+  "centered_form": "y = bf16(rms_f32(x) * (1 + w)); weight stored as the zero-centered delta",
+  "final_norm": "plain weighted RMS (MuseGlimmerRMSNorm with_scale=True): y = bf16(rms_f32(x) * w); NOT centered per the pinned modeling source",
+  "scale_less_norms": "qk norm (32 heads x 128) and embedding norm (1 x 6656) carry no weight tensor",
+  "embedding_norm": "runtime step, never folded into the embedding matrix (DFlash2 draft path needs the raw embedding)"
+ },
+ "precision": {
+  "source": "bf16 unquantized",
+  "lane_pack_policy": {
+   "all_tensors": "bf16 (NEVER quantize)",
+   "kv_cache": "bf16",
+   "activations": "bf16",
+   "softmax": "fp32 online",
+   "norms": "fp32 internal, single bf16 round at the output (q rows get the HF-exact second bf16 round through the 3.87 epilogue)"
+  }
+ },
+ "tokenization": {
+  "bos_token_id": 200000,
+  "eos_token_id": 200001,
+  "note": "tokenizer files freeze with the warm download; token ids in this contract come from config.json"
+ },
+ "digest_freeze": {
+  "status": "frozen 2026-09-10 on sparkc (sparkcap-wrapped sha256sum over the warm copy; config/index shas independently cross-checked against the pack receipts and validation PINS.txt)",
+  "files": {
+   "model-00001-of-00002.safetensors": "8eef61530e1283642c77ce2e6721feb5c6f348fa055c00e90f2844a136372694",
+   "model-00002-of-00002.safetensors": "b58cc2144ba1ba1af4420f67f4ca3ced7f09298510b80464cc75018a0be14381",
+   "model.safetensors.index.json": "7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba",
+   "config.json": "5a9df2d8a385b3d361ab6ae68d73586f4e775033933bd0cd863fb7f3820e6a14",
+   "generation_config.json": "1fa51889b1f8d3659802dedaa27e005b81e5c58483f13ecf13f2d97306bc6e35",
+   "tokenizer.json": "c9dbee66967b58f31a7c27f723c3760da3526ccd0427578e8905b0abb0031c4d",
+   "tokenizer_config.json": "781e6c74f571642c71202167b67d9255b28cc439bdda1582ff31346182f5a9c5",
+   "processor_config.json": "97e2a486dd9866b81f40cf4b8bc0c9ced9a7cd8a5bc65aa4cc2f4de0712dae77",
+   "chat_template.jinja": "cfc67e5f349f37690dfd31ed1f18bc4442a9dd32fe39a648f993cb4eb3cae678"
+  }
+ },
+ "tensor_census": {
+  "status": "RESOLVED against the real warm index at V1 (index sha256 7d817b4dccb1b123fc6c1939356c65cee3a0ad462a5b821ac88280990a27d1ba, 1436 entries total): 624 layer tensors (12 classes x 52) + embed_tokens + final norm + lm_head = 627 text tensors; 809 skipped (806 vision_tower + vision_adapter.fc1/fc2 + vision_projection). The pre-download estimate said 626 text / 810 vision; the real index proves 627/809 - the patterns side was right, this contract was off by one",
+  "expected_text_tensors": 627,
+  "expected_skipped_vision_tensors": 809,
+  "expected_text_pattern_classes": 12,
+  "layer_classes": {
+   "global": [
+    "embed_tokens",
+    "final_norm",
+    "lm_head"
+   ],
+   "every_layer": [
+    "input_layernorm",
+    "post_attention_layernorm",
+    "pre_feedforward_layernorm",
+    "post_feedforward_layernorm",
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "gate_proj(attn out gate)",
+    "o_proj",
+    "gate_up_proj",
+    "down_proj"
+   ]
+  }
+ },
+ "qualification": {
+  "cuda_target": "sm_121a",
+  "status": "V1 real-weight verification on sparkc: packs rebuilt+audited (A7 PASS), kernel/reference GPU tiers PASS on the real rank00 pack, real goldens A1-A7 green (A6 real greedy 1418); module lifecycle E2E pending weightd lazy-pack attach plumbing, then fleet qualification under model_residentd",
+  "production_ready": false
+ }
+}

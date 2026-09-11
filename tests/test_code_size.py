@@ -1478,27 +1478,13 @@ CEILING = 233150
 # incl. the error-site SPARK_FAIL sweep (1583 sites) and the direct-pack-load
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
-# Re-merge 8f3a6f2..14df85a: glm53-p0 #912 (residentd scope release, transport
-# patient startup + route self-healing) + ceiling re-pin #911. Measured exact
-# on 14df85a: 241327 (+275).
-# PR #913 (50bd0d3) lands the E2E-proven transport: the rdma wire-up engine
-# and the old-engine test debt are deleted (tp_device_collective.c 3647 ->
-# 413, nccl backend gone), main's exact drops to 232148 (-9179).
-# The gemma4 lane #903 lands the family: two-contract model header, gemma
-# stagepack format + firmware ABI, the carved module and kernel set
-# replacing the qwen4_flash donor body, arm Makefiles, serving adapter,
-# pack synth tool, contract freeze, anchor-consuming oracle, +4261 net.
-# Measured exact: 236409 at the gemma4 tip.
-# The gemma4 lane round 3 (AC6/AC8) adds the family GPU validator
-# (modules/gemma4_resident_decode_stage/validation/, +1870: the carved
-# kernel-set harness with the host mirror of the anchor oracle math, both
-# arms), the retained-receipt validate script (+70), the real-weight
-# stagepack packer (tools/gemma4_stagepack.py, +860: census-locked TP16/TP4
-# shard maps, router/per-expert folds, .experts v2 manifest with the ck128
-# port), the publisher-exact layer_scalar and MoE branch-norm kinds
-# (format/module/synth, net +~100), and the cuda.cu fixes (configure opt-in,
-# Mloop path removal). Ceiling moves to the exact count, ratchet law.
-CEILING = 239154
+CEILING = 241052
+# muse #902 round 2, second hop onto 167cde7 (main moved 190 commits under
+# the lane during validation): the muse glimmer family stack (module + cuda
+# tier + stagepack/deployment tooling + the two shared norm kernels in
+# inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
+# 233419 at 167cde7. Measured exact: 238091.
+CEILING = 238091
 
 
 ROOT = Path(__file__).resolve().parent.parent

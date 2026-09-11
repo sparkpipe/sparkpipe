@@ -1,5 +1,4 @@
-#ifndef SPARKPIPE_SPARK_K3_BIND_H
-#define SPARKPIPE_SPARK_K3_BIND_H
+#pragma once
 
 #include <stdint.h>
 
@@ -33,11 +32,7 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 
 const SparkK3PackEntry *SparkK3BoundEntry(const SparkK3BoundLayer *bound,
 	const char *name);
-const void *SparkK3BoundPayload(const SparkK3Pack *pack,
-	const SparkK3BoundLayer *bound, const char *name);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

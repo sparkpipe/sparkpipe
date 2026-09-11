@@ -119,12 +119,3 @@ const SparkK3PackEntry *SparkK3BoundEntry(const SparkK3BoundLayer *bound,
 			return(&bound->tensors[i].entry);
 	return(0);
 }
-
-const void *SparkK3BoundPayload(const SparkK3Pack *pack,
-	const SparkK3BoundLayer *bound, const char *name)
-{
-	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
-	if ( entry == 0 )
-		return(0);
-	return(SparkK3PackPayload(pack, entry));
-}

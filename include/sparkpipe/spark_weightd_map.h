@@ -20,6 +20,9 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map);
 // calls cannot be preempted. Expiry retains a nonzero identifier for cleanup.
 SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier,uint64_t timeout);
 SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,void **address);
+// The map's stable virtual base: a consumer address for any pack offset is
+// base + offset while its covering chunk is committed. Constant after Create.
+SparkStatus SparkWeightdMapBase(const SparkWeightdMap *map,void **address);
 // Record after every stream using the lease has joined this stream. No further
 // work may use this lease after recording completion.
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream);

@@ -47,6 +47,11 @@ ARMS = {
     },
 }
 
+CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "model_contracts", "glm52.json")
+with open(CONTRACT_PATH) as _contract_file:
+    EOS_TOKEN_IDS = sorted(json.load(_contract_file)["eos_token_ids"].values())
+
 RUNTIME_ROOT_TEMPLATE = os.environ.get(
     "GLM53FULL_RUNTIME_ROOT_TEMPLATE",
     "/home/{host}/sparkdata/glm53full.{codec}.tp16")
@@ -54,6 +59,8 @@ RUNTIME_ROOT_TEMPLATE = os.environ.get(
 
 COLLECTIVE_SESSION_BASE = int(os.environ.get(
     "GLM53FULL_SESSION_BASE", "63500"))
+COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
+    "GLM53FULL_SESSION_HC_BASE", "64500"))
 
 def tp_collective(collective_base):
     return {
@@ -66,8 +73,15 @@ def tp_collective(collective_base):
         "peer_hosts": list(HOSTS),
         "peer_ports": [collective_base + r for r in range(TP)],
         "algorithms": ["tree"],
+        "direct_all_to_all_max_payload_bytes": 0,
+        "split_ring_min_payload_bytes": 0,
+        "rail_peer_hosts": [list(HOSTS) for _ in range(2)],
+        "step_rail_indices": [0] + [1] * (TP - 1),
         "session_ports": [
             [COLLECTIVE_SESSION_BASE + a * TP + b if a != b else 0
+             for b in range(TP)] for a in range(TP)],
+        "session_ports_hc": [
+            [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
              for b in range(TP)] for a in range(TP)],
     }
 
@@ -95,7 +109,12 @@ def resident_deployment(codec, runtime_root_template):
     for rank, host in enumerate(HOSTS):
         nodes.append({
             "rank_index": rank,
-            "stage_index": 0,
+            # The deployment schema requires stage_index UNIQUE per node,
+            # and the glm52 adapter asserts tp_rank == stage_index
+            # (SparkGlm52ServingAdapterConfigure) while overriding the
+            # module context to the single 78-layer stage itself. So
+            # stage_index here IS the TP rank, not a pipeline stage.
+            "stage_index": rank,
             "runtime_root": runtime_root_template.format(host=host, codec=codec),
             "node_target": "cuda.sm121.glm52.resident_decode_stage.bf16.expert_%s" % codec,
             "transport_host": host,
@@ -110,7 +129,9 @@ def resident_deployment(codec, runtime_root_template):
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": EOS_TOKEN_IDS,
         "coordinator_rank_index": 0,
+        "weightd": {"socket_path": "/tmp/spark_weightd.sock"},
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
             "shared_object_path": "lib/model_driver.so",

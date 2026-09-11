@@ -30,6 +30,10 @@ typedef struct SparkGlm52LayerWeights
 	const void *expert_up_gate_scale;
 	const void *expert_down_payload;
 	const void *expert_down_scale;
+	uint64_t expert_up_gate_payload_offset;
+	uint64_t expert_up_gate_scale_offset;
+	uint64_t expert_down_payload_offset;
+	uint64_t expert_down_scale_offset;
 	const void *shared_gate_up_bf16;
 	const void *shared_down_bf16;
 } SparkGlm52LayerWeights;
@@ -86,6 +90,9 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
+	uint32_t *group_row_offset_host;
+	void *route_ready_event;
+	uint32_t route_recorded;
 	void *kv_access_error;
 } SparkGlm52ExecutionSlot;
 
@@ -133,6 +140,8 @@ typedef struct SparkGlm52CudaWave
 	uint32_t decode_split_context_threshold;
 	float *attention_split_partials_f32;
 	uint64_t attention_split_partial_blocks;
+	const uint8_t *expert_lease_base;
+	uint32_t expert_lease_local_layer;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus
@@ -143,6 +152,8 @@ int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm52LaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);

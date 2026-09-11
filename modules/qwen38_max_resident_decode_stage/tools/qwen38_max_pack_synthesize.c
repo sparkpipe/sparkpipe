@@ -29,7 +29,14 @@
 #define SPARK_SYNTH_SCALE_BYTES(format, rows, columns) \
 	SparkQwen38MaxStagePackScaleBytes((format),(rows),(columns))
 #define SPARK_SYNTH_FILL_SCALE(entry, buffer, bytes, state) \
-	SparkSynthFillScaleBytes((buffer),(bytes),(state))
+	do \
+	{ \
+		if ( (entry)->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 || \
+			(entry)->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 ) \
+			SparkSynthFillScaleF32Blocks((buffer),(bytes),(state)); \
+		else \
+			SparkSynthFillScaleBytes((buffer),(bytes),(state)); \
+	} while ( 0 )
 #define SPARK_SYNTH_MTP_LAYER SPARK_QWEN38_MAX_STAGEPACK_MTP_LAYER
 #define SPARK_SYNTH_GLOBAL_LAYER SPARK_QWEN38_MAX_STAGEPACK_GLOBAL_LAYER
 #define SPARK_SYNTH_TENSOR_EMBEDDING SPARK_QWEN38_MAX_STAGEPACK_TENSOR_EMBEDDING

@@ -1,0 +1,225 @@
+{
+ "schema_version": 1,
+ "family": "laguna",
+ "contract": "model_contracts/laguna_authoritative.json",
+ "tensor_pattern_count": 23,
+ "tensor_count": 36769,
+ "patterns": {
+  "model.embed_tokens.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "model.embed_tokens.weight",
+   "shape": [
+    100352,
+    3072
+   ]
+  },
+  "lm_head.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "lm_head.weight",
+   "shape": [
+    100352,
+    3072
+   ]
+  },
+  "model.norm.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "model.norm.weight",
+   "shape": [
+    3072
+   ]
+  },
+  "model.layers.{layer}.input_layernorm.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.input_layernorm.weight",
+   "shape": [
+    3072
+   ]
+  },
+  "model.layers.{layer}.post_attention_layernorm.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.post_attention_layernorm.weight",
+   "shape": [
+    3072
+   ]
+  },
+  "model.layers.{layer}.self_attn.q_proj.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.q_proj.weight",
+   "shape": [
+    6144,
+    3072
+   ],
+   "shape_sliding": [
+    9216,
+    3072
+   ],
+   "head_count_full": 48,
+   "head_count_sliding": 72
+  },
+  "model.layers.{layer}.self_attn.k_proj.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.k_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.self_attn.v_proj.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.v_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.self_attn.o_proj.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.o_proj.weight",
+   "shape": [
+    3072,
+    6144
+   ],
+   "shape_sliding": [
+    3072,
+    9216
+   ]
+  },
+  "model.layers.{layer}.self_attn.g_proj.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.g_proj.weight",
+   "shape": [
+    48,
+    3072
+   ],
+   "shape_sliding": [
+    72,
+    3072
+   ]
+  },
+  "model.layers.{layer}.self_attn.q_norm.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.q_norm.weight",
+   "shape": [
+    128
+   ]
+  },
+  "model.layers.{layer}.self_attn.k_norm.weight": {
+   "count": 48,
+   "dtype": "BF16",
+   "example": "model.layers.0.self_attn.k_norm.weight",
+   "shape": [
+    128
+   ]
+  },
+  "model.layers.{layer}.mlp.gate.weight": {
+   "count": 47,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.gate.weight",
+   "shape": [
+    256,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.experts.e_score_correction_bias": {
+   "count": 47,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.experts.e_score_correction_bias",
+   "shape": [
+    256
+   ],
+   "dtype_alternate": "F32"
+  },
+  "model.layers.{layer}.mlp.experts.{expert}.gate_proj.weight": {
+   "count": 12032,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.experts.0.gate_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.experts.{expert}.up_proj.weight": {
+   "count": 12032,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.experts.0.up_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.experts.{expert}.down_proj.weight": {
+   "count": 12032,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.experts.0.down_proj.weight",
+   "shape": [
+    3072,
+    1024
+   ]
+  },
+  "model.layers.{layer}.mlp.shared_expert.gate_proj.weight": {
+   "count": 47,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.shared_expert.gate_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.shared_expert.up_proj.weight": {
+   "count": 47,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.shared_expert.up_proj.weight",
+   "shape": [
+    1024,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.shared_expert.down_proj.weight": {
+   "count": 47,
+   "dtype": "BF16",
+   "example": "model.layers.1.mlp.shared_expert.down_proj.weight",
+   "shape": [
+    3072,
+    1024
+   ]
+  },
+  "model.layers.{layer}.mlp.gate_proj.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "model.layers.0.mlp.gate_proj.weight",
+   "shape": [
+    12288,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.up_proj.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "model.layers.0.mlp.up_proj.weight",
+   "shape": [
+    12288,
+    3072
+   ]
+  },
+  "model.layers.{layer}.mlp.down_proj.weight": {
+   "count": 1,
+   "dtype": "BF16",
+   "example": "model.layers.0.mlp.down_proj.weight",
+   "shape": [
+    3072,
+    12288
+   ]
+  }
+ }
+}

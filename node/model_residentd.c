@@ -690,11 +690,11 @@ static uint32_t SparkModelResidentdSequenceSlotMatches(
 }
 
 static SparkStatus SparkModelResidentdValidatePersistentSlot(
-	const SparkModelResidentdRuntime *runtime,
+	SparkModelResidentdRuntime *runtime,
 	const SparkModelResidentdRoute *route,
 	uint32_t lane_index)
 {
-	const SparkModelResidentdSequenceSlot *slot;
+	SparkModelResidentdSequenceSlot *slot;
 	const SparkModelServingLane *lane;
 	lane = &route->submission.lanes[lane_index];
 	slot = &runtime->sequence_slots[lane->resident_sequence_slot];
@@ -706,7 +706,14 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 	}
 	if ( slot->bound == 0u || SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u )
 		return(SPARK_STATUS_OK);
-	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( slot->active_owner != 0u )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	SparkModelContinuationLeaseInvalidate(&slot->lease);
+	slot->bound = 0u;
+	slot->request_id = 0u;
+	slot->request_generation = 0u;
+	slot->sequence_id = 0u;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
