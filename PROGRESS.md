@@ -528,3 +528,67 @@ contract (35 bindings + 9 composed). sparkcap again blocked by polkit
 required") — denial logged; suite run under /usr/bin/time -v, RSS
 7,005,488 KB max (r21), wall 19.2s. PACKAGE_MANIFEST/SHA256SUMS
 regenerated LAST on this final tree (d0bcd6e + manifest commit).
+
+## CODER FINAL ROUND (r22, 09-11/12) — EXPOSED DORMANT TIER2A GATES TO THE RULED INCREMENT FORM, SUITE GREEN
+
+THE TWO SITES (manager ruling extension, same class as the r21 sublayer
+gates): the walk-end absolute gates — router weight_rel (3.829e-2 vs
+2e-2) and boundary stream (rel_l2 0.556 vs 2e-2) — sat DOWNSTREAM of the
+proven-legal accumulated drift (chain ~2.3e-2 hidden -> ~3e-2 logits ->
+3.8e-2 weights; boundary = the same drift through the MoE combine) and
+crossed at the last token of the now-legal walk. Both moved to the
+established conditional increment model (commit 05034e8); the old
+absolute walk-end comparisons DELETED (RunTier pass-0 block gone; the
+accumulated absolute is never gated anywhere now):
+
+- ROUTER: weight gate = fp64 router on the DEVICE's own carried inputs.
+  New SparkLingValRouter64 (fp64 RMS norm + GEMM + sigmoid + correction +
+  group-limited top-k + renormalise, bf16 roundings at the device's
+  rounding points) seeded per token with hidden_bf16 + attention_out_bf16
+  read back at the ATTENTION sync (pre-MLP: the fused kernel then
+  overwrites both) — the exact rows the device MLP consumed. Per token,
+  per routed local (layers 5 and 6, tier2a): SET gate stays HARD
+  (set_match vs the conditional set — 1 at all 8 sites), weight increment
+  gated at ROUTE_INCREMENT_BAND.
+- BOUNDARY: fp64 boundary rows (bf16-round of the fp64 sum) from the
+  DEVICE's carried hidden + sublayer rows read back post-head, gated per
+  token at BOUNDARY_INCREMENT_BAND.
+
+PINNED BANDS (gate data, banner prints them):
+  ROUTE_INCREMENT_BAND    = SPARK_LING_VAL_ONE_BF16_ULP (one relative
+  bf16 ulp, 3.90625e-3). Provenance: measurement run /tmp/
+  ling_r22_measure.log (placeholder 0.05 bands, same tree) — increments
+  rel_l2 over the 4 tokens x 2 routed locals: l5 0.00071/0.00009/0.00006/
+  0.00019, l6 0.00060/0.00000/0.00000/0.00000 — max 7.1e-4 = 0.18 ulp
+  (w0 p0 l5, maxabs 4.629e-4), cos >= 0.9999997. No ruled number existed
+  for this site; the increment is flat and one-ulp-relative is the honest
+  per-step bound.
+  BOUNDARY_INCREMENT_BAND = SPARK_LING_VAL_ONE_BF16_ULP. Provenance:
+  same measurement run — rel_l2 0.00000, maxabs 0.000e+00 at EVERY token
+  (the boundary add is bit-exact vs fp64: fp32 addition of two bf16 rows
+  is exact). Pinned at the same one-ulp floor; the gate has real reach
+  (any carry/store corruption trips it) while never gating the walk's
+  legal accumulated drift.
+
+SUITE (spark9 ~/batch-ling-r10, /tmp/ling_r22_final.log, GB10, /usr/bin/
+time -v, wall 23.99s, RSS 7,014,740 KB, exit 0):
+  tier1 KDA  : flat 0.00574/0.00383/0.00422/0.00405 | cond 0.00891/0.00693/0.00642/0.00643 | PASS all 4 tokens
+  tier2a MLA : flat 0.00000/0.00159/0.00131/0.00125 | cond 0.00322/0.00362/0.00366/0.00353 | PASS all 4 tokens
+  tier2a new : route set_match 8/8; route inc 0.00071/0.00060/0.00009/0.00000/0.00006/0.00000/0.00019/0.00000 (max 0.00391); boundary inc 0.00000 x4
+  tier3      : flat 0.00574/0.00528/0.00415/0.00427/0.00446 | cond 0.00891/0.00961/0.00712/0.00606/0.00701 | PASS all 5 rows
+  determinism: tier1/tier2a/tier3 all bit-exact re-walk
+  validator  : PASS (0 failures)
+  header gate: PASS ling header matches the authoritative contract
+  (35 bindings + 9 composed). Host: test_layer_host.py rc=0,
+  test_bf16_conv_host.py rc=0.
+
+STRIP PROOF: two independent nvcc links of the final sources (raw md5
+34010a5661cf2c222a02b55377781d4a / aec5755499e0b4c98489fdf2a695d4f4 —
+differ only in the 3 nvcc temp-name bytes) strip to md5
+45e6a3d7428d974f001f565621a63d21 BOTH (/tmp/ling_strip_a/b). Zero probe
+symbols: the only "probe" string in the stripped binary is the
+r21-pinned CarryProbe diagnostic (pre-existing content, not a
+reintroduction); the new prints are gate receipts only.
+
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree (r22
+receipts commit).

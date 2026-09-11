@@ -78,8 +78,8 @@
     },
     {
       "path": "PROGRESS.md",
-      "sha256": "515b42a0eb71adb15c1f965c782819ad003c11b1016d63195c027c7717b81740",
-      "size_bytes": 27891
+      "sha256": "602ca4fd1df67c711cca280a68b8421bb60837f6c68ddcbfcf381a4f7a260cf9",
+      "size_bytes": 35609
     },
     {
       "path": "README.md",
@@ -4798,8 +4798,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu",
-      "sha256": "6a4c423a569f2ae1407f5b57bdfb39659e36eaebb2cc3a7068d652d157ba5f51",
-      "size_bytes": 113744
+      "sha256": "ac73650199323164f7cae956ab16e8aa033fc4d592e672dee50c9abf94219726",
+      "size_bytes": 119045
     },
     {
       "path": "modules/ling_resident_decode_stage/validation/validate_ling_resident_decode_stage_cuda.sh",
@@ -10755,5 +10755,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 34916661
+  "total_bytes": 34929680
 }
