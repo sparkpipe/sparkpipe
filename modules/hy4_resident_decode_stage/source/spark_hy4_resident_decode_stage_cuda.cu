@@ -22,7 +22,15 @@
 
 static __device__ __forceinline__ float SparkHy4Fp8ToFloat(uint8_t raw)
 {
-	return (float)(int8_t)raw;
+	float sign = (raw & 0x80u) != 0u ? -1.0f : 1.0f;
+	uint32_t exponent = ((uint32_t)raw >> 3) & 0x0fu;
+	uint32_t mantissa = (uint32_t)raw & 0x07u;
+	if ( exponent == 0u )
+		return sign * ldexpf((float)mantissa,-9);
+	if ( exponent == 0x0fu && mantissa == 0x07u )
+		return NAN;
+	return sign * ldexpf(1.0f + (float)mantissa * 0.125f,
+	    (int)exponent - 7);
 }
 
 static __device__ __forceinline__ float SparkHy4E8m0ToFloat(uint8_t raw)
@@ -55,15 +63,14 @@ static __device__ __forceinline__ float SparkHy4DotFp8Grouped(
 
 __global__ void SparkHy4GemvFp8GroupedKernel(const uint8_t *weights,
 	const uint8_t *scales, const float *x, float *y, int rows,
-	int columns)
+	int columns, int scale_stride)
 {
 	int row = blockIdx.x * blockDim.x + threadIdx.x;
-	if (row >= rows)
+	if ( row >= rows )
 		return;
 	y[row] = SparkHy4DotFp8Grouped(
 	    weights + (size_t)row * (size_t)columns,
-	    scales + (size_t)row * (size_t)(columns /
-	    SPARK_HY4_CUDA_SCALE_GROUP),
+	    scales + (size_t)row * (size_t)scale_stride,
 	    x, columns);
 }
 

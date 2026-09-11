@@ -2,7 +2,7 @@
 cd "$HOME/hy4-gpu" || exit 1
 P="$HOME/sparkdata/hy4.fp8.tp16/packs/rank-02/model-fp8-tp16-rank-02.safetensors"
 M="$HOME/hy4-fp8inc"
-D="$HOME/hy4-fp8rung"
+D="$HOME/hy4-fp8rung6"
 if [ -f "$D/ALL.done" ]; then
   echo "FP8 RUNG DONE ALREADY"
   exit 0
@@ -25,12 +25,12 @@ else
   fi
 fi
 mkdir -p "$D/done"
-python3 fp8_rung_manifest.py "$P" "$D/fp8_rung.manifest" || exit 1
+python3 fp8_rung_manifest.py "$P" "$D/fp8_rung.manifest" 2 16 || exit 1
 export HY4_FP8_CKPT="$D/ckpt"
 export HY4_FP8_TSV="$D/fp8_rung.tsv"
-./hy4_fp8_rung "$P" "$D/fp8_rung.manifest" "$D" >> fp8rung.log 2>&1
+./hy4_fp8_rung "$P" "$D/fp8_rung.manifest" "$D" >> fp8rung6.log 2>&1
 rc=$?
-if [ $rc -eq 0 ] && grep -q FP8_RUNG_DONE fp8rung.log; then
+if [ $rc -eq 0 ] && grep -q FP8_RUNG_DONE fp8rung6.log; then
   date > "$D/ALL.done"
 fi
 echo "FP8RUNG RC=$rc"

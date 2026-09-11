@@ -78,6 +78,46 @@ geometry, -4 scale shape, -5 null out, -6 rows do not tile, -7 columns do
 not tile) and the attach path must `SPARK_FAIL` naming the plane; the
 oracle prints `SCALE-CONTRACT FAIL <name>` and exits 1.
 
+## Payload decode (E4M3, confirmed 2026-09-12)
+
+The payload bytes of every `.weight` plane are E4M3 (IEEE-style sign,
+4 exponent bits bias 7, 3 mantissa bits, NaN only at `0x7F`/`0xFF`),
+dequantized as `e4m3(w) * 2^(s - 127)` against the U8 E8M0 companion.
+Evidence, in order of force:
+
+1. Checkpoint safetensors headers declare `.weight` as `F8_E4M3` and
+   `.weight_scale` as `U8` (verified in `model-00068-of-00130` and
+   `model-00128-of-00130` shards); `config.json quantization_config` is
+   `quant_method=modelopt, quant_algo=MXFP8` (modelopt MXFP8 = E4M3 data
+   + E8M0 block-32 scale).
+2. Byte census over 4 MiB of `layers.0.self_attn.q_a_proj.weight`
+   payload: ZERO bytes `0x7F`/`0xFF` (the E4M3 NaN patterns — impossible
+   for int8 data, where `0xFF` = -1 would be a top byte), mass split
+   49.4% `[0x40,0x7F]` + 49.4% `[0xC0,0xFF]` with top bytes mirrored
+   under the sign bit (`0x71`/`0xF1` = +144/-144) — the E4M3
+   sign-magnitude signature. Per-group E4M3-decoded max lands in
+   `(224, 448]` for 95.4% of groups (block-max normalization against the
+   E4M3 max normal 448), remainder in the expected slack band.
+3. Scale bytes 113-116 (`2^-14 .. 2^-11`): with E4M3 payloads (~100-450)
+   this yields weight magnitudes ~1e-3..1e-1; sane.
+4. Format pin: stagepack weight-format code 9
+   (`SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_FP8_E4M3_E8M0B32`) is documented
+   as F8_E4M3 payload + U8 E8M0 scale; the canonical device decode is
+   `LmE4m3ToFloat` (`inference/kernels/dtype.cuh`, hardware
+   `cvt.rn.f16x2.e4m3x2`).
+
+The pre-contract production decode `SparkHy4Fp8ToFloat` read payloads as
+`(int8_t)raw` — wrong by construction against this evidence, and
+undetectable by kernel-vs-CPU agreement alone because the rung-2 CPU
+oracle carried the same decode (the dual-agreement hazard A-dsv5-r7).
+Rung-2's GREEN verdict is therefore VOID. Fixed 2026-09-12:
+`SparkHy4Fp8ToFloat` is an exact fp32 E4M3 decode (subnormals `m * 2^-9`,
+normals `(1 + m/8) * 2^(e-7)`, NaN preserved), and the rung oracle
+decodes E4M3 in double. The GGUF-path int8 decodes in
+`tools/hy4_gpu/hy4_{qchain,forward,moe,layer,attn}_test.cu` are Q8_0
+blocks (fp16 scale header + 32 int8 quants), a different tensor class —
+untouched and correct.
+
 ## Validation status
 
 Shape-level (this contract, rank-02 placed header, `tools/hy4_fp8_scale_contract.py`):
@@ -94,8 +134,25 @@ experts down 77+1, shared gate/up/down 77+1 each, dense L0 gate/up/down 1
 each (= the 573). Rank-2 offsets: q_b row 2048, kv_b row 3584, wq_b row
 512, o_proj group 64 at stride 512.
 
-Byte-level (production grouped dot vs CPU double over the 259 planes through
-`idx(i, g)`): PENDING — the rung-3 cell (`tools/hy4_gpu/hy4_fp8_rung.cu`
-extended with the contract's row/group offsets; queue v2 spark2 gpu ttl-15,
-chunked foreground, done markers). Not run: fleet suspended before the cell
-could be queued.
+Byte-level (production grouped dot vs CPU double, E4M3 decode, all 832
+planes through the contract; rung-6, spark2 gpu, job `hy4-fp8-rung-6`,
+2026-09-12): GREEN. 6656 sampled rows (8 per plane), 0 zero-dot flags,
+0 NaN. Worst per-plane max relative deltas:
+
+    rule          class   n    max_maxrel     max_maxabs
+    ALIGNED       SPINE   417   3.857e-05   1.788e-06
+    ALIGNED       EXPERT  156   2.678e-04   1.833e-06
+    REPLICATED_ROWS  SPINE 180   4.233e-04   1.134e-06
+    REPLICATED_GROUPS SPINE  79   1.616e-05   3.070e-07
+
+The worst plane (il 73 `q_b_proj`, maxrel 4.2e-4) has maxabs 3.5e-07 —
+a near-zero expectation denominator, i.e. fp32-vs-double accumulation
+noise, not a decode or addressing error. All 259 replicated planes read
+their scale bytes at the contract `idx(i, g)`: q_b row_off 2048, kv_b
+3584, wq_b 512 (rank 2 row bases), o_proj group_off 64 at stride 512 on
+all 79 planes — wrong bytes would show relative deltas O(1). The 259
+contract planes and the 573 ALIGNED planes are byte-validated in one
+pass under the corrected decode. Rung cell also fixed: mtp planes
+previously shared plane keys with `model.layers.0` (done-marker
+collision, silently skipped); plane keys are now unique (`il = 1000 +
+layer` for mtp) with a duplicate-key hard failure on load.
