@@ -148,6 +148,36 @@ nonzero unless the emitted token stream is identical to baseline and the KDA
 state, conv windows, KV cache, and index cache bytes match the serial decode
 at every burst boundary.
 
+The hidden-tap ring gate (the DFlash2 tap-extraction contract for
+`SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION`) is:
+
+```sh
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+make -C modules/glm5_next_resident_decode_stage validate_tap_ring EXPERT_CODEC=fp8 \
+    MODEL_REVISION=check \
+    CONTRACT_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+```
+
+That gate synthesizes the 43-layer stack (KDA and DSA/MoE at real geometry,
+global layers 5/14/24/33/42 as tap sites), walks a fixed prompt through
+prefill plus serial decode, and captures at every tap layer exactly as the
+module chain does: HC-mean of the post-MlpPost residual into a device stage,
+then the ring's async D2H on its dedicated side stream. It fails nonzero
+unless every in-window ring entry is byte-exact against the wave residual
+captured from the device stage, the last position's tap is byte-exact
+against an independent host-computed HC mean of the post-MlpPost hidden,
+wrapped positions evict their stale entries, and reads of uncaptured,
+beyond-anchor, or other-lane positions are rejected. It also prints the
+measured per-capture mean-kernel and ring D2H cost.
+
+The tap ring is allocated at module init when the node context carries the
+tap extraction flag (the serving adapter sets it when its speculation seam
+has DFlash2 enabled and a draft bridge configured): host-pinned, per lane,
+2048 positions deep, five 4096-wide bf16 taps per position. The adapter
+reads a row with `SparkGlm5NextResidentDecodeStageTapRead` (module state,
+lane, absolute position), which fails loudly unless the position is inside
+the lane's sliding window and was actually captured.
+
 The node context binds resident weight pointers, paged KV cache, streams, workspaces, RoPE tables, token maps, and output buffers once when the driver instance is created. Per-submission inputs are only dynamic decode facts such as active sequence count, requested token count, sequence identity, deadline, priority, and residency token. The firmware admission function chooses the opaque pipeline slot; SparkPipe does not assign or interpret CUDA stream/KV ownership.
 
 The module also publishes direct admission and snapshot symbols. They expose only neutral scheduling data: accepted/rejected, dispatch slot, dispatch generation/cookies, private queue pressure, resident token capacity, active submissions, CUDA graph capture/replay counts, stale-admission count, and zero memcpy/host-staging counters.

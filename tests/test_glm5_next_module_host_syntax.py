@@ -20,6 +20,12 @@ SOURCES = (
     (
         ROOT
         / "modules/glm5_next_resident_decode_stage/source"
+        / "spark_glm5_next_tap_ring.c",
+        (),
+    ),
+    (
+        ROOT
+        / "modules/glm5_next_resident_decode_stage/source"
         / "spark_glm5_next_serving_adapter.c",
         (),
     ),
@@ -27,6 +33,12 @@ SOURCES = (
         ROOT
         / "modules/glm5_next_resident_decode_stage/validation"
         / "spark_glm5_next_resident_decode_stage_mtp_parity.cu",
+        ("-x", "c++", "-std=c++17"),
+    ),
+    (
+        ROOT
+        / "modules/glm5_next_resident_decode_stage/validation"
+        / "spark_glm5_next_resident_decode_stage_tap_ring.cu",
         ("-x", "c++", "-std=c++17"),
     ),
 )
