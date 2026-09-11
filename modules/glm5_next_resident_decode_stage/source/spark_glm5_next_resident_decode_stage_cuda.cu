@@ -670,12 +670,12 @@ static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 		SparkGlm5NextMoeNumProbe("expert",&buffers,(cudaStream_t)wave->slot->stream);
 		SparkGlm5NextMoeNumProbe("final",&buffers,(cudaStream_t)wave->slot->stream);
 		if ( cudaStreamSynchronize((cudaStream_t)wave->slot->stream) == cudaSuccess &&
-			cudaMemcpy(w1_scales,buffers->expert_w1_scale,sizeof(w1_scales),
+			cudaMemcpy(w1_scales,buffers.expert_w1_scale,sizeof(w1_scales),
 				cudaMemcpyDeviceToHost) == cudaSuccess &&
-			cudaMemcpy(w2_scales,buffers->expert_w2_scale,sizeof(w2_scales),
+			cudaMemcpy(w2_scales,buffers.expert_w2_scale,sizeof(w2_scales),
 				cudaMemcpyDeviceToHost) == cudaSuccess )
 			fprintf(stderr,"G5N-MOEPROBE site=scales layer=%u w1=%g %g %g %g w2=%g %g %g %g\n",
-				(unsigned)buffers->layer_index,
+				(unsigned)buffers.layer_index,
 				(double)w1_scales[0],(double)w1_scales[1],
 				(double)w1_scales[2],(double)w1_scales[3],
 				(double)w2_scales[0],(double)w2_scales[1],
