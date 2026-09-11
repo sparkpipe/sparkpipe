@@ -96,6 +96,7 @@ EXPERTS_PER_TOKEN = 10
 EXPERT_INTERMEDIATE = 2048
 VOCAB = 248320
 MTP_LAYERS = 1
+STRIP_MTP = False
 MXFP4_GROUP = 32
 
 GDN_QK_DIM = GDN_KEY_HEADS * GDN_HEAD_KEY_DIM            # 2048
@@ -302,7 +303,10 @@ def expected_tensor_count(first_layer: int, layer_count: int) -> int:
     if first_layer == 0:
         tensors += 1
     if first_layer + layer_count == LAYER_COUNT:
-        tensors += 2 + 4 + 16 + (1 if first_layer != 0 else 0)
+        if STRIP_MTP:
+            tensors += 2 + (1 if first_layer != 0 else 0)
+        else:
+            tensors += 2 + 4 + 16 + (1 if first_layer != 0 else 0)
     return tensors
 
 
@@ -319,11 +323,15 @@ def build_inventory(first_layer: int, layer_count: int) -> list[TensorRef]:
     if first_layer + layer_count == LAYER_COUNT:
         if first_layer != 0:
             refs.append(TensorRef(KIND_EMBEDDING, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_EMBEDDING]))
-        for kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_MTP_FC,
-                     KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM):
-            refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
-        for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
-            refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER)))
+        if STRIP_MTP:
+            refs.append(TensorRef(KIND_FINAL_NORM, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_FINAL_NORM]))
+            refs.append(TensorRef(KIND_LM_HEAD, GLOBAL_LAYER, GLOBAL_TENSORS[KIND_LM_HEAD]))
+        else:
+            for kind in (KIND_FINAL_NORM, KIND_LM_HEAD, KIND_MTP_FC,
+                         KIND_MTP_EMBED_NORM, KIND_MTP_HIDDEN_NORM, KIND_MTP_FINAL_NORM):
+                refs.append(TensorRef(kind, GLOBAL_LAYER, GLOBAL_TENSORS[kind]))
+            for kind in EVERY_LAYER_KINDS + ATTN_LAYER_KINDS:
+                refs.append(TensorRef(kind, MTP_LAYER, layer_tensor_name(kind, MTP_LAYER)))
     expected = expected_tensor_count(first_layer, layer_count)
     if len(refs) != expected:
         raise PackFailure(f"inventory {len(refs)} tensors, format expects {expected}")
@@ -726,6 +734,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
     payload_base = align_up(HEADER_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
     file_bytes = payload_base + cursor
 
+    mtp_layer_count = 0 if STRIP_MTP else MTP_LAYERS
     if tp_degree > 1:
         header = HEADER2_STRUCT.pack(
             MAGIC, FORMAT2_VERSION, HEADER2_BYTES, ENTRY_BYTES, len(plans),
@@ -734,7 +743,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
             GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
             ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
-            VOCAB, MXFP4_GROUP, MTP_LAYERS,
+            VOCAB, MXFP4_GROUP, mtp_layer_count,
             tp_degree, tp_rank, HEADER2_BYTES, file_bytes)
         payload_base = align_up(HEADER2_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
         file_bytes = payload_base + cursor
@@ -746,7 +755,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             GDN_KEY_HEADS, GDN_VALUE_HEADS, GDN_HEAD_KEY_DIM, GDN_HEAD_VALUE_DIM,
             GDN_CONV_KERNEL, ATTN_QUERY_HEADS, ATTN_KV_HEADS, ATTN_HEAD_DIM,
             ATTN_ROPE_DIM, EXPERT_COUNT, EXPERTS_PER_TOKEN, EXPERT_INTERMEDIATE,
-            VOCAB, MXFP4_GROUP, MTP_LAYERS,
+            VOCAB, MXFP4_GROUP, mtp_layer_count,
             HEADER_BYTES, file_bytes)
     entries = b"".join(
         ENTRY_STRUCT.pack(
@@ -1019,7 +1028,7 @@ def copy_tp_plan(source: SafetensorsSource, ref, plan, out) -> None:
         raise PackFailure(f"unknown tp plan {plan.kind}")
 
 def main() -> int:
-    global EXPERT_CODEC
+    global EXPERT_CODEC, STRIP_MTP
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", type=Path, help="safetensors checkpoint directory")
     parser.add_argument("--output", type=Path, help="pack output path")
@@ -1028,6 +1037,10 @@ def main() -> int:
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--receipt", type=Path, help="receipt output (default: <output>.receipt.json)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--strip-mtp", action="store_true",
+        help="exclude the MTP entries (4 global kinds + the MTP-layer "
+             "pseudo-layer) from the tail stage; the pack header carries "
+             "mtp_layer_count 0 and the MTP=0 module form accepts it")
     parser.add_argument("--expert-codec", choices=("fp8", "nvfp4"), default="fp8",
         help="expert weight codec: fp8 (F8_E4M3 + BF16 scale_inv b128, the "
              "2.3T source) or nvfp4 (U8-packed 4-bit + F8_E4M3 g16 scales + "
@@ -1041,6 +1054,7 @@ def main() -> int:
                         help="this rank's shard (0 .. tp-degree-1)")
     args = parser.parse_args()
     EXPERT_CODEC = args.expert_codec
+    STRIP_MTP = args.strip_mtp
     if args.tp_degree < 1 or args.tp_rank < 0 or args.tp_rank >= args.tp_degree:
         parser.error("--tp-rank must satisfy 0 <= tp-rank < tp-degree")
 
