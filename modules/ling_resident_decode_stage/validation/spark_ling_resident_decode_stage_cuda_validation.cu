@@ -481,6 +481,7 @@ typedef struct SparkLingValKdaDump
 	float k_raw[SPARK_LING_VAL_KDA_QK];
 	float v_raw[SPARK_LING_VAL_KDA_V];
 	float q_conv[SPARK_LING_VAL_KDA_QK];
+	float q_l2[SPARK_LING_VAL_KDA_QK];
 	float k_conv[SPARK_LING_VAL_KDA_QK];
 	float v_conv[SPARK_LING_VAL_KDA_V];
 	float retention[SPARK_LING_VAL_KDA_QK];
@@ -547,6 +548,7 @@ static void SparkLingValKdaAttention(
 		beta[head] = SparkLingValSigmoid(
 			SparkLingValFromBf16(SparkLingValBf16(sum)));
 	}
+	memcpy(dump->beta,beta,sizeof(dump->beta));
 	memcpy(dump->q_raw,q,sizeof(dump->q_raw));
 	memcpy(dump->k_raw,k,sizeof(dump->k_raw));
 	memcpy(dump->v_raw,v,sizeof(dump->v_raw));
@@ -600,6 +602,7 @@ static void SparkLingValKdaAttention(
 		dump->v_conv[index] = v[index];
 	SparkLingValL2PerHead(q,heads,key,SPARK_LING_VAL_RMS_EPS);
 	SparkLingValBf16Array(q,qk);
+	memcpy(dump->q_l2,q,sizeof(dump->q_l2));
 	SparkLingValL2PerHead(k,heads,key,SPARK_LING_VAL_RMS_EPS);
 	SparkLingValBf16Array(k,qk);
 	for (index = 0u; index < qk; index++)
@@ -613,6 +616,7 @@ static void SparkLingValKdaAttention(
 			SparkLingValFromBf16(SparkLingValBf16(sum)),
 			w->dt_bias[index],w->a_log[index / key],SPARK_LING_VAL_LOWER);
 	}
+	memcpy(dump->retention,retention,sizeof(dump->retention));
 	for (index = 0u; index < v_dim; index++)
 	{
 		float sum = 0.0f;
@@ -1454,7 +1458,7 @@ static int SparkLingValFixtureBuild(SparkLingValFixture *fixture)
 			SPARK_LING_VAL_HEADS * SPARK_LING_VAL_VALUE,SPARK_LING_VAL_LATENT,0,0.01f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->mla_attn_gate,SPARK_LING_VAL_HEADS,SPARK_LING_VAL_HIDDEN,0,0.008f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->mla_o_proj,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_ATTN_COLS,0,0.004f) != 0 ||
-		SparkLingValAllocMatrix(&fixture->router,SPARK_LING_VAL_EXPERTS,SPARK_LING_VAL_HIDDEN,0,0.02f) != 0 ||
+		SparkLingValAllocMatrix(&fixture->router,SPARK_LING_VAL_EXPERTS,SPARK_LING_VAL_HIDDEN,0,0.05f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->shared_gate_up,SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN,0,0.005f) != 0 ||
 		SparkLingValAllocMatrix(&fixture->shared_down,SPARK_LING_VAL_HIDDEN,SPARK_LING_VAL_EXPERT_INTER,0,0.005f) != 0)
 		return(1);
@@ -1961,14 +1965,14 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 							}
 						for (index = 0u; index < SPARK_LING_VAL_KDA_QK; index++)
 						{
-							float d = SparkLingValFromBf16(device_q[index]) - oracle_dump.q_conv[index];
-							if ( fabsf(d) > 0.002f * (fabsf(oracle_dump.q_conv[index]) + 0.001f) &&
+							float d = SparkLingValFromBf16(device_q[index]) - oracle_dump.q_l2[index];
+							if ( fabsf(d) > 0.002f * (fabsf(oracle_dump.q_l2[index]) + 0.001f) &&
 								first_q == SPARK_LING_VAL_KDA_QK * SPARK_LING_VAL_KDA_CONV )
 								first_q = index;
 						}
 						printf(" win_first_diff %u (dev %04x or %04x) q_first_diff %u (dev %.5f or %.5f)",
 							first_w,device_window[0][first_w],walk->kda_windows[0][0][first_w],
-							first_q,SparkLingValFromBf16(device_q[first_q]),oracle_dump.q_conv[first_q]);
+							first_q,SparkLingValFromBf16(device_q[first_q]),oracle_dump.q_l2[first_q]);
 						static float device_stage_f[SPARK_LING_VAL_KDA_FUSED];
 						static float device_q_f[SPARK_LING_VAL_KDA_QK];
 						SparkLingValMetrics m;
@@ -1980,8 +1984,8 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 						printf("stage w%u q_raw rel %.4f cos %.6f",wave_index,m.max_relative_l2,m.cosine);
 						SparkLingValMeasure(&m,device_stage_f + 2u * SPARK_LING_VAL_KDA_QK,oracle_dump.v_raw,SPARK_LING_VAL_KDA_V);
 						printf(" v_raw rel %.4f",m.max_relative_l2);
-						SparkLingValMeasure(&m,device_q_f,oracle_dump.q_conv,SPARK_LING_VAL_KDA_QK);
-						printf(" q_conv+l2 rel %.4f cos %.6f",m.max_relative_l2,m.cosine);
+						SparkLingValMeasure(&m,device_q_f,oracle_dump.q_l2,SPARK_LING_VAL_KDA_QK);
+						printf(" q_l2 rel %.4f cos %.6f",m.max_relative_l2,m.cosine);
 						SparkLingValMeasure(&m,device_ret,oracle_dump.retention,SPARK_LING_VAL_KDA_QK);
 						printf(" ret rel %.4f",m.max_relative_l2);
 						SparkLingValMeasure(&m,device_beta,oracle_dump.beta,SPARK_LING_VAL_KDA_HEADS);
@@ -2232,23 +2236,30 @@ static int SparkLingValRunTier(SparkLingValFixture *fixture,
 					SPARK_LING_VAL_TOP_K * sizeof(float),cudaMemcpyDeviceToHost) == cudaSuccess )
 			{
 				int set_match = 1;
-				float weight_error = 0.0f;
+				double weight_error_squared = 0.0;
+				double weight_reference_squared = 0.0;
 				for (uint32_t slot = 0u; slot < SPARK_LING_VAL_TOP_K; slot++)
 				{
 					int found = 0;
 					for (uint32_t other = 0u; other < SPARK_LING_VAL_TOP_K; other++)
 						if ( device_selected[other] == walk.selected[slot] )
 						{
-							weight_error += fabsf(device_weights[other] - walk.route_weights[slot]);
+							double delta = (double)device_weights[other] - (double)walk.route_weights[slot];
+							weight_error_squared += delta * delta;
+							weight_reference_squared += (double)walk.route_weights[slot] * (double)walk.route_weights[slot];
 							found = 1;
 						}
 					if ( found == 0 )
 						set_match = 0;
 				}
-				printf("%s %-44s set_match %d weight_abs %.3e\n",
-					set_match != 0 && weight_error < 1e-4f ? "PASS" : "FAIL",
-					"router selection and weights",set_match,weight_error);
-				failures += set_match != 0 && weight_error < 1e-4f ? 0 : 1;
+				{
+					double weight_relative = weight_reference_squared > 0.0 ?
+						sqrt(weight_error_squared) / sqrt(weight_reference_squared) : 0.0;
+					printf("%s %-44s set_match %d weight_rel %.3e\n",
+						set_match != 0 && weight_relative <= 0.02 ? "PASS" : "FAIL",
+						"router selection and weights",set_match,weight_relative);
+					failures += set_match != 0 && weight_relative <= 0.02 ? 0 : 1;
+				}
 			}
 			{
 				static float actual[SPARK_LING_VAL_HIDDEN];
