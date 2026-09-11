@@ -173,6 +173,10 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
+#ifdef SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE
+	if ( SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) != 0u )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+#endif
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDescriptor),&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -734,7 +738,14 @@ static const SparkModelServingAdapterInterface SPARK_QWEN38_SERVING_ADAPTER_FN(S
 	.submit = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit),
 	.progress = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingProgress),
 	.quiesce = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce),
-	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot)
+	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot),
+#ifdef SPARK_QWEN38_SERVING_ADAPTER_PREFETCH
+	.prefetch = SPARK_QWEN38_SERVING_ADAPTER_PREFETCH,
+	.resolve_prefetch = SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH,
+#endif
+#ifdef SPARK_QWEN38_SERVING_ADAPTER_RESET
+	.reset = SPARK_QWEN38_SERVING_ADAPTER_RESET
+#endif
 };
 
 __attribute__((visibility("default")))
