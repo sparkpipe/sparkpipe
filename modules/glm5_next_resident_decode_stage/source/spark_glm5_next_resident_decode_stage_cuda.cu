@@ -576,7 +576,7 @@ static void SparkGlm5NextMoeNumProbe(const char *site,
 		return;
 	if ( strcmp(site,"route") == 0 )
 	{
-		if ( cudaMemcpy(floats,buffers->router_logits_f32,sizeof(floats),
+		if ( cudaMemcpy(floats,buffers->router_logits,sizeof(floats),
 			cudaMemcpyDeviceToHost) != cudaSuccess )
 			return;
 		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u normed=%04x %04x %04x %04x logits=%g %g %g %g\n",
@@ -602,7 +602,12 @@ static void SparkGlm5NextMoeNumProbe(const char *site,
 	}
 	else
 	{
+		const uint16_t *source = strcmp(site,"gateup") == 0 ?
+			buffers->gate_up_bf16 : buffers->expert_out_bf16;
 		uint32_t index;
+		if ( cudaMemcpy(bf16_words,source,sizeof(bf16_words),
+			cudaMemcpyDeviceToHost) != cudaSuccess )
+			return;
 		for ( index = 0u; index < 8u; index++ )
 		{
 			uint32_t bits = (uint32_t)bf16_words[index] << 16;
