@@ -3,9 +3,10 @@
 
 Emits one safetensors-per-rank bundle plus manifest.json and a .sha256
 sidecar per rank, matching the hy4 rank-pack conventions (schema
-hy4-fp8-tp16-v1). Bytes move verbatim: FP8 E4M3 weights, their U8 E8M0
-MX scale companions and the BF16/F32 exclude-list tensors are sliced, never
-requantized. The MTP layer (model.mtp_layers.0.*) is included and sharded
+hy4-fp8-tp16-v1). Bytes move verbatim: FP8 E4M3 weights and the BF16/F32
+exclude-list tensors are sliced, never requantized; U8 E8M0 MX scale
+companions follow the scale-row-offset contract (SCALE_REPLICATED below).
+The MTP layer (model.mtp_layers.0.*) is included and sharded
 by the same suffix rules as the main stack.
 
 Memory discipline (stagepack-dev pattern, qwen38_max packer): 512 KiB
@@ -33,10 +34,14 @@ CHUNK_BYTES = 512 * 1024
 TP = 16
 VOCAB = 120832
 
-# suffix -> (split_dim on the weight tensor, split the scale identically)
-# dim0 = HF output rows, dim1 = input columns; scales carry the split dim
-# at the same index (their last dim is the MX group count and is never
-# split). None = replicate.
+# suffix -> split_dim on the weight tensor. dim0 = HF output rows, dim1 =
+# input columns. None = replicate. Scale companions: the four head-split
+# attention projections carry their FULL checkpoint scale plane on every
+# rank (scale-row-offset contract, docs/AGENT_LANE_BRIEFS/
+# hy4-fp8-scale-contract.md: REPLICATED_ROWS for q_b/kv_b/wq_b,
+# REPLICATED_GROUPS for o_proj); every other scale plane follows its
+# weight (ALIGNED), which for the current inventory means replicated
+# with a replicated weight or dim0-split with a dim0-split expert plane.
 SPLIT_RULES = [
     ("model.embed_tokens.weight", 0),
     ("lm_head.weight", 0),
@@ -50,15 +55,23 @@ SPLIT_RULES = [
     (".mlp.experts.down_proj", 0),
 ]
 SCALE_SUFFIX = ".weight_scale"
+SCALE_REPLICATED = (
+    ".self_attn.q_b_proj.weight_scale",
+    ".self_attn.kv_b_proj.weight_scale",
+    ".self_attn.o_proj.weight_scale",
+    ".self_attn.indexer.wq_b.weight_scale",
+)
 
 
 def split_rule(name: str):
-    """Returns (split_dim or None, is_base_weight). Scale companions strip
-    their suffix (`.weight_scale` or `_scale`) and inherit the base
-    weight's split dim."""
+    """Returns (split_dim or None, is_base_weight). The four contract
+    scale planes replicate whole; other `_scale` companions inherit the
+    base weight's split dim."""
+    if name.endswith(SCALE_REPLICATED):
+        return (None, False)
     base = name
     if base.endswith(SCALE_SUFFIX):
-        base = base[: -len(SCALE_SUFFIX)]
+        base = base[: -len("_scale")]
     elif base.endswith("_scale"):
         base = base[: -len("_scale")]
     for suffix, dim in SPLIT_RULES:
