@@ -1776,7 +1776,7 @@ static int SparkLingValFixtureBuild(SparkLingValFixture *fixture)
 	{
 		uint32_t e;
 		for (e = 0u; e < SPARK_LING_VAL_EXPERTS; e++)
-			fixture->router_correction_host[e] = ((float)(int32_t)(e % 11u) - 5.0f) * 0.01f;
+			fixture->router_correction_host[e] = 4.0f * (float)e;
 		fixture->router_correction_dev = (float *)SparkLingValAllocZeroed(sizeof(fixture->router_correction_host));
 		if ( fixture->router_correction_dev == 0 ||
 			cudaMemcpy(fixture->router_correction_dev,fixture->router_correction_host,
