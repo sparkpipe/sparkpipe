@@ -559,6 +559,62 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	return(LM_LAUNCH_OK);
 }
 
+static void SparkGlm5NextMoeNumProbe(const char *site,
+	const Glm5NextLayerBuffers *buffers,cudaStream_t stream)
+{
+	static uint64_t printed;
+	uint16_t bf16_words[8];
+	float floats[8];
+	uint32_t experts[8];
+	if ( printed >= 16ull )
+		return;
+	printed++;
+	if ( cudaStreamSynchronize(stream) != cudaSuccess )
+		return;
+	if ( cudaMemcpy(bf16_words,buffers->normed_bf16,sizeof(bf16_words),
+		cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	if ( strcmp(site,"route") == 0 )
+	{
+		if ( cudaMemcpy(floats,buffers->router_logits_f32,sizeof(floats),
+			cudaMemcpyDeviceToHost) != cudaSuccess )
+			return;
+		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u normed=%04x %04x %04x %04x logits=%g %g %g %g\n",
+			site,(unsigned)buffers->layer_index,
+			(unsigned)bf16_words[0],(unsigned)bf16_words[1],
+			(unsigned)bf16_words[2],(unsigned)bf16_words[3],
+			(double)floats[0],(double)floats[1],
+			(double)floats[2],(double)floats[3]);
+	}
+	else if ( strcmp(site,"pick") == 0 )
+	{
+		if ( cudaMemcpy(experts,buffers->route_expert,sizeof(experts),
+			cudaMemcpyDeviceToHost) != cudaSuccess ||
+			cudaMemcpy(floats,buffers->route_weight,sizeof(floats),
+			cudaMemcpyDeviceToHost) != cudaSuccess )
+			return;
+		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u experts=%u %u %u %u weights=%g %g %g %g\n",
+			site,(unsigned)buffers->layer_index,
+			(unsigned)experts[0],(unsigned)experts[1],
+			(unsigned)experts[2],(unsigned)experts[3],
+			(double)floats[0],(double)floats[1],
+			(double)floats[2],(double)floats[3]);
+	}
+	else
+	{
+		uint32_t index;
+		for ( index = 0u; index < 8u; index++ )
+		{
+			uint32_t bits = (uint32_t)bf16_words[index] << 16;
+			memcpy(&floats[index],&bits,sizeof(float));
+		}
+		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u gateup=%g %g %g %g\n",
+			site,(unsigned)buffers->layer_index,
+			(double)floats[0],(double)floats[1],
+			(double)floats[2],(double)floats[3]);
+	}
+}
+
 static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -577,19 +633,32 @@ static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,u
 	status = Glm5NextHcSite(&buffers,buffers.hc_ffn_fn,buffers.hc_ffn_base,buffers.hc_ffn_scale,wave->row_count,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
+		SparkGlm5NextMoeNumProbe("route",&buffers,stream);
 	status = layer < GLM5_NEXT_FIRST_ROUTED_LAYER ? Glm5NextLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : Glm5NextLayerMoeRoute<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
+		SparkGlm5NextMoeNumProbe("pick",&buffers,stream);
 	return(LM_LAUNCH_OK);
 }
 
 static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
-	if ( (wave->first_layer_index + local_layer) < GLM5_NEXT_FIRST_ROUTED_LAYER )
+	uint32_t layer;
+	layer = wave->first_layer_index + local_layer;
+	if ( layer < GLM5_NEXT_FIRST_ROUTED_LAYER )
 		return(LM_LAUNCH_OK);
 	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
-	return(Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	{
+		int32_t status = Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
+		SparkGlm5NextMoeNumProbe("gateup",&buffers,(cudaStream_t)wave->slot->stream);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
