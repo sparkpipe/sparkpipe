@@ -1485,6 +1485,12 @@ CEILING = 241052
 # inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
 # 233419 at 167cde7. Measured exact: 238091.
 CEILING = 238091
+# minimax H3 TP16 round (rebase onto f6db50a): main grew under the lane
+# (muse merge, #919/#925 mesh safety, mgr2 waves, k3/dspark and stage-timing
+# additions) and the lane lands the TP16 pack support (tensor_patterns tp16
+# spec + heads/kv plans + extent guard + pp-degree placement in
+# tools/minimax_h3_stagepack.py). Measured exact: 245453.
+CEILING = 245453
 
 
 ROOT = Path(__file__).resolve().parent.parent

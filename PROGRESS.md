@@ -116,6 +116,64 @@ differ. They bind the kernels (criterion 4+).
 
 ## Work log
 
+- 2026-09-10 (round 6, PAUSED mid-round per operator): REBASE + TP16 PACK SUPPORT.
+  REBASE landed and pushed: lane/minimax-driver e4af723 = old bc45d75 lineage rebased
+  onto origin/main f6db50a (182 main commits: muse merge, #919/#925 mesh safety,
+  mgr2 waves, k3 #907-era adapter state). Resolution record: PROGRESS.md add/add vs
+  muse's doc - ours kept as the lane receipt doc (muse's content preserved in main
+  history; the same-path clash re-surfaces at PR merge time for the manager);
+  PACKAGE_MANIFEST.json/SHA256SUMS/test_code_size.py took main's side at every
+  conflict commit, then manifest+sums REGENERATED and CEILING re-pinned to measured
+  245453 at this landing (gate green); Makefile auto-merged (minimax contract/archive/
+  publish hooks intact, main's k3/muse wiring kept); 8 manifest/sums-only lane commits
+  became empty and were skipped. K3 ADAPTER VERDICT: the lane never textually forked
+  the k3 adapter (the r5 "newer discipline" note referred to the lane's own r5
+  A-0041 application of the same rule) - main's post-#907/swept
+  spark_k3_serving_adapter.c taken wholesale; union verified: main's swept
+  spark_error_site.h kept the exact SPARK_FAIL(status_value) contract (now #pragma
+  once), minimax module.c/pack_synthesize/stagepack shape protocol conform as-is;
+  format test green on the rebased tree (57 declared kinds resolve, per-site
+  ERREPORT lines firing). PUSH GOTCHA for every lane: /usr/local/bin/git 2.10.1
+  (first on PATH) gets HTTP 400 from GitHub receive-pack; use
+  PATH=/usr/bin:$PATH tools/sparkpipe_github_pat.sh git push ... (git 2.39.5).
+  TP16 PACK SUPPORT landed (code complete, unit-proven, NOT yet run against the
+  real shards): tensor_patterns.json gains the tp16 spec block (arm h3.bf16.tp16,
+  pp_degree 1, dit_head_counts [4x8, 3x8], head_dim 128, encoder kv replication 2)
+  and 10 pattern tags - DiT main-block AND token-refiner to_q/to_k/to_v = heads_rows,
+  their to_out = heads_cols (columns follow the same rank ownership), encoder
+  k_proj/v_proj = kv_rows (rank r carries kv head r//2; its 4 q heads 4r..4r+3 all
+  sit in kv group r//2, so GQA pairing stays local and exact). tools/minimax_h3_stagepack.py
+  gains the three plans, --pp-degree placement (default 4; tp16 spec's 1 collapses
+  every section onto the single stage), arm-named outputs (h3.bf16.tp16.rankNN.sp +
+  .sha256 + .receipt.json), tp16 placement block in the receipt, resume signature
+  widened with pp_degree, and a FAIL-CLOSED extent guard: any tensor whose
+  rows/columns equal the DiT qkv extent 7168 must use the head plans and any
+  encoder 1024-row tensor must use kv_rows (a missed tag can no longer silently
+  pack 3.5-head slices). Unit proofs (this transcript, all green): rank0 = 4 heads
+  rows [0,512), rank7 = 4 heads [3584,4096), rank8 = 3 heads [4096,4480), rank15 =
+  3 heads [6784,7168), to_out columns mirror the same boundaries, sum = 7168; kv
+  head map = r//2 exact with rank pair (0,1) sharing head 0 and (14,15) sharing 7;
+  uniform-16 divisibility verified exact for encoder q 8192 (4 heads), o 8192 cols,
+  ffn 25600, vocab 151936 (9496/rank), DiT ffn 28672/14336, video VAE 2048 (2 heads
+  x 64) and ffn 16384/8192. RESUME POINT (next session, in order): (1) stage the
+  rebased tree to sparke (/mnt/model-warm/staging/minimax-lane/<sha>.tgz via scp +
+  git archive), (2) run the two-pass proof + pack chain: pass A per-rank dry-run
+  census (tools/minimax_h3_stagepack.py --tp-degree 16 --sections
+  encoder,dit,video_vae,audio_vae --rank R --dry-run) summed over 16 ranks must
+  equal the strict census (705+638+585+936 placements with replication), pass B
+  the real packs under sudo -n sparkcap, one queue job per small rank batch with
+  --ttl-min 5 and --resources exclusive, falling back to the nohup sparkcap chain
+  pattern if a rank exceeds the window at contended IO, (3) boundary checks on the
+  WRITTEN packs: rank00/rank15 directory entries (q 512/384 rows, k/v 128 rows at
+  kv head r//2, ffn 1792/896) plus a 4-head vs 3-head rank pair (07 vs 08) diffed
+  per tensor kind, (4) C9 PP1 deployment tables via tools/minimax_h3_gen_deployment.py
+  extended for TP=16/PP=1 (port base 17408 parse-compat; matrix cells BASE+a*16+b
+  put the +768 route-kind offset at 18431 = exactly BLOCK_LIMIT, zero margin -
+  note for the ledger), (5) ABI-seam instrumentation plan fill-in, (6) manifest+sums
+  LAST again, PROGRESS receipts, push (PATH=/usr/bin). NOTHING from the r5 pack
+  set exists yet: 0 of 16 ranks generated, no pack bytes written this round; the
+  queue was NOT touched this round (no jobs dispatched, none in flight).
+
 - 2026-09-10 (round 4): ADOPTION + REBASE CHAIN. Adopted the coredev-aligned
   origin/lane/minimax-driver 5462630 (reset onto it; family content verified intact —
   audio-census 914 static assert + all v3/v4 anchor fixtures survived; the only family
@@ -250,7 +308,7 @@ differ. They bind the kernels (criterion 4+).
 | 6 | V4 VAE decode gates | **GREEN (r5)** — video_vae rel=1.293e-6 max_abs=0.000009 (gate: rel<=5e-4, abs<=2/255); audio_vae rel=2.129e-6 max_abs=0.000002 (before_clamp max 0.401314 vs anchor 0.401315). Audio root causes (bisected via refa_* per-op dumps): (1) r4-era AMP structure inverted -> r5 rewrote to per-dilation residual chain + one 3-block average per stage; (2) dec_in_proj/conv_pre ran single-batch -> second mono channel was stale zeros; (3) gate Conv1d ran the kernel FLIPPED vs cross-correlation (k1 ops masked it); (4) pass-1 activation must chain from conv1 output. Video root cause: rope applied IN-PLACE (second half rotated the already-rotated first half) + swiglu wrote the silu-mid at fused stride 2*ffn while down GEMM read it packed. Anchor-side fixture correction (documented, not driver-tuning): gen_v3_v4_real.raw_s_ff dropped the video VAE ff.net.0.proj/ff.net.2 biases (non-zero trained tensors; V2 bit-exact xcheck via h3_reference proves the pinned module applies them) -> decoded fixture regenerated ff-bias-inclusive; video fix6 rel went 3.735e-2 -> 1.293e-6 |
 | 7 | module build + offline-gates | **PARTIAL** — root Makefile wiring landed (contract/archive/publish hooks mirroring the glm52 flow); module archive builds through the repo flow on sparke; remaining: `make offline-gates` exit 0 on sparke cpu-class (deferred to the C10 landing because the package-manifest gate requires the final manifest regen LAST) |
 | 8 | V5 determinism | **DONE at mini-DiT scale** — spark_minimax_h3_v5_gate.cu on real weights: 2 scheduler steps x real blocks 0,1 from a fixed 64-bit LCG seed; same-seed rerun bit-identical at TP1 and at TP4-segmented GEMM, and TP4-vs-TP1 bit-identical per step (receipt minimax-r4-v5gate4, sparke GB10). Full-pipeline 2x same-seed latents across 16 ranks still needs the cell |
-| 9 | cell E2E | **TP16-FIRST PACK PLAN SET (r5, operator directive)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). Imbalance 4:3 is accepted for the first cell (the operator's bubble/balance reasoning favors the least-complex exact scheme). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack plan (tp-degree 16, PP1, mixed 4/3 head split, per-rank ~8.4GB x 16 ~= 135GB) is the next session's first item: tensor_patterns.json TP16 entries + packer --tp-degree 16 + placement |
+| 9 | cell E2E | **TP16-FIRST PACK PLAN SET (r5, operator directive)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). Imbalance 4:3 is accepted for the first cell (the operator's bubble/balance reasoning favors the least-complex exact scheme). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack support LANDED r6 (tensor_patterns tp16 spec + heads/kv plans + pp-degree placement + fail-closed extent guard, unit-proven slice arithmetic); pack generation itself is the next session's first action (resume point in the r6 work log entry) |
 | 10 | fail-closed tests + report + manifest | pending |
 
 ## ABI seam instrumentation (ruling 3) — to be filled with measured numbers

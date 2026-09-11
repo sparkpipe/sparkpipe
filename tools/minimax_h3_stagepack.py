@@ -6,13 +6,16 @@ Setup-time tool, never the serving path. Streams safetensors tensor-by-tensor
 law regardless of component size. Slicing only — bf16/f32 payloads are copied
 verbatim, never requantized.
 
-Arm h3.bf16.tp4pp4: 16 rank packs, tp_rank = rank % tp_degree, pp_stage =
-rank // tp_degree. The TP plan and name routing live in
-model-families/minimax_h3/tensor_patterns.json; the PP placement: encoder
-entirely on stage 0, DiT main blocks 13/13/13/11 with entry globals
-(proj_in, audio_proj_in, context_embedder, time_embedder, token refiner) on
-stage 0 and exit globals (norm_out, proj_out, audio_proj_out) on stage 3,
-video VAE decoder on stage 3, audio VAE replicated on rank 0 only.
+Arm h3.bf16.tp4pp4 (tp-degree 4, PP4): 16 rank packs, tp_rank = rank % 4,
+pp_stage = rank // 4. Arm h3.bf16.tp16 (tp-degree 16, PP1): 16 rank packs,
+every section on the single stage; DiT attention uses the mixed 4/3 head
+split and the encoder k/v replicate kv head r//2 from the tp16 spec in
+model-families/minimax_h3/tensor_patterns.json. The TP plan and name routing
+live in that file; the TP4xPP4 placement: encoder entirely on stage 0, DiT
+main blocks 13/13/13/11 with entry globals (proj_in, audio_proj_in,
+context_embedder, time_embedder, token refiner) on stage 0 and exit globals
+(norm_out, proj_out, audio_proj_out) on stage 3, video VAE decoder on stage 3,
+audio VAE replicated on rank 0 only.
 """
 
 from __future__ import annotations
@@ -61,7 +64,9 @@ def assign_kind_codes(spec: dict) -> dict[tuple[str, str], int]:
             for section, kinds in names.items() for kind, index in kinds.items()}
 
 
-def stage_of(entry: dict, packed_layer: int) -> int:
+def stage_of(entry: dict, packed_layer: int, pp_degree: int = 4) -> int:
+    if pp_degree == 1:
+        return 0
     stage = entry.get("stage")
     if stage == "g0":
         return 0
@@ -113,7 +118,8 @@ def match_name(name: str, patterns: list[dict], codes: dict, excluded: list[re.P
     return None
 
 
-def tp_slice(rows: int, columns: int, plan: str, tp_rank: int, tp_degree: int) -> tuple[int, int, int, int]:
+def tp_slice(rows: int, columns: int, plan: str, tp_rank: int, tp_degree: int,
+             tp16: dict | None = None) -> tuple[int, int, int, int]:
     if plan in ("repl", "rank0"):
         return 0, rows, 0, columns
     if plan in ("rows", "vocab"):
@@ -126,6 +132,25 @@ def tp_slice(rows: int, columns: int, plan: str, tp_rank: int, tp_degree: int) -
             raise SystemExit(f"columns {columns} not divisible by tp {tp_degree}")
         per = columns // tp_degree
         return 0, rows, tp_rank * per, per
+    if plan in ("heads_rows", "heads_cols"):
+        if tp16 is None:
+            raise SystemExit(f"plan {plan} needs the tp16 spec")
+        counts = tp16["dit_head_counts"]
+        head_dim = tp16["dit_head_dimension"]
+        extent = rows if plan == "heads_rows" else columns
+        if sum(counts) * head_dim != extent:
+            raise SystemExit(f"head map {sum(counts)}x{head_dim} != extent {extent}")
+        start = sum(counts[:tp_rank]) * head_dim
+        count = counts[tp_rank] * head_dim
+        return (start, count, 0, columns) if plan == "heads_rows" else (0, rows, start, count)
+    if plan == "kv_rows":
+        if tp16 is None:
+            raise SystemExit(f"plan {plan} needs the tp16 spec")
+        head_dim = tp16["encoder_head_dimension"]
+        heads = rows // head_dim
+        if rows % head_dim or heads * tp16["encoder_kv_replication"] != tp_degree:
+            raise SystemExit(f"kv rows {rows} not head-replicable over tp {tp_degree}")
+        return (tp_rank // tp16["encoder_kv_replication"]) * head_dim, head_dim, 0, columns
     raise SystemExit(f"unknown tp plan {plan}")
 
 
@@ -200,8 +225,32 @@ def read_tensor_blob(file, shape: list[int], dtype: str, offsets: tuple[int, int
     return blob
 
 
-def args_signature(sections: list[str], rank: int, tp_degree: int) -> str:
-    return "|".join(sections) + f"|{rank}|{tp_degree}"
+def args_signature(sections: list[str], rank: int, tp_degree: int, pp_degree: int) -> str:
+    return "|".join(sections) + f"|{rank}|{tp_degree}|{pp_degree}"
+
+
+def plan_of(item: dict, tp_degree: int) -> str:
+    if tp_degree >= 16 and "tp16" in item:
+        return item["tp16"]
+    return item["tp"]
+
+
+def check_tp16_plan(section: str, name: str, rows: int, columns: int, plan: str,
+                    tp_degree: int, tp16: dict) -> None:
+    if plan not in ("rows", "cols"):
+        return
+    dit_extent = sum(tp16["dit_head_counts"]) * tp16["dit_head_dimension"]
+    if (plan == "rows" and rows == dit_extent) or (plan == "cols" and columns == dit_extent):
+        raise SystemExit(f"{name}: extent {dit_extent} requires the tp16 head plans, not {plan}")
+    kv_extent = (tp_degree // tp16["encoder_kv_replication"]) * tp16["encoder_head_dimension"]
+    if section == "encoder" and plan == "rows" and rows == kv_extent:
+        raise SystemExit(f"{name}: extent {rows} requires kv_rows, not {plan}")
+
+
+def arm_of(tp_degree: int, pp_degree: int) -> str:
+    if pp_degree == 1:
+        return f"h3.bf16.tp{tp_degree}"
+    return f"h3.bf16.tp{tp_degree}pp{pp_degree}"
 
 
 def sha256_file(path: Path) -> str:
@@ -213,9 +262,11 @@ def sha256_file(path: Path) -> str:
 
 
 def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_dir: Path,
-               patterns: list[dict], codes: dict, excluded: list[re.Pattern], dry_run: bool) -> dict:
+               patterns: list[dict], codes: dict, excluded: list[re.Pattern], dry_run: bool,
+               tp16: dict | None = None, pp_degree: int = 4) -> dict:
     tp_rank = rank % tp_degree
     stage = rank // tp_degree
+    arm = arm_of(tp_degree, pp_degree)
     directory: list[dict] = []
     sources = set()
     per_section = {section: 0 for section in sections}
@@ -226,7 +277,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
         if dry_run:
             stages: dict[int, int] = {}
             for item in inventory:
-                item_stage = stage_of(item, item["layer"])
+                item_stage = stage_of(item, item["layer"], pp_degree)
                 stages[item_stage] = stages.get(item_stage, 0) + 1
             print(f"{section}: {len(inventory)} tensors, stage split {dict(sorted(stages.items()))}")
             continue
@@ -234,12 +285,15 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
             if section == "audio_vae":
                 if rank != 0:
                     continue
-            elif stage_of(item, item["layer"]) != stage:
+            elif stage_of(item, item["layer"], pp_degree) != stage:
                 continue
             if item["tp"] == "rank0" and rank != 0:
                 continue
             rows, columns = flat_rows_columns(item["shape"])
-            row_start, row_count, col_start, col_count = tp_slice(rows, columns, item["tp"], tp_rank, tp_degree)
+            plan = plan_of(item, tp_degree)
+            if tp16 is not None and tp_degree >= 16:
+                check_tp16_plan(section, item["name"], rows, columns, plan, tp_degree, tp16)
+            row_start, row_count, col_start, col_count = tp_slice(rows, columns, plan, tp_rank, tp_degree, tp16)
             weight_format = WEIGHT_F32 if item["dtype"] == "F32" else WEIGHT_BF16
             directory.append({
                 "tensor_kind": item["code"],
@@ -256,8 +310,8 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
     if dry_run:
         return {}
 
-    out_path = out_dir / f"minimax_h3.rank{rank:02d}.sp"
-    progress_path = out_dir / f"minimax_h3.rank{rank:02d}.progress.json"
+    out_path = out_dir / f"{arm}.rank{rank:02d}.sp"
+    progress_path = out_dir / f"{arm}.rank{rank:02d}.progress.json"
     ordered = sorted(directory, key=lambda e: (e["item"]["section"], e["item"]["shard"]))
     started = time.time()
     running_offset = HEADER_BYTES
@@ -270,7 +324,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
     resume = None
     if progress_path.exists():
         resume = json.loads(progress_path.read_text())
-        if resume.get("signature") != (args_signature(sections, rank, tp_degree)):
+        if resume.get("signature") != (args_signature(sections, rank, tp_degree, pp_degree)):
             resume = None
     if resume is not None and out_path.exists():
         with out_path.open("r+b") as out:
@@ -305,7 +359,7 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
             payload_offset += aligned
             out.flush()
             progress_path.write_text(json.dumps({
-                "signature": args_signature(sections, rank, tp_degree),
+                "signature": args_signature(sections, rank, tp_degree, pp_degree),
                 "next_index": index + 1,
                 "payload_offset": payload_offset,
             }))
@@ -333,10 +387,20 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
     elapsed = time.time() - started
     progress_path.unlink(missing_ok=True)
     digest = sha256_file(out_path)
-    (out_dir / f"minimax_h3.rank{rank:02d}.sp.sha256").write_text(f"{digest}  {out_path.name}\n")
+    (out_dir / f"{arm}.rank{rank:02d}.sp.sha256").write_text(f"{digest}  {out_path.name}\n")
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    placement = {
+        "encoder": f"vocab/rows/cols split x{tp_degree}, kv heads replicated x{tp16['encoder_kv_replication'] if tp16 else 1}" if tp16 else "stage 0, vocab/rows/cols split x4",
+        "dit_blocks": DIT_BLOCKS_PER_STAGE if pp_degree != 1 else "all 50 on the single stage",
+        "dit_entry_globals": "stage 0",
+        "dit_exit_globals": "stage 3" if pp_degree != 1 else "stage 0",
+        "video_vae": "stage 3" if pp_degree != 1 else "single stage",
+        "audio_vae": "rank 0 replicated",
+    }
+    if tp16:
+        placement["dit_head_counts"] = tp16["dit_head_counts"]
     receipt = {
-        "arm": "h3.bf16.tp4pp4",
+        "arm": arm,
         "rank": rank,
         "tp_degree": tp_degree,
         "tp_rank": tp_rank,
@@ -347,19 +411,12 @@ def build_pack(rank: int, tp_degree: int, sections: list[str], warm: Path, out_d
         "file_bytes": file_bytes,
         "sha256": digest,
         "sources": sorted(sources),
-        "placement": {
-            "encoder": "stage 0, vocab/rows/cols split x4",
-            "dit_blocks": DIT_BLOCKS_PER_STAGE,
-            "dit_entry_globals": "stage 0",
-            "dit_exit_globals": "stage 3",
-            "video_vae": "stage 3",
-            "audio_vae": "rank 0 replicated",
-        },
+        "placement": placement,
         "peak_rss_mib": round(peak / 1024, 1),
         "elapsed_seconds": round(elapsed, 1),
         "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (out_dir / f"minimax_h3.rank{rank:02d}.receipt.json").write_text(json.dumps(receipt, indent=1))
+    (out_dir / f"{arm}.rank{rank:02d}.receipt.json").write_text(json.dumps(receipt, indent=1))
     return receipt
 
 
@@ -372,6 +429,8 @@ def main() -> int:
     parser.add_argument("--sections", default="dit", help="comma list: encoder,dit,video_vae,audio_vae")
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--tp-degree", type=int, default=4)
+    parser.add_argument("--pp-degree", type=int, default=None,
+                        help="pipeline degree; default 4, or the tp16 spec's pp_degree when tp-degree >= 16")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -382,12 +441,17 @@ def main() -> int:
         patterns.append(dict(entry, rx=re.compile(rx)))
     codes = assign_kind_codes(spec)
     excluded = [re.compile(rx) for rx in spec.get("excluded", [])]
+    tp16 = spec.get("tp16")
+    pp_degree = args.pp_degree
+    if pp_degree is None:
+        pp_degree = tp16["pp_degree"] if tp16 and args.tp_degree >= 16 else 4
     sections = [s.strip() for s in args.sections.split(",")]
     if args.out is not None:
         args.out.mkdir(parents=True, exist_ok=True)
 
     receipt = build_pack(args.rank, args.tp_degree, sections, args.warm, args.out,
-                         patterns, codes, excluded, args.dry_run)
+                         patterns, codes, excluded, args.dry_run,
+                         tp16=tp16, pp_degree=pp_degree)
     if not args.dry_run:
         print(json.dumps({k: v for k, v in receipt.items() if k != "sources"}, indent=1))
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss

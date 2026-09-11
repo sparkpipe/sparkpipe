@@ -1,5 +1,30 @@
 {
- "comment": "Name patterns are regex over checkpoint tensor names; {N} is the layer capture. tp: rows = output-channel split, cols = input-channel split, repl = replicate on every TP rank, vocab = embedding row split, rank0 = pack on rank 0 only. stage: 0-3 for the TP4xPP4 placement, 'first'/'last' follows the DiT block split, 'g0'/'g3' = entry/exit globals. Exclusions include the audio VAE encode arm (pre_block/mean_proj/logs_proj sit on the encode path per the pinned AutoencoderKLMiniMaxH3Audio.encode; decode is dec_in_proj + decoder BigVGAN only) and the audio/video VAE encoder stacks.",
+ "comment": "Name patterns are regex over checkpoint tensor names; {N} is the layer capture. tp: rows = output-channel split, cols = input-channel split, repl = replicate on every TP rank, vocab = embedding row split, rank0 = pack on rank 0 only. tp16 overrides for arm h3.bf16.tp16 (PP1): heads_rows/heads_cols = mixed DiT head split from tp16.dit_head_counts (8 ranks x 4 heads + 8 ranks x 3 heads = 56, full 128-channel heads, to_out columns follow the same rank ownership), kv_rows = encoder kv-head replication (8 kv heads x2 = 16, rank r carries kv head r//2 so its 4 q heads 4r..4r+3 sit in kv group r//2). stage: 0-3 for the TP4xPP4 placement, 'first'/'last' follows the DiT block split, 'g0'/'g3' = entry/exit globals; under tp16 PP1 every pattern lands on the single stage. Exclusions include the audio VAE encode arm (pre_block/mean_proj/logs_proj sit on the encode path per the pinned AutoencoderKLMiniMaxH3Audio.encode; decode is dec_in_proj + decoder BigVGAN only) and the audio/video VAE encoder stacks.",
+ "tp16": {
+  "arm": "h3.bf16.tp16",
+  "pp_degree": 1,
+  "dit_head_counts": [
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   4,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3
+  ],
+  "dit_head_dimension": 128,
+  "encoder_kv_replication": 2,
+  "encoder_head_dimension": 128
+ },
  "sections": {
   "encoder": 4096,
   "dit": 8192,
@@ -30,7 +55,8 @@
    "kind": "ENCODER_ATTENTION_KEY",
    "sub": 0,
    "tp": "rows",
-   "stage": 0
+   "stage": 0,
+   "tp16": "kv_rows"
   },
   {
    "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.v_proj\\.weight",
@@ -38,7 +64,8 @@
    "kind": "ENCODER_ATTENTION_VALUE",
    "sub": 0,
    "tp": "rows",
-   "stage": 0
+   "stage": 0,
+   "tp16": "kv_rows"
   },
   {
    "regex": "model\\.language_model\\.layers\\.{N}\\.self_attn\\.o_proj\\.weight",
@@ -201,7 +228,8 @@
    "sub": 0,
    "tp": "rows",
    "stage": 0,
-   "block_base": 50
+   "block_base": 50,
+   "tp16": "heads_rows"
   },
   {
    "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_k\\.weight",
@@ -210,7 +238,8 @@
    "sub": 0,
    "tp": "rows",
    "stage": 0,
-   "block_base": 50
+   "block_base": 50,
+   "tp16": "heads_rows"
   },
   {
    "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_v\\.weight",
@@ -219,7 +248,8 @@
    "sub": 0,
    "tp": "rows",
    "stage": 0,
-   "block_base": 50
+   "block_base": 50,
+   "tp16": "heads_rows"
   },
   {
    "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.to_out\\.0\\.weight",
@@ -228,7 +258,8 @@
    "sub": 0,
    "tp": "cols",
    "stage": 0,
-   "block_base": 50
+   "block_base": 50,
+   "tp16": "heads_cols"
   },
   {
    "regex": "token_refiner\\.refiner_blocks\\.{N}\\.attn\\.norm_q\\.weight",
@@ -361,28 +392,32 @@
    "section": "dit",
    "kind": "DIT_ATTENTION_QUERY",
    "sub": 0,
-   "tp": "rows"
+   "tp": "rows",
+   "tp16": "heads_rows"
   },
   {
    "regex": "^transformer_blocks\\.{N}\\.attn\\.to_k\\.weight",
    "section": "dit",
    "kind": "DIT_ATTENTION_KEY",
    "sub": 0,
-   "tp": "rows"
+   "tp": "rows",
+   "tp16": "heads_rows"
   },
   {
    "regex": "^transformer_blocks\\.{N}\\.attn\\.to_v\\.weight",
    "section": "dit",
    "kind": "DIT_ATTENTION_VALUE",
    "sub": 0,
-   "tp": "rows"
+   "tp": "rows",
+   "tp16": "heads_rows"
   },
   {
    "regex": "^transformer_blocks\\.{N}\\.attn\\.to_out\\.0\\.weight",
    "section": "dit",
    "kind": "DIT_ATTENTION_OUTPUT",
    "sub": 0,
-   "tp": "cols"
+   "tp": "cols",
+   "tp16": "heads_cols"
   },
   {
    "regex": "^transformer_blocks\\.{N}\\.attn\\.norm_q\\.weight",
