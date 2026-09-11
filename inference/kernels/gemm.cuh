@@ -261,6 +261,8 @@ static __device__ __forceinline__ void LmGemmProduce(
         INTERLEAVED_B,args.output_dimension / 16u);
 }
 
+__managed__ uint32_t LmGemmStallReport[32];
+
 template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false, uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE, bool INTERLEAVED_B = false>
 __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
 void LmGemmKernel(
@@ -349,8 +351,21 @@ void LmGemmKernel(
     total_tiles = args.group_count == 1u
         ? dense_tiles
         : LmTotalTiles(args.group_tile_prefix, args.group_count);
+    if ( blockIdx.x == 0u && threadIdx.x == 0u )
+    {
+        atomicExch(&LmGemmStallReport[18u], total_tiles);
+        atomicExch(&LmGemmStallReport[19u], k_tiles);
+        atomicExch(&LmGemmStallReport[20u], dense_rows);
+        atomicExch(&LmGemmStallReport[21u], gridDim.x);
+        atomicExch(&LmGemmStallReport[22u], neuron_tiles);
+        atomicExch(&LmGemmStallReport[23u], args.group_count);
+        atomicExch(&LmGemmStallReport[24u], args.input_dimension);
+        atomicExch(&LmGemmStallReport[25u], args.output_dimension);
+    }
     for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
     {
+        atomicAdd(&LmGemmStallReport[16u], 1u);
+        atomicMax(&LmGemmStallReport[17u], tile);
         group = args.group_count == 1u
             ? 0u
             : LmGroupOfTile(args.group_tile_prefix, args.group_count, tile);
@@ -405,9 +420,40 @@ void LmGemmKernel(
                     group,
                     grouped);
             }
-            LmMbarrierWait(
-                &barrier[stage],
-                (phase >> stage) & 1u);
+            {
+                uint32_t spins = 0u;
+                while ( LmMbarrierTryWait(
+                            &barrier[stage],
+                            (phase >> stage) & 1u) == false )
+                {
+                    if ( ++spins == (1u << 26u) )
+                    {
+                        uint32_t slot = atomicAdd(&LmGemmStallReport[0], 1u);
+                        if ( slot < 15u )
+                        {
+                            uint32_t *report = &LmGemmStallReport[1u + slot * 0u];
+                            (void)report;
+                            atomicExch(&LmGemmStallReport[1u], blockIdx.x);
+                            atomicExch(&LmGemmStallReport[2u], threadIdx.x);
+                            atomicExch(&LmGemmStallReport[3u], tile);
+                            atomicExch(&LmGemmStallReport[4u], total_tiles);
+                            atomicExch(&LmGemmStallReport[5u], k);
+                            atomicExch(&LmGemmStallReport[6u], k_tiles);
+                            atomicExch(&LmGemmStallReport[7u], stage);
+                            atomicExch(&LmGemmStallReport[8u], ahead);
+                            atomicExch(&LmGemmStallReport[9u], (phase >> stage) & 1u);
+                            atomicExch(&LmGemmStallReport[10u],
+                                (uint32_t)(barrier[stage] & 0xffffffffu));
+                            atomicExch(&LmGemmStallReport[11u],
+                                (uint32_t)(barrier[stage] >> 32u));
+                            atomicExch(&LmGemmStallReport[12u], row_base);
+                            atomicExch(&LmGemmStallReport[13u], row_limit);
+                            atomicExch(&LmGemmStallReport[14u], neuron_base);
+                            atomicExch(&LmGemmStallReport[15u], dense_rows);
+                        }
+                    }
+                }
+            }
 			if constexpr ( ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
 				__syncthreads();
             phase ^= 1u << stage;
@@ -444,6 +490,7 @@ void LmGemmKernel(
             warp,
             lane);
         __syncthreads();
+        atomicAdd(&LmGemmStallReport[26u], 1u);
     }
     LmPipelineRelease<STAGES>(barrier);
 }

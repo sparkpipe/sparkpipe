@@ -1,10 +1,12 @@
 #include <cuda_runtime.h>
 
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_ling_model.h"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
@@ -1214,7 +1216,56 @@ typedef struct SparkLingValFixture
 	uint32_t *kv_access_error_dev;
 	uint8_t *kv_cache_dev,*kda_state_pool_dev,*kda_window_pool_dev;
 	uint32_t host_page_table[SPARK_LING_VAL_PAGES];
+	uint32_t *stall_report;
+	uint32_t *stage_report;
 } SparkLingValFixture;
+
+extern "C" uint32_t *LingGemmStallReportPointer(void);
+extern "C" uint32_t *LingKdaStageReportPointer(void);
+
+static void *SparkLingValStallWatch(void *argument)
+{
+	SparkLingValFixture *fixture = (SparkLingValFixture *)argument;
+	uint32_t previous_entries = 0u;
+	uint32_t rounds = 0u;
+	for (;;)
+	{
+		sleep(20);
+		{
+			const uint32_t *report = fixture->stall_report;
+			const uint32_t *stages = fixture->stage_report;
+			uint32_t entries = report[0];
+			uint32_t slot;
+			if ( 1 )
+			{
+				printf("STALL tile_entries=%u max_tile=%u total_tiles=%u "
+					"k_tiles=%u dense_rows=%u grid=%u neuron_tiles=%u "
+					"group_count=%u in=%u out=%u spin_fires=%u "
+					"tile=%u k=%u stage=%u ahead=%u phase=%u "
+					"bar=%08x%08x row_base=%u row_limit=%u dense_rows_r=%u\n",
+					report[16u],report[17u],report[18u],report[19u],
+					report[20u],report[21u],report[22u],report[23u],
+					report[24u],report[25u],report[0u],report[3u],
+					report[5u],report[7u],report[8u],report[9u],
+					report[11u],report[10u],report[12u],report[13u],
+					report[15u]);
+				for (slot = 0u; slot < 32u; slot++)
+				{
+					if ( stages[slot * 3u] == 0xffffffffu )
+						continue;
+					printf("TAG stage=%u off0=%u off1=%u (0x%08x)\n",
+						stages[slot * 3u],stages[slot * 3u + 1u],
+						stages[slot * 3u + 2u],stages[slot * 3u + 2u]);
+				}
+				fflush(stdout);
+				rounds++;
+				if ( rounds >= 3u )
+					return(0);
+			}
+			previous_entries = report[16u];
+		}
+	}
+}
 
 static int SparkLingValSynthExperts(SparkLingValFixture *fixture)
 {
@@ -1823,6 +1874,15 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 			status,cudaGetErrorString(cudaGetLastError()));
 		return(SparkLingValFail("drive","begin"));
 	}
+	if ( probe != 0 )
+	{
+		uint32_t dense_off_host[2];
+		if ( cudaStreamSynchronize(fixture->stream) == cudaSuccess &&
+			cudaMemcpy(dense_off_host,fixture->dense_row_offset_dev,
+				sizeof(dense_off_host),cudaMemcpyDeviceToHost) == cudaSuccess )
+			fprintf(stderr,"drive w%u: after begin dense_row_offset %u %u\n",
+				wave_index,dense_off_host[0],dense_off_host[1]);
+	}
 	for (local = 0u; local < 2u; local++)
 	{
 		uint32_t layer = layers[local];
@@ -1941,7 +2001,14 @@ static int SparkLingValDriveWave(SparkLingValFixture *fixture,
 		if ( cudaStreamSynchronize(fixture->stream) != cudaSuccess )
 			return(SparkLingValFail("drive","attn_sync"));
 		if ( probe != 0 )
+		{
+			uint32_t dense_off_host[2];
 			fprintf(stderr,"drive w%u: l%u attention synced\n",wave_index,local);
+			if ( cudaMemcpy(dense_off_host,fixture->dense_row_offset_dev,
+				sizeof(dense_off_host),cudaMemcpyDeviceToHost) == cudaSuccess )
+				fprintf(stderr,"drive w%u: after l%u attention dense_row_offset %u %u\n",
+					wave_index,local,dense_off_host[0],dense_off_host[1]);
+		}
 		status = SparkLingLaunchCudaLayerMlp(&fixture->wave,local);
 		if ( status != 0 )
 		{
@@ -2276,8 +2343,17 @@ int main(int argc,char **argv)
 		SPARK_LING_VAL_TOKENS,"tier1 kda+dense decode",0);
 	failures += SparkLingValRunTier(&fixture,mixed_layers,decode_plans,
 		SPARK_LING_VAL_TOKENS,"tier2a mla+moe decode",1);
-	failures += SparkLingValRunTier(&fixture,kda_layers,prefill_plans,2u,
-		"tier3 prefill+cached decode",0);
+	{
+		pthread_t watchdog;
+		fixture.stall_report = LingGemmStallReportPointer();
+		fixture.stage_report = LingKdaStageReportPointer();
+		memset(fixture.stall_report,0,32u * sizeof(uint32_t));
+		memset(fixture.stage_report,0xff,96u * sizeof(uint32_t));
+		pthread_create(&watchdog,0,SparkLingValStallWatch,&fixture);
+		failures += SparkLingValRunTier(&fixture,kda_layers,prefill_plans,2u,
+			"tier3 prefill+cached decode",0);
+		pthread_cancel(watchdog);
+	}
 	printf("ling validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);
 	cudaDeviceSynchronize();
