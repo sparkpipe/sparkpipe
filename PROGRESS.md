@@ -304,3 +304,92 @@ persistent-GEMM deadlock (open device bug, cuda-gdb evidence logged).
 Diagnostic probes (carry/stage/mlp/logits) are still in the validator
 and are the evidence trail; strip or keep deliberately next round.
 
+
+## CLOSE-OUT ROUND (r17, 09-11) — TIER3 GEMM "DEADLOCK" ROOT-CAUSED
+
+STATUS: tier3 blocker ROOT-CAUSED to device-buffer garbage, NOT a GEMM
+pipeline bug. Fix not yet written (day paused). Items 2 (fixture widening)
+and 3 (probe disposition) untouched.
+
+EVIDENCE CHAIN (all on spark9, GB10 48SM, archive rebuilt with -g):
+
+1. Isolation sweep PROVES the shared dense GEMM healthy at m<TILE_M:
+   standalone repro tools/dev/ling_gemm_repro.cu drives the prebuilt
+   module archive's LingGemmBf16 (exact launch the layer stack uses:
+   LmGemmLaunch<LmBf16Format,128,64,2,8>, group_count=1) across rows
+   {1,2,3,4,8,16,17} x the six real ling dense shapes
+   {(2560,2560),(2560,16320),(4096,2560),(2560,12288),(6144,2560),
+   (2560,6144)}: 42/42 PASS, no hang. The wave-tail / mbarrier-arrival
+   suspicion from the brief is DISPROVEN: partial last tile rows
+   complete their TMA (zero-fill), waits complete, stores are
+   row_limit-guarded.
+2. Live hang reproduced 3x deterministically: tier3 "drive w0" (rows=4
+   prefill), l0 KDA attention — 3 causal-conv probe lines print, then
+   silence. Only GEMM after the convs is the o-proj (in=4096 out=2560
+   rows=4). Logs: /tmp/ling_r17_repro.log, /tmp/ling_r17_g.log,
+   /tmp/ling_r17_w2.log on spark9.
+3. cuda-gdb attach: stuck kernel is
+   LmGemmKernel<LmBf16Format,LmBf16Format,16,128,64,2,8,false,0,false>
+   grid(48,1,1) block(256,1,1) — the plain dense bf16 instantiation.
+   All 48 blocks "running"; sampled PCs sweep produce/wait/consume/MMA
+   (healthy k-loop, no spin park).
+4. Instrumented probe (tools/dev/ling_gemm_stall_probe.patch — applied
+   to gemm.cuh wait site + tile loop, unity.cu accessor, validator
+   watchdog pthread; managed report read from the hung process):
+   STALL tile_entries (growing) max_tile (growing)
+   total_tiles=2679275120 k_tiles=64 dense_rows=2143420082 grid=48
+   neuron_tiles=20 group_count=1 in=4096 out=2560 spin_fires=0.
+   => total_tiles = ceil(dense_rows/16)*20 with GARBAGE dense_rows
+   = group_row_offset[1]-group_row_offset[0] read from
+   slot->dense_row_offset; the tile loop iterates ~2.7e9 tiles
+   ("forever", ~95% SM), every mbarrier wait completes normally
+   (spin_fires=0), stores never fault because row_limit (the same
+   buffer) guards them.
+
+ROOT CAUSE PRECISION: whoever holds the o-proj GEMM launch passes a
+VALID pointer, but the 8 bytes slot->dense_row_offset[0..1] contain
+garbage by the time the hang kernel starts. SparkLingWaveMetadataKernel
+(spark_ling_resident_decode_stage_cuda.cu:247,85-86) writes
+[0]=0,[1]=row_count at every wave begin, and the fixture zeroes the
+buffer at build — so garbage means something wrote 8 bytes of
+bf16-pattern data into dense_row_offset_dev (16B alloc) during the w0
+wave, OR the metadata kernel for w0 ran with a garbage row_count
+arg/pointer (its row==0 branch), OR a w0 kernel writes out-of-bounds
+through a different pointer that lands on this allocation.
+
+NEXT STEP (one build away): with the probe patch re-applied, dump
+dense_row_offset_dev right after SparkLingLaunchCudaWaveBegin(w0) and
+after each l0 kernel (norm/fused-qkv/decay/gate/convs) from the
+validator, to name the writer. Prime suspects in order: (a) the
+tier3 run_count=1 wave-prep path in SparkLingValRunTier (validator)
+passing wrong host_positions/slots so SparkLingKdaResetKernel's
+positions[row]==0 branch or the context_lengths scatter
+(context_lengths[resident_slots[row]]) indexes wildly — both write
+through slot pointers adjacent in the slot struct; (b) the KDA
+sequential kernels' sequence_row_begin indexing (run_begin_dev /
+run_state_dev) reading run metadata as row data; (c) an embedding /
+boundary-load kernel launched with row_count != the buffer's rows.
+The GEMM kernel itself needs NO change — the fix belongs in the wave
+prep / metadata path, then tier3 runs as planned (anchors in
+/Users/mac/batch-ling-val, full-K MLA + sequential KDA t=3..10).
+
+BUILD NOTE for spark9 manual nvcc: use -gencode
+arch=compute_121a,code=sm_121a (compute_121 WITHOUT the 'a' fails
+ptxas on cvt.ue8m0x2 in dtype.cuh). The module archive was rebuilt in
+place with -g via NVCCFLAGS override (rules.mk default flag set
+otherwise); spark9 tree carries the probe + patched files — re-sync
+from the mac tree and re-apply the patch next round.
+
+RECEIPTS (spark9): /tmp/ling_gemm_repro (42/42 PASS sweep, built
+against the bf16 module archive), /tmp/ling_r17_w2.log (STALL probe
+lines above), /tmp/ling_r17_w.log, /tmp/ling_r17_repro.log. Probe
+patch + repro tool are COMMITTED on lane/ling-driver (this tip); the
+three source files are REVERTED clean on the branch — re-apply with
+git apply tools/dev/ling_gemm_stall_probe.patch.
+
+REMAINING AFTER TIER3: item 2 fixture tie-widening (tier2a w3 route
+near-tie 0.3092/0.2879 — widen synthetic gaps, anchor
+tie-free-by-construction; do NOT add tolerance), item 3 probe
+disposition (this round's stall probe + the earlier carry/stage/mlp/
+logits probes; if stripped, prove verdicts md5-identical), contract
+freeze + PACKAGE_MANIFEST/SHA256SUMS last on the final pack set.

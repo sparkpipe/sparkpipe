@@ -1,0 +1,184 @@
+diff --git a/inference/kernels/gemm.cuh b/inference/kernels/gemm.cuh
+index 0ff739c..946ccbe 100644
+--- a/inference/kernels/gemm.cuh
++++ b/inference/kernels/gemm.cuh
+@@ -261,6 +261,8 @@ static __device__ __forceinline__ void LmGemmProduce(
+         INTERLEAVED_B,args.output_dimension / 16u);
+ }
+ 
++__managed__ uint32_t LmGemmStallReport[32];
++
+ template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS, bool INDIRECT_A = false, uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE, bool INTERLEAVED_B = false>
+ __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
+ void LmGemmKernel(
+@@ -349,8 +351,21 @@ void LmGemmKernel(
+     total_tiles = args.group_count == 1u
+         ? dense_tiles
+         : LmTotalTiles(args.group_tile_prefix, args.group_count);
++    if ( blockIdx.x == 0u && threadIdx.x == 0u )
++    {
++        atomicExch(&LmGemmStallReport[18u], total_tiles);
++        atomicExch(&LmGemmStallReport[19u], k_tiles);
++        atomicExch(&LmGemmStallReport[20u], dense_rows);
++        atomicExch(&LmGemmStallReport[21u], gridDim.x);
++        atomicExch(&LmGemmStallReport[22u], neuron_tiles);
++        atomicExch(&LmGemmStallReport[23u], args.group_count);
++        atomicExch(&LmGemmStallReport[24u], args.input_dimension);
++        atomicExch(&LmGemmStallReport[25u], args.output_dimension);
++    }
+     for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
+     {
++        atomicAdd(&LmGemmStallReport[16u], 1u);
++        atomicMax(&LmGemmStallReport[17u], tile);
+         group = args.group_count == 1u
+             ? 0u
+             : LmGroupOfTile(args.group_tile_prefix, args.group_count, tile);
+@@ -405,9 +420,40 @@ void LmGemmKernel(
+                     group,
+                     grouped);
+             }
+-            LmMbarrierWait(
+-                &barrier[stage],
+-                (phase >> stage) & 1u);
++            {
++                uint32_t spins = 0u;
++                while ( LmMbarrierTryWait(
++                            &barrier[stage],
++                            (phase >> stage) & 1u) == false )
++                {
++                    if ( ++spins == (1u << 26u) )
++                    {
++                        uint32_t slot = atomicAdd(&LmGemmStallReport[0], 1u);
++                        if ( slot < 15u )
++                        {
++                            uint32_t *report = &LmGemmStallReport[1u + slot * 0u];
++                            (void)report;
++                            atomicExch(&LmGemmStallReport[1u], blockIdx.x);
++                            atomicExch(&LmGemmStallReport[2u], threadIdx.x);
++                            atomicExch(&LmGemmStallReport[3u], tile);
++                            atomicExch(&LmGemmStallReport[4u], total_tiles);
++                            atomicExch(&LmGemmStallReport[5u], k);
++                            atomicExch(&LmGemmStallReport[6u], k_tiles);
++                            atomicExch(&LmGemmStallReport[7u], stage);
++                            atomicExch(&LmGemmStallReport[8u], ahead);
++                            atomicExch(&LmGemmStallReport[9u], (phase >> stage) & 1u);
++                            atomicExch(&LmGemmStallReport[10u],
++                                (uint32_t)(barrier[stage] & 0xffffffffu));
++                            atomicExch(&LmGemmStallReport[11u],
++                                (uint32_t)(barrier[stage] >> 32u));
++                            atomicExch(&LmGemmStallReport[12u], row_base);
++                            atomicExch(&LmGemmStallReport[13u], row_limit);
++                            atomicExch(&LmGemmStallReport[14u], neuron_base);
++                            atomicExch(&LmGemmStallReport[15u], dense_rows);
++                        }
++                    }
++                }
++            }
+ 			if constexpr ( ACTIVATION_CODEC != SPARK_ACTIVATION_CODEC_NONE )
+ 				__syncthreads();
+             phase ^= 1u << stage;
+@@ -444,6 +490,7 @@ void LmGemmKernel(
+             warp,
+             lane);
+         __syncthreads();
++        atomicAdd(&LmGemmStallReport[26u], 1u);
+     }
+     LmPipelineRelease<STAGES>(barrier);
+ }
+diff --git a/modules/ling_resident_decode_stage/source/cuda/unity.cu b/modules/ling_resident_decode_stage/source/cuda/unity.cu
+index 0d69f19..1c72ad0 100644
+--- a/modules/ling_resident_decode_stage/source/cuda/unity.cu
++++ b/modules/ling_resident_decode_stage/source/cuda/unity.cu
+@@ -46,6 +46,11 @@ extern "C" uint32_t LingExpertWeightCodec(void)
+     return LING_EXPERT_WEIGHT_CODEC;
+ }
+ 
++extern "C" uint32_t *LingGemmStallReportPointer(void)
++{
++    return LmGemmStallReport;
++}
++
+ extern "C" int32_t LingGemmBf16(
+     LmGemmArguments *arguments,
+     const void *activation_bf16,
+diff --git a/modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu b/modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu
+index 5032768..5606367 100644
+--- a/modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu
++++ b/modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu
+@@ -1,10 +1,12 @@
+ #include <cuda_runtime.h>
+ 
+ #include <math.h>
++#include <pthread.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <unistd.h>
+ 
+ #include "sparkpipe/spark_ling_model.h"
+ #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
+@@ -1214,8 +1216,45 @@ typedef struct SparkLingValFixture
+ 	uint32_t *kv_access_error_dev;
+ 	uint8_t *kv_cache_dev,*kda_state_pool_dev,*kda_window_pool_dev;
+ 	uint32_t host_page_table[SPARK_LING_VAL_PAGES];
++	uint32_t *stall_report;
+ } SparkLingValFixture;
+ 
++extern "C" uint32_t *LingGemmStallReportPointer(void);
++
++static void *SparkLingValStallWatch(void *argument)
++{
++	SparkLingValFixture *fixture = (SparkLingValFixture *)argument;
++	uint32_t previous_entries = 0u;
++	uint32_t rounds = 0u;
++	for (;;)
++	{
++		sleep(20);
++		{
++			const uint32_t *report = fixture->stall_report;
++			uint32_t entries = report[0];
++			if ( 1 )
++			{
++				printf("STALL tile_entries=%u max_tile=%u total_tiles=%u "
++					"k_tiles=%u dense_rows=%u grid=%u neuron_tiles=%u "
++					"group_count=%u in=%u out=%u spin_fires=%u "
++					"tile=%u k=%u stage=%u ahead=%u phase=%u "
++					"bar=%08x%08x row_base=%u row_limit=%u dense_rows_r=%u\n",
++					report[16u],report[17u],report[18u],report[19u],
++					report[20u],report[21u],report[22u],report[23u],
++					report[24u],report[25u],report[0u],report[3u],
++					report[5u],report[7u],report[8u],report[9u],
++					report[11u],report[10u],report[12u],report[13u],
++					report[15u]);
++				fflush(stdout);
++				rounds++;
++				if ( rounds >= 3u )
++					return(0);
++			}
++			previous_entries = report[16u];
++		}
++	}
++}
++
+ static int SparkLingValSynthExperts(SparkLingValFixture *fixture)
+ {
+ 	uint32_t codec = SPARK_LING_VAL_CODEC;
+@@ -2276,8 +2315,15 @@ int main(int argc,char **argv)
+ 		SPARK_LING_VAL_TOKENS,"tier1 kda+dense decode",0);
+ 	failures += SparkLingValRunTier(&fixture,mixed_layers,decode_plans,
+ 		SPARK_LING_VAL_TOKENS,"tier2a mla+moe decode",1);
+-	failures += SparkLingValRunTier(&fixture,kda_layers,prefill_plans,2u,
+-		"tier3 prefill+cached decode",0);
++	{
++		pthread_t watchdog;
++		fixture.stall_report = LingGemmStallReportPointer();
++		memset(fixture.stall_report,0,32u * sizeof(uint32_t));
++		pthread_create(&watchdog,0,SparkLingValStallWatch,&fixture);
++		failures += SparkLingValRunTier(&fixture,kda_layers,prefill_plans,2u,
++			"tier3 prefill+cached decode",0);
++		pthread_cancel(watchdog);
++	}
+ 	printf("ling validator: %s (%d failures)\n",
+ 		failures == 0 ? "PASS" : "FAIL",failures);
+ 	cudaDeviceSynchronize();
