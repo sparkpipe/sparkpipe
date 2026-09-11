@@ -39,6 +39,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t band_base;
     uint64_t slot_bytes;
     uint64_t round_timeout_ns;
+    uint64_t round_seq;
     pthread_mutex_t completion_lock;
     pthread_cond_t completion_wake;
     SparkTpDeviceCollectiveCompletionNode *completion_head;
@@ -205,6 +206,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     SparkTpDeviceCollectiveCompletionNode *finish;
     uint64_t bytes;
     uint64_t ordinal;
+    uint64_t round_seq;
     uint64_t slot_bytes;
     uint64_t slot_index;
     uint8_t *slot;
@@ -228,8 +230,9 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             implementation->combine_u64_max == 0) )
         return SPARK_STATUS_UNSUPPORTED;
     ordinal = submission->ordinal;
+    round_seq = ++implementation->round_seq;
     slot_bytes = implementation->slot_bytes;
-    slot_index = (uint64_t)implementation->tp_rank * 2u + (ordinal & 1ull);
+    slot_index = (uint64_t)implementation->tp_rank * 2u + (round_seq & 1ull);
     slot = implementation->mesh_buffer + implementation->band_base +
         slot_index * slot_bytes;
     band_index = (uint32_t)(implementation->band_base /
@@ -241,11 +244,11 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             implementation->mesh_buffer +
             SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
                 implementation->tp_rank),
-            ordinal + 1u,bytes,slot_index) != 0 )
+            round_seq,bytes,slot_index) != 0 )
         return SPARK_STATUS_IO_ERROR;
     if ( SparkGlm5NextLaunchMeshWait(submission->cuda_stream,
             implementation->mesh_buffer + implementation->band_base,
-            slot_bytes,ordinal + 1u,ordinal & 1ull,
+            slot_bytes,round_seq,round_seq & 1ull,
             implementation->tp_rank,implementation->tp_degree) != 0 )
         return SPARK_STATUS_IO_ERROR;
     for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
@@ -253,7 +256,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         uint8_t *source = implementation->mesh_buffer +
             implementation->band_base +
             ((uint64_t)(peer < implementation->tp_rank ?
-                peer : peer + 1u) * 2u + (ordinal & 1ull)) * slot_bytes;
+                peer : peer + 1u) * 2u + (round_seq & 1ull)) * slot_bytes;
         SparkStatus status;
         if ( operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
@@ -491,6 +494,8 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
             SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
                 implementation->tp_rank));
         uint32_t slot;
+        if ( entry[0] > implementation->round_seq )
+            implementation->round_seq = entry[0];
         for ( slot = 0u;
               slot < SPARK_WEIGHTD_MESH_RANKS_PER_BAND *
                 SPARK_WEIGHTD_MESH_SLOTS_PER_RANK; slot++ )
