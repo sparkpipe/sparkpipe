@@ -160,6 +160,42 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.jobs()["independent"]["state"], "running")
         self.assertFalse(any(call[0] in {"b", "c"} for call in self.calls))
 
+    def test_gate_and_note_children_receive_dependency_receipts(self):
+        self.add("a")
+        self.cli("done", "--id", "a", "--exit", "1")
+        self.add("gate", "spark1", "--kind", "gate", "--after", "a")
+        self.add("note", "spark1", "--kind", "note", "--after", "a")
+        self.add("child", "spark1", "--after", "gate")
+        self.dispatch()
+        results = {j["id"]: j for j in self.state()["results"]}
+        self.assertEqual(results["gate"]["exit"], 125)
+        self.assertEqual(results["gate"]["failed_dependencies"], ["a"])
+        self.assertNotIn("attempt", results["gate"])
+        self.assertEqual(results["note"]["exit"], 125)
+        self.assertEqual(results["child"]["exit"], 125)
+        self.assertEqual(results["child"]["failed_dependencies"], ["gate"])
+        self.assertEqual(self.state()["jobs"], [])
+        self.assertFalse(self.calls)
+
+    def test_readonly_commands_write_nothing(self):
+        self.add("a")
+        self.dispatch()
+        path = Path(self.tmp.name) / "state-v2.json"
+        before = path.read_bytes()
+        self.cli("list")
+        self.cli("list", "--all")
+        self.cli("status", "--id", "a")
+        self.cli("doctor")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((Path(self.tmp.name) / "state-v2.tmp").exists())
+
+    def test_reads_on_fresh_state_persist_nothing(self):
+        self.cli("doctor")
+        self.cli("list")
+        names = {p.name for p in Path(self.tmp.name).iterdir()}
+        self.assertNotIn("state-v2.json", names)
+        self.assertNotIn("state-v2.tmp", names)
+
     def test_invalid_dependencies_rejected_before_submission(self):
         self.add("parent")
         for deps in ["missing", "child", "parent,parent", "parent,"]:

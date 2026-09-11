@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Durable Spark queue; see docs/PARALLEL_DRIVER_DEBUG.md."""
+"""Queue v2 contract: docs/PARALLEL_DRIVER_DEBUG.md."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -18,6 +18,8 @@ import uuid
 
 STATE = Path(os.environ.get("SPARK_QUEUE_STATE", Path.home() / ".sparkpipe/queue"))
 ACTIVE = {"launching", "running", "stopping"}
+JOB_MEMORY_MIB_DEFAULT = 8192
+NODE_MEMORY_MIB_MAX = 114688
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
             "-o", "ServerAliveInterval=3", "-o", "ServerAliveCountMax=1"]
 
@@ -45,7 +47,6 @@ def read_json(path, default):
 
 
 def migrate():
-    """Preserve legacy receipts, fail closed on legacy running jobs."""
     def lines(name):
         path = STATE / name
         return [json.loads(s) for s in path.read_text().splitlines() if s.strip()] if path.exists() else []
@@ -62,28 +63,45 @@ def migrate():
             "fences": fences}
 
 
+def persist(path, state):
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as out:
+        json.dump(state, out, allow_nan=False)
+        out.flush()
+        os.fsync(out.fileno())
+    tmp.replace(path)
+    fd = os.open(STATE, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def load():
+    state = read_json(STATE / "state-v2.json", None)
+    return migrate() if state is None else state
+
+
 @contextmanager
-def transaction():
-    # Network operations must never occur in this transaction.
+def locked(op):
     STATE.mkdir(parents=True, exist_ok=True)
     with (STATE / ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        path = STATE / "state-v2.json"
-        state = read_json(path, None)
-        if state is None:
-            state = migrate()
+        fcntl.flock(lock, op)
+        yield
+
+
+@contextmanager
+def transaction():
+    with locked(fcntl.LOCK_EX):
+        state = load()
         yield state
-        tmp = path.with_suffix(".tmp")
-        with tmp.open("w") as out:
-            json.dump(state, out, allow_nan=False)
-            out.flush()
-            os.fsync(out.fileno())
-        tmp.replace(path)
-        fd = os.open(STATE, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        persist(STATE / "state-v2.json", state)
+
+
+@contextmanager
+def snapshot():
+    with locked(fcntl.LOCK_SH):
+        yield load()
 
 
 def ssh(node, command, timeout=12):
@@ -95,8 +113,8 @@ def ssh(node, command, timeout=12):
 
 
 def remote(job, node, action):
-    """Retained units reconcile lost launch ACKs without duplicate execution."""
     unit = "sparkqueue-" + job["attempt"]
+    mib = str(job.get("memory_mib", JOB_MEMORY_MIB_DEFAULT))
     ctl = "sudo -n systemctl"
     show = f"{ctl} show {unit} -p LoadState -p ActiveState -p SubState -p ExecMainStatus -p Result"
     if action == "stop":
@@ -111,8 +129,8 @@ def remote(job, node, action):
                 "--uid=" + node, "--property=Type=exec", "--property=RemainAfterExit=yes",
                 "--property=KillMode=control-group", "--property=TimeoutStopSec=5",
                 "--property=RuntimeMaxSec=" + str(remaining),
-                "--property=MemoryMax=" + str(job.get("memory_mib", 8192)) + "M",
-                "--property=LimitMEMLOCK=" + str(job.get("memory_mib", 8192)) + "M",
+                "--property=MemoryMax=" + mib + "M",
+                "--property=LimitMEMLOCK=" + mib + "M",
                 "--property=MemorySwapMax=0", "--property=TasksMax=512",
                 "--property=StandardOutput=append:/tmp/" + unit + ".log",
                 "--property=StandardError=inherit", "--setenv=SPARK_QUEUE_RANK=" + str(job["nodes"].index(node)),
@@ -145,7 +163,7 @@ def memory_available(job, held):
     for node in job["nodes"]:
         used = sum(owner.get("memory_mib", 0) for owner in held
                    if node in owner["nodes"] and node not in owner.get("released_nodes", []))
-        if used + job.get("memory_mib", 8192) > 114688:
+        if used + job.get("memory_mib", JOB_MEMORY_MIB_DEFAULT) > NODE_MEMORY_MIB_MAX:
             return False
     return True
 
@@ -173,7 +191,6 @@ def reconcile(snapshot):
             if job["state"] == "stopping" or time.time() >= job["deadline"]:
                 job["state"] = "stopping"
                 job.setdefault("exit", 124)
-                # Poll/launch racing cancellation is not a stop acknowledgement.
                 job["released_nodes"] = [n for n, (a, r) in results.items()
                     if a == "stop" and not r.get("unknown") and
                     (r.get("LoadState") == "not-found" or r.get("ActiveState") in {"inactive", "failed"})]
@@ -211,13 +228,15 @@ def claim(default_ttl):
                 unavailable.update(set(owner["nodes"]) - set(owner.get("released_nodes", [])))
         candidates = []
         for job in list(state["jobs"]):
-            if job.get("state") not in {"queued", "blocked"} or job.get("kind", "run") != "run":
+            if job.get("state") not in {"queued", "blocked"}:
                 continue
             failed_dependencies = sorted(set(job.get("after", [])) & failed)
             if failed_dependencies:
                 job["failed_dependencies"] = failed_dependencies
                 finish(state, job, 125, "dependency failed: " + ", ".join(failed_dependencies))
                 failed.add(job["id"])
+                continue
+            if job.get("kind", "run") != "run":
                 continue
             try:
                 ttl = validate_ttl(float(job.get("ttl_minutes") or default_ttl))
@@ -227,6 +246,7 @@ def claim(default_ttl):
             if not valid:
                 job.update(state="invalid", error="legacy command/window requires resubmission")
                 continue
+            job["ttl_minutes"] = ttl
             if not all(dep in done for dep in job.get("after", [])):
                 continue
             if any(n in unavailable for n in job["nodes"]):
@@ -238,9 +258,8 @@ def claim(default_ttl):
             if any(conflicts(job, other) for other in held + waiting) or not memory_available(job, held):
                 waiting.append(job)
                 continue
-            ttl = validate_ttl(float(job.get("ttl_minutes") or default_ttl))
-            job.update(state="launching", attempt=uuid.uuid4().hex, deadline=now + ttl * 60,
-                       dispatched_at=now, ttl_minutes=ttl)
+            job.update(state="launching", attempt=uuid.uuid4().hex,
+                       deadline=now + job["ttl_minutes"] * 60, dispatched_at=now)
             held.append(job)
             claimed.append(dict(job))
         return claimed
@@ -279,8 +298,8 @@ def cmd_add(args):
     if args.kind == "run" and not (args.cmd or "").strip():
         raise SystemExit("run entries require a nonempty command")
     ttl = validate_ttl(3.0 if args.ttl_min is None else args.ttl_min)
-    if not 64 <= args.memory_mib <= 114688:
-        raise SystemExit("--memory-mib must be 64..114688, including child processes")
+    if not 64 <= args.memory_mib <= NODE_MEMORY_MIB_MAX:
+        raise SystemExit(f"--memory-mib must be 64..{NODE_MEMORY_MIB_MAX}, including child processes")
     with transaction() as state:
         if any(j["id"] == args.id for j in state["jobs"] + state["results"]):
             raise SystemExit("ID already exists; use a new ID for each attempt")
@@ -296,13 +315,13 @@ def cmd_add(args):
 
 
 def cmd_list(args):
-    with transaction() as state:
+    with snapshot() as state:
         jobs = state["jobs"] + (state["results"] if args.all else [])
     print(json.dumps(jobs, indent=2))
 
 
 def cmd_status(args):
-    with transaction() as state:
+    with snapshot() as state:
         jobs = state["jobs"] + state["results"]
     job = next((j for j in jobs if j["id"] == args.id), None)
     if job is None:
@@ -350,7 +369,7 @@ def cmd_release(args):
 
 
 def cmd_doctor(args):
-    with transaction() as state:
+    with snapshot() as state:
         report = {"state": str(STATE), "version": state["version"], "fences": state["fences"],
                   "dispatcher_age_seconds": time.time() - state.get("dispatcher_at", 0),
                   "manual": state["manual"], "active": [j["id"] for j in state["jobs"] if j["state"] in ACTIVE]}
@@ -358,7 +377,6 @@ def cmd_doctor(args):
 
 
 def cmd_sync(args):
-    """Rsync a clean main checkout into an immutable, lane-owned directory."""
     valid_name(args.id)
     nodes = args.nodes.split(",")
     if len(set(nodes)) != len(nodes) or any(not re.fullmatch(r"spark[0-9a-f]", n) for n in nodes):
@@ -413,7 +431,7 @@ def main():
     a.add_argument("--cmd")
     a.add_argument("--cmd-file", type=Path)
     a.add_argument("--per-node", action="store_true")
-    a.add_argument("--memory-mib", type=int, default=8192)
+    a.add_argument("--memory-mib", type=int, default=JOB_MEMORY_MIB_DEFAULT)
     a.add_argument("--resources", choices=["gpu", "cpu", "exclusive"], default="gpu")
     a.add_argument("--cwd")
     a.add_argument("--priority", type=int, default=5)
