@@ -3328,8 +3328,8 @@
     },
     {
       "path": "inference/kernels/norm.cuh",
-      "sha256": "ed3c792b82b7c51fa6fb77d1ed6967dd595bc58483b4d65b74688a0071c5fa2c",
-      "size_bytes": 22724
+      "sha256": "7d7ef40e4cd55368c8b7a84a2b5dc90a318f4330185c8c2b52a0eb50ad9d75b8",
+      "size_bytes": 21591
     },
     {
       "path": "inference/kernels/project.cuh",
@@ -10265,5 +10265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 33633305
+  "total_bytes": 33632172
 }
