@@ -46,16 +46,6 @@ extern "C" uint32_t LingExpertWeightCodec(void)
     return LING_EXPERT_WEIGHT_CODEC;
 }
 
-extern "C" uint32_t *LingGemmStallReportPointer(void)
-{
-    return LmGemmStallReport;
-}
-
-extern "C" uint32_t *LingKdaStageReportPointer(void)
-{
-    return LingKdaStageReport;
-}
-
 extern "C" int32_t LingGemmBf16(
     LmGemmArguments *arguments,
     const void *activation_bf16,

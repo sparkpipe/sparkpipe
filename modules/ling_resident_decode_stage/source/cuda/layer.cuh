@@ -38,15 +38,6 @@ struct LingKv
 #define LING_LAYER_WARPS 8u
 #define LING_HEAD_TILE 1024u
 
-__managed__ uint32_t LingKdaStageReport[96];
-
-__global__ void LingKdaStageTagKernel(const uint32_t *dense_row_offset,uint32_t stage)
-{
-	LingKdaStageReport[stage * 3u] = stage;
-	LingKdaStageReport[stage * 3u + 1u] = dense_row_offset[0];
-	LingKdaStageReport[stage * 3u + 2u] = dense_row_offset[1];
-}
-
 static_assert(
     LING_HIDDEN % LmBf16Format::kTileK == 0u,
     "ling hidden projections must cover every BF16 K tile");
@@ -515,8 +506,6 @@ static int32_t LingLayerKda(
     const uint32_t rank_qk = rank_heads * LING_KDA_KEY_DIM;
     const uint32_t rank_v = rank_heads * LING_KDA_VALUE_DIM;
     int32_t status;
-#define LING_KDA_TAG(stage) \
-    LingKdaStageTagKernel<<<1u,1u,0u,stream>>>(buffers->dense_row_offset,(stage))
 
     if (buffers == 0 || rows == 0u || sequences == 0u ||
         buffers->kda_state_pool == 0 ||
@@ -554,7 +543,6 @@ static int32_t LingLayerKda(
         LING_HIDDEN,
         LING_HIDDEN,
         LING_RMS_EPSILON);
-    LING_KDA_TAG(0u);
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kda_qkv_beta_weight,
@@ -570,7 +558,6 @@ static int32_t LingLayerKda(
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
-    LING_KDA_TAG(1u);
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kda_decay_weight,
@@ -586,7 +573,6 @@ static int32_t LingLayerKda(
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
-    LING_KDA_TAG(2u);
     status = LingLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->kda_gate_weight,
@@ -602,7 +588,6 @@ static int32_t LingLayerKda(
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
-    LING_KDA_TAG(3u);
     LM_LAUNCH(
         (LingSplitFusedProjectionsKernel<LING_LAYER_THREADS>),
         rows,
@@ -619,7 +604,6 @@ static int32_t LingLayerKda(
         rank_v,
         rank_heads,
         rank_qk * 2u + rank_v + rank_heads);
-    LING_KDA_TAG(4u);
     LM_LAUNCH(
         (LmCausalConvKernel<LING_LAYER_THREADS,LING_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_qk + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS),
@@ -636,7 +620,6 @@ static int32_t LingLayerKda(
         rank_qk,
         sequences,
         commit);
-    LING_KDA_TAG(5u);
     LM_LAUNCH(
         (LmCausalConvKernel<LING_LAYER_THREADS,LING_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_qk + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS),
@@ -653,7 +636,6 @@ static int32_t LingLayerKda(
         rank_qk,
         sequences,
         commit);
-    LING_KDA_TAG(6u);
     LM_LAUNCH(
         (LmCausalConvKernel<LING_LAYER_THREADS,LING_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_v + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS),
@@ -670,7 +652,6 @@ static int32_t LingLayerKda(
         rank_v,
         sequences,
         commit);
-    LING_KDA_TAG(7u);
     LM_LAUNCH(
         (LmL2NormalisePerHeadKernel<LING_LAYER_THREADS,LING_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -681,7 +662,6 @@ static int32_t LingLayerKda(
         rank_heads,
         rows,
         LING_RMS_EPSILON);
-    LING_KDA_TAG(8u);
     LM_LAUNCH(
         (LmL2NormalisePerHeadKernel<LING_LAYER_THREADS,LING_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -692,7 +672,6 @@ static int32_t LingLayerKda(
         rank_heads,
         rows,
         LING_RMS_EPSILON);
-    LING_KDA_TAG(9u);
     LM_LAUNCH(
         (LmBoundedDecayKernel<LING_LAYER_THREADS,LING_KDA_KEY_DIM>),
         dim3(rows,rank_heads),
@@ -706,7 +685,6 @@ static int32_t LingLayerKda(
         rank_heads,
         LING_KDA_GATE_LOWER_BOUND,
         rows);
-    LING_KDA_TAG(10u);
     LM_LAUNCH(
         (LmSigmoidRowsKernel<LING_LAYER_THREADS>),
         rows,
@@ -715,8 +693,7 @@ static int32_t LingLayerKda(
         stream,
         buffers->kda_beta_logit,
         buffers->kda_write_gate,
-        rank_heads);    LING_KDA_TAG(11u);
-    status = LingDeltaRuleOptIn(
+        rank_heads);    status = LingDeltaRuleOptIn(
         LING_KDA_KEY_DIM * LING_KDA_VALUE_DIM * sizeof(float));
     if (status != LM_LAUNCH_OK)
         return(status);
@@ -740,8 +717,7 @@ static int32_t LingLayerKda(
         rank_heads,
         1u,
         sequences,
-        commit);    LING_KDA_TAG(12u);
-    LM_LAUNCH(
+        commit);    LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<LING_LAYER_THREADS,float>),
         dim3((uint64_t)rows * rank_heads),
         LING_LAYER_THREADS,
@@ -755,7 +731,6 @@ static int32_t LingLayerKda(
         LING_KDA_VALUE_DIM,
         LING_KDA_VALUE_DIM,
         LING_RMS_EPSILON);
-    LING_KDA_TAG(13u);
     LM_LAUNCH(
         (LmOutputGateKernel<LING_LAYER_THREADS>),
         rows,
@@ -764,8 +739,7 @@ static int32_t LingLayerKda(
         stream,
         buffers->attention_out_bf16,
         buffers->kda_gate_bf16,
-        rank_v);    LING_KDA_TAG(14u);
-    LM_LAUNCH(
+        rank_v);    LM_LAUNCH(
         (LmCopyRowsKernel<LING_LAYER_THREADS>),
         dim3((rank_v + LING_LAYER_THREADS - 1u) / LING_LAYER_THREADS,rows),
         LING_LAYER_THREADS,
@@ -775,7 +749,6 @@ static int32_t LingLayerKda(
         buffers->kv_slot_bf16,
         rows,
         rank_v);
-    LING_KDA_TAG(15u);
     status = LingLaunchBf16Linear(
         buffers->kv_slot_bf16,
         buffers->kda_out_weight,
@@ -788,9 +761,7 @@ static int32_t LingLayerKda(
         LING_HIDDEN,
         0u,
         multiprocessors,
-        stream);    LING_KDA_TAG(16u);
-    return(status);
-#undef LING_KDA_TAG
+        stream);    return(status);
 }
 
 static int32_t LingLayerDenseMlp(
