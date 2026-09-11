@@ -250,7 +250,6 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 	uint32_t begin,end,row,tap;
 	uint16_t taps[KERNEL];
 	uint16_t *slot;
-	float debug_total = 0.0f;
 	if ( sequence >= sequences || channel >= channels )
 		return;
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
@@ -276,13 +275,7 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 			total = total * (1.0f / (1.0f + __expf(-total)));
 		}
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
-		debug_total = total;
 	}
-	if ( sequence == 0u && channel == 0u )
-		printf("conv seq0 ch0 slot %p si %u taps %04x %04x %04x %04x out %04x\n",
-			(const void *)slot,state_index[0],
-			taps[0],taps[1],taps[2],taps[3],
-			LmFloatToBf16(debug_total));
 	if ( commit == 0u )
 		return;
 	for (tap = 0u; tap < KERNEL; ++tap)
