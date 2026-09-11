@@ -1488,12 +1488,27 @@ CEILING = 233151
 # purge. Growth is landing debt; shrink-back tracked by the audit del:add.
 # Measured exact: 241052 on 2a46b8c.
 CEILING = 241052
+# convergence-window landings 241052-window..dccf1ec: the async collective
+# engine (operator: GPU combine kernels, B1-inline submitter), qwen-max T2
+# instrumentation + exec fixes (#918), glm53full S4 + R2 fixes (#916/#922),
+# hy4 scale-row-offset contract + E4M3 decode + rung-6 (#826), admission DRY
+# (#920), k3 A-0023 strip (net-negative), norm.cuh orphan fix (#934), and
+# the max hill-climb instrumentation (#921/#923/#924). Measured exact:
+# 268809 on dccf1ec.
+CEILING = 268809
 # muse #902 round 2, second hop onto 167cde7 (main moved 190 commits under
 # the lane during validation): the muse glimmer family stack (module + cuda
 # tier + stagepack/deployment tooling + the two shared norm kernels in
 # inference/kernels/norm.cuh) adds 4672 authored lines over main's measured
 # 233419 at 167cde7. Measured exact: 238091.
 CEILING = 238091
+# convergence-window landings after the muse pin: the async collective
+# engine (operator: GPU combine kernels, B1-inline submitter), qwen-max T2
+# instrumentation + exec fixes (#918/#921/#923/#924), glm53full S4 + R2
+# fixes (#916/#922), hy4 scale-row-offset contract + E4M3 decode + rung-6
+# (#826), admission DRY (#920), k3 A-0023 strip (net-negative), norm.cuh
+# orphan fix (#934). Measured exact: 268809 on dccf1ec.
+CEILING = 268809
 
 
 ROOT = Path(__file__).resolve().parent.parent
