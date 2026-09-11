@@ -1,0 +1,51 @@
+{
+ "schema_version": 1,
+ "model": {
+  "id": "inclusion.ling-3.0-flash.resident-decode-stage-firmware",
+  "revision": "bf16-h2560-l42-kda35-mla7-e512-k8-gr8x4-rope64il-gate-v1pack-v1"
+ },
+ "metadata": {
+  "architecture": "ling_resident_decode_stage",
+  "purpose": "resident decode-stage firmware for Ling-3.0-flash (BailingMoeV3): 5:1 Kimi-delta-attention to gated latent attention (rope 64 interleaved, head-wise sigmoid gate), no hyper-connections, no DSA indexer, routed MoE (512 experts, top-8, 8x4 group routing, correction bias, one shared), full-rank KDA decay/gate projections, block-128 FP8-class expert codecs, BF16 spine, one-layer MTP",
+  "provenance": {
+   "status": "in bring-up; driver code complete, CUDA compile and synthesized-weight validator pending; packs wait on the warm download",
+   "disclosed_source": [
+    "publisher config + modeling inclusionAI/Ling-3.0-flash @ e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3 (modeling pin: model_contracts/references/modeling_ling_bailing_moe_v3.py sha256 c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40)",
+    "checkpoint census from model.safetensors.index.json (63783 tensors) recorded in model-families/ling"
+   ]
+  },
+  "module_geometry": {
+   "hidden_dimension": 2560,
+   "layer_count": 42,
+   "kda_layer_count": 35,
+   "mla_layer_count": 7,
+   "attention_period": 6,
+   "attention_phase": 5,
+   "kda_head_count": 32,
+   "kda_head_key_dimension": 128,
+   "kda_head_value_dimension": 128,
+   "kda_conv_kernel": 4,
+   "kda_chunk_tokens": 64,
+   "mla_head_count": 32,
+   "mla_latent_dimension": 512,
+   "mla_qk_nope_head_dimension": 128,
+   "mla_qk_rope_head_dimension": 64,
+   "mla_value_head_dimension": 128,
+   "mla_rope_theta": 6000000.0,
+   "mla_output_gate": "head_wise_sigmoid",
+   "moe_routed_expert_count": 512,
+   "moe_experts_per_token": 8,
+   "moe_shared_expert_count": 1,
+   "moe_intermediate_dimension": 768,
+   "moe_dense_intermediate_dimension": 6144,
+   "moe_router_groups": 8,
+   "moe_router_top_groups": 4,
+   "moe_routed_scaling_factor": 2.5,
+   "vocabulary_size": 157184,
+   "maximum_context_tokens": 262144,
+   "mtp_layer_index": 42,
+   "kv_cache_token_elements": 576,
+   "kv_cache_bits_per_scalar": 16
+  }
+ }
+}

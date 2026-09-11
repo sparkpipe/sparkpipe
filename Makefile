@@ -45,6 +45,7 @@ DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideploym
 CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src $(DSV4_DEFAULT_BATCH_FLAGS)
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
+LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
@@ -311,6 +312,7 @@ PYTHON_TESTS := \
 	tests/test_hy4_model_header.py \
 	tests/test_qwen4_flash_model_header.py \
 	tests/test_gemma4_model_header.py \
+	tests/test_ling_model_header.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
 	tests/test_code_size.py \
@@ -1274,6 +1276,27 @@ glm52_serving_adapter:
 
 glm52_dspark_draft_backend:
 	$(MAKE) -C modules/glm52_dspark_draft_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
+
+cuda_ling_resident_decode_stage_variants:
+	$(MAKE) -C modules/ling_resident_decode_stage variants \
+		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
+		CONTRACT_SHA256='$(CONTRACT_SHA256)' NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+ling_resident_decode_stage_archive:
+	$(MAKE) -C modules/ling_resident_decode_stage archive \
+		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
+		CONTRACT_SHA256='$(CONTRACT_SHA256)' NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+ling_resident_decode_stage_publish:
+	$(MAKE) -C modules/ling_resident_decode_stage publish \
+		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
+		CONTRACT_SHA256='$(CONTRACT_SHA256)' STAGE_PACK_PATH='$(STAGE_PACK_PATH)' \
+		GPU_VALIDATOR='$(GPU_VALIDATOR)' NVCC='$(NVCC)' CUDA_ARCH='$(CUDA_ARCH)'
+
+ling_serving_adapter:
+	$(MAKE) -C modules/ling_resident_decode_stage adapter \
+		EXPERT_CODEC='$(EXPERT_CODEC)' MODEL_REVISION='$(MODEL_REVISION)' \
+		CONTRACT_SHA256='$(CONTRACT_SHA256)'
 
 tree_summary:
 	@printf "core_public_headers="; find include/sparkpipe -type f | wc -l

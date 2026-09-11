@@ -1,5 +1,18 @@
 # Pinned modeling references (semantics ground truth for kernel ports)
 
+## modeling_ling_bailing_moe_v3.py
+- Source: inclusionAI/Ling-3.0-flash @ e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3 (modeling_bailing_moe_v3.py, repo remote code)
+- Fetched: 2026-09-07 from huggingface.co (resolve/main)
+- sha256 prefix: c2509bf7ac580c26
+- Purpose: ling M1 semantics ground truth — BailingMoeV3 layer dispatch
+  ((layer+1)%6==0 -> MultiLatentAttention else KimiDeltaAttention;
+  7 MLA + 35 KDA of 42), MLA q_pass(nope 128)/q_rot(rope 64) split with
+  interleave rope and head_wise sigmoid g_proj gate, KDA full-rank
+  f_proj/g_proj + dt_bias + A_log + sigmoid b_proj + FusedRMSNormGated,
+  MTP layer 42 = full MLA+MoE layer with enorm/hnorm/eh_proj and its own
+  final_layernorm. The checkpoint census (63,783 tensors) agrees: 8
+  kv_b_proj (7 stack + MTP), 43 g_proj (all layers), 41 routers.
+
 ## modeling_qwen4_exp.py
 - Source: huggingface/transformers main, src/transformers/models/qwen4_exp/modeling_qwen4_exp.py
 - Fetched: 2026-08-28 from the controller (raw.githubusercontent.com)

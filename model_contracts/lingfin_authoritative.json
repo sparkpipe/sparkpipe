@@ -1,0 +1,84 @@
+{
+ "schema_version": 1,
+ "lane": "ling",
+ "model_id": "ling-3.0-flash-fin",
+ "architecture": "BailingMoeV3ForCausalLM (model_type bailing_hybrid)",
+ "source_revision": "fin warm mount 2026-09-10 (content-identical to ling-3.0-flash @ e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3)",
+ "freeze_status": "pre-freeze",
+ "notes": [
+  "source_revision pins the config.json/modeling commit on huggingface (2026-09-07); the checkpoint shard shas are pinned at freeze, after the warm download lands",
+  "semantics ground truth: model_contracts/references/modeling_ling_bailing_moe_v3.py sha256 c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40",
+  "checkpoint census from model.safetensors.index.json: 63783 tensors, 8 kv_b_proj (7 stack MLA + MTP), 43 g_proj (all layers), 41 routers (layers 2..42)",
+  "text stack only; no vision tower exists in this checkpoint",
+  "lingfin: config.json content-identical to ling-3.0-flash (zero differing keys; ling-r9-fin receipt); identity = config.json sha256 f3e5b1ad82762c7910a303a3642290f0ac4d3abbc9046bf2eab6b19c0385aa05 + model.safetensors.index.json sha256 19b4f2f2e199c7e34bab049c1fc1d99b1661700a669a9ea7e7fabcb4527c5920; census 63783, tensor name set identical (0 deltas both ways)"
+ ],
+ "model": {
+  "hidden_dimension": 2560,
+  "layer_count": 42,
+  "vocabulary_size": 157184,
+  "mtp_layer_index": 42,
+  "maximum_context_tokens": 262144,
+  "rms_norm_epsilon": 1e-06,
+  "end_of_text_token_id": 156895,
+  "pad_token_id": 156892,
+  "dtype": "bfloat16"
+ },
+ "hybrid_attention": {
+  "period": 6,
+  "mla_phase": 5,
+  "mla_layer_count": 7,
+  "kda_layer_count": 35,
+  "layer_pattern": "5 linear_attention : 1 latent_attention, phase 5"
+ },
+ "mla": {
+  "head_count": 32,
+  "q_lora_rank": 0,
+  "latent_dimension": 512,
+  "qk_nope_head_dimension": 128,
+  "qk_rope_head_dimension": 64,
+  "value_head_dimension": 128,
+  "rope_theta": 6000000.0,
+  "rope_interleave": true,
+  "qk_scale": 0.07216878364870323,
+  "output_gate": "head_wise sigmoid (g_proj hidden->32), applied to v-head outputs before o_proj (checkpoint name attention.dense)"
+ },
+ "kda": {
+  "head_count": 32,
+  "key_dimension": 128,
+  "value_dimension": 128,
+  "short_conv_kernel": 4,
+  "chunk_tokens": 64,
+  "qk_l2norm": 1,
+  "full_rank_gate": 1,
+  "gate_lower_bound": -5.0,
+  "decay": "per-(head,key-dim) channel decay: f_proj hidden->4096 full rank, dt_bias 4096, A_log 32; bounded gate formula per reference_semantics",
+  "checkpoint_note": "q/k/v_proj plus q_conv1d/k_conv1d/v_conv1d, b_proj, f_proj, g_proj, o_norm, o_proj under attention.* on KDA layers"
+ },
+ "attention": {
+  "rope_dimension": 64,
+  "rope_theta": 6000000.0,
+  "partial_rotary_factor": 0.5,
+  "rotary_note": "rotary is built over the 64 rope dims only (modeling forces partial factor 1.0 inside the rotary head); qk_nope section passes through unrotated"
+ },
+ "moe": {
+  "routed_expert_count": 512,
+  "experts_per_token": 8,
+  "shared_expert_count": 1,
+  "expert_intermediate_dimension": 768,
+  "shared_expert_intermediate_dimension": 768,
+  "dense_intermediate_dimension": 6144,
+  "first_dense_layer_count": 2,
+  "routed_scaling_factor": 2.5,
+  "norm_topk_prob": 1,
+  "router_group_count": 8,
+  "router_top_groups": 4,
+  "router_correction_bias": 1,
+  "router_bias_checkpoint_name": "mlp.gate.expert_bias",
+  "router_dtype_config": "float32",
+  "swiglu_limit_note": "config expert_swiglu_limit_list/share_expert_swiglu_limit_list exist but the publisher modeling applies no clamp; lists are carried as inert config data and no clamp is implemented"
+ },
+ "tokenizer": {
+  "note": "not pinned yet; vocab 157184 with eos 156895 pad 156892 from config"
+ },
+ "family": "lingfin"
+}

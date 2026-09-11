@@ -1,8 +1,32 @@
 {
   "canonical_rule": "<model>.<quant>.<topo>; packs under ~/sparkdata/<arm>/packs/; file <arm>.rank<h>.sp with h a single hex digit 0-9a-f matching the spark node letter",
-  "models": ["glm53flash", "glm53full", "dsv4flash", "dsv4pro", "qwen3flash", "qwen27b", "qwenmax", "k3", "hy4"],
-  "quants": ["bf16", "fp8", "nvfp4", "nvfp4a16", "mxfp4", "iq1m"],
-  "topologies": ["tp4", "tp8", "tp16", "tp4pp4"],
+  "models": [
+    "glm53flash",
+    "glm53full",
+    "dsv4flash",
+    "dsv4pro",
+    "qwen3flash",
+    "qwen27b",
+    "qwenmax",
+    "k3",
+    "hy4",
+    "ling",
+    "lingfin"
+  ],
+  "quants": [
+    "bf16",
+    "fp8",
+    "nvfp4",
+    "nvfp4a16",
+    "mxfp4",
+    "iq1m"
+  ],
+  "topologies": [
+    "tp4",
+    "tp8",
+    "tp16",
+    "tp4pp4"
+  ],
   "legacy_map": {
     "hy4-fp8-packs/model-fp8-tp16-rank-NN.safetensors": "hy4.fp8.tp16",
     "qwen4_flash.tp4": "qwen3flash.bf16.tp4",

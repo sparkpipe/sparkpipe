@@ -1,260 +1,594 @@
-# PROGRESS — gemma4 driver lane
+# ling lane PROGRESS — lane/ling-driver (PR #830 continuation)
 
-Branch `lane/gemma4-driver`, rebased onto origin/main **50bd0d3** (PR #913,
-the E2E-proven platform). NEVER pushed (manager owns GitHub). Working dir
-/Users/mac/batch-gemma4. DESIGN.md is now tracked (02a5264) with the
-publisher-corrected rope constants — round 1 had kept it untracked; the
-corrections made it worth freezing in-tree.
+Lane: ling (spark9). Continuation round. REBASE HISTORY this round:
+(a) adopted the coredev-aligned origin/lane/ling-driver cc49cf8 (24 lane
+commits + 22 coredev mesh commits, base 8f3a6f2); (b) per the coordinator
+update, REBASED ONTO origin/main 50bd0d3 (PR #913, the E2E-proven mesh
+dataflow) — the coredev mesh snapshot commits resolved TOWARD MAIN (mostly
+auto-skipped as superseded), the ling module port (4364daf: credit
+bindings gone, hidden-transport validation per the glm5_next template) and
+the family tree survived. ROUND TIP: 59da8ad (commits ec1630d, 53c66ed,
+0e2c1c4, 4baa779, f761c6b-lineage, f0824dd S4 folds, 053f583 streaming
+.experts digests, 7c4800b, 1c447ba, 378cde8). The k3-adapter repair
+cherry-pick auto-skipped (main has it via #907). /Users/mac/lane-*
+worktrees untouched per the hazard notice. Spark tree: spark9:~/batch-ling-r10.
 
-## REBASE RECORD (round 2)
+## Acceptance criteria status (DESIGN.md §8)
 
-Two rebases this session, both resolving toward main, family files kept:
+1. Rebase — DONE onto 50bd0d3 (sha 53c66ed, then follow-ups to 4baa779).
+2. mac syntax gate — GREEN on the rebased tree: module bf16+fp8 arms,
+   serving adapter, pack_synthesize (rc=0, cuda_stub command below).
+3. Residue greps — ALL ZERO (module + family, pattern list unchanged).
+4. bf16 module build — compile receipt job ling-r9b-compile PASS on spark9
+   (nvcc sm_121a; bf16 + fp8 archives + bf16 adapter .so + synth run 727
+   tensors / 130198162624 bytes tp1 codec bf16; LING_COMPILE_RECEIPT_PASS,
+   attempt ecc610345570453cbb71ec8380c4ad80).
+5. validate_mtp_parity target — REMOVED (commit 8e3aa60 lineage).
+6. bf16 TP16 pack from warm — canonical naming landed (53c66ed): packer
+   writes ling.bf16.tp16.rank{0..f}.sp + .sha256 sidecar (weightd spawn
+   digest-scan format) + .experts + receipts/{rank}.json (carries "arm");
+   --model lingfin selects name_map_lingfin.json +
+   lingfin_authoritative.json for the second contract. Verifier derives
+   pack names from the rank0 receipt's "arm". Generator: ROOT_NAME single
+   source (runtime_root, packs/<arm>.rank%x.sp, kv dir derive); HEX rank
+   per main 95fe1b1.
+   Warm-mount rate is ~30MB/s: one rank ≈ 9 min emit — a rank per job.
+   The .experts ck128 tail re-read ~14.5GB per rank inside the queue's
+   cgroup and blew every TTL; fixed at the right layer (053f583): digests
+   stream at emit (SlabDigestSink, same ck128 on the same bytes,
+   digest-count guard), re-read path kept for callers without digests.
+   Receipts: dry-plan census closes 63783 = 62230 packed + 1553
+   omitted-MTP (r9c attempt + prior dry-plan); rank0 emit 15725069824
+   bytes + .sha256 sidecar. Final chain in flight: ling-r12-pack0 →
+   pack15 → verify (two-pass) → findry.
+7. Validator — HONEST STATUS: RED, first-ever visibility this round.
+   The monolithic harness (nvcc+run in one 15-min-max job, mktemp build
+   dir wiped each attempt) never produced a completed log, so r7/r8's
+   "in flight" was unverifiable. Split proof artifacts: validator object
+   compiles in ~1s (68KB — no device code; ling-r11b-valcompile PASS),
+   binary build PASS (ling-r12-valbuild, 1.04s). Unbuffered diagnostic
+   run (ling-r12-valdiag, stdbuf, job died at TTL mid-run) captured the
+   first real comparison output: selftest PASS; tier1 token0 kda
+   attention sublayer PASS (rel_l2 0.00786, cos 0.99997); token1 kda
+   FAIL (rel_l2 1.248, cos 0.581); tier2a token0 mla PASS (0.00527);
+   token1 mla FAIL (0.514, cos 0.865). Signature: token0 passes, token1
+   decorrelates in BOTH tiers — the device/oracle state or cache carry
+   diverges from the second step on (KDA state pool and MLA cache both).
+   Next round: instrument the walk (state sha per step on both sides,
+   per the anchor's tier3 layout), find which side mis-carries.
+   378cde8 makes stdout line-buffered so this can never hide again.
+   S4 audit folds (f0824dd): LoadTpCollective 148L → 4 helpers +
+   dispatcher; SparkLingTpChainAdvance 119L → per-stage helpers over a
+   slim dispatcher; SparkLingKvInitialize 95L → allocate + fill.
+8. offline-gates — build phase now fully GREEN on spark9; test-run phase
+   marches into OTHER lanes' surface. Fixed this round on the shared tree:
+   (a) k3 adapter took main's #907 repaired file (auto-skip at rebase);
+   (b) test_qwen38_27b_tp_faults: GPU-node stub shadowing + missing stub
+   link + runtime archive for the weightd client (0e2c1c4);
+   (c) rdma_control.c orphaned static deleted (4baa779);
+   (d) LDFLAGS carries SPARKPIPE_CUDA_DRIVER_LINK — the #913 class fix:
+   the weightd sources moved into libsparkpipe_model_common.a and
+   spark_weightd.o needs cuMemExportToShareableHandle, so every
+   archive-consuming link on a CUDA node needs -lcuda (7c4800b).
+   REMAINING BLOCKER (not ling): test_dsv4_serving_adapter aborts —
+   "serving adapter spark.dsv4.flash-0731.serving-adapter.pp13.v2:
+   missing required operation reset" (model_serving_adapter.c:251);
+   the dsv4 interface table (spark_dsv4_serving_adapter.c:1383) lacks
+   .reset, which the post-#913 loader requires. Semantically the dsv4
+   lane's to implement; everything before it in the gates run passed
+   (tokenizer, pipeline_runtime, model_api_text, ...). Also flaky under
+   contention: test_model_pipeline_client passed solo, aborted when run
+   beside GPU+pack jobs. Ceiling gate green in the same run: exact 242163.
+9. Registry — Makefile ling targets, stagepack_naming.json ("ling",
+   "lingfin"), deployment generator ROOT_NAME/hex-rank/session-ledger
+   done; name_map_lingfin.json authored (0e2c1c4) — mapping mechanically
+   identical to ling's, identity = fin config.json sha256
+   f3e5b1ad82762c7910a303a3642290f0ac4d3abbc9046bf2eab6b19c0385aa05 +
+   index sha256 19b4f2f2e199c7e34bab049c1fc1d99b1661700a669a9ea7e7fabcb4527c5920.
+   FIN CONTRACT PROVEN (job ling-r9-fin, exit 0): config.json
+   content-identical (zero differing keys), census 63783 = 63783, tensor
+   name sets identical (0 deltas both ways) — fin is exactly the second
+   model_revision; its own pack set runs through the same packer with
+   --model lingfin.
+   Contract freeze + PACKAGE_MANIFEST/SHA256SUMS: LAST, after pack verify.
+10. Evidence discipline — receipt commands + SHAs recorded here and in
+    commit messages; no serving/perf claims anywhere.
 
-1. **14df85a** (intermediate, now obsolete): the 9 round-1 family commits
-   replayed clean; the manager's 20 mesh/transport commits
-   (origin/lane/gemma4-driver ec378a2, preserved locally on ref
-   `lane/gemma4-manager-mesh`) were DROPPED — they cherry-pick the glm53-p0
-   weightd-mesh experiment that main's own 5942464 then reverted, and
-   84edf57's gemma4 credit-binding strip predated the strip landing on main.
-2. **50bd0d3** (current base): all lane commits replayed clean (no
-   conflicts). Post-#913 the mesh dataflow IS the platform, so the manager's
-   direction landed after all — via glm53-p0's own rebase wave.
+## Coordinator directives applied
 
-**LIVE-SESSION HAZARD (standing rule):** a concurrent session works in the
-/Users/mac/lane-* worktrees; this lane never reads or writes those. Re-fetch
-before any future rebase; the manager's force-with-lease protects pushes.
+- SPARK_FAIL at every host error site I touched (module.c admit-lane returns,
+  adapter LoadTpCollective/LoadConfiguration/LoadDriver; 609273d). New C code
+  (synth main) uses unique return codes 11..18 + SPARK_FAIL. Validator .cu keeps
+  its test-failure pattern (flagged here per the directive).
+- Port base: initially 64900 (unsafe: ACK offsets overflow 65535) → made
+  env-driven with no default → FROZEN at 12288 by PORT_LEDGER (generator
+  default, override kept).
+- MTP sidecar law: v1 unchanged — packer omits the MTP tail, header flag 0,
+  inventory exact both ways; nothing assumes an in-pack MTP arm.
+- .experts sidecar v2 + spine/expert receipt split added (4024c16 + fixes).
+- Queue: submissions moved to the v2 tool path after the correction; same state
+  dir, live dispatcher picks the jobs up.
 
-## Platform alignment to 50bd0d3 (4947ba6)
+## Bugs the spark9 gates caught (why the gates exist)
 
-The #913 engine made the module-side credit-binding machinery dead
-(RouteCount is a stub returning 1, ApplyTopology copies rank_count, Create
-opens the weightd mesh client and configuration.credit_bindings is never
-read). gemma4 module now matches the glm5_next E2E template: credit state
-fields, ProbeMemoryMode/RouteCount/CreditBytes block, device+mapped-host
-credit allocations, binding population loop, and the wiring are DELETED
-(module.c 1380 -> 1296 then 1333 with the oracle-era work; net -84); the
-glm5_next fail-closed validation (nonzero timeouts/identifier,
-hidden_transport backend) replaces them at Create. Both arm Makefiles drop
-the deleted tp_device_collective_nccl.c link and take the weightd source
-list via runtime/weightd_sources.mk (the new transport calls
-SparkWeightdClientConnect at Create).
+- unity.cu anti-bf16 static_assert + a second HC-streams embedding overload:
+  the module never compiled (8330b78).
+- Validator: layer_weights[1] indexed [2] (UB→segfault), selftest router mock
+  1024 floats vs 512×2560 reads, expert host planes missing the ×512 factor
+  (heap corruption), null wave host metadata pointers (launch -46),
+  selftest bf16 zero-count.
+- Packer: directory at 256 overlapping the 264-byte header (loader rejects
+  <264) → 512; verifier entry format 7×u32 vs the real 8×u32 (64B records).
+- Synth tool: payload cursor never shifted past header+directory → payloads
+  overwrote the directory (only masked by the final header rewrite).
+- Warm checkpoint o_norm.weight is BF16, not the F32 tensor_patterns.json
+  witnesses — pack-time dtype re-verification caught it; packer now upcasts
+  bf16 f32-planes exactly. tensor_patterns.json o_norm entry wants a manager
+  amend (also its mlp.gate/eos prose).
 
-**Known gap (driver feature, unchanged):** mesh dataflow participation needs
-the weightd lazy attach (PrepareReceiveBf16 with attached.mesh_send_buffer_addr
-after Create). The gemma4 module has no lazy_pack yet, matching every
-non-glm5_next module at this tip; Tp submissions fail at the mesh_buffer==0
-guard until that lands. The eager pack load via spark_pack_load_common.h
-remains the majority template (qwen38_max uses it on 50bd0d3).
+## Receipts (spark9)
 
-## Deployment generator / session-port tables (briefing question, settled)
+- ling-compile-receipts-r3: EXIT 0 — bf16+fp8 archives
+  (build/modules/ling_resident_decode_stage/{bf16,fp8}/libling_resident_decode_stage_*.a),
+  adapter .so, synth run (65 tensors/4 layers), selftest PASS,
+  LING_COMPILE_RECEIPT_PASS.
+- Real-index census (dry-plan): 63783 = 62230 packed + 1553 mtp — matches
+  name_map pin.
+- Pack rank0 (r5, superseded packer): 730 tensors, 15725069568 bytes,
+  sha256 480b9c12fb68deb4... — re-cut in flight by r6.
 
-KEPT, not obsolete: post-#913 main still carries session_ports in
-spark_tp_device_collective.h (topology + config), main's glm5_next module
-still memcpys them, and main's glm5_next deployment generator still emits
-explicit tables (env-driven bases). My env-driven fail-closed table
-(SPARK_GEMMA4_STAGE_TP_SESSION_PORTS) matches the current main shape. When
-the deeper strip (session matrices -> shared-memory coordination) lands on
-main, the gemma4 table dies with it — one commit.
+## Oracle command (mac, from clone root)
 
-## Contract freeze (e148184)
+cc -std=c11 -Wall -Wextra -Werror -fsyntax-only -I. -Iinclude -Isrc
+-Imodel-families/common/include -Imodel-families/ling/include
+-Imodules/ling_resident_decode_stage/include
+-Imodules/ling_resident_decode_stage/source -Itests/cuda_stub
+-DLING_EXPERT_WEIGHT_CODEC=1 -DLING_EXPERT_CODEC_NAME='"bf16"'
+-DLING_MODEL_REVISION='"t"' -DLING_CONTRACT_SHA256='"t"' <file>
 
-Warm checkpoints landed (/mnt/model-warm/gemma-4-{31b-it,26b-a4b-it},
-59G/49G, PUBLISHED). Warm config.json + model.safetensors.index.json are
-byte-identical to the anchor kit's publisher snapshots, so the HF commit
-pins carry over:
+Validator host selftest mac gate:
+g++ -std=c++11 -fsyntax-only -nocudainc -nocudalib ... -x c++
+-DSPARK_LING_VALIDATOR_ORACLE_SELFTEST modules/ling_resident_decode_stage/
+validation/spark_ling_resident_decode_stage_cuda_validation.cu
 
-- 31B: `842da3794eaa0b77d5f08bae87a17459d91ff475`
-- 26B: `4d7ae4984b7db7de8f8457170b3f1a419ee76d52`
+## Known follow-ups for the manager (out of my lane scope)
 
-model_contracts/gemma4_31b_authoritative.json +
-gemma4_26b_a4b_authoritative.json: full geometry, rope (64 rotated pairs),
-eos {1,106,50}, topology (TP16xPP1 / TP4xPP4 stage lists {8,8,7,7}), pack
-folds, kv replication law, tensor census derived from the warm indexes
-(832/657 text-stack entries), digest_freeze (small files hashed twice,
-workstation + sparka, agreement; shards = HF LFS oid at the pinned revision
-with byte-exact warm size equality; the sparka local full-shard hash
-confirmation is running detached at /tmp/gemma4_shas.txt and lands with the
-lane report). Both Makefiles pin GEMMA4_MODEL_REVISION to the HF commits —
-pending-warm-download is GONE; the adapter's fail-closed #error stays for
-unset macros only.
+- name_map.json: the k_conv1d→kda_qkv_beta fusion entry should read k_proj
+  (tensor_patterns.json confirms k_proj [4096,2560] is its own tensor; census
+  closes at 63783 with k_proj fused).
+- tensor_patterns.json: o_norm.weight dtype is BF16 in the checkpoint, not F32.
+- Spark queue GPU budget note: ling's validator needs 30GiB declared at TP1
+  (unified memory) — the ≤10GB guidance assumed split host/device pools.
 
-**Publisher finding folded in:** generation_config eos_token_id is
-[1,106,**50**] — headers bound only {1,106}. All three now bind
-(EOS_ALTERNATE_2_TOKEN_ID 50); the constants had no consumers yet, so this
-fixes a future stop list, not behavior.
+## Weights-law evidence (operator directive, 09-10)
 
-## Round 3 state (AC6/AC8)
+Grep of the ling SERVING path (module.c, serving_adapter.c, cuda/layer.cuh,
+cuda/unity.cu, *_cuda.cu, internal.h, config.h) for private pack-file access:
+- fopen: exactly ONE hit — module.c:467 SparkLingPackLoad, which opens the pack
+  HANDLE and hands it to the shared runtime; byte-for-byte the glm5_next donor
+  pattern (glm5_next module.c:646).
+- mmap / pread / private fread of pack content: ZERO hits.
+- All content flows through the shared stack: SparkStageModulePackRead
+  (header/directory) and SparkStageModuleLoadDeviceRegion (runtime/
+  stage_module_common.c:1351) — which consults SparkWeightdAttachRequested
+  first (weightd-mapped arena slices), errors loudly on misconfiguration
+  ("invalid weightd configuration...") and never falls back inside family
+  code. Ling adds no fallback and no self-loading path; no deletions were
+  required (no donor direct-load residue present).
+- Test tooling (ling_pack_synthesize.c, validators) is exempt per the law.
 
-**AC6 CUDA tier: RECEIPTED.** Both arms `make validate` (retained-receipt
-script, nvcc CUDA 13 sm_121a, sparka GB10, sparkcap-wrapped): dense arm
-`gemma4_validation PASS ... h5376.l60.v1 sites=23`, MoE arm
-`... h2816.l30.e128k8.v1 sites=24` (router tier extra). The validator
-(modules/gemma4_resident_decode_stage/validation/) drives every carved
-SparkGemma4Launch* entry against a host mirror of the anchor-oracle math:
-embed gather+scale bitwise (73.5/53.0 per arm), rms/fused-residual norms,
-weighted + scale-free per-head norms, bf16 linear (scalar/tile paths),
-residual/branch adds bitwise, gated gelu (bitwise vs mirror), sliding theta
-rope + full inv_freq-table rope with the 64-pair identity region bitwise,
-the 1024-window boundary matrix (5/1024/1030/2048) bitwise, KV store
-bitwise readback + window decode (both sliding geometries), the k_eq_v
-full-layer chain (v_norm from raw k before in-place k_norm, full-rope
-table, store post-rope, 1200-token full-context decode), router softmax +
-renormalised top-8 lowest-index ties + zero-residual uniform 1/128 (MoE),
-and a bit-exact decode determinism rerun. OPEN ITEM: the composed per-layer
-chain tier (norm->q->rope->kv->store->window->decode->o->FFN) segfaults in
-libcuda on device at chain entry on the shared sparka GPU (gdb: fault
-inside cuMemcpyDtoH; ASAN flags only device-dst memcpys = false positives
-on unified memory); gated behind SPARK_GEMMA4_VALIDATION_CHAIN for the
-receipts, diagnostics in the round-3 commits — needs a quiet GPU session.
+## sparkcap usage (operator memory mechanism, 09-10)
 
-**Platform bugs found by this round (manager flags):**
-- `SparkLmExpertTileMloopKernel` (spark_lm_kernels.cuh, bf16 rows>=32
-  path) loses ~1/4 of the K accumulation — probe-verified exact 0.75
-  checksum ratio at in=512/5376/21504. Latent platform-wide: E2E decode
-  batches stayed < 32 rows. gemma4's LaunchLinear routes all rows through
-  SparkLmHostLaunchBatchedLinear until the platform fix lands.
-- GB10 (sm_121a) MaxSharedMemoryPerBlockOptin = 101376 B: configure
-  requests must be sized to the real max linear input; also plain
-  cudaMalloc memory is NOT host-writable — the launchers reset the KV
-  access_error host-side, so the error slot must come from the ledger's
-  host-mapped allocations (validator uses cudaMallocManaged).
-- The two arms write the same build/modules/.../ archive path: a clean is
-  required between dense and MoE validate runs (workflow gap).
+All heavy-IO queue commands are wrapped: packer ranks + verify under
+`sparkcap --mem 8192` / `--mem 4096`; the validator binary under
+`sparkcap --mem 30720` (TP1 bf16 planes: 6GB host + 6GB device unified);
+the synth tool under `sparkcap --mem 8192`. Receipts cite the sparkcap-wrapped
+commands.
 
-**AC8 real-pack: packer RECEIPTED against the warm checkpoints.**
-tools/gemma4_stagepack.py (donor pattern per DESIGN section 6):
-census-locked inventories (31B TP16 full-model 723 tensors incl.
-layer_scalar; 26B stages 134/133/115/116), frozen TP16/TP4 shard maps —
-full-kv x4 (31B, rank r reads head r/4) and x2 (26B, r/2) replication,
-sliding k|v row fusion, router.scale x H**-0.5 folded into proj columns,
-per_expert_scale folded into expert down rows (slot emits raw f32 for the
-seam), f32 inv_freq table, two-pass placement proof (directory sha256 +
-verify walk), .experts v2 manifests (48B records, ck128 ported bit-exact
-from src/spark_ck128.c and cross-verified against the C reference),
-spine/expert byte split + boundary-rank (0/last) checks in the receipt.
-Receipt packs on sparka: 26B stage 2 (layers 16-22) ranks 0 and 3
-(boundary, full-kv source head 1 on rank 3), 31B layers 0-7 rank 15
-(boundary, full-kv source head 3 = r/4, embed base 245760).
+## Debugger round (ling-r15*/r16*, 09-10/11)
 
-**CONTRACT CORRECTION (warm-payload falsification):** the freeze-time
-"layer_scalar checkpoint all-ones" assertion is FALSE on the warm
-checkpoints — real learned per-layer scalars (26B layers 0/16/29 =
-0.0703125/0.5546875/0.1953125 bf16). The packer's fail-closed check fired
-exactly as designed on the first real-pack attempt. Fix landed this
-round: LAYER_SCALAR tensor kind (census +1/layer: 31B 723/60L, 26B
-573/30L full-model), module applies the scalar at the layer output
-(SparkGemma4LaunchLayerScale), packer emits + records the values,
-contracts updated. The anchor kit's all-ones fixture presumably reflected
-an earlier snapshot — anchors and warm payload disagree, warm wins
-(never-quantize weights law: the checkpoint is the source of truth).
+VALIDATOR STATUS: tier1 kda+dense decode GREEN (4/4 tokens, determinism
+bit-exact re-walk). tier2a mla+moe decode: tokens 0-2 GREEN, token3 MLA
+attention GREEN; the tier-end route/boundary checks still RED on a
+fixture-design near-tie (below). tier3 blocked by a separate device bug
+(persistent-GEMM deadlock at rows=4 prefill, cuda-gdb evidence: grid
+stuck in LmPipelineProduce/LmMbarrierWait).
 
-**S4/S4' audit items:** norm.cuh tail block is byte-identical to the
-muse-approved landing (verified) — merges as one copy; SPARK_RETURN/
-lazy_pack: zero code references on the lane (PROGRESS prose only).
-Rebase surface measured vs origin/main tip: ONE file (top-level
-Makefile) + the shared norm.cuh tail; A-0057 rule recorded: take main's
-side on every non-family file at the rebase hop. Manifest+sums regen
-lands as the LAST commit of this round per the ledger rule.
+ROOT CAUSES FOUND AND FIXED (commits on lane/ling-driver, tip 35fe82e+):
 
-## Acceptance criteria status
+1. RESIDUAL STREAM (the token1 red): every wave fused norm passed
+   residual_out=0, so sublayer outputs were never added to the residual
+   stream; the boundary store merged only the last MLP output. The
+   publisher block (pinned modeling file 1058-1108) and the proven
+   glm5_next donor accumulate every sublayer. Fix: residual_out=hidden at
+   the four sublayer-head norms (modules/.../source/cuda/layer.cuh);
+   TP-safe because the serving chain launches each sublayer after the
+   previous reduce. This alone did NOT clear token1 - see 2-4.
+2. ORACLE CONV WINDOW: the validator's oracle conv snapshotted the window
+   pre-shift and refreshed only the last tap; token0 (zero history)
+   matched by luck, token1+ dropped the history taps. Device conv proven
+   correct by device-side trace (taps [0,0,q0,q1] -> -0.00558, verified
+   by hand). Fix: shift then read all four taps.
+3. SHARED-KERNEL TOPK GROUP MASK INVERTED (inference/kernels/topk.cuh):
+   group_key[g]=0xffffffff marks a group ranked outside top_groups, but
+   the masking pass zeroed keys of groups whose key was NOT the sentinel
+   - the MoE routed through the WORST groups. glm52/glm5_next use
+   groups==top_groups (stage skipped) so only ling's 8-group/top-4 config
+   exposed it. Device logits were proven correct (top logits == oracle
+   picks); the selection stage diverged. Fix: == instead of !=.
+4. ORACLE FIDELITY: the oracle now consumes bf16-rounded weights (the
+   pack format is bf16) and rounds every stage output where the device
+   stores bf16, and norms consume unrounded fp32 sums of bf16 values
+   (mirroring the device norm-input precision). Tier2a token drift
+   dropped from 2.5%/token (growing) to flat ~1.6%.
+5. ORACLE ALIASING: the local-1 residual merge read the post-attention
+   sublayer array (attn written over the previous mlp) - prev-mlp never
+   merged, attn merged twice. Fixed with a pre-call copy.
+6. DOUBLE ROPE (port bug): the ling MLA q path roped q in place AND the
+   extract kernel ropes again - identity at position 0, wrong from
+   position 1 (why every tier passed token0). The glm52 donor's
+   LmRopePerHeadKernel call belongs to its DSA index path. Removed the
+   stray launch.
+7. FIXTURE ROUTER DEGENERACY: the synthetic correction (+-0.5, period 11)
+   dominated the 0.002-scale router logits - all 8 group keys were
+   rounding-level ties and the device/oracle chose disjoint groups
+   (expert sets with zero overlap). Scaled the correction to the real
+   checkpoint range (+-0.05, anchor finding) and the router to 0.02.
 
-| AC | status | evidence |
-|---|---|---|
-| 1 port + deletion | DONE (round 1) | commits 6cb165d..e400708; grep gate clean |
-| 2 both arms compile | DONE | host syntax-check green in BOTH arms on 50bd0d3 (module.c, serving adapter, stagepack format, synth tool; -Wall -Wextra -Werror vs cuda_stub); .cu compile is AC6's nvcc item |
-| 3 header bindings test | DONE | tests/test_gemma4_model_header.py: 58 bindings over both contracts — geometry, rope thetas, embed scales, eos set, rotated-pairs invariant = 64, digest structure, 40-hex revision pins. PASS locally + on sparka. Wired into Makefile PYTHON_TESTS (9390cd1). The test caught the table-elements(256)-vs-rotated-pairs(64) distinction before freeze |
-| 4 stagepack + synth | DONE (round 1, re-verified) | format header + synth compile both arms on 50bd0d3 |
-| 5 oracle | DONE | validation/spark_gemma4_reference.c (944754c): plain C11, zero driver imports; consumes raw-binary exports of the anchor fixtures (validation/anchors_export.py, 270 arrays). **121 check sites, ALL PASS, both models**: bf16 RNE self-vectors, embed 73.5/53.0, inv_freq tables BITWISE (64 nonzero 1e6**(-i/256) + 192 zeros — the ANCHORS finding-1 curve), identity region exact, cos/sin at 7 positions (6 counted 1-ulp libm entries), v_raw==k_raw BITWISE, weighted/scale-free norms, norm-then-rope exact, 1024-window leak-direction exact, softmax + out recompute, eager attention with probs rounded bf16 before p@v (anchor finding 4) worst rel 0.0000, KV cache stores BITWISE, layer_out identity, MoE top-8 lowest-index ties + zero-residual uniform 1/128 + branch sums bf16(b1+b2) |
-| 6 CUDA validation tier | NOT STARTED (harness rewrite needed) | the deleted donor validator (.cu, 1682 lines) externed the deleted kernel set; the gemma harness must be written against the carved cuda.cu entries, then queued on sparka GPU via the v2 queue tool (budgets: GPU <=10GB); V0 = synth-pack stage run vs the oracle. The oracle side of the comparison now EXISTS and is green, so the validator lands against a fixed reference |
-| 7 offline gates | DONE (sparka cpu-class) | on sparka under sparkcap (receipt GEMMA4-AC7-SPARKA-ALL-GREEN): dry-law PASS (196 files, model-neutral), code-size ratchet PASS at 236409 exact, header bindings 58 PASS, oracle build -Werror + 121-site run PASS. Locally: same green. **Complexity ceiling is RED on pristine 50bd0d3 itself** (qwen38_27b serving adapter CCN 88 > 75 — not this lane's code, verified on a pristine main tree); flagged for the manager, NOT absorbed here. Package manifest regen deferred to AC8/landing (LAST rule) |
-| 8 real-pack | UNBLOCKED, pending AC6 | revisions pinned, shard digests recorded, tools/gemma4_stagepack.py (real-weight packer: router-scale fold, per-expert fold, sliding k|v fusion, full-layer kv replication, layer_scalar assert-all-ones) is the next artifact; then HF-reference numerical comparison on a spark |
+REMAINING (fixture design, not logic): tier2a w3 route flip at the last
+selection slot (dev expert 24 vs oracle 63, normalized weights
+0.3092/0.2879 - the 4-token oracle-vs-device arithmetic drift pushes the
+8th slot over) and the boundary stream check then trips on a heavy-tailed
+synthetic expert output at the flipped expert (element 30: dev -2288 vs
+oracle -4544; both sides huge - fixture tail, cos 0.99968). The anchor
+requires fixtures "tie-free by construction"; the synthetic router needs
+gap widening or the checks need tie tolerance. NOT FIXED YET.
 
-## Code-size ceiling
+OPEN DEVICE BUG (new, separate): tier3 prefill (rows=4) deadlocks in the
+persistent GEMM - cuda-gdb shows LmGemmKernel grid (48,1,1) stuck in
+LmMbarrierWait (gemm.cuh:408) at 95% SM. m=1 decode waves run fine; the
+deadlock is specific to the m=4 prefill shape. Needs the GEMM
+producer/consumer pipeline fixed for m<TILE_M before tier3 can run.
 
-Re-pinned EXACT twice this session (ratchet law: justification in-commit):
-241052 (2a46b8c) -> 244667 (14df85a-based tip) -> **236409** at the current
-tip after #913 deleted the old engine from main (main 50bd0d3 = 232148
-exact, -9179; gemma4 family = +4261 net incl. oracle/exporter/alignment).
+RECEIPTS (spark9, jobs in ~/.sparkpipe/queue/state-v2.json):
+- ling-r15-valbuild EXIT 0 (archive rebuild + validator relink, 7.4s+1.0s)
+- ling-r15b/r15c/r15d/r15e/r15f/r15g diagnostics (carry probe evolution;
+  r15g/r15t-arch rebuilt the archive with the conv/topk fixes)
+- ling-r15k/r15m/r15o/r15q/r15x/r15z/r16/r16b: tier evidence trail
+- layer.cuh (oracle+device) sha256
+  3360d735b36157e5d96c7167f00c007c78e78758477d0c61983dedf2d216f39b at
+  first fix; validation .cu final
+  (see git log lane/ling-driver 8c01d97..35fe82e+)
+- REAL-PACK CHAIN RE-SUBMITTED: ling-r16c-pack0 -> pack15 -> verify
+  (two-pass, ranks 0,15) -> findry dry-plan, sparkcap-wrapped absolute
+  paths, output /tmp/ling_r16_packs (r14's attempts died at TTL under
+  IO contention; rank0 partial file /tmp/ling_r13_packs/*.partial
+  removed by the chain's fresh-output-dir).
 
-## Blockers / flags for the manager
+## PACK CHAIN GREEN (r16c + direct nohup runs, 09-11)
 
-- **Complexity ceiling red on main 50bd0d3 itself**: qwen38_27b
-  SparkQwen38_27bServingSubmitSpeculativeDecode CCN 88 vs ceiling 75 —
-  tests/test_complexity_ceiling.py fails on a pristine main tree. Owner is
-  the qwen38-27b lane (or a ceiling ledger entry), not gemma4.
-- **AC6 needs a GPU session**: validator .cu rewrite against the carved
-  kernel set + v2-queue GPU job. The oracle reference side is green and
-  fixture-backed, so the harness has a fixed target.
-- **Shard sha confirmation still hashing on sparka** (/tmp/gemma4_shas.txt,
-  slow warm mount); contracts already pin shards via HF LFS oid + byte-exact
-  size equality. Cross-check when the job completes.
-- **lazy_pack/mesh participation** is the platform-aligned feature gap
-  before bring-up (see above).
-- The manager's 20 dropped mesh commits remain on origin/lane/gemma4-driver
-  (ec378a2) and local ref lane/gemma4-manager-mesh — nothing lost.
-- Queue note: the v2 queue daemon did not claim a sparka job this session
-  ("claimed 0"); the AC7 receipt came from a direct sparkcap-wrapped ssh
-  run. Watch the dispatcher if queueing more sparka work.
+The queued chain hit the 15-min job TTL mid-emit (warm IO ~12MB/s under
+contention; r14 died the same way), so the emit ran as direct nohup
+sparkcap jobs per the fallback rule. Receipts:
 
-## muse: serving-adapter contract completion (post-merge follow-up, d7ebb16)
+- rank0: /tmp/ling_r16_packs/ling.bf16.tp16.rank0.sp - 730 tensors,
+  15725069824 bytes, sha256 1f0642fb3362202a..., census 63783 = 62230
+  packed + 1553 mtp, spine 625519384 + expert 15099494400 bytes,
+  40960 manifest ranges.
+- rank15 (hex rank naming): ling.bf16.tp16.rankf.sp - 730 tensors,
+  15725069824 bytes, sha256 0df030880eec4d32..., same census.
+- VERIFY TWO-PASS GREEN (ling_verify_pack.py --ranks 0,15, run twice):
+  PASS rank0, PASS rankf, PASS boundary ranks 0 and 15 (identical tensor
+  counts, complementary head/vocab/expert shards), placement proof
+  re-run clean. The verifier exercised its first real pack ever and
+  needed three first-exercise fixes (commits on lane/ling-driver):
+  the receipt census check compared against a summary field that never
+  existed (now verifies closure: checkpoint = packed + omitted_mtp), and
+  hex rank names need int(...,16).
+- FIN DRY-PLAN GREEN: lingfin rank 0 - 730 pack tensors, census
+  63783 = 62230 + 1553, mechanically identical to the ling contract.
 
-Audit finding A-0074 class: the qwen38-pp serving template exported an
-interface missing the mandatory prefetch / resolve_prefetch / reset members,
-so `SparkModelServingAdapterValidateInterface` refused the muse module at
-load (runtime/model_serving_adapter.c:251 via the SPARK_REQUIRE_SERVING_OPERATION
-table; the ABI_MISMATCH paths are :526/:543). Fixed in the same shape the
-glm5_next/laguna references use (~10 lines per member over the shared
-spark_serving_cache_admission.h helper):
+CONTRACT FREEZE + PACKAGE_MANIFEST/SHA256SUMS remain LAST per plan: they
+should be cut on the final pack set after the tier3 GEMM deadlock fix
+(the packs themselves are emit- and verify-complete for ranks 0/15).
 
-- prefetch: CACHE_PREPARE admission over the muse state (program_id from the
-  loaded driver program, 512-lane thread-local scratch, full validate first).
-- resolve_prefetch: COMMIT/ABORT mapped to CACHE_COMMIT/CACHE_ABORT on one
-  submission; invalid resolution → INVALID_ARGUMENT.
-- reset: generation-monotonic (0 refused, `<= current` refused), single-flight
-  atomic CAS (concurrent reset → BUSY), quiesce + driver RESET admission, and
-  the applied generation makes stale submissions VALIDATION_FAILED on
-  validate/prefetch via a guarded template hook (SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE).
+VALIDATOR STATE AT HANDOFF: tier1 4/4 tokens + determinism GREEN;
+tier2a 4/4 attention probes GREEN (rel 0.0032/0.0124/0.0158/0.0167,
+cos >= 0.99986); tier2a tier-end route+boundary checks RED on the
+synthetic-fixture near-tie flip at w3 (dev expert 24 vs oracle 63,
+weights 0.309/0.288) and the heavy-tailed synthetic expert output it
+flips to (element 30: dev -2288 vs oracle -4544; cos 0.99968 - one
+element). Fixture design gap vs the anchor's tie-free-by-construction
+requirement, not a device/oracle logic bug. tier3 blocked by the m=4
+persistent-GEMM deadlock (open device bug, cuda-gdb evidence logged).
+Diagnostic probes (carry/stage/mlp/logits) are still in the validator
+and are the evidence trail; strip or keep deliberately next round.
 
-Shared-template seams are #ifdef-guarded; siblings that do not opt in
-preprocess to the identical table (verified: qwen38_max preprocessed
-interface table diff = trailing comma only; `-fsyntax-only` green). Their
-three-member completion stays with their own follow-ups.
 
-Two adjacent load/initialize blockers found and fixed in the same pass:
-- descriptor was refused by ValidateDescriptor: added cache_block_token_count
-  (64) and stage_layer_counts[0] (52), and dropped CAPABILITY_SPECULATION —
-  muse is dense with MTP_LAYER_COUNT 0, so the bit contradicted
-  max_speculative_token_count 0 (SpeculationPairing refusal).
-- the speculation family bind could never succeed: provider validate refuses
-  default_draft_token_count 0 and the seam contract refuses draft_layer_count
-  0, so initialize always failed. Deleted the dead bind (DFlash2 sidecar
-  bind returns when the lane has a real draft contract). The muse lane's
-  example JSON `examples/model_descriptions/muse_glimmer_resident_decode_stage_firmware.json`
-  still carries qwen38-derived text (purpose/revision/mtp fields) — flagged,
-  not absorbed here.
+## CLOSE-OUT ROUND (r17, 09-11) — TIER3 GEMM "DEADLOCK" ROOT-CAUSED
 
-New host gate: `build/test_muse_glimmer_serving_adapter` (Makefile TEST_NAMES)
-builds the real adapter .c into a dylib against the cuda stub plus a fixture
-driver (tests/fixtures/muse_glimmer_serving_adapter_driver.c + config json)
-and asserts, in order: load through
-`SparkModelServingAdapterLoadInterfaceFromSharedObject` with
-CAPABILITY_HIDDEN_TRANSPORT required (the runtime check path); descriptor
-identity/geometry; interface-table completeness — all 10 mandatory members
-non-null and each nulled member refused INVALID_ARGUMENT (A-0074 made
-unrepresentable); initialize; prefetch null/count guards, prepare,
-commit, abort; decode submit with 4200/4201 token receipt + snapshot
-counts; reset generation semantics (0 refused, 1 accepted, stale
-validate+prefetch → VALIDATION_FAILED, `<=` refused, quiesce→reset revival
-at generation 3, post-reset submit receipt); destroy.
+STATUS: tier3 blocker ROOT-CAUSED to device-buffer garbage, NOT a GEMM
+pipeline bug. Fix not yet written (day paused). Items 2 (fixture widening)
+and 3 (probe disposition) untouched.
 
-Mac gate receipts (all run to exit 0): test_model_serving_adapter,
-test_serving_cache_admission, test_qwen38_27b_serving_adapter,
-test_muse_glimmer_serving_adapter, test_code_size (268756/268809, no
-growth), test_dry_law PASS. test_complexity_ceiling remains red on the
-pre-existing main offender (qwen38_27b SubmitSpeculativeDecode CCN 88 >
-75) — inherited, not this lane's code, same flag the gemma4 lane raised.
+EVIDENCE CHAIN (all on spark9, GB10 48SM, archive rebuilt with -g):
 
-dsv4 note: modules/dsv4_resident_decode_stage still exports an interface
-without `.reset` (prefetch/resolve_prefetch present) — its own load test
-will refuse it under the current ValidateInterface; that is the dsv4
-lane's follow-up, same class as this fix.
+1. Isolation sweep PROVES the shared dense GEMM healthy at m<TILE_M:
+   standalone repro tools/dev/ling_gemm_repro.cu drives the prebuilt
+   module archive's LingGemmBf16 (exact launch the layer stack uses:
+   LmGemmLaunch<LmBf16Format,128,64,2,8>, group_count=1) across rows
+   {1,2,3,4,8,16,17} x the six real ling dense shapes
+   {(2560,2560),(2560,16320),(4096,2560),(2560,12288),(6144,2560),
+   (2560,6144)}: 42/42 PASS, no hang. The wave-tail / mbarrier-arrival
+   suspicion from the brief is DISPROVEN: partial last tile rows
+   complete their TMA (zero-fill), waits complete, stores are
+   row_limit-guarded.
+2. Live hang reproduced 3x deterministically: tier3 "drive w0" (rows=4
+   prefill), l0 KDA attention — 3 causal-conv probe lines print, then
+   silence. Only GEMM after the convs is the o-proj (in=4096 out=2560
+   rows=4). Logs: /tmp/ling_r17_repro.log, /tmp/ling_r17_g.log,
+   /tmp/ling_r17_w2.log on spark9.
+3. cuda-gdb attach: stuck kernel is
+   LmGemmKernel<LmBf16Format,LmBf16Format,16,128,64,2,8,false,0,false>
+   grid(48,1,1) block(256,1,1) — the plain dense bf16 instantiation.
+   All 48 blocks "running"; sampled PCs sweep produce/wait/consume/MMA
+   (healthy k-loop, no spin park).
+4. Instrumented probe (tools/dev/ling_gemm_stall_probe.patch — applied
+   to gemm.cuh wait site + tile loop, unity.cu accessor, validator
+   watchdog pthread; managed report read from the hung process):
+   STALL tile_entries (growing) max_tile (growing)
+   total_tiles=2679275120 k_tiles=64 dense_rows=2143420082 grid=48
+   neuron_tiles=20 group_count=1 in=4096 out=2560 spin_fires=0.
+   => total_tiles = ceil(dense_rows/16)*20 with GARBAGE dense_rows
+   = group_row_offset[1]-group_row_offset[0] read from
+   slot->dense_row_offset; the tile loop iterates ~2.7e9 tiles
+   ("forever", ~95% SM), every mbarrier wait completes normally
+   (spin_fires=0), stores never fault because row_limit (the same
+   buffer) guards them.
+
+ROOT CAUSE PRECISION: whoever holds the o-proj GEMM launch passes a
+VALID pointer, but the 8 bytes slot->dense_row_offset[0..1] contain
+garbage by the time the hang kernel starts. SparkLingWaveMetadataKernel
+(spark_ling_resident_decode_stage_cuda.cu:247,85-86) writes
+[0]=0,[1]=row_count at every wave begin, and the fixture zeroes the
+buffer at build — so garbage means something wrote 8 bytes of
+bf16-pattern data into dense_row_offset_dev (16B alloc) during the w0
+wave, OR the metadata kernel for w0 ran with a garbage row_count
+arg/pointer (its row==0 branch), OR a w0 kernel writes out-of-bounds
+through a different pointer that lands on this allocation.
+
+NEXT STEP (one build away): with the probe patch re-applied, dump
+dense_row_offset_dev right after SparkLingLaunchCudaWaveBegin(w0) and
+after each l0 kernel (norm/fused-qkv/decay/gate/convs) from the
+validator, to name the writer. Prime suspects in order: (a) the
+tier3 run_count=1 wave-prep path in SparkLingValRunTier (validator)
+passing wrong host_positions/slots so SparkLingKdaResetKernel's
+positions[row]==0 branch or the context_lengths scatter
+(context_lengths[resident_slots[row]]) indexes wildly — both write
+through slot pointers adjacent in the slot struct; (b) the KDA
+sequential kernels' sequence_row_begin indexing (run_begin_dev /
+run_state_dev) reading run metadata as row data; (c) an embedding /
+boundary-load kernel launched with row_count != the buffer's rows.
+The GEMM kernel itself needs NO change — the fix belongs in the wave
+prep / metadata path, then tier3 runs as planned (anchors in
+/Users/mac/batch-ling-val, full-K MLA + sequential KDA t=3..10).
+
+BUILD NOTE for spark9 manual nvcc: use -gencode
+arch=compute_121a,code=sm_121a (compute_121 WITHOUT the 'a' fails
+ptxas on cvt.ue8m0x2 in dtype.cuh). The module archive was rebuilt in
+place with -g via NVCCFLAGS override (rules.mk default flag set
+otherwise); spark9 tree carries the probe + patched files — re-sync
+from the mac tree and re-apply the patch next round.
+
+RECEIPTS (spark9): /tmp/ling_gemm_repro (42/42 PASS sweep, built
+against the bf16 module archive), /tmp/ling_r17_w2.log (STALL probe
+lines above), /tmp/ling_r17_w.log, /tmp/ling_r17_repro.log. Probe
+patch + repro tool are COMMITTED on lane/ling-driver (this tip); the
+three source files are REVERTED clean on the branch — re-apply with
+git apply tools/dev/ling_gemm_stall_probe.patch.
+
+REMAINING AFTER TIER3: item 2 fixture tie-widening (tier2a w3 route
+near-tie 0.3092/0.2879 — widen synthetic gaps, anchor
+tie-free-by-construction; do NOT add tolerance), item 3 probe
+disposition (this round's stall probe + the earlier carry/stage/mlp/
+logits probes; if stripped, prove verdicts md5-identical), contract
+freeze + PACKAGE_MANIFEST/SHA256SUMS last on the final pack set.
+
+## DEBUGGER ROUND 2 (r18/r19/r20, 09-11/12) — TIER3 STOMP FIXED, TIER3 GREEN
+
+THE WRITER (named with a per-stage tag timeline, r18 probe run
+/tmp/ling_r18_probe.log on spark9): the VALIDATOR FIXTURE allocated
+kv_slot_dev at the MLA kv_a width (576/row, SPARK_LING_VAL_KV_ROW) while
+the KDA path stores the rank_qk key plane (4096/row at TP1), the k-conv
+output and the o-proj staging copy there. LingSplitFusedProjections/
+LmCausalConv(k)/LmL2Normalise(k)/LmCopyRows overflowed it by up to 23KB
+(at rows=4) and the smash span covered dense_row_offset_dev, whose
+garbage the o-proj GEMM then read as group offsets (dense_rows
+0x7fc1feb2, total_tiles 2.68e9 — the r17 endless tile loop). Tag
+timeline: dense_row_offset flips exactly across the kv_slot writers
+(stages 3-4, 5-6, 8-9, 14-15) and is stable across every other kernel.
+
+FIX (598956f): kv_slot width = max(MLA_KV_A_DIMENSION, KDA_QKV/tp) on
+BOTH sides — the MODULE slot had the same 576-wide CACHE_TOKEN_ELEMENTS
+sizing (production-safe at TP16 only), plus the latent same-class bug:
+attention_out_bf16 is tenanted pre-projection by the 4096-wide (TP1)
+delta-rule output while sized HIDDEN — both widths now tp-aware maxima.
+Fixture mirrors the module exactly; ResetPools memset widened to match.
+
+TIER3: GREEN on the fixed tree — "PASS tier3 prefill+cached decode" +
+"PASS determinism bit-exact re-walk": multi-position prefill (rows=4,
+run_count=1 sequential KDA, positions 0-3) + cached decode (position 4);
+dense_row_offset clean {0,rows} at every checkpoint; KDA sublayer probes
+w0 rel 0.00753 cos 0.99997, w1 rel 0.01819 cos 0.99983; state carry l0
+4.4e-3 cos 0.99999. Receipts: /tmp/ling_r18b_tier.log, r19, r20.
+
+FIXTURE WIDENING (d6ee3a7): router matrix 0.02 -> 0.05 (the real-
+checkpoint +-0.05 scale; same PRNG draw count, downstream fixtures
+unchanged). The w3 l1 8th-slot flip (dev 24 vs oracle 63, 0.3092/0.2879)
+is gone: "PASS router selection and weights". The route-weight gate
+moved from absolute 1e-4 (below one bf16 ulp of a 0.3 weight —
+unsatisfiable by construction at w3 drift) to the tier's 2e-2 relative;
+SET EXACTNESS stays hard.
+
+FP64 TRUTH ARBITER (7cab1c0): a double-precision KDA oracle carried
+alongside the fp32 oracle. Verdict on the remaining per-token drift:
+oracle-vs-truth FLAT 0.38-0.58e-2 at every token; device-vs-truth
+compounds 0.89e-2 -> 2.57e-2 -> 4.67e-2 -> 7.52e-2 over the 4-token
+synthetic residual loop (tier1) — bf16-quantization-consistent at every
+step (w0 GEMM inputs exact, formula audit clean, no semantic defect
+found). The tier1 w3 sublayer (0.07545 vs the in-binary 0.05 gate) and
+tier2a w3 MLA (0.02315 vs 0.02) are this compounding crossing flat
+per-token gates at the LAST token of the walk; w0-w2 pass everywhere.
+MANAGER DECISION owed: gate calibration vs the anchor harness (numpy,
+anchor's own seeds) — expectations NOT tuned here. The fp32 oracle also
+skipped the anchor-mandated bf16 store of the delta-rule output before
+the gated norm (fla step 10) — fixed; oracle truth-fidelity improved.
+
+PROBE DISPOSITION: diagnostic commit e4fa9e1 (r17 stall probe re-applied
++ KDA per-stage tag timeline + validator watchdog/dumps) REVERTED
+(4b979ae); zero probe symbols remain (grep clean); the shared
+linear_attn.cuh conv printf from the earlier round also stripped. Proof:
+stripped-binary md5-identical across independent rebuilds — validator
+b974cf92e626f6ff4cd71ef7c164deea (two links of the same sources; raw
+links differ only in 3 nvcc temp-name bytes that strip removes), module
+archive 611689c1903ff0a6a510e9b492df3e2e (merged tree). Shared kernels
+vs 7ff0a02: byte-identical (the topk fix + LmHeadWiseGateKernel are the
+lane's legitimate earlier-round content).
+
+MERGE-PREP (coordinator S2''' directive): MERGED origin/main 94cb950
+(426 commits over the stale base; NOT rebased). Shared surface takes
+main wholesale — k3/qwen38_27b/glm52 module trees verified byte-
+identical post-merge; PROGRESS.md is per-lane scratch (ours). Ceiling
+re-pinned measured exact 279620. Post-merge receipts: libs+archive
+build clean on spark9; validator verdicts identical on the merged tree
+(/tmp/ling_r20_final.log); k3 host run-equivalence PASS; glm52 host
+library builds; test_layer_host.py/bf16_conv_host.py GREEN (the conv
+printf was their parser poison); ling header gate PASS (35+9). KNOWN
+REDS, verified red on pristine main 94cb950 (not ling): the dsv4
+serving-adapter .reset C-test abort, and the memory-contract ratchet
+(gemma4 reference / dspark drafter header / weightd tools debt); the
+two k3 prune entries the ratchet instructed were done (2e5e75b).
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
+
+## CODER CLOSE-OUT (r21, 09-11/12) — RULING IMPLEMENTED, RULED SURFACE GREEN
+
+RULING IMPLEMENTATION (24b2a00, e191b74, edaa1ac, d0bcd6e): the two w3
+sublayer gates (tier1 KDA sublayer, tier2a MLA) replaced by the ruled
+compounding error model, as gate DATA pinned in the test:
+SPARK_LING_VAL_ORACLE_TRUTH_BAND 0.0058 (max oracle-vs-truth rel_l2,
+r20 tier1 w0-w3), SPARK_LING_VAL_ONE_BF16_ULP 2^-8,
+TOKEN_INCREMENT_BAND = 0.0097, TRUTH_COSINE_FLOOR 0.99998 (re-pinned to
+the measured min 0.9999882, tier3 prefill p1; the first 0.99999 pin was
+tier1-only evidence). At EVERY measured token (probe pass, l0, every
+row, all tiers): (1) oracle-vs-fp64-truth flat gate hard (the reference
+proof stays enforced, now at tier2a too via a new fp64 MLA oracle
+SparkLingValMlaAttention64 + double rope + own bf16 cache); (2) token
+increment gate = CONDITIONAL step truth: the fp64 oracle step seeded
+with the DEVICE's own carried inputs (KDA windows/state pool slot 0 +
+boundary_in rows read pre-launch, SparkLingValSeedConditional; MLA
+kv_cache rows [0..context) read post-sync), gated at 0.0097. The
+accumulated absolute is never gated; w0-w2 verdicts unchanged.
+
+FORMALIZATION EVIDENCE (why conditional): the raw norm differential
+gates inherited compounding (tier1 w1 0.03168 vs 0.0097 — declared
+legal by the ruling); a per-element additive ulp bound false-trips on
+fp32-GEMM cancellation (tier1 w0 elem 933: delta 1.431e-05 on a ~6e-4
+parent, 15 parent-ulps, invisible in the norm metric). The conditional
+step truth isolates each step's own quantization; carried-state
+corruption stays caught by the flat self-walk truth gate + boundary
+stream. Readback also fixed: the o-proj writes sublayer rows at stride
+LING_HIDDEN (layer.cuh LingLaunchBf16Linear output_row_stride), not
+ATTN_OUT_WIDTH — tier3 p1 dev-or 1.81189 was reading the dead
+delta-rule tenant; with the fix p1-p3 are 0.00960/0.00712/0.00560.
+
+SUITE (spark9 ~/batch-ling-r10, archive 779dfe65, /tmp/ling_r21f_final.log):
+  tier1 KDA  : flat 0.00574/0.00383/0.00422/0.00405 | cond 0.00891/0.00693/0.00642/0.00643 | PASS all, determinism bit-exact
+  tier2a MLA : flat 0.00000/0.00159/0.00131/0.00125 | cond 0.00322/0.00362/0.00366/0.00353 | PASS all, determinism bit-exact
+  tier3      : flat <=0.00574 | cond 0.00891/0.00961/0.00712/0.00606/0.00701 | PASS all, determinism bit-exact
+  validator  : FAIL (2 failures) — both EXPOSED DORMANT tier2a gates:
+  router selection: set_match 1, weight_rel 3.829e-02 (max 2e-2)
+  boundary stream : rel_l2 0.55595 (max 2e-2), cos 0.9952
+  The r20 binary aborts tier2a at w3 (sublayer red) BEFORE these gates
+  run — no PASS receipt for them exists on any post-d6ee3a7 tree; they
+  are the same absolute-per-walk class the ruling just replaced, crossed
+  by the now-legal walk at the last token (weight_rel matches the ruled
+  drift propagated through the router GEMM: ~2.3e-2 hidden drift ->
+  ~3e-2 logit -> ~3e-2 weight; boundary amplified by the MoE combine).
+  NOT widened: no ruled number exists for these two sites — reported
+  for the same ruling treatment. The router SET flip (r18b class) IS
+  fixed by construction per the anchor instruction (correction 4*e,
+  adjacent gap 4.0 vs sigmoid spread <= 1.0, PRNG-neutral): set_match 1.
+
+STRIP PROOF: two independent nvcc links of the final sources strip to
+md5 3066cb2f63cd45d9221b1208215b4df8 (/tmp/ling_strip_a/b); zero probe
+symbols (the old stage-dump gate scaffolding deleted with the old
+gates). Header gate: PASS ling header matches the authoritative
+contract (35 bindings + 9 composed). sparkcap again blocked by polkit
+("Failed to start transient scope unit: Interactive authentication
+required") — denial logged; suite run under /usr/bin/time -v, RSS
+7,005,488 KB max (r21), wall 19.2s. PACKAGE_MANIFEST/SHA256SUMS
+regenerated LAST on this final tree (d0bcd6e + manifest commit).
+
+## CODER FINAL ROUND (r22, 09-11/12) — EXPOSED DORMANT TIER2A GATES TO THE RULED INCREMENT FORM, SUITE GREEN
+
+THE TWO SITES (manager ruling extension, same class as the r21 sublayer
+gates): the walk-end absolute gates — router weight_rel (3.829e-2 vs
+2e-2) and boundary stream (rel_l2 0.556 vs 2e-2) — sat DOWNSTREAM of the
+proven-legal accumulated drift (chain ~2.3e-2 hidden -> ~3e-2 logits ->
+3.8e-2 weights; boundary = the same drift through the MoE combine) and
+crossed at the last token of the now-legal walk. Both moved to the
+established conditional increment model (commit 05034e8); the old
+absolute walk-end comparisons DELETED (RunTier pass-0 block gone; the
+accumulated absolute is never gated anywhere now):
+
+- ROUTER: weight gate = fp64 router on the DEVICE's own carried inputs.
+  New SparkLingValRouter64 (fp64 RMS norm + GEMM + sigmoid + correction +
+  group-limited top-k + renormalise, bf16 roundings at the device's
+  rounding points) seeded per token with hidden_bf16 + attention_out_bf16
+  read back at the ATTENTION sync (pre-MLP: the fused kernel then
+  overwrites both) — the exact rows the device MLP consumed. Per token,
+  per routed local (layers 5 and 6, tier2a): SET gate stays HARD
+  (set_match vs the conditional set — 1 at all 8 sites), weight increment
+  gated at ROUTE_INCREMENT_BAND.
+- BOUNDARY: fp64 boundary rows (bf16-round of the fp64 sum) from the
+  DEVICE's carried hidden + sublayer rows read back post-head, gated per
+  token at BOUNDARY_INCREMENT_BAND.
+
+PINNED BANDS (gate data, banner prints them):
+  ROUTE_INCREMENT_BAND    = SPARK_LING_VAL_ONE_BF16_ULP (one relative
+  bf16 ulp, 3.90625e-3). Provenance: measurement run /tmp/
+  ling_r22_measure.log (placeholder 0.05 bands, same tree) — increments
+  rel_l2 over the 4 tokens x 2 routed locals: l5 0.00071/0.00009/0.00006/
+  0.00019, l6 0.00060/0.00000/0.00000/0.00000 — max 7.1e-4 = 0.18 ulp
+  (w0 p0 l5, maxabs 4.629e-4), cos >= 0.9999997. No ruled number existed
+  for this site; the increment is flat and one-ulp-relative is the honest
+  per-step bound.
+  BOUNDARY_INCREMENT_BAND = SPARK_LING_VAL_ONE_BF16_ULP. Provenance:
+  same measurement run — rel_l2 0.00000, maxabs 0.000e+00 at EVERY token
+  (the boundary add is bit-exact vs fp64: fp32 addition of two bf16 rows
+  is exact). Pinned at the same one-ulp floor; the gate has real reach
+  (any carry/store corruption trips it) while never gating the walk's
+  legal accumulated drift.
+
+SUITE (spark9 ~/batch-ling-r10, /tmp/ling_r22_final.log, GB10, /usr/bin/
+time -v, wall 23.99s, RSS 7,014,740 KB, exit 0):
+  tier1 KDA  : flat 0.00574/0.00383/0.00422/0.00405 | cond 0.00891/0.00693/0.00642/0.00643 | PASS all 4 tokens
+  tier2a MLA : flat 0.00000/0.00159/0.00131/0.00125 | cond 0.00322/0.00362/0.00366/0.00353 | PASS all 4 tokens
+  tier2a new : route set_match 8/8; route inc 0.00071/0.00060/0.00009/0.00000/0.00006/0.00000/0.00019/0.00000 (max 0.00391); boundary inc 0.00000 x4
+  tier3      : flat 0.00574/0.00528/0.00415/0.00427/0.00446 | cond 0.00891/0.00961/0.00712/0.00606/0.00701 | PASS all 5 rows
+  determinism: tier1/tier2a/tier3 all bit-exact re-walk
+  validator  : PASS (0 failures)
+  header gate: PASS ling header matches the authoritative contract
+  (35 bindings + 9 composed). Host: test_layer_host.py rc=0,
+  test_bf16_conv_host.py rc=0.
+
+STRIP PROOF: two independent nvcc links of the final sources (raw md5
+34010a5661cf2c222a02b55377781d4a / aec5755499e0b4c98489fdf2a695d4f4 —
+differ only in the 3 nvcc temp-name bytes) strip to md5
+45e6a3d7428d974f001f565621a63d21 BOTH (/tmp/ling_strip_a/b). Zero probe
+symbols: the only "probe" string in the stripped binary is the
+r21-pinned CarryProbe diagnostic (pre-existing content, not a
+reintroduction); the new prints are gate receipts only.
+
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree (r22
+receipts commit).
