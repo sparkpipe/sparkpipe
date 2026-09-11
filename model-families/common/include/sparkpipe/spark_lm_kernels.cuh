@@ -443,6 +443,25 @@ static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_in
 	return(accumulator);
 }
 
+static __device__ __forceinline__ float SparkLmDotRowBf16Staged(const void *shared_input, const void *weight_payload, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
+{
+	uint64_t pair_row = ((uint64_t)neuron * input_dimension) >> 1u;
+	uint32_t pair_count = input_dimension >> 1u,pair,element;
+	float accumulator = 0.0f;
+	float2 input_pair,pair_value;
+	#pragma unroll 4
+	for (pair = lane; pair < pair_count; pair += SPARK_LM_WARP_LANES)
+	{
+		input_pair = __bfloat1622float2(*(const __nv_bfloat162 *)(((const uint32_t *)shared_input) + pair));
+		pair_value = SparkLmLoadBf16Pair(weight_payload,pair_row + pair);
+		accumulator = fmaf(input_pair.x,pair_value.x,accumulator);
+		accumulator = fmaf(input_pair.y,pair_value.y,accumulator);
+	}
+	for (element = (pair_count << 1u) + lane; element < input_dimension; element += SPARK_LM_WARP_LANES)
+		accumulator += (SparkLmBf16ToFloat(shared_input,element) * SparkLmBf16ToFloat(weight_payload,((uint64_t)neuron * input_dimension) + element));
+	return(accumulator);
+}
+
 static __device__ __forceinline__ void SparkLmDotRowBf16Pair(
 	const float *shared_input,const void *first_weight,
 	const void *second_weight,uint32_t neuron,uint32_t input_dimension,
@@ -826,10 +845,12 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 		(const uint8_t *)weight_scale,neuron,input_dimension,lane));
 }
 
-template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC,uint32_t CTA_WARPS>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC,uint32_t CTA_WARPS,uint32_t STAGE_BF16 = 0u>
 static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
+	static_assert(STAGE_BF16 == 0u || ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE,"bf16 staged linear dot requires the none activation codec");
 	extern __shared__ float shared_input[];
+	extern __shared__ uint16_t shared_input_bf16[];
 	uint32_t row = blockIdx.x,neuron_base =
 		blockIdx.y * CTA_WARPS;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
@@ -838,16 +859,26 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	float2 stage_pair;
 	if ( row >= row_count )
 		return;
-	for (element = threadIdx.x; element < (input_dimension >> 1u); element += blockDim.x)
+	if ( STAGE_BF16 != 0u )
 	{
-		stage_pair = SparkLmLoadBf16Pair(input_bf16,(((uint64_t)row * input_dimension) >> 1u) + element);
-		shared_input[element << 1u] = stage_pair.x;
-		shared_input[(element << 1u) + 1u] = stage_pair.y;
+		if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 )
+			return;
+		for (element = threadIdx.x; element < (input_dimension >> 1u); element += blockDim.x)
+			((uint32_t *)shared_input_bf16)[element] = ((const uint32_t *)input_bf16)[(((uint64_t)row * input_dimension) >> 1u) + element];
 	}
-	for (element = ((input_dimension >> 1u) << 1u) + threadIdx.x; element < input_dimension; element += blockDim.x)
-		shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
+	else
+	{
+		for (element = threadIdx.x; element < (input_dimension >> 1u); element += blockDim.x)
+		{
+			stage_pair = SparkLmLoadBf16Pair(input_bf16,(((uint64_t)row * input_dimension) >> 1u) + element);
+			shared_input[element << 1u] = stage_pair.x;
+			shared_input[(element << 1u) + 1u] = stage_pair.y;
+		}
+		for (element = ((input_dimension >> 1u) << 1u) + threadIdx.x; element < input_dimension; element += blockDim.x)
+			shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
+	}
 	__syncthreads();
-	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 )
+	if constexpr ( ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0 && STAGE_BF16 == 0u )
 	{
 		LmActivationFp8QdqFloatRow<ACTIVATION_CODEC>(shared_input,input_dimension);
 		__syncthreads();
@@ -855,12 +886,15 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	neuron = neuron_base + warp;
 	if ( neuron < output_dimension )
 	{
-		accumulator = SparkLmDotLinearRow<GROUP_SIZE>(weight_format,
-			shared_input,weight_payload,weight_scale,neuron,input_dimension,lane,
-			weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
-			(const float *)((const uint8_t *)weight_scale +
-				((uint64_t)output_dimension * (input_dimension / 16u))) :
-			(const float *)0);
+		if ( STAGE_BF16 != 0u )
+			accumulator = SparkLmDotRowBf16Staged(shared_input_bf16,weight_payload,neuron,input_dimension,lane);
+		else
+			accumulator = SparkLmDotLinearRow<GROUP_SIZE>(weight_format,
+				shared_input,weight_payload,weight_scale,neuron,input_dimension,lane,
+				weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 ?
+				(const float *)((const uint8_t *)weight_scale +
+					((uint64_t)output_dimension * (input_dimension / 16u))) :
+				(const float *)0);
 		accumulator = SparkLmWarpReduceSum(accumulator);
 		if ( lane == 0u )
 			SparkLmFloatToBf16(output_bf16,
@@ -5093,7 +5127,7 @@ static inline cudaError_t SparkLmHostLaunchGroupedScalarLinear(cudaStream_t stre
 	return(cudaGetLastError());
 }
 
-template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE>
+template <uint32_t GROUP_SIZE,uint32_t ACTIVATION_CODEC=SPARK_ACTIVATION_CODEC_NONE,uint32_t STAGE_BF16=0u>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
@@ -5111,9 +5145,21 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
-		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
+		uint32_t shared_bytes;
 		dim3 scalar_grid(row_count,(output_dimension +
 			SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
+		if ( STAGE_BF16 != 0u && weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 &&
+			(input_dimension & 1u) == 0u )
+		{
+			shared_bytes = input_dimension * (uint32_t)sizeof(uint16_t);
+			SPARK_LM_LAUNCH((SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,
+				SPARK_LM_CTA_WARPS,1u><<<scalar_grid,
+				SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,
+				weight_payload,weight_scale,input_bf16,output_bf16,row_count,
+				input_dimension,output_dimension)));
+			return(cudaGetLastError());
+		}
+		shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		SPARK_LM_LAUNCH((SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,
 			SPARK_LM_CTA_WARPS><<<scalar_grid,
 			SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,
