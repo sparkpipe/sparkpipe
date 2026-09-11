@@ -1491,6 +1491,16 @@ CEILING = 238091
 # spec + heads/kv plans + extent guard + pp-degree placement in
 # tools/minimax_h3_stagepack.py). Measured exact: 245453.
 CEILING = 245453
+# minimax H3 r7 (real-pack round): the emit caught two driver defects and
+# their fixes land with their binding tests (match_name tp16 tag propagation
+# + pure-name routing test, read_tensor_blob column slicing + BytesIO blob
+# unit in tools/minimax_h3_stagepack_routing_test.py), plus the C9 deployment
+# generator rewrite to TP16xPP1-only with the model_resident root
+# (tools/minimax_h3_gen_deployment.py), the TP16 pack boundary checker
+# (tools/minimax_h3_tp16_boundary_check.py), and the firmware topology flip
+# to 16x1 (net-negative: the PP4 13x3+11 split and its asserts deleted).
+# Measured exact: 245788.
+CEILING = 245788
 
 
 ROOT = Path(__file__).resolve().parent.parent

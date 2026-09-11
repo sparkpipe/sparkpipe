@@ -116,6 +116,84 @@ differ. They bind the kernels (criterion 4+).
 
 ## Work log
 
+- 2026-09-11 (round 7): REAL TP16 PACK EMIT (in flight) + TWO EMIT-TIME DRIVER
+  BUGS CAUGHT + C9 TABLES + FIRMWARE FLIP. Work dir moved back to
+  /Users/mac/batch-minimax (r6 ran in /Users/mac/lane-minimax); lane branch
+  fast-forwarded to the r6 tip 13b410f, tree staged to sparke
+  (/mnt/model-warm/staging/minimax-lane/13b410f.tgz + extracted). PASS A
+  placement proof GREEN: all 16 per-rank dry-run censuses print the identical
+  strict census encoder 705 / dit 638 / video_vae 585 / audio_vae 914 (the r6
+  note's 936 was the superseded r2 number; the header static assert binds 914
+  = decode path, pre_block excluded as encode-only), stage split {0: N} on
+  every rank, fail-closed extent guard silent. PASS B real emit: chain
+  (nohup sparkcap per rank, skip-if-receipt-complete, per-tensor progress
+  resume) wrote ranks 00-03 GREEN before two host events intervened:
+  BUG 1 (commit 0e9afdd): match_name built the matched entry WITHOUT the tp16
+  tag, so every heads_rows/heads_cols/kv_rows pattern degraded to plain
+  rows/cols and the real emit aborted at the first encoder k_proj (1024 rows
+  guard) instead of silently packing 448-row uniform slices of the 7168 DiT
+  qkv — the r6 unit proofs exercised tp_slice directly and never the name
+  routing; routing test added (pure-name, no warm IO, binds tag survival at
+  tp16 + tp4 fallback + kv r//2). BUG 2 (commit f96bc23): read_tensor_blob
+  sliced rows only and returned row_count × FULL width — (a) the payload
+  region ran ~2x the directory's recorded bytes (rank00 first attempt: 63.9
+  GiB file, 31.5 GiB payload sum, 304 offset jumps) and (b) every tp_rank > 0
+  silently carried RANK-0's columns on all cols/heads_cols tensors (heads_cols
+  start != 0 reads the wrong half of the row-major payload). Undetected
+  historically because only rank-0 packs ever fed the real numeric gates and
+  the r5 tp4 rank>0 packs were cancelled before use. Fix: in-memory column
+  slice from a full-row-span read (rows fast path unchanged), 4-way extent in
+  the entry, resume signature v2; BytesIO blob unit in the routing test.
+  MEASURED SIZES with both fixes (receipts, post-fix chain): rank00 33,829,
+  381,672 B = 120 header + 31.51 GiB payload + padding + 2842×56 directory —
+  matches the computed layout byte-exactly; uniform 4-head ranks 01-03
+  identical 33,569,479,480 B, 1928 tensors (audio rank-0-only), peak RSS
+  587-610 MiB (≤1GB law), ~136 s/rank on healthy IO. FLAG (plan figure
+  refuted, not tuned): per-rank packs are ~31.5 GiB, not ~8.4 GB — the r5
+  135 GB total assumed adaLN sliced 1/16, but DIT_ADALN (n=100, 24.23 GiB on
+  rank0) MUST stay replicated: the post-to_out allreduce replicates the full
+  hidden on every rank and modulate applies elementwise over all 5376
+  channels locally; slicing would add per-block collectives (rejected). Full
+  16-rank set ≈ 500 GiB on /mnt/model-warm (11 T free). HOST EVENT: sparke
+  rebooted mid-emit (00:38, all net paths down ~7 min; ceph warm storage
+  survived, 4 receipts intact) and the warm pool then entered a long
+  contention stall (rank04 python D-state, 0 CPU, 17+ min) — the r3/ling
+  pattern. Resume is one command: rerun
+  /mnt/model-warm/staging/minimax-lane/13b410f/emit_tp16_chain.sh (skips
+  ranks with receipt+sha256, resumes partial ranks from progress files).
+  Receipts so far: minimax-r7-passA (16/16 dry-run), minimax-r7-pack00..03.
+  C9 TABLES LANDED (commit f5c0b02): tools/minimax_h3_gen_deployment.py
+  rewritten PP1-only (TP4xPP4 placement code deleted), 16 stage configs +
+  deployment_manifest.json + model_resident.json (schema v2 root: adapter/
+  driver/transport host-rdma control base 60920 via MINIMAX_H3_TRANSPORT_BASE,
+  per-rank tcp endpoints 19560+r, kv pages 0) regenerated under
+  deploy/minimax_h3. PORT-MATRIX FINDING pinned in the manifest: session
+  cells 17409..17663; cells + route-kind offset +768 reach 18431 = EXACTLY
+  BLOCK_LIMIT, zero margin. And the matrix is DEAD PARSE-COMPAT on the
+  post-#913 tree — verified by reading the consumers: ring/transport/
+  tp_device_collective.c (413 lines, mesh_buffer slot bands) has ZERO
+  session_port references; runtime/spark_weightd.c zero; the glm52 reference
+  TP16 adapter zero; serving_adapter_template.c requires the members
+  (absent = SCHEMA_ERROR) and SparkTpCollectiveLoadSessionPorts fills the
+  topology struct, which nothing dials. Noted, proceeded per mission. FIRMWARE
+  FLIP (commit dd255e0): SPARK_MINIMAX_H3_TP_DEGREE 4→16, PP_STAGE_COUNT 4→1,
+  DIT_BLOCKS_PER_STAGE = the whole 50-block stack (13x3+11 split + two PP4
+  asserts deleted, single-stage-coverage assert added); module
+  StageBlockCount loses the stage_index<3 branch; format test green locally
+  AND on sparke (57 kinds resolve), module.c strict -Werror clean on both.
+  ABI-SEAM PLAN ready to fire (PROGRESS §ABI seam r7): sample struct + receipt
+  shape frozen in spark_minimax_h3_serving_adapter.h, fire points = existing
+  batch-engine extension slots, cell procedure = 2-step smoke then full 5s
+  clip vs the 15-min window; measured numbers land at the cell round (module
+  host is still the metadata stub). BOUNDARY CHECKER committed
+  (tools/minimax_h3_tp16_boundary_check.py): directory extents per rank,
+  payload sha of 9 representative tensors vs fresh warm slices, rank07+08
+  concat proof vs warm q [3584,4480) — fires when the pack set completes.
+  QUEUE untouched this round (zero jobs; direct nohup sparkcap only, per the
+  ttl-min-5 contention concern). NOT DONE this round: ranks 04-15 (stalled
+  warm pool), boundary checks on the written set, cell bring-up — all gated
+  on the same resume command.
+
 - 2026-09-10 (round 6, PAUSED mid-round per operator): REBASE + TP16 PACK SUPPORT.
   REBASE landed and pushed: lane/minimax-driver e4af723 = old bc45d75 lineage rebased
   onto origin/main f6db50a (182 main commits: muse merge, #919/#925 mesh safety,
@@ -308,22 +386,36 @@ differ. They bind the kernels (criterion 4+).
 | 6 | V4 VAE decode gates | **GREEN (r5)** — video_vae rel=1.293e-6 max_abs=0.000009 (gate: rel<=5e-4, abs<=2/255); audio_vae rel=2.129e-6 max_abs=0.000002 (before_clamp max 0.401314 vs anchor 0.401315). Audio root causes (bisected via refa_* per-op dumps): (1) r4-era AMP structure inverted -> r5 rewrote to per-dilation residual chain + one 3-block average per stage; (2) dec_in_proj/conv_pre ran single-batch -> second mono channel was stale zeros; (3) gate Conv1d ran the kernel FLIPPED vs cross-correlation (k1 ops masked it); (4) pass-1 activation must chain from conv1 output. Video root cause: rope applied IN-PLACE (second half rotated the already-rotated first half) + swiglu wrote the silu-mid at fused stride 2*ffn while down GEMM read it packed. Anchor-side fixture correction (documented, not driver-tuning): gen_v3_v4_real.raw_s_ff dropped the video VAE ff.net.0.proj/ff.net.2 biases (non-zero trained tensors; V2 bit-exact xcheck via h3_reference proves the pinned module applies them) -> decoded fixture regenerated ff-bias-inclusive; video fix6 rel went 3.735e-2 -> 1.293e-6 |
 | 7 | module build + offline-gates | **PARTIAL** — root Makefile wiring landed (contract/archive/publish hooks mirroring the glm52 flow); module archive builds through the repo flow on sparke; remaining: `make offline-gates` exit 0 on sparke cpu-class (deferred to the C10 landing because the package-manifest gate requires the final manifest regen LAST) |
 | 8 | V5 determinism | **DONE at mini-DiT scale** — spark_minimax_h3_v5_gate.cu on real weights: 2 scheduler steps x real blocks 0,1 from a fixed 64-bit LCG seed; same-seed rerun bit-identical at TP1 and at TP4-segmented GEMM, and TP4-vs-TP1 bit-identical per step (receipt minimax-r4-v5gate4, sparke GB10). Full-pipeline 2x same-seed latents across 16 ranks still needs the cell |
-| 9 | cell E2E | **TP16-FIRST PACK PLAN SET (r5, operator directive)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). Imbalance 4:3 is accepted for the first cell (the operator's bubble/balance reasoning favors the least-complex exact scheme). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack support LANDED r6 (tensor_patterns tp16 spec + heads/kv plans + pp-degree placement + fail-closed extent guard, unit-proven slice arithmetic); pack generation itself is the next session's first action (resume point in the r6 work log entry) |
+| 9 | cell E2E | **TP16 PACK EMIT IN FLIGHT (r7)** — first cell runs TP16 (PP1, no pipeline bubbles). Head arithmetic resolved: encoder 64q/16=4.0 and video VAE 32q/16=2.0 divide cleanly; DiT 56q/16=3.5 does NOT - scheme chosen: MIXED HEAD COUNTS, 8 ranks x 4 heads + 8 ranks x 3 heads (=56), standard TP attention per rank (full 128 head_dim per head, exact all-reduce after to_out; no head-dim split, which would break softmax without gather). TP4xPP4 pack generation was started then CANCELLED - receipts showed 45GB/rank (PP0) x 4 + 11.5GB (PP1) x N ~ 300GB total, inconsistent with the 135GB figure AND obsolete under TP16-first; partial packs deleted. TP16 pack support landed r6; r7 pass-A placement proof 16/16 GREEN and the real emit fixed two driver bugs (tp16 tag dropped by match_name; blob reader had no column slicing so tp_rank>0 got rank-0 columns) before writing ranks 00-03 GREEN (33.57-33.83 GB, layout byte-exact vs computed); sizes ~31.5 GiB/rank FLAG (r5 8.4 GB figure refuted by the required- repl DIT_ADALN 24.2 GiB); ranks 04-15 stalled by a sparke reboot + warm-pool contention stall, resume = rerun emit_tp16_chain.sh; deployment tables TP16xPP1 + model_resident root regenerated; route matrix pinned DEAD PARSE-COMPAT (zero dialers) with 18431 = BLOCK_LIMIT zero-margin noted |
 | 10 | fail-closed tests + report + manifest | pending |
 
-## ABI seam instrumentation (ruling 3) — to be filled with measured numbers
+## ABI seam instrumentation (ruling 3) — plan ready to fire at the cell (r7)
 
-- per-denoise-step submission/completion round-trip vs step compute: TBD (C9)
-- model_extension payload handling at admission: TBD (C9)
-- receipt shape: FLAG_MODEL_EXTENSION model_extension[512] blob = {artifact path id,
-  sha256[32], byte count, width/height/frames/sample-rate} — layout to be frozen in
-  spark_minimax_h3_serving_adapter.h
-- spool I/O cadence: rank-0 adapter writes job JSON at admission + per-step (state,
-  step k/N) + terminal receipt; media file written once, atomic rename
-- queue-window/TTL vs video-job lifetime: measured pool contention (2.8 MB/s) already
-  forced the ttl-15 detached-chain pattern for a single rank pack; a full 16-rank pack
-  set (135 GB) at contended rates needs either an idle-pool window or the chain pattern
-  at scale — record actuals when the pack chain completes
+- instrumented shape is FROZEN in
+  `modules/minimax_h3_resident_media_stage/include/sparkpipe/spark_minimax_h3_serving_adapter.h`:
+  `SparkMinimaxH3AbiSeamSample` = {submission_to_dispatch_ns,
+  dispatch_to_completion_ns, step_compute_ns, receipt_write_ns,
+  spool_bytes_written, admission_payload_bytes}; the terminal receipt
+  (`SparkMinimaxH3MediaReceipt`, static-asserted to ride
+  SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES) carries step_compute_ns.
+- fire points, zero engine edits per the ruling: the batch engine's existing
+  extension slots stamp submission (admission, extension payload present) and
+  completion; the module host fills one sample per denoise step; per-step node
+  log line `h3 step k/N submit_us/compute_us/roundtrip_us`; seam overhead =
+  (submission_to_dispatch + dispatch_to_completion − step_compute) /
+  step_compute, reported as mean + max over the job.
+- cell procedure: (1) 2-step kind=run smoke job → receipt seam sample +
+  admission payload handling time; (2) full 5s-clip job (37 latent frames,
+  N−1 evals) → total dispatch→terminal wall vs the 15-min queue window; if a
+  single job cannot own the window, FLAG the measured lifetime here and take
+  the detached-chain/cursor or idle-window reservation path — never a TTL
+  hack.
+- spool I/O cadence: rank-0 adapter writes job JSON at admission + per-step
+  (state, step k/N) + terminal receipt; media file written once, atomic
+  rename; receipt_write_ns measures the per-step spool cost.
+- status: measurement points pending the module host implementation (module.c
+  is still the metadata stub; the step-pump wiring is the remaining cell-round
+  work) — measured samples land here at the cell round.
 
 ## Handoff notes (next coder session)
 
