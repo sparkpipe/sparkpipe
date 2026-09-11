@@ -393,3 +393,79 @@ tie-free-by-construction; do NOT add tolerance), item 3 probe
 disposition (this round's stall probe + the earlier carry/stage/mlp/
 logits probes; if stripped, prove verdicts md5-identical), contract
 freeze + PACKAGE_MANIFEST/SHA256SUMS last on the final pack set.
+
+## DEBUGGER ROUND 2 (r18/r19/r20, 09-11/12) — TIER3 STOMP FIXED, TIER3 GREEN
+
+THE WRITER (named with a per-stage tag timeline, r18 probe run
+/tmp/ling_r18_probe.log on spark9): the VALIDATOR FIXTURE allocated
+kv_slot_dev at the MLA kv_a width (576/row, SPARK_LING_VAL_KV_ROW) while
+the KDA path stores the rank_qk key plane (4096/row at TP1), the k-conv
+output and the o-proj staging copy there. LingSplitFusedProjections/
+LmCausalConv(k)/LmL2Normalise(k)/LmCopyRows overflowed it by up to 23KB
+(at rows=4) and the smash span covered dense_row_offset_dev, whose
+garbage the o-proj GEMM then read as group offsets (dense_rows
+0x7fc1feb2, total_tiles 2.68e9 — the r17 endless tile loop). Tag
+timeline: dense_row_offset flips exactly across the kv_slot writers
+(stages 3-4, 5-6, 8-9, 14-15) and is stable across every other kernel.
+
+FIX (598956f): kv_slot width = max(MLA_KV_A_DIMENSION, KDA_QKV/tp) on
+BOTH sides — the MODULE slot had the same 576-wide CACHE_TOKEN_ELEMENTS
+sizing (production-safe at TP16 only), plus the latent same-class bug:
+attention_out_bf16 is tenanted pre-projection by the 4096-wide (TP1)
+delta-rule output while sized HIDDEN — both widths now tp-aware maxima.
+Fixture mirrors the module exactly; ResetPools memset widened to match.
+
+TIER3: GREEN on the fixed tree — "PASS tier3 prefill+cached decode" +
+"PASS determinism bit-exact re-walk": multi-position prefill (rows=4,
+run_count=1 sequential KDA, positions 0-3) + cached decode (position 4);
+dense_row_offset clean {0,rows} at every checkpoint; KDA sublayer probes
+w0 rel 0.00753 cos 0.99997, w1 rel 0.01819 cos 0.99983; state carry l0
+4.4e-3 cos 0.99999. Receipts: /tmp/ling_r18b_tier.log, r19, r20.
+
+FIXTURE WIDENING (d6ee3a7): router matrix 0.02 -> 0.05 (the real-
+checkpoint +-0.05 scale; same PRNG draw count, downstream fixtures
+unchanged). The w3 l1 8th-slot flip (dev 24 vs oracle 63, 0.3092/0.2879)
+is gone: "PASS router selection and weights". The route-weight gate
+moved from absolute 1e-4 (below one bf16 ulp of a 0.3 weight —
+unsatisfiable by construction at w3 drift) to the tier's 2e-2 relative;
+SET EXACTNESS stays hard.
+
+FP64 TRUTH ARBITER (7cab1c0): a double-precision KDA oracle carried
+alongside the fp32 oracle. Verdict on the remaining per-token drift:
+oracle-vs-truth FLAT 0.38-0.58e-2 at every token; device-vs-truth
+compounds 0.89e-2 -> 2.57e-2 -> 4.67e-2 -> 7.52e-2 over the 4-token
+synthetic residual loop (tier1) — bf16-quantization-consistent at every
+step (w0 GEMM inputs exact, formula audit clean, no semantic defect
+found). The tier1 w3 sublayer (0.07545 vs the in-binary 0.05 gate) and
+tier2a w3 MLA (0.02315 vs 0.02) are this compounding crossing flat
+per-token gates at the LAST token of the walk; w0-w2 pass everywhere.
+MANAGER DECISION owed: gate calibration vs the anchor harness (numpy,
+anchor's own seeds) — expectations NOT tuned here. The fp32 oracle also
+skipped the anchor-mandated bf16 store of the delta-rule output before
+the gated norm (fla step 10) — fixed; oracle truth-fidelity improved.
+
+PROBE DISPOSITION: diagnostic commit e4fa9e1 (r17 stall probe re-applied
++ KDA per-stage tag timeline + validator watchdog/dumps) REVERTED
+(4b979ae); zero probe symbols remain (grep clean); the shared
+linear_attn.cuh conv printf from the earlier round also stripped. Proof:
+stripped-binary md5-identical across independent rebuilds — validator
+b974cf92e626f6ff4cd71ef7c164deea (two links of the same sources; raw
+links differ only in 3 nvcc temp-name bytes that strip removes), module
+archive 611689c1903ff0a6a510e9b492df3e2e (merged tree). Shared kernels
+vs 7ff0a02: byte-identical (the topk fix + LmHeadWiseGateKernel are the
+lane's legitimate earlier-round content).
+
+MERGE-PREP (coordinator S2''' directive): MERGED origin/main 94cb950
+(426 commits over the stale base; NOT rebased). Shared surface takes
+main wholesale — k3/qwen38_27b/glm52 module trees verified byte-
+identical post-merge; PROGRESS.md is per-lane scratch (ours). Ceiling
+re-pinned measured exact 279620. Post-merge receipts: libs+archive
+build clean on spark9; validator verdicts identical on the merged tree
+(/tmp/ling_r20_final.log); k3 host run-equivalence PASS; glm52 host
+library builds; test_layer_host.py/bf16_conv_host.py GREEN (the conv
+printf was their parser poison); ling header gate PASS (35+9). KNOWN
+REDS, verified red on pristine main 94cb950 (not ling): the dsv4
+serving-adapter .reset C-test abort, and the memory-contract ratchet
+(gemma4 reference / dspark drafter header / weightd tools debt); the
+two k3 prune entries the ratchet instructed were done (2e5e75b).
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
