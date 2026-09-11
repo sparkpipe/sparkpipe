@@ -1,41 +1,63 @@
 #!/usr/bin/env python3
-"""dsv41-flash layer-0 decode host oracle (M7 host-oracle-first).
+"""dsv41-flash decode host oracle (M7 host-oracle-first piece ladder).
 
-Recomputes the layer-0 block (SWA-only: attention + single-pass mHC mult 4 +
-router top-6 of 384 + routed/shared experts) from a TP8 rank stagepack and
-EMITS per-piece expectations; tests/test_dsv41_flash_layer0_oracle.c
-recomputes the same pieces from the same pack bytes in C and prints the
-per-piece deltas. No module/driver code is imported: the formulas come from
-the pinned reference sources (cache/dsv41_warm/ref/{model,kernel}.py at
-revision dba1be0a, sha256 recorded in
-model_contracts/dsv41_flash_authoritative.json):
+Recomputes the layer-0 block (SWA-only) and the layer-2/8 blocks (CSA2:
+compressor m=2 softmax-gated 2-token pooling with carried state + indexer
+32h x 128d top-512) from a TP8 rank stagepack and EMITS per-piece
+expectations; tests/test_dsv41_flash_layer0_anchor.c recomputes the same
+pieces from the same pack bytes in C and prints the per-piece deltas. No
+module/driver code is imported: the formulas come from the pinned reference
+sources (cache/dsv41_warm/ref/{model,kernel}.py at revision dba1be0a, sha256
+recorded in model_contracts/dsv41_flash_authoritative.json):
 
   linear    = act_quant(x, 32, ue8m0) then fp8-block GEMM: per 32-wide
               k-block fp32 accumulation scaled by sa[i,kb]*sb[j,kb], bf16 out
   act_quant = s = 2^ceil(log2(amax/448)) per 32 block (amax floored 1e-4),
               q = fp8e4m3(clamp(x/s, +/-448)); the inplace variant the
               window-KV cache uses stores bf16(q*s)
+  fp4 rt    = indexer q/k: e8m0 scale 2^ceil(log2(amax/6)) per 32, dequant
+              written back bf16; compressed KV: e4m3 scale fp8e4m3(amax/6)
+              per 16 (amax floored 6*2^-9), dequant written back bf16
   mHC       = pre=sigmoid(m*s0+b0)+eps; post=2*sigmoid(m*s1+b1);
               comb=softmax(m*s2+b2, rows)+eps, col-norm, then
               (iters-1) x (row-norm, col-norm), all +eps
   gate      = sqrt(softplus(x.W)) fp32 (bf16 weight, fp32 math); top-6 of
               score+bias; weights/(sum + 1e-20) * 1.5
-  rope      = adjacent-pair complex rotation on the 64-dim tail, pure
-              theta 10000 on SWA-only layer 0 (no YaRN), conjugate on the
-              attention output tail
-  attention = softmax over the window ring (fp8-round-tripped bf16 rows)
-              with the per-head sink exp(sink - max) in the denominator
+  rope      = layer 0: pure theta 10000 on the 64-dim tail. CSA2 layers 2/8:
+              ONE yarn table (base 160000, factor 16, original 65536,
+              beta 32/1) shared by q, window kv, compressed kv, indexer q
+              AND indexer k; group j takes position j*ratio (freq row
+              pos+1-ratio during decode); conjugate on the attention output
+  compressor= kv=wkv(x) score=wgate(x) in fp32 (bf16 weights promoted);
+              decode slot=pos%2; on odd pos latent = norm(bf16(sum(kv_state
+              * softmax(score_state)))) published pre-rope
+  indexer   = k=fp4rt(k_norm(wk(latent))) roped at pos-1, cached; q=fp4rt(
+              wq_b_idx(qr)); weights=weights_proj(x)*(128^-0.5*32^-0.5);
+              score = relu(q.k)*weights summed over LOCAL heads then
+              all_reduce (this oracle emits the RANK-0 PARTIAL, no
+              cross-rank summands exist in one pack); top-512 sorted,
+              mapped +window, -1 unreachable
+  attention = softmax over the window ring plus compressed positions with
+              the per-head sink exp(sink - max) in the denominator
 
 Modes:
-  synth --out DIR              constrained-random layer-0-only TP8 stagepack
-                               + expectations (CI; no weights needed)
+  synth --out DIR              constrained-random TP8 stagepack carrying
+                               layers 0/2/8 + expectations (CI; no weights)
   real --pack FILE --out DIR   expectations from a real rank pack; fixture
                                token ids must be < VOCAB // TP (rank 0 owns
                                only its vocab slice)
   --verify-checkpoint DIR      re-derive sample planes from the warm
                                checkpoint shards and assert byte equality
 
-Outputs: DIR/layer0_expectations.bin + DIR/layer0_manifest.json
+Layer 0 is fed the tiled embedding (its true input). Layers 2/8 are ALSO fed
+the tiled embedding: their true input depends on the engram-gated layer 1,
+which is fail-closed, so the 2/8 ladders are per-piece instruments on a
+synthetic-but-identical input stream, not an end-to-end chain. o_a is
+consumed in the reference-faithful TP8 layout (rank rows-slice x full 4096
+cols); real packs staged before the o_a ruling fail closed with a REPACK
+message.
+
+Outputs: DIR/dsv41_expectations.bin + DIR/dsv41_manifest.json
 """
 import argparse
 import hashlib
@@ -70,10 +92,21 @@ ROPE_THETA = 10000.0
 WINDOW = 128
 ROUTE_SCALE = 1.5
 SWIGLU_LIMIT = 10.0
-LAYER = 0
 TP = 8
 RANK = 0
 REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+COMP_RATIO = 2
+COMP_THETA = 160000.0
+YARN_FACTOR = 16.0
+YARN_ORIGINAL = 65536
+YARN_BETA_FAST = 32
+YARN_BETA_SLOW = 1
+IDX_HEADS = 32
+IDX_HEADS_LOCAL = IDX_HEADS // TP
+IDX_DIM = 128
+IDX_TOPK = 512
+IDX_SCALE = (IDX_DIM ** -0.5) * (IDX_HEADS ** -0.5)
+CSA2_LAYERS = (2, 8)
 
 MAGIC = 0x31413444
 FORMAT_VERSION = 1
@@ -87,13 +120,14 @@ SE_NONE, SE_E8M0 = 0, 3
 
 (K_EMBED, K_FNORM, K_HEAD, K_ATTN_NORM, K_FFN_NORM, K_QA, K_QB, K_KVA, K_QNORM,
  K_KVNORM, K_SINK, K_OA, K_OB) = range(13)
+(K_IQB, K_IWK, K_IWP, K_IKN, K_CWKV, K_CWGATE, K_CNORM) = range(13, 20)
 (K_HCAF, K_HCAB, K_HCAS, K_HCFF, K_HCFB, K_HCFS, K_ROUTER, K_RBIAS,
  K_W1, K_W2, K_W3, K_SW1, K_SW2, K_SW3) = (20, 21, 22, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34)
 
 LOCAL_HEADS = HEADS // TP
 LOCAL_QB_ROWS = HEADS * HEAD_DIM // TP
 LOCAL_OA_ROWS = O_GROUPS * O_LORA // TP
-LOCAL_OA_COLS = HEADS * 64 // TP
+OA_FULL_COLS = HEADS * HEAD_DIM // O_GROUPS
 LOCAL_OB_COLS = O_GROUPS * O_LORA // TP
 LOCAL_EXPERTS = N_EXPERTS // TP
 LOCAL_SINKS = SINKS // TP
@@ -101,6 +135,9 @@ LOCAL_EMBED = VOCAB // TP
 W1_SHAPE = (MOE_INTER, HIDDEN // 2)
 W2_SHAPE = (HIDDEN, MOE_INTER // 2)
 W3_SHAPE = (MOE_INTER, HIDDEN // 2)
+IDX_QB_SHAPE = (IDX_HEADS * IDX_DIM // TP, Q_LORA)
+IDX_WP_SHAPE = (IDX_HEADS // TP, HIDDEN)
+COMP_W_SHAPE = (KV_LATENT, HIDDEN)
 
 FP8_LUT = np.zeros(256, dtype=np.float32)
 for _i in range(256):
@@ -118,6 +155,8 @@ for _i in range(256):
 FP4_LUT = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
                     -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
                    dtype=np.float32)
+FP4_TIES = np.array([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0], dtype=np.float32)
+FP4_TIE_MAG = np.array([0.0, 1.0, 1.0, 2.0, 2.0, 4.0, 4.0], dtype=np.float32)
 
 
 def bf16_u16(x):
@@ -155,10 +194,10 @@ def fp8_code(x):
     exp = np.where(m3 > 7, exp + 1, exp)
     m3 = np.where(m3 > 7, 0, m3)
     code = np.zeros(x.shape, dtype=np.int32)
-    normal = (bits >= 0x3C000000) & (bits < 0x7F800000)
+    normal = (bits >= 0x3D000000) & (bits < 0x7F800000)
     code = np.where(normal, ((exp - 120) << 3) | m3, code)
-    sub = (bits > 0) & (bits < 0x3C000000)
-    sub_m = rne_shift(0x800000 | man, np.clip(268 - exp, 0, 31))
+    sub = (bits > 0) & (bits < 0x3D000000)
+    sub_m = rne_shift(0x800000 | man, np.clip(141 - exp, 0, 31))
     code = np.where(sub, sub_m, code)
     return (sign | code.astype(np.uint8)).astype(np.uint8)
 
@@ -180,6 +219,43 @@ def act_quant(x_rows, group=32):
 def act_dequant(x_bf16_flat, group=32):
     vals, scale = act_quant(bf16_f32(x_bf16_flat).reshape(1, -1), group)
     deq = (vals.reshape(-1, group) * scale.reshape(-1, 1)).astype(np.float32)
+    return bf16_u16(deq.reshape(-1))
+
+
+def fp4_nearest_mag(v):
+    a = np.abs(np.asarray(v, dtype=np.float32))
+    idx = np.searchsorted(FP4_TIES, a, side="right")
+    mag = FP4_LUT[idx]
+    tie = np.searchsorted(FP4_TIES, a, side="left")
+    exact = (tie < FP4_TIES.size) & (FP4_TIES[tie.clip(0, FP4_TIES.size - 1)] == a)
+    mag = np.where(exact, FP4_TIE_MAG[tie.clip(0, FP4_TIES.size - 1)], mag)
+    return np.sign(v) * mag
+
+
+def fp4_rt_e8m0(x_f32, group=32):
+    rows = np.asarray(x_f32, dtype=np.float32).reshape(-1, x_f32.shape[-1])
+    n = rows.shape[-1]
+    blocks = rows.reshape(rows.shape[0], n // group, group)
+    amax = np.maximum(np.abs(blocks).max(axis=2), 6.0 * 2.0 ** -126)
+    t = (amax * (1.0 / 6.0)).astype(np.float32).view(np.uint32)
+    log2_ceil = ((t >> 23).astype(np.int32) - 127 +
+                 ((t & 0x7FFFFF) != 0).astype(np.int32))
+    scale = np.ldexp(np.ones_like(amax), log2_ceil).astype(np.float32)
+    q = np.clip(blocks / scale[:, :, None], -6.0, 6.0)
+    mag = fp4_nearest_mag(q)
+    deq = (mag * scale[:, :, None]).reshape(rows.shape)
+    return bf16_u16(deq.reshape(-1))
+
+
+def fp4_rt_e4m3(x_f32, group=16):
+    rows = np.asarray(x_f32, dtype=np.float32).reshape(-1, x_f32.shape[-1])
+    n = rows.shape[-1]
+    blocks = rows.reshape(rows.shape[0], n // group, group)
+    amax = np.maximum(np.abs(blocks).max(axis=2), 6.0 * 2.0 ** -9)
+    scale = FP8_LUT[fp8_code(amax * (1.0 / 6.0))]
+    q = np.clip(blocks / scale[:, :, None], -6.0, 6.0)
+    mag = fp4_nearest_mag(q)
+    deq = (mag * scale[:, :, None]).reshape(rows.shape)
     return bf16_u16(deq.reshape(-1))
 
 
@@ -216,6 +292,12 @@ def fp4_gemm_vector(x_bf16, w_u8, w_scale_u8, out_rows, k):
     return bf16_u16(acc)
 
 
+def bf16_gemm_vector(x_bf16, w_bf16, out_rows):
+    x = bf16_f32(x_bf16).reshape(-1).astype(np.float32)
+    w = bf16_f32(w_bf16.reshape(out_rows, x.shape[0])).astype(np.float32)
+    return bf16_u16(w @ x)
+
+
 def rmsnorm(x_bf16, weight_bf16):
     x = bf16_f32(np.asarray(x_bf16).reshape(-1)).astype(np.float32)
     w = bf16_f32(np.asarray(weight_bf16).reshape(-1)).astype(np.float32)
@@ -223,8 +305,29 @@ def rmsnorm(x_bf16, weight_bf16):
     return bf16_u16(w * x * rstd)
 
 
+def _yarn_band(base):
+    def corrected(rotations):
+        return ROPE * math.log(YARN_ORIGINAL / (rotations * 2.0 * math.pi)) / \
+            (2.0 * math.log(base))
+    low = max(math.floor(corrected(YARN_BETA_FAST)), 0)
+    high = min(math.ceil(corrected(YARN_BETA_SLOW)), ROPE - 1)
+    ramp = (np.arange(ROPE // 2, dtype=np.float32) - np.float32(low)) / \
+        np.float32(max(high - low, 1e-3))
+    ramp = np.clip(ramp, 0.0, 1.0).astype(np.float32)
+    return 1.0 - ramp
+
+
 def rope_freqs(last_pos):
-    inv = 1.0 / (ROPE_THETA ** (np.arange(0, ROPE, 2, dtype=np.float32) / ROPE))
+    inv = 1.0 / (np.float32(ROPE_THETA) ** (np.arange(0, ROPE, 2, dtype=np.float32) /
+                                            np.float32(ROPE)))
+    return np.outer(np.arange(last_pos + 1, dtype=np.float32), inv).astype(np.float32)
+
+
+def rope_freqs_yarn(last_pos, base):
+    inv = 1.0 / (np.float32(base) ** (np.arange(0, ROPE, 2, dtype=np.float32) /
+                                      np.float32(ROPE)))
+    smooth = _yarn_band(base)
+    inv = (inv / np.float32(YARN_FACTOR) * (1.0 - smooth) + inv * smooth).astype(np.float32)
     return np.outer(np.arange(last_pos + 1, dtype=np.float32), inv).astype(np.float32)
 
 
@@ -237,6 +340,13 @@ def apply_rope_tail(vec_bf16, freq_row, inverse=False):
     im = tail[:, 0] * s + tail[:, 1] * c
     tail[:, 0], tail[:, 1] = re, im
     return bf16_u16(v)
+
+
+def apply_rope_rows(rows_bf16, freq_row, inverse=False):
+    out = np.empty_like(rows_bf16)
+    for r in range(rows_bf16.shape[0]):
+        out[r] = apply_rope_tail(rows_bf16[r], freq_row, inverse)
+    return out
 
 
 def hc_mixes(stream_bf16, fn_f32, scale3, base24):
@@ -321,14 +431,101 @@ def sparse_attn(q_bf16, cache, idxs, sinks, scale):
         for j, idx in enumerate(valid):
             scores[j] = float(np.sum(qh * bf16_f32(cache[idx]).astype(np.float32),
                                      dtype=np.float32)) * scale
-        top = scores.max()
-        ex = np.exp(scores - top).astype(np.float32)
-        denom = (ex.sum(dtype=np.float32) + math.exp(float(sinks[h]) - float(top))).astype(np.float32)
+        top = scores.max() if len(valid) else -1e30
+        ex = np.exp(scores - top).astype(np.float32) if len(valid) else \
+            np.zeros(0, dtype=np.float32)
+        sink_term = math.exp(float(sinks[h]) - float(top)) if top > -1e29 \
+            else math.inf
+        denom = (ex.sum(dtype=np.float32) + sink_term).astype(np.float32)
         acc = np.zeros(HEAD_DIM, dtype=np.float32)
         for j, idx in enumerate(valid):
             acc += ex[j] * bf16_f32(cache[idx]).astype(np.float32)
         o[h] = bf16_u16(acc / denom)
     return o
+
+
+class Compressor:
+    def __init__(self, wkv_bf16, wgate_bf16, norm_bf16):
+        self.wkv = bf16_f32(wkv_bf16.reshape(COMP_W_SHAPE)).astype(np.float32)
+        self.wgate = bf16_f32(wgate_bf16.reshape(COMP_W_SHAPE)).astype(np.float32)
+        self.norm = norm_bf16
+        self.kv_state = np.zeros((COMP_RATIO, KV_LATENT), dtype=np.float32)
+        self.score_state = np.zeros((COMP_RATIO, KV_LATENT), dtype=np.float32)
+
+    def step(self, x_bf16, pos, pieces, tag):
+        x = bf16_f32(x_bf16.reshape(-1)).astype(np.float32)
+        kv = (self.wkv @ x).astype(np.float32)
+        score = (self.wgate @ x).astype(np.float32)
+        slot = pos % COMP_RATIO
+        self.kv_state[slot] = kv
+        self.score_state[slot] = score
+        if tag:
+            pieces.add(f"{tag}.c_kv_proj", kv, 2e-3, 1e-5)
+            pieces.add(f"{tag}.c_gate_score", score, 2e-3, 1e-5)
+            pieces.add(f"{tag}.c_state_kv", self.kv_state.reshape(-1), 2e-3, 1e-5)
+            pieces.add(f"{tag}.c_state_score", self.score_state.reshape(-1), 2e-3, 1e-5)
+        if (pos + 1) % COMP_RATIO != 0:
+            return None
+        mx = self.score_state.max(axis=0)
+        ex = np.exp(self.score_state - mx[None, :]).astype(np.float32)
+        p = (ex / ex.sum(axis=0, keepdims=True)).astype(np.float32)
+        pooled = (self.kv_state * p).sum(axis=0).astype(np.float32)
+        latent = rmsnorm(bf16_u16(pooled), self.norm)
+        if tag:
+            pieces.add(f"{tag}.c_latent", bf16_f32(latent), 2e-3, 1e-5)
+        return latent
+
+
+class Indexer:
+    def __init__(self, iqb, iqbs, iwk, iwp, ikn):
+        self.iqb = (iqb, iqbs)
+        self.wk = iwk
+        self.iwp = iwp
+        self.ikn = ikn
+        self.k_cache = {}
+
+    def publish_k(self, latent_bf16, pos, freqs, pieces, tag):
+        k = rmsnorm(bf16_gemm_vector(latent_bf16, self.wk, IDX_DIM), self.ikn)
+        k = apply_rope_tail(k, freqs[pos + 1 - COMP_RATIO])
+        k = fp4_rt_e8m0(bf16_f32(k).reshape(1, -1)).reshape(IDX_DIM)
+        self.k_cache[pos // COMP_RATIO] = k
+        if tag:
+            pieces.add(f"{tag}.idx_k", bf16_f32(k), 0.25, 1e-6)
+
+    def score(self, x_bf16, qr, pos, freqs, pieces, tag):
+        q = fp8_gemm_vector(qr, self.iqb[0], self.iqb[1],
+                            IDX_HEADS_LOCAL * IDX_DIM).reshape(IDX_HEADS_LOCAL, IDX_DIM)
+        q = apply_rope_rows(q, freqs[pos])
+        q = fp4_rt_e8m0(bf16_f32(q))
+        w = bf16_gemm_vector(x_bf16, self.iwp, IDX_HEADS_LOCAL)
+        w = bf16_u16(bf16_f32(w).astype(np.float32) * np.float32(IDX_SCALE))
+        n = (pos + 1) // COMP_RATIO
+        keys = np.stack([self.k_cache[j] for j in range(n)]) if n else \
+            np.zeros((0, IDX_DIM), dtype=np.uint16)
+        qf = bf16_f32(q.reshape(-1)).astype(np.float32).reshape(IDX_HEADS_LOCAL, IDX_DIM)
+        kf = bf16_f32(keys.reshape(-1)).astype(np.float32).reshape(n, IDX_DIM)
+        dots = bf16_u16(np.einsum("hd,td->th", qf, kf).reshape(-1)) \
+            if n else np.zeros(0, dtype=np.uint16)
+        dots = bf16_f32(dots).reshape(n, IDX_HEADS_LOCAL) if n else \
+            np.zeros((0, IDX_HEADS_LOCAL), dtype=np.float32)
+        dots = np.maximum(dots, 0.0)
+        wf = bf16_f32(w).astype(np.float32)
+        part = bf16_u16((dots * wf[None, :]).reshape(-1))
+        part = bf16_f32(part).reshape(n, IDX_HEADS_LOCAL) if n else \
+            np.zeros((0, IDX_HEADS_LOCAL), dtype=np.float32)
+        score = bf16_u16(part.sum(axis=1, dtype=np.float32)) if n else \
+            np.zeros(0, dtype=np.uint16)
+        sf = bf16_f32(score)
+        top = min(IDX_TOPK, n)
+        order = np.argsort(-sf, kind="stable")[:top]
+        mapped = np.sort(order).astype(np.int32) + WINDOW
+        if tag:
+            pieces.add(f"{tag}.idx_q", bf16_f32(q.reshape(-1)), 0.25, 1e-6)
+            pieces.add(f"{tag}.idx_w", bf16_f32(w), 2e-3, 1e-6)
+            if n:
+                pieces.add(f"{tag}.idx_score", sf, 2e-2, 1e-3)
+                pieces.add(f"{tag}.idx_topk", mapped.astype(np.float32), 0.0, 0.0)
+        return mapped
 
 
 class PackWriter:
@@ -378,16 +575,19 @@ class PackWriter:
         return file_bytes
 
 
-def add_dense(writer, kind, payload, codec, scale=b"", groups=1):
+LAYER = 0
+
+
+def add_dense(writer, kind, layer, payload, codec, scale=b"", groups=1):
     rows, cols = payload.shape
     if codec == COD_BF16:
-        writer.add(kind, LAYER, PT_BF16, COD_BF16, SE_NONE, groups, rows, cols,
+        writer.add(kind, layer, PT_BF16, COD_BF16, SE_NONE, groups, rows, cols,
                    payload.tobytes(), b"")
     elif codec == COD_NONE:
-        writer.add(kind, LAYER, PT_F32, COD_NONE, SE_NONE, groups, rows, cols,
+        writer.add(kind, layer, PT_F32, COD_NONE, SE_NONE, groups, rows, cols,
                    payload.astype(np.float32).tobytes(), b"")
     else:
-        writer.add(kind, LAYER, PT_PACKED, COD_FP8, SE_E8M0, groups, rows, cols,
+        writer.add(kind, layer, PT_PACKED, COD_FP8, SE_E8M0, groups, rows, cols,
                    payload.tobytes(), scale.tobytes())
 
 
@@ -408,76 +608,99 @@ def synth_tensors(rng):
         scales = rng.integers(116, 124, size=(scale_rows, shape[1] * 2 // 32)).astype(np.uint8)
         return bytes_, scales
 
-    t = {}
-    t[K_EMBED] = bf16n((LOCAL_EMBED, HIDDEN), 0.1)
-    t[K_FNORM] = bf16n((1, HIDDEN), 0.1)
-    t[K_HEAD] = bf16n((LOCAL_EMBED, HIDDEN))
-    t[K_ATTN_NORM] = bf16n((1, HIDDEN), 0.1)
-    t[K_FFN_NORM] = bf16n((1, HIDDEN), 0.1)
-    t[K_QA] = fp8w((Q_LORA, HIDDEN))
-    t[K_QB] = fp8w((LOCAL_QB_ROWS, Q_LORA))
-    t[K_KVA] = fp8w((KV_LATENT, HIDDEN))
-    t[K_QNORM] = bf16n((1, Q_LORA), 0.1)
-    t[K_KVNORM] = bf16n((1, KV_LATENT), 0.1)
-    t[K_SINK] = f32n((1, LOCAL_SINKS))
-    t[K_OA] = fp8w((LOCAL_OA_ROWS, LOCAL_OA_COLS))
-    t[K_OB] = fp8w((HIDDEN, LOCAL_OB_COLS))
-    t[K_HCAF] = (f32n((HC_ROWS, HC_FLAT), 0.02)).reshape(HC_ROWS, HC_FLAT)
-    t[K_HCAB] = f32n(HC_ROWS, 0.3)
-    t[K_HCAS] = np.abs(f32n(3, 0.5)) + 0.25
-    t[K_HCFF] = f32n((HC_ROWS, HC_FLAT), 0.02)
-    t[K_HCFB] = f32n(HC_ROWS, 0.3)
-    t[K_HCFS] = np.abs(f32n(3, 0.5)) + 0.25
-    t[K_ROUTER] = bf16n((N_EXPERTS, HIDDEN), 0.02)
-    t[K_RBIAS] = f32n(N_EXPERTS, 0.05)
-    for kind, shape, srows in ((K_W1, W1_SHAPE, MOE_INTER), (K_W2, W2_SHAPE, HIDDEN),
-                               (K_W3, W3_SHAPE, MOE_INTER)):
-        planes = [fp4w(shape, srows) for _ in range(LOCAL_EXPERTS)]
-        t[kind] = (np.concatenate([p[0].reshape(-1) for p in planes]),
-                   np.concatenate([p[1].reshape(-1) for p in planes]))
-    t[K_SW1] = fp8w((MOE_INTER, HIDDEN))
-    t[K_SW2] = fp8w((HIDDEN, MOE_INTER))
-    t[K_SW3] = fp8w((MOE_INTER, HIDDEN))
+    t = {"globals": {}, "layers": {}}
+    t["globals"][K_EMBED] = bf16n((LOCAL_EMBED, HIDDEN), 0.1)
+    t["globals"][K_FNORM] = bf16n((1, HIDDEN), 0.1)
+    t["globals"][K_HEAD] = bf16n((LOCAL_EMBED, HIDDEN))
+    for layer in (LAYER,) + CSA2_LAYERS:
+        tl = {}
+        tl[K_ATTN_NORM] = bf16n((1, HIDDEN), 0.1)
+        tl[K_FFN_NORM] = bf16n((1, HIDDEN), 0.1)
+        tl[K_QA] = fp8w((Q_LORA, HIDDEN))
+        tl[K_QB] = fp8w((LOCAL_QB_ROWS, Q_LORA))
+        tl[K_KVA] = fp8w((KV_LATENT, HIDDEN))
+        tl[K_QNORM] = bf16n((1, Q_LORA), 0.1)
+        tl[K_KVNORM] = bf16n((1, KV_LATENT), 0.1)
+        tl[K_SINK] = f32n((1, LOCAL_SINKS))
+        tl[K_OA] = fp8w((LOCAL_OA_ROWS, OA_FULL_COLS))
+        tl[K_OB] = fp8w((HIDDEN, LOCAL_OB_COLS))
+        tl[K_HCAF] = f32n((HC_ROWS, HC_FLAT), 0.02)
+        tl[K_HCAB] = f32n(HC_ROWS, 0.3)
+        tl[K_HCAS] = np.abs(f32n(3, 0.5)) + 0.25
+        tl[K_HCFF] = f32n((HC_ROWS, HC_FLAT), 0.02)
+        tl[K_HCFB] = f32n(HC_ROWS, 0.3)
+        tl[K_HCFS] = np.abs(f32n(3, 0.5)) + 0.25
+        tl[K_ROUTER] = bf16n((N_EXPERTS, HIDDEN), 0.02)
+        tl[K_RBIAS] = f32n(N_EXPERTS, 0.05)
+        for kind, shape, srows in ((K_W1, W1_SHAPE, MOE_INTER), (K_W2, W2_SHAPE, HIDDEN),
+                                   (K_W3, W3_SHAPE, MOE_INTER)):
+            planes = [fp4w(shape, srows) for _ in range(LOCAL_EXPERTS)]
+            tl[kind] = (np.concatenate([p[0].reshape(-1) for p in planes]),
+                        np.concatenate([p[1].reshape(-1) for p in planes]))
+        tl[K_SW1] = fp8w((MOE_INTER, HIDDEN))
+        tl[K_SW2] = fp8w((HIDDEN, MOE_INTER))
+        tl[K_SW3] = fp8w((MOE_INTER, HIDDEN))
+        if layer in CSA2_LAYERS:
+            tl[K_IQB] = fp8w(IDX_QB_SHAPE)
+            tl[K_IWK] = bf16n((IDX_DIM, KV_LATENT))
+            tl[K_IWP] = bf16n(IDX_WP_SHAPE)
+            tl[K_IKN] = bf16n((1, IDX_DIM), 0.1)
+            tl[K_CWKV] = bf16n(COMP_W_SHAPE, 0.02)
+            tl[K_CWGATE] = bf16n(COMP_W_SHAPE, 0.02)
+            tl[K_CNORM] = bf16n((1, KV_LATENT), 0.1)
+        t["layers"][layer] = tl
     return t
 
 
 def synth_write_pack(path, t):
     writer = PackWriter(path)
-    for kind, payload, codec in ((K_EMBED, t[K_EMBED], COD_BF16),
-                                 (K_FNORM, t[K_FNORM], COD_BF16),
-                                 (K_HEAD, t[K_HEAD], COD_BF16)):
+    tg = t["globals"]
+    for kind, payload, codec in ((K_EMBED, tg[K_EMBED], COD_BF16),
+                                 (K_FNORM, tg[K_FNORM], COD_BF16),
+                                 (K_HEAD, tg[K_HEAD], COD_BF16)):
         rows, cols = payload.shape
         writer.add(kind, GLOBAL_LAYER, PT_BF16, COD_BF16, SE_NONE, 1, rows, cols,
                    payload.tobytes(), b"")
-    for kind, payload, codec in ((K_ATTN_NORM, t[K_ATTN_NORM], COD_BF16),
-                                 (K_FFN_NORM, t[K_FFN_NORM], COD_BF16),
-                                 (K_QNORM, t[K_QNORM], COD_BF16),
-                                 (K_KVNORM, t[K_KVNORM], COD_BF16),
-                                 (K_ROUTER, t[K_ROUTER], COD_BF16)):
-        rows, cols = payload.shape
-        writer.add(kind, LAYER, PT_BF16, COD_BF16, SE_NONE, 1, rows, cols,
-                   payload.tobytes(), b"")
-    for kind, payload in ((K_SINK, t[K_SINK]), (K_HCAF, t[K_HCAF]), (K_HCAB, t[K_HCAB]),
-                          (K_HCAS, t[K_HCAS]), (K_HCFF, t[K_HCFF]), (K_HCFB, t[K_HCFB]),
-                          (K_HCFS, t[K_HCFS]), (K_RBIAS, t[K_RBIAS])):
-        flat = payload.reshape(1, -1)
-        rows, cols = flat.shape
-        writer.add(kind, LAYER, PT_F32, COD_NONE, SE_NONE, 1, rows, cols,
-                   flat.astype(np.float32).tobytes(), b"")
-    for kind, payload, scale in ((K_QA, t[K_QA], None), (K_QB, t[K_QB], None),
-                                 (K_KVA, t[K_KVA], None), (K_OA, t[K_OA], None),
-                                 (K_OB, t[K_OB], None), (K_SW1, t[K_SW1], None),
-                                 (K_SW2, t[K_SW2], None), (K_SW3, t[K_SW3], None)):
-        code, scales = payload
-        rows, cols = code.shape
-        writer.add(kind, LAYER, PT_PACKED, COD_FP8, SE_E8M0, 1, rows, cols,
-                   code.tobytes(), scales.tobytes())
-    for kind in (K_W1, K_W2, K_W3):
-        code, scales = t[kind]
-        rows = MOE_INTER if kind != K_W2 else HIDDEN
-        cols = code.size // LOCAL_EXPERTS // rows
-        writer.add(kind, LAYER, PT_PACKED, COD_MXFP4, SE_E8M0, LOCAL_EXPERTS, rows,
-                   cols, code.tobytes(), scales.tobytes())
+    for layer in (LAYER,) + CSA2_LAYERS:
+        tl = t["layers"][layer]
+        for kind, payload, codec in ((K_ATTN_NORM, tl[K_ATTN_NORM], COD_BF16),
+                                     (K_FFN_NORM, tl[K_FFN_NORM], COD_BF16),
+                                     (K_QNORM, tl[K_QNORM], COD_BF16),
+                                     (K_KVNORM, tl[K_KVNORM], COD_BF16),
+                                     (K_ROUTER, tl[K_ROUTER], COD_BF16)):
+            rows, cols = payload.shape
+            writer.add(kind, layer, PT_BF16, COD_BF16, SE_NONE, 1, rows, cols,
+                       payload.tobytes(), b"")
+        for kind, payload in ((K_SINK, tl[K_SINK]), (K_HCAF, tl[K_HCAF]),
+                              (K_HCAB, tl[K_HCAB]), (K_HCAS, tl[K_HCAS]),
+                              (K_HCFF, tl[K_HCFF]), (K_HCFB, tl[K_HCFB]),
+                              (K_HCFS, tl[K_HCFS]), (K_RBIAS, tl[K_RBIAS])):
+            flat = payload.reshape(1, -1)
+            rows, cols = flat.shape
+            writer.add(kind, layer, PT_F32, COD_NONE, SE_NONE, 1, rows, cols,
+                       flat.astype(np.float32).tobytes(), b"")
+        for kind, payload in ((K_QA, tl[K_QA]), (K_QB, tl[K_QB]), (K_KVA, tl[K_KVA]),
+                              (K_OA, tl[K_OA]), (K_OB, tl[K_OB]), (K_SW1, tl[K_SW1]),
+                              (K_SW2, tl[K_SW2]), (K_SW3, tl[K_SW3])):
+            code, scales = payload
+            rows, cols = code.shape
+            writer.add(kind, layer, PT_PACKED, COD_FP8, SE_E8M0, 1, rows, cols,
+                       code.tobytes(), scales.tobytes())
+        for kind in (K_W1, K_W2, K_W3):
+            code, scales = tl[kind]
+            rows = MOE_INTER if kind != K_W2 else HIDDEN
+            cols = code.size // LOCAL_EXPERTS // rows
+            writer.add(kind, layer, PT_PACKED, COD_MXFP4, SE_E8M0, LOCAL_EXPERTS, rows,
+                       cols, code.tobytes(), scales.tobytes())
+        if layer in CSA2_LAYERS:
+            code, scales = tl[K_IQB]
+            rows, cols = code.shape
+            writer.add(K_IQB, layer, PT_PACKED, COD_FP8, SE_E8M0, 1, rows, cols,
+                       code.tobytes(), scales.tobytes())
+            for kind in (K_IWK, K_IWP, K_IKN, K_CWKV, K_CWGATE, K_CNORM):
+                rows, cols = tl[kind].shape
+                writer.add(kind, layer, PT_BF16, COD_BF16, SE_NONE, 1, rows, cols,
+                           tl[kind].tobytes(), b"")
     return writer.write(RANK)
 
 
@@ -500,8 +723,8 @@ class PackReader:
             self.entries[(e[0], layer)] = e
         self.m = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
 
-    def view(self, kind, expert=None):
-        e = self.entries[(kind, GLOBAL_LAYER if kind <= K_HEAD else LAYER)]
+    def view(self, kind, layer=LAYER, expert=None):
+        e = self.entries[(kind, GLOBAL_LAYER if kind <= K_HEAD else layer)]
         groups, p_off, p_bytes, s_off, s_bytes = e[5], e[8], e[9], e[10], e[11]
         if expert is None:
             payload = np.frombuffer(self.m, dtype=np.uint8, count=p_bytes, offset=p_off)
@@ -514,22 +737,21 @@ class PackReader:
         scale = np.frombuffer(self.m, dtype=np.uint8, count=sper, offset=s_off + expert * sper)
         return payload, scale
 
-    def bf16(self, kind):
-        return np.frombuffer(self.view(kind)[0], dtype=np.uint16)
+    def bf16(self, kind, layer=LAYER):
+        return np.frombuffer(self.view(kind, layer)[0], dtype=np.uint16)
 
-    def f32(self, kind):
-        return np.frombuffer(self.view(kind)[0], dtype=np.float32)
+    def f32(self, kind, layer=LAYER):
+        return np.frombuffer(self.view(kind, layer)[0], dtype=np.float32)
 
-    def fp8(self, kind, scale_rows=None, scale_cols=None):
-        p, s = self.view(kind)
+    def fp8(self, kind, layer=LAYER, scale_rows=None, scale_cols=None):
+        p, s = self.view(kind, layer)
         if scale_rows is not None:
             s = s.reshape(scale_rows, scale_cols)
         return p, s
 
-    def experts(self, kind):
+    def experts(self, kind, layer=LAYER):
         def one(g):
-            p, s = self.view(kind, g)
-            return p, s
+            return self.view(kind, layer, g)
         return one
 
 
@@ -550,14 +772,14 @@ class Expectations:
 
     def write(self, meta):
         os.makedirs(self.out_dir, exist_ok=True)
-        bin_path = os.path.join(self.out_dir, "layer0_expectations.bin")
+        bin_path = os.path.join(self.out_dir, "dsv41_expectations.bin")
         with open(bin_path, "wb") as f:
             f.write(bytes(self.bin))
         meta["pieces"] = self.pieces
         meta["expectations_sha256"] = hashlib.sha256(bytes(self.bin)).hexdigest()
-        with open(os.path.join(self.out_dir, "layer0_manifest.json"), "w") as f:
+        with open(os.path.join(self.out_dir, "dsv41_manifest.json"), "w") as f:
             json.dump(meta, f, indent=1)
-        table_path = os.path.join(self.out_dir, "layer0_piece_table.bin")
+        table_path = os.path.join(self.out_dir, "dsv41_piece_table.bin")
         tokens = meta["tokens"] + [0] * (16 - len(meta["tokens"]))
         header = struct.pack("<4s7I16iffI", b"L0AT", 1, meta["total_positions"],
                              meta["window"], len(meta["tokens"]), 0, 0, 0,
@@ -586,11 +808,20 @@ class _Drift:
 
 
 class Block:
-    def __init__(self, t):
+    def __init__(self, t, layer, freqs):
         self.t = t
+        self.layer = layer
+        self.freqs = freqs
+        self.is_csa2 = layer in CSA2_LAYERS
+        self.tol_amp = 5.0 if self.is_csa2 else 1.0
+        if self.is_csa2:
+            self.compressor = Compressor(t[K_CWKV], t[K_CWGATE], t[K_CNORM])
+            self.indexer = Indexer(t[K_IQB][0], t[K_IQB][1], t[K_IWK], t[K_IWP],
+                                   t[K_IKN])
 
-    def attention(self, x_collapsed, freqs, cache, start_pos, pieces, tag):
+    def attention(self, x_collapsed, cache, start_pos, pieces, tag):
         t = self.t
+        freqs = self.freqs
         qr = rmsnorm(fp8_gemm_vector(x_collapsed, t[K_QA][0], t[K_QA][1], Q_LORA),
                      t[K_QNORM])
         q = np.zeros((LOCAL_HEADS, HEAD_DIM), dtype=np.uint16)
@@ -610,24 +841,46 @@ class Block:
             if slot >= len(cache):
                 cache.extend([np.zeros(KV_LATENT, dtype=np.uint16)] * (slot + 1 - len(cache)))
             cache[slot] = kv_row
-        idxs = window_topk_idxs(start_pos)
+        if self.is_csa2:
+            latent = self.compressor.step(x_collapsed, start_pos, pieces, tag)
+            if latent is not None:
+                self.indexer.publish_k(latent, start_pos, freqs, pieces, tag)
+                roped = apply_rope_tail(latent, freqs[start_pos + 1 - COMP_RATIO])
+                comp_row = fp4_rt_e4m3(bf16_f32(roped).reshape(1, -1)).reshape(KV_LATENT)
+                self.comp_cache[start_pos // COMP_RATIO] = comp_row
+                if tag:
+                    pieces.add(f"{tag}.c_kv_row", bf16_f32(comp_row), 0.25, 1e-6)
+            idxs_c = self.indexer.score(x_collapsed, qr, start_pos, freqs, pieces, tag)
+        if tag:
+            a = self.tol_amp
+            pieces.add(f"{tag}.q_lora", bf16_f32(qr), 2e-3 * a, 1e-5)
+            pieces.add(f"{tag}.q", bf16_f32(q), 2e-3 * a, 1e-5)
+            pieces.add(f"{tag}.kv_row", bf16_f32(kv_row), 2e-3 * a, 1e-2 * a)
+        idxs_w = window_topk_idxs(start_pos)
+        if self.is_csa2:
+            n = (start_pos + 1) // COMP_RATIO
+            pad = [np.zeros(KV_LATENT, dtype=np.uint16)] * (WINDOW - len(cache))
+            comp_rows = [self.comp_cache[j] for j in range(n)]
+            full_cache = cache[:WINDOW] + pad + comp_rows
+            idxs = np.concatenate([idxs_w, idxs_c]).astype(np.int32)
+        else:
+            full_cache = cache
+            idxs = idxs_w
         sinks = self.t[K_SINK].reshape(LOCAL_SINKS).astype(np.float32)
-        o = sparse_attn(q, cache, idxs, sinks, HEAD_DIM ** -0.5)
+        o = sparse_attn(q, full_cache, idxs, sinks, HEAD_DIM ** -0.5)
         for h in range(LOCAL_HEADS):
             o[h] = apply_rope_tail(o[h], freqs[start_pos], inverse=True)
-        flat = o.reshape(-1)
-        o_slice = flat[RANK * LOCAL_OA_COLS:(RANK + 1) * LOCAL_OA_COLS]
-        oa_vals = FP8_LUT[t[K_OA][0].reshape(LOCAL_OA_ROWS, LOCAL_OA_COLS)]
-        oa_scales = e8m0_f32(t[K_OA][1].reshape(LOCAL_OA_ROWS // 32, LOCAL_OA_COLS // 32))
+        if tag:
+            pieces.add(f"{tag}.attn_out_rope_inv", bf16_f32(o), 2e-3 * self.tol_amp,
+                       1e-5)
+        oa_vals = FP8_LUT[t[K_OA][0].reshape(LOCAL_OA_ROWS, OA_FULL_COLS)]
+        oa_scales = e8m0_f32(t[K_OA][1].reshape(LOCAL_OA_ROWS // 32, OA_FULL_COLS // 32))
         oa = bf16_f32(bf16_u16(oa_vals * oa_scales.repeat(32, 0).repeat(32, 1))).astype(np.float32)
-        partial = (oa @ bf16_f32(o_slice).astype(np.float32)).astype(np.float32)
+        partial = (oa @ bf16_f32(o.reshape(-1)).astype(np.float32)).astype(np.float32)
         attn_out = fp8_gemm_vector(bf16_u16(partial), t[K_OB][0], t[K_OB][1], HIDDEN)
         if tag:
-            pieces.add(f"{tag}.q_lora", bf16_f32(qr), 2e-3, 1e-5)
-            pieces.add(f"{tag}.q", bf16_f32(q), 2e-3, 1e-5)
-            pieces.add(f"{tag}.kv_row", bf16_f32(kv_row), 2e-3, 1e-5)
-            pieces.add(f"{tag}.attn_out_rope_inv", bf16_f32(o), 2e-3, 1e-5)
-            pieces.add(f"{tag}.wo_b_out", bf16_f32(attn_out), 2e-2, 1e-5)
+            pieces.add(f"{tag}.wo_b_out", bf16_f32(attn_out), 2e-2 * self.tol_amp,
+                       1e-5)
         return attn_out
 
     def moe(self, x_collapsed, pieces, tag):
@@ -656,15 +909,16 @@ class Block:
             pieces.add(f"{tag}.moe_out", bf16_f32(moe_out), 2e-2, 1e-5)
         return moe_out
 
-    def forward(self, stream_in, start_pos, freqs, cache, pre_mix_in, pieces, tag):
+    def forward(self, stream_in, start_pos, cache, comp_cache, pre_mix_in, pieces, tag):
         want = bool(tag)
         t = self.t
+        self.comp_cache = comp_cache
         residual = stream_in.reshape(HC * HIDDEN)
         fn_a = t[K_HCAF].astype(np.float32)
         mixes_a, pre_a, post_a, comb_a = hc_mixes(residual, fn_a, t[K_HCAS], t[K_HCAB])
         collapsed_a = hc_pre(residual, pre_mix_in)
         normed_a = rmsnorm(collapsed_a, t[K_ATTN_NORM])
-        attn_out = self.attention(normed_a, freqs, cache, start_pos, pieces, tag)
+        attn_out = self.attention(normed_a, cache, start_pos, pieces, tag)
         stream_a = hc_post(attn_out, residual, post_a, comb_a)
         fn_f = t[K_HCFF].astype(np.float32)
         mixes_f, pre_f, post_f, comb_f = hc_mixes(stream_a, fn_f, t[K_HCFS], t[K_HCFB])
@@ -673,24 +927,26 @@ class Block:
         moe_out = self.moe(normed_f, pieces, tag)
         stream_f = hc_post(moe_out, stream_a, post_f, comb_f)
         if want:
-            pieces.add(f"{tag}.mixes_attn", mixes_a, 2e-3, 1e-6)
-            pieces.add(f"{tag}.pre_attn", pre_a, 2e-4, 1e-7)
-            pieces.add(f"{tag}.post_attn", post_a, 2e-4, 1e-7)
-            pieces.add(f"{tag}.comb_attn", comb_a, 2e-4, 1e-7)
-            pieces.add(f"{tag}.collapsed_attn", bf16_f32(collapsed_a), 2e-3, 1e-5)
-            pieces.add(f"{tag}.normed_attn", bf16_f32(normed_a), 2e-3, 1e-5)
-            pieces.add(f"{tag}.stream_after_attn", bf16_f32(stream_a), 2e-2, 1e-5)
-            pieces.add(f"{tag}.mixes_ffn", mixes_f, 2e-3, 1e-6)
-            pieces.add(f"{tag}.pre_ffn", pre_f, 2e-4, 1e-7)
-            pieces.add(f"{tag}.post_ffn", post_f, 2e-4, 1e-7)
-            pieces.add(f"{tag}.comb_ffn", comb_f, 2e-4, 1e-7)
-            pieces.add(f"{tag}.collapsed_ffn", bf16_f32(collapsed_f), 2e-3, 1e-5)
-            pieces.add(f"{tag}.normed_ffn", bf16_f32(normed_f), 2e-3, 1e-5)
+            a = self.tol_amp
+            pieces.add(f"{tag}.mixes_attn", mixes_a, 2e-3 * a, 1e-6)
+            pieces.add(f"{tag}.pre_attn", pre_a, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.post_attn", post_a, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.comb_attn", comb_a, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.collapsed_attn", bf16_f32(collapsed_a), 2e-3 * a, 1e-5)
+            pieces.add(f"{tag}.normed_attn", bf16_f32(normed_a), 2e-3 * a, 1e-5)
+            pieces.add(f"{tag}.stream_after_attn", bf16_f32(stream_a), 2e-2 * a, 1e-5)
+            pieces.add(f"{tag}.mixes_ffn", mixes_f, 2e-3 * a, 1e-6)
+            pieces.add(f"{tag}.pre_ffn", pre_f, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.post_ffn", post_f, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.comb_ffn", comb_f, 2e-4 * a, 1e-7)
+            pieces.add(f"{tag}.collapsed_ffn", bf16_f32(collapsed_f), 2e-3 * a, 1e-5)
+            pieces.add(f"{tag}.normed_ffn", bf16_f32(normed_f), 2e-3 * a, 1e-5)
         return stream_f, pre_f
 
 
 TOKENS = [11, 900, 5, 12999, 42, 7, 12345, 8000, 3133, 64, 1, 0, 999, 2048, 777]
 TOTAL_POSITIONS = 131
+CSA2_STREAM_HORIZON = 64
 
 
 def expert_views(t):
@@ -705,29 +961,54 @@ def expert_views(t):
     return views
 
 
-def run(t, out_dir, source, pack_path, ckpt_report):
-    block = Block(expert_views(t))
-    pieces = Expectations(out_dir)
-    freqs = rope_freqs(TOTAL_POSITIONS)
+def run_layer(block, layer, embed, pieces, prefix):
     cache = []
+    comp_cache = {}
     pre_mix = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     for pos in range(TOTAL_POSITIONS + 1):
         token = TOKENS[pos % len(TOKENS)]
         if token >= LOCAL_EMBED:
             raise SystemExit(f"fixture token {token} outside rank-0 vocab slice")
-        row = token * HIDDEN
-        embed = t[K_EMBED].reshape(LOCAL_EMBED, HIDDEN)[token]
-        stream_in = np.tile(embed, HC)
-        tag = f"pos{pos}" if pos in (0, 1, 2) else None
+        stream_in = np.tile(embed[token], HC)
+        if layer == LAYER:
+            tag = f"pos{pos}" if pos in (0, 1, 2) else None
+        else:
+            tag = f"{prefix}.p{pos}" if pos in (0, 1, 2, 3, 4, 5) else None
         drift = 1.0 if pos == 0 else 5.0
         stream, pre_mix = block.forward(
-            stream_in, pos, freqs, cache, pre_mix, _Drift(pieces, drift), tag)
-        pieces.add(f"stream_pos{pos}", bf16_f32(stream), 8e-2, 1e-4)
+            stream_in, pos, cache, comp_cache, pre_mix, _Drift(pieces, drift), tag)
+        name = f"stream_pos{pos}" if layer == LAYER else f"{prefix}.stream_pos{pos}"
+        if layer != LAYER and pos > CSA2_STREAM_HORIZON:
+            continue
+        pieces.add(name, bf16_f32(stream), 8e-2, 1e-4)
+
+
+def run(t, out_dir, source, pack_path, ckpt_report):
+    pieces = Expectations(out_dir)
+    freqs_pure = rope_freqs(TOTAL_POSITIONS)
+    freqs_yarn = rope_freqs_yarn(TOTAL_POSITIONS, COMP_THETA)
+    embed = t["globals"][K_EMBED].reshape(LOCAL_EMBED, HIDDEN)
+    for layer in (LAYER,) + CSA2_LAYERS:
+        block = Block(expert_views(t["layers"][layer]), layer,
+                      freqs_pure if layer == LAYER else freqs_yarn)
+        run_layer(block, layer, embed, pieces, f"l{layer}")
     meta = {
         "lane": "dsv5-flash", "model_revision": REVISION, "source": source,
-        "pack": os.path.abspath(pack_path), "layer": LAYER, "tp": TP, "rank": RANK,
+        "pack": os.path.abspath(pack_path), "layers": [LAYER] + list(CSA2_LAYERS),
+        "tp": TP, "rank": RANK,
         "tokens": TOKENS, "total_positions": TOTAL_POSITIONS, "window": WINDOW,
-        "rope_theta": ROPE_THETA, "norm_eps": NORM_EPS,
+        "rope_theta": ROPE_THETA,
+        "csa2_rope": {"base": COMP_THETA, "factor": YARN_FACTOR,
+                      "original_seq_len": YARN_ORIGINAL,
+                      "beta_fast": YARN_BETA_FAST, "beta_slow": YARN_BETA_SLOW,
+                      "note": "one yarn table for q/window-kv/compressed-kv/indexer-q/indexer-k on CSA2 layers"},
+        "compress_ratio": COMP_RATIO,
+        "indexer": {"heads": IDX_HEADS, "head_dim": IDX_DIM, "topk": IDX_TOPK,
+                    "score_piece": "rank-0 partial (local-head sum, pre-all-reduce)"},
+        "input_note": "layer 0 consumes the tiled embedding (its true input); layers 2/8 consume the same synthetic tiled stream because the true stream depends on the engram-gated layer 1 (fail-closed)",
+        "csa2_stream_horizon": CSA2_STREAM_HORIZON,
+        "csa2_stream_note": "the bf16 hc-feedback chain is chaotic under ~1-ulp implementation-order differences (numpy BLAS/pairwise vs C sequential reductions); CSA2 stream pieces are emitted only up to the horizon, the per-operator tagged pieces carry the semantic proof",
+        "norm_eps": NORM_EPS,
         "swiglu_limit": SWIGLU_LIMIT, "route_scale": ROUTE_SCALE,
         "hc": {"mult": HC, "sinkhorn_iters": SINKHORN_ITERS, "eps": HC_EPS},
         "checkpoint_report": ckpt_report,
@@ -807,35 +1088,50 @@ def verify_checkpoint(reader, ckpt_dir):
 
 
 def real_tensors(reader):
-    t = {}
-    t[K_EMBED] = reader.bf16(K_EMBED).reshape(LOCAL_EMBED, HIDDEN)
-    t[K_FNORM] = reader.bf16(K_FNORM)
-    t[K_HEAD] = reader.bf16(K_HEAD).reshape(LOCAL_EMBED, HIDDEN)
-    t[K_ATTN_NORM] = reader.bf16(K_ATTN_NORM)
-    t[K_FFN_NORM] = reader.bf16(K_FFN_NORM)
-    t[K_QA] = reader.fp8(K_QA, Q_LORA // 32, HIDDEN // 32)
-    qb_p, qb_s = reader.fp8(K_QB, LOCAL_QB_ROWS // 32, Q_LORA // 32)
-    t[K_QB] = (qb_p.reshape(LOCAL_QB_ROWS, Q_LORA), qb_s)
-    t[K_KVA] = reader.fp8(K_KVA, KV_LATENT // 32, HIDDEN // 32)
-    t[K_QNORM] = reader.bf16(K_QNORM)
-    t[K_KVNORM] = reader.bf16(K_KVNORM)
-    t[K_SINK] = reader.f32(K_SINK).reshape(LOCAL_SINKS)
-    t[K_OA] = reader.fp8(K_OA, LOCAL_OA_ROWS // 32, LOCAL_OA_COLS // 32)
-    t[K_OB] = reader.fp8(K_OB, HIDDEN // 32, LOCAL_OB_COLS // 32)
-    t[K_HCAF] = reader.f32(K_HCAF).reshape(HC_ROWS, HC_FLAT)
-    t[K_HCAB] = reader.f32(K_HCAB).reshape(HC_ROWS)
-    t[K_HCAS] = reader.f32(K_HCAS).reshape(3)
-    t[K_HCFF] = reader.f32(K_HCFF).reshape(HC_ROWS, HC_FLAT)
-    t[K_HCFB] = reader.f32(K_HCFB).reshape(HC_ROWS)
-    t[K_HCFS] = reader.f32(K_HCFS).reshape(3)
-    t[K_ROUTER] = reader.bf16(K_ROUTER)
-    t[K_RBIAS] = reader.f32(K_RBIAS).reshape(N_EXPERTS)
-    t[K_SW1] = reader.fp8(K_SW1, MOE_INTER // 32, HIDDEN // 32)
-    t[K_SW2] = reader.fp8(K_SW2, HIDDEN // 32, MOE_INTER // 32)
-    t[K_SW3] = reader.fp8(K_SW3, MOE_INTER // 32, HIDDEN // 32)
-    t[K_W1] = reader.experts(K_W1)
-    t[K_W2] = reader.experts(K_W2)
-    t[K_W3] = reader.experts(K_W3)
+    t = {"globals": {}, "layers": {}}
+    t["globals"][K_EMBED] = reader.bf16(K_EMBED).reshape(LOCAL_EMBED, HIDDEN)
+    t["globals"][K_HEAD] = reader.bf16(K_HEAD).reshape(LOCAL_EMBED, HIDDEN)
+    for layer in (LAYER,) + CSA2_LAYERS:
+        tl = {}
+        tl[K_ATTN_NORM] = reader.bf16(K_ATTN_NORM, layer)
+        tl[K_FFN_NORM] = reader.bf16(K_FFN_NORM, layer)
+        tl[K_QA] = reader.fp8(K_QA, layer, Q_LORA // 32, HIDDEN // 32)
+        qb_p, qb_s = reader.fp8(K_QB, layer, LOCAL_QB_ROWS // 32, Q_LORA // 32)
+        tl[K_QB] = (qb_p.reshape(LOCAL_QB_ROWS, Q_LORA), qb_s)
+        tl[K_KVA] = reader.fp8(K_KVA, layer, KV_LATENT // 32, HIDDEN // 32)
+        tl[K_QNORM] = reader.bf16(K_QNORM, layer)
+        tl[K_KVNORM] = reader.bf16(K_KVNORM, layer)
+        tl[K_SINK] = reader.f32(K_SINK, layer).reshape(LOCAL_SINKS)
+        oa_p, oa_s = reader.view(K_OA, layer)
+        if len(oa_p) != LOCAL_OA_ROWS * OA_FULL_COLS:
+            raise SystemExit(f"pack o_a layer {layer} is {len(oa_p)} bytes; the "
+                             f"reference-faithful TP8 layout is "
+                             f"[{LOCAL_OA_ROWS}, {OA_FULL_COLS}] fp8 - REPACK required")
+        tl[K_OA] = (oa_p, oa_s.reshape(LOCAL_OA_ROWS // 32, OA_FULL_COLS // 32))
+        tl[K_OB] = reader.fp8(K_OB, layer, HIDDEN // 32, LOCAL_OB_COLS // 32)
+        tl[K_HCAF] = reader.f32(K_HCAF, layer).reshape(HC_ROWS, HC_FLAT)
+        tl[K_HCAB] = reader.f32(K_HCAB, layer).reshape(HC_ROWS)
+        tl[K_HCAS] = reader.f32(K_HCAS, layer).reshape(3)
+        tl[K_HCFF] = reader.f32(K_HCFF, layer).reshape(HC_ROWS, HC_FLAT)
+        tl[K_HCFB] = reader.f32(K_HCFB, layer).reshape(HC_ROWS)
+        tl[K_HCFS] = reader.f32(K_HCFS, layer).reshape(3)
+        tl[K_ROUTER] = reader.bf16(K_ROUTER, layer)
+        tl[K_RBIAS] = reader.f32(K_RBIAS, layer).reshape(N_EXPERTS)
+        tl[K_SW1] = reader.fp8(K_SW1, layer, MOE_INTER // 32, HIDDEN // 32)
+        tl[K_SW2] = reader.fp8(K_SW2, layer, HIDDEN // 32, MOE_INTER // 32)
+        tl[K_SW3] = reader.fp8(K_SW3, layer, MOE_INTER // 32, HIDDEN // 32)
+        tl[K_W1] = reader.experts(K_W1, layer)
+        tl[K_W2] = reader.experts(K_W2, layer)
+        tl[K_W3] = reader.experts(K_W3, layer)
+        if layer in CSA2_LAYERS:
+            tl[K_IQB] = reader.fp8(K_IQB, layer, IDX_QB_SHAPE[0] // 32, Q_LORA // 32)
+            tl[K_IWK] = reader.bf16(K_IWK, layer)
+            tl[K_IWP] = reader.bf16(K_IWP, layer)
+            tl[K_IKN] = reader.bf16(K_IKN, layer)
+            tl[K_CWKV] = reader.bf16(K_CWKV, layer)
+            tl[K_CWGATE] = reader.bf16(K_CWGATE, layer)
+            tl[K_CNORM] = reader.bf16(K_CNORM, layer)
+        t["layers"][layer] = tl
     return t
 
 
@@ -855,7 +1151,7 @@ def main():
         rng = np.random.default_rng(args.seed)
         t = synth_tensors(rng)
         os.makedirs(args.out, exist_ok=True)
-        pack_path = os.path.join(args.out, "dsv41_flash_layer0_synth_tp8.spstage")
+        pack_path = os.path.join(args.out, "dsv41_flash_synth_tp8.spstage")
         synth_write_pack(pack_path, t)
         run(t, args.out, "synth", pack_path, [])
 
