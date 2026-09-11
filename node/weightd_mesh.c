@@ -61,7 +61,7 @@ typedef struct SparkWeightdMesh
     uint64_t seq_storage;
     struct ibv_mr *seq_mr;
     uint64_t doorbell_posted[SPARK_WEIGHTD_MESH_BANDS *
-        SPARK_WEIGHTD_MESH_SLOTS_PER_BAND];
+        SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t mesh_active;
     uint32_t mesh_ready;
     uint32_t local_rank;
@@ -549,27 +549,27 @@ void SparkWeightdMeshDoorbellLoop(void)
         struct timespec pause = {0,20000};
         for (band = 0u; band < SPARK_WEIGHTD_MESH_BANDS; band++)
         {
-            for (rank = 0u; rank < SPARK_WEIGHTD_MESH_SLOTS_PER_BAND; rank++)
+            for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
             {
                 uint64_t index =
-                    (uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + rank;
-                volatile uint64_t *entry = entries + index * 2u;
+                    (uint64_t)band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
+                volatile uint64_t *entry = entries + index * 3u;
                 uint64_t seq = entry[0];
                 uint64_t bytes = entry[1];
-                if (seq == 0ull || bytes == 0ull ||
+                uint64_t slot = entry[2];
+                if ( seq == 0ull || bytes == 0ull ||
                     seq == weightd_mesh.doorbell_posted[index])
                     continue;
-                if ( bytes + 16u > SPARK_WEIGHTD_MESH_SLOT_BYTES )
+                if ( slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND ||
+                    bytes + 16u > SPARK_WEIGHTD_MESH_SLOT_BYTES )
                     continue;
                 weightd_mesh.seq_storage = seq;
                 for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
                 {
-                    uint32_t peer_rank =
-                        peer < weightd_mesh.local_rank ? peer : peer + 1u;
                     uint64_t slot_base = (uint64_t)band *
                         SPARK_WEIGHTD_MESH_SLOTS_PER_BAND *
                         SPARK_WEIGHTD_MESH_SLOT_BYTES +
-                        (uint64_t)rank * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+                        slot * SPARK_WEIGHTD_MESH_SLOT_BYTES;
                     struct ibv_sge scatter;
                     struct ibv_send_wr work_request;
                     struct ibv_send_wr *bad;
@@ -614,7 +614,6 @@ void SparkWeightdMeshDoorbellLoop(void)
                         weightd_mesh.qp_info[peer].rkey;
                     (void)ibv_post_send(weightd_mesh.send_qps[peer],
                         &work_request,&bad);
-                    (void)peer_rank;
                 }
                 weightd_mesh.doorbell_posted[index] = seq;
             }
