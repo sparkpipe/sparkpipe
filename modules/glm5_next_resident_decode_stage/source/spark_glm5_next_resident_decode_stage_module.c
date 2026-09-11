@@ -1603,6 +1603,7 @@ typedef struct SparkGlm5NextTpChain
 } SparkGlm5NextTpChain;
 
 static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status);
+static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus status);
 static void CUDART_CB SparkGlm5NextCompleteAsync(void *context);
 static void CUDART_CB SparkGlm5NextMtpResolveHost(void *context);
 static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
@@ -1891,7 +1892,8 @@ static void SparkGlm5NextModuleTpCompletion(
 	chain = (SparkGlm5NextTpChain *)context;
 	if ( chain == 0 || chain->active == 0u || completion == 0 )
 		return;
-	SparkGlm5NextTpChainAdvance(chain,completion->status);
+	if ( completion->status != SPARK_STATUS_OK )
+		SparkGlm5NextTpChainFail(chain,completion->status);
 }
 
 static SparkStatus SparkGlm5NextChainOrdinal(SparkGlm5NextTpChain *chain,uint32_t hc_wide,uint32_t operation,uint64_t *ordinal)
@@ -1904,24 +1906,6 @@ static SparkStatus SparkGlm5NextChainOrdinal(SparkGlm5NextTpChain *chain,uint32_
 		return(SPARK_STATUS_OK);
 	}
 	return(SparkTpChainOrdinal(chain->frame->request_id,state->pipeline_slot_count,SPARK_GLM5_NEXT_TP_COLLECTIVE_CREDITS_PER_SLOT,SPARK_GLM5_NEXT_TP_CHAIN_OPERATIONS,operation,ordinal));
-}
-
-static void SparkGlm5NextNumProbe(const char *kind,SparkGlm5NextTpChain *chain,
-	void *device,void *cuda_stream,uint32_t words)
-{
-	static uint64_t printed;
-	uint32_t host[8];
-	if ( printed >= 24ull )
-		return;
-	printed++;
-	if ( cudaMemcpyAsync(host,device,words * sizeof(uint32_t),
-		cudaMemcpyDeviceToHost,cuda_stream) != cudaSuccess )
-		return;
-	if ( cudaStreamSynchronize(cuda_stream) != cudaSuccess )
-		return;
-	fprintf(stderr,"G5N-NUMPROBE kind=%s layer=%u rows=%u w0=%08x w1=%08x w2=%08x w3=%08x w4=%08x w5=%08x w6=%08x w7=%08x\n",
-		kind,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,
-		host[0],host[1],host[2],host[3],host[4],host[5],host[6],host[7]);
 }
 
 static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *chain,
@@ -1939,8 +1923,6 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
-	SparkGlm5NextNumProbe(hc_wide != 0u ? "attn" : "mlp",chain,device_bf16,
-		chain->slot->stream,8u);
 	if ( state->tp_device_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( hc_wide != 0u )
@@ -1976,14 +1958,17 @@ static SparkStatus SparkGlm5NextModuleReduceHiddenWide(SparkGlm5NextTpChain *cha
 		*op_index += 1u;
 		submit_status = SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 		if ( submit_status != SPARK_STATUS_OK )
+		{
 			*op_index -= 1u;
-		if ( submit_status != SPARK_STATUS_OK )
 			fprintf(stderr,"G5N-DBG reduce submit -> %d (rows %u slot %u dev %p stream %p maxact %u)\n",
 				(int)submit_status,(unsigned)chain->wave_rows,(unsigned)chain->slot_index,
 				device_bf16,chain->slot->stream,
 				(unsigned)state->tp_device_collective.max_active_sequence_count);
-		SPARK_RETURN(submit_status);
+			SPARK_RETURN(submit_status);
+		}
 	}
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
@@ -2000,8 +1985,6 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	}
 	if ( state->tp_device_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	SparkGlm5NextNumProbe("head",chain,chain->slot->head_maxloc_u64,
-		chain->slot->stream,2u);
 	status = SparkGlm5NextChainOrdinal(chain,0u,chain->tp_op_index,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -2021,8 +2004,12 @@ static SparkStatus SparkGlm5NextModuleReduceHeadMax(SparkGlm5NextTpChain *chain)
 	chain->tp_op_index += 1u;
 	status = SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 	if ( status != SPARK_STATUS_OK )
+	{
 		chain->tp_op_index -= 1u;
-	SPARK_RETURN(status);
+		SPARK_RETURN(status);
+	}
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkGlm5NextBuildMtpDraftWave(
