@@ -592,3 +592,81 @@ reintroduction); the new prints are gate receipts only.
 
 PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree (r22
 receipts commit).
+
+## CODER (post-merge follow-up, 09-11) — serving-adapter contract completion (A-0086)
+
+THE DEFECT (S1'''' A-0086; the A-0082/A-0074 class at family birth — ling
+merged via #830 before the adapter arc completed): the ling serving
+adapter's interface table ended at .snapshot, so
+SparkModelServingAdapterValidateInterface refused the module at first
+load (runtime/model_serving_adapter.c:251, one "missing required
+operation" per member; prefetch/resolve_prefetch/reset mandatory since
+ABI 22). Fixed in the muse #938 shape over
+spark_serving_cache_admission.h, against ling's own state struct:
+
+- prefetch: CACHE_PREPARE admission over the ling state (program_id from
+  the loaded driver program, thread-local SparkModelDriverCacheLane
+  scratch sized by the batch bucket, full adapter validate first; the
+  helper skips RELEASE lanes).
+- resolve_prefetch: COMMIT/ABORT mapped to CACHE_COMMIT/CACHE_ABORT on
+  one submission (count 1); any other resolution → INVALID_ARGUMENT.
+- reset: single-flight atomic CAS on reset_active (concurrent reset →
+  BUSY), generation-monotonic on an atomic reset_generation (0 refused,
+  <= current refused), real quiesce (all pipeline slots free + driver
+  snapshot active==0) then a direct driver admit with
+  ADMISSION_FLAG_RESET (decision.accepted required); on success the
+  applied generation is stored and quiescing cleared (quiesce→reset
+  revival). Stale-submission refusal: control_generation below the
+  applied reset generation → VALIDATION_FAILED on validate, prefetch and
+  resolve (the muse SUBMISSION_STALE hook, inline — ling's adapter is
+  standalone and does not include the qwen38 pp common template).
+
+ADJACENT-BLOCKER CLASS VERIFIED:
+- descriptor: ling's table was refused TWICE — the missing members AND
+  SparkDescriptorCheckCacheBlockFields ("required cache_block_token_count
+  is zero"): the descriptor never set the field. Now pinned to
+  SPARK_LING_KV_BLOCK_TOKEN_COUNT (64, <= the 256 cap). Everything else
+  was already valid: stage_layer_counts 42x16 == layer_count under the
+  PARALLEL_FANOUT rule, SpeculationPairing 0/0 consistent,
+  minimum_efficient_submission_row_count 0, parallel_group_size 0 with
+  no HYBRID_TP_PP.
+- speculation seam: ling has NO dead speculation bind to delete (muse's
+  pre-#938 provider/seam bind has no ling counterpart; the adapter
+  binds only the driver program; the module Makefile's
+  spark_speculation_policy.c link and unity.cu's speculate.cuh include
+  are module-side, never adapter binds). Nothing never-validatable.
+
+NEW HOST GATE: build/test_ling_serving_adapter (Makefile TEST_NAMES)
+builds the real adapter .c into a dylib (bf16 arm, LING_MODEL_REVISION
+e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3, contract sha 4c339009...a4c856)
+plus a fixture driver (tests/fixtures/ling_serving_adapter_driver.c,
+ling frame contract: 1 WRITE buffer, batch view, EXTERNAL_COMPLETION +
+BULK_PREFILL flag set, profile_flags = flags minus EXTERNAL_COMPLETION
+per the loader's profile-consistency check) and asserts, in order:
+load through SparkModelServingAdapterLoadInterfaceFromSharedObject with
+CAPABILITY_PARALLEL_FANOUT required; descriptor identity/geometry
+(adapter_id spark.ling.serving-adapter.tp16.expert_bf16.v1,
+cache_block_token_count 64, 16 stages x 42 layers); interface-table
+completeness — all 10 mandatory members non-null and each nulled member
+refused INVALID_ARGUMENT (the 10 "missing required operation" lines on
+stderr are the probe's expected refusals); initialize through the real
+config JSON (schema v3, tp_collective nccl base members, 16 peers);
+prefetch null/count guards, prepare, commit, abort; decode submit with
+4200/4201 token receipts + snapshot counts; reset generation ladder
+(0 refused, 1 accepted, stale validate+prefetch → VALIDATION_FAILED,
+<= refused, gen 2 accepted, quiesce→BUSY then reset revival at gen 3,
+post-reset submit receipt). MAC GATE RECEIPTS (all exit 0):
+test_model_serving_adapter, test_serving_cache_admission,
+test_qwen38_27b_serving_adapter, test_muse_glimmer_serving_adapter,
+test_ling_serving_adapter, test_dry_law, test_ling_model_header.py
+(35+9), test_code_size (280042/280042), module-path adapter build
+(modules/ling_resident_decode_stage `make adapter` EXPERT_CODEC=bf16,
+exit 0). test_complexity_ceiling remains red on the pre-existing main
+offender (qwen38_27b SubmitSpeculativeDecode CCN 88 > 75) — inherited,
+not this lane's code, same flag the muse receipt carries.
+
+Code-size ratchet: +136 authored lines (adapter contract + top-level
+Makefile wiring; the test trio is tests/-excluded by construction),
+ceiling re-pinned to the measured exact 280042 in the same change
+(A-0085's lesson applied: measured on the final tree, gate exit 0).
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.

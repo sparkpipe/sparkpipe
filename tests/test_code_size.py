@@ -1518,6 +1518,13 @@ CEILING = 268809
 # wholesale (k3/qwen38_27b/glm52 verified byte-identical post-merge).
 # Measured exact: 279620.
 CEILING = 279906
+# the ling serving-adapter contract completion (lane/ling-driver follow-up,
+# A-0086, the muse #938 shape): prefetch/resolve_prefetch/reset with real
+# semantics over spark_serving_cache_admission.h (+~130 in the adapter), the
+# descriptor's required cache_block_token_count, and the top-level Makefile
+# adapter/driver/test wiring (+18). The test trio is tests/-excluded by
+# construction. Measured exact: 280042.
+CEILING = 280042
 
 
 ROOT = Path(__file__).resolve().parent.parent
