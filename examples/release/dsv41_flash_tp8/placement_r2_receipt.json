@@ -20,8 +20,8 @@
       "copy_done_utc": "2026-09-12T13:29:24Z",
       "verify_done_utc": "2026-09-12T13:29:49Z",
       "purge_done_utc": "2026-09-12T13:29:53Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 65640052,
+      "cache_kb_after_purge": 1559660
     },
     {
       "node": "spark8",
@@ -37,8 +37,8 @@
       "copy_done_utc": "2026-09-12T13:31:48Z",
       "verify_done_utc": "2026-09-12T13:32:08Z",
       "purge_done_utc": "2026-09-12T13:32:13Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 61424652,
+      "cache_kb_after_purge": 1541980
     },
     {
       "node": "spark1",
@@ -54,8 +54,8 @@
       "copy_done_utc": "2026-09-12T13:33:44Z",
       "verify_done_utc": "2026-09-12T13:34:10Z",
       "purge_done_utc": "2026-09-12T13:34:14Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 23387860,
+      "cache_kb_after_purge": 2863476
     },
     {
       "node": "spark9",
@@ -71,8 +71,8 @@
       "copy_done_utc": "2026-09-12T13:35:29Z",
       "verify_done_utc": "2026-09-12T13:35:49Z",
       "purge_done_utc": "2026-09-12T13:35:52Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 47036688,
+      "cache_kb_after_purge": 1369540
     },
     {
       "node": "spark2",
@@ -88,8 +88,8 @@
       "copy_done_utc": "2026-09-12T13:37:31Z",
       "verify_done_utc": "2026-09-12T13:37:57Z",
       "purge_done_utc": "2026-09-12T13:38:10Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 51849776,
+      "cache_kb_after_purge": 7262272
     },
     {
       "node": "sparka",
@@ -105,8 +105,8 @@
       "copy_done_utc": "2026-09-12T13:39:30Z",
       "verify_done_utc": "2026-09-12T13:39:49Z",
       "purge_done_utc": "2026-09-12T13:39:54Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 41062272,
+      "cache_kb_after_purge": 1339796
     },
     {
       "node": "spark3",
@@ -122,8 +122,8 @@
       "copy_done_utc": "2026-09-12T13:41:25Z",
       "verify_done_utc": "2026-09-12T13:41:49Z",
       "purge_done_utc": "2026-09-12T13:41:49Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 34570364,
+      "cache_kb_after_purge": 1359356
     },
     {
       "node": "sparkb",
@@ -139,8 +139,8 @@
       "copy_done_utc": "2026-09-12T13:43:11Z",
       "verify_done_utc": "2026-09-12T13:43:31Z",
       "purge_done_utc": "2026-09-12T13:43:33Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 58771600,
+      "cache_kb_after_purge": 1766384
     },
     {
       "node": "spark4",
@@ -156,8 +156,8 @@
       "copy_done_utc": "2026-09-12T13:45:07Z",
       "verify_done_utc": "2026-09-12T13:45:29Z",
       "purge_done_utc": "2026-09-12T13:45:33Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 79119548,
+      "cache_kb_after_purge": 2219912
     },
     {
       "node": "sparkc",
@@ -173,8 +173,8 @@
       "copy_done_utc": "2026-09-12T13:46:50Z",
       "verify_done_utc": "2026-09-12T13:47:09Z",
       "purge_done_utc": "2026-09-12T13:47:13Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 63529004,
+      "cache_kb_after_purge": 1597188
     },
     {
       "node": "spark5",
@@ -190,8 +190,8 @@
       "copy_done_utc": "2026-09-12T13:48:45Z",
       "verify_done_utc": "2026-09-12T13:49:12Z",
       "purge_done_utc": "2026-09-12T13:49:17Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 64873316,
+      "cache_kb_after_purge": 1581812
     },
     {
       "node": "sparkd",
@@ -207,8 +207,8 @@
       "copy_done_utc": "2026-09-12T13:50:37Z",
       "verify_done_utc": "2026-09-12T13:50:56Z",
       "purge_done_utc": "2026-09-12T13:51:00Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 59455708,
+      "cache_kb_after_purge": 1501120
     },
     {
       "node": "sparke",
@@ -224,8 +224,8 @@
       "copy_done_utc": "2026-09-12T13:53:55Z",
       "verify_done_utc": "2026-09-12T13:54:13Z",
       "purge_done_utc": "2026-09-12T13:54:15Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 64519308,
+      "cache_kb_after_purge": 1537040
     },
     {
       "node": "spark7",
@@ -241,8 +241,8 @@
       "copy_done_utc": "2026-09-12T13:55:55Z",
       "verify_done_utc": "2026-09-12T13:56:20Z",
       "purge_done_utc": "2026-09-12T13:56:21Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 11053464,
+      "cache_kb_after_purge": 1291300
     },
     {
       "node": "sparkf",
@@ -258,8 +258,8 @@
       "copy_done_utc": "2026-09-12T13:57:40Z",
       "verify_done_utc": "2026-09-12T13:57:59Z",
       "purge_done_utc": "2026-09-12T13:58:04Z",
-      "cache_kb_before_purge": null,
-      "cache_kb_after_purge": null
+      "cache_kb_before_purge": 70116572,
+      "cache_kb_after_purge": 415728
     },
     {
       "node": "spark6",

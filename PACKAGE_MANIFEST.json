@@ -1,5 +1,5 @@
 {
-  "file_count": 2202,
+  "file_count": 2203,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -2810,6 +2810,11 @@
       "path": "examples/release/dsv41_flash_tp8/m7_ladder_triage_receipt.json",
       "sha256": "168b6c7e6f40a5e9d38b7b64fb6cb86df8cecac5e73cfc2c2de3db711fdbe36c",
       "size_bytes": 4834
+    },
+    {
+      "path": "examples/release/dsv41_flash_tp8/placement_r2_receipt.json",
+      "sha256": "dc01b21d0ac69613343a5243277cc6d5aa68a4fe45fa74d94609b39fcbd516f6",
+      "size_bytes": 11741
     },
     {
       "path": "examples/release/dsv41_flash_tp8/rank0-3.sha256",
@@ -11015,5 +11020,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 44965853
+  "total_bytes": 44977594
 }
