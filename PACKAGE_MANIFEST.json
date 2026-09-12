@@ -1,5 +1,5 @@
 {
-  "file_count": 2163,
+  "file_count": 2165,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -10453,8 +10453,8 @@
     },
     {
       "path": "tools/qwen38_stagepack.py",
-      "sha256": "6e221017f6a5f0a65f31388aec7164cb25a3f7a4c11bfedcbd26aa2b04b55393",
-      "size_bytes": 51892
+      "sha256": "25a71e5d37d36e3a6e792b0c513ddeca62a2b020b1062383909c9f8976ab1f75",
+      "size_bytes": 51916
     },
     {
       "path": "tools/qwen38_stagepack_layout_audit.py",
@@ -10508,8 +10508,8 @@
     },
     {
       "path": "tools/qwen38max_experts_manifest.c",
-      "sha256": "2709e1a318f8dbd6fcbbc6170edfc88487d15cdae11742015359091381033712",
-      "size_bytes": 9620
+      "sha256": "b91997fb9065df9d75b0b5208390566233fe2861de61c7593a6fd58024f880b7",
+      "size_bytes": 10365
     },
     {
       "path": "tools/qwen38max_gen_deployment.py",
@@ -10517,9 +10517,19 @@
       "size_bytes": 5845
     },
     {
+      "path": "tools/qwen38max_tp16_rank_verify.py",
+      "sha256": "aef78538bb6c4d83f8ccba25f7f419d9533df85ec84747ca683e5008d56c4c22",
+      "size_bytes": 14137
+    },
+    {
       "path": "tools/qwen38max_tp16_regression.sh",
       "sha256": "74952fdd9084064668344688c663e921a8d9b0a3a5984e9a6cef5f10f8f32614",
       "size_bytes": 1915
+    },
+    {
+      "path": "tools/qwen38max_tp16_split_summary.py",
+      "sha256": "c25b91f17a6f34b326a00f29239f774c31da72fe633a7e3f693a681f1090e1d6",
+      "size_bytes": 2876
     },
     {
       "path": "tools/qwen4_flash_b1_32k_batch.json",
@@ -10820,5 +10830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35176077
+  "total_bytes": 35193859
 }

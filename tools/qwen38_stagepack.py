@@ -729,7 +729,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             payload_bytes = pr * pc * element_bytes
             scale_bytes = 0
         payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
-        plans.append((ref, offset, payload_offset, payload_bytes, scale_bytes, plan))
+        plans.append((ref, offset, payload_offset, payload_bytes, scale_bytes, plan, pr, pc))
         cursor = payload_offset + payload_bytes + scale_bytes
     payload_base = align_up(HEADER_BYTES + len(plans) * ENTRY_BYTES, PAYLOAD_ALIGNMENT)
     file_bytes = payload_base + cursor
@@ -764,7 +764,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             payload_base + payload_offset, payload_bytes,
             payload_base + payload_offset + payload_bytes if scale_bytes else 0,
             scale_bytes)
-        for ref, _, payload_offset, payload_bytes, scale_bytes, plan in plans)
+        for ref, _, payload_offset, payload_bytes, scale_bytes, plan, pr, pc in plans)
     receipt.update({
         "first_layer_index": first_layer,
         "layer_count": layer_count,
@@ -794,7 +794,7 @@ def convert(checkpoint: Path, output: Path, first_layer: int, layer_count: int,
             "tp_degree": tp_degree,
             "tp_rank": tp_rank,
         })
-        for ref, source_offset, payload_offset, payload_bytes, scale_bytes, plan in plans:
+        for ref, source_offset, payload_offset, payload_bytes, scale_bytes, plan, pr, pc in plans:
             before = hashing.tell()
             if plan is not None:
                 copy_tp_plan(source, ref, plan, hashing)
