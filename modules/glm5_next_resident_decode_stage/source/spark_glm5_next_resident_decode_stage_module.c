@@ -2188,6 +2188,8 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	state = chain->state;
 	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
 		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
+	if ( state->tp_device_collective_initialized != 0u )
+		SparkTpDeviceCollectiveBroadcastCancel(&state->tp_device_collective);
 	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
 	{
 		chain->retained_status = status;
@@ -2955,13 +2957,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 		{
 			if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
-				SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-			else
 			{
-				launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyWork,chain);
-				if ( launch_status != SPARK_STATUS_OK )
-					SparkGlm5NextTpChainFail(chain,launch_status);
+				SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+				return;
 			}
+			launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyWork,chain);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
 		}
 		if ( SparkGlm5NextLaunchCudaLayerMlp(&chain->wave,chain->next_layer) != 0 )
