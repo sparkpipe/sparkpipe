@@ -4088,8 +4088,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
-      "sha256": "3e1ffc709f0a43876ddb1ad0568e14d2cba4fbde494532fb2bcb05000afd9ae6",
-      "size_bytes": 63910
+      "sha256": "1c51fc58f8cc42be7eacdc708a1cedd46ad8c24b9a60900392c89d2f3dc98429",
+      "size_bytes": 65881
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_sparse_attention_split.h",
@@ -10820,5 +10820,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35170541
+  "total_bytes": 35172512
 }
