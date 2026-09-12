@@ -28,6 +28,15 @@ extern int SparkGlm5NextLaunchMeshWait(void *stream,
     uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
     void *error_word,unsigned long long deadline_ns);
 
+#define SPARK_TP_DEVICE_COLLECTIVE_STAGING_SETS \
+    (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * 16u)
+typedef struct SparkTpDeviceCollectiveStagingSet
+{
+    uint64_t seq;
+    uint64_t bytes;
+    uint64_t slot;
+} SparkTpDeviceCollectiveStagingSet;
+
 typedef struct SparkTpDeviceCollectiveCompletionNode
 {
     struct SparkTpDeviceCollectiveCompletionNode *next;
@@ -51,9 +60,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t chain_epoch;
     uint64_t round_index;
     uint64_t cancel_epoch;
-    uint64_t staging_seq;
-    uint64_t staging_bytes;
-    uint64_t staging_slot;
+    SparkTpDeviceCollectiveStagingSet
+        staging[SPARK_TP_DEVICE_COLLECTIVE_STAGING_SETS];
     void *seq_cell;
     void *round_seq_device;
     void *error_word;
@@ -358,6 +366,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     uint64_t slot_base;
     uint8_t *slot;
     volatile uint64_t *entry;
+    SparkTpDeviceCollectiveStagingSet *staging;
     uint32_t band_index;
     uint32_t peer;
 
@@ -451,26 +460,28 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     entry = (volatile uint64_t *)(implementation->mesh_buffer +
         SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
             implementation->tp_rank));
-    implementation->staging_slot = slot_index;
-    implementation->staging_bytes = bytes;
-    implementation->staging_seq = round_seq;
+    staging = &implementation->staging[implementation->round_index &
+        (uint64_t)(SPARK_TP_DEVICE_COLLECTIVE_STAGING_SETS - 1u)];
+    staging->slot = slot_index;
+    staging->bytes = bytes;
+    staging->seq = round_seq;
     __sync_synchronize();
     if ( cudaMemcpyAsync(slot,submission->local_device,(size_t)bytes,
             SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 )
         goto publish_fail;
-    if ( cudaMemcpyAsync(slot + bytes,&implementation->staging_seq,
+    if ( cudaMemcpyAsync(slot + bytes,&staging->seq,
             sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_HOST,
             submission->cuda_stream) != 0 )
         goto publish_fail;
-    if ( cudaMemcpyAsync((void *)&entry[2],&implementation->staging_slot,
+    if ( cudaMemcpyAsync((void *)&entry[2],&staging->slot,
             sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_HOST,
             submission->cuda_stream) != 0 )
         goto publish_fail;
-    if ( cudaMemcpyAsync((void *)&entry[1],&implementation->staging_bytes,
+    if ( cudaMemcpyAsync((void *)&entry[1],&staging->bytes,
             sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_HOST,
             submission->cuda_stream) != 0 )
         goto publish_fail;
-    if ( cudaMemcpyAsync((void *)&entry[0],&implementation->staging_seq,
+    if ( cudaMemcpyAsync((void *)&entry[0],&staging->seq,
             sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_HOST,
             submission->cuda_stream) != 0 )
         goto publish_fail;
@@ -503,9 +514,9 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     (unsigned long long)round_seq,
                     (unsigned long long)*end_word,
                     (unsigned long long)implementation->round_index,
-                    (unsigned long long)implementation->staging_seq,
-                    (unsigned long long)implementation->staging_bytes,
-                    (unsigned long long)implementation->staging_slot);
+                    (unsigned long long)staging->seq,
+                    (unsigned long long)staging->bytes,
+                    (unsigned long long)staging->slot);
                 return SPARK_STATUS_BUSY;
             }
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
@@ -517,9 +528,9 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     (unsigned long long)*end_word,
                     (unsigned long long)bytes,
                     (unsigned long long)implementation->round_index,
-                    (unsigned long long)implementation->staging_seq,
-                    (unsigned long long)implementation->staging_bytes,
-                    (unsigned long long)implementation->staging_slot);
+                    (unsigned long long)staging->seq,
+                    (unsigned long long)staging->bytes,
+                    (unsigned long long)staging->slot);
                 return SPARK_STATUS_BUSY;
             }
             nanosleep(&pause,0);
