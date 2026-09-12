@@ -1,5 +1,5 @@
 {
-  "file_count": 2165,
+  "file_count": 2166,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -415,6 +415,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
       "sha256": "05f7d62df8e350810897064098ec85bd6d833eaee4a4ffe5223e44093b168e41",
       "size_bytes": 12598
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/disk-reclamation-ledger-2026-09-12.md",
+      "sha256": "2fa21b93feb0b45504e420d83cc0dc6e2f1db2dd52a5bb2ed4d736f57a609f98",
+      "size_bytes": 7763
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -7323,8 +7328,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "c045b82388ff37ae72cc4a52428512af843f0410ab4e6716ca3cc2dc83494018",
-      "size_bytes": 104422
+      "sha256": "26dcc637992c212fa32196d649b85396159be02a6e1fb93726ce05364a6aae1f",
+      "size_bytes": 105117
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -10830,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35193859
+  "total_bytes": 35202317
 }

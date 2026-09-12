@@ -1544,6 +1544,17 @@ CEILING = 281184
 # in favor of main's better-attributed 281184). Measured exact: 283170 on
 # the rebased tree (1986 over the r23 pin).
 CEILING = 283170
+# D-2 reclamation session rebase (lane/d1-disk-reclamation): three lands
+# merged after D-1's pin without a ceiling run. Each delta measured by
+# counter runs on pristine trees at the named commit: +86 #957 mesh
+# fleet-consensus round_seq base (061798a), +48 #958 mesh fast-abort
+# (e19f2be), +454 #952 qwen38max-m1-tp16 chain — TP16 rank verifier +307
+# (55a89d4), packer directory late-binding fix net-zero (4ca697a), v2
+# rank-pack experts manifest producer +48 (6ed9113), per-rank split
+# summary +88 (2e38202), structure-only mode +5 (3967668), fail-verdict
+# hardening +6 (1e72cc3). Growth belongs to the respective lands. Measured
+# exact: 283758 on the rebased tree.
+CEILING = 283758
 
 
 ROOT = Path(__file__).resolve().parent.parent
