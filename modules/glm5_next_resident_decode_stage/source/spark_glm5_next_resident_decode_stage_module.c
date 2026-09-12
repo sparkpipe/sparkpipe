@@ -2474,6 +2474,42 @@ static void SparkGlm5NextGraphLeasesDrop(
 	    (size_t)state->decode_cover_words * sizeof(uint32_t));
 }
 
+static void SparkGlm5NextGraphLeaseTrim(
+    SparkGlm5NextModuleState *state)
+{
+	SparkWeightdMap *map = state->lazy_pack->map;
+	uint32_t dropped;
+	uint32_t bit;
+	uint32_t index;
+	while ( state->decode_route_lease_count > 1u &&
+	        state->decode_union_count + 512u > 2400u )
+	{
+		(void)SparkWeightdMapRelease(map,
+			state->decode_route_leases[0],
+			SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+		state->decode_route_lease_count--;
+		memmove(state->decode_route_leases,
+		    state->decode_route_leases + 1u,
+		    (size_t)state->decode_route_lease_count *
+		        sizeof(state->decode_route_leases[0]));
+		dropped = state->decode_union_count < 512u ?
+		    state->decode_union_count : 512u;
+		for ( index = 0u; index < dropped; index++ )
+		{
+			bit = state->decode_union_keys[index].layer *
+			    SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT +
+			    state->decode_union_keys[index].expert;
+			state->decode_cover_host[bit / 32u] &=
+			    ~(UINT32_C(1) << (bit % 32u));
+		}
+		memmove(state->decode_union_keys,
+		    state->decode_union_keys + dropped,
+		    (size_t)(state->decode_union_count - dropped) *
+		        sizeof(state->decode_union_keys[0]));
+		state->decode_union_count -= dropped;
+	}
+}
+
 static SparkStatus SparkGlm5NextGraphRouteSweep(
     SparkGlm5NextTpChain *chain)
 {
@@ -2564,8 +2600,11 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 			if ( (state->decode_cover_host[bit / 32u] &
 			        (UINT32_C(1) << (bit % 32u))) != 0u )
 				continue;
-			if ( delta >= SPARK_WEIGHTD_LEASE_GROUPS_MAX ||
-			     state->decode_union_count + delta >= 2400u )
+			if ( delta >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+				break;
+			if ( state->decode_union_count + delta >= 1888u )
+				SparkGlm5NextGraphLeaseTrim(state);
+			if ( state->decode_union_count + delta >= 2400u )
 				break;
 			state->decode_union_keys[state->decode_union_count +
 			    delta] = *key;
