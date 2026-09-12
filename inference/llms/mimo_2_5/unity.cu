@@ -40,7 +40,7 @@ template __global__ void LmGqaAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS,
 template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K, false, 1u, 1u, LM_TOPK_SCORE_IDENTITY>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
 template __global__ void LmRouteBuildKernel<MIMO25_THREADS, MIMO25_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 template __global__ void LmSplitQkvKernel<MIMO25_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
-template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float, const float *, float, uint32_t);
 template __global__ void LmGqaKvStoreKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_FULL_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
 template __global__ void LmGqaKvStoreKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_SWA_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
 template __global__ void LmHeadCandidateKernel<MIMO25_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);

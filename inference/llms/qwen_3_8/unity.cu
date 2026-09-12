@@ -28,7 +28,7 @@ template __global__ void LmGemmKernel<LmBf16Format, LmFp8, 32u, QWEN38_TILE_N, 6
 template __global__ void LmGemmKernel<LmBf16Format, LmFp8, 64u, QWEN38_TILE_N, 64u, QWEN38_STAGES, QWEN38_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmFusedResidualRmsNormKernel<QWEN38_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<QWEN38_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
-template __global__ void LmRopePerHeadKernel<QWEN38_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmRopePerHeadKernel<QWEN38_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float, const float *, float, uint32_t);
 template __global__ void LmSplitQkvKernel<QWEN38_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmSplitQueryGateKernel<QWEN38_THREADS>(const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmOutputGateKernel<QWEN38_THREADS>(uint16_t *, const uint16_t *, uint32_t);
