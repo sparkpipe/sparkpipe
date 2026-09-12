@@ -418,6 +418,19 @@ SparkStatus SparkWeightdMeshInit(void)
         weightd_mesh.recv_buffer = 0;
         return SPARK_STATUS_IO_ERROR;
     }
+    {
+        struct ibv_mr *burn[8];
+        uint32_t burn_index;
+        for (burn_index = 0u; burn_index < 8u; burn_index++)
+        {
+            burn[burn_index] = ibv_reg_mr(weightd_mesh.protection_domain,
+                &weightd_mesh.seq_storage,sizeof(weightd_mesh.seq_storage),
+                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+            if ( burn[burn_index] == 0 )
+                break;
+        }
+        (void)burn;
+    }
     weightd_mesh.recv_mr = ibv_reg_mr(weightd_mesh.protection_domain,
         weightd_mesh.recv_buffer,SPARK_WEIGHTD_MESH_REGION_BYTES,
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
