@@ -200,6 +200,8 @@ struct SparkGlm5NextModuleState
 	SparkTpDeviceCollective tp_device_collective_hc;
 	uint32_t tp_device_collective_hc_initialized;
 	uint32_t tp_device_collective_initialized;
+	uint32_t tp_chain_active;
+	uint32_t tp_lane;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_credit_binding_count;
 	void *tp_credit_send_bf16;
@@ -1806,6 +1808,22 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
+	{
+		SparkWeightdClient *lane_client;
+		const char *socket = getenv("SPARK_WEIGHTD_SOCKET");
+		if ( socket == 0 || socket[0] == '\0' )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( SparkWeightdClientConnect(socket,&lane_client,0) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		status = SparkWeightdClientLaneAcquire(lane_client,&state->tp_lane,
+			(uint64_t)context->tp_connect_timeout_milli * 1000000ull);
+		(void)SparkWeightdClientClose(lane_client);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"GLM mesh lane acquire failed: no free lane (status=%d)\n",(int32_t)status);
+			SPARK_RETURN(status);
+		}
+	}
 	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
 	if ( SparkGlm5NextProbeEnabled() )
 	{
@@ -1833,8 +1851,9 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.connect_timeout_milli = probe_connect_timeout_milli;
 	configuration.operation_timeout_milli = probe_operation_timeout_milli;
-	configuration.control_port_base = context->tp_collective_control_port_base;
-	configuration.collective_identifier = context->tp_collective_identifier;
+	configuration.control_port_base = context->tp_collective_control_port_base +
+		2u * state->tp_lane;
+	configuration.collective_identifier = 2u * state->tp_lane;
 	configuration.backend_module_path = context->tp_collective_backend_module_path;
 	configuration.registration_cuda_stream = state->execution_stream;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
@@ -1859,8 +1878,8 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	configuration_hc.connect_timeout_milli = probe_connect_timeout_milli;
 	configuration_hc.operation_timeout_milli = probe_operation_timeout_milli;
 	configuration_hc.control_port_base = context->tp_collective_control_port_base +
-		SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE;
-	configuration_hc.collective_identifier = context->tp_collective_identifier + 1u;
+		SPARK_GLM5_NEXT_TP_COLLECTIVE_HC_PORT_STRIDE + 2u * state->tp_lane;
+	configuration_hc.collective_identifier = 2u * state->tp_lane + 1u;
 	configuration_hc.backend_module_path = context->tp_collective_backend_module_path;
 	configuration_hc.registration_cuda_stream = state->execution_stream;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration_hc);
@@ -1878,7 +1897,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		configuration_hc.combine_tp4_bf16_function = SparkGlm5NextModuleCombineDirectBf16;
 		configuration_hc.combine_context = state;
 	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
@@ -2200,6 +2219,7 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	{
 		chain->retained_status = status;
 		fprintf(stderr,"GLM chain drain failed; retaining slot %u and CUDA resources for teardown retry\n",chain->slot_index);
+		state->tp_chain_active = 0u;
 		atomic_store_explicit(&state->lazy_retained[chain->slot_index],chain,memory_order_release);
 		return;
 	}
@@ -2318,6 +2338,7 @@ static void SparkGlm5NextLazyWork(void *context)
 	{
 		chain->retained_status = status != SPARK_STATUS_OK ? status : cleanup;
 		fprintf(stderr,"GLM expert cleanup failed: slot=%u lease=%llu status=%d; retaining slot and lease for teardown retry\n",chain->slot_index,(unsigned long long)chain->expert_lease,(int32_t)cleanup);
+		chain->state->tp_chain_active = 0u;
 		atomic_store_explicit(&chain->state->lazy_retained[chain->slot_index],chain,memory_order_release);
 		return;
 	}
@@ -3216,6 +3237,7 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
 		return;
 	slot = &state->slots[async->slot_index];
+	state->tp_chain_active = 0u;
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
 		fprintf(stderr,"GLM cache access failed: code %u row %u slot %u\n",slot->host_kv_access_error[0],slot->host_kv_access_error[2],async->slot_index);
@@ -3354,6 +3376,8 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 	SparkGlm5NextTpChain *chain;
 	SparkStatus status;
 	cudaError_t error;
+	if ( state->tp_chain_active != 0u )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	chain = (SparkGlm5NextTpChain *)calloc(1u,sizeof(*chain));
 	if ( chain == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -3374,6 +3398,7 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
+	state->tp_chain_active = 1u;
 	if ( state->tp_device_collective_initialized != 0u )
 		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,chain->frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
 	if ( status == SPARK_STATUS_OK && state->tp_device_collective_hc_initialized != 0u )

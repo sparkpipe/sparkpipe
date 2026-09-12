@@ -168,6 +168,7 @@ typedef struct SparkWeightdConnection
      * other path — flush error, connection death, server teardown. */
     uint32_t response_fd_count;
     int response_fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+    uint32_t lane_mask;
     SparkWeightdAttachRef attaches[SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX];
 } SparkWeightdConnection;
 
@@ -181,6 +182,7 @@ struct SparkWeightdServer
     uint64_t next_owner;
     uint32_t arena_count;
     uint64_t resident_bytes;
+    uint16_t lane_owner[SPARK_WEIGHTD_MESH_MAX_LANES];
     SparkWeightdArena arenas[SPARK_WEIGHTD_ARENA_COUNT_MAX];
     SparkWeightdConnection connections[SPARK_WEIGHTD_CONNECTION_COUNT_MAX];
 };
@@ -334,6 +336,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcExportLeaseResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT:
             return sizeof(SparkWeightdIpcEpochExport) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE:
+            return sizeof(SparkWeightdIpcLaneAcquire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT:
+            return sizeof(SparkWeightdIpcLaneAcquireResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT:
             return sizeof(SparkWeightdIpcEpochExportResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
@@ -385,6 +391,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT:
             return SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE:
+            return SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RELEASE:
@@ -2023,6 +2031,27 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         return SPARK_WEIGHTD_IPC_DETACH_RESULT_BYTES;
     }
 
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE)
+    {
+        SparkWeightdIpcLaneAcquireResult *result =
+            (SparkWeightdIpcLaneAcquireResult *)response;
+        uint32_t lane;
+        memset(result,0,sizeof(*result));
+        SparkWeightdBuildHeader(response,result_kind,request_id);
+        result->status = (uint32_t)SPARK_STATUS_BUSY;
+        for (lane = 0u; lane < SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
+            if (server->lane_owner[lane] == 0u)
+            {
+                server->lane_owner[lane] =
+                    (uint16_t)(connection - server->connections) + 1u;
+                connection->lane_mask |= (uint16_t)(1u << lane);
+                result->status = (uint32_t)SPARK_STATUS_OK;
+                result->lane = lane;
+                break;
+            }
+        return(sizeof(*result));
+    }
+
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT)
     {
         SparkWeightdIpcEpochExportResult *result =
@@ -2088,6 +2117,16 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     if (connection->fd >= 0)
     {
         (void)close(connection->fd);
+    }
+    if (connection->lane_mask != 0u)
+    {
+        uint32_t lane;
+        for (lane = 0u; lane < SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
+            if ((connection->lane_mask & (uint16_t)(1u << lane)) != 0u &&
+                server->lane_owner[lane] ==
+                    (uint16_t)(connection - server->connections) + 1u)
+                server->lane_owner[lane] = 0u;
+        connection->lane_mask = 0u;
     }
     SparkWeightdServerCloseStagedFds(connection); /* unsent chunk fds die here */
     connection->fd = -1;
@@ -2896,15 +2935,26 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
         }
         if (fds_received != 0u)
         {
-            void *mapping = mmap(0, wire_result.mesh_send_buffer_bytes,
+            uint64_t slack = wire_result.mesh_send_buffer_bytes +
+                SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES -
+                wire_result.mesh_send_buffer_bytes %
+                    SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES -
+                wire_result.mesh_send_buffer_bytes;
+            uint8_t *raw = mmap(0,
+                wire_result.mesh_send_buffer_bytes + slack,
                 PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
             (void)close(fds[0]);
-            if (mapping == MAP_FAILED)
+            if (raw == MAP_FAILED)
             {
                 SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             }
-            wire_result.mesh_send_buffer_addr = (uint64_t)(uintptr_t)mapping;
-            result->mesh_mapping = mapping;
+            {
+                uintptr_t aligned = ((uintptr_t)raw +
+                    SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES - 1u) &
+                    ~(uintptr_t)(SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES - 1u);
+                wire_result.mesh_send_buffer_addr = (uint64_t)aligned;
+                result->mesh_mapping = (void *)aligned;
+            }
         }
     }
     if (wire_result.status != (uint32_t)SPARK_STATUS_OK)
@@ -3006,6 +3056,36 @@ SparkStatus SparkWeightdClientMeshBroadcast(
         SPARK_RETURN(status);
     if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
         return SparkWeightdStatusFromWire(wire_result.status);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
+    uint32_t *lane_out, uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcLaneAcquire wire;
+    SparkWeightdIpcLaneAcquireResult wire_result;
+    SparkStatus status;
+
+    if ( client == 0 || lane_out == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE;
+    wire.header.body_bytes =
+        sizeof(wire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
+    if ( status != SPARK_STATUS_OK )
+        SPARK_RETURN(status);
+    if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
+        return SparkWeightdStatusFromWire(wire_result.status);
+    if ( wire_result.lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+    *lane_out = wire_result.lane;
     return SPARK_STATUS_OK;
 }
 

@@ -3203,8 +3203,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd.h",
-      "sha256": "cd3cc36be2a844bcaf9d297b74f31c03e96b3ba27ff85668f9ab82b6a581a6c5",
-      "size_bytes": 18388
+      "sha256": "c44832947bf39c0c4b9ab598617cd787604b1a6f2859f455f21f699e2cbed78e",
+      "size_bytes": 19174
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
@@ -4348,8 +4348,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "b147502d59e4d62583ec059b4799e98de705224843ab27f700a0dac429f6d81e",
-      "size_bytes": 181975
+      "sha256": "f220ddd00f3921fbc42bf53c3f2081acdabaa762c27859dda687cce52926cbe8",
+      "size_bytes": 182828
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5103,8 +5103,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "7983fa1b15cc82ef43c003d9286b1470199ba17d878b2bf70c0cdf66ba44a8cf",
-      "size_bytes": 114202
+      "sha256": "ab9db22a88f9f7fcc6d616414bf43e0d4f3813aac3b0fb355de918306b49852e",
+      "size_bytes": 114159
     },
     {
       "path": "node/weightd.c",
@@ -5113,8 +5113,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "dbe3e3c7c2688f352a0cb5f097967d77b7994f4d7e0fa3ea3654b16d83f30c42",
-      "size_bytes": 36319
+      "sha256": "c8c84a00c38991ca765351c3b4e01ec685daf90c42ce4836aaed52cd574aa5ca",
+      "size_bytes": 28432
     },
     {
       "path": "node/weightd_spawn.c",
@@ -6483,8 +6483,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "3d5f064df6558df7b451976fbd7f12a4852c330dbb60fe8142b34cafa76cd2b1",
-      "size_bytes": 34476
+      "sha256": "b41ac6163ad2591b65ba247a9c722d74cabe93e09b9fabca18f0fc6c4bb0fd70",
+      "size_bytes": 37003
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -6628,8 +6628,8 @@
     },
     {
       "path": "runtime/spark_weightd.c",
-      "sha256": "69fa1ed67ebee46cd7d76c92221ad73665e0b4303e1f79d8a2f53ac41f0a1cb2",
-      "size_bytes": 131863
+      "sha256": "0c0b692436ebc6cad0402c2e348b02513edd30b2dcb7feab5d9063d327c6a5c4",
+      "size_bytes": 135385
     },
     {
       "path": "runtime/spark_weightd_attach.c",
@@ -10830,5 +10830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35201502
+  "total_bytes": 35201260
 }

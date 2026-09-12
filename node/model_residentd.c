@@ -1336,8 +1336,7 @@ static void SparkModelResidentdCloseClientLocked(
 					&runtime->sequence_slots[index].lease);
 			}
 	if ( live_lease != 0u && SparkModelResidentdStop == 0 )
-		SparkModelResidentdFailLocked(runtime,SPARK_STATUS_IO_ERROR,
-			SPARK_MODEL_RESIDENTD_FAILURE_CLIENT_LEASE_DISCONNECT,0);
+		fprintf(stderr,"model_residentd client_lease_disconnect live_leases reset\n");
 	if ( runtime->sequence_slots != 0 )
 		for (index=0u; index<runtime->runtime_limits.resident_sequence_capacity;
 			index++)
