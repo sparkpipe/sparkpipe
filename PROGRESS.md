@@ -840,3 +840,73 @@ code-size 283161 green. NOT COVERED HERE: the full 74-invocation matrix and
 the comparator's independent checkpoint-side scoring (inapplicable - the
 dumps are bit-identical to the already-scored run); laguna A-0088 G5N-DBG
 residue is main-side ledgered debt, untouched.
+
+## 2026-09-12 ling bf16.tp16 fleet placement complete (stagepack campaign, agent L-2)
+
+PLACEMENT: rank r -> spark r for all 16 ranks (fleet pack policy). Every
+spark0..sparkf now carries ~/sparkdata/ling.bf16.tp16/packs/ling.bf16.tp16
+.rank<r:x>.sp plus its weightd lazy-expert manifest (.experts, v2, 40960
+ranges) and .sha256 sidecar; 15,725,069,824 bytes per pack, 251,601,117,184
+bytes placed fleet-wide. Destination sha256 (pack + .experts) verified equal
+to the build artifacts on every node BEFORE any source cleanup; disk-cache
+purge (sync + drop_caches) on the destination and the build host after every
+node batch. Family verifier tools/ling_verify_pack.py over the full set:
+16/16 PASS (730 tensors each), boundary proof "ranks 0 and 15: identical
+tensor counts, complementary head/vocab/expert shards", placement proof
+re-run clean.
+
+PARITY: spark9's pre-existing ling_stage.tp16.rank0.lspk (mgr1-era
+validation build, Sep 10) header-parses as tp_degree=16 tp_rank=0 revision
+e0dfe7cd - it is a rank0 pack under a legacy name, not a rank9 pack; it was
+left byte-untouched (mtime preserved) and spark9 additionally received its
+proper ling.bf16.tp16.rank9.sp. Parity gate: the fleet-tip packer
+(tools/ling_stagepack.py @ 6c6caf5) rebuilt rank0 and produced sha256
+1f0642fb3362202a53f95e90f565b599c270908d7b5e71c24a5f3861ec7e146d -
+byte-identical to the placed legacy pack. Packer parity across the mgr1
+era and the current tree is proven, and the staged source is proven
+bit-correct for every byte rank0 reads (spine, embeddings, lm_head, its
+512-expert slice).
+
+BUILD PATH: the warm ceph mount throttles per-client - sustained readers
+collapse to kB/s within minutes (spark9 measured 1.4-7.3 MB/s, spark3 182
+kB/s, spark0 stalled client-wide mid-copy) while fresh clients read the
+same inodes at 0.4-7.8 GB/s. The 238 GB official BF16 release
+(/mnt/model-warm/ling-3.0-flash, revision e0dfe7cd, index census 63783)
+was therefore staged to spark0:lingbuild/src/ling-3.0-flash by short
+rotating bursts from 12 fast clients (one per-node queue job
+ling16-fanout2, 2 shards each, cache-evicting copies, relayed over the LAN
+and size-verified: 254,981,097,642 bytes, zero mismatches, every
+weight_map shard present) with a spark0 cache purge after the gather. All
+16 ranks were built there sequentially under sparkcap scopes
+(MemoryMax=4096M MemoryHigh=2900M), ~15m50s per rank. The queue's ttl-15
+window physically cannot carry a single-rank build (job ling16-rank0b was
+stopped at 99.4% of the pack), hence direct sparkcap scopes per the
+sparkcap law.
+
+TOOLS: tools/ling_stage_nocache.py (cache-evicting warm staging),
+tools/ling_stage_pair.py (per-node burst staging + LAN relay fanout via
+SPARK_QUEUE_RANK slicing), tools/ling_packheader_check.py (wire-level
+structural check: magic/format/tensor count/tp fields/revision/file bytes/
+directory offset + experts manifest magic/version/range count).
+
+PLACEMENT LEDGER (pack sha256 at destination; .experts shas verified in
+the same pass, recorded in the campaign ledger):
+
+| node | rank | file | bytes | pack sha256 | verified_at |
+|------|------|------|-------|-------------|-------------|
+| spark0 | 0 | ling.bf16.tp16.rank0.sp | 15725069824 | 1f0642fb3362202a53f95e90f565b599c270908d7b5e71c24a5f3861ec7e146d | 2026-09-12T17:39:41Z |
+| spark1 | 1 | ling.bf16.tp16.rank1.sp | 15725069824 | 11169d972afbd549e700a2b32b30b8753edaff1dcf073727fa0e147e5cb1aee5 | 2026-09-12T17:53:30Z |
+| spark2 | 2 | ling.bf16.tp16.rank2.sp | 15725069824 | e08e8c985a1fb13a394cdddc948ad6ea4d291578ff2a89df96b435e3cd504504 | 2026-09-12T18:08:33Z |
+| spark3 | 3 | ling.bf16.tp16.rank3.sp | 15725069824 | c1ffdc0c4cdc608a9371f9108c3614124a9094d88bdc0024beb72c8cb76fb118 | 2026-09-12T18:24:29Z |
+| spark4 | 4 | ling.bf16.tp16.rank4.sp | 15725069824 | fbe7565e9947b0b832ef063764418c48cfda2261cb0eea5b488f0033889d9efe | 2026-09-12T18:41:55Z |
+| spark5 | 5 | ling.bf16.tp16.rank5.sp | 15725069824 | 77d529d28aa339ad9e11598507001958db0c295407853ca966635f0a157d4ab3 | 2026-09-12T19:05:32Z |
+| spark6 | 6 | ling.bf16.tp16.rank6.sp | 15725069824 | 184a647880c20c119205c01b531da4518f36e9677c3b53ba62c1fb84781add35 | 2026-09-12T19:16:36Z |
+| spark7 | 7 | ling.bf16.tp16.rank7.sp | 15725069824 | 20de00d7f794461d5088e5380df774d793856f0156c0da04df9c2cce605cd15c | 2026-09-12T19:36:54Z |
+| spark8 | 8 | ling.bf16.tp16.rank8.sp | 15725069824 | c1f89fb10d6c2f3d2fde11183de12791d55d6feda0728b8017a301aa12e3a508 | 2026-09-12T19:47:16Z |
+| spark9 | 9 | ling.bf16.tp16.rank9.sp | 15725069824 | cf62a57278306601f7f1fbc8790860b1a5aef22f730c6a1cc8224a9336282800 | 2026-09-12T20:01:40Z |
+| sparka | 10 | ling.bf16.tp16.ranka.sp | 15725069824 | 47357715a2d8f2dafe10ac459df9757e1353a866bd0931dae4a1b7ae55872544 | 2026-09-12T20:18:02Z |
+| sparkb | 11 | ling.bf16.tp16.rankb.sp | 15725069824 | d953332f4cb3303f78cd3ca4e238fc2b7f4a4ca1d137f7d09a69b96f221128e0 | 2026-09-12T20:33:34Z |
+| sparkc | 12 | ling.bf16.tp16.rankc.sp | 15725069824 | 1998b7ab3d8f6dce614481340604a4936fe2024a1b638f9a6cca11638afddc72 | 2026-09-12T20:49:13Z |
+| sparkd | 13 | ling.bf16.tp16.rankd.sp | 15725069824 | 97a1ed249648cb162411c2b55cf10f315a3b9ebfe74c8697b0397c0e7c828e37 | 2026-09-12T21:04:52Z |
+| sparke | 14 | ling.bf16.tp16.ranke.sp | 15725069824 | d7699a5cbc80630f09e2de92a5e4551870b318b62a63e2480075b73d6e0ac2a9 | 2026-09-12T21:20:36Z |
+| sparkf | 15 | ling.bf16.tp16.rankf.sp | 15725069824 | 0df030880eec4d324249370e457f1a465e6a621f575924656a991eb5e512d6bd | 2026-09-12T21:31:17Z |
