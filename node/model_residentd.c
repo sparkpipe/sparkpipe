@@ -1082,8 +1082,14 @@ static void SparkModelResidentdCompletion(
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT :
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
-	if ( status != SPARK_STATUS_OK )
-		SparkModelResidentdFailLocked(runtime,status,failure_reason,route);
+	if ( status != SPARK_STATUS_OK && route != 0 )
+	{
+		route->completion.status = status;
+		route->completion.token_count = 0u;
+		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+	}
+	else if ( status != SPARK_STATUS_OK )
+		SparkModelResidentdFailLocked(runtime,status,failure_reason,0);
 	pthread_mutex_unlock(&runtime->mutex);
 	SparkModelResidentdWake(runtime);
 }
