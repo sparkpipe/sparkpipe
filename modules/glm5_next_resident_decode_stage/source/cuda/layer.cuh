@@ -259,6 +259,9 @@ struct Glm5NextLayerBuffers
     const void *expert_w1_scale;
     const void *expert_w2_weight;
     const void *expert_w2_scale;
+    const uint32_t *expert_cover;
+    uint32_t expert_cover_stride;
+    volatile uint32_t *expert_miss;
     const void *shared_gate_up_weight;
     const void *shared_down_weight;
 
@@ -2060,6 +2063,43 @@ static int32_t Glm5NextLayerMoeValidate(
     return LM_LAUNCH_OK;
 }
 
+__global__ __launch_bounds__(GLM5_NEXT_LAYER_THREADS, 1)
+static void Glm5NextExpertCoverKernel(
+    uint32_t *route_expert,
+    const uint32_t *expert_cover,
+    uint32_t cover_stride,
+    uint32_t experts,
+    uint32_t layer_word_base,
+    uint32_t packed_rows,
+    volatile uint32_t *expert_miss)
+{
+    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t *layer_words;
+    uint32_t word;
+    uint32_t fallback = 0xffffffffu;
+    uint32_t expert;
+    uint32_t slot;
+    if ( index >= packed_rows )
+        return;
+    layer_words = expert_cover + layer_word_base;
+    expert = route_expert[index];
+    if ( (layer_words[expert >> 5u] & (1u << (expert & 31u))) != 0u )
+        return;
+    for ( word = 0u; word < cover_stride; word++ )
+        if ( layer_words[word] != 0u )
+        {
+            fallback = word * 32u + (uint32_t)__ffs((int)layer_words[word]) - 1u;
+            break;
+        }
+    if ( fallback >= experts )
+        fallback = 0u;
+    slot = atomicAdd((unsigned int *)(expert_miss + 1u),1u);
+    expert_miss[2u + (slot & 63u)] =
+        (layer_word_base / cover_stride) * 512u + expert;
+    route_expert[index] = fallback;
+    *expert_miss = 1u;
+}
+
 template<uint32_t ExpertCodec>
 static int32_t Glm5NextLayerMoeRoute(
     const Glm5NextLayerBuffers *buffers,
@@ -2133,6 +2173,23 @@ static int32_t Glm5NextLayerMoeRoute(
         buffers->router_correction_bias,
         0,
         GLM5_NEXT_ROUTED_SCALE);
+    if ( buffers->expert_cover != 0 && buffers->expert_miss != 0 )
+    {
+        LM_LAUNCH(
+            (Glm5NextExpertCoverKernel),
+            (packed_rows + GLM5_NEXT_LAYER_THREADS - 1u) /
+                GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            buffers->route_expert,
+            buffers->expert_cover,
+            buffers->expert_cover_stride,
+            GLM5_NEXT_EXPERTS,
+            buffers->layer_index * buffers->expert_cover_stride,
+            packed_rows,
+            buffers->expert_miss);
+    }
     status = LmRouteBuild<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_EXPERTS>(
         buffers->route_expert,
         rows,

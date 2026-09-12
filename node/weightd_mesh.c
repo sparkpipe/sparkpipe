@@ -13,7 +13,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-#define SPARK_WEIGHTD_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS - 1u)
+#define SPARK_WEIGHTD_MESH_PEERS 15
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
 
@@ -59,14 +59,14 @@ typedef struct SparkWeightdMesh
     uint64_t send_err;
     uint64_t send_logged;
     uint64_t seq_storage;
+    uint64_t fast_seq_cells[65536];
     struct ibv_mr *seq_mr;
+    struct ibv_mr *fast_seq_mr;
     uint64_t doorbell_posted[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t mesh_active;
     uint32_t mesh_ready;
-    uint32_t resources_ready;
     uint32_t local_rank;
-    uint8_t sgid_index;
 } SparkWeightdMesh;
 
 static SparkWeightdMesh weightd_mesh;
@@ -77,6 +77,20 @@ static uint64_t SparkWeightdMeshRealtimeNs(void)
     if (clock_gettime(CLOCK_REALTIME,&now) != 0)
         return 0ull;
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static uint32_t SparkWeightdMeshRankFromHost(void)
+{
+    char hostname[64];
+    char tail;
+    if (gethostname(hostname,sizeof(hostname)) != 0)
+        return 0;
+    tail = hostname[strlen(hostname) - 1];
+    if (tail >= '0' && tail <= '9')
+        return (uint32_t)(tail - '0');
+    if (tail >= 'a' && tail <= 'f')
+        return (uint32_t)(tail - 'a' + 10);
+    return 0;
 }
 
 static SparkStatus SparkWeightdMeshWriteRecord(
@@ -166,8 +180,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     struct ibv_qp *qp,
     uint32_t remote_qpn,
     uint16_t dlid,
-    const uint8_t *dgid,
-    uint8_t sgid_index)
+    const uint8_t *dgid)
 {
     struct ibv_qp_attr attributes;
     int flags;
@@ -201,7 +214,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     attributes.ah_attr.dlid = dlid;
     attributes.ah_attr.port_num = 1;
     memcpy(attributes.ah_attr.grh.dgid.raw,dgid,16);
-    attributes.ah_attr.grh.sgid_index = sgid_index;
+    attributes.ah_attr.grh.sgid_index = 3;
     attributes.ah_attr.grh.hop_limit = 1;
     flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
         IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
@@ -235,8 +248,6 @@ static void SparkWeightdMeshTryWire(void)
     uint32_t my_index_in_peer;
     uint32_t changed;
 
-    if (weightd_mesh.resources_ready == 0u)
-        return;
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
@@ -261,15 +272,13 @@ static void SparkWeightdMeshTryWire(void)
                 weightd_mesh.send_qps[peer],
                 peer_records[peer].recv_qpn[my_index_in_peer],
                 peer_records[peer].lid,
-                peer_records[peer].gid,
-                weightd_mesh.sgid_index) != SPARK_STATUS_OK)
+                peer_records[peer].gid) != SPARK_STATUS_OK)
             return;
         if (SparkWeightdMeshTransitionQp(
                 weightd_mesh.recv_qps[peer],
                 peer_records[peer].send_qpn[my_index_in_peer],
                 peer_records[peer].lid,
-                peer_records[peer].gid,
-                weightd_mesh.sgid_index) != SPARK_STATUS_OK)
+                peer_records[peer].gid) != SPARK_STATUS_OK)
             return;
         weightd_mesh.qp_info[peer].remote_qpn =
             peer_records[peer].recv_qpn[my_index_in_peer];
@@ -291,8 +300,7 @@ static void SparkWeightdMeshTryWire(void)
     fflush(stdout);
 }
 
-SparkStatus SparkWeightdMeshInit(uint32_t rank,
-    const char *interface_name, uint32_t sgid_index)
+SparkStatus SparkWeightdMeshInit(void)
 {
     struct ibv_device **devices;
     struct ibv_port_attr port_attr;
@@ -302,26 +310,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
     uint32_t peer;
 
     memset(&weightd_mesh,0,sizeof(weightd_mesh));
-    if (interface_name == 0 || interface_name[0] == '\0')
-    {
-        fprintf(stderr,
-            "weightd-mesh: no interface stated (--mesh-interface)\n");
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    if (rank >= SPARK_WEIGHTD_MESH_RANKS)
-    {
-        fprintf(stderr,"weightd-mesh: rank %u outside 0..%u\n",
-            rank,SPARK_WEIGHTD_MESH_RANKS - 1u);
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    if (sgid_index > UINT8_MAX)
-    {
-        fprintf(stderr,"weightd-mesh: sgid index %u outside 0..255\n",
-            sgid_index);
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    weightd_mesh.local_rank = rank;
-    weightd_mesh.sgid_index = (uint8_t)sgid_index;
+    weightd_mesh.local_rank = SparkWeightdMeshRankFromHost();
     weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
     (void)unlink(SPARK_WEIGHTD_MESH_DIR "/.ready");
 
@@ -337,7 +326,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
         for (device_index = 0; device_index < device_count; device_index++)
         {
             const char *name = ibv_get_device_name(devices[device_index]);
-            if (name != 0 && strcmp(name,interface_name) == 0)
+            if (name != 0 && strcmp(name,"rocep1s0f1") == 0)
             {
                 weightd_mesh.context = ibv_open_device(devices[device_index]);
                 found = 1;
@@ -346,19 +335,9 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
         }
         if (found == 0)
         {
-            fprintf(stderr,
-                "weightd-mesh: interface %s not found; enumerated:",
-                interface_name);
-            for (device_index = 0; device_index < device_count;
-                device_index++)
-            {
-                const char *listed =
-                    ibv_get_device_name(devices[device_index]);
-                fprintf(stderr," %s",listed != 0 ? listed : "?");
-            }
-            fprintf(stderr,"\n");
+            fprintf(stderr,"weightd-mesh: rocep1s0f1 (switch) not found\n");
             ibv_free_device_list(devices);
-            SPARK_FAIL(SPARK_STATUS_DRIVER_LOAD_ERROR);
+            return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
     }
     ibv_free_device_list(devices);
@@ -384,7 +363,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
         fprintf(stderr,"weightd-mesh: pd failed\n");
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    weightd_mesh.cq = ibv_create_cq(weightd_mesh.context,256,0,0,0);
+    weightd_mesh.cq = ibv_create_cq(weightd_mesh.context,4096,0,0,0);
     if (weightd_mesh.cq == 0)
     {
         fprintf(stderr,"weightd-mesh: cq failed\n");
@@ -425,11 +404,19 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
         fprintf(stderr,"weightd-mesh: seq mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
+    weightd_mesh.fast_seq_mr = ibv_reg_mr(weightd_mesh.protection_domain,
+        weightd_mesh.fast_seq_cells,sizeof(weightd_mesh.fast_seq_cells),
+        IBV_ACCESS_LOCAL_WRITE);
+    if (weightd_mesh.fast_seq_mr == 0)
+    {
+        fprintf(stderr,"weightd-mesh: fast seq mr failed errno=%d\n",errno);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
     memset(&qp_attributes,0,sizeof(qp_attributes));
     qp_attributes.send_cq = weightd_mesh.cq;
     qp_attributes.recv_cq = weightd_mesh.cq;
-    qp_attributes.cap.max_send_wr = 16;
-    qp_attributes.cap.max_recv_wr = 16;
+    qp_attributes.cap.max_send_wr = 64;
+    qp_attributes.cap.max_recv_wr = 64;
     qp_attributes.cap.max_send_sge = 1;
     qp_attributes.cap.max_recv_sge = 1;
     qp_attributes.cap.max_inline_data = 64;
@@ -447,7 +434,6 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
     }
-    weightd_mesh.resources_ready = 1u;
     memset(&own_record,0,sizeof(own_record));
     own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
     own_record.rank = weightd_mesh.local_rank;
@@ -457,11 +443,9 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,
     own_record.lid = (uint16_t)port_attr.lid;
     {
         union ibv_gid gid;
-        if (ibv_query_gid(weightd_mesh.context,1,
-                (int)weightd_mesh.sgid_index,&gid) != 0)
+        if (ibv_query_gid(weightd_mesh.context,1,3,&gid) != 0)
         {
-            fprintf(stderr,"weightd-mesh: gid query index=%u failed\n",
-                (unsigned)weightd_mesh.sgid_index);
+            fprintf(stderr,"weightd-mesh: gid query failed\n");
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
         memcpy(own_record.gid,gid.raw,16);
@@ -555,6 +539,18 @@ int SparkWeightdMeshBufferFd(void)
     return weightd_mesh.mesh_ready != 0u ? dup(weightd_mesh.memfd) : -1;
 }
 
+typedef struct SparkWeightdMeshFastWr
+{
+    struct ibv_send_wr payload;
+    struct ibv_sge payload_sge;
+    struct ibv_send_wr seq;
+    struct ibv_sge seq_sge;
+} SparkWeightdMeshFastWr;
+
+static SparkWeightdMeshFastWr fast_wrs[SPARK_WEIGHTD_MESH_BANDS *
+    SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND]
+    [SPARK_WEIGHTD_MESH_PEERS];
+
 void SparkWeightdMeshDoorbellLoop(void)
 {
     volatile uint64_t *entries;
@@ -572,7 +568,7 @@ void SparkWeightdMeshDoorbellLoop(void)
         SPARK_WEIGHTD_MESH_DOORBELL_OFFSET);
     for (;;)
     {
-        struct timespec pause = {0,20000};
+        struct timespec pause = {0,2000};
         for (band = 0u; band < SPARK_WEIGHTD_MESH_BANDS; band++)
         {
             for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
@@ -580,16 +576,162 @@ void SparkWeightdMeshDoorbellLoop(void)
                 uint64_t index =
                     (uint64_t)band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
                 volatile uint64_t *entry = entries + index * 3u;
-                uint64_t seq = entry[0];
-                uint64_t bytes = entry[1];
-                uint64_t slot = entry[2];
+                uint64_t seq;
+                uint64_t bytes;
+                uint64_t slot;
+                {
+                    uint32_t stable = 0u;
+                    uint32_t tries;
+                    for ( tries = 0u; tries < 64u && stable == 0u; tries++ )
+                    {
+                        seq = entry[0];
+                        bytes = entry[1];
+                        slot = entry[2];
+                        __sync_synchronize();
+                        if ( seq == entry[0] && bytes == entry[1] &&
+                            slot == entry[2] )
+                            stable = 1u;
+                    }
+                    if ( stable == 0u )
+                        continue;
+                }
                 if ( seq == 0ull || bytes == 0ull ||
-                    seq == weightd_mesh.doorbell_posted[index])
+                    seq <= weightd_mesh.doorbell_posted[index])
                     continue;
                 if ( slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND ||
                     bytes + 16u > SPARK_WEIGHTD_MESH_SLOT_BYTES )
                     continue;
+                if ( band == 1u || band == 2u )
+                {
+                    uint32_t fast_repair = 0u;
+                    static uint64_t fast_dbg;
+                    if ( fast_dbg < 30ull )
+                    {
+                        fast_dbg++;
+                        fprintf(stderr,"WD-FAST idx=%llu seq=%llu bytes=%llu slot=%llu posted=%llu stable-read-ok\n",
+                            (unsigned long long)index,(unsigned long long)seq,
+                            (unsigned long long)bytes,(unsigned long long)slot,
+                            (unsigned long long)weightd_mesh.doorbell_posted[index]);
+                    }
+                    uint64_t fast_key = index * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot;
+                    SparkWeightdMeshFastWr *set = fast_wrs[fast_key];
+                    if ( set[0].payload_sge.length == 0u )
+                    {
+                        uint64_t slot_base = (uint64_t)band *
+                            SPARK_WEIGHTD_MESH_SLOTS_PER_BAND *
+                            SPARK_WEIGHTD_MESH_SLOT_BYTES +
+                            slot * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+                        for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
+                        {
+                            SparkWeightdMeshFastWr *w = &set[peer];
+                            memset(w,0,sizeof(*w));
+                            w->payload_sge.addr = (uint64_t)(uintptr_t)
+                                weightd_mesh.recv_buffer + slot_base;
+                            w->payload_sge.length = (uint32_t)bytes;
+                            w->payload_sge.lkey = weightd_mesh.recv_mr->lkey;
+                            w->payload.wr_id = (uint64_t)peer;
+                            w->payload.sg_list = &w->payload_sge;
+                            w->payload.num_sge = 1;
+                            w->payload.opcode = IBV_WR_RDMA_WRITE;
+                            w->payload.send_flags = IBV_SEND_SIGNALED;
+                            w->payload.wr.rdma.remote_addr =
+                                weightd_mesh.qp_info[peer].remote_addr + slot_base;
+                            w->payload.wr.rdma.rkey =
+                                weightd_mesh.qp_info[peer].rkey;
+                            w->payload.next = &w->seq;
+                            w->seq_sge.addr = (uint64_t)(uintptr_t)
+                                weightd_mesh.fast_seq_cells;
+                            w->seq_sge.length = sizeof(weightd_mesh.seq_storage);
+                            w->seq_sge.lkey = weightd_mesh.fast_seq_mr->lkey;
+                            w->seq.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+                            w->seq.wr_id = (uint64_t)(peer + 100u);
+                            w->seq.sg_list = &w->seq_sge;
+                            w->seq.num_sge = 1;
+                            w->seq.opcode = IBV_WR_RDMA_WRITE;
+                            w->seq.send_flags = IBV_SEND_SIGNALED;
+                            w->seq.wr.rdma.remote_addr =
+                                weightd_mesh.qp_info[peer].remote_addr + slot_base +
+                                SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
+                            w->seq.wr.rdma.rkey =
+                                weightd_mesh.qp_info[peer].rkey;
+                            w->seq.next = 0;
+                        }
+                    }
+                    {
+                        struct ibv_wc wcs[64];
+                        int done = ibv_poll_cq(weightd_mesh.cq,64,wcs);
+                        int w;
+                        for ( w = 0; w < done; w++ )
+                        {
+                            if ( wcs[w].status == IBV_WC_SUCCESS )
+                                weightd_mesh.send_ok++;
+                            else if ( wcs[w].status == IBV_WC_WR_FLUSH_ERR )
+                            {
+                                weightd_mesh.send_err++;
+                                fast_repair = 1u;
+                            }
+                            else
+                                weightd_mesh.send_err++;
+                        }
+                    }
+                    {
+                        uint64_t *value = &weightd_mesh.fast_seq_cells[seq & 65535ull];
+                        *value = seq;
+                        __sync_synchronize();
+                        {
+                            uint32_t failed = 0u;
+                            struct ibv_send_wr *bad = 0;
+                            for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
+                            {
+                                struct ibv_send_wr seq_wr;
+                                struct ibv_sge seq_sge;
+                                seq_sge = set[peer].seq_sge;
+                                seq_sge.addr = (uint64_t)(uintptr_t)value;
+                                seq_wr = set[peer].seq;
+                                seq_wr.sg_list = &seq_sge;
+                                seq_wr.next = 0;
+                                set[peer].payload.next = &seq_wr;
+                                if ( ibv_post_send(weightd_mesh.send_qps[peer],
+                                        &set[peer].payload,&bad) != 0 )
+                                {
+                                    failed = 1u;
+                                    SparkWeightdMeshTryWire();
+                                    (void)ibv_post_send(weightd_mesh.send_qps[peer],
+                                        &set[peer].payload,&bad);
+                                }
+                                set[peer].payload.next = &set[peer].seq;
+                            }
+                            if ( failed == 0u )
+                                weightd_mesh.doorbell_posted[index] = seq;
+                            else if ( fast_dbg < 30ull )
+                            {
+                                fast_dbg++;
+                                fprintf(stderr,"WD-FAST post FAILED idx=%llu seq=%llu errno=%d\n",
+                                    (unsigned long long)index,
+                                    (unsigned long long)seq,errno);
+                            }
+                        }
+                    }
+                    if ( fast_repair != 0u )
+                    {
+                        fast_repair = 0u;
+                        SparkWeightdMeshTryWire();
+                    }
+                    continue;
+                }
                 weightd_mesh.seq_storage = seq;
+                uint32_t posted_failed = 0u;
+                static uint64_t trace_printed;
+                int trace = 0;
+                if ( band == 1u && trace_printed < 40ull )
+                {
+                    trace_printed++;
+                    trace = 1;
+                    fprintf(stderr,"WD-TRACE idx=%llu seq=%llu bytes=%llu slot=%llu posted=%llu\n",
+                        (unsigned long long)index,(unsigned long long)seq,
+                        (unsigned long long)bytes,(unsigned long long)slot,
+                        (unsigned long long)weightd_mesh.doorbell_posted[index]);
+                }
                 for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
                 {
                     uint64_t slot_base = (uint64_t)band *
@@ -620,7 +762,10 @@ void SparkWeightdMeshDoorbellLoop(void)
                         SparkWeightdMeshTryWire();
                         if (ibv_post_send(weightd_mesh.send_qps[peer],
                                 &work_request,&bad) != 0)
+                        {
+                            posted_failed = 1u;
                             continue;
+                        }
                     }
                     memset(&scatter,0,sizeof(scatter));
                     scatter.addr = (uint64_t)(uintptr_t)
@@ -628,20 +773,24 @@ void SparkWeightdMeshDoorbellLoop(void)
                     scatter.length = sizeof(weightd_mesh.seq_storage);
                     scatter.lkey = weightd_mesh.seq_mr->lkey;
                     memset(&work_request,0,sizeof(work_request));
-                    work_request.wr_id = (uint64_t)peer;
+                    work_request.wr_id = (uint64_t)(peer + 100u);
                     work_request.sg_list = &scatter;
                     work_request.num_sge = 1;
                     work_request.opcode = IBV_WR_RDMA_WRITE;
-                    work_request.send_flags = 0;
+                    work_request.send_flags = IBV_SEND_SIGNALED;
                     work_request.wr.rdma.remote_addr =
                         weightd_mesh.qp_info[peer].remote_addr + slot_base +
                         SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
                     work_request.wr.rdma.rkey =
                         weightd_mesh.qp_info[peer].rkey;
-                    (void)ibv_post_send(weightd_mesh.send_qps[peer],
+                    int seq_rc = ibv_post_send(weightd_mesh.send_qps[peer],
                         &work_request,&bad);
+                    if ( seq_rc != 0 && trace != 0 )
+                        fprintf(stderr,"WD-TRACE seq post FAIL peer=%u rc=%d errno=%d slot_base=%llu\n",
+                            peer,seq_rc,errno,(unsigned long long)slot_base);
                 }
-                weightd_mesh.doorbell_posted[index] = seq;
+                if ( posted_failed == 0u )
+                    weightd_mesh.doorbell_posted[index] = seq;
             }
         }
         nanosleep(&pause,0);

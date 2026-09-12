@@ -329,6 +329,18 @@ SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
     SparkTpDeviceCollective *collective,
     uint32_t timeout_milli);
 
+SparkStatus SparkTpDeviceCollectiveArmCapture(
+    SparkTpDeviceCollective *collective);
+
+SparkStatus SparkTpDeviceCollectiveDisarmCapture(
+    SparkTpDeviceCollective *collective);
+
+uint64_t SparkTpDeviceCollectiveGraphError(
+    SparkTpDeviceCollective *collective);
+
+void SparkTpDeviceCollectiveClearGraphError(
+    SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
