@@ -60,7 +60,11 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
 #define SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT 25u
 #define SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT 26u
+#define SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE 27u
+#define SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT 28u
 
+#define SPARK_WEIGHTD_MESH_MAX_LANES 2u
+#define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
 #define SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS 128u
 #define SPARK_WEIGHTD_MESH_ROW_BYTES_MAX (16u * 1024u * 2u)
 #define SPARK_WEIGHTD_MESH_SLOT_BYTES \
@@ -70,11 +74,11 @@ extern "C" {
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 4u
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
-#define SPARK_WEIGHTD_MESH_BANDS 4u
+#define SPARK_WEIGHTD_MESH_BANDS (2u * SPARK_WEIGHTD_MESH_MAX_LANES)
 #define SPARK_WEIGHTD_MESH_BUFFER_BYTES \
     (SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * \
      SPARK_WEIGHTD_MESH_BANDS)
-#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 4096u
+#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 8192u
 #define SPARK_WEIGHTD_MESH_REGION_BYTES \
     (SPARK_WEIGHTD_MESH_BUFFER_BYTES + SPARK_WEIGHTD_MESH_DOORBELL_BYTES)
 #define SPARK_WEIGHTD_MESH_DOORBELL_OFFSET SPARK_WEIGHTD_MESH_BUFFER_BYTES
@@ -84,6 +88,9 @@ extern "C" {
 _Static_assert(SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND * \
     24u <= SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
     "doorbell entries must fit the doorbell page");
+_Static_assert((202u + 2u * SPARK_WEIGHTD_MESH_BANDS) * 24u <= \
+    SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+    "control cells must fit the doorbell page");
 
 #define SPARK_WEIGHTD_EXPERT_COUNT_MAX 40960u
 #define SPARK_WEIGHTD_LAZY_POOL_BYTES_DEFAULT (8ull * 1024ull * 1024ull * 1024ull)
@@ -250,6 +257,18 @@ typedef struct SparkWeightdIpcEpochExportResult
     uint32_t status;
     uint32_t reserved;
 } SparkWeightdIpcEpochExportResult;
+
+typedef struct SparkWeightdIpcLaneAcquire
+{
+    SparkWeightdIpcHeader header;
+} SparkWeightdIpcLaneAcquire;
+
+typedef struct SparkWeightdIpcLaneAcquireResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t lane;
+} SparkWeightdIpcLaneAcquireResult;
 
 #define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExport))
 #define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExportResult))
@@ -577,6 +596,10 @@ SparkStatus SparkWeightdClientDetach(SparkWeightdClient *client,
 SparkStatus SparkWeightdClientEpochExport(SparkWeightdClient *client,
     uint64_t arena_generation,
     int *fd_out,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
+    uint32_t *lane_out,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
