@@ -198,3 +198,55 @@ bf16.tp4pp4} sibling trees and the large srcdata/ tree.
   = +32,903,045,120 B (entry bytes + metadata rounding). Post-state:
   packs/ holds the 16 receipt.json + SHA256SUMS only, no pack bodies.
 
+---
+
+# D-2 spark6 extension sweep, 2026-09-12
+
+spark6 (rank6's node) after A-dsv5-r11's r1+scratch reclaim: every
+`sparkdata/*` tree measured. Standard placement-matrix trees (glm53full
+×6, glm53flash ×6, k3 ×2, qwen* ×13, dsv4flash, hy4, qwenmax.pp16 per
+the operator keep) are out of scope. Three non-matrix candidates:
+
+| tree | bytes | classification |
+|---|---|---|
+| dsv41flash.mxfp4.tp8 | 339,250,548,228 | KEEP — ACTIVE r2 arm build: packs-r2 8/8 ranks + engram-r2, `stage.log` STAGE_EXIT=0, mtime today 17:34; fresh build of the deepseek-v4.1-flash arm (warm source present), not stale |
+| dsv4_pro.tp4pp4 | 193,898,801,686 | DELETE — D-1 class (entries 1/4/7) |
+| dsv4_pro.probe | 127,149,105,988 | DELETE — derived probes, receipts banked on warm |
+
+dsv4_pro.tp16 (56 GB) stays UNCLASSIFIED (D-1: coordinator ruling
+pending). k3.mxfp4.* stay KEEP (audit: "never a removal candidate").
+
+## dsv4_pro.tp4pp4 (entry 12) — DELETE, 193,898,801,686 B
+
+Same artifact family D-1 deleted on sparks 1-3 (entries 1/4/7): dsv4 pro
+obsolete (replaced by dsv5), packs regenerable from the warm source
+`/mnt/model-warm/deepseek-v4-pro-0813-ga` (present on spark6's warm
+view), receipts banked at `/mnt/model-warm/packbuild/dsv4pro/`. Holds TWO
+rank packs — rank06 (the lawful rank6 placement, receipt `a5df6430…`
+2026-09-02, sha256 re-verified this session = receipt = sidecar) and a
+STRAY rank00 (rank00's lawful node is spark0; sha256 `490c5cdc…` =
+sidecar) plus bin/lib/config/smoke leftovers. Receipted does not mean
+active: no dsv4_pro serving arm exists post-dsv5; pre-flight clean
+(proc/fuser/lsattr).
+
+## dsv4_pro.probe (entry 13) — DELETE, 127,149,105,988 B
+
+Two validated probe packs of the packer against dsv4_pro (Sep 10):
+probe_l0_3 43,511,343,288 B (output_sha256 `a07dbed0…` == sidecar) and
+probe_l3_3 83,637,762,348 B. Probe receipts (`validated: true`,
+PROBE-PACK-RC=0) are banked on warm at
+`/mnt/model-warm/packbuild/dsv4pro/probe_pack.log` + `probe_pack_mid.log`
+— the digest-matched receipts already live on the cold path; the local
+bytes are derived, regenerable from the warm source, and referenced by
+nothing (zero repo references, no process, pre-flight clean).
+
+## Deletion ledger (execute only after this commit)
+
+| # | node | path | bytes | class |
+|---|------|------|-------|-------|
+| 12 | spark6 | /home/spark6/sparkdata/dsv4_pro.tp4pp4 | 193,898,801,686 | DELETE (D-1 obsolete-model class) |
+| 13 | spark6 | /home/spark6/sparkdata/dsv4_pro.probe | 127,149,105,988 | DELETE (banked validated probes) |
+
+Planned reclaim: spark6 321,047,907,674 B (299 GiB) → ~1.4 T free vs the
+2 TB target.
+
