@@ -96,7 +96,7 @@ for stage, layer in ((0, 1), (0, 4), (1, 24), (1, 25)):
     for rank in range(8):
         bits = np.fromfile("%s/dumps/s%dl%dr%d_t10_opart.bin" % (work, stage, layer, rank), dtype=np.uint16)
         assert bits.size == 10 * HIDDEN, (stage, layer, rank, bits.size)
-        total += bf16_to_f32(bits)
+        total += bf16_to_f32(bits).reshape(total.shape)
     bf16_from_f32(total.astype(np.float32)).tofile("%s/attnfull_s%dl%d_t10.bin" % (work, stage, layer))
     print("attnfull s%dl%d combined" % (stage, layer))
 PYEOF
