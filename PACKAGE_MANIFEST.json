@@ -5108,8 +5108,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "ab9db22a88f9f7fcc6d616414bf43e0d4f3813aac3b0fb355de918306b49852e",
-      "size_bytes": 114159
+      "sha256": "c3032d991a7ad3fe3f79453f41c2206924dcd0498c38319b267be16b03d8f82d",
+      "size_bytes": 114352
     },
     {
       "path": "node/weightd.c",
@@ -10835,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35213600
+  "total_bytes": 35213793
 }
