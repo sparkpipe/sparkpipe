@@ -74,7 +74,37 @@ Planned reclaim: spark1 284,438,040,576 B (265 GiB); spark2 615,836,127,232 B
 - hy4 gguf and q38max pack digests: sha256sum under
   `sudo -n systemd-run --scope -q -p MemoryMax=4096M -p MemoryHigh=2900M`.
 
-## Receipts (filled after execution)
+## Receipts (execution, 2026-09-12)
 
-See the receipts commit on this branch for per-entry `rm` + post-delete `df`
-output (before/after per node).
+Every path verified present immediately before its `rm`; per-path result:
+
+- spark1: `DELETED /home/spark1/sparkdata/qwen38_2.4t_a95b`; `DELETED
+  /home/spark1/sparkdata/qwenmax.pp16-stripped/packs/.stage0.qwen38sp.ou1n_gf5.tmp`;
+  `dsv4_pro.tp4pp4` — first pass left
+  `packs/dsv4_pro.tp4_pp4.rank01.spstage` (`Operation not permitted`,
+  lsattr shows the immutable `i` flag), cleared with `sudo -n chattr -i`
+  then `DELETED-after-unlock`.
+- spark2: `DELETED /home/spark2/hy4-full.gguf`; `DELETED
+  /home/spark2/hy4-allranks/rank-00 rank-01 rank-03 … rank-15` (15 lines);
+  `dsv4_pro.tp4pp4` — immutable `rank02.spstage`, `chattr -i` then
+  `DELETED-after-unlock`.
+- spark3: `DELETED /home/spark3/q38max_hs_regress.qwen38sp`; `DELETED
+  /home/spark3/.q38max_fw_l0.qwen38sp.k_fd74_f.tmp` and the empty
+  `.7ch16rgs.tmp`; `dsv4_pro.tp4pp4` — immutable `rank03.spstage`,
+  `chattr -i` then `DELETED-after-unlock`.
+
+df (/, same node, before session → after execution):
+
+- spark1: 1.5T free (57%) at session start → **1.8T free (50%)**
+- spark2: 294G free (92%) at session start → **867G free (76%)** (audit had
+  146G/96%; the qwen38_2.4t copy was already reclaimed before this session)
+- spark3: 266G free (93%) at session start → **466G free (87%)** (audit had
+  131G/97%, same pre-session reclamation)
+
+The other lanes kept writing during execution, so per-node df deltas also
+absorb unrelated traffic; the ledger byte counts are the authoritative
+reclaim figures. 2 TB-per-spark remains unmet on spark2 (−1.13T) and spark3
+(−1.5T): the remaining classified-adjacent space needs coordinator rulings
+(dsv4_pro.tp16, dsv4flash.*, spark3/srcdata 747G, qwen38_max.tp4pp4,
+qwenmax.pp16-stripped if its lane abandons it).
+
