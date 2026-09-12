@@ -113,3 +113,57 @@ rebuild driver verifies fail-closed (verifier rc captured; receipts written only
 | 2026-09-12T18:20Z | probes | warm reads recovered fleet-wide after the stall window: spark1 408, spark2 511, spark3 440, spark5 469, spark6 574, spark7 503, spark9 548, sparka 504, spark4 164, spark8 513 MB/s |
 | 2026-09-12T18:2xZ | dry-plan | stage0 272 tensors, stage1 287 — generation match |
 | 2026-09-12T18:2xZ | wave 1 | rank0 (spark0) + rank1 (spark1), stage0 L0+11 owns-embedding — running |
+
+## Final placement matrix (16/16, sweep-verified 2026-09-12)
+
+All 16 packs: MTP-free (flags=0), directory_offset 512, header file_bytes == actual,
+chattr +i locked, receipt pair (`.receipt.json` + `.g5nsp.receipt.json`) whose
+output_sha256 equals the independently recomputed pack sha, `.experts` manifest
+regenerated and recorded, verify = plan-diff + all-tensors round-trip PASS vs
+/mnt/model-warm/glm-5.3-flash at main 6c6caf52. dir_sha256 uniform per stage:
+stage0 f579fdf7…, stage1 4b8caff6…, stage2 8df28e2c…, stage3 fc9bfe45….
+
+| rank | node | stage/layers | entries | bytes | output sha256 |
+|---|---|---|---|---|---|
+| 0 | spark0 | 0, 0+11 | 272 | 16,503,376,128 | 7007d579adfa727eb10bb3113efb0b4d90a79340a411ba238e6f604ec516b292 |
+| 1 | spark1 | 0, 0+11 | 272 | 16,503,376,128 | 490f39e70f4e91f552f2b190e31b436f460f94132d000d26b4120eca3445e107 |
+| 2 | spark2 | 0, 0+11 | 272 | 16,503,376,128 | b49959909d97905c6af7a3fe1a38a844508b646c399137b624f9c6bfd501afba |
+| 3 | spark3 | 0, 0+11 | 272 | 16,503,376,128 | 55d3feecd03b7102b008e48f2eb67900d579f2a3e092ab704d9fb012a5a11f79 |
+| 4 | spark4 | 1, 11+11 | 287 | 21,651,182,336 | 33df6607a46de0ecf4dce239f79c468a414ee9f84c985df7ab343a5cbe20d5b5 |
+| 5 | spark5 | 1, 11+11 | 287 | 21,651,182,336 | 42c035f010c23ee3dc1385bd09b73d4e8cd1980da1a962fd4dc8a14a2a9c407b |
+| 6 | spark6 | 1, 11+11 | 287 | 21,651,182,336 | be0eb252d289c287142ae21716637a210645136638d12553185854df849041c9 |
+| 7 | spark7 | 1, 11+11 | 287 | 21,651,182,336 | 43d19d4f18017d56c13f9aab172368deeb59c7e0e70027434074297aa5b2cdab |
+| 8 | spark8 | 2, 22+11 | 287 | 21,651,182,336 | f804adae3db324172ae609e2664a0ebeabb89429e9aa922ed911e6548f15b4e0 |
+| 9 | spark9 | 2, 22+11 | 287 | 21,651,182,336 | beb3a24cb1c252c896dcb85f815b5a506133eccf5dad233e70a32d6552f2202c |
+| 10 | sparka | 2, 22+11 | 287 | 21,651,182,336 | 51c36fd3992558dc755186f4016b6edd4de62e11fce86b589680106ce8268e64 |
+| 11 | sparkb | 2, 22+11 | 287 | 21,651,182,336 | ca51deee64fcfe889a5916832398a070a06ddad2b977160d54fb5a4d1f671425 |
+| 12 | sparkc | 3, 33+12 | 314 | 23,925,499,392 | 7e578703f75055830cc198b07028450f38d7497864e9fea63445d0ba4d84aa05 |
+| 13 | sparkd | 3, 33+12 | 314 | 23,925,499,392 | e4dafece459260c45d698cc0afd839866a46b72eaf7f4b5043c7de7c1f187563 |
+| 14 | sparke | 3, 33+12 | 314 | 23,925,499,392 | ffabeab8b791a3b85152411eea54f162bc65df0d6bce4fec346835e1dbd36778 |
+| 15 | sparkf | 3, 33+12 | 314 | 23,925,499,392 | a1392b4df4e62f604f0f75163e017a1184c7fcfc23205cd6f23c3a710a606023 |
+
+Relay notes: rank3 built+verified on spark9, mesh-shipped to spark3 (its build path
+stalled twice — serving co-tenancy + OSD double-duty); rank6 built+verified on spark9
+after spark6's build stalled twice. Both dest-sha verified before the receipt was
+written. Sizes are byte-identical to the replaced generation (the #877 pairing
+redistributes up/gate rows within unchanged shapes) — which is exactly why the old
+packs' unchanged sizes could not prove validity.
+
+## Cleanup
+
+Staging build dirs (~270 GB: sparkc ~190 GB, spark9/spark3/spark6/spark8 transient
+copies), per-node driver scripts, and /tmp tool tarballs removed after the sweep;
+wave systemd scopes stopped; disk caches purged per batch throughout.
+
+## Blockers / watch items
+
+- The warm-ceph stall windows recurred three times (spark3 ×2, spark6 ×1, correlated
+  with `ceph` reporting 1 OSD with slow BlueStore ops); all self-resolved. The
+  read-probe-before-wave + relay-build mitigations carried the campaign through.
+- Serving engines on the 16 nodes still hold the old pack inodes until their next
+  restart (no daemon interaction was performed, per law); the next engine restart on
+  each node picks up the corrected bytes. Weightd will fail-closed on any node whose
+  engine state predates the swap until remapped.
+- The 2026-09-08 in-place rewrite's origin and intent are unknown to this lane; its
+  output was pre-#877-pairing bytes. Other arms built before 2026-09-09 may carry the
+  same defect class and deserve the same probe (out of scope here).
