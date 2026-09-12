@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI wrapper for the dsv41-flash host-oracle piece ladder (layers 0/2/8).
+"""CI wrapper for the dsv41-flash host-oracle piece ladder (layers 0/1/2/8, engram gate on layer 1).
 
 Generates the synth TP8 stagepack + per-piece expectations with
 tools/dsv41_flash_layer0_oracle.py, compiles the independent C anchor
@@ -45,14 +45,16 @@ def main() -> int:
             [str(binary),
              str(Path(tmp) / "dsv41_flash_synth_tp8.spstage"),
              str(Path(tmp) / "dsv41_piece_table.bin"),
-             str(Path(tmp) / "dsv41_expectations.bin")],
+             str(Path(tmp) / "dsv41_expectations.bin"),
+             "0:0,1:0,2:2,8:2",
+             str(Path(tmp) / "dsv41_engram.bin")],
             capture_output=True, text=True, timeout=900)
         print(run_result.stderr)
         print(run_result.stdout)
         if run_result.returncode != 0:
             print("FAIL anchor disagree")
             return 1
-    print("PASS dsv41 flash host-oracle ladder CI (layers 0/2/8)")
+    print("PASS dsv41 flash host-oracle ladder CI (layers 0/1/2/8, engram gate on layer 1)")
     return 0
 
 

@@ -137,9 +137,26 @@ W3_SHAPE = (MOE_INTER, HIDDEN // 2)
 IDX_QB_SHAPE = (IDX_HEADS * IDX_DIM // TP, Q_LORA)
 IDX_WP_SHAPE = (IDX_HEADS // TP, HIDDEN)
 COMP_W_SHAPE = (KV_LATENT, HIDDEN)
-LAYER_PLAN = {0: 0, 2: 2, 8: 2, 14: 2, 20: 1, 38: 0, 39: 0}
-SYNTH_LAYERS = {0: 0, 2: 2, 8: 2}
-TAG_POSITIONS = {0: 3, 2: 6, 8: 6, 14: 6, 20: 6, 38: 1, 39: 1}
+LAYER_PLAN = {0: 0, 1: 0, 2: 2, 8: 2, 14: 2, 20: 1, 38: 0, 39: 0}
+SYNTH_LAYERS = {0: 0, 1: 0, 2: 2, 8: 2}
+TAG_POSITIONS = {0: 3, 1: 6, 2: 6, 8: 6, 14: 6, 20: 6, 38: 1, 39: 1}
+ENGRAM_LAYERS = (1, 14)
+ENGRAM_HEADS = 8
+ENGRAM_ORDERS = 3
+ENGRAM_COLS = ENGRAM_ORDERS * ENGRAM_HEADS
+ENGRAM_HEAD_DIM = 256
+ENGRAM_SCALE_COLS = 8
+ENGRAM_VOCAB = 99092
+ENGRAM_PAD_ID = 2
+ENGRAM_MULT_SEED = 10007
+ENGRAM_PRIME_START = 16000000 - 1
+ENGRAM_SYNTH_PRIME_START = 4008
+ENGRAM_WKV_ROWS = 25600
+ENGRAM_WKV_COLS = ENGRAM_COLS * ENGRAM_HEAD_DIM
+ENGRAM_GK_ROWS = 4
+ENGRAM_NORM_EPS = 1e-20
+ENGRAM_CLAMP = 1e-6
+ENGRAM_PART_RANKS = 16
 
 FP8_LUT = np.zeros(256, dtype=np.float32)
 for _i in range(256):
@@ -538,6 +555,227 @@ class Indexer:
         return mapped
 
 
+def is_prime(n):
+    if n < 2:
+        return False
+    if n % 2 == 0:
+        return n == 2
+    f = 3
+    while f * f <= n:
+        if n % f == 0:
+            return False
+        f += 2
+    return True
+
+
+def next_prime(start, seen):
+    candidate = start + 1
+    while not is_prime(candidate) or candidate in seen:
+        candidate += 1
+    return candidate
+
+
+def engram_primes(synth):
+    start = ENGRAM_SYNTH_PRIME_START if synth else ENGRAM_PRIME_START
+    primes, seen = [], set()
+    for _ in ENGRAM_LAYERS:
+        per_order = []
+        for _ in range(ENGRAM_ORDERS):
+            sizes = []
+            for _ in range(ENGRAM_HEADS):
+                start = next_prime(start, seen)
+                seen.add(start)
+                sizes.append(start)
+            per_order.append(sizes)
+        primes.append(per_order)
+    return np.array(primes, dtype=np.int64)
+
+
+def engram_multipliers():
+    bound = max(1, ((2 ** 63 - 1) // ENGRAM_VOCAB) // 2)
+    rows = []
+    for layer_id in ENGRAM_LAYERS:
+        generator = np.random.default_rng(ENGRAM_MULT_SEED * layer_id)
+        rows.append(generator.integers(0, bound, size=4, dtype=np.int64) * 2 + 1)
+    return np.array(rows, dtype=np.int64)
+
+
+def engram_offsets(primes_per_layer):
+    flat = primes_per_layer.reshape(-1)
+    return np.concatenate([[0], np.cumsum(flat)[:-1]]).astype(np.int64)
+
+
+class EngramTable:
+    def __init__(self, weights, scales):
+        self.weights = weights
+        self.scales = scales
+
+    def row(self, row_id):
+        return self.weights[row_id], self.scales[row_id]
+
+
+class CheckpointEngramTable:
+    def __init__(self, ckpt_dir, layer, entries):
+        self.dir = ckpt_dir
+        self.weight_name = f"layers.{layer}.engram.embed.weight"
+        self.scale_name = f"layers.{layer}.engram.embed.scale"
+        self.entries = entries
+        self.views = {n: self._open(n) for n in (self.weight_name, self.scale_name)}
+
+    def _open(self, name):
+        with open(os.path.join(self.dir, "model.safetensors.index.json")) as f:
+            shard = json.load(f)["weight_map"][name]
+        path = os.path.join(self.dir, shard)
+        with open(path, "rb") as f:
+            (n,) = struct.unpack("<Q", f.read(8))
+            header = json.loads(f.read(n))
+        begin, _ = header[name]["data_offsets"]
+        handle = open(path, "rb")
+        base = 8 + n + begin
+        handle.seek(base)
+        return handle, base
+
+    def row(self, row_id):
+        if row_id >= self.entries:
+            raise SystemExit(f"engram id {row_id} outside table entries {self.entries}")
+        weight_handle, weight_base = self.views[self.weight_name]
+        scale_handle, scale_base = self.views[self.scale_name]
+        weight_handle.seek(weight_base + row_id * ENGRAM_HEAD_DIM)
+        scale_handle.seek(scale_base + row_id * ENGRAM_SCALE_COLS)
+        w = np.frombuffer(weight_handle.read(ENGRAM_HEAD_DIM), dtype=np.uint8)
+        s = np.frombuffer(scale_handle.read(ENGRAM_SCALE_COLS), dtype=np.uint8)
+        if len(w) != ENGRAM_HEAD_DIM or len(s) != ENGRAM_SCALE_COLS:
+            raise SystemExit("short engram row read")
+        return w, s
+
+
+class Engram:
+    def __init__(self, layer_id, hidx, multipliers, primes, weights, table):
+        self.layer_id = layer_id
+        self.hidx = hidx
+        self.mult = multipliers[hidx]
+        self.primes = primes[hidx]
+        self.offsets = engram_offsets(primes[hidx])
+        self.entries = int(primes[hidx].sum())
+        self.part = (self.entries + ENGRAM_PART_RANKS - 1) // ENGRAM_PART_RANKS
+        self.wkv_w, self.wkv_s = weights[0], weights[1]
+        self.qw, self.kw = weights[2], weights[3]
+        self.table = table
+        self.used_ids = {}
+
+    def ids_at(self, pos, compressed):
+        tokens = [ENGRAM_PAD_ID if pos < shift
+                  else compressed[(pos - shift) % len(compressed)]
+                  for shift in range(4)]
+        rolling = np.int64(tokens[0]) * self.mult[0]
+        ids = np.zeros(ENGRAM_COLS, dtype=np.int64)
+        for i in range(1, 4):
+            rolling = rolling ^ (np.int64(tokens[i]) * self.mult[i])
+            base = (i - 1) * ENGRAM_HEADS
+            ids[base:base + ENGRAM_HEADS] = \
+                rolling % self.primes[i - 1] + self.offsets[base:base + ENGRAM_HEADS]
+        return ids
+
+    def forward(self, stream_flat, pos, compressed, pieces, tag):
+        ids = self.ids_at(pos, compressed)
+        self.used_ids[pos] = ids
+        rows = np.zeros((ENGRAM_COLS, ENGRAM_HEAD_DIM), dtype=np.uint8)
+        scales = np.zeros((ENGRAM_COLS, 8), dtype=np.uint8)
+        for j in range(ENGRAM_COLS):
+            rows[j], scales[j] = self.table.row(int(ids[j]))
+        values = bf16_u16((FP8_LUT[rows].reshape(ENGRAM_COLS, 8, 32)
+                           * e8m0_f32(scales)[:, :, None]).reshape(-1))
+        kv = fp8_gemm_vector(values, self.wkv_w, self.wkv_s, ENGRAM_WKV_ROWS)
+        key = bf16_f32(kv[:ENGRAM_GK_ROWS * HIDDEN]).reshape(ENGRAM_GK_ROWS, HIDDEN)
+        value = bf16_f32(kv[ENGRAM_GK_ROWS * HIDDEN:])
+        w = bf16_f32(self.qw) * bf16_f32(self.kw)
+        h = bf16_f32(stream_flat).reshape(ENGRAM_GK_ROWS, HIDDEN).astype(np.float32)
+        rstd = (1.0 / np.sqrt(np.square(h).mean(-1) + ENGRAM_NORM_EPS)
+                * (1.0 / np.sqrt(np.square(key).mean(-1) + ENGRAM_NORM_EPS)))
+        dot = (h * w * key).sum(-1) * rstd * HIDDEN ** -0.5
+        magnitude = np.clip(np.abs(dot), ENGRAM_CLAMP, None)
+        gate = stable_sigmoid(np.copysign(np.sqrt(magnitude), dot))
+        out = (h + gate[:, None] * value[None, :]).astype(np.float32)
+        if tag:
+            owner = ids // self.part
+            local = ids - owner * self.part
+            access = np.concatenate([owner.astype(np.float32),
+                                     (local >> 24).astype(np.float32),
+                                     (local & 0xFFFFFF).astype(np.float32)])
+            pieces.add(f"{tag}.eg_access", access, 0.0, 0.0)
+            pieces.add(f"{tag}.eg_rows", bf16_f32(values), 3e-2, 1e-2)
+            pieces.add(f"{tag}.eg_value", value, 2e-2, 1e-5)
+            pieces.add(f"{tag}.eg_gate", gate, 2e-3, 1e-6)
+            pieces.add(f"{tag}.eg_out", out.reshape(-1), 2e-2, 1e-5)
+        return bf16_u16(out.reshape(-1))
+
+    def fixture_records(self):
+        for pos in sorted(self.used_ids):
+            for row_id in self.used_ids[pos]:
+                yield int(row_id)
+
+
+def write_engram_fixture(path, engrams):
+    seen = {e.layer_id: set() for e in engrams}
+    for e in engrams:
+        for row_id in e.fixture_records():
+            seen[e.layer_id].add(row_id)
+    spec = bytearray()
+    spec += struct.pack("<4sII", b"EGWF", 1, len(engrams))
+    for e in engrams:
+        spec += struct.pack("<IIQQ", e.layer_id, 0, e.entries, e.part)
+        spec += e.mult.astype("<i8").tobytes()
+        spec += e.primes.reshape(-1).astype("<i8").tobytes()
+        spec += e.offsets.astype("<i8").tobytes()
+    records = bytearray()
+    count = 0
+    for e in engrams:
+        for row_id in sorted(seen[e.layer_id]):
+            w, s = e.table.row(row_id)
+            records += struct.pack("<IIQQ", 0, e.layer_id, 0, row_id)
+            records += bytes(w) + bytes(s)
+            count += 1
+        records += struct.pack("<IIQQ", 1, e.layer_id, 0, 0)
+        records += e.wkv_w.tobytes() + e.wkv_s.tobytes()
+        count += 1
+        for kind, plane in ((2, e.qw), (3, e.kw)):
+            records += struct.pack("<IIQQ", kind, e.layer_id, 0, 0)
+            records += plane.tobytes()
+            count += 1
+    with open(path, "wb") as f:
+        f.write(bytes(spec))
+        f.write(struct.pack("<I", count))
+        f.write(bytes(records))
+    return count
+
+
+def synth_engram_tensors(rng, primes):
+    def fp8w(shape):
+        codes = rng.integers(8, 40, size=shape).astype(np.uint8)
+        scales = rng.integers(118, 123, size=(shape[0] // 32, shape[1] // 32)).astype(np.uint8)
+        return codes, scales
+
+    tables = {}
+    for hidx, layer_id in enumerate(ENGRAM_LAYERS):
+        if layer_id not in SYNTH_LAYERS:
+            continue
+        entries = int(primes[hidx].sum())
+        codes = rng.integers(0, 256, size=(entries, ENGRAM_HEAD_DIM)).astype(np.uint8)
+        codes[codes == 127] = 126
+        codes[codes == 255] = 254
+        scales = rng.integers(118, 123, size=(entries, 8)).astype(np.uint8)
+        wkv_codes, wkv_scales = fp8w((ENGRAM_WKV_ROWS, ENGRAM_WKV_COLS))
+        tables[layer_id] = {
+            "table": EngramTable(codes, scales),
+            "wkv": (wkv_codes.reshape(-1), wkv_scales.reshape(-1)),
+            "qw": bf16_u16((rng.standard_normal((ENGRAM_GK_ROWS, HIDDEN)) * 0.1)
+                           .astype(np.float32)),
+            "kw": bf16_u16((rng.standard_normal((ENGRAM_GK_ROWS, HIDDEN)) * 0.1)
+                           .astype(np.float32)),
+        }
+    return tables
+
+
 class PackWriter:
     def __init__(self, path):
         self.path = path
@@ -660,6 +898,9 @@ def synth_tensors(rng):
                 tl[K_CWGATE] = bf16n(COMP_W_SHAPE, 0.02)
             tl[K_CNORM] = bf16n((1, KV_LATENT), 0.1)
         t["layers"][layer] = tl
+    t["engram_meta"] = {"primes": engram_primes(synth=True),
+                        "multipliers": engram_multipliers()}
+    t["engram"] = synth_engram_tensors(rng, t["engram_meta"]["primes"])
     return t
 
 
@@ -823,13 +1064,14 @@ class _Drift:
 
 
 class Block:
-    def __init__(self, t, layer, ratio, freqs):
+    def __init__(self, t, layer, ratio, freqs, engram=None, tol_amp=None):
         self.t = t
         self.layer = layer
         self.ratio = ratio
         self.freqs = freqs
+        self.engram = engram
         self.is_csa2 = ratio > 0
-        self.tol_amp = 5.0 if self.is_csa2 else 1.0
+        self.tol_amp = tol_amp if tol_amp is not None else (5.0 if self.is_csa2 else 1.0)
         if self.is_csa2:
             self.compressor = Compressor(ratio, t[K_CWKV],
                                          t[K_CWGATE] if ratio > 1 else None,
@@ -982,7 +1224,7 @@ def expert_views(t):
     return views
 
 
-def run_layer(block, layer, embed, pieces, prefix):
+def run_layer(block, layer, embed, pieces, prefix, engram=None):
     cache = []
     comp_cache = {}
     pre_mix = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -995,6 +1237,8 @@ def run_layer(block, layer, embed, pieces, prefix):
             tag = f"pos{pos}" if pos in (0, 1, 2) else None
         else:
             tag = f"{prefix}.p{pos}" if pos < TAG_POSITIONS[layer] else None
+        if engram is not None:
+            stream_in = engram.forward(stream_in, pos, TOKENS, pieces, tag)
         attn = _Drift(pieces, 1.0 if pos == 0 else 25.0)
         stream, pre_mix = block.forward(
             stream_in, pos, cache, comp_cache, pre_mix, attn, _Drift(pieces, 25.0),
@@ -1004,15 +1248,34 @@ def run_layer(block, layer, embed, pieces, prefix):
         pieces.add(f"stream_pos{pos}", bf16_f32(stream), 8e-2, 1e-4)
 
 
+def build_engrams(t, multipliers, primes):
+    engrams = {}
+    for hidx, layer_id in enumerate(ENGRAM_LAYERS):
+        source = t["engram"].get(layer_id)
+        if source is None:
+            continue
+        weights = (source["wkv"][0], source["wkv"][1], source["qw"], source["kw"])
+        engrams[layer_id] = Engram(layer_id, hidx, multipliers, primes, weights,
+                                   source["table"])
+    return engrams
+
+
 def run(t, out_dir, source, pack_path, ckpt_report, plan):
     pieces = Expectations(out_dir)
     freqs_pure = rope_freqs(TOTAL_POSITIONS)
     freqs_yarn = rope_freqs_yarn(TOTAL_POSITIONS, COMP_THETA)
     embed = t["globals"][K_EMBED].reshape(LOCAL_EMBED, HIDDEN)
+    engrams = build_engrams(t, t["engram_meta"]["multipliers"],
+                            t["engram_meta"]["primes"])
     for layer, ratio in plan.items():
+        engram = engrams.get(layer)
         block = Block(expert_views(t["layers"][layer]), layer, ratio,
-                      freqs_pure if ratio == 0 else freqs_yarn)
-        run_layer(block, layer, embed, pieces, f"l{layer}")
+                      freqs_pure if ratio == 0 else freqs_yarn, engram,
+                      5.0 if engram is not None else None)
+        run_layer(block, layer, embed, pieces, f"l{layer}", engram)
+    fixture_count = write_engram_fixture(os.path.join(out_dir, "dsv41_engram.bin"),
+                                         [engrams[l] for l in sorted(engrams)]) \
+        if engrams else 0
     meta = {
         "lane": "dsv5-flash", "model_revision": REVISION, "source": source,
         "pack": os.path.abspath(pack_path), "layers": sorted(plan),
@@ -1027,7 +1290,19 @@ def run(t, out_dir, source, pack_path, ckpt_report, plan):
         "compress_ratio": "per layer_plan (kv_source layers only: 2/8/14 m=2, 20 m=1; all other CSA2 layers are Reuse and read the shared compressed cache)",
         "indexer": {"heads": IDX_HEADS, "head_dim": IDX_DIM, "topk": IDX_TOPK,
                     "score_piece": "rank-0 partial (local-head sum, pre-all-reduce)"},
-        "input_note": "layer 0 consumes the tiled embedding (its true input); every other ladder layer consumes the same synthetic tiled stream because the true stream depends on the engram-gated layers 1/14 (fail-closed) and the pre-layer-1 chain",
+        "input_note": "layer 0 consumes the tiled embedding; layer 1 consumes the tiled embedding through the engram row-shard gate (its true input; fixture compressed stream = tokens, identity token map); layers 2+ consume the same synthetic tiled stream as per-piece instruments because the full chain depends on unrolled layers not in the ladder plan",
+        "engram": {
+            "layers": list(ENGRAM_LAYERS),
+            "heads": ENGRAM_HEADS, "orders": ENGRAM_ORDERS,
+            "head_dim": ENGRAM_HEAD_DIM, "compressed_vocab": ENGRAM_VOCAB,
+            "pad_id": ENGRAM_PAD_ID, "mult_seed": ENGRAM_MULT_SEED,
+            "prime_start": ENGRAM_PRIME_START,
+            "synth_prime_start": ENGRAM_SYNTH_PRIME_START,
+            "partition": "owner=id//part, part=ceil(entries/16) at TP8xPP2=16 ranks",
+            "fixture_pieces": "eg_access=owner|local>>24|local&0xffffff exact, eg_rows dequant, eg_value, eg_gate, eg_out",
+            "fixture_records": fixture_count,
+            "fixture_token_map": "identity on the fixture (production map is the 99092-entry normalization-collapsed lookup; ships with full-chain decode)",
+        },
         "stream_note": "the bf16 hc-feedback chain is chaotic under ~1-ulp implementation-order differences (numpy BLAS/pairwise vs C sequential reductions) and amplifies at layer-dependent rates on the synthetic fixture (measured crossings: l2/l8 pos 46, l14 pos 40, l20 pos 4, l38 pos 7), so the end-to-end stream piece is emitted for layer 0 only and every other layer is verified by its per-operator tagged pieces",
         "norm_eps": NORM_EPS,
         "swiglu_limit": SWIGLU_LIMIT, "route_scale": ROUTE_SCALE,
@@ -1108,7 +1383,7 @@ def verify_checkpoint(reader, ckpt_dir):
     return report
 
 
-def real_tensors(reader, plan):
+def real_tensors(reader, plan, warm_dir=None):
     t = {"globals": {}, "layers": {}}
     t["globals"][K_EMBED] = reader.bf16(K_EMBED).reshape(LOCAL_EMBED, HIDDEN)
     t["globals"][K_HEAD] = reader.bf16(K_HEAD).reshape(LOCAL_EMBED, HIDDEN)
@@ -1154,6 +1429,31 @@ def real_tensors(reader, plan):
                 tl[K_CWGATE] = reader.bf16(K_CWGATE, layer)
             tl[K_CNORM] = reader.bf16(K_CNORM, layer)
         t["layers"][layer] = tl
+    engram_primes_real = engram_primes(synth=False)
+    t["engram_meta"] = {"primes": engram_primes_real,
+                        "multipliers": engram_multipliers()}
+    t["engram"] = {}
+    if warm_dir is None and any(l in plan for l in ENGRAM_LAYERS):
+        raise SystemExit("engram ladder layers require --verify-checkpoint WARM_DIR "
+                         "for the row tables and wkv/qk weights")
+    for hidx, layer_id in enumerate(ENGRAM_LAYERS):
+        if layer_id not in plan:
+            continue
+        entries = int(engram_primes_real[hidx].sum())
+        wkv = np.frombuffer(load_checkpoint_raw(
+            warm_dir, f"layers.{layer_id}.engram.wkv.weight"), dtype=np.uint8)
+        wkv_s = np.frombuffer(load_checkpoint_raw(
+            warm_dir, f"layers.{layer_id}.engram.wkv.scale"), dtype=np.uint8)
+        if wkv.size != ENGRAM_WKV_ROWS * ENGRAM_WKV_COLS or wkv_s.size != 800 * 192:
+            raise SystemExit(f"engram wkv plane bytes wrong for layer {layer_id}")
+        t["engram"][layer_id] = {
+            "table": CheckpointEngramTable(warm_dir, layer_id, entries),
+            "wkv": (wkv, wkv_s),
+            "qw": np.frombuffer(load_checkpoint_raw(
+                warm_dir, f"layers.{layer_id}.engram.q_weight"), dtype=np.uint16),
+            "kw": np.frombuffer(load_checkpoint_raw(
+                warm_dir, f"layers.{layer_id}.engram.k_weight"), dtype=np.uint16),
+        }
     return t
 
 
@@ -1168,8 +1468,8 @@ def main():
         reader = PackReader(args.pack)
         report = verify_checkpoint(reader, args.verify_checkpoint) \
             if args.verify_checkpoint else []
-        run(real_tensors(reader, LAYER_PLAN), args.out, "real", args.pack, report,
-            LAYER_PLAN)
+        run(real_tensors(reader, LAYER_PLAN, args.verify_checkpoint), args.out,
+            "real", args.pack, report, LAYER_PLAN)
     else:
         rng = np.random.default_rng(args.seed)
         t = synth_tensors(rng)

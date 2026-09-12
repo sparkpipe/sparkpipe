@@ -48,7 +48,7 @@ two Engram embedding tables. Contract: model_contracts/dsv41_flash_authoritative
 | Dense codec | FP8 E4M3 + UE8M0 scale per 32x32 block | config.json quantization_config |
 | mHC (hyper-connections) | Single-Pass mHC, mult 4: base F32[24], fn F32[24,20480], scale F32[3], attn+ffn | config.json hc_mult + tech report §2.4.1 |
 | Global KV cache | FP4 E2M1, one E4M3 scale per 16 channels, no global second scale, quantized after rope, 890 B/token | tech report §2.4.4 |
-| Engram | layers 1,14; 2 modules; ~16M-entry x 8-head tables; embed F8_E4M3 [384006168,256]; HOST-RESIDENT (RDMA prefetch), not GPU pack | config.json + tech report §2.4.2 |
+| Engram | layers 1,14; 2 modules; ~16M-entry x 8-head tables; embed F8_E4M3 [384006168,256]; ROW-SHARD across the 16 sparks (TP8xPP2, 12.3GiB/spark) served through weightd host-map/lease per operator ruling 2026-09-11 — access contract in model_contracts/dsv41_flash_authoritative.json `engram_row_shard`; shard files cut by tools/dsv41_flash_engram_shard.py (sparkdata/dsv41flash.mxfp4.tp8/engram-r2) | config.json + tech report §2.4.2 + operator ruling |
 | DSpark | 3 blocks (SWA-128), draft 5, markov rank 256, 128 routed experts top-3; markov/confidence heads only on mtp.2; main_proj F8 [5120,15360] | config.json + shard-44/47 headers + tech report §2.4.3 |
 | Expert bytes | 17,694,720 B/expert packed; 271.8 GB all routed; TP16 → 16.99 GB/rank | derived from shard headers |
 | Manifest capacity | 40x384x3x2 = 92,160 v2 records < 131,072 SPARK_WEIGHTD_RANGE_COUNT_MAX; per-expert bytes < 64 MiB cap | include/sparkpipe/spark_weightd.h |

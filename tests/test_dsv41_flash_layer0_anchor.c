@@ -44,6 +44,7 @@
 #define RANK 0u
 #define TOKEN_SLOTS 16u
 #define ROUTER_TIE_FLOOR 0.03f
+#define ENGRAM_ROUTER_TIE_FLOOR 0.15f
 
 #define PACK_MAGIC UINT32_C(0x31413444)
 #define ENTRY_BYTES 64u
@@ -83,6 +84,24 @@
 #define K_SW1 32u
 #define K_SW2 33u
 #define K_SW3 34u
+
+#define ENGRAM_LAYERS_MAX 2u
+#define ENGRAM_COLS 24u
+#define ENGRAM_ORDERS 3u
+#define ENGRAM_HEADS 8u
+#define ENGRAM_HEAD_DIM 256u
+#define ENGRAM_PAD_ID 2
+#define ENGRAM_WKV_ROWS 25600u
+#define ENGRAM_WKV_COLS 6144u
+#define ENGRAM_GK_ROWS 4u
+#define ENGRAM_SCALE_COLS 8u
+#define ENGRAM_EPS 1e-20f
+#define ENGRAM_CLAMP 1e-6f
+#define ENGRAM_PART_RANKS 16u
+#define ENGRAM_PRIME_START_REAL INT64_C(15999999)
+#define ENGRAM_PRIME_START_SYNTH INT64_C(4008)
+#define GEMV_K_MAX 6144u
+#define ENGRAM_FIXTURE_MAGIC UINT32_C(0x46574745)
 
 #define FAIL_EXIT 2
 
@@ -151,6 +170,214 @@ static float g_sin[2u][TOTAL_POSITIONS + 1u][ROPE_PAIRS];
 static Pack g_pack;
 static int32_t g_tokens[TOKEN_SLOTS];
 static uint32_t g_token_count;
+
+typedef struct EngramLayerSpec
+{
+	uint32_t layer_id;
+	uint64_t entries;
+	uint64_t part;
+	int64_t mult[4];
+	int64_t primes[ENGRAM_COLS];
+	int64_t offsets[ENGRAM_COLS];
+} EngramLayerSpec;
+
+typedef struct EngramRecord
+{
+	uint32_t kind, layer;
+	uint64_t id, offset;
+} EngramRecord;
+
+typedef struct EngramFixture
+{
+	uint32_t layer_count, record_count;
+	EngramLayerSpec spec[ENGRAM_LAYERS_MAX];
+	EngramRecord *records;
+	uint8_t *data;
+	uint64_t data_bytes;
+} EngramFixture;
+
+static EngramFixture g_engram;
+
+static uint32_t IsPrime64(int64_t n)
+{
+	uint64_t f;
+	if ( n < 2 )
+		return 0u;
+	if ( (n & 1) == 0 )
+		return n == 2 ? 1u : 0u;
+	for (f = 3u; f * f <= (uint64_t)n; f += 2u)
+	{
+		if ( (uint64_t)n % f == 0u )
+			return 0u;
+	}
+	return 1u;
+}
+
+static const EngramLayerSpec *EngramSpec(uint32_t layer_id)
+{
+	uint32_t i;
+	for (i = 0u; i < g_engram.layer_count; i++)
+	{
+		if ( g_engram.spec[i].layer_id == layer_id )
+			return &g_engram.spec[i];
+	}
+	return 0;
+}
+
+static uint64_t EngramFixtureParse(const char *path)
+{
+	int fd;
+	struct stat st;
+	const uint8_t *p;
+	uint32_t magic, version, i, j;
+	if ( stat(path, &st) != 0 )
+	{
+		(void)fprintf(stderr, "cannot stat engram fixture %s\n", path);
+		return 1u;
+	}
+	fd = open(path, O_RDONLY);
+	if ( fd < 0 )
+		return 1u;
+	g_engram.data = (uint8_t *)mmap(0, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	(void)close(fd);
+	if ( g_engram.data == MAP_FAILED )
+		return 1u;
+	g_engram.data_bytes = (uint64_t)st.st_size;
+	p = g_engram.data;
+	memcpy(&magic, p, 4u);
+	memcpy(&version, p + 4u, 4u);
+	memcpy(&g_engram.layer_count, p + 8u, 4u);
+	if ( magic != ENGRAM_FIXTURE_MAGIC || version != 1u ||
+		g_engram.layer_count == 0u || g_engram.layer_count > ENGRAM_LAYERS_MAX )
+	{
+		(void)fprintf(stderr, "bad engram fixture header\n");
+		return 1u;
+	}
+	p += 12u;
+	for (i = 0u; i < g_engram.layer_count; i++)
+	{
+		EngramLayerSpec *spec = &g_engram.spec[i];
+		uint32_t pad;
+		int64_t prime_start, expected;
+		memcpy(&spec->layer_id, p, 4u);
+		memcpy(&pad, p + 4u, 4u);
+		memcpy(&spec->entries, p + 8u, 8u);
+		memcpy(&spec->part, p + 16u, 8u);
+		p += 24u;
+		memcpy(spec->mult, p, 4u * sizeof(int64_t));
+		p += 4u * sizeof(int64_t);
+		memcpy(spec->primes, p, ENGRAM_COLS * sizeof(int64_t));
+		p += ENGRAM_COLS * sizeof(int64_t);
+		memcpy(spec->offsets, p, ENGRAM_COLS * sizeof(int64_t));
+		p += ENGRAM_COLS * sizeof(int64_t);
+		if ( pad != 0u || spec->part != (spec->entries + ENGRAM_PART_RANKS - 1u) / ENGRAM_PART_RANKS )
+		{
+			(void)fprintf(stderr, "bad engram spec geometry layer %u\n", spec->layer_id);
+			return 1u;
+		}
+		prime_start = i == 0u ? INT64_MIN
+			: g_engram.spec[i - 1u].primes[ENGRAM_COLS - 1u];
+		for (j = 0u; j < 4u; j++)
+		{
+			if ( spec->mult[j] <= 0 || (spec->mult[j] & 1) == 0 )
+			{
+				(void)fprintf(stderr, "bad engram multiplier\n");
+				return 1u;
+			}
+		}
+		expected = 0;
+		for (j = 0u; j < ENGRAM_COLS; j++)
+		{
+			if ( spec->primes[j] <= prime_start || IsPrime64(spec->primes[j]) == 0u )
+			{
+				(void)fprintf(stderr, "bad engram prime %lld\n", (long long)spec->primes[j]);
+				return 1u;
+			}
+			prime_start = spec->primes[j];
+			if ( spec->offsets[j] != expected )
+			{
+				(void)fprintf(stderr, "bad engram offset %u\n", j);
+				return 1u;
+			}
+			expected += spec->primes[j];
+		}
+		if ( spec->entries != (uint64_t)expected )
+		{
+			(void)fprintf(stderr, "bad engram entries sum layer %u\n", spec->layer_id);
+			return 1u;
+		}
+	}
+	memcpy(&g_engram.record_count, p, 4u);
+	p += 4u;
+	g_engram.records = (EngramRecord *)calloc(g_engram.record_count, sizeof(EngramRecord));
+	if ( g_engram.records == 0 )
+		return 1u;
+	for (i = 0u; i < g_engram.record_count; i++)
+	{
+		EngramRecord *record = &g_engram.records[i];
+		uint32_t kind, layer, pad;
+		uint64_t id;
+		uint64_t bytes;
+		memcpy(&kind, p, 4u);
+		memcpy(&layer, p + 4u, 4u);
+		memcpy(&pad, p + 8u, 4u);
+		memcpy(&id, p + 16u, 8u);
+		p += 24u;
+		record->kind = kind;
+		record->layer = layer;
+		record->id = id;
+		record->offset = (uint64_t)(p - g_engram.data);
+		if ( kind == 0u )
+			bytes = ENGRAM_HEAD_DIM + ENGRAM_SCALE_COLS;
+		else if ( kind == 1u )
+			bytes = (uint64_t)ENGRAM_WKV_ROWS * ENGRAM_WKV_COLS + (ENGRAM_WKV_ROWS / 32u) * (ENGRAM_WKV_COLS / 32u);
+		else
+			bytes = (uint64_t)ENGRAM_GK_ROWS * HIDDEN * 2u;
+		p += bytes;
+	}
+	if ( (uint64_t)(p - g_engram.data) > g_engram.data_bytes )
+	{
+		(void)fprintf(stderr, "engram fixture truncated\n");
+		return 1u;
+	}
+	return 0u;
+}
+
+static const uint8_t *EngramRecordPayload(uint32_t layer, uint32_t kind, uint64_t id)
+{
+	uint32_t i;
+	for (i = 0u; i < g_engram.record_count; i++)
+	{
+		const EngramRecord *record = &g_engram.records[i];
+		if ( record->layer == layer && record->kind == kind &&
+			(kind == 0u ? record->id == id : record->id == 0u) )
+			return g_engram.data + record->offset;
+	}
+	return 0;
+}
+
+static void EngramIds(const EngramLayerSpec *spec, uint32_t pos, int64_t *ids)
+{
+	int32_t tokens[4];
+	int64_t rolling;
+	uint32_t shift, i, base;
+	for (shift = 0u; shift < 4u; shift++)
+	{
+		if ( pos < shift )
+			tokens[shift] = ENGRAM_PAD_ID;
+		else
+			tokens[shift] = g_tokens[(pos - shift) % g_token_count];
+	}
+	rolling = (int64_t)tokens[0] * spec->mult[0];
+	for (i = 1u; i < 4u; i++)
+	{
+		rolling ^= (int64_t)tokens[i] * spec->mult[i];
+		base = (i - 1u) * ENGRAM_HEADS;
+		for (shift = 0u; shift < ENGRAM_HEADS; shift++)
+			ids[base + shift] = rolling % spec->primes[base + shift] + spec->offsets[base + shift];
+	}
+}
+
 
 static float Bf16ToF32(uint16_t v)
 {
@@ -338,7 +565,7 @@ static void Fp4RoundTripE4M3(uint16_t *row, uint32_t n)
 static void GemvFp8(const uint16_t *x, const uint8_t *w, const uint8_t *ws,
 	uint32_t rows, uint32_t k, uint16_t *out)
 {
-	float xf[HIDDEN], aq[HIDDEN], sa[HIDDEN / 32u], acc;
+	float xf[GEMV_K_MAX], aq[GEMV_K_MAX], sa[GEMV_K_MAX / 32u], acc;
 	uint32_t r, b, j;
 	for (r = 0u; r < k; r++)
 		xf[r] = Bf16ToF32(x[r]);
@@ -773,7 +1000,7 @@ static void EmitF32(Expect *expect, const char *name, const float *values, uint3
 }
 
 static void EmitRouterIndices(Expect *expect, const char *tag, const float *values,
-	const float *scores, const float *rbias, uint32_t count)
+	const float *scores, const float *rbias, uint32_t count, float tie_floor)
 {
 	char name[64];
 	Piece *piece = 0;
@@ -820,7 +1047,7 @@ static void EmitRouterIndices(Expect *expect, const char *tag, const float *valu
 		key_want = SoftplusSqrt(scores[(uint32_t)expected[slot]]) +
 			rbias[(uint32_t)expected[slot]];
 		gap = fabsf(key_got - key_want);
-		if ( gap < ROUTER_TIE_FLOOR )
+		if ( gap < tie_floor )
 			continue;
 		if ( piece->bad == 0u )
 			(void)fprintf(stderr,
@@ -1154,7 +1381,8 @@ static void MoeStep(const BlockWeights *w, const Pack *pack, const uint16_t *x,
 		EmitPiece(tag, "router_scores", expect, scores, N_EXPERTS);
 		for (slot = 0u; slot < TOPK; slot++)
 			piece[slot] = (float)idx[slot];
-		EmitRouterIndices(expect, tag, piece, scores, w->rbias, TOPK);
+		EmitRouterIndices(expect, tag, piece, scores, w->rbias, TOPK,
+			EngramSpec(w->layer) != 0 ? ENGRAM_ROUTER_TIE_FLOOR : ROUTER_TIE_FLOOR);
 		EmitPiece(tag, "router_weights", expect, weights, TOPK);
 	}
 	for (d = 0u; d < HIDDEN; d++)
@@ -1384,7 +1612,127 @@ static uint32_t TagCount(uint32_t layer, uint32_t ratio)
 {
 	if ( layer == 0u )
 		return 3u;
+	if ( layer == 1u )
+		return 6u;
 	return ratio != 0u ? 6u : 1u;
+}
+
+static float U16PayloadToF32(const uint8_t *payload, uint32_t index)
+{
+	uint16_t v;
+	memcpy(&v, payload + 2u * index, 2u);
+	return(Bf16ToF32(v));
+}
+
+static void EngramForward(uint32_t layer_id, const uint16_t *stream_in,
+	uint32_t pos, Expect *expect, const char *tag, uint16_t *stream_out)
+{
+	static float rows_f32[ENGRAM_COLS * ENGRAM_HEAD_DIM];
+	static float out_f32[ENGRAM_GK_ROWS * HIDDEN];
+	const EngramLayerSpec *spec = EngramSpec(layer_id);
+	int64_t ids[ENGRAM_COLS], id, local;
+	float access[3u * ENGRAM_COLS];
+	float key[ENGRAM_GK_ROWS][HIDDEN], value[HIDDEN];
+	float weight[ENGRAM_GK_ROWS][HIDDEN], h[ENGRAM_GK_ROWS][HIDDEN];
+	float gate[ENGRAM_GK_ROWS], acc, rstd, dot;
+	uint8_t rows[ENGRAM_COLS][ENGRAM_HEAD_DIM];
+	uint8_t scales[ENGRAM_COLS][ENGRAM_SCALE_COLS];
+	uint16_t values[ENGRAM_COLS * ENGRAM_HEAD_DIM], kv[ENGRAM_WKV_ROWS];
+	uint16_t out[ENGRAM_GK_ROWS * HIDDEN];
+	char name[64];
+	const uint8_t *plane, *wkv, *wkv_s, *qw, *kw;
+	uint32_t i, c, d;
+	if ( spec == 0 )
+		return;
+	EngramIds(spec, pos, ids);
+	for (i = 0u; i < ENGRAM_COLS; i++)
+	{
+		id = ids[i];
+		local = id - (id / (int64_t)spec->part) * (int64_t)spec->part;
+		access[i] = (float)(id / (int64_t)spec->part);
+		access[ENGRAM_COLS + i] = (float)(local >> 24);
+		access[2u * ENGRAM_COLS + i] = (float)(local & UINT64_C(0xFFFFFF));
+		plane = EngramRecordPayload(layer_id, 0u, (uint64_t)id);
+		if ( plane == 0 )
+		{
+			(void)fprintf(stderr, "engram row record missing layer %u id %lld\n",
+				layer_id, (long long)id);
+			expect->piece_failures += 1u;
+			return;
+		}
+		for (d = 0u; d < ENGRAM_HEAD_DIM; d++)
+		{
+			rows[i][d] = plane[d];
+			scales[i][d >> 5] = plane[ENGRAM_HEAD_DIM + (d >> 5)];
+			values[i * ENGRAM_HEAD_DIM + d] =
+				F32ToBf16(fp8_lut[rows[i][d]] * E8M0ToF32(scales[i][d >> 5]));
+		}
+	}
+	wkv = EngramRecordPayload(layer_id, 1u, 0u);
+	qw = EngramRecordPayload(layer_id, 2u, 0u);
+	kw = EngramRecordPayload(layer_id, 3u, 0u);
+	if ( wkv == 0 || qw == 0 || kw == 0 )
+	{
+		(void)fprintf(stderr, "engram weight records missing layer %u\n", layer_id);
+		expect->piece_failures += 1u;
+		return;
+	}
+	wkv_s = wkv + (uint64_t)ENGRAM_WKV_ROWS * ENGRAM_WKV_COLS;
+	GemvFp8(values, wkv, wkv_s, ENGRAM_WKV_ROWS, ENGRAM_WKV_COLS, kv);
+	for (c = 0u; c < ENGRAM_GK_ROWS; c++)
+	{
+		for (d = 0u; d < HIDDEN; d++)
+		{
+			key[c][d] = Bf16ToF32(kv[c * HIDDEN + d]);
+			value[d] = Bf16ToF32(kv[ENGRAM_GK_ROWS * HIDDEN + d]);
+			weight[c][d] = U16PayloadToF32(qw, c * HIDDEN + d)
+				* U16PayloadToF32(kw, c * HIDDEN + d);
+			h[c][d] = Bf16ToF32(stream_in[c * HIDDEN + d]);
+		}
+	}
+	for (c = 0u; c < ENGRAM_GK_ROWS; c++)
+	{
+		acc = 0.0f;
+		for (d = 0u; d < HIDDEN; d++)
+			acc += h[c][d] * h[c][d];
+		rstd = 1.0f / sqrtf(acc / (float)HIDDEN + ENGRAM_EPS);
+		acc = 0.0f;
+		for (d = 0u; d < HIDDEN; d++)
+			acc += key[c][d] * key[c][d];
+		rstd *= 1.0f / sqrtf(acc / (float)HIDDEN + ENGRAM_EPS);
+		acc = 0.0f;
+		for (d = 0u; d < HIDDEN; d++)
+			acc += h[c][d] * weight[c][d] * key[c][d];
+		dot = acc * rstd * (1.0f / sqrtf((float)HIDDEN));
+		if ( fabsf(dot) < ENGRAM_CLAMP )
+			dot = dot >= 0.0f ? ENGRAM_CLAMP : -ENGRAM_CLAMP;
+		gate[c] = StableSigmoid(copysignf(sqrtf(fabsf(dot)), dot));
+	}
+	for (c = 0u; c < ENGRAM_GK_ROWS; c++)
+	{
+		for (d = 0u; d < HIDDEN; d++)
+		{
+			out_f32[c * HIDDEN + d] = h[c][d] + gate[c] * value[d];
+			out[c * HIDDEN + d] = F32ToBf16(out_f32[c * HIDDEN + d]);
+		}
+	}
+	for (i = 0u; i < ENGRAM_COLS; i++)
+		for (d = 0u; d < ENGRAM_HEAD_DIM; d++)
+			rows_f32[i * ENGRAM_HEAD_DIM + d] =
+				Bf16ToF32(values[i * ENGRAM_HEAD_DIM + d]);
+	memcpy(stream_out, out, sizeof(out));
+	if ( tag == 0 )
+		return;
+	(void)snprintf(name, sizeof(name), "%s.eg_access", tag);
+	EmitF32(expect, name, access, 3u * ENGRAM_COLS);
+	(void)snprintf(name, sizeof(name), "%s.eg_rows", tag);
+	EmitF32(expect, name, rows_f32, ENGRAM_COLS * ENGRAM_HEAD_DIM);
+	(void)snprintf(name, sizeof(name), "%s.eg_value", tag);
+	EmitF32(expect, name, value, HIDDEN);
+	(void)snprintf(name, sizeof(name), "%s.eg_gate", tag);
+	EmitF32(expect, name, gate, ENGRAM_GK_ROWS);
+	(void)snprintf(name, sizeof(name), "%s.eg_out", tag);
+	EmitF32(expect, name, out_f32, ENGRAM_GK_ROWS * HIDDEN);
 }
 
 static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
@@ -1413,6 +1761,8 @@ static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
 		embed_row = embed + (uint64_t)token * HIDDEN;
 		for (i = 0u; i < HC * HIDDEN; i++)
 			stream_in[i] = embed_row[i % HIDDEN];
+		const uint16_t *block_in;
+		uint16_t engram_stream[HC * HIDDEN];
 		tag_used = 0;
 		if ( pos < tags )
 		{
@@ -1422,7 +1772,14 @@ static void RunLadder(const Pack *pack, const uint16_t *embed, Expect *expect,
 				(void)snprintf(tag, sizeof(tag), "l%u.p%u", layer, pos);
 			tag_used = tag;
 		}
-		BlockForward(&w, st, stream_in, pos, expect, tag_used, stream_out);
+		if ( EngramSpec(layer) != 0 )
+		{
+			EngramForward(layer, stream_in, pos, expect, tag_used, engram_stream);
+			block_in = engram_stream;
+		}
+		else
+			block_in = stream_in;
+		BlockForward(&w, st, block_in, pos, expect, tag_used, stream_out);
 		if ( layer != 0u )
 			continue;
 		(void)snprintf(tag, sizeof(tag), "stream_pos%u", pos);
@@ -1479,14 +1836,14 @@ int main(int argc, char **argv)
 	const uint16_t *embed;
 	uint64_t ignore = 0u;
 	uint32_t l, i, unseen = 0u;
-	if ( argc != 4 && argc != 5 )
+	if ( argc != 4 && argc != 5 && argc != 6 )
 	{
 		(void)fprintf(stderr,
-			"usage: %s <pack> <piece_table> <expectations_bin> [layer:ratio,...]\n",
+			"usage: %s <pack> <piece_table> <expectations_bin> [layer:ratio,...] [engram_fixture]\n",
 			argv[0]);
 		return(FAIL_EXIT);
 	}
-	if ( argc == 5 )
+	if ( argc >= 5 )
 	{
 		ladder_layers = ParseLayers(argv[4], ladder_layer, ladder_ratio);
 		if ( ladder_layers == 0u )
@@ -1508,6 +1865,11 @@ int main(int argc, char **argv)
 	memcpy(&g_token_count, header + 16u, 4u);
 	memcpy(g_tokens, header + 32u, sizeof(g_tokens));
 	ExpectLoad(&expect, argv[3], argv[2]);
+	if ( argc == 6 )
+	{
+		if ( EngramFixtureParse(argv[5]) != 0u )
+			return(FAIL_EXIT);
+	}
 	embed = (const uint16_t *)PackPlane(&g_pack, 0u, K_EMBED, 0u, &ignore);
 	for (l = 0u; l < ladder_layers; l++)
 		RunLadder(&g_pack, embed, &expect, ladder_layer[l], ladder_ratio[l]);
@@ -1528,6 +1890,10 @@ int main(int argc, char **argv)
 		if ( piece->bad != 0u )
 			(void)printf("FAIL %s max_abs=%.7g bad=%u\n", piece->name,
 				(double)piece->max_abs, piece->bad);
+		else if ( piece->seen != 0u && piece->max_abs > 0.0f &&
+			strncmp(piece->name, "l1.", 3u) == 0 )
+			(void)printf("DELTA %s max_abs=%.7g\n", piece->name,
+				(double)piece->max_abs);
 	}
 	if ( expect.piece_failures == 0u && expect.missing == 0u )
 	{

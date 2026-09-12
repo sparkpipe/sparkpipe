@@ -32,6 +32,7 @@ MODEL_HEADER := ../../model-families/dsv41_flash/include/sparkpipe/spark_dsv41_f
 MODULE_ENTRY_PREFIX := SparkDsv41FlashResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_dsv41_flash_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
+	source/spark_dsv41_flash_engram_access.c \
 	../../runtime/stage_module_lifecycle.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
@@ -89,3 +90,17 @@ test_host: contract
 	$(BUILD_DIRECTORY)/dsv41_flash_pack_synthesize $(DSV41_TEST_PACK) $(MODEL_REVISION) $(CONTRACT_SHA256) 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 $(TP_DEGREE) $(TP_RANK) $(EXPERT_CODEC) $(DSV41_TEST_LAYERS)
 	$(BUILD_DIRECTORY)/dsv41_flash_experts_manifest $(DSV41_TEST_PACK) $(DSV41_TEST_MANIFEST)
 	$(BUILD_DIRECTORY)/dsv41_flash_pack_contract_test $(DSV41_TEST_PACK) $(DSV41_TEST_MANIFEST)
+
+.PHONY: engram_probe
+engram_probe: contract
+	mkdir -p $(BUILD_DIRECTORY)
+	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \
+		-DSPARK_DSV41_FLASH_MODEL_REVISION=\"$(MODEL_REVISION)\" \
+		source/spark_dsv41_flash_engram_access.c \
+		tools/dsv41_flash_engram_probe.c \
+		../../runtime/stage_module_common.c \
+		$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
+		../../src/spark_status.c \
+		../../src/spark_sha256.c \
+		../../src/spark_ck128.c \
+		-o $(BUILD_DIRECTORY)/dsv41_flash_engram_probe

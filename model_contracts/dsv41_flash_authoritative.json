@@ -309,7 +309,7 @@
    "primes": "disjoint prime bucket ranges per (layer, ngram 2..4, head 0..7), drawn in order starting from engram_vocab_size-1 = 15999999; 24 ids per layer per token ((4-1) orders x 8 heads)",
    "decode_read": "per decode step per engram layer: 24 row gathers of 256B fp8 E4M3 + 8B E8M0 scales (~6.3KB) -> dequant bf16 -> wkv Linear(6144 -> 5120*(hc_mult+1)=25600) -> split key[4,5120]+value[5120] -> normalized-dot sigmoid sqrt-gate per hc copy -> residual add"
   },
-  "residency_engine_question": "ESCALATED in PR #914: the released reference implementation keeps the table GPU-resident (row-sharded across ranks, all_reduce on lookup) and contains NO host-resident gather or RDMA prefetch path; host residency + background RDMA prefetch is tech report 2.4.2 prose about DeepSeek's production engine only. Our engine has no seam for a per-step 24-row gather from a host-resident 98GiB table (weightd packs are GPU-resident; driver code may not read packs directly). Options need an operator/architecture decision: pinned-host gather over the interconnect, an engine-managed hot-row cache, or revised residency; NOT to be invented in the lane",
+  "residency_engine_question": "RESOLVED by operator ruling 2026-09-11: ROW-SHARD across the 16 sparks of the TP8xPP2 topology via weightd's host-map/lease + mesh machinery (see engram_row_shard); no all_reduce gather, no host-resident 98GiB table per node",
   "embed_table_bytes_measured": {
    "layer_1": {
     "embed_weight_F8_E4M3": 98305579008,
@@ -321,7 +321,16 @@
    },
    "note": "sha256-verified shard headers at dba1be0a; each engram module fills warm shard model-00047/00048 (~101.5 GiB incl its small wkv/q_weight/k_weight tensors); replaces the earlier 98385580032 estimate"
   },
-  "excluded_from_gpu_pack_bytes_total": 203073076240
+  "excluded_from_gpu_pack_bytes_total": 203073076240,
+  "engram_row_shard": {
+   "status": "OPERATOR-RULED 2026-09-11 (TP8xPP2, 16 mesh ranks, one rank per spark): row-shard, 12.3GiB/spark; implementation contract below",
+   "partition": "reference ParallelEngramEmbedding layout exactly: rows_per_rank = ceil(entries/16) (layer1 384006168 -> 24000386, rank15 holds 24000378; layer14 384016682 -> 24001043, rank15 holds 24001037); owner(rank) = id // rows_per_rank; local_row = id - owner*rows_per_rank; ids are in-range by hash construction but the access path fail-closes SPARK_STATUS_SCHEMA_ERROR on id >= entries (table/hash mismatch)",
+   "shard_file": "ONE stagepack-wire-format file per rank (engram shard pack, own tensor-kind space + own contract sha, NOT the GPU stagepack kinds): rank slice of layers.1 and layers.14 embed.weight F8_E4M3 [rows_r, 256] + embed.scale F8_E8M0 [rows_r, 8], plus replicated per layer: wkv.weight F8_E4M3 [25600, 6144] + scale E8M0 [800, 192], q_weight/k_weight BF16 [4, 5120]; file naming <arm>.engram.rank<h> (sparkdata tree), .experts manifest with row-block expert entries (32768-row blocks; <=733 blocks/table/rank, payload 8MiB << SPARK_WEIGHTD_EXPERT_BYTES_MAX)",
+   "access_path": "per decode step per engram layer: (1) compressed token map (99092, sha-pinned) -> rolling XOR hash (pinned: multipliers seed 10007*layer_id odd, per-(order,head) prime % from 15999999 drawn in order) -> 24 ids; (2) owner = id // rows_per_rank; (3) OWNED columns: weightd lazy-attach #2 on the rank's shard file, row-block Ensure/lease (expert-pool pattern), row bytes read from the leased GPU map; (4) REMOTE columns: owner's driver memcpy's the 264B row (256B fp8 + 8B E8M0 scale) into its mesh slot at the deterministic staging offset col*264 + layer*6336 and MeshBroadcasts to the 15 peers, arrival signalled by the existing per-offset seq doorbell; (5) consumer polls all 24 seq offsets (deadline -> SPARK_STATUS_BUSY fail-closed, never zero-fill), assembles [24,256]+[24,8]; (6) dequant bf16 exactly as reference (float().unflatten(-1,(-1,32))*scale.float().unsqueeze(-1) -> bf16) then reference Engram block (wkv, split key[4,5120]+value[5120], normalized-dot sigmoid sqrt-gate, residual add); wkv/q_weight/k_weight read via the same shard lease (replicated)",
+   "primitive_audit": "NO new weightd primitive required: second lazy attach is allowed (SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX 8), row-block Ensure/Acquire/lease is the proven expert-pool path, and the cross-rank fetch is SparkWeightdClientMeshBroadcast (proven by the hidden-transport ring); 24 cols x 264B x 2 layers = 12,672B/step staged, trivial vs the 16MiB mesh slot",
+   "fail_closed": "unresolvable access fail-closed at SPARK_FAIL, no zero-row fabrication, no direct file reads in driver code (WEIGHTS LAW): shard bytes reach the driver only through weightd leases/maps; oracle/anchor and shard tooling are exempt tooling",
+   "cut_and_verify": "tools/dsv41_flash_engram_shard.py cut mode (sparkcap on the node, chunked per source shard) + verify mode: headers==index, byte-verify vs checkpoint, per-rank boundary ranks (0, mid, last-row), sha256 per shard, .experts census; ladder synth first, real-row pieces on rank0 shard after cut"
+  }
  },
  "dspark": {
   "role": "speculative decoding (replaces MTP-style jointly-trained next-n)",
