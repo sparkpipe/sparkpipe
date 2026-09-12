@@ -30,6 +30,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_lease.h"
 #include "sparkpipe/spark_head_screen.h"
@@ -217,6 +218,8 @@ struct SparkGlm5NextModuleState
 	SparkWeightdExpertKey decode_lease_keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
 	SparkWeightdExpertKey decode_union_keys[2400u];
 	const uint8_t *decode_lease_base_saved;
+	const void *epoch_device;
+	uint64_t epoch_validated;
 	atomic_ullong nccl_next_ordinal_hc;
 };
 
@@ -570,6 +573,13 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 		status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,UINT64_C(8589934592),&spine_budget);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+	if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 &&
+	     state->lazy_pack->map != 0 )
+	{
+		state->epoch_device = SparkWeightdMapEpochDevice(
+			state->lazy_pack->map);
+		state->epoch_validated = 0ull;
+	}
 	SPARK_RETURN(status);
 }
 
@@ -2392,6 +2402,11 @@ static void SparkGlm5NextGraphRecord(SparkGlm5NextTpChain *chain,
 	*exec_out = 0;
 	if ( cudaStreamBeginCapture(stream,0u) != cudaSuccess )
 		return;
+	if ( state->epoch_device != 0 &&
+	     SparkGlm5NextLaunchEpochSample(stream,state->epoch_device,
+	         (void *)((uint64_t *)state->decode_miss_host + 64u)) !=
+	             cudaSuccess )
+		failed = 1u;
 	if ( SparkGlm5NextLaunchCudaWaveBegin(wave) != 0 )
 		failed = 1u;
 	if ( failed == 0u &&
@@ -2710,6 +2725,21 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 	{
 		fprintf(stderr,"GRAPH-EXPERT-MISS slot=%u\n",chain->slot_index);
 		status = SPARK_STATUS_BUSY;
+	}
+	if ( status == SPARK_STATUS_OK && state->epoch_device != 0 )
+	{
+		uint64_t seen =
+		    ((volatile uint64_t *)state->decode_miss_host)[64];
+		if ( seen != state->epoch_validated )
+		{
+			fprintf(stderr,
+				"GRAPH-EPOCH-MOVE seen=%llu validated=%llu\n",
+				(unsigned long long)seen,
+				(unsigned long long)state->epoch_validated);
+			SparkGlm5NextGraphLeasesDrop(state);
+			state->epoch_validated = seen;
+			status = SPARK_STATUS_BUSY;
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 	{

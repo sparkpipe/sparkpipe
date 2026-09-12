@@ -233,6 +233,26 @@ extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *des
 	return(cudaPeekAtLastError());
 }
 
+__global__ static void SparkGlm5NextEpochSampleKernel(
+    const unsigned long long *epoch,
+    volatile unsigned long long *seen)
+{
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	seen[0] = epoch[0];
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,
+    const void *epoch_device,void *seen)
+{
+	if ( epoch_device == 0 || seen == 0 )
+		return(cudaErrorInvalidValue);
+	SparkGlm5NextEpochSampleKernel<<<1,32,0u,stream>>>(
+		(const unsigned long long *)epoch_device,
+		(volatile unsigned long long *)seen);
+	return(cudaPeekAtLastError());
+}
+
 __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs()
 {
     unsigned long long t;

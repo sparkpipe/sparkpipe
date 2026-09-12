@@ -10,7 +10,9 @@ typedef struct SparkWeightdMap SparkWeightdMap;
 
 // Serialized calls on the creating CUDA context. The borrowed client and its
 // lazy attach must outlive the map. Allocation and events are created here.
-SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,SparkWeightdMap **out);
+SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,SparkWeightdMap **out);
+
+const void *SparkWeightdMapEpochDevice(const SparkWeightdMap *map);
 // Once teardown starts, errors permit only a Destroy retry, never new work.
 SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map);
 

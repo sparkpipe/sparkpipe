@@ -28,6 +28,8 @@ struct SparkWeightdMap
 	CUcontext context;
 	CUdeviceptr base;
 	uint64_t generation,span_bytes,chunk_bytes;
+	void *epoch_device;
+	void *epoch_handle;
 	uint32_t chunk_count;
 	int32_t device;
 	SparkStatus failure;
@@ -82,8 +84,18 @@ static SparkWeightdMapSlot *map_slot(SparkWeightdMap *map,uint64_t identifier)
 static void map_free_initial(SparkWeightdMap *map)
 {
 	uint32_t i;
+	if ( map->epoch_handle != 0 )
+	{
+		(void)cuMemUnmap(map->base + map->span_bytes,
+		    (size_t)map->chunk_bytes);
+		(void)cuMemRelease((CUmemGenericAllocationHandle)
+		    map->epoch_handle);
+		map->epoch_device = 0;
+		map->epoch_handle = 0;
+	}
 	if ( map->base != 0u )
-		(void)cuMemAddressFree(map->base,(size_t)map->span_bytes);
+		(void)cuMemAddressFree(map->base,
+		    (size_t)(map->span_bytes + map->chunk_bytes));
 	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
 		if ( map->slots[i].event != 0 )
 			(void)cudaEventDestroy(map->slots[i].event);
@@ -112,10 +124,14 @@ static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
 	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 	if ( cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || granularity == 0u || (map->chunk_bytes % granularity) != 0u )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-	return(cuMemAddressReserve(&map->base,(size_t)map->span_bytes,0u,0u,0u) == CUDA_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
+	map->epoch_device = 0;
+	map->epoch_handle = 0;
+	return(cuMemAddressReserve(&map->base,
+	    (size_t)(map->span_bytes + map->chunk_bytes),0u,0u,0u) ==
+	    CUDA_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
-SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,SparkWeightdMap **out)
+SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,SparkWeightdMap **out)
 {
 	SparkWeightdMap *map;
 	SparkStatus status;
@@ -140,6 +156,34 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 	status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( map->handles != 0 && map->owners != 0 && map->mapped != 0 )
 		status = map_initialize_cuda(map);
+	if ( status == SPARK_STATUS_OK && epoch_fd >= 0 )
+	{
+		CUmemAccessDesc access;
+		if ( cuMemImportFromShareableHandle(
+		         (CUmemGenericAllocationHandle *)&map->epoch_handle,
+		         (void *)(intptr_t)epoch_fd,
+			         CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) !=
+			     CUDA_SUCCESS ||
+		     cuMemMap(map->base + map->span_bytes,
+		         (size_t)map->chunk_bytes,0u,
+		         (CUmemGenericAllocationHandle)map->epoch_handle,
+		         0u) != CUDA_SUCCESS )
+			status = SPARK_STATUS_IO_ERROR;
+		else
+		{
+			memset(&access,0,sizeof(access));
+			access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+			access.location.id = map->device;
+			access.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
+			if ( cuMemSetAccess(map->base + map->span_bytes,
+			        (size_t)map->chunk_bytes,&access,1u) != CUDA_SUCCESS )
+				status = SPARK_STATUS_IO_ERROR;
+			else
+				map->epoch_device =
+				    (void *)(map->base + map->span_bytes);
+		}
+		(void)close(epoch_fd);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		map_free_initial(map);
@@ -147,6 +191,13 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 	}
 	*out = map;
 	return(SPARK_STATUS_OK);
+}
+
+const void *SparkWeightdMapEpochDevice(const SparkWeightdMap *map)
+{
+	if ( map == 0 )
+		return(0);
+	return(map->epoch_device);
 }
 
 SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
