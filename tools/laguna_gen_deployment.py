@@ -47,7 +47,10 @@ COLLECTIVE_ID = 9911223344556679
 PACK_TEMPLATE = os.environ.get(
     "LAGUNA_PACK_TEMPLATE",
     "packs/laguna_stage.tp8.pp2.stage%d.rank%d.lgsp")
-MODEL_REVISION = "PRE-FREEZE"
+CONTRACT = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/laguna_authoritative.json").read_text())
+MODEL_REVISION = CONTRACT["revision"]
+if not MODEL_REVISION or CONTRACT["freeze_status"].startswith("PRE-FREEZE"):
+    raise SystemExit("model_contracts/laguna_authoritative.json is not frozen; refusing to emit a deployment")
 NODE_TARGET = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_bf16"
 
 TP_COLLECTIVE = {

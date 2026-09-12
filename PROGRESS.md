@@ -796,3 +796,47 @@ drafter header / weightd tools debt); offline-gates full build-all crosses
 other lanes' surface. Ling-scoped gates: ALL GREEN.
 
 PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
+## LAGUNA CRITERION-7 RESTORE ON MAIN (2026-09-12, takeover session G-1)
+
+PR #904 MERGED with a silent loss: the branch rebase onto e60f690 died at
+patch 0037 of 53 (rebase-apply state left parked in the lane worktree), the
+manager merged the partial chain, and patches 0037-0053 never reached main.
+Lost: the criterion-7 real-pack harness (9fc8d7a), the bf16-expert MoE launch
+fix (9d1912d), the contract freeze + generator enforcement (a183da0-era,
+0041), and the validation/criterion-7 PROGRESS receipts (0047/0049/0053).
+On main the merged laguna module could not launch MoE on ANY bf16-expert
+pack (all 16 real packs), emitted deployments with MODEL_REVISION hardcoded
+PRE-FREEZE, and carried no freeze pins. Obsolete-or-absorbed patches
+triaged: tp_faults link fixes (0037/0038/0042-0044 - test gone from main),
+comment deletion (0039 = 84d717d), libcuda link class (0046 = 7c4800b),
+rdma dead helper (0045 = 4baa779), stale ceiling pin (0040), manifest
+regens (0048/0050). Orphaned patches preserved: /Users/mac/laguna-forensics
+(workstation).
+
+RESTORED + RE-VERIFIED on main fb2b898 (commits 71a898e/9b7c56a/8699793/
+973908b): harness verbatim from 77105a7, the MoE scale fix, the frozen
+contract (revision 0f5731.., config sha, 46 shard shas), the generator's
+contract read + PRE-FREEZE refusal, and a runner combine fix (the committed
+script never executed end-to-end: flat opart dump vs (10,3072) accumulator
+cannot broadcast; r1 caught it after build OK + embed + 8/8 attn ranks).
+
+RE-VERIFICATION (sparkb, queue v2 jobs laguna-c7-restore-r1/r2/r3, real
+frozen-contract packs, revision verified by the harness on every pack open):
+build sm_121a OK on the restored tree; reduced matrix = embed t10/t520,
+attn+moe 8 ranks both s0l1 and s1l24 (the 9d1912d repro site), rope both
+regimes (yarn to 1048575, swa), 38 L7RECEIPTs; every stage dump md5-matches
+the retained L7-VERDICT-PASS run at 77105a7: 282/282 bit-identical, 0
+mismatches (r2: 260/260 before the t520 leg; r3 completes it). The L7
+verdict therefore transfers to main bit-for-bit: same kernels, same pack
+bytes, same publisher-reference-scored outputs. Retained:
+~/laguna_runs/lane7/restore-check/ on sparkb (run.log, run_t520.log, dumps).
+
+CEILING: test_code_size measured 283161 exact on the restored tree (main's
+own #948/#950/#951 growth was +1195 past the #946 pin with no re-pin - the
+gate was red on pristine fb2b898; the restore adds 1986); pinned with
+history per the #942 ruling. MAC GATES: test_laguna_model_header PASS
+against the restored frozen contract, py_compile generator + comparator,
+code-size 283161 green. NOT COVERED HERE: the full 74-invocation matrix and
+the comparator's independent checkpoint-side scoring (inapplicable - the
+dumps are bit-identical to the already-scored run); laguna A-0088 G5N-DBG
+residue is main-side ledgered debt, untouched.

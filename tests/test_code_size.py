@@ -1535,6 +1535,15 @@ CEILING = 279980
 # +9. Each delta measured by counter runs at 5ed18e7/2ed65a5/315d29a/
 # 39deac2/a08eb8e; receipts /tmp/ling_r23_*.log on spark9.
 CEILING = 281184
+# laguna criterion-7 restore (G-1 takeover session, PR #954): the round the
+# #904 merge rebase dropped (patches 0037-0053) lands on main — real-pack
+# layer-forward harness + publisher reference comparator + runner (1979
+# validation-tooling lines), the bf16-expert MoE launch fix, the contract
+# freeze + generator enforcement. This pin raced ling's r23 pin (my first
+# pin measured 283161 over the pre-#953 tree and was skipped in the rebase
+# in favor of main's better-attributed 281184). Measured exact: 283170 on
+# the rebased tree (1986 over the r23 pin).
+CEILING = 283170
 
 
 ROOT = Path(__file__).resolve().parent.parent

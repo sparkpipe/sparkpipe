@@ -682,9 +682,13 @@ static int32_t LagunaLayerMoeExperts(
 	int32_t status = LagunaLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
 	if (status != LM_LAUNCH_OK)
 		return status;
-	if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-		buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+	if ( buffers->expert_w1_weight == 0 || buffers->expert_w2_weight == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if constexpr ( LmWeightCodec<ExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE )
+	{
+		if ( buffers->expert_w1_scale == 0 || buffers->expert_w2_scale == 0 )
+			return(LM_LAUNCH_ERR_SHAPE);
+	}
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(

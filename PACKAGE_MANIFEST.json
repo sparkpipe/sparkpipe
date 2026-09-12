@@ -1,5 +1,5 @@
 {
-  "file_count": 2161,
+  "file_count": 2163,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -47,11 +47,6 @@
       "size_bytes": 8250
     },
     {
-      "path": "DESIGN.ling-r17-scratch.md",
-      "sha256": "e9f7bad1d24a43bb25beebd681e70c3f69b87307a1e80e14570fe2629c86d1d3",
-      "size_bytes": 34566
-    },
-    {
       "path": "DESIGN.md",
       "sha256": "83f99a44096c2b7ee201fc1b2f4b55699da4d10e326e5e102bceda8f5db8e591",
       "size_bytes": 31028
@@ -83,8 +78,8 @@
     },
     {
       "path": "PROGRESS.md",
-      "sha256": "ec31ce78d754228354b3965082452d7fa4529b458e8b3cb0877e4661519eed38",
-      "size_bytes": 48717
+      "sha256": "eca0d2a729179062a03c2764e742acc0ebd08833d2379e7281b40a6377a7a458",
+      "size_bytes": 51563
     },
     {
       "path": "README.md",
@@ -3918,8 +3913,8 @@
     },
     {
       "path": "model_contracts/laguna_authoritative.json",
-      "sha256": "354f559dcdc7195d6f9771990dd63e42df4903eefa9e6e3b92626274b19ca39a",
-      "size_bytes": 2689
+      "sha256": "8e9e82f9317b2297360958f320c735edfb75f33b65ea7baed834f0b31236503e",
+      "size_bytes": 8152
     },
     {
       "path": "model_contracts/ling_authoritative.json",
@@ -4678,8 +4673,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "615cfabb7ca4be9bc9961b00dcce738697be1ec1d610a63206325e6ab185bac4",
-      "size_bytes": 23641
+      "sha256": "34bfd6d621d153e82866ae8187760ef1b6b5495a8686c92bc7fc8f298a0f4ec1",
+      "size_bytes": 23770
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/cuda/unity.cu",
@@ -4715,6 +4710,21 @@
       "path": "modules/laguna_resident_decode_stage/tools/laguna_pack_synthesize.c",
       "sha256": "f2febdc515f7a47d662dc2ba0b5c11b2a81a86dc8c9a381df176dd900a0d3a5e",
       "size_bytes": 12408
+    },
+    {
+      "path": "modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu",
+      "sha256": "ac9cda297ce4fb3c6cb8c56c3aa277f19081ffbd17711312a842d1585632a35b",
+      "size_bytes": 48295
+    },
+    {
+      "path": "modules/laguna_resident_decode_stage/validation/laguna_layer7_reference.py",
+      "sha256": "43c6b6a002ca1e0663ee3f667d1900f62ab0ce175574a7f92dfbfe2b0bef4277",
+      "size_bytes": 35018
+    },
+    {
+      "path": "modules/laguna_resident_decode_stage/validation/run_laguna_layer7.sh",
+      "sha256": "4915549ea7b49a09e1d39d5c0ebefccc1f932d2623bcc76efc6818ddce0a8b69",
+      "size_bytes": 6198
     },
     {
       "path": "modules/laguna_resident_decode_stage/validation/spark_laguna_resident_decode_stage_cuda_validation.cu",
@@ -7313,8 +7323,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "ed294a3dda1562eddd6df1507ff07e6b9df4485794e60dc429155c2cb84811d7",
-      "size_bytes": 103840
+      "sha256": "c045b82388ff37ae72cc4a52428512af843f0410ab4e6716ca3cc2dc83494018",
+      "size_bytes": 104422
     },
     {
       "path": "tests/test_complexity_ceiling.py",
@@ -10073,8 +10083,8 @@
     },
     {
       "path": "tools/laguna_gen_deployment.py",
-      "sha256": "7b372f4d6853506a38a21cfa480cab58591e15c9373dd342e7c40a7427e1c545",
-      "size_bytes": 9575
+      "sha256": "ef8cc9f493e5d541ea283d23f482ddd295e544905c48ada7cce6c3b55973bb88",
+      "size_bytes": 9890
     },
     {
       "path": "tools/laguna_gen_name_map.py",
@@ -10810,5 +10820,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35106261
+  "total_bytes": 35170541
 }
