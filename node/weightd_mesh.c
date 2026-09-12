@@ -66,6 +66,7 @@ typedef struct SparkWeightdMesh
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t doorbell_stuck[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    uint64_t ship_log_count;
     uint32_t mesh_active;
     uint32_t mesh_ready;
     uint32_t local_rank;
@@ -692,6 +693,13 @@ void SparkWeightdMeshDoorbellLoop(void)
                     {
                         weightd_mesh.doorbell_posted[index] = seq;
                         weightd_mesh.doorbell_stuck[index] = 0u;
+                        weightd_mesh.ship_log_count++;
+                        if ( (weightd_mesh.ship_log_count % 512u) == 0u )
+                            fprintf(stderr,"WD-SHIP idx=%llu seq=%llu posted=%llu total=%llu\n",
+                                (unsigned long long)index,
+                                (unsigned long long)seq,
+                                (unsigned long long)weightd_mesh.doorbell_posted[index],
+                                (unsigned long long)weightd_mesh.ship_log_count);
                     }
                     else if ( weightd_mesh.doorbell_stuck[index] % 500u == 0u )
                         fprintf(stderr,"WD-SHIP FAILED idx=%llu seq=%llu errno=%d\n",
