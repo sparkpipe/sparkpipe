@@ -1,5 +1,5 @@
 {
-  "file_count": 2165,
+  "file_count": 2166,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -780,6 +780,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/w3-weightd-2026-08-29.md",
       "sha256": "d130cf56c22597053532e10eecd91860b101910dcf0895519e730ba88ecc316d",
       "size_bytes": 15079
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-b1-stagepack-rebuild-2026-09-12.md",
+      "sha256": "dfb64f00506f1665c65b34f57fddd1220153a3b5e1b66b5508f4d03a622efa91",
+      "size_bytes": 11539
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/tickets/nvfp4-flash-module-port.md",
@@ -5113,8 +5118,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "c8c84a00c38991ca765351c3b4e01ec685daf90c42ce4836aaed52cd574aa5ca",
-      "size_bytes": 28432
+      "sha256": "e5f2c35dda7a8552d9902e68d724629f775d02f51a8f9ec9a2fb0582cd524742",
+      "size_bytes": 29233
     },
     {
       "path": "node/weightd_spawn.c",
@@ -10830,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35201260
+  "total_bytes": 35213600
 }
