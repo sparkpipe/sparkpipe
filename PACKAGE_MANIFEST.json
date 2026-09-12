@@ -6468,8 +6468,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "0b99df10f7445121ca1f2ea0957dc153267a74fe54849bd6c1becc6aaa95a38c",
-      "size_bytes": 26405
+      "sha256": "7a0b8193815690a14d6db69c6f95b215865ab8e2b92773bf86957a752e25d1ba",
+      "size_bytes": 26775
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -9553,8 +9553,8 @@
     },
     {
       "path": "tools/glm5_next_resident_stagepack.py",
-      "sha256": "837448752956fba2f04cf170acafd168b096d51e42bd505c44b6ebc904cd8750",
-      "size_bytes": 46102
+      "sha256": "530409aadd9e6a79851dbe6fde994457fec867696dcedcf695a82c1a68adff1a",
+      "size_bytes": 48055
     },
     {
       "path": "tools/hardware/generate_runner_configs.py",
@@ -10805,5 +10805,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35053539
+  "total_bytes": 35055862
 }
