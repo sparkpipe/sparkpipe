@@ -107,3 +107,28 @@ minus preserved dirs below.
 
 Expected freed: spark3 ~724700 MiB, spark1 65941 MiB, spark2 69076 MiB;
 ~840 GiB total against the 2TB target.
+
+## Execution record (2026-09-12, post-ledger commit 741f927)
+
+All gates passed on all three nodes before each rm batch: zero running
+sparkqueue units, zero open handles under srcdata (lsof +D, run from $HOME —
+two initial aborts were the gate detecting its own session cwd, fixed by not
+cd-ing into the tree; the misfiring immutable check matched the letter "i" in
+path names ending -main, fixed by testing only the lsattr flags field), zero
+immutable flags at directory and file level (lsattr -R over the spark3 model
+trees and the large job dirs). Pre-deletion manifests on each node at
+/tmp/d3-purge-manifest-20260912.txt.
+
+Freed (df -m on /, before -> after):
+- spark1: 1807493 -> 1741119 MiB used = 66374 MiB freed; avail 1841239 ->
+  1907614 (50% -> 48%). Preserved: k3-lane-d-m907-s1, qwen-flash-cuda5c.
+- spark2: 2761366 -> 2691632 MiB used = 69734 MiB freed; avail 887367 ->
+  957100 (76% -> 74%). Preserved: gate-d1-sm121a, qwen-flash-cuda5c.
+- spark3: 3171808 -> 2447995 MiB used = 723813 MiB freed; avail 476924 ->
+  1200737 (87% -> 68%). Preserved: dsv4-tp4-correct-f8c8f001-rank03.spstage,
+  releases/, sparkqueue/{glm53full-s4, glm53full-maincheck, qwen-flash-cuda5c}.
+- Total freed: 859921 MiB (839.8 GiB) against the 2TB fleet target.
+
+spark3 serving verified alive and untouched post-purge: sparkpipe_weightd
+(/tmp/spark_weightd.sock) and sparkpipe_model_residentd running; lsof proved
+neither held any srcdata handle pre-deletion.
