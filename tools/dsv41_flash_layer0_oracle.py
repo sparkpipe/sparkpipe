@@ -1450,9 +1450,11 @@ def real_tensors(reader, plan, warm_dir=None):
             "table": CheckpointEngramTable(warm_dir, layer_id, entries),
             "wkv": (wkv, wkv_s),
             "qw": np.frombuffer(load_checkpoint_raw(
-                warm_dir, f"layers.{layer_id}.engram.q_weight"), dtype=np.uint16),
+                warm_dir, f"layers.{layer_id}.engram.q_weight"),
+                dtype=np.uint16).reshape(ENGRAM_GK_ROWS, HIDDEN),
             "kw": np.frombuffer(load_checkpoint_raw(
-                warm_dir, f"layers.{layer_id}.engram.k_weight"), dtype=np.uint16),
+                warm_dir, f"layers.{layer_id}.engram.k_weight"),
+                dtype=np.uint16).reshape(ENGRAM_GK_ROWS, HIDDEN),
         }
     return t
 
