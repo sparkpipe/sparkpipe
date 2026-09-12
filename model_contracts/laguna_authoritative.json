@@ -2,8 +2,8 @@
  "schema_version": 1,
  "family": "laguna",
  "publisher": "poolside/Laguna-S-2.1",
- "revision": null,
- "freeze_status": "PRE-FREEZE: revision + config sha + shard shas pin when the warm download completes (sparkb); reference .py byte copies land in model_contracts/references at freeze",
+ "revision": "0f573140834b11cfac0c2af97a101a7a69a13e22",
+ "freeze_status": "FROZEN: revision + config sha + 46 shard shas pinned from the warm snapshot (HF tree marker 0f573140 verified on-node); publisher reference copies in model_contracts/references verified byte-for-byte against the anchors pins",
  "source": {
   "config_json": {
    "hidden_size": 3072,
@@ -51,7 +51,64 @@
     2,
     24
    ],
-   "pad_token_id": 9
+   "pad_token_id": 9,
+   "sha256": "8309d2ab0da8ac0981b8803b1a4637d843c10fdf7851ddd202ca918fb682392c"
+  },
+  "shard_sha256": {
+   "model-00001-of-00046.safetensors": "e8fd968d4c0d1c5ddaccaf93a3bb277d49652f853f628b5c7467c0161632e1dd",
+   "model-00002-of-00046.safetensors": "e74b6bb8ba427c87dd8315fadaeb76386405e337f1f0be14fcbd526932e7806f",
+   "model-00003-of-00046.safetensors": "583231c1d7cee5f5c30889d95740ef11f96761fb211c5998c8e8d32dd44ab0e1",
+   "model-00004-of-00046.safetensors": "7ce6e48b7aad7ea1d88f4adc2363979268aece2d0cb3451258796f93ba7d3b6c",
+   "model-00005-of-00046.safetensors": "554e0b341efc75449e35373df435b01d1b393897faaaf2b266dfc579c659a738",
+   "model-00006-of-00046.safetensors": "09375e99bde0b699167640f283c6c97630cd04dc8cdf6577099acb6dbbf47132",
+   "model-00007-of-00046.safetensors": "211981662364c537705ab2f001e890a0dad78f317f991cba12328a8430912a20",
+   "model-00008-of-00046.safetensors": "accf003d94c40b9a1b18e1d0af8f09d6283845b0f9ab4d1620237c5acdb4c711",
+   "model-00009-of-00046.safetensors": "beb2b07cd0130203d940bd2d7e111ac3289a2924b987de4a4b66f4a75677c998",
+   "model-00010-of-00046.safetensors": "854c9ecfd640218821382cbe884234aa2ab4a095586b7e79332fe0dd39030451",
+   "model-00011-of-00046.safetensors": "7990e4cfcef928737036a79b51dd18b583b97f768191e16a4c9c35ed6a8a90be",
+   "model-00012-of-00046.safetensors": "a4499f1834bbb61963e4cab3910d9fa68204e6a79df20e074e33033cc9eccebe",
+   "model-00013-of-00046.safetensors": "21939ed1f057632d2619f8116bef1393f5651f66b42803e11cfb9421272acbe6",
+   "model-00014-of-00046.safetensors": "56a93bce9942193cbc97d1bf0956e6e144d2eda5393f1451a8b29e47c1dd72e3",
+   "model-00015-of-00046.safetensors": "8dbe8f40428c9b54dbdbe3bd48bfe24915e7ff6c041dc4f264253cfedf52c131",
+   "model-00016-of-00046.safetensors": "c7e321b971707b3202807173286ff9958b1c68d18294a8099c14cd9f19b1e031",
+   "model-00017-of-00046.safetensors": "635d2210c72a5433c54c6648d382907a273113d37565fc8327dfa48467fe4956",
+   "model-00018-of-00046.safetensors": "b3cf79b3ec1e02327aa0db2b401695d9f9ad30d554a5a196bc0c664e6efa1814",
+   "model-00019-of-00046.safetensors": "879c8ae5315d6ac85d06af3edd44c17259cc5da41cbb517e209557d8d495a7fe",
+   "model-00020-of-00046.safetensors": "1b17ade3e3b89f91a837da754c4b5664ca0aaf5ee303853929c2b61e7629e6d7",
+   "model-00021-of-00046.safetensors": "3ba6273814850b4f700a1610529d1dd49631077536bf4a647c526cc7757137f0",
+   "model-00022-of-00046.safetensors": "baafcfcaf638eb3281f544f19fe94061947b70b480ccb9fba2ccb1d9c9d375af",
+   "model-00023-of-00046.safetensors": "e5887ad7d9449bebd0ca74eb89e66fc365e3de0e2a0957f3129af2a508e425fd",
+   "model-00024-of-00046.safetensors": "fd42e9ecc725ca75416220d6928f5d604aa2e930d850e19fc28810076ad46950",
+   "model-00025-of-00046.safetensors": "806fb7ac2acb46e7fa998714346f30ca698203124a104016e96b3cc2afd41914",
+   "model-00026-of-00046.safetensors": "50f5cab6c72b8cefbf73ca198142e91b297063c79999bb9db1d96914004ff2ca",
+   "model-00027-of-00046.safetensors": "1b136986ef03a9fb0d59b5402431b39a9a6c00e912aa0aa39202313b6f71725b",
+   "model-00028-of-00046.safetensors": "b20986e17c2438afae92adacc73d8f0950c3b5fa1df7b841edf6f4599d0aba82",
+   "model-00029-of-00046.safetensors": "06bc11f60a13bd25d5a051b43601174c1eabbfc8a79b7f27ce913f24dc0dd704",
+   "model-00030-of-00046.safetensors": "f91f242ba966007796911d413c2a55301c2970e77b6aeb7ae106f969e00143c7",
+   "model-00031-of-00046.safetensors": "eadd9d449788573437fd5547ddf1ab47d319bab86d386af09816fdce1a277e56",
+   "model-00032-of-00046.safetensors": "3cee82b9e55e10d7dc8e9e6d520307cad812da0578395735d350f2070688b911",
+   "model-00033-of-00046.safetensors": "431608c5d999abb7d221ba7eaea200c15a226f6b70b0745bbf2228bf77244465",
+   "model-00034-of-00046.safetensors": "cdccefda3ec897e2120fd6ce61295e76506c3738ff0d411440957e19ec53cdde",
+   "model-00035-of-00046.safetensors": "96b809ce76baa75b689acf44c0b32e55b19668f045a70917cc46218be53c1e12",
+   "model-00036-of-00046.safetensors": "2a4768922f56d5882548e93e53afd481b1d4b4090b65f8b7f53ef69acc215b31",
+   "model-00037-of-00046.safetensors": "2eb3e2ebb178c804671e03886384a0bf350ac28fa7e5b79c772d2f18818d2d46",
+   "model-00038-of-00046.safetensors": "347c4b5bad0fd5630903ded0cb7b5774563f321e245643dab80e6ca14915a395",
+   "model-00039-of-00046.safetensors": "268a4ce70a6d1dc532100171393f94f0d7c45b9fd0f1fbb538516f20cb1d14ba",
+   "model-00040-of-00046.safetensors": "e3ee5dbe50a75da5776ff2e5b94b846e80964a083582696ffbbd3b4912e5050d",
+   "model-00041-of-00046.safetensors": "88bb23dc4e9a56b102db5a7e96a0151521b7680eb3df783c83a32bfca203284e",
+   "model-00042-of-00046.safetensors": "44d5cc53e65d78f86ef8fca5f51af06eae98bf24a9084545bd007bd24d6509f9",
+   "model-00043-of-00046.safetensors": "d1a371ec20caa5311788f59b4650f540f5792128e499f6d84317d99eab765b4b",
+   "model-00044-of-00046.safetensors": "df485c3c09d7f0f2d3748b9db400dd53b0cd8b952e7e560e563b2992bb415354",
+   "model-00045-of-00046.safetensors": "3460f9cd677c6ba9e7f7d06d474a19dd1bcfd8605e4688a9cb6010f8329e1810",
+   "model-00046-of-00046.safetensors": "5143801097f26d20e8f1f30d8b9fc1f38bc3ccae9e5fb37e12e31a7f4c9a0f71"
+  },
+  "modeling_py": {
+   "path": "model_contracts/references/modeling_laguna.py",
+   "sha256": "765fd328542d176ff6a62ac814327b11a824df29bdca001d341e9a7c2fe9d876"
+  },
+  "configuration_py": {
+   "path": "model_contracts/references/configuration_laguna.py",
+   "sha256": "9446b4fca6f895bd0ed79d861f33447f8c231ba42b7c89cb4b4d25af3958c1fd"
   }
  },
  "tokens": {
