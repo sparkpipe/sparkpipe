@@ -247,19 +247,52 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         uint32_t band_index = (uint32_t)(implementation->band_base /
             (SPARK_WEIGHTD_MESH_SLOT_BYTES *
              SPARK_WEIGHTD_MESH_SLOTS_PER_BAND));
-        uint32_t peer_rank;
-        uint64_t band_max = implementation->round_seq;
-        for ( peer_rank = 0u;
-              peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-              peer_rank++ )
+        volatile uint64_t *base_cell = (volatile uint64_t *)
+            (implementation->mesh_buffer +
+            SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 100u * 24u);
+        uint64_t deadline =
+            SparkTpDeviceCollectiveTimeNs() +
+            implementation->round_timeout_ns;
+        if ( implementation->tp_rank == 0u )
         {
-            volatile uint64_t *peer_entry = (volatile uint64_t *)
-                (implementation->mesh_buffer +
-                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,peer_rank));
-            if ( peer_entry[0] > band_max )
-                band_max = peer_entry[0];
+            uint32_t peer_rank;
+            uint64_t band_max = implementation->round_seq;
+            for ( peer_rank = 0u;
+                  peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+                  peer_rank++ )
+            {
+                volatile uint64_t *peer_entry = (volatile uint64_t *)
+                    (implementation->mesh_buffer +
+                    SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
+                        peer_rank));
+                if ( peer_entry[0] > band_max )
+                    band_max = peer_entry[0];
+            }
+            if ( *base_cell == 0ull )
+            {
+                *base_cell = band_max + 1ull;
+                __sync_synchronize();
+                (void)SparkWeightdClientMeshBroadcast(
+                    implementation->client,
+                    0xffffu & ~(1u << implementation->tp_rank),
+                    SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 100u * 24u,
+                    SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 100u * 24u,
+                    8u,0ull,0ull,
+                    implementation->round_timeout_ns);
+            }
+            implementation->round_seq = *base_cell - 1ull;
         }
-        implementation->round_seq = band_max;
+        else
+        {
+            while ( *base_cell == 0ull )
+            {
+                struct timespec pause = {0,1000};
+                if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
+                    return SPARK_STATUS_BUSY;
+                nanosleep(&pause,0);
+            }
+            implementation->round_seq = *base_cell - 1ull;
+        }
         implementation->round_rebased = 1u;
     }
     ordinal = submission->ordinal;
