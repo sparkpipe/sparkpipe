@@ -282,7 +282,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 	volatile uint64_t *band_base,
 	uint64_t slot_bytes,
 	const unsigned long long *round_seq,
-	uint64_t parity,
+	uint64_t slots_per_rank,
+	uint64_t ring,
 	uint32_t rank,
 	uint32_t degree,
 	unsigned long long *error_word,
@@ -301,7 +302,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
 		end_word = (volatile uint64_t *)
 			((uint8_t *)band_base +
-			((uint64_t)peer_rank * 2u + parity) * slot_bytes +
+			((uint64_t)peer_rank * slots_per_rank +
+				(ring & (slots_per_rank - 1ull))) * slot_bytes +
 			slot_bytes - 8u);
 		while ( *end_word < sequence )
 		{
@@ -329,16 +331,16 @@ extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
 
 extern "C" cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
 	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
-	uint64_t parity,uint32_t rank,uint32_t degree,void *error_word,
-	unsigned long long deadline_ns)
+	uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
+	void *error_word,unsigned long long deadline_ns)
 {
 	if ( band_base == 0 || round_seq == 0 || degree == 0u ||
 	     error_word == 0 )
 		return(cudaErrorInvalidValue);
 	SparkGlm5NextMeshWaitKernel<<<1,32,0u,stream>>>(
 		(volatile uint64_t *)band_base,slot_bytes,
-		(const unsigned long long *)round_seq,parity,rank,degree,
-		(unsigned long long *)error_word,deadline_ns);
+		(const unsigned long long *)round_seq,slots_per_rank,ring,rank,
+		degree,(unsigned long long *)error_word,deadline_ns);
 	return(cudaPeekAtLastError());
 }
 
