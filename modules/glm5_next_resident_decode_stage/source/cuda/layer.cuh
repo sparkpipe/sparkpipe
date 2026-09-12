@@ -2078,6 +2078,7 @@ static void Glm5NextExpertCoverKernel(
     uint32_t word;
     uint32_t fallback = 0xffffffffu;
     uint32_t expert;
+    uint32_t slot;
     if ( index >= packed_rows )
         return;
     layer_words = expert_cover + layer_word_base;
@@ -2092,6 +2093,9 @@ static void Glm5NextExpertCoverKernel(
         }
     if ( fallback >= experts )
         fallback = 0u;
+    slot = atomicAdd((unsigned int *)(expert_miss + 1u),1u);
+    expert_miss[2u + (slot & 63u)] =
+        (layer_word_base / cover_stride) * 512u + expert;
     route_expert[index] = fallback;
     *expert_miss = 1u;
 }

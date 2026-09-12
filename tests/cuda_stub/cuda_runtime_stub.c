@@ -454,6 +454,15 @@ cudaError_t cudaGraphInstantiate(
     return *graph_exec != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
 }
 
+cudaError_t cudaGraphUpload(
+    cudaGraphExec_t graph_exec,
+    cudaStream_t stream)
+{
+    (void)graph_exec;
+    (void)stream;
+    return cudaSuccess;
+}
+
 cudaError_t cudaGraphLaunch(
     cudaGraphExec_t graph_exec,
     cudaStream_t stream)

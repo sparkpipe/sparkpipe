@@ -4328,8 +4328,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "17f6747e4d4088db23fadfa3afe7d8eca5118cf2844c1239557f1e9caa8de27c",
-      "size_bytes": 89120
+      "sha256": "d6c031663038476cd1c9b6bf11a6defe6a3b4f2304c30aede648157020b44baf",
+      "size_bytes": 89295
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -4348,8 +4348,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "afaec5c96ae7ed4a45b4f896bff55cd1b6278d2610d8c7c39eae65b6a95bc02a",
-      "size_bytes": 176224
+      "sha256": "22af016e3f8d31b5df69ecef6d8420fc32e8ac169adc1dd14d29a24a76042c81",
+      "size_bytes": 178586
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6793,8 +6793,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "0d89ca08e66989067653689b0bcfcd294fe97a7cb334b88a6b1bcbe239ed2a80",
-      "size_bytes": 29635
+      "sha256": "021df0e1c26143ad6ef4e1bec10acf5e9de184ea3f7b0ba440eb752397a1e6b1",
+      "size_bytes": 29790
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -10805,5 +10805,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35050847
+  "total_bytes": 35053539
 }
