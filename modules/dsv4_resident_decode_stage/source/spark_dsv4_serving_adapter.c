@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdatomic.h>
 #include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 #include <string.h>
@@ -316,6 +317,8 @@ typedef struct SparkDsv4ServingAdapterState
 	uint32_t draft_bridge_port;
 	char draft_bridge_host[SPARK_DSV4_SERVING_DRAFT_BRIDGE_HOST_BYTES];
 	uint32_t quiescing;
+	atomic_uint reset_active;
+	atomic_uint_fast64_t reset_generation;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
 	SparkDsv4ServingPending pending[SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX];
@@ -848,6 +851,8 @@ static void SparkDsv4ServingInitializeState(
 	state->completion_context = configuration->completion_context;
 	state->wake_function = configuration->wake_function;
 	state->wake_context = configuration->wake_context;
+	atomic_init(&state->reset_active,0u);
+	atomic_init(&state->reset_generation,0u);
 }
 
 static void SparkDsv4ServingSpeculationModelContract(
@@ -1308,6 +1313,50 @@ static SparkStatus SparkDsv4ServingQuiesce(
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
+static SparkStatus SparkDsv4ServingResetControl(
+	SparkDsv4ServingAdapterState *state,
+	uint64_t control_generation)
+{
+	SparkModelDriverAdmissionRequest request = {0};
+	SparkModelDriverAdmissionDecision decision;
+	SparkStatus status;
+	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkDsv4ServingQuiesce(state,UINT64_MAX);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = state->program->program_id;
+	request.control_generation = control_generation;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
+	SparkModelDriverInitializeAdmissionDecision(&decision);
+	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
+	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	if ( status == SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
+		state->quiescing = 0u;
+	}
+	return(status);
+}
+
+static SparkStatus SparkDsv4ServingReset(
+	void *adapter_state,
+	uint64_t control_generation)
+{
+	SparkDsv4ServingAdapterState *state = (SparkDsv4ServingAdapterState *)adapter_state;
+	uint32_t expected = 0u;
+	SparkStatus status;
+	if ( state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
+		return(SPARK_STATUS_BUSY);
+	status = SparkDsv4ServingResetControl(state,control_generation);
+	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
+	return(status);
+}
+
 static SparkStatus SparkDsv4ServingSnapshot(
 	void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
@@ -1355,7 +1404,8 @@ static const SparkModelServingAdapterInterface SparkDsv4ServingInterface =
 	.resolve_prefetch = SparkDsv4ServingResolvePrefetch,
 	.progress = SparkDsv4ServingProgress,
 	.quiesce = SparkDsv4ServingQuiesce,
-	.snapshot = SparkDsv4ServingSnapshot
+	.snapshot = SparkDsv4ServingSnapshot,
+	.reset = SparkDsv4ServingReset
 };
 
 __attribute__((visibility("default")))
