@@ -130,6 +130,9 @@ typedef struct SparkWeightdArena
     SparkWeightdLeaseTable *leases;
     uint8_t *needed_chunks;
     uint8_t *created_chunks;
+    void *epoch_device;
+    void *epoch_handle;
+    uint64_t epoch;
     uint8_t staging[65536];
 } SparkWeightdArena;
 
@@ -329,6 +332,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcExportLease) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT:
             return sizeof(SparkWeightdIpcExportLeaseResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT:
+            return sizeof(SparkWeightdIpcEpochExport) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT:
+            return sizeof(SparkWeightdIpcEpochExportResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return sizeof(SparkWeightdIpcAcquire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT:
@@ -376,6 +383,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
     {
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT:
+            return SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RELEASE:
@@ -661,14 +670,43 @@ static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
         arena->chunk_refs = 0;
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
-    if (cuMemAddressReserve(&base,
-            (size_t)(chunk_count * chunk_bytes), 0u, 0ull, 0ull) != CUDA_SUCCESS)
     {
-        free(arena->chunk_handles);
-        free(arena->chunk_refs);
-        arena->chunk_handles = 0;
-        arena->chunk_refs = 0;
-        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+        CUmemAccessDesc access_stub;
+        memset(&access_stub,0,sizeof(access_stub));
+        access_stub.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        access_stub.location.id = device;
+        access_stub.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
+        if (cuMemAddressReserve(&base,
+                (size_t)((chunk_count + 1ull) * chunk_bytes), 0u, 0ull,
+                0ull) != CUDA_SUCCESS ||
+            cuMemCreate((CUmemGenericAllocationHandle *)
+                &arena->epoch_handle,(size_t)chunk_bytes,&prop,0ull) !=
+                CUDA_SUCCESS ||
+            cuMemMap(base + (CUdeviceptr)chunk_count * chunk_bytes,
+                (size_t)chunk_bytes,0u,
+                (CUmemGenericAllocationHandle)arena->epoch_handle,0ull) !=
+                CUDA_SUCCESS ||
+            cuMemSetAccess(base + (CUdeviceptr)chunk_count * chunk_bytes,
+                (size_t)chunk_bytes,&access_stub,1u) != CUDA_SUCCESS)
+        {
+            if ( base != 0 )
+                (void)cuMemAddressFree(base,
+                    (size_t)((chunk_count + 1ull) * chunk_bytes));
+            if ( arena->epoch_handle != 0 )
+            {
+                (void)cuMemRelease((CUmemGenericAllocationHandle)
+                    arena->epoch_handle);
+                arena->epoch_handle = 0;
+            }
+            free(arena->chunk_handles);
+            free(arena->chunk_refs);
+            arena->chunk_handles = 0;
+            arena->chunk_refs = 0;
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+        }
+        arena->epoch_device = (void *)(uintptr_t)
+            (base + (CUdeviceptr)chunk_count * chunk_bytes);
+        arena->epoch = 0ull;
     }
     arena->device_base = (void *)(uintptr_t)base;
     arena->virtual_bytes = chunk_count * chunk_bytes;
@@ -1476,6 +1514,10 @@ static SparkStatus SparkWeightdEvictGroup(SparkWeightdServer *server,SparkWeight
 		arena->expert_present_bytes -= range->bytes;
 	}
 	arena->experts[group_index].present = 0u;
+	arena->epoch++;
+	if ( arena->epoch_device != 0 )
+		(void)cudaMemcpy(arena->epoch_device,&arena->epoch,
+		    sizeof(uint64_t),cudaMemcpyHostToDevice);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1979,6 +2021,30 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         result->resident_bytes = server->resident_bytes;
         result->arena_count = server->arena_count;
         return SPARK_WEIGHTD_IPC_DETACH_RESULT_BYTES;
+    }
+
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT)
+    {
+        SparkWeightdIpcEpochExportResult *result =
+            (SparkWeightdIpcEpochExportResult *)response;
+        const SparkWeightdIpcEpochExport *request =
+            (const SparkWeightdIpcEpochExport *)request_header;
+        SparkWeightdArena *arena;
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        arena = SparkWeightdAttachedArena(server, connection,
+            request->arena_generation);
+        if (arena == 0 || arena->epoch_handle == 0 ||
+            SparkWeightdServerExportOne(connection, arena->epoch_handle) !=
+                SPARK_STATUS_OK)
+        {
+            if (arena != 0 && arena->epoch_handle != 0)
+                SparkWeightdServerCloseStagedFds(connection);
+            result->status = (uint32_t)SPARK_STATUS_NOT_FOUND;
+            return SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES;
+        }
+        result->status = (uint32_t)SPARK_STATUS_OK;
+        return SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES;
     }
 
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_RECLAIM)
@@ -3259,6 +3325,42 @@ SparkStatus SparkWeightdClientExportLeaseBatch(SparkWeightdClient *client,uint64
 	batch->batch_offset = response.base.batch_offset;
 	batch->batch_count = response.base.batch_count;
 	memcpy(batch->chunk_indices,response.chunk_indices,sizeof(batch->chunk_indices));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientEpochExport(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    int *fd_out,
+    uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcEpochExport request;
+	SparkWeightdIpcEpochExportResult response;
+	int fds[1];
+	uint32_t received = 0u;
+	SparkStatus status;
+	if (client == 0 || fd_out == 0)
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*fd_out = -1;
+	if (client->next_request_id == UINT64_MAX)
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&request,0,sizeof(request));
+	memset(&response,0,sizeof(response));
+	fds[0] = -1;
+	SparkWeightdBuildHeader((uint8_t *)&request,
+	    SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT,++client->next_request_id);
+	request.arena_generation = arena_generation;
+	status = SparkWeightdClientExportExchange(client,&request,
+	    sizeof(request),&response,sizeof(response),fds,&received,
+	    timeout_nanoseconds);
+	if (status != SPARK_STATUS_OK)
+		SPARK_RETURN(status);
+	if (response.status != (uint32_t)SPARK_STATUS_OK || received != 1u)
+	{
+		while (received != 0u)
+			(void)close(fds[--received]);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	*fd_out = fds[0];
 	return(SPARK_STATUS_OK);
 }
 

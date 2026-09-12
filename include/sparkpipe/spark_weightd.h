@@ -58,6 +58,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_WRITE_RESULT 22u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST 23u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT 24u
+#define SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT 25u
+#define SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT 26u
 
 #define SPARK_WEIGHTD_MESH_SLOT_BYTES (16u * 1024u * 1024u)
 #define SPARK_WEIGHTD_MESH_RANKS_PER_BAND 16u
@@ -231,6 +233,23 @@ typedef struct SparkWeightdIpcAttachLazyResult
     uint32_t mesh_send_buffer_bytes;
     uint8_t manifest_sha256[32];
 } SparkWeightdIpcAttachLazyResult;
+
+typedef struct SparkWeightdIpcEpochExport
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint32_t reserved;
+} SparkWeightdIpcEpochExport;
+
+typedef struct SparkWeightdIpcEpochExportResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reserved;
+} SparkWeightdIpcEpochExportResult;
+
+#define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExport))
+#define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExportResult))
 
 typedef struct SparkWeightdIpcMeshWrite
 {
@@ -550,6 +569,11 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
 SparkStatus SparkWeightdClientDetach(SparkWeightdClient *client,
     uint64_t arena_generation,
     SparkWeightdDetachResult *result,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientEpochExport(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    int *fd_out,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
