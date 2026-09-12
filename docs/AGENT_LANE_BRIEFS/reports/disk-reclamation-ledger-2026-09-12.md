@@ -190,3 +190,11 @@ is the live arm. Remaining spark5 candidates outside this brief's scope,
 for coordinator ruling: glm53full.{bf16.tp16, fp8.tp4pp4, nvfp4.tp4pp4,
 bf16.tp4pp4} sibling trees and the large srcdata/ tree.
 
+## Receipts (execution, 2026-09-12, D-2)
+
+- spark5 entry 11: pre-flight at execution — fuser clean, lsof 0 lines,
+  proc scan found only the scan shell, lsattr plain `e` (no immutable
+  flag). `DELETED …/glm53full.nvfp4.tp16-rank5.glm52sp`; df delta on /
+  = +32,903,045,120 B (entry bytes + metadata rounding). Post-state:
+  packs/ holds the 16 receipt.json + SHA256SUMS only, no pack bodies.
+
