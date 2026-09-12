@@ -1918,13 +1918,7 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 		&submission,wire->header.message_id) : 0;
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( status != SPARK_STATUS_OK )
-	{
-		pthread_mutex_lock(&runtime->mutex);
-		SparkModelResidentdFailLocked(runtime,status,
-			SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,0);
-		pthread_mutex_unlock(&runtime->mutex);
 		SPARK_RETURN(status);
-	}
 	if ( route == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,0u);
@@ -1939,8 +1933,6 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 		cleanup_status = SparkModelResidentdDeactivateRouteLocked(runtime,route);
 		if ( cleanup_status != SPARK_STATUS_OK )
 			status = cleanup_status;
-		SparkModelResidentdFailLocked(runtime,status,
-			SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,route);
 	}
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
@@ -2314,8 +2306,6 @@ static SparkStatus SparkModelResidentdFailContinuationLocked(
 	SparkStatus status)
 {
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_FENCED;
-	SparkModelResidentdFailLocked(runtime,status,
-		SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE,route);
 	SPARK_RETURN(status);
 }
 
