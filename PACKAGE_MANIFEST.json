@@ -6488,8 +6488,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "b41ac6163ad2591b65ba247a9c722d74cabe93e09b9fabca18f0fc6c4bb0fd70",
-      "size_bytes": 37003
+      "sha256": "39ee211077301cdc4fd12b515c9dafc25c7316c98bbd6e0c3a0063a86e5cd185",
+      "size_bytes": 37249
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -10835,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35213401
+  "total_bytes": 35213647
 }
