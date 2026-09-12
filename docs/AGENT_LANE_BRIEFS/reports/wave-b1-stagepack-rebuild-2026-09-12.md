@@ -48,7 +48,23 @@ that cannot verify (stage3) are rebuilt from the source checkpoint.
 
 | time (UTC) | op | detail |
 |---|---|---|
-| 2026-09-12T16:04Z | build rank12 | spark3, sparkcap MemoryMax=10240M/High=8192M, source /mnt/model-warm/glm-5.3-flash → running |
+| 2026-09-12T16:04Z | build rank12 | spark3, sparkcap MemoryMax=10240M/High=8192M, source /mnt/model-warm/glm-5.3-flash → DONE: glm5_next_stage.tp4.pp4.stage3.rank0.g5nsp, 314 tensors, 23,925,499,392 B, sha256 7e578703f75055830cc198b07028450f38d7497864e9fea63445d0ba4d84aa05 |
+
+## Ceph stall incident (16:08-16:40Z) and pivot
+
+The spark3 all-tensors verify + rank13 build both entered D-state on their first
+checkpoint reads (0% CPU from start, partial stuck at 203,914,496 B). Probes: spark3
+reads model-00062 at 2.4 MB/s and spark0 at 1.4 MB/s, sparkc reads the same file at
+422 MB/s; `ceph -s` (spark0, read-only): HEALTH_WARN, 1 OSD experiencing slow
+operations in BlueStore. Node-specific read-path stall, not a dataset stall. Actions:
+stopped both wave scopes on spark3 (`systemctl stop run-r89f38… run-rc0a52…`),
+purged spark3 disk caches (buff/cache 22G→1G), verified the killed verify emitted no
+verdict (empty log — no false PASS). PIVOT: warm-reading work moved to sparkc
+(276-422 MB/s re-probe) — a placement target, so its rank also places locally with
+zero network hop. rank0 pack mesh-copied spark3→sparkc for verification there.
+Fresh stage3 size (23,925,499,392 B) ≠ sparkf placed (23,925,520,768 B): the
+compact-era layout differs from the current packer — rebuild (not re-pin) confirmed
+mandatory for the whole quartet.
 
 ## Verification ledger
 
