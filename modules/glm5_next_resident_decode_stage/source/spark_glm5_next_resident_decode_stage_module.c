@@ -3234,10 +3234,12 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	SparkModelDriverCompletion completion;
 	SparkModelDriverCompletionFunction complete;
 	void *complete_context;
-	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
+	if ( state == 0 )
+		return;
+	state->tp_chain_active = 0u;
+	if ( async->slot_index >= state->pipeline_slot_count )
 		return;
 	slot = &state->slots[async->slot_index];
-	state->tp_chain_active = 0u;
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
 		fprintf(stderr,"GLM cache access failed: code %u row %u slot %u\n",slot->host_kv_access_error[0],slot->host_kv_access_error[2],async->slot_index);
@@ -3272,7 +3274,10 @@ static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 		return;
 	status = SparkWeightdWorkerSubmit(async->state->completion_worker,SparkGlm5NextCompleteOnWorker,async);
 	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"GLM completion handoff failed: status %d; retaining lane and slot ownership\n",(int32_t)status);
+	{
+		fprintf(stderr,"GLM completion handoff failed: status %d; completing inline\n",(int32_t)status);
+		SparkGlm5NextCompleteOnWorker(async);
+	}
 }
 
 static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
