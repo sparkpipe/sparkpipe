@@ -70,10 +70,46 @@ mandatory for the whole quartet.
 
 (filled per rank: verifier verdict, sha256, dir sha, .experts, splits)
 
-## Placement ledger
+## Placement ledger (stage3 quartet — complete)
 
-(filled per rank: source/dest sha256, lock state, purge)
+| rank | node | file sha256 (dest-verified) | .experts sha256 | lock |
+|---|---|---|---|---|
+| 12 | sparkc | 7e578703f75055830cc198b07028450f38d7497864e9fea63445d0ba4d84aa05 | e6ad8a4b704eca5096470e2c7febefeb6178bc024ee0e2eff03ac7119e069998 | +i |
+| 13 | sparkd | e4dafece459260c45d698cc0afd839866a46b72eaf7f4b5043c7de7c1f187563 | ef0dc3033f4e3a66a844a5a0dace15fad681f87cd593426739d211f1a664e9ba | +i |
+| 14 | sparke | ffabeab8b791a3b85152411eea54f162bc65df0d6bce4fec346835e1dbd36778 | 2025e3038e31b1a766919287c090e72b32187249a5a29c535fd93b56b7812144 | +i |
+| 15 | sparkf | a1392b4df4e62f604f0f75163e017a1184c7fcfc23205cd6f23c3a710a606023 | 46360b37f8ef4f84ba0af88b31f82fbd19960c9c32db4e3a17d80e450b307f49 | +i |
 
-## Stage0-2 re-pin ledger
+All four: 23,925,499,392 B, 314 entries, dir_sha256 fc9bfe454258206f0d17148043f2d964505f5ac12db44c32e8db67beb3ad5e0f
+(uniform), flags=0 MTP-free, .experts manifests published via build/glm5_next_experts_manifest
+(SparkWeightdManifestLoad-validated), receipt pairs written (.receipt.json user + .g5nsp.receipt.json
+root, fleet convention). SPINE/EXPERT splits per rank: 290 spine entries 1,502,716,512 B |
+24 expert entries 22,422,749,184 B | payload total 23,925,465,696 B. Disk-cache purge after
+each placement batch (sync + drop_caches=3, sudo -n).
 
-(filled per stage/rank)
+## Stage0-2: re-pin REVERSED — full rebuild required
+
+The rank11 all-tensors verify (sparkb) FAILED: layer-22 (0x16) expert up_gate slab,
+pack c64ba2d4766700043712427b3c0572fcf5b0eaaaa78cdc6ac14bd9e15976d80c != checkpoint
+2fdafa710a12d67486a720976d13463b9d880550aa525f491757089091aa5467, plan-diff PASS.
+ROOT CAUSE: the 2026-09-08 in-place fleet rewrite predates #877 (e38ebb2, 2026-09-09):
+"Pair expert up and gate TP slices with down columns" — the pre-#877 packer gave a rank
+only up or only gate rows and the local SwiGLU multiplied unrelated channels (75.4%
+relative error at layer 4 per GLM_FLASH_HILLCLIMB 2026-09-09, which mandates
+regeneration of affected TP packs; unchanged sizes cannot prove validity). Every one of
+the 16 placed packs is therefore a defective-generation artifact; the receipt re-pin is
+invalid by contract and all 16 ranks are rebuilt from the source through the current
+packer (stage3 already done above).
+
+SCRIPT DEFECT CAUGHT (self-inflicted, fixed): the re-pin driver's `| tail -2` swallowed
+the verifier's exit code (set -e defeat — the firing-270 lesson) and wrote a PASS receipt
+after a FAIL verdict. The false receipt pair + the regenerated .experts were removed from
+sparkb (rank11 left unreceipted = fail-closed for weightd until the rebuild lands); the
+rebuild driver verifies fail-closed (verifier rc captured; receipts written only on PASS).
+
+## Stage0-2 rebuild ledger (12 ranks, waves of 2, on placement targets)
+
+| time (UTC) | op | detail |
+|---|---|---|
+| 2026-09-12T18:20Z | probes | warm reads recovered fleet-wide after the stall window: spark1 408, spark2 511, spark3 440, spark5 469, spark6 574, spark7 503, spark9 548, sparka 504, spark4 164, spark8 513 MB/s |
+| 2026-09-12T18:2xZ | dry-plan | stage0 272 tensors, stage1 287 — generation match |
+| 2026-09-12T18:2xZ | wave 1 | rank0 (spark0) + rank1 (spark1), stage0 L0+11 owns-embedding — running |
