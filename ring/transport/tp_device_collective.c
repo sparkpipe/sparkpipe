@@ -50,6 +50,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *round_seq_device;
     void *error_word;
     uint32_t capture_armed;
+    uint32_t round_rebased;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
     pthread_cond_t completion_wake;
@@ -241,6 +242,26 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
             implementation->combine_u64_max == 0) )
         return SPARK_STATUS_UNSUPPORTED;
+    if ( implementation->round_rebased == 0u )
+    {
+        uint32_t band_index = (uint32_t)(implementation->band_base /
+            (SPARK_WEIGHTD_MESH_SLOT_BYTES *
+             SPARK_WEIGHTD_MESH_SLOTS_PER_BAND));
+        uint32_t peer_rank;
+        uint64_t band_max = implementation->round_seq;
+        for ( peer_rank = 0u;
+              peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+              peer_rank++ )
+        {
+            volatile uint64_t *peer_entry = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,peer_rank));
+            if ( peer_entry[0] > band_max )
+                band_max = peer_entry[0];
+        }
+        implementation->round_seq = band_max;
+        implementation->round_rebased = 1u;
+    }
     ordinal = submission->ordinal;
     round_seq = ++implementation->round_seq;
     slot_bytes = implementation->slot_bytes;
@@ -570,7 +591,6 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
             (implementation->mesh_buffer +
             SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
                 implementation->tp_rank));
-        uint32_t slot;
         uint32_t peer_rank;
         for ( peer_rank = 0u;
               peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer_rank++ )
@@ -580,16 +600,6 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
                 SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,peer_rank));
             if ( peer_entry[0] > implementation->round_seq )
                 implementation->round_seq = peer_entry[0];
-        }
-        for ( slot = 0u;
-              slot < SPARK_WEIGHTD_MESH_RANKS_PER_BAND *
-                SPARK_WEIGHTD_MESH_SLOTS_PER_RANK; slot++ )
-        {
-            volatile uint64_t *sequence = (volatile uint64_t *)
-                (implementation->mesh_buffer + implementation->band_base +
-                (uint64_t)slot * implementation->slot_bytes +
-                implementation->slot_bytes - 8u);
-            *sequence = 0ull;
         }
         __sync_synchronize();
         entry[2] = 0ull;
