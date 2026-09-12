@@ -341,6 +341,9 @@ uint64_t SparkTpDeviceCollectiveGraphError(
 void SparkTpDeviceCollectiveClearGraphError(
     SparkTpDeviceCollective *collective);
 
+void SparkTpDeviceCollectiveBroadcastCancel(
+    SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);

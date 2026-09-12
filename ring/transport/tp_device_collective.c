@@ -51,6 +51,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *error_word;
     uint32_t capture_armed;
     uint32_t round_rebased;
+    uint64_t cancel_seen;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
     pthread_cond_t completion_wake;
@@ -293,6 +294,12 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             }
             implementation->round_seq = *base_cell - 1ull;
         }
+        {
+            volatile uint64_t *cancel_cell = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 101u * 24u);
+            implementation->cancel_seen = *cancel_cell;
+        }
         implementation->round_rebased = 1u;
     }
     ordinal = submission->ordinal;
@@ -374,6 +381,19 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         while ( *end_word < round_seq )
         {
             struct timespec pause = {0,1000};
+            volatile uint64_t *cancel_cell = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 101u * 24u);
+            if ( *cancel_cell != implementation->cancel_seen )
+            {
+                implementation->cancel_seen = *cancel_cell;
+                fprintf(stderr,
+                    "MESH-CANCEL-ABORT rank=%u peer=%u want=%llu got=%llu\n",
+                    implementation->tp_rank,peer_rank,
+                    (unsigned long long)round_seq,
+                    (unsigned long long)*end_word);
+                return SPARK_STATUS_BUSY;
+            }
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 fprintf(stderr,
@@ -688,6 +708,29 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(
              SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) == 0 && cell != 0ull )
         implementation->round_seq = cell;
     return(SPARK_STATUS_OK);
+}
+
+void SparkTpDeviceCollectiveBroadcastCancel(
+    SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    volatile uint64_t *cancel_cell;
+    if ( collective == 0 || collective->implementation == 0 )
+        return;
+    implementation = collective->implementation;
+    if ( implementation->mesh_buffer == 0 )
+        return;
+    cancel_cell = (volatile uint64_t *)(implementation->mesh_buffer +
+        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 101u * 24u);
+    *cancel_cell = (implementation->round_seq << 8) |
+        (uint64_t)implementation->tp_rank;
+    implementation->cancel_seen = *cancel_cell;
+    __sync_synchronize();
+    (void)SparkWeightdClientMeshBroadcast(implementation->client,
+        0xffffu & ~(1u << implementation->tp_rank),
+        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 101u * 24u,
+        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + 101u * 24u,
+        8u,0ull,0ull,implementation->round_timeout_ns);
 }
 
 uint64_t SparkTpDeviceCollectiveGraphError(
