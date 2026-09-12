@@ -3528,8 +3528,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_lm_kernels.cuh",
-      "sha256": "2b493abe3890e775abebed7dca9abc584f62b66ea1f777d273f1e648dc3ec16b",
-      "size_bytes": 226769
+      "sha256": "1feb5460758017c8e750dc0718bbdaf7fa602357ddbc9814c7687f3c8bd8d992",
+      "size_bytes": 226802
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_pack_load_common.h",
@@ -10820,5 +10820,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35172608
+  "total_bytes": 35172641
 }
