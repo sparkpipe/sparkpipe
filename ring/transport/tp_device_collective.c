@@ -366,7 +366,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     uint64_t slot_base;
     uint8_t *slot;
     volatile uint64_t *entry;
-    SparkTpDeviceCollectiveStagingSet *staging;
+    SparkTpDeviceCollectiveStagingSet *staging = 0;
     uint32_t band_index;
     uint32_t peer;
 
@@ -465,6 +465,13 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     staging->slot = slot_index;
     staging->bytes = bytes;
     staging->seq = round_seq;
+    if ( bytes == 0ull || slot_index >=
+            (uint64_t)SPARK_WEIGHTD_MESH_SLOTS_PER_BAND )
+        fprintf(stderr,"MESH-STAGING-BAD rank=%u seq=%llu bytes=%llu slot=%llu\n",
+            implementation->tp_rank,
+            (unsigned long long)round_seq,
+            (unsigned long long)bytes,
+            (unsigned long long)slot_index);
     __sync_synchronize();
     if ( cudaMemcpyAsync(slot,submission->local_device,(size_t)bytes,
             SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 )
@@ -509,10 +516,12 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             {
                 implementation->cancel_seen = *cancel_cell;
                 fprintf(stderr,
-                    "MESH-CANCEL-ABORT rank=%u peer=%u want=%llu got=%llu mi=%llu pub seq=%llu bytes=%llu slot=%llu\n",
+                    "MESH-CANCEL-ABORT rank=%u peer=%u want=%llu got=%llu at8=%llu mi=%llu pub seq=%llu bytes=%llu slot=%llu\n",
                     implementation->tp_rank,peer_rank,
                     (unsigned long long)round_seq,
                     (unsigned long long)*end_word,
+                    (unsigned long long)*(volatile uint64_t *)
+                        ((uint8_t *)end_word - bytes),
                     (unsigned long long)implementation->round_index,
                     (unsigned long long)staging->seq,
                     (unsigned long long)staging->bytes,
@@ -537,6 +546,17 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         }
     }
 combine:
+    if ( staging != 0 && (entry[1] != staging->bytes ||
+         entry[2] != staging->slot || entry[0] != staging->seq) )
+        fprintf(stderr,"MESH-ENTRY-READBACK rank=%u seq=%llu entry=(%llu,%llu,%llu) staged=(%llu,%llu,%llu)\n",
+            implementation->tp_rank,
+            (unsigned long long)round_seq,
+            (unsigned long long)entry[0],
+            (unsigned long long)entry[1],
+            (unsigned long long)entry[2],
+            (unsigned long long)staging->seq,
+            (unsigned long long)staging->bytes,
+            (unsigned long long)staging->slot);
     for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
     {
         uint8_t *source = implementation->mesh_buffer +
