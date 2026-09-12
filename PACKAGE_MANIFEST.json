@@ -418,8 +418,8 @@
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/disk-reclamation-ledger-2026-09-12.md",
-      "sha256": "4b1c3465b88ae698ec23bbf20f07bb69d87b9b0d01d605d2c99922e38f3b2e01",
-      "size_bytes": 15875
+      "sha256": "92c11751d09fc5d31723487c7124b2abbd1e4dd5dd569291356585d25b5584a2",
+      "size_bytes": 16553
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/draft-formats-2026-08-29.md",
@@ -10835,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35210429
+  "total_bytes": 35211107
 }

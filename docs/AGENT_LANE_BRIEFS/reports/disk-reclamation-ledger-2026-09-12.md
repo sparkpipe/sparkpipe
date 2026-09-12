@@ -250,3 +250,15 @@ nothing (zero repo references, no process, pre-flight clean).
 Planned reclaim: spark6 321,047,907,674 B (299 GiB) → ~1.4 T free vs the
 2 TB target.
 
+## Receipts (execution, 2026-09-12, D-2)
+
+- spark6 entry 12: first `rm -rf` freed 226,764,185,600 B (probe-class
+  pass 1 caught everything except the locked pack); rank06.spstage carried
+  the immutable `i` flag (`----i---------e-------` — same lock pattern as
+  D-1's spark1/2/3 dsv4_pro packs), cleared with `sudo -n chattr -i`, then
+  `DELETED-after-unlock`. Final df free on / = 1,466,285,346,816 B
+  (1.1 T → 1.37 T free, 70% → 64% use). Only `dsv4_pro.tp16` remains in
+  sparkdata (coordinator-pending, untouched).
+- spark6 entry 13: `DELETED /home/spark6/sparkdata/dsv4_pro.probe` in the
+  same first pass (both probe packs + sidecars; receipts survive on warm).
+
