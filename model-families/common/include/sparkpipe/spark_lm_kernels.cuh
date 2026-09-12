@@ -5148,16 +5148,19 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		uint32_t shared_bytes;
 		dim3 scalar_grid(row_count,(output_dimension +
 			SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-		if ( STAGE_BF16 != 0u && weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 &&
-			(input_dimension & 1u) == 0u )
+		if constexpr (STAGE_BF16 != 0u)
 		{
-			shared_bytes = input_dimension * (uint32_t)sizeof(uint16_t);
-			SPARK_LM_LAUNCH((SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,
-				SPARK_LM_CTA_WARPS,1u><<<scalar_grid,
-				SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,
-				weight_payload,weight_scale,input_bf16,output_bf16,row_count,
-				input_dimension,output_dimension)));
-			return(cudaGetLastError());
+			if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 &&
+				(input_dimension & 1u) == 0u )
+			{
+				shared_bytes = input_dimension * (uint32_t)sizeof(uint16_t);
+				SPARK_LM_LAUNCH((SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,
+					SPARK_LM_CTA_WARPS,1u><<<scalar_grid,
+					SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,
+					weight_payload,weight_scale,input_bf16,output_bf16,row_count,
+					input_dimension,output_dimension)));
+				return(cudaGetLastError());
+			}
 		}
 		shared_bytes = input_dimension * (uint32_t)sizeof(float);
 		SPARK_LM_LAUNCH((SparkLmLinearKernel<GROUP_SIZE,ACTIVATION_CODEC,
