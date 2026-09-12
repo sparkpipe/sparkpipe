@@ -108,3 +108,85 @@ reclaim figures. 2 TB-per-spark remains unmet on spark2 (−1.13T) and spark3
 (dsv4_pro.tp16, dsv4flash.*, spark3/srcdata 747G, qwen38_max.tp4pp4,
 qwenmax.pp16-stripped if its lane abandons it).
 
+---
+
+# D-2 session (successor) — spark5 glm53full.tp16 stacks, 2026-09-12
+
+Target per the brief: `spark5:/home/spark5/sparkdata/glm53full.fp8.tp16/`
+and `glm53full.nvfp4.tp16/`, believed to hold ~15 ranks stacked on one node
+(a placement-law violation). The premise is REFUTED by direct inspection:
+each tree holds exactly ONE pack body — rank5, spark5's lawful rank under
+the fleet-table policy (`tools/glm53full_place_packs.sh`: rank r → spark
+hex(r)) — plus the 16 per-rank `receipt.json` build receipts (~3.7 MB
+each; the "~15 ranks" was a count of receipt files). The placement law is
+not violated on either tree.
+
+## Digest identification (sha256 of every file whose bytes exceed the
+receipt sidecars, plus the receipt chain)
+
+| file | bytes | sha256 | classification |
+|---|---|---|---|
+| glm53full.fp8.tp16/packs/glm53full.fp8.tp16-rank5.glm52sp | 54,136,549,376 | `6e5102f1355b10c10a7f1219c5fccadf9eadd9c824ee4ed06e6cd157aaec9bbd` | KEEP — active arm, live attach |
+| glm53full.fp8.tp16/packs/…rank5.glm52sp.experts + .sha256 | 3,686,416 + 99 | (sidecars of the body) | KEEP |
+| glm53full.fp8.tp16/packs/rank{0-15}.glm52sp.receipt.json | 16 × 3,706,207-08 | (receipt chain of the R2 set) | KEEP |
+| glm53full.fp8.tp16/{bin,lib,config,kvcache,r2_attach_receipt.txt,residentd_r2.*} | deploy tree | — | KEEP — live deployment root |
+| glm53full.nvfp4.tp16/packs/glm53full.nvfp4.tp16-rank5.glm52sp | 32,903,038,976 | `471548d763d5ef98457878da6b2a518df6fdaa47acbdf7f8814c7919a41b195e` | DELETE — matches no receipt (below) |
+| glm53full.nvfp4.tp16/packs/rank{0-15}.glm52sp.receipt.json + SHA256SUMS | 17 files, 63.0 MB | (build receipts, pinned in glm53full-2026-08-28.md) | KEEP — rebuild reference |
+
+## Receipt comparison
+
+- fp8 rank5: on-disk sha256 == `packs/*.sha256` sidecar == every
+  `g53r2 RECEIPT` line in `r2_attach_receipt.txt` (bytes and digest both
+  recorded per attach). The tree's residentd is ATTACHED LIVE right now
+  (the `sparkqueue-df93f211…` unit re-ran during this session: a residentd
+  PID in state S running `./bin/sparkpipe_model_residentd … --rank-index 5`
+  with the fp8 tree as its root; earlier scan caught its reaped zombie).
+  Active receipt → whole tree KEEP. Node weightd (mesh-rank 5) is cwd'd on
+  the operator's glm53flash serving swap — different tree, untouched.
+- nvfp4 rank5: the pinned `SHA256SUMS` (2026-08-29 13:57, build session of
+  the 16/16-validated set) demands `9e16b01111d66012…`; the on-disk body
+  (mtime 2026-08-30 19:44, one minute after the fp8 rank5 rewrite) hashes
+  to `471548d763d5ef98…`. No receipt, manifest, script, unit, or repo
+  reference anywhere names 471548d7. Cross-node control: spark0's rank0
+  body still hashes exactly to its pin `36fef980…` (mtime Aug 29 15:51,
+  placement era) — the fleet set and SHA256SUMS are intact and
+  authoritative; spark5's rank5 body is the single divergent copy.
+- The qwen38 packer directory rows/cols defect (#952, 4ca697a) does not
+  apply: glm53full packs come from `glm52_resident_stagepack.py` (wire
+  format v3, receipts validated 16/16 errors:0 at build), a different
+  packer with no shared late-binding pattern.
+- mgr1-era L7/#829 receipts were not found in the repo or the #904/#954
+  threads (limit); the fp8 KEEP chain above is independent of them.
+
+## Classification outcome
+
+- fp8.tp16 (54.2 GB): KEEP — the lane's active arm, receipt-matched, live
+  attach in progress. Zero deletions.
+- nvfp4.tp16 rank5 body (32,903,038,976 B): DELETE — digest-matched to
+  nothing, contradicted by the set's own pin, unreferenced by any process
+  or unit (fuser/lsof/proc scans clean; no immutable flags, plain `e`
+  extent). The lane's own plan (glm53full-2026-08-28.md, SPACE note)
+  already slated the local nvfp4 set for deletion as "derived artifacts,
+  rebuildable from pinned sources"; rank5 survived that rm only as the
+  local-rank retention, and as retained it is not the receipted bytes —
+  it has no value to the arm. When the nvfp4 arm activates, rank5 is
+  rebuilt from the warm-pinned source (`/mnt/model-warm/glm-5.3-nvfp4-
+  radixark`, index_sha256 `2aa8397b…` in the authoritative contract) and
+  re-placed by the resumable placement tool; the 15 verified fleet ranks
+  are untouched on their nodes.
+- nvfp4 receipts + SHA256SUMS (63 MB): KEEP — the rebuild/verify reference
+  for the set.
+
+## Deletion ledger (execute only after this commit)
+
+| # | node | path | bytes | class |
+|---|------|------|-------|-------|
+| 11 | spark5 | /home/spark5/sparkdata/glm53full.nvfp4.tp16/packs/glm53full.nvfp4.tp16-rank5.glm52sp | 32,903,038,976 | DELETE (unreceipted divergent body) |
+
+Planned reclaim: spark5 32,903,038,976 B (30.6 GiB). The 2 TB target is
+not met on spark5 (1.6 T free at session start, ~1.63 T after): the
+briefed stacks held 87 GB total, not the audited hundreds — the fp8 half
+is the live arm. Remaining spark5 candidates outside this brief's scope,
+for coordinator ruling: glm53full.{bf16.tp16, fp8.tp4pp4, nvfp4.tp4pp4,
+bf16.tp4pp4} sibling trees and the large srcdata/ tree.
+
