@@ -1,0 +1,64 @@
+{
+ "lane": "dsv5-flash",
+ "session": "A-dsv5-r8",
+ "milestone": "M7 o_a repack (r2) + real-pack 3-layer ladder",
+ "module_commit": "229147f (rebased on origin/main 2304eda)",
+ "node": "spark6 GB10 sm_121a",
+ "repack": {
+  "converter_recipe_sha256": "d58a0258b67ba0208794e3a6ea3fdf802e32703532f480b3c0b26ce2368a6f66",
+  "verifier_sha256": "c48a843166450a1c9f20f381988f9a0625cd2a944502eae28b764c7f8cd0a21a",
+  "identity": {
+   "source": "/mnt/model-warm/deepseek-v4.1-flash @ dba1be0a40aa45a94ad051997016db3960a90277",
+   "pack_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+   "contract_sha256": "bb8adaf752c079374b8b1572ae3327ce69f1a23740e8685434900317df764921",
+   "config_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+   "expert_codec": "MXFP4 as-checkpoint, dense FP8 E4M3 + UE8M0"
+  },
+  "layout": {
+   "o_a_per_rank": "[1024, 4096] fp8 rows-slice x FULL cols + scale [32, 128] (reference ColumnParallel layout per the o_a ruling)",
+   "delta_vs_r1": "+146,944,000 B/rank = 3,673,600 B x 40 layers (o_a only; expert bytes unchanged 36,097,228,800)",
+   "file_bytes_per_rank": 39158874624,
+   "spine_bytes": 3061536448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  "chain": {
+   "stagepack_selftest": "PASS 728 pieces tp4 (mac, commit 229147f)",
+   "host_synth_chain": "PASS fp8 + mxfp4 tp8 rank0 (mac, new ExpectedShape)",
+   "headers_vs_weight_map": "PASS 96,085 tensors (on node)",
+   "index_census": "PASS on node (compressor 11, indexer 24)",
+   "converter_vs_c_packer": "layout identical: 1038/1038 directory records + file_bytes 39,158,874,624 (dsv41_flash_pack_synthesize tp8 mxfp4 l40)",
+   "copy_chunks": "11/11 exit 0, 313,270,121,984 B written",
+   "byte_verify": "PASS 313,270,121,984 B == copy total, zero deltas, all 8 ranks (11 chunks, every chunk re-derives layout independently; boundary directories rank0+rank7 re-checked every chunk)",
+   "experts_manifests": "8/8 (C producer)",
+   "contract_validator": "PASS rank0..rank7 (C, vs .experts manifests)",
+   "sha256": {
+    "rank0": "9079cc4babf23f5ae86bfaad3f3e3b663d494ad45dbab21f20aa1a8c92e715f2",
+    "rank1": "d7ba178e462e4bff11ad8f0b2564448b08e991b14e2995dfa15a878224ba4981",
+    "rank2": "85db1c7785620d317db85268381508799824b52b835a19de62acd510391d14b0",
+    "rank3": "7980952a0a012e8b285bb5105fa67db41cd7ec6d2633a926eb4ace4ca5903f31",
+    "rank4": "386687995d9b095c93c26b236532b48113228d63ec2c7313f54c16bed3de6ac8",
+    "rank5": "d7413625d3c066252e095779ec0133f34d9bd7aa466e7761a48bd1a1201d9660",
+    "rank6": "58a93a871e1fe119133e91ed5738558ec65d11ec574373ee0c9521f36d171f0e",
+    "rank7": "f005526658dde4ccfec71f23607b7ed82b3267eafcd96cc2bc7d08ea11e5802e"
+   }
+  },
+  "location": "spark6 /home/spark6/dsv41-flash-tp8/packs-r2 (r1 diag-layout packs left in packs/ for forensic comparison; staged copy to sparkdata submitted as dsv5m7g-r2-stage)"
+ },
+ "ladder_cell_dsv5m7g_ladder0": {
+  "pack": "packs-r2/rank0.spstage",
+  "oracle_pieces": 732,
+  "checkpoint_cross_check": "5/5 tensors byte-equal (wq_a, wq_b rank slice, ffn gate, shared w1, expert0 w1)",
+  "structural": "zero SHAPE mismatches, zero NaN, zero UNSEEN, zero pack-missing; all 732 piece planes decode on the C side",
+  "layer0": "GREEN (all pieces within tolerance; o_a rows-slice x full-4096 path proven on real bytes at l0)",
+  "compressor_indexer_real_data": "GREEN - no compressor_* or idx_* piece diverges on real weights at layers 2/8 (first real-data exercise of the session-7 pieces)",
+  "divergences": {
+   "count_pieces": 26,
+   "layers": "l2: 4 (router only, from p2); l8: 22 (root at p0 attn_out_rope_inv, cascade through ffn/router/moe + stream pos46/54)",
+   "root_signature": "l8 divergence enters between attn_out and attn_out_rope_inv at position 0 (pre-carry); l2 router_indices flips are near-boundary selection sensitivity (slot 2-4 of top-6, got 211 want 112 class)",
+   "interpretation": "oracle-vs-anchor parity is NOT yet established for l2/l8 on real weights; synth ladder (732/732, session 7) and l0 real (204/204, session 6) remain valid. This is the first real-data run of the l2/l8 pieces - triage (per-operator dumps around the l8 o-path/output-rope at p0, fp8-code distribution in l8 vs l2 planes) is the next session opener",
+   "summary_line": "pieces=732 piece_failures=65561 missing=2662623500 unseen=0 (missing counts anchor emits beyond the oracle's 6-position emission window; no oracle piece unseen)"
+  }
+ },
+ "queue_jobs": "dsv5m7g-r2-* (build/headers/plan/layout2/c00-c10/v00-v10/man03/man47/ct03b/ct47b/sha03/sha47/stage) + dsv5m7g-ladder0; superseded failures: layout (comparison-script bug, fixed in layout2), ct03/ct47 (race vs manifest producers, rerun gated)"
+}

@@ -1,0 +1,134 @@
+{
+ "engram_tensors": {
+  "layers.1.engram.embed.scale": {
+   "shard": 47,
+   "dtype": "F8_E8M0",
+   "shape": [
+    384006168,
+    8
+   ],
+   "bytes": 3072049344,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.1.engram.embed.weight": {
+   "shard": 47,
+   "dtype": "F8_E4M3",
+   "shape": [
+    384006168,
+    256
+   ],
+   "bytes": 98305579008,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.1.engram.k_weight": {
+   "shard": 47,
+   "dtype": "BF16",
+   "shape": [
+    4,
+    5120
+   ],
+   "bytes": 40960,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.1.engram.q_weight": {
+   "shard": 47,
+   "dtype": "BF16",
+   "shape": [
+    4,
+    5120
+   ],
+   "bytes": 40960,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.1.engram.wkv.scale": {
+   "shard": 47,
+   "dtype": "F8_E8M0",
+   "shape": [
+    800,
+    192
+   ],
+   "bytes": 153600,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.1.engram.wkv.weight": {
+   "shard": 47,
+   "dtype": "F8_E4M3",
+   "shape": [
+    25600,
+    6144
+   ],
+   "bytes": 157286400,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+  },
+  "layers.14.engram.embed.scale": {
+   "shard": 48,
+   "dtype": "F8_E8M0",
+   "shape": [
+    384016682,
+    8
+   ],
+   "bytes": 3072133456,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  },
+  "layers.14.engram.embed.weight": {
+   "shard": 48,
+   "dtype": "F8_E4M3",
+   "shape": [
+    384016682,
+    256
+   ],
+   "bytes": 98308270592,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  },
+  "layers.14.engram.k_weight": {
+   "shard": 48,
+   "dtype": "BF16",
+   "shape": [
+    4,
+    5120
+   ],
+   "bytes": 40960,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  },
+  "layers.14.engram.q_weight": {
+   "shard": 48,
+   "dtype": "BF16",
+   "shape": [
+    4,
+    5120
+   ],
+   "bytes": 40960,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  },
+  "layers.14.engram.wkv.scale": {
+   "shard": 48,
+   "dtype": "F8_E8M0",
+   "shape": [
+    800,
+    192
+   ],
+   "bytes": 153600,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  },
+  "layers.14.engram.wkv.weight": {
+   "shard": 48,
+   "dtype": "F8_E4M3",
+   "shape": [
+    25600,
+    6144
+   ],
+   "bytes": 157286400,
+   "shard_path": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+  }
+ },
+ "engram_bytes_total": 203073076240,
+ "dspark_sidecar_tensors": 2401,
+ "vision_aligner_tensors": 266,
+ "accounting": {
+  "checkpoint_tensors": 96085,
+  "pack_consumed": 93406,
+  "engram_excluded": 12,
+  "dspark_sidecar": 2401,
+  "vision_aligner_out_of_scope": 266
+ }
+}

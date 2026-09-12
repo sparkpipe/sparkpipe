@@ -1,0 +1,186 @@
+{
+ "lane": "dsv5-flash",
+ "session": "A-dsv5-r5",
+ "milestone": "M7 real-pack attach cells",
+ "module_commit": "52ae08d (probe 1f86020)",
+ "node": "spark6 GB10 sm_121a",
+ "staging": {
+  "source": "/home/spark6/dsv41-flash-tp8/packs",
+  "target": "/home/spark6/sparkdata/dsv41flash.mxfp4.tp8/packs",
+  "scope": "sudo -n systemd-run --scope -q -p MemoryMax=4096M -p MemoryHigh=2900M",
+  "sha256sum_c": "8/8 OK",
+  "stage_exit": 0,
+  "bytes_per_pack": 39011930624,
+  "experts_manifests": 8
+ },
+ "identity": {
+  "contract_sha256_baked": "51e04021670876e9d71c01dfe426396c219a46c93d55ce9e54cd90a986864ca9",
+  "note": "pack header carries the 755387d contract bytes; cb808aa reformatted the JSON only (diff verified, no semantic change)"
+ },
+ "builds": [
+  "build/libsparkpipe_core.a",
+  "build/libsparkpipe_runtime.a",
+  "build/sparkpipe_weightd",
+  "build/modules/dsv41_flash_resident_decode_stage/mxfp4/libdsv41_flash_resident_decode_stage_mxfp4.a",
+  "build/dsv41_flash_attach_probe"
+ ],
+ "fail_closed": {
+  "job": "dsv5m7b-fc0",
+  "init_status": 19,
+  "state": 0,
+  "result": "PASS",
+  "path": "SparkWeightdAttachRequested BUSY -> module maps UNSUPPORTED"
+ },
+ "cells": {
+  "spine_budget_bytes": 3221225472,
+  "expert_pool_bytes": 17694720,
+  "expert_pool_note": "minimum: 1 expert packed bytes",
+  "lazy_attach_served": "experts=1920 arena=39011930624 pool=17694720 (all ranks)"
+ },
+ "per_rank": [
+  {
+   "rank": 0,
+   "file": "rank0.spstage",
+   "sha256": "f41a8684bf845d83b07bc59aa099319747a78b02651b809e8ff6c83179f4366b",
+   "init_status": 0,
+   "init_wall_ms": 34540.313,
+   "init_device_ms": 34540.211,
+   "exec_status": 19,
+   "exec_wall_ms": 0.073,
+   "exec_device_ms": 0.068,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 1,
+   "file": "rank1.spstage",
+   "sha256": "eb1f28626caf7009f359104db9e341470953e32e5dbfac207e9aacd793374ef7",
+   "init_status": 0,
+   "init_wall_ms": 39998.959,
+   "init_device_ms": 39998.832,
+   "exec_status": 19,
+   "exec_wall_ms": 0.073,
+   "exec_device_ms": 0.069,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 2,
+   "file": "rank2.spstage",
+   "sha256": "f80ee4f6f433012604b0bbed877c0274b2da894432b94743b85409a2a3675152",
+   "init_status": 0,
+   "init_wall_ms": 39741.933,
+   "init_device_ms": 39741.805,
+   "exec_status": 19,
+   "exec_wall_ms": 0.072,
+   "exec_device_ms": 0.067,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 3,
+   "file": "rank3.spstage",
+   "sha256": "b33462cc9a38e6959aa6e835b37cd310664de2f830af015e1f47dcd5b14f3332",
+   "init_status": 0,
+   "init_wall_ms": 40001.647,
+   "init_device_ms": 40001.496,
+   "exec_status": 19,
+   "exec_wall_ms": 0.073,
+   "exec_device_ms": 0.068,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 4,
+   "file": "rank4.spstage",
+   "sha256": "8629006fb33b88ecaa69fcd9dce3619fc113bde3f2312691b7097322f6dac42a",
+   "init_status": 0,
+   "init_wall_ms": 40356.256,
+   "init_device_ms": 40356.125,
+   "exec_status": 19,
+   "exec_wall_ms": 0.147,
+   "exec_device_ms": 0.001,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 5,
+   "file": "rank5.spstage",
+   "sha256": "4feed5d303765e58e2429e000fb59ab67bd21299cf8e2e736cd6427be226a189",
+   "init_status": 0,
+   "init_wall_ms": 40103.931,
+   "init_device_ms": 40103.797,
+   "exec_status": 19,
+   "exec_wall_ms": 0.082,
+   "exec_device_ms": 0.072,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 6,
+   "file": "rank6.spstage",
+   "sha256": "068d05e4c23c7c4f55b54ec875e6541aaf3ac8f32c140b0481ddf979fc584ede",
+   "init_status": 0,
+   "init_wall_ms": 42034.368,
+   "init_device_ms": 42034.227,
+   "exec_status": 19,
+   "exec_wall_ms": 0.09,
+   "exec_device_ms": 0.085,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  },
+  {
+   "rank": 7,
+   "file": "rank7.spstage",
+   "sha256": "e0d524f81cf67986fb1e2c7cea3f1bb317faa60695eb24a069ba2d9a1c45d01d",
+   "init_status": 0,
+   "init_wall_ms": 50380.623,
+   "init_device_ms": 50380.457,
+   "exec_status": 19,
+   "exec_wall_ms": 0.15,
+   "exec_device_ms": 0.001,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038,
+   "spine_source": "probe directory census == converter receipt"
+  }
+ ],
+ "timing_baseline": {
+  "mean_init_wall_ms": 40894.8,
+  "method": "CUDA events around Initialize; wall CLOCK_MONOTONIC; device==wall => spine H2D dominates",
+  "spine_h2d_mbps_mean": 71.3,
+  "note": "~73-86 MB/s spine load is the first hill-climb target; hypothesis: span-wise pread+hash path, not nvme"
+ },
+ "execute_and_engram": {
+  "exec_status": 19,
+  "exec_device_ms_max": 0.15,
+  "module_decode_implemented": false,
+  "engram_symbols_in_module": 0,
+  "engram_model_header_constants_only": [
+   "ENGRAM_MODULE_COUNT 2",
+   "ENGRAM_LAYER_0 1",
+   "ENGRAM_LAYER_1 14",
+   "HEAD_COUNT 8",
+   "HEAD_DIMENSION 256"
+  ],
+  "operator_escalation_input": "Execute is the fail-closed stub; layers 1/14 never reached; no access path exists to skip/fail/crash at the Engram tables"
+ },
+ "bugs_fixed_this_session": [
+  "module inventory expected-bits skipped routed/shared kinds 29-34 that the pack legitimately carries per layer (3d59ba0)",
+  "weightd mesh TryWire transitioned NULL QPs against stale peer records after early init failure (52ae08d)"
+ ]
+}
