@@ -386,15 +386,6 @@ cudaError_t cudaEventSynchronize(cudaEvent_t event)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
-cudaError_t cudaEventElapsedTime(float *milliseconds, cudaEvent_t start,
-    cudaEvent_t stop)
-{
-    if (milliseconds == 0 || start == 0 || stop == 0)
-        return cudaErrorInvalidValue;
-    *milliseconds = 0.0f;
-    return cudaSuccess;
-}
-
 cudaError_t cudaHostRegister(
     void *address,
     size_t bytes,
@@ -1094,4 +1085,22 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
         return CUDA_ERROR_INVALID_VALUE;
     }
     return cuda_stub_free(reservation);
+}
+
+cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
+    volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
+    uint64_t slot_index)
+{
+    (void)stream;(void)entry;
+    (void)seq_cell;(void)round_seq;(void)bytes;(void)slot_index;
+    return cudaSuccess;
+}
+
+cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
+    volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+    uint64_t parity,uint32_t rank,uint32_t degree)
+{
+    (void)stream;(void)band_base;
+    (void)slot_bytes;(void)round_seq;(void)parity;(void)rank;(void)degree;
+    return cudaSuccess;
 }

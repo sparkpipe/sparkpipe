@@ -62,6 +62,12 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *stream;
 	void *route_ready_event;
 	uint32_t route_recorded;
+	void *graph_exec_a;
+	void *graph_exec_b;
+	uint32_t graph_ready;
+	uint32_t graph_alt;
+	uint32_t graph_bound;
+	uint32_t graph_disabled;
 	void *host_staging;
 	uint32_t *host_token_ids;
 	uint32_t *host_resident_slots;
@@ -86,10 +92,6 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *hidden_bf16;
 	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
-	uint16_t *tap_stage_bf16;
-	void *tap_op_event;
-	void *tap_done_event;
-	uint32_t tap_capture_pending;
 	uint16_t *q_compressed_bf16;
 	uint16_t *q_bf16;
 	uint16_t *query_latent_bf16;
@@ -198,7 +200,11 @@ typedef struct SparkGlm5NextCudaWave
 	// A lazy wave must bind its current layer lease before expert submission.
 	uint32_t lazy_experts;
 	uint32_t expert_lease_local_layer;
+	uint32_t expert_lease_all;
 	const uint8_t *expert_lease_base;
+	const uint32_t *expert_cover;
+	uint32_t expert_cover_stride;
+	void *expert_miss;
 	SparkGlm5NextExecutionSlot *slot;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
@@ -268,7 +274,6 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
-cudaError_t SparkGlm5NextLaunchHcMeanRows(cudaStream_t stream,const uint16_t *hidden_hc_bf16,uint16_t *out_bf16,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);

@@ -233,6 +233,95 @@ extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *des
 	return(cudaPeekAtLastError());
 }
 
+__device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs()
+{
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+__global__ void SparkGlm5NextMeshPublishKernel(
+	volatile uint64_t *entry,
+	unsigned long long *seq_cell,
+	unsigned long long *round_seq,
+	uint64_t bytes,
+	uint64_t slot_index)
+{
+	unsigned long long sequence;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	sequence = 1ull + atomicAdd((unsigned long long *)seq_cell,1ull);
+	round_seq[0] = sequence;
+	entry[2] = slot_index;
+	entry[1] = bytes;
+	__threadfence_system();
+	entry[0] = sequence;
+}
+
+__global__ void SparkGlm5NextMeshWaitKernel(
+	volatile uint64_t *band_base,
+	uint64_t slot_bytes,
+	const unsigned long long *round_seq,
+	uint64_t parity,
+	uint32_t rank,
+	uint32_t degree,
+	unsigned long long *error_word,
+	unsigned long long deadline_ns)
+{
+	uint32_t peer;
+	volatile uint64_t *end_word;
+	uint64_t sequence;
+	unsigned long long stop_at;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	sequence = round_seq[0];
+	stop_at = SparkGlm5NextGlobalTimerNs() + deadline_ns;
+	for ( peer = 0u; peer < degree - 1u; peer++ )
+	{
+		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
+		end_word = (volatile uint64_t *)
+			((uint8_t *)band_base +
+			((uint64_t)peer_rank * 2u + parity) * slot_bytes +
+			slot_bytes - 8u);
+		while ( *end_word < sequence )
+		{
+			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
+			{
+				atomicExch((unsigned long long *)error_word,sequence);
+				return;
+			}
+			__nanosleep(200u);
+		}
+	}
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
+	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
+	uint64_t slot_index)
+{
+	if ( entry == 0 || seq_cell == 0 || round_seq == 0 )
+		return(cudaErrorInvalidValue);
+	SparkGlm5NextMeshPublishKernel<<<1,32,0u,stream>>>(
+		(volatile uint64_t *)entry,(unsigned long long *)seq_cell,
+		(unsigned long long *)round_seq,bytes,slot_index);
+	return(cudaPeekAtLastError());
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
+	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+	uint64_t parity,uint32_t rank,uint32_t degree,void *error_word,
+	unsigned long long deadline_ns)
+{
+	if ( band_base == 0 || round_seq == 0 || degree == 0u ||
+	     error_word == 0 )
+		return(cudaErrorInvalidValue);
+	SparkGlm5NextMeshWaitKernel<<<1,32,0u,stream>>>(
+		(volatile uint64_t *)band_base,slot_bytes,
+		(const unsigned long long *)round_seq,parity,rank,degree,
+		(unsigned long long *)error_word,deadline_ns);
+	return(cudaPeekAtLastError());
+}
+
 extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
 {
 	if ( destination == 0 || source == 0 || element_count == 0u )
@@ -420,11 +509,17 @@ static void SparkGlm5NextBindLayer(
 	buffers->expert_w2_scale = weight->expert_down_scale;
 	if ( wave->lazy_experts != 0u )
 	{
-		buffers->expert_w1_weight = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_up_gate_payload_offset;
-		buffers->expert_w1_scale = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
-		buffers->expert_w2_weight = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_down_payload_offset;
-		buffers->expert_w2_scale = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
+		uint32_t expert_leased = wave->expert_lease_base != 0 &&
+			(wave->expert_lease_all != 0u ||
+			 wave->expert_lease_local_layer == local_layer) ? 1u : 0u;
+		buffers->expert_w1_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_payload_offset : 0;
+		buffers->expert_w1_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_scale_offset : 0;
+		buffers->expert_w2_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_payload_offset : 0;
+		buffers->expert_w2_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_scale_offset : 0;
 	}
+	buffers->expert_cover = wave->expert_cover;
+	buffers->expert_cover_stride = wave->expert_cover_stride;
+	buffers->expert_miss = (volatile uint32_t *)wave->expert_miss;
 	buffers->shared_gate_up_weight = weight->shared_gate_up_bf16;
 	buffers->shared_down_weight = weight->shared_down_bf16;
 	buffers->kda_qkv_beta_weight = weight->kda_qkv_beta_bf16;
@@ -559,69 +654,6 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 	return(LM_LAUNCH_OK);
 }
 
-static void SparkGlm5NextMoeNumProbe(const char *site,
-	const Glm5NextLayerBuffers *buffers,cudaStream_t stream)
-{
-	static uint64_t printed;
-	uint16_t bf16_words[8];
-	float floats[8];
-	uint32_t experts[8];
-	if ( printed >= 16ull )
-		return;
-	printed++;
-	if ( cudaStreamSynchronize(stream) != cudaSuccess )
-		return;
-	if ( cudaMemcpy(bf16_words,buffers->normed_bf16,sizeof(bf16_words),
-		cudaMemcpyDeviceToHost) != cudaSuccess )
-		return;
-	if ( strcmp(site,"route") == 0 )
-	{
-		if ( cudaMemcpy(floats,buffers->router_logits,sizeof(floats),
-			cudaMemcpyDeviceToHost) != cudaSuccess )
-			return;
-		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u normed=%04x %04x %04x %04x logits=%g %g %g %g\n",
-			site,(unsigned)buffers->layer_index,
-			(unsigned)bf16_words[0],(unsigned)bf16_words[1],
-			(unsigned)bf16_words[2],(unsigned)bf16_words[3],
-			(double)floats[0],(double)floats[1],
-			(double)floats[2],(double)floats[3]);
-	}
-	else if ( strcmp(site,"pick") == 0 )
-	{
-		if ( cudaMemcpy(experts,buffers->route_expert,sizeof(experts),
-			cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(floats,buffers->route_weight,sizeof(floats),
-			cudaMemcpyDeviceToHost) != cudaSuccess )
-			return;
-		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u experts=%u %u %u %u weights=%g %g %g %g\n",
-			site,(unsigned)buffers->layer_index,
-			(unsigned)experts[0],(unsigned)experts[1],
-			(unsigned)experts[2],(unsigned)experts[3],
-			(double)floats[0],(double)floats[1],
-			(double)floats[2],(double)floats[3]);
-	}
-	else
-	{
-		const uint16_t *source =
-			strcmp(site,"gateup") == 0 ? buffers->gate_up_bf16 :
-			strcmp(site,"final") == 0 ? buffers->attention_out_bf16 :
-			buffers->expert_out_bf16;
-		uint32_t index;
-		if ( cudaMemcpy(bf16_words,source,sizeof(bf16_words),
-			cudaMemcpyDeviceToHost) != cudaSuccess )
-			return;
-		for ( index = 0u; index < 8u; index++ )
-		{
-			uint32_t bits = (uint32_t)bf16_words[index] << 16;
-			memcpy(&floats[index],&bits,sizeof(float));
-		}
-		fprintf(stderr,"G5N-MOEPROBE site=%s layer=%u gateup=%g %g %g %g\n",
-			site,(unsigned)buffers->layer_index,
-			(double)floats[0],(double)floats[1],
-			(double)floats[2],(double)floats[3]);
-	}
-}
-
 static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -640,67 +672,19 @@ static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,u
 	status = Glm5NextHcSite(&buffers,buffers.hc_ffn_fn,buffers.hc_ffn_base,buffers.hc_ffn_scale,wave->row_count,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
-		SparkGlm5NextMoeNumProbe("route",&buffers,stream);
 	status = layer < GLM5_NEXT_FIRST_ROUTED_LAYER ? Glm5NextLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : Glm5NextLayerMoeRoute<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
-		SparkGlm5NextMoeNumProbe("pick",&buffers,stream);
 	return(LM_LAUNCH_OK);
 }
 
 static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
-	uint32_t layer;
-	layer = wave->first_layer_index + local_layer;
-	if ( layer < GLM5_NEXT_FIRST_ROUTED_LAYER )
+	if ( (wave->first_layer_index + local_layer) < GLM5_NEXT_FIRST_ROUTED_LAYER )
 		return(LM_LAUNCH_OK);
 	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
-	{
-		int32_t status = Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-	}
-	if ( layer >= 3u && layer <= 4u && wave->tp_rank == 0u )
-	{
-		float w1_scales[8];
-		float w2_scales[8];
-		SparkGlm5NextMoeNumProbe("expert",&buffers,(cudaStream_t)wave->slot->stream);
-		SparkGlm5NextMoeNumProbe("final",&buffers,(cudaStream_t)wave->slot->stream);
-		if ( cudaStreamSynchronize((cudaStream_t)wave->slot->stream) == cudaSuccess &&
-			cudaMemcpy(w1_scales,buffers.expert_w1_scale,sizeof(w1_scales),
-				cudaMemcpyDeviceToHost) == cudaSuccess &&
-			cudaMemcpy(w2_scales,buffers.expert_w2_scale,sizeof(w2_scales),
-				cudaMemcpyDeviceToHost) == cudaSuccess )
-			fprintf(stderr,"G5N-MOEPROBE site=scales layer=%u lazy=%u lease=%p w1=%g %g %g %g w2=%g %g %g %g\n",
-				(unsigned)buffers.layer_index,
-				(unsigned)wave->lazy_experts,(void *)(uintptr_t)wave->expert_lease_base,
-				(double)w1_scales[0],(double)w1_scales[1],
-				(double)w1_scales[2],(double)w1_scales[3],
-				(double)w2_scales[0],(double)w2_scales[1],
-				(double)w2_scales[2],(double)w2_scales[3]);
-		{
-			float resident_scales[8];
-			const SparkGlm5NextLayerWeights *weight = &wave->layers[local_layer];
-			if ( weight->expert_up_gate_scale != 0 &&
-				cudaMemcpy(resident_scales,weight->expert_up_gate_scale,
-					sizeof(resident_scales),cudaMemcpyDeviceToHost) == cudaSuccess )
-				fprintf(stderr,"G5N-MOEPROBE site=resident_w1_scale layer=%u %g %g %g %g\n",
-					(unsigned)buffers.layer_index,
-					(double)resident_scales[0],(double)resident_scales[1],
-					(double)resident_scales[2],(double)resident_scales[3]);
-			if ( weight->expert_down_scale != 0 &&
-				cudaMemcpy(resident_scales,weight->expert_down_scale,
-					sizeof(resident_scales),cudaMemcpyDeviceToHost) == cudaSuccess )
-				fprintf(stderr,"G5N-MOEPROBE site=resident_w2_scale layer=%u %g %g %g %g\n",
-					(unsigned)buffers.layer_index,
-					(double)resident_scales[0],(double)resident_scales[1],
-					(double)resident_scales[2],(double)resident_scales[3]);
-		}
-	}
-	return(LM_LAUNCH_OK);
+	return(Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
 }
 
 static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
@@ -737,14 +721,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchHcMeanRows(cudaStream_t stream,const uint16_t *hidden_hc_bf16,uint16_t *out_bf16,uint32_t row_count)
-{
-	if ( stream == 0 || hidden_hc_bf16 == 0 || out_bf16 == 0 || row_count == 0u )
-		return(cudaErrorInvalidValue);
-	Glm5NextHcHeadMeanKernel<<<row_count,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(hidden_hc_bf16,out_bf16,row_count,GLM5_NEXT_HC,GLM5_NEXT_HIDDEN);
-	return(cudaPeekAtLastError());
 }
 
 static int32_t SparkGlm5NextRunLayers(const SparkGlm5NextCudaWave *wave)
@@ -882,7 +858,12 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaW
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	if ( routed != 0u )
-		error = cudaMemcpyAsync(wave->slot->host_group_row_offset,wave->slot->group_row_offset,(GLM5_NEXT_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
+		error = cudaMemcpyAsync(wave->slot->host_group_row_offset +
+		    (wave->first_layer_index + local_layer) *
+		        (GLM5_NEXT_EXPERTS + 1u),
+		    wave->slot->group_row_offset,
+		    (GLM5_NEXT_EXPERTS + 1u) * sizeof(uint32_t),
+		    cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
 	if ( error == cudaSuccess )
 		error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
 	if ( error != cudaSuccess )
