@@ -3193,8 +3193,8 @@
     },
     {
       "path": "include/sparkpipe/spark_tp_device_collective.h",
-      "sha256": "2f5be04674fd770ca4c8a8ffd0f6b9d8e2e446f0a8d3ce5f91a088533ac06acd",
-      "size_bytes": 14319
+      "sha256": "34ec89982d056138295a0a1c4f4aacb0e69bda6fc279fc5c49052c01a7a554d8",
+      "size_bytes": 14744
     },
     {
       "path": "include/sparkpipe/spark_weight_codec.h",
@@ -3203,8 +3203,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd.h",
-      "sha256": "18f4f1c84a27c344188cf3d5711487404517382943be78ca8b8618060b9c3db3",
-      "size_bytes": 18226
+      "sha256": "cd3cc36be2a844bcaf9d297b74f31c03e96b3ba27ff85668f9ab82b6a581a6c5",
+      "size_bytes": 18388
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
@@ -4338,8 +4338,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "a5fd83cd79c7c98235f59070528cca9bb5fe900e821f963b502ea2e439224559",
-      "size_bytes": 52931
+      "sha256": "e1ee544b9cdb4a4a93ab39aa00e5f1ca9ecefd973adbe91a45ec0c535e205d09",
+      "size_bytes": 53032
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
@@ -4348,8 +4348,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "d29e650ee8d494d334d36fbcf6e22472be2ace9293bd59e76bd69c887570fa10",
-      "size_bytes": 180979
+      "sha256": "b147502d59e4d62583ec059b4799e98de705224843ab27f700a0dac429f6d81e",
+      "size_bytes": 181975
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5113,8 +5113,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "2f263aaff84b385af28c3772e09fc6099346eebaa37183fc76228adb28f7ecfa",
-      "size_bytes": 34840
+      "sha256": "dbe3e3c7c2688f352a0cb5f097967d77b7994f4d7e0fa3ea3654b16d83f30c42",
+      "size_bytes": 36319
     },
     {
       "path": "node/weightd_spawn.c",
@@ -6483,8 +6483,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "4d2164e64e3f03082b813a456f81f79a560dc0c116169f96696c93e4df0888ab",
-      "size_bytes": 29996
+      "sha256": "3d5f064df6558df7b451976fbd7f12a4852c330dbb60fe8142b34cafa76cd2b1",
+      "size_bytes": 34476
     },
     {
       "path": "ring/transport/tp_device_collective_nccl.h",
@@ -10830,5 +10830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35193859
+  "total_bytes": 35201502
 }

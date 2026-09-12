@@ -344,6 +344,18 @@ void SparkTpDeviceCollectiveClearGraphError(
 void SparkTpDeviceCollectiveBroadcastCancel(
     SparkTpDeviceCollective *collective);
 
+#define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS 24u
+#define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS 16u
+#define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK \
+    ((1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) - 1ull)
+
+SparkStatus SparkTpDeviceCollectiveChainKey(
+    SparkTpDeviceCollective *collective,
+    uint64_t request_id);
+
+uint64_t SparkTpDeviceCollectiveRoundIndex(
+    SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
