@@ -3473,8 +3473,8 @@
     },
     {
       "path": "inference/llms/mimo_2_5/unity.cu",
-      "sha256": "e5b710d4476908e0010fcfe9a60a1351e1af6ccf2d77b708b8b646d50354c81a",
-      "size_bytes": 8045
+      "sha256": "6fccd45d2ae75b43262b7e0d198d0eb33521b076c5a348b4cb537980776b1c8a",
+      "size_bytes": 8077
     },
     {
       "path": "inference/llms/qwen_3_6/bind.cu",
@@ -3493,8 +3493,8 @@
     },
     {
       "path": "inference/llms/qwen_3_6/unity.cu",
-      "sha256": "e1141e40d0508a02fc00402dcd146d6d5808fcad9436241c4bab9590d4223430",
-      "size_bytes": 6340
+      "sha256": "08ec0cc0e5329c4321c49c52320e05ff5b0d5e4f365e74abdb61630be6000de9",
+      "size_bytes": 6372
     },
     {
       "path": "inference/llms/qwen_3_8/bind.cu",
@@ -3513,8 +3513,8 @@
     },
     {
       "path": "inference/llms/qwen_3_8/unity.cu",
-      "sha256": "d54f40a7c5c1489dd557458cdc5ffdb3c28b244a3861aed9d8c026ebb96eef65",
-      "size_bytes": 7890
+      "sha256": "a790ee1a94eb035002a783108ebedb7fa5c85aae24c91c958bd093a9b2b0cc40",
+      "size_bytes": 7922
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
@@ -10820,5 +10820,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35172512
+  "total_bytes": 35172608
 }
