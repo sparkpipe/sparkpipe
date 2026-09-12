@@ -119,10 +119,16 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
         except _tables.PackFailure as error:
             fail(f"inventory build failed: {error}")
         want("tensor_count", tensor_count, len(expected_refs))
+        if tensor_count != len(expected_refs):
+            return False, {"verdict": "FAIL", "pack": str(pack),
+                           "errors": findings + [
+                               "tensor_count does not match the MTP-stripped "
+                               "inventory; directory not read"]}
 
         raw_dir = f.read(tensor_count * ENTRY_BYTES)
         if len(raw_dir) != tensor_count * ENTRY_BYTES:
-            fail("directory truncated")
+            return False, {"verdict": "FAIL", "pack": str(pack),
+                           "errors": findings + ["directory truncated"]}
 
         seen: set[tuple[int, int]] = set()
         for index in range(tensor_count):
