@@ -1526,6 +1526,15 @@ CEILING = 268809
 # onto runtime/stage_module_common) deletes 158 lines against 72 added.
 # Measured exact: 279980 (post-#945/#946 merged tree).
 CEILING = 279980
+# r23 ling gate RUN cycle (lane/ling-driver): the 279980 pin was born stale —
+# its own commit tree measured 280046 (+66; A-0089 explicitly deferred the RUN
+# receipt to the next gate cycle and the gate was never executed). First-ever
+# spark-side RUN of the ling suite attributes the rest: #948 glm53flash graph
+# engine +811, #949 mesh init races +43, #950 expert working-set LRU +39,
+# #951 weightd eviction epoch +236, ling serving-gate driver-module wiring
+# +9. Each delta measured by counter runs at 5ed18e7/2ed65a5/315d29a/
+# 39deac2/a08eb8e; receipts /tmp/ling_r23_*.log on spark9.
+CEILING = 281184
 
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -730,3 +730,69 @@ EmitHiddenOutput, 0.952 ValidateFrameContext, 0.944 ConsumeHiddenInput,
 laguna carries glm5_next's "G5N-DBG" fprintf debug lines in
 TpChainFail/Execute/Admit production paths — ported debug residue.
 PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
+
+## L-1 TAKEOVER ROUND (r23, 09-12) — AUTHORITATIVE SPARK-SIDE RUN RECEIPTS, LING GATES GREEN; SERVING-GATE WIRING FIXED; CEILING RE-PINNED WITH FULL ATTRIBUTION
+
+RECONCILIATION: mgr1's handoff was stale — #830 MERGED 09-11 18:47 (the
+stomp fix 598956f, tier3 green, r22 gate re-form, merge-prep all landed via
+#941-#947 by the operator's rounds). L-1 found the live open item instead:
+A-0089's "authoritative RUN receipt executes spark-side in the next gate
+cycle" — never executed. This round IS that gate cycle, on main tip fb2b898
+(the tree carries #949 mesh races / #950 expert LRU / #951 weightd eviction
+epoch, and #951's spark_weightd.c compiles into the ling archive). spark9
+~/batch-ling-r10 re-mirrored from the mac worktree at fb2b898; stale build
+artifacts deleted before building (archive, adapter .so, core/runtime/
+model_common libs, test binaries).
+
+VALIDATOR SUITE (fresh bf16 archive from cleaned artifacts, sha256
+1a5f1a878ee910af11aa3e65c1d50b03364069cab26493393b570d79d5cfbb89,
+configuration 9a205cf1b8fc8b5636fa4c9f4c04ee191f34904f4f001c0888838d8bb1ab6439
+— r21f/r22 invocation parity; jobs ling-r23-arch/ling-r23-val, queue v2
+run-kind ttl-15):
+  tier1 KDA  : flat 0.00574/0.00383/0.00422/0.00405 | cond 0.00891/0.00693/0.00642/0.00643 | PASS all 4 tokens
+  tier2a MLA : flat 0.00000/0.00159/0.00131/0.00125 | cond 0.00322/0.00362/0.00366/0.00353 | PASS all 4 tokens
+  tier2a r22 gates: route set_match 8/8, weight inc max 0.00071 (band 0.00391); boundary inc 0.00000 x4
+  tier3      : prefill+cached decode PASS; determinism bit-exact re-walk PASS
+  validator  : PASS (0 failures) — 52 PASS lines, 0 FAIL, wall 27.07s, RSS 7,014,428 KB
+  Receipts: /tmp/ling_r23_arch.log, /tmp/ling_r23_final.log. The stomp fix
+  holds on the current main tip; tier3 stays green; the r22 ruled-form gates
+  reproduce bit-identical verdicts.
+
+SERVING-GATE FIX (the born-red gate, first PASS ever — on the mac stub
+build AND spark9): test_ling_serving_adapter failed at the revision assert
+(182) with TEST_LING_MODEL_REVISION defaulting to "" while the adapter .so
+was built -DLING_MODEL_REVISION=\"t\" (A-0089 defined LING_MODEL_REVISION
+in the test rule, which the test never reads — it reads TEST_LING_*);
+past that, initialize failed because TEST_LING_SERVING_DRIVER_PATH was
+undefined (empty driver_shared_object_path, driver loader dlopen failed,
+spark_driver_loader.c:236) and would then have failed the fixture's
+model_revision==LING_MODEL_REVISION parse. Fix, muse/gemma-canonical:
+LING_MODEL_REVISION ?= the fixture's real revision e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3,
+LING_CONTRACT_SHA256 derived from model_contracts/ling_authoritative.json
+(4c33900952e561e68a984ca8f083d1a317cbcc5b28a8b9a6d073c03ad8a4c856 — the
+74-hex placeholder is gone), LING_SERVING_ADAPTER_FLAGS shared by the .so
+rule and a new TEST_LING_SERVING_DRIVER_MODULE rule building
+tests/fixtures/ling_serving_adapter_driver.c (the file existed with #error
+guards demanding exact adapter-define parity and was never wired); the test
+rule defines TEST_LING_MODEL_REVISION and TEST_LING_SERVING_DRIVER_PATH.
+RUN: build -Werror green on both hosts; spark9 run exit 0, zero assertions
+(jobs ling-r23-adapter2; /tmp/ling_r23_adapter2_build.log,
+/tmp/ling_r23_adapter2_run.log). Header gate PASS 35 bindings + 9 composed
+(/tmp/ling_r23_header.log).
+
+CEILING RE-PIN 279980 -> 281184, FULL ATTRIBUTION (counter runs on pristine
+trees at each ancestor): the 279980 pin was born stale — 5ed18e7's own tree
+measures 280046 (+66; the RUN receipt was explicitly deferred and the gate
+was never executed, so main has been ceiling-red since A-0089). Then #948
+glm53flash graph engine +811, #949 mesh init races +43, #950 expert
+working-set LRU +39, #951 weightd eviction epoch +236, this round's ling
+gate driver-module wiring +9. The growth belongs to the respective lands;
+this re-pin is the justification vehicle the gate requires, with per-commit
+provenance above. test_code_size GREEN exact 281184, rc=0 on the fixed tree.
+
+KNOWN REDS (not ling, verified on pristine main): the dsv4 serving-adapter
+.reset C-test abort; the memory-contract ratchet (gemma4 reference / dspark
+drafter header / weightd tools debt); offline-gates full build-all crosses
+other lanes' surface. Ling-scoped gates: ALL GREEN.
+
+PACKAGE_MANIFEST/SHA256SUMS regenerated LAST on this final tree.
