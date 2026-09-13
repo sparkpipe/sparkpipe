@@ -265,22 +265,10 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     implementation->cancel_seen = *cancel_cell;
     if ( implementation->tp_rank == 0u )
     {
-        uint32_t peer_rank;
         uint64_t high = implementation->round_seq;
         uint64_t base;
         if ( *base_cell > high )
             high = *base_cell;
-        for ( peer_rank = 0u;
-              peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-              peer_rank++ )
-        {
-            volatile uint64_t *peer_entry = (volatile uint64_t *)
-                (implementation->mesh_buffer +
-                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
-                    peer_rank));
-            if ( peer_entry[0] > high )
-                high = peer_entry[0];
-        }
         base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
             SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
         *base_cell = base;
