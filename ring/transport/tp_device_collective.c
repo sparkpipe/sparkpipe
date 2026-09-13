@@ -14,6 +14,10 @@
 #define SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST 2
 extern int cudaGetLastError(void);
 extern const char *cudaGetErrorString(int error);
+extern int cudaMemsetAsync(void *destination,int value,size_t bytes,
+    void *stream);
+extern int cudaMalloc(void **pointer,size_t bytes);
+extern int cudaFree(void *pointer);
 extern int cudaMemcpyAsync(void *destination,const void *source,
     size_t bytes,int kind,void *stream);
 extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
@@ -23,6 +27,8 @@ extern int cudaMalloc(void **address,size_t bytes);
 extern int SparkGlm5NextLaunchMeshPublish(void *stream,
     volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
     uint64_t slot_index);
+extern int SparkGlm5NextLaunchMeshGuard(void *stream,
+    volatile void *error_word,void *output);
 extern int SparkGlm5NextLaunchMeshWait(void *stream,
     volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
     uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
@@ -75,6 +81,12 @@ typedef struct SparkTpDeviceCollectiveImplementation
     SparkTpDeviceCollectiveCompletionNode *completion_tail;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max;
+    SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed;
+    SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add;
+    SparkTpDeviceCollectiveRoundF32Function round_f32;
+    SparkTpDeviceCollectiveCombineFusedBf16Function combine_fused_bf16;
+    float *f32_scratch;
+    uint64_t f32_scratch_bytes;
     void *combine_context;
     uint32_t tp_rank;
     uint32_t tp_degree;
@@ -265,22 +277,10 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     implementation->cancel_seen = *cancel_cell;
     if ( implementation->tp_rank == 0u )
     {
-        uint32_t peer_rank;
         uint64_t high = implementation->round_seq;
         uint64_t base;
         if ( *base_cell > high )
             high = *base_cell;
-        for ( peer_rank = 0u;
-              peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
-              peer_rank++ )
-        {
-            volatile uint64_t *peer_entry = (volatile uint64_t *)
-                (implementation->mesh_buffer +
-                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
-                    peer_rank));
-            if ( peer_entry[0] > high )
-                high = peer_entry[0];
-        }
         base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
             SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
         *base_cell = base;
@@ -317,6 +317,35 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveChainRetire(
+    SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint32_t band_index;
+    volatile uint64_t *base_cell;
+    if ( collective == 0 || collective->implementation == 0 )
+        return(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    if ( implementation->mesh_buffer == 0 || implementation->tp_rank != 0u )
+        return(SPARK_STATUS_OK);
+    band_index = (uint32_t)(implementation->band_base /
+        (SPARK_WEIGHTD_MESH_SLOT_BYTES *
+         SPARK_WEIGHTD_MESH_SLOTS_PER_BAND));
+    base_cell = (volatile uint64_t *)(implementation->mesh_buffer +
+        SparkTpDeviceCollectiveBaseCellOffset(band_index));
+    *base_cell = *base_cell +
+        SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
+    __sync_synchronize();
+    (void)SparkWeightdClientMeshBroadcast(
+        implementation->client,
+        ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) &
+            ~(1u << implementation->tp_rank),
+        SparkTpDeviceCollectiveBaseCellOffset(band_index),
+        SparkTpDeviceCollectiveBaseCellOffset(band_index),8u,0ull,0ull,
+        implementation->round_timeout_ns);
+    return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,uint64_t request_id)
 {
@@ -348,10 +377,18 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     if ( epoch == 0ull ||
          epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    implementation->chain_epoch = epoch;
+    if ( epoch != implementation->chain_epoch )
+    {
+        fprintf(stderr,
+            "CKEY-ADOPT rank=%u epoch=%llu had=%llu\n",
+            implementation->tp_rank,
+            (unsigned long long)epoch,
+            (unsigned long long)implementation->chain_epoch);
+        implementation->chain_epoch = epoch;
+        implementation->round_index = 0ull;
+    }
     implementation->chain_key =
         (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
-    implementation->round_index = 0ull;
     return SPARK_STATUS_OK;
 }
 
@@ -560,12 +597,107 @@ combine:
             (unsigned long long)staging->seq,
             (unsigned long long)staging->bytes,
             (unsigned long long)staging->slot);
-    for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
+    if ( operation_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+         implementation->combine_fused_bf16 != 0 )
+    {
+        const void *source_devices[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
+        SparkStatus fused_status;
+        for ( peer = 0u;
+              peer < implementation->tp_degree;
+              peer++ )
+            source_devices[peer] = implementation->mesh_buffer +
+                implementation->band_base +
+                ((uint64_t)peer *
+                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+                    (round_seq &
+                        (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
+                    slot_bytes;
+        fused_status = implementation->combine_fused_bf16(
+            implementation->combine_context,
+            submission->full_device,source_devices,
+            implementation->tp_degree,
+            submission->active_sequence_count,
+            implementation->local_hidden_dimension,
+            submission->cuda_stream);
+        if ( fused_status != SPARK_STATUS_OK )
+            return fused_status;
+        goto combine_done;
+    }
+    if ( operation_kind !=
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+         implementation->combine_f32_seed != 0 &&
+         implementation->combine_f32_add != 0 &&
+         implementation->round_f32 != 0 )
+    {
+        uint64_t f32_bytes = ((uint64_t)bytes) * 2ull;
+        if ( implementation->f32_scratch == 0 ||
+             implementation->f32_scratch_bytes < f32_bytes )
+        {
+            if ( implementation->f32_scratch != 0 )
+                (void)cudaFree(implementation->f32_scratch);
+            if ( cudaMalloc((void **)&implementation->f32_scratch,
+                     (size_t)f32_bytes) != 0 )
+            {
+                implementation->f32_scratch = 0;
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            implementation->f32_scratch_bytes = f32_bytes;
+        }
+        {
+            uint8_t *slot_zero = implementation->mesh_buffer +
+                implementation->band_base +
+                ((uint64_t)0u *
+                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+                    (round_seq &
+                        (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
+                    slot_bytes;
+            uint8_t *slot_one = implementation->mesh_buffer +
+                implementation->band_base +
+                ((uint64_t)1u *
+                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+                    (round_seq &
+                        (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
+                    slot_bytes;
+            SparkStatus f32_status;
+            f32_status = implementation->combine_f32_seed(
+                implementation->combine_context,
+                implementation->f32_scratch,slot_zero,slot_one,
+                (uint32_t)(bytes / 2u),submission->cuda_stream);
+            for ( peer = 1u;
+                  peer < implementation->tp_degree && f32_status == SPARK_STATUS_OK;
+                  peer++ )
+            {
+                uint8_t *source = implementation->mesh_buffer +
+                    implementation->band_base +
+                    ((uint64_t)peer *
+                        SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+                        (round_seq &
+                            (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
+                        slot_bytes;
+                f32_status = implementation->combine_f32_add(
+                    implementation->combine_context,
+                    implementation->f32_scratch,source,
+                    (uint32_t)(bytes / 2u),submission->cuda_stream);
+            }
+            if ( f32_status == SPARK_STATUS_OK )
+                f32_status = implementation->round_f32(
+                    implementation->combine_context,
+                    submission->full_device,implementation->f32_scratch,
+                    (uint32_t)(bytes / 2u),submission->cuda_stream);
+            if ( f32_status != SPARK_STATUS_OK )
+                return f32_status;
+            goto combine_done;
+        }
+    }
+    if ( cudaMemsetAsync(submission->full_device,0,(size_t)bytes,
+             submission->cuda_stream) != 0 )
+        return SPARK_STATUS_IO_ERROR;
+    for ( peer = 0u; peer < implementation->tp_degree; peer++ )
     {
         uint8_t *source = implementation->mesh_buffer +
             implementation->band_base +
-            ((uint64_t)(peer < implementation->tp_rank ?
-                peer : peer + 1u) *
+            ((uint64_t)peer *
                 SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
                 (round_seq &
                     (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
@@ -589,6 +721,13 @@ combine:
         if ( status != SPARK_STATUS_OK )
             return status;
     }
+combine_done:
+    if ( operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+         implementation->error_word != 0 &&
+         SparkGlm5NextLaunchMeshGuard(submission->cuda_stream,
+             implementation->error_word,submission->full_device) != 0 )
+        return(SPARK_STATUS_IO_ERROR);
     if ( implementation->capture_armed == 0u )
         SparkTpDeviceCollectiveQueueCompletion(implementation,submission,
             ordinal,SPARK_STATUS_OK);
@@ -640,6 +779,10 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         (uint64_t)config->operation_timeout_milli * 1000000ull;
     implementation->combine_bf16 = config->combine_bf16_function;
     implementation->combine_u64_max = config->combine_u64_max_function;
+    implementation->combine_f32_seed = config->combine_f32_seed_function;
+    implementation->combine_f32_add = config->combine_f32_add_function;
+    implementation->round_f32 = config->round_f32_function;
+    implementation->combine_fused_bf16 = config->combine_fused_bf16_function;
     implementation->combine_context = config->combine_context;
     if ( SparkWeightdClientConnect(socket,&implementation->client,0) !=
             SPARK_STATUS_OK )
