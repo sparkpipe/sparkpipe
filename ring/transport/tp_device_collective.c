@@ -305,6 +305,35 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveChainRetire(
+    SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint32_t band_index;
+    volatile uint64_t *base_cell;
+    if ( collective == 0 || collective->implementation == 0 )
+        return(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    if ( implementation->mesh_buffer == 0 || implementation->tp_rank != 0u )
+        return(SPARK_STATUS_OK);
+    band_index = (uint32_t)(implementation->band_base /
+        (SPARK_WEIGHTD_MESH_SLOT_BYTES *
+         SPARK_WEIGHTD_MESH_SLOTS_PER_BAND));
+    base_cell = (volatile uint64_t *)(implementation->mesh_buffer +
+        SparkTpDeviceCollectiveBaseCellOffset(band_index));
+    *base_cell = *base_cell +
+        SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
+    __sync_synchronize();
+    (void)SparkWeightdClientMeshBroadcast(
+        implementation->client,
+        ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) &
+            ~(1u << implementation->tp_rank),
+        SparkTpDeviceCollectiveBaseCellOffset(band_index),
+        SparkTpDeviceCollectiveBaseCellOffset(band_index),8u,0ull,0ull,
+        implementation->round_timeout_ns);
+    return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,uint64_t request_id)
 {

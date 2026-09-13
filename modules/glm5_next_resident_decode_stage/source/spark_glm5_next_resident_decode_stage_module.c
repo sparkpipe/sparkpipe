@@ -87,6 +87,7 @@ typedef struct SparkGlm5NextAsyncCompletion
 	uint64_t lane_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
+	uint32_t finish_retries;
 	uint32_t burst_token_count;
 	uint64_t mtp_cache_extra;
 	uint32_t mtp_draft_tokens[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
@@ -2226,7 +2227,10 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
 		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
 	if ( state->tp_device_collective_initialized != 0u )
+	{
 		SparkTpDeviceCollectiveBroadcastCancel(&state->tp_device_collective);
+		(void)SparkTpDeviceCollectiveChainRetire(&state->tp_device_collective);
+	}
 	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
 	{
 		chain->retained_status = status;
@@ -2806,8 +2810,22 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 			}
 			state->decode_lease_base_saved = (const uint8_t *)address;
 		}
-		memset(state->decode_miss_host,0,
-		    SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES);
+		{
+			uint64_t epoch_seen =
+			    ((volatile uint64_t *)state->decode_miss_host)[
+			        SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64];
+			memset(state->decode_miss_host,0,
+			    SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES);
+			((volatile uint64_t *)state->decode_miss_host)[
+			    SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] =
+			    epoch_seen;
+		}
+		if ( state->epoch_device != 0 &&
+		     SparkGlm5NextLaunchEpochSample(
+		         (cudaStream_t)chain->slot->stream,state->epoch_device,
+		         (void *)((uint64_t *)state->decode_miss_host +
+		             SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64)) != 0 )
+			return(SPARK_STATUS_IO_ERROR);
 		if ( cudaMemcpyAsync(state->decode_cover_device,
 		         state->decode_cover_host,
 		         (size_t)state->decode_cover_words * sizeof(uint32_t),
@@ -2825,8 +2843,22 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 	else if ( state->decode_union_count != 0u )
 	{
 		if ( state->decode_miss_host[0] != 0u )
+		{
+			uint64_t epoch_seen =
+			    ((volatile uint64_t *)state->decode_miss_host)[
+			        SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64];
 			memset(state->decode_miss_host,0,
-		    SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES);
+			    SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES);
+			((volatile uint64_t *)state->decode_miss_host)[
+			    SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] =
+			    epoch_seen;
+		}
+		if ( state->epoch_device != 0 &&
+		     SparkGlm5NextLaunchEpochSample(
+		         (cudaStream_t)chain->slot->stream,state->epoch_device,
+		         (void *)((uint64_t *)state->decode_miss_host +
+		             SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64)) != 0 )
+			return(SPARK_STATUS_IO_ERROR);
 		chain->wave.expert_lease_base = chain->state->decode_lease_base_saved;
 		chain->wave.expert_lease_local_layer = 0u;
 		chain->wave.expert_lease_all = 1u;
@@ -3455,8 +3487,33 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	async->completion.status = SparkGlm5NextFinishCacheLanes(async);
+	if ( async->completion.status == SPARK_STATUS_BUSY &&
+	     ++async->finish_retries >= 2u )
+	{
+		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+		fprintf(stderr,
+		    "cache finish forced after retries slot=%u\n",
+		    async->slot_index);
+	}
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
+		if ( state->epoch_device != 0 )
+		{
+			uint64_t seen =
+			    ((volatile uint64_t *)state->decode_miss_host)[
+			        SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64];
+			if ( state->epoch_validated != 0ull &&
+			     seen != state->epoch_validated )
+			{
+				fprintf(stderr,
+				    "EPOCH-MOVE seen=%llu validated=%llu\n",
+				    (unsigned long long)seen,
+				    (unsigned long long)state->epoch_validated);
+				SparkGlm5NextGraphLeasesDrop(state);
+				async->completion.status = SPARK_STATUS_BUSY;
+			}
+			state->epoch_validated = seen;
+		}
 		if ( async->output_token_destination != 0 )
 		{
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)(async->burst_token_count != 0u ? async->burst_token_count : async->row_count) * sizeof(uint32_t));
