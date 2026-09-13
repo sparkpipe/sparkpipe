@@ -221,6 +221,7 @@ struct SparkGlm5NextModuleState
 	uint32_t decode_union_count;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
+	uint32_t hbound_probes;
 	uint32_t decode_cover_words;
 	uint32_t *decode_cover_host;
 	uint32_t *decode_cover_device;
@@ -3181,6 +3182,19 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		}
 		chain->next_layer++;
 		chain->sweep_retries = 0u;
+		if ( chain->next_layer >= 6u && chain->next_layer <= 31u )
+		{
+			uint32_t flag = 1u << chain->next_layer;
+			if ( (state->hbound_probes & flag) == 0u )
+			{
+				uint16_t h[4];
+				state->hbound_probes |= flag;
+				if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) == cudaSuccess &&
+				     cudaMemcpy(h,chain->slot->hidden_bf16,sizeof(h),cudaMemcpyDeviceToHost) == cudaSuccess )
+					fprintf(stderr,"HBOUND n=%u h=%04x %04x %04x %04x\n",
+					    chain->next_layer,h[0],h[1],h[2],h[3]);
+			}
+		}
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
 			chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION;
