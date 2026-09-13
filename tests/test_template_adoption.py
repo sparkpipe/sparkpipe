@@ -45,6 +45,8 @@ FAMILIES = {
     "glm5_next_resident_decode_stage": "wave-2 (post-closeout)",
     "qwen38_max_resident_decode_stage": "wave-2",
     "qwen4_flash_resident_decode_stage": "wave-2",
+    "ling_resident_decode_stage": None,
+    "laguna_resident_decode_stage": "wave-2 (mod-infra-mid migration notes: TP-config loader + MASK_CONDITIONAL/ADAPTIVE_COMBOS policies)",
 }
 
 # A family-local copy of the TP-collective config parser is the fork

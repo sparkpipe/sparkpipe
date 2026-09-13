@@ -439,8 +439,9 @@ static uint64_t SparkGemma4ModuleExpectedGlobalBits(const SparkGemma4ModuleState
 	return(bits);
 }
 
-static uint64_t SparkGemma4ModuleExpectedMtpBits(void)
+static uint64_t SparkGemma4ModuleExpectedMtpBits(const SparkGemma4ModuleState *state)
 {
+	(void)state;
 	return(0ull);
 }
 
