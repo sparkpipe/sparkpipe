@@ -84,6 +84,7 @@ static int SPARK_PACK_LOAD_REGION_HOOK(
 	void **scale);
 #endif
 
+#ifdef SPARK_PACK_LOAD_ORDINALS
 static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) *state)
 {
 	uint32_t layer;
@@ -100,7 +101,9 @@ static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) 
 			state->attn_ordinal_by_layer[layer] = state->attn_layer_count++;
 	}
 }
+#endif
 
+#ifdef SPARK_PACK_LOAD_LINEAR_VIEW
 static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) *view, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, void *payload, void *scale)
 {
 	view->abi_version = SPARK_PACK_LOAD_CONST(RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION);
@@ -112,6 +115,7 @@ static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) 
 	view->weight_payload_bytes = entry->payload_bytes;
 	view->weight_scale_bytes = entry->scale_bytes;
 }
+#endif
 
 static SparkStatus SPARK_PACK_LOAD_FN(ValidateEntryPlacement)(SPARK_PACK_LOAD_TYPE(ModuleState) *state, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, uint64_t file_bytes, uint32_t *is_global)
 {

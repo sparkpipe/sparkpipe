@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Bind every macro and both 48-entry dispatch tables in
-spark_laguna_model.h against model_contracts/laguna_authoritative.json.
+"""Bind every macro in spark_laguna_model.h and its single-source
+llm_defines.h against model_contracts/laguna_authoritative.json, and prove
+the hybrid-layer and head-count derivations for all 48 layers.
 
-Pure python; runs anywhere. RED on any mismatch: the header is the shipped
-statement of the checkpoint geometry and this test is the census lock on it.
+Pure python; runs anywhere. RED on any mismatch: llm_defines.h is the single
+parameter source, the family header is its alias shim, and this test is the
+census lock on both.
 """
 import json
 import math
@@ -13,12 +15,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "model-families/laguna/include/sparkpipe/spark_laguna_model.h"
+LLM_DEFINES = ROOT / "model-families/laguna/include/sparkpipe/llm_defines.h"
 CONTRACT = ROOT / "model_contracts/laguna_authoritative.json"
+NAME_PATTERN = r"(?:SPARK_LAGUNA_MODEL_|SPARK_LLM_)[A-Z0-9_]+"
 
 
-def define_values(text):
+def define_values(text, prefix_pattern):
     values = {}
-    for match in re.finditer(r"#define (SPARK_LAGUNA_MODEL_[A-Z0-9_]+)\s+(.+?)(?=\n(?:#|\n))", text, re.S):
+    for match in re.finditer(r"#define (" + prefix_pattern + r")\s+(.+?)(?=\n(?:#|\n))", text, re.S):
         name, body = match.group(1), match.group(2).strip()
         body = body.split("\\")[0].strip()
         values[name] = body
@@ -37,24 +41,57 @@ def resolve(expression, values, depth=0):
     current = expression
     while previous != current:
         previous = current
-        current = re.sub(r"SPARK_LAGUNA_MODEL_[A-Z0-9_]+", substitute, current)
+        current = re.sub(NAME_PATTERN, substitute, current)
     python_literal = re.sub(r"\b([0-9]+)[uU]f?\b", r"\1", current.replace("f", ""))
+    python_literal = re.sub(r"\s+", " ", python_literal).strip()
+    while python_literal.startswith("(") and matching_paren(python_literal, 0) == len(python_literal) - 1:
+        python_literal = python_literal[1:-1].strip()
+    depth = 0
+    question = colon = -1
+    for offset, char in enumerate(python_literal):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "?" and depth == 0:
+            question = offset
+        elif char == ":" and depth == 0 and question >= 0 and colon < 0:
+            colon = offset
+    if question >= 0:
+        condition = python_literal[:question].strip()
+        consequent = python_literal[question + 1:colon].strip()
+        alternative = python_literal[colon + 1:].strip()
+        python_literal = f"({consequent} if {condition} else {alternative})"
     return eval(python_literal, {"__builtins__": {}}, {})
 
 
-def table_entries(text, name):
-    match = re.search(re.escape(name) + r"\[[^\]]*\]\s*=\s*\{(.*?)\};", text, re.S)
+def matching_paren(text, start):
+    depth = 0
+    for offset, char in enumerate(text[start:], start):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return offset
+    return -1
+
+
+def parameterized_macro_body(normalized, name, parameter):
+    match = re.search(r"#define " + re.escape(name) + r"\(" + parameter + r"\)\s+(.+?)(?=\n#|\n\n)", normalized)
     if not match:
-        raise AssertionError(f"missing table {name}")
-    return [int(token.strip().rstrip("u")) for token in match.group(1).split(",") if token.strip()]
+        raise AssertionError(f"missing macro {name}({parameter})")
+    return match.group(1).strip()
 
 
 def main():
     contract = json.loads(CONTRACT.read_text())
     config = contract["source"]["config_json"]
     text = HEADER.read_text()
+    llm_text = LLM_DEFINES.read_text()
     normalized = text.replace("\\\n", " ")
-    values = define_values(text)
+    values = define_values(normalized, r"SPARK_LAGUNA_MODEL_[A-Z0-9_]+")
+    values.update(define_values(llm_text.replace("\\\n", " "), r"SPARK_LLM_[A-Z0-9_]+"))
     failures = []
 
     def check(label, actual, expected):
@@ -105,16 +142,17 @@ def main():
         failures.append("ROPE_SLIDING_ROTARY_DIMENSION is not stated as head_dim * partial_rotary_factor")
     check("rope_sliding_rot", int(config["head_dim"] * config["rope_sliding"]["partial_rotary_factor"]), 128)
 
-    heads = table_entries(text, "SPARK_LAGUNA_MODEL_LAYER_HEAD_COUNT_TABLE")
-    sliding = table_entries(text, "SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING_TABLE")
-    check("head table length", len(heads), 48)
-    check("sliding table length", len(sliding), 48)
+    sliding_macro = parameterized_macro_body(normalized, "SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING", "layer_index")
+    heads_macro = parameterized_macro_body(normalized, "SPARK_LAGUNA_MODEL_LAYER_HEAD_COUNT", "layer_index")
+    heads_macro = heads_macro.replace("SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING(layer_index)", sliding_macro)
+    heads_derived = [int(resolve(heads_macro.replace("layer_index", f"({index})"), values)) for index in range(48)]
+    sliding_derived = [int(bool(resolve(sliding_macro.replace("layer_index", f"({index})"), values))) for index in range(48)]
     for index in range(48):
         expected = config["num_attention_heads_per_layer_sliding"] if index % 4 != 0 else config["num_attention_heads_per_layer_full"]
-        check(f"layer {index} heads", heads[index], expected)
-        check(f"layer {index} sliding", sliding[index], 1 if index % 4 != 0 else 0)
-    check("full layer count", sum(1 for value in sliding if value == 0), 12)
-    check("sliding layer count", sum(sliding), 36)
+        check(f"layer {index} heads", heads_derived[index], expected)
+        check(f"layer {index} sliding", sliding_derived[index], 1 if index % 4 != 0 else 0)
+    check("full layer count", resolve("SPARK_LAGUNA_MODEL_FULL_LAYER_COUNT", values), 12)
+    check("sliding layer count", resolve("SPARK_LAGUNA_MODEL_SLIDING_LAYER_COUNT", values), 36)
     if "SPARK_LAGUNA_MODEL_STAGE_LAYER_COUNT(stage_count,stage_index)" not in normalized:
         failures.append("missing SPARK_LAGUNA_MODEL_STAGE_LAYER_COUNT(stage_count,stage_index) macro")
     for stage_count, expected in ((2, contract["fleet_shape"]["stage_layer_counts"][0]), (4, 12)):
@@ -130,7 +168,7 @@ def main():
         for failure in failures:
             print("FAIL", failure)
         return 1
-    print("laguna model header binds the contract: geometry, both rope regimes, 48-entry dispatch tables, census, tokens")
+    print("laguna model header binds the contract: geometry, both rope regimes, 48-layer hybrid derivation, census, tokens")
     return 0
 
 
