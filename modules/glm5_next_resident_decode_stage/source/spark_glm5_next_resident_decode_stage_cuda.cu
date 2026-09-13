@@ -279,22 +279,6 @@ static uint32_t SparkGlm5NextProbeReduction(cudaStream_t stream,const uint16_t *
 	return(count);
 }
 
-extern "C" cudaError_t SparkGlm5NextLaunchDirectSum(cudaStream_t stream,void *destination,const void *const *rank_devices,uint32_t local_rank,uint32_t rows,uint32_t width)
-{
-	LmTpBf16Contributions<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT> inputs = {};
-	uint32_t rank,pass;
-	cudaError_t error;
-	if ( destination == 0 || rank_devices == 0 || local_rank >= SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT || rows == 0u || width == 0u )
-		return(cudaErrorInvalidValue);
-	for (rank=0u; rank<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT; rank++)
-		inputs.rank[rank] = (const uint16_t *)(rank == local_rank ? destination : rank_devices[rank]);
-	pass = SparkGlm5NextProbeReduction(stream,inputs.rank,local_rank,rows,width);
-	LmTpBf16SumKernel<<<rows,256u,0u,stream>>>((uint16_t *)destination,inputs,rows,width);
-	error = cudaPeekAtLastError();
-	if ( error == cudaSuccess && pass != 0u )
-		Glm5NextProbeVecU16(stream,(const uint16_t *)destination,width,0u,pass,"reduce_result");
-	return(error);
-}
 
 extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
 {
