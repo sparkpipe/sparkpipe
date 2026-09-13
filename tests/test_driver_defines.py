@@ -63,7 +63,7 @@ NEGATIVE_CONTROLS = [
     ("latent_layout_flip", r"#define SPARK_LLM_MLA_LATENT_DIMENSION .*\n",
      "#define SPARK_LLM_MLA_LATENT_DIMENSION 640u\n", "latent cache slot layout"),
     ("router_subset_flip", r"#define SPARK_LLM_MOE_ROUTER_TOP_GROUPS .*\n",
-     "#define SPARK_LLM_MOE_ROUTER_TOP_GROUPS 8u\n", "strict subset"),
+     "#define SPARK_LLM_MOE_ROUTER_TOP_GROUPS 9u\n", "cannot exceed"),
     ("period_tiling_flip", r"#define SPARK_LLM_ATTENTION_PERIOD .*\n",
      "#define SPARK_LLM_ATTENTION_PERIOD 5u\n", "tile the stack exactly"),
     ("kind_flip_to_gqa", r"#define SPARK_LLM_ATTENTION_KIND .*\n",

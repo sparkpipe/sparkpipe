@@ -126,6 +126,13 @@ _Static_assert((SPARK_HY4_MODEL_VOCAB_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"h
 _Static_assert((SPARK_HY4_MODEL_ROUTED_EXPERT_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"hy4 experts must tile the ranks");
 _Static_assert((SPARK_HY4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 expert intermediate must tile scale groups");
 _Static_assert((SPARK_HY4_MODEL_HIDDEN_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 hidden must tile scale groups");
+
+#define SPARK_HY4_STAGEPACK_FP8_ALIGNED_PLANES_PER_RANK 573u
+#define SPARK_HY4_STAGEPACK_FP8_REPLICATED_PLANES_PER_RANK 259u
+#define SPARK_HY4_STAGEPACK_FP8_PLANES_PER_RANK \
+	(SPARK_HY4_STAGEPACK_FP8_ALIGNED_PLANES_PER_RANK + \
+	 SPARK_HY4_STAGEPACK_FP8_REPLICATED_PLANES_PER_RANK)
+_Static_assert(SPARK_HY4_STAGEPACK_FP8_PLANES_PER_RANK == 832u,"the hy4 fp8 arm places 832 payload planes per rank (573 row-aligned plus 259 replicated scales)");
 /* The firmware header's literal weight-format codes must match the
  * shared stagepack format constants. Code 9 (F8_E4M3 payload + U8
  * E8M0 group-32 scales) is hy4-specific and lives only here. */
