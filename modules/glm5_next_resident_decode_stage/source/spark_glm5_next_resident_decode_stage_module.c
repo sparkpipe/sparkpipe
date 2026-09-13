@@ -2705,8 +2705,22 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 			    UINT32_C(1) << (bit % 32u);
 		}
 	}
-	fprintf(stderr,"RS slot=%u taken=%u hit=%u miss=%u\n",
-	    chain->slot_index,state->rs_taken,state->rs_hit,recorded);
+	fprintf(stderr,
+	    "RS slot=%u taken=%u hit=%u miss=%u rr=%u f=%u e=%u lc=%u off=%u %u %u %u\n",
+	    chain->slot_index,state->rs_taken,state->rs_hit,recorded,
+	    chain->slot->route_recorded,first,end,chain->wave.layer_count,
+	    chain->slot->host_group_row_offset != 0 ?
+	        chain->slot->host_group_row_offset[
+	            3u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u)] : 999u,
+	    chain->slot->host_group_row_offset != 0 ?
+	        chain->slot->host_group_row_offset[
+	            3u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u) + 1u] : 999u,
+	    chain->slot->host_group_row_offset != 0 ?
+	        chain->slot->host_group_row_offset[
+	            3u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u) + 2u] : 999u,
+	    chain->slot->host_group_row_offset != 0 ?
+	        chain->slot->host_group_row_offset[
+	            3u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u) + 3u] : 999u);
 	if ( delta != 0u )
 	{
 		index = 0u;
