@@ -1,0 +1,335 @@
+{
+  "lane": "wave-seam2",
+  "date": "2026-09-13",
+  "baseline_main": "6dbb58e",
+  "minimax_branch": "origin/lane/minimax-driver",
+  "minimax_branch_rebase6": "absent on origin (fetch ref not found)",
+  "families": ["k3", "dsv5", "ling", "gemma4", "laguna", "muse", "minimax-h3"],
+  "method": "line diff + identifier-normalized diff + role-level function clone matching (token jaccard after family-token strip)",
+  "dry1_reference": "docs/DRY_PACKBUILDER_PROPOSAL.md (#976) covers tools/*_stagepack.py corpus; this survey covers driver modules and the host glue DRY-1 excluded",
+  "modules": {
+    "k3_resident_decode_stage": {
+      "path": "modules/k3_resident_decode_stage",
+      "family_path": "model-families/k3",
+      "loc": {"module": 3411, "family": 224},
+      "shared_seams": {
+        "serving_adapter_template": "use",
+        "pack_load_common": "bypass",
+        "batch_variant_tuning_common": "bypass",
+        "stage_module_common": "bypass",
+        "tp_device_collective": "use",
+        "inference_kernels": "bypass (uses inference/llms/kimi_k3)",
+        "weightd_client": "use"
+      }
+    },
+    "dsv4_resident_decode_stage": {
+      "path": "modules/dsv4_resident_decode_stage",
+      "family_path": "model-families/dsv4",
+      "alias": "dsv5 / dsv41flash",
+      "loc": {"module": 15268, "family": 1919},
+      "shared_seams": {
+        "serving_adapter_template": "use",
+        "pack_load_common": "bypass",
+        "batch_variant_tuning_common": "bypass",
+        "stage_module_common": "use",
+        "tp_device_collective": "use",
+        "inference_kernels": "use",
+        "weightd_client": "use"
+      }
+    },
+    "ling_resident_decode_stage": {
+      "path": "modules/ling_resident_decode_stage",
+      "family_path": "model-families/ling",
+      "loc": {"module": 8809, "family": 815},
+      "shared_seams": {
+        "serving_adapter_template": "bypass",
+        "pack_load_common": "bypass",
+        "batch_variant_tuning_common": "use",
+        "stage_module_common": "use",
+        "tp_device_collective": "use",
+        "inference_kernels": "use",
+        "weightd_client": "bypass"
+      }
+    },
+    "gemma4_resident_decode_stage": {
+      "path": "modules/gemma4_resident_decode_stage",
+      "family_path": "model-families/gemma4",
+      "variants": ["31b (Makefile)", "26b-a4b (Makefile.moe, SPARK_GEMMA4_MOE_BUILD + alias header)"],
+      "loc": {"module": 5102, "family": 192},
+      "shared_seams": {
+        "serving_adapter_template": "use",
+        "pack_load_common": "use",
+        "batch_variant_tuning_common": "n/a",
+        "stage_module_common": "use",
+        "tp_device_collective": "use",
+        "inference_kernels": "use",
+        "weightd_client": "bypass"
+      }
+    },
+    "laguna_resident_decode_stage": {
+      "path": "modules/laguna_resident_decode_stage",
+      "family_path": "model-families/laguna",
+      "loc": {"module": 8709, "family": 763},
+      "shared_seams": {
+        "serving_adapter_template": "bypass",
+        "pack_load_common": "bypass",
+        "batch_variant_tuning_common": "use",
+        "stage_module_common": "use",
+        "tp_device_collective": "use",
+        "inference_kernels": "use",
+        "weightd_client": "use"
+      }
+    },
+    "muse_glimmer_resident_decode_stage": {
+      "path": "modules/muse_glimmer_resident_decode_stage",
+      "family_path": "model-families/muse_glimmer",
+      "loc": {"module": 3610, "family": 395},
+      "shared_seams": {
+        "serving_adapter_template": "use",
+        "pack_load_common": "bypass",
+        "batch_variant_tuning_common": "n/a",
+        "stage_module_common": "use",
+        "tp_device_collective": "use",
+        "inference_kernels": "use",
+        "weightd_client": "bypass"
+      }
+    },
+    "minimax_h3_resident_media_stage": {
+      "path": "modules/minimax_h3_resident_media_stage",
+      "family_path": "model-families/minimax_h3",
+      "branch": "origin/lane/minimax-driver (not on main)",
+      "loc": {"module_media_stage_code": 1000, "module_validation_incl_fixtures": 4500, "family": 445, "tools": 1300},
+      "note": "multimodal: text encoder + diffusion media stage; repeats stagepack/firmware/serving-adapter/deploy patterns of decode fleet"
+    }
+  },
+  "clusters": [
+    {
+      "id": "C1",
+      "name": "serving-adapter deployment-config + TP rail plumbing",
+      "members": [
+        "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
+        "modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c"
+      ],
+      "template_users": [
+        "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
+        "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
+        "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
+        "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c"
+      ],
+      "divergence": {
+        "ling_vs_laguna_raw_pct": 68.6,
+        "ling_vs_laguna_normalized_pct": 32.3,
+        "role_clones": {
+          "ServingValidateTpCollectiveMembers": 95,
+          "ServingLoadSessionPorts": 91,
+          "ServingLoadTpRailHosts": 91,
+          "ServingLoadTpAlgorithms": 91,
+          "ServingLoadTpStepRails": 89,
+          "ServingProgress": 89,
+          "ServingSnapshot": 85,
+          "ServingDriverCompletion": 80
+        }
+      },
+      "wasted_loc": 1900,
+      "parameter_keys": ["FAMILY_TOKEN", "TP_DEGREE", "TP_RAIL_HOSTS", "TP_STEP_RAILS", "TP_ALGORITHMS", "SESSION_PORTS", "HIDDEN_TRANSPORT_MEMBERS", "COLLECTIVE_PEERS", "QUIESCE_POLICY", "RESET_POLICY", "MAX_ACTIVE_SEQUENCES", "SNAPSHOT_FIELDS"],
+      "proposed_common": "extend spark_serving_adapter_template.h with a tp/deployment-config loader; ling+laguna adapters shrink to template + family table"
+    },
+    {
+      "id": "C2",
+      "name": "pack validate/load/bind",
+      "existing_common": "model-families/common/include/sparkpipe/spark_pack_load_common.h",
+      "adopters": ["gemma4"],
+      "bypassers": ["ling", "laguna", "muse", "k3", "dsv4"],
+      "members": [
+        "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c (Pack* roles ~450 loc)",
+        "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c (Pack* roles ~350 loc)",
+        "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c (~200 loc)",
+        "modules/k3_resident_decode_stage/source/spark_k3_pack_load.c",
+        "modules/k3_resident_decode_stage/source/spark_k3_bind.c",
+        "modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h + module.c load path"
+      ],
+      "divergence": {"ling_vs_laguna_PackValidateRanges_pct": 78},
+      "wasted_loc": 1200,
+      "parameter_keys": ["SPARK_PACK_LOAD_FN", "SPARK_PACK_LOAD_TYPE", "SPARK_PACK_LOAD_CONST", "SPARK_PACK_LOAD_LAYER_IS_GDN", "SPARK_PACK_LOAD_SEEN_TYPE", "SPARK_PACK_LOAD_SEEN_ONE", "SPARK_PACK_LOAD_SEEN_FORMAT", "SPARK_PACK_LOAD_SEEN_ARG", "SPARK_PACK_LOAD_BYTES_MATCH", "SPARK_PACK_LOAD_EXPECT_GEOMETRY", "SPARK_PACK_LOAD_GEOMETRY_MISMATCH", "SPARK_PACK_LOAD_REGION_HOOK"],
+      "proposed_common": "already exists; migrate ling/laguna/muse/k3/dsv4 onto it (mechanical)"
+    },
+    {
+      "id": "C3",
+      "name": "stagepack_format.h per family",
+      "members": [
+        "modules/ling_resident_decode_stage/source/spark_ling_stagepack_format.h (422)",
+        "modules/gemma4_resident_decode_stage/source/spark_gemma4_stagepack_format.h (482)",
+        "modules/laguna_resident_decode_stage/source/spark_laguna_stagepack_format.h (346)",
+        "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_stagepack_format.h (222)",
+        "modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h (407)"
+      ],
+      "divergence": {
+        "ling_vs_laguna_normalized_pct": 36.5,
+        "ling_vs_muse_normalized_pct": 68.0,
+        "gemma4_vs_muse_normalized_pct": 53.7
+      },
+      "wasted_loc": 1300,
+      "parameter_keys": ["MAGIC", "REVISION", "HEADER_BYTES_257", "ENTRY_BYTES_64", "ALIGN_256", "TENSOR_KIND_ENUM_TABLE", "SCALE_BLOCK_GEOMETRY", "PER_KIND_SLICE_MODE"],
+      "proposed_common": "one stagepack struct/validator common + per-family tensor-kind table include"
+    },
+    {
+      "id": "C4",
+      "name": "model-defines headers (llm_defines.h candidate)",
+      "members": [
+        "model-families/*/include/sparkpipe/spark_*_model.h",
+        "modules/{ling,laguna}_resident_decode_stage/source/cuda/config.h",
+        "model-families/gemma4/include/sparkpipe/spark_gemma4_moe_model_aliases.h (variant alias pattern)",
+        "inference/llms/kimi_k3/config.h (k3 fold)"
+      ],
+      "divergence": {"ling_vs_laguna_config_normalized_pct": 8.8},
+      "wasted_loc": 600,
+      "parameter_keys_shared": ["MODEL_ID", "MODULE_ID", "MODULE_TARGET", "DRIVER_MODEL_ID", "DRIVER_REVISION", "CONTRACT_SHA256", "HIDDEN_DIMENSION", "LAYER_COUNT", "VOCAB_COUNT", "MAXIMUM_CONTEXT_TOKENS", "FIRST_ROUTED_LAYER", "WEIGHT_LAYER_COUNT", "ATTENTION_KIND", "HEAD_DIMENSION", "Q_HEADS", "KV_HEADS", "ATTENTION_SCALE", "WINDOW_TOKENS", "FULL_LAYER_PERIOD", "FULL_LAYER_PHASE", "ROUTED_EXPERT_COUNT", "EXPERTS_PER_TOKEN", "EXPERT_INTERMEDIATE_DIMENSION", "DENSE_INTERMEDIATE_DIMENSION", "ROUTED_SCALE", "W1_COMPONENTS", "ROUTER_GROUPS", "ROUTER_TOP_GROUPS", "TOP_K", "RMS_NORM_EPSILON", "FINAL_LOGIT_SOFTCAP", "EMBED_SCALE", "FP8_SCALE_BLOCK", "KV_BITS", "BF16_ELEMENT_BYTES", "KV_PAGE_SLOTS", "KV_SLOT_BYTES", "KV_BLOCK_TOKENS", "BOS_TOKEN_ID", "EOS_TOKEN_ID", "PAD_TOKEN_ID"],
+      "parameter_keys_mla": ["LATENT_DIMENSION", "QK_ROPE_HEAD_DIMENSION", "QK_NOPE_HEAD_DIMENSION", "VALUE_HEAD_DIMENSION", "MLA_ROPE_THETA"],
+      "parameter_keys_kda": ["KDA_HEADS", "KDA_KEY_DIM", "KDA_VALUE_DIM", "KDA_QK_DIM", "KDA_CONV_KERNEL", "KDA_GATE_LOWER_BOUND", "KDA_STATE_ELEMENT_BYTES", "KDA_CONV_WINDOW_BYTES_PER_LAYER"],
+      "parameter_keys_rope": ["ROPE_MODE", "ROPE_FULL_ROTARY_DIMENSION", "ROPE_SLIDING_ROTARY_DIMENSION", "ROPE_FULL_THETA", "ROPE_SLIDING_THETA", "ROPE_ATTENTION_FACTOR", "ROPE_TABLE_ELEMENTS", "QK_SCALE"],
+      "proposed_common": "spark_driver_defines.h: driver code reads generic keys; per-family constants header + alias fold (gemma4 pattern) supplies values"
+    },
+    {
+      "id": "C5",
+      "name": "KDA/GDN/sliding hybrid state machinery",
+      "members": [
+        "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu (hand-rolled KDA)",
+        "modules/ling_resident_decode_stage/source/cuda/layer.cuh (KDA via inference/kernels/linear_attn.cuh)",
+        "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c (gdn_* aliased onto sliding_*)",
+        "modules/laguna_resident_decode_stage/source/cuda/layer.cuh (sliding positions + GQA)",
+        "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c (RunGdnLayer roles)"
+      ],
+      "shape_shared": "hybrid layer-map predicate + ordinal-by-layer arrays + per-layer state/window slot bytes + state pool + index",
+      "wasted_loc": 800,
+      "parameter_keys": ["LAYER_MAP_PREDICATE", "LAYER_MAP_PERIOD", "LAYER_MAP_PHASE", "STATE_ELEMENT_BYTES", "CONV_KERNEL_WIDTH", "CONV_ACTIVATION", "DECAY_GATE_BOUNDS", "WINDOW_TOKENS", "STATE_HEADS", "STATE_KEY_DIM", "STATE_VALUE_DIM"],
+      "proposed_common": "spark_hybrid_state.h: ordinal builder + slot-bytes algebra + pool sizing; kernels stay in inference/kernels"
+    },
+    {
+      "id": "C6",
+      "name": "rope tables + sliding-window geometry",
+      "members": [
+        "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_cuda.cu (LagunaBuildYarnInvFrequency)",
+        "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_cuda.cu (LaunchSlidingRope/LaunchFullRope over LmRopePerHeadKernel)",
+        "modules/ling_resident_decode_stage/source/cuda/config.h (latent rope sections)",
+        "modules/minimax_h3_resident_media_stage (branch: cos/sin fixture tables)"
+      ],
+      "wasted_loc": 300,
+      "parameter_keys": ["ROPE_MODE", "ROTARY_DIMENSION_PER_CLASS", "THETA_PER_CLASS", "YARN_FACTOR", "YARN_ATTENTION_FACTOR", "TABLE_ELEMENTS", "QK_SCALE"],
+      "proposed_common": "spark_rope_plan.h: table builder (theta|yarn|table) + upload; launches stay over shared LmRopePerHeadKernel"
+    },
+    {
+      "id": "C7",
+      "name": "firmware.h ABI constants",
+      "members": [
+        "modules/{ling,laguna,muse,gemma4}_resident_decode_stage/include/sparkpipe/spark_*_firmware.h",
+        "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+      ],
+      "divergence": {"ling_vs_laguna_normalized_pct": 22.3, "ling_vs_muse_normalized_pct": 67.2},
+      "wasted_loc": 500,
+      "parameter_keys": ["NODE_CONTEXT_ABI_VERSION", "FRAME_CONTEXT_ABI_VERSION", "PREFILL_FRAME_VIEW_ABI_VERSION", "KV_BLOCK_TABLE_ABI_VERSION", "LINEAR_VIEW_ABI_VERSION", "DECODE_BATCH_VIEW_ABI_VERSION", "MAX_ACTIVE_SEQUENCE_COUNT", "LIMITS", "TAG_STRINGS"],
+      "proposed_common": "spark_resident_decode_stage_firmware_common.h with per-family value table"
+    },
+    {
+      "id": "C8",
+      "name": "batch-tuning bucket ladder",
+      "existing_common": "include/sparkpipe/spark_batch_variant_tuning_common.h",
+      "adopters": ["ling", "laguna"],
+      "bypassers": ["k3 (152 loc)", "dsv4 (172 loc)"],
+      "wasted_loc": 250,
+      "parameter_keys": ["MODULE_ID_PREFIX", "MODULE_ID_SUFFIX", "EXPERT_CODEC_NAME", "TOP_K", "EXPERT_COUNT", "GROUPED_PEAK_ROWS", "GROUPED_TILE_M"],
+      "proposed_common": "convert k3/dsv4 to the ling/laguna shim shape"
+    },
+    {
+      "id": "C9",
+      "name": "pack_synthesize.c in-module synthesizers (missed by DRY-1)",
+      "members": [
+        "modules/ling_resident_decode_stage/tools/ling_pack_synthesize.c (297)",
+        "modules/gemma4_resident_decode_stage/tools/gemma4_pack_synthesize.c (244)",
+        "modules/laguna_resident_decode_stage/tools/laguna_pack_synthesize.c (325)",
+        "modules/muse_glimmer_resident_decode_stage/tools/muse_glimmer_pack_synthesize.c (243)",
+        "modules/minimax_h3_resident_media_stage/tools/minimax_h3_pack_synthesize.c (branch, ~200)"
+      ],
+      "divergence": {"ling_vs_laguna_normalized_pct": 20.6},
+      "wasted_loc": 700,
+      "parameter_keys": ["TENSOR_KIND_TABLE", "DIMENSIONS", "ENTRY_RECIPES", "FIXTURE_PATHS"],
+      "proposed_common": "one parameterized synthesizer; DRY-1 corpus covered tools/*_stagepack.py only, not these C tools"
+    },
+    {
+      "id": "C10",
+      "name": "cuda validation rigs",
+      "members": [
+        "modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu (2847)",
+        "modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu (1904)",
+        "modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu (1604)",
+        "modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu (620)",
+        "modules/{ling,gemma4,laguna,muse_glimmer}_resident_decode_stage/validation/validate_*.sh"
+      ],
+      "wasted_loc": 2500,
+      "parameter_keys": ["FIXTURE_DIR", "STAGE_TABLE", "TOLERANCES", "DIGEST_EXPECTATIONS"],
+      "proposed_common": "one harness + per-family stage table; keep laguna layer7 realpack rig distinct"
+    },
+    {
+      "id": "C11",
+      "name": "Makefiles beside rules.mk",
+      "members": ["modules/{ling,laguna,gemma4,muse_glimmer,dsv4}_resident_decode_stage/Makefile*"],
+      "existing_common": "modules/resident_decode_stage_rules.mk",
+      "divergence": {"ling_vs_laguna_normalized_pct": 29.7},
+      "wasted_loc": 250,
+      "parameter_keys": ["MODULE_FAMILY", "MODULE_IDENTIFIER", "MODULE_TARGET", "MODEL_HEADER", "CONTRACT_SHA256", "SOURCES", "VARIANT_DEFINES"],
+      "proposed_common": "thin Makefile wrappers over rules.mk only"
+    },
+    {
+      "id": "C12",
+      "name": "gen_deployment generators",
+      "members": ["tools/ling_gen_deployment.py (182)", "tools/laguna_gen_deployment.py (212)", "tools/muse_gen_deployment.py (121)", "tools/k3_gen_deployment.sh (sh)", "tools/minimax_h3_gen_deployment.py (branch, 164)"],
+      "divergence": {"pairwise_normalized_pct": "47-50"},
+      "wasted_loc": 400,
+      "parameter_keys": ["RANKS", "TP_DEGREE", "PORTS", "PACK_PATHS", "STAGE_LAYER_COUNTS", "MODEL_ID", "REVISION"],
+      "proposed_common": "one deployment generator with per-family key table"
+    },
+    {
+      "id": "C13",
+      "name": "kv_geometry capacity fillers",
+      "members": [
+        "model-families/k3/include/sparkpipe/spark_k3_kv_geometry.h",
+        "model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h",
+        "model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h",
+        "model-families/minimax_h3/include/sparkpipe/spark_minimax_h3_kv_geometry.h (branch)"
+      ],
+      "drift_finding": "k3 filler omits abi_version/descriptor_bytes that ling sets",
+      "wasted_loc": 120,
+      "parameter_keys": ["KV_LAYOUT", "LAYER_COUNT", "COMPRESSED_DIMENSION", "POSITION_DIMENSION", "BYTES_PER_SCALAR", "FP8_SCALE_BLOCK_SIZE", "INDEX_KEY_*", "ABI_VERSION"],
+      "proposed_common": "one SparkKvFillCapacityRequest inline + geometry keys from spark_driver_defines.h"
+    }
+  ],
+  "unique_math_candidates": [
+    {"name": "flow-matching sigma scheduler", "source": "model-families/minimax_h3/src/spark_minimax_h3_scheduler.c (branch)", "keys": ["SHIFT", "SIGMA_POINT_COUNT", "STEP_RULE"]},
+    {"name": "yarn inv-frequency builder", "source": "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_cuda.cu", "keys": ["ROPE_MODE=yarn params"]},
+    {"name": "KDA slot sizing algebra", "source": "spark_k3_kv_geometry.h + ling config.h static_asserts (triplicated)", "keys": ["KDA_* from defines"]},
+    {"name": "RowsPerExpert MoE row estimator", "source": "modules/laguna_resident_decode_stage/source/cuda/config.h", "keys": ["TOP_K", "EXPERT_COUNT"]},
+    {"name": "kv cache plan/arena planner", "source": "model-families/dsv4/src/spark_dsv4_cache_plan.c (1037 loc)", "keys": ["page tiers", "arena bounds"]},
+    {"name": "minimax block reductions", "verdict": "delete against inference/kernels reductions; bypass, not unique math"}
+  ],
+  "top10_wasted_loc": [
+    {"rank": 1, "cluster": "C10 validation rigs", "wasted": 2500},
+    {"rank": 2, "cluster": "C1 serving adapters", "wasted": 1900},
+    {"rank": 3, "cluster": "C3 stagepack formats", "wasted": 1300},
+    {"rank": 4, "cluster": "C2 pack load/bind", "wasted": 1200},
+    {"rank": 5, "cluster": "C5 cuda cell glue", "wasted": 1200},
+    {"rank": 6, "cluster": "dsv4 monolith boilerplate", "wasted": 800},
+    {"rank": 7, "cluster": "C9 pack synthesizers", "wasted": 700},
+    {"rank": 8, "cluster": "C4 model-defines folds", "wasted": 600},
+    {"rank": 9, "cluster": "C7 firmware ABI headers", "wasted": 500},
+    {"rank": 10, "cluster": "C12 gen_deployment", "wasted": 400}
+  ],
+  "total_wasted_loc_estimate": 10500,
+  "surprises": [
+    "lane/minimax-driver-rebase6 absent on origin; only lane/minimax-driver carries h3",
+    "common seams for the worst clusters already exist; ling/laguna bypass the serving template while younger families use it",
+    "gemma4 31b/26b alias-header pattern is the working precedent for the fleet llm_defines.h",
+    "k3 is a different generation: inference/llms/kimi_k3 includes, five seam bypasses",
+    "ling/laguna api.h+launch_shape.h+unity.cu are rename-only copies; their serving adapters diverged 32%",
+    "minimax branch hand-rolls warp reductions that exist in shared kernels",
+    "k3 kv_geometry filler omits abi_version ling sets (contract drift the common filler kills)"
+  ]
+}
