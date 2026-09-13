@@ -14,7 +14,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-#define SPARK_WEIGHTD_MESH_PEERS 15
+#define SPARK_WEIGHTD_MESH_PEERS \
+    (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
 #define SPARK_WEIGHTD_MESH_CQ_ENTRIES 16384u
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
@@ -613,7 +614,8 @@ void SparkWeightdMeshDoorbellLoop(void)
             {
                 uint64_t index =
                     (uint64_t)band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
-                volatile uint64_t *entry = entries + index * 3u;
+                volatile uint64_t *entry = entries + index *
+                    (SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES / 8u);
                 uint64_t seq;
                 uint64_t bytes;
                 uint64_t slot;
@@ -682,7 +684,8 @@ void SparkWeightdMeshDoorbellLoop(void)
                     uint32_t last_rkey = 0u;
                     uint32_t resync_mask = 0u;
                     {
-                        uint64_t key_lo = (seq & ~0xffffull) + 1ull;
+                        uint64_t key_lo = (seq &
+                ~((1ull << 16u) - 1ull)) + 1ull;
                         uint64_t first_missed =
                             weightd_mesh.doorbell_posted[index] + 1ull;
                         uint32_t missed_count;

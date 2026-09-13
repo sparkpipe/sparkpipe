@@ -2094,8 +2094,10 @@ static void Glm5NextExpertCoverKernel(
     if ( fallback >= experts )
         fallback = 0u;
     slot = atomicAdd((unsigned int *)(expert_miss + 1u),1u);
-    expert_miss[2u + (slot & 63u)] =
-        (layer_word_base / cover_stride) * 512u + expert;
+    expert_miss[2u + (slot &
+        (SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY - 1u))] =
+        (layer_word_base / cover_stride) *
+        SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + expert;
     route_expert[index] = fallback;
     *expert_miss = 1u;
 }

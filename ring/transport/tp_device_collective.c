@@ -234,13 +234,15 @@ static void SparkTpDeviceCollectiveInvokeCompletion(
 static uint64_t SparkTpDeviceCollectiveBaseCellOffset(uint32_t band_index)
 {
     return SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
-        (100u + 2u * band_index) * 24u;
+        (SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE + 2u * band_index) *
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES;
 }
 
 static uint64_t SparkTpDeviceCollectiveCancelCellOffset(uint32_t band_index)
 {
     return SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
-        (101u + 2u * band_index) * 24u;
+        (SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL + 2u * band_index) *
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES;
 }
 
 static SparkStatus SparkTpDeviceCollectiveRebase(
@@ -287,7 +289,8 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
             __sync_synchronize();
             (void)SparkWeightdClientMeshBroadcast(
                 implementation->client,
-                0xffffu & ~(1u << implementation->tp_rank),
+                ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) &
+                    ~(1u << implementation->tp_rank),
                 base_offset,base_offset,8u,0ull,0ull,
                 implementation->round_timeout_ns);
         }
@@ -926,7 +929,8 @@ void SparkTpDeviceCollectiveBroadcastCancel(
                 (SPARK_WEIGHTD_MESH_SLOT_BYTES *
                  SPARK_WEIGHTD_MESH_SLOTS_PER_BAND)));
         (void)SparkWeightdClientMeshBroadcast(implementation->client,
-            0xffffu & ~(1u << implementation->tp_rank),
+            ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) &
+                ~(1u << implementation->tp_rank),
             cancel_offset,cancel_offset,
             8u,0ull,0ull,implementation->round_timeout_ns);
     }
