@@ -59,6 +59,27 @@ receipt output_sha256 (mtp stripped, 31 entries dropped, 30518614272 bytes).
 - 2026-09-13T05:52Z BUILD (detached units sp5-ling-r3/sp5-ling-r4) rank3 on
   spark3, rank4 on spark4, same packer/source/memory caps; logs
   ~/lingbuild/r3.log r4.log.
+- 2026-09-13T06:13Z BUILD COMPLETE rank3 spark3: 15725069824 bytes, sha256
+  c1ffdc0c4cdc608a9371f9108c3614124a9094d88bdc0024beb72c8cb76fb118 (== the
+  pre-existing sidecar; census closes; 730 tensors, 40960 manifest ranges).
+- 2026-09-13T06:13Z BUILD COMPLETE rank4 spark4: 15725069824 bytes, sha256
+  fbe7565e9947b0b832ef063764418c48cfda2261cb0eea5b488f0033889d9efe (== the
+  pre-existing sidecar).
+- 2026-09-13T06:15Z PLACE rank3 -> spark3, rank4 -> spark4 (SPARK_OK, staged
+  copy re-hashed, destination sha256sum -c PASS, ownership normalized to the
+  node user per the spark0 rank0 convention; placement script updated with
+  chown + SPARK_FAIL 26). Cache purged on spark3 + spark4.
+- 2026-09-13T06:18Z BUILD (detached units sp5-ling-r5/sp5-ling-r6) rank5 on
+  spark5, rank6 on spark6.
+- 2026-09-13T06:05Z IDENTIFY spark9:~/sparkdata/ling.bf16.tp16/packs/
+  ling_stage.tp16.rank0.lspk 15725069824 bytes sha256 1f0642fb3362202a53f95e
+  90f565b599c270908d7b5e71c24a5f3861ec7e146d == the rank0 packer receipt ->
+  it is a duplicate of rank0 (correctly placed on spark0) under the retired
+  ling_stage naming. This is the audit's "mislabeled pack" (a rank0-content
+  file sitting in spark9's ling arm; spark9's actual rank9.sp sidecar
+  cf62a572... is a different, unreceipted digest and gets REPLACED by the
+  fresh rank9 build in its wave). Queued for removal in the spark9
+  maintenance window: lsof clean + lsattr clean verified 06:20Z.
 
 ## Verification sweeps (filesystem-only; header/dir walk + sha256; no module execution)
 
