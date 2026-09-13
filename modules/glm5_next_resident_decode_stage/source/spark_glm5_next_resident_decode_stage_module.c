@@ -2363,39 +2363,6 @@ static void SparkGlm5NextLazyWork(void *context)
 	fprintf(stderr,"LAZY enter slot=%u layer=%u\n",chain->slot_index,chain->next_layer);
 	status = SparkGlm5NextLazyExperts(chain);
 	fprintf(stderr,"LAZY experts slot=%u layer=%u status=%d\n",chain->slot_index,chain->next_layer,(int32_t)status);
-	if ( status == SPARK_STATUS_OK && chain->state->decode_cover_host != 0 )
-	{
-		SparkGlm5NextModuleState *st = chain->state;
-		SparkWeightdExpertKey ukeys[SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT];
-		uint32_t ucount = 0u,index,bit,appended = 0u;
-		SparkWeightdRouteKeys(chain->wave.first_layer_index + chain->next_layer,
-			chain->slot->host_group_row_offset +
-			    (chain->wave.first_layer_index + chain->next_layer) *
-			        (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u),
-			SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,
-			chain->wave.row_count * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,
-			ukeys,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,&ucount);
-		for (index=0u; index<ucount; index++)
-		{
-			bit = ukeys[index].layer *
-			    SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT +
-			    ukeys[index].expert;
-			if ( (st->decode_cover_host[bit / 32u] &
-			        (UINT32_C(1) << (bit % 32u))) != 0u )
-				continue;
-			if ( st->decode_union_count >=
-			     SPARK_GLM5_NEXT_ROUTE_UNION_TRIM )
-				SparkGlm5NextGraphLeaseTrim(st);
-			if ( st->decode_union_count >=
-			     SPARK_GLM5_NEXT_ROUTE_UNION_MAX )
-				break;
-			st->decode_union_keys[st->decode_union_count] =
-				ukeys[index];
-			st->decode_union_count++;
-			appended++;
-		}
-		chain->union_fed = appended;
-	}
 	cleanup = SparkGlm5NextLazyRelease(chain);
 	if ( cleanup == SPARK_STATUS_IO_ERROR || cleanup == SPARK_STATUS_BUSY )
 		cleanup = SparkGlm5NextLazyRelease(chain);
