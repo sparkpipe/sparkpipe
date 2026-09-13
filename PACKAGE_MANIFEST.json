@@ -1,5 +1,5 @@
 {
-  "file_count": 2187,
+  "file_count": 2188,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -805,6 +805,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/wave-mod-infra-q-identity-2026-09-13.md",
       "sha256": "d6e60f336d4c3ab56995aaf561e485c896072195122e5e6d1187bef31fceda52",
       "size_bytes": 3874
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-refactor-qwen38-27b-identity-2026-09-13.md",
+      "sha256": "459f9035b803b7bd61460e149a10cf5cbc12c36e7e84ee5f94d717b6da1713c0",
+      "size_bytes": 10539
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/tickets/nvfp4-flash-module-port.md",
@@ -10940,5 +10945,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35404013
+  "total_bytes": 35414552
 }
