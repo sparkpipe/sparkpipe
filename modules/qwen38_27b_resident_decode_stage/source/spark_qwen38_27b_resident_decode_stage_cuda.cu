@@ -7,6 +7,9 @@
 #include "spark_qwen38_27b_dspark_cuda.cuh"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_native_ws.cuh"
+#include "common/common_gdn_stage_kernels.h"
+
+#include "common/common_gdn_stage_kernels.cu"
 
 
 #define SPARK_QWEN38_27B_CUDA_DK SPARK_QWEN38_27B_MODEL_GDN_HEAD_KEY_DIMENSION
@@ -784,15 +787,6 @@ static __global__ void SparkQwen38_27bAttnDecodeKernel(const void *q_fused_bf16,
     }
 }
 
-static __global__ void SparkQwen38_27bEmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count)
-{
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint32_t row = (uint32_t)(index / SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION),element = (uint32_t)(index % SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION);
-	if ( row >= row_count )
-		return;
-	SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(embedding_bf16,((uint64_t)token_ids[row] * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION) + element));
-}
-
 #define SPARK_QWEN38_27B_CUDA_CHUNK SPARK_QWEN38_27B_MODEL_GDN_CHUNK_TOKENS
 #define SPARK_QWEN38_27B_CUDA_GDN_QK_SHARED_BYTES \
     (2u * SPARK_QWEN38_27B_CUDA_CHUNK * SPARK_QWEN38_27B_CUDA_DK * sizeof(float))
@@ -1142,36 +1136,15 @@ static __global__ void SparkQwen38_27bChunkConvKernel(const void *qkv_bf16, cons
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[2]);
 }
 
-static __global__ void SparkQwen38_27bResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
-	float2 hidden_pair,delta_pair;
-	if ( pair >= pair_count )
-		return;
-	hidden_pair = SparkLmLoadBf16Pair(hidden_bf16,pair);
-	delta_pair = SparkLmLoadBf16Pair(delta_bf16,pair);
-	SparkLmStoreBf16Pair(hidden_bf16,pair,hidden_pair.x + delta_pair.x,hidden_pair.y + delta_pair.y);
-	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
-		SparkLmFloatToBf16(hidden_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmBf16ToFloat(hidden_bf16,((uint64_t)row_count * dimension) - 1u) + SparkLmBf16ToFloat(delta_bf16,((uint64_t)row_count * dimension) - 1u));
-}
-
-static __global__ void SparkQwen38_27bSwiGluKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
-	float2 gate_pair,up_pair;
-	if ( pair >= pair_count )
-		return;
-	gate_pair = SparkLmLoadBf16Pair(gate_bf16,pair);
-	up_pair = SparkLmLoadBf16Pair(up_bf16,pair);
-	SparkLmStoreBf16Pair(up_bf16,pair,SparkLmSwish(gate_pair.x) * up_pair.x,SparkLmSwish(gate_pair.y) * up_pair.y);
-	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
-		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
-}
-
 extern "C" cudaError_t SparkQwen38_27bConfigureCudaKernels(void)
 {
     cudaError_t status;
 
+    status = LmGdnStageConfigureKernels();
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
     status = cudaFuncSetAttribute(
         SparkQwen38_27bGdnStepKernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -1204,18 +1177,12 @@ extern "C" cudaError_t SparkQwen38_27bConfigureCudaKernels(void)
 
 extern "C" cudaError_t SparkQwen38_27bLaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	return(LmGdnStageLaunchFusedResidualRmsNorm(stream,hidden_bf16,delta_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon));
 }
 
 extern "C" cudaError_t SparkQwen38_27bLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
 {
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(input_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
+	return(LmGdnStageLaunchRmsNorm(stream,input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon));
 }
 #define SPARK_QWEN38_27B_SMALL_BATCH_MAX_ROWS 8u
 #define SPARK_QWEN38_27B_SMALL_BATCH_TILE_N 64u
@@ -1918,23 +1885,17 @@ extern "C" cudaError_t SparkQwen38_27bLaunchGdnChunk(cudaStream_t stream, const 
 
 extern "C" cudaError_t SparkQwen38_27bLaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count)
 {
-	uint64_t elements = (uint64_t)row_count * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	SparkQwen38_27bEmbeddingGatherKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(token_ids,embedding_bf16,hidden_bf16,row_count);
-	return(cudaGetLastError());
+	return(LmGdnStageLaunchEmbeddingGather(stream,token_ids,embedding_bf16,hidden_bf16,row_count));
 }
 
 extern "C" cudaError_t SparkQwen38_27bLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
-	SparkQwen38_27bResidualAddKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,row_count,dimension);
-	return(cudaGetLastError());
+	return(LmGdnStageLaunchResidualAdd(stream,hidden_bf16,delta_bf16,row_count,dimension));
 }
 
 extern "C" cudaError_t SparkQwen38_27bLaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
-	SparkQwen38_27bSwiGluKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(gate_bf16,up_bf16,row_count,dimension);
-	return(cudaGetLastError());
+	return(LmGdnStageLaunchSwiGlu(stream,gate_bf16,up_bf16,row_count,dimension));
 }
 
 static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP == SPARK_LM_HEAD_SCREEN_CAP,"screen cap must match the shared kernels");
@@ -2003,92 +1964,6 @@ extern "C" cudaError_t SparkQwen38_27bLaunchHeadMaxLocUnpack(cudaStream_t stream
 	SparkQwen38_27bHeadMaxLocUnpackKernel<<<row_count,1u,0,stream>>>(keys_u64,token_ids_u32,row_count);
 	return(cudaGetLastError());
 }
-
-static __global__ void SparkQwen38_27bAccumAddKernel(void *destination, const void *source, uint32_t element_count)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t pair_count = (uint64_t)element_count >> 1u;
-	float2 dst,src;
-	if ( pair >= pair_count )
-		return;
-	dst = SparkLmLoadBf16Pair(destination,pair);
-	src = SparkLmLoadBf16Pair(source,pair);
-	SparkLmStoreBf16Pair(destination,pair,dst.x + src.x,dst.y + src.y);
-	if ( pair == 0u && ((uint64_t)element_count & 1u) != 0u )
-		SparkLmFloatToBf16(destination,element_count - 1u,SparkLmBf16ToFloat(destination,element_count - 1u) + SparkLmBf16ToFloat(source,element_count - 1u));
-}
-
-static __global__ void SparkQwen38_27bAccumAddRelayKernel(void *destination, const void *source, void *relay, uint32_t element_count)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t pair_count = (uint64_t)element_count >> 1u;
-	float2 dst,src;
-	if ( pair >= pair_count )
-		return;
-	dst = SparkLmLoadBf16Pair(destination,pair);
-	src = SparkLmLoadBf16Pair(source,pair);
-	SparkLmStoreBf16Pair(destination,pair,dst.x + src.x,dst.y + src.y);
-	SparkLmStoreBf16Pair(relay,pair,src.x,src.y);
-}
-
-static __global__ void SparkQwen38_27bAccumAddTp4Kernel(void *destination, const void *const *rank_devices, uint32_t tp_rank, uint32_t element_count)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t pair_count = (uint64_t)element_count >> 1u;
-	float2 dst,peer;
-	uint32_t rank;
-	if ( pair >= pair_count )
-		return;
-	dst = SparkLmLoadBf16Pair(destination,pair);
-	for (rank = 0u; rank < 4u; rank++)
-	{
-		if ( rank == tp_rank )
-			continue;
-		peer = SparkLmLoadBf16Pair(rank_devices[rank],pair);
-		dst.x += peer.x;
-		dst.y += peer.y;
-	}
-	SparkLmStoreBf16Pair(destination,pair,dst.x,dst.y);
-}
-
-static __global__ void SparkQwen38_27bAccumU64MaxKernel(uint64_t *destination, const uint64_t *source, uint32_t element_count)
-{
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t value;
-	if ( index >= (uint64_t)element_count )
-		return;
-	value = source[index];
-	if ( value > destination[index] )
-		destination[index] = value;
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension)
-{
-	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
-	SparkQwen38_27bAccumAddKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,(uint32_t)elements);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchAccumAddRelay(cudaStream_t stream, void *destination, const void *source, void *relay, uint32_t active_sequence_count, uint32_t hidden_dimension)
-{
-	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
-	SparkQwen38_27bAccumAddRelayKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,relay,(uint32_t)elements);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchAccumAddTp4(cudaStream_t stream, void *destination, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension)
-{
-	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
-	SparkQwen38_27bAccumAddTp4Kernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(destination,rank_devices,tp_rank,(uint32_t)elements);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
-{
-	SparkQwen38_27bAccumU64MaxKernel<<<(element_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,element_count);
-	return(cudaGetLastError());
-}
-
 
 extern "C" cudaError_t SparkQwen38_27bLaunchDsparkTapStore(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *taps_bf16, uint32_t rows, uint32_t tap_index, uint32_t hidden_dim, uint32_t tap_layers)
 {

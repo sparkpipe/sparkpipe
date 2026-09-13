@@ -329,7 +329,8 @@ TEST_NAMES := \
     test_weight_codec \
     test_topology_switch \
     test_qwen38_math_kernels \
-    test_llm_module_contract
+    test_llm_module_contract \
+    test_qwen38_27b_llm_contract
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -1084,6 +1085,11 @@ build/test_llm_module_contract: tests/test_llm_module_contract.c tests/test_llm_
 	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I model-families/qwen38_max/include -I . -c tests/test_llm_module_contract.c -o build/test_llm_module_contract_main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I model-families/qwen38_max/include -I . -DSPARK_LLM_KV_BLOCK_TOKENS=65u -c tests/test_llm_module_contract_negative.c -o build/test_llm_module_contract_negative.o
 	$(CC) $(CFLAGS) build/test_llm_module_contract_main.o build/test_llm_module_contract_negative.o tests/cuda_stub/cuda_runtime_stub.c -o $@
+
+build/test_qwen38_27b_llm_contract: tests/test_qwen38_27b_llm_contract.c tests/test_qwen38_27b_llm_contract_negative.c model-families/qwen38_27b/include/sparkpipe/llm_defines.h model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -Wall -Wextra -Werror -I include -I model-families/common/include -I model-families/qwen38_27b/include -I modules/qwen38_27b_resident_decode_stage/include -I . -c tests/test_qwen38_27b_llm_contract.c -o build/test_qwen38_27b_llm_contract_main.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -Wall -Wextra -Werror -I include -I model-families/common/include -I model-families/qwen38_27b/include -I modules/qwen38_27b_resident_decode_stage/include -I . -DSPARK_LLM_KV_BLOCK_TOKENS=65u -c tests/test_qwen38_27b_llm_contract_negative.c -o build/test_qwen38_27b_llm_contract_negative.o
+	$(CC) $(CFLAGS) build/test_qwen38_27b_llm_contract_main.o build/test_qwen38_27b_llm_contract_negative.o -o $@
 
 build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_qwen38_math_kernels (no nvcc on this host)"; fi

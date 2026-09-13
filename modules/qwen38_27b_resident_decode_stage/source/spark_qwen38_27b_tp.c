@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_qwen38_27b_model.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 
 #define SPARK_QWEN38_27B_TP_TAG "qwen38_27b_tp"
 
@@ -23,35 +24,6 @@ static const char *SparkQwen38_27bTpRailHosts[2][SPARK_TP_DEVICE_COLLECTIVE_MAX_
 	{ "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
 	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 };
-
-extern cudaError_t SparkQwen38_27bLaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumAddRelay(cudaStream_t stream, void *destination, const void *source, void *relay, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumAddTp4(cudaStream_t stream, void *destination, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
-
-static SparkStatus SparkQwen38_27bTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineRelayBf16(void *combine_context, void *destination_device, const void *source_device, void *relay_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAddRelay((cudaStream_t)cuda_stream,destination_device,source_device,relay_device,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineTp4Bf16(void *combine_context, void *destination_device, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAddTp4((cudaStream_t)cuda_stream,destination_device,rank_devices,tp_rank,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineU64Max(void *combine_context, uint64_t *destination_device, const uint64_t *source_device, uint32_t element_count, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
 
 static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
@@ -184,10 +156,7 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	configuration.rail_count = 0u;
 	configuration.direct_all_to_all_max_payload_bytes = 0u;
 	configuration.split_ring_min_payload_bytes = 0u;
-	configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
-	configuration.combine_relay_bf16_function = SparkQwen38_27bTpCombineRelayBf16;
-	configuration.combine_tp4_bf16_function = SparkQwen38_27bTpCombineTp4Bf16;
-	configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = tp;
 	for (index = 0u; index < 2u; index++)
 		memcpy(configuration.rail_rank_hosts[index],SparkQwen38_27bTpRailHosts[index],sizeof(SparkQwen38_27bTpRailHosts[index]));
