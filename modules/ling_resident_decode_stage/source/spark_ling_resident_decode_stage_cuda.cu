@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "modules/ling_resident_decode_stage/source/cuda/unity.cu"
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "spark_ling_resident_decode_stage_internal.h"
 
 #define SPARK_LING_CUDA_THREADS 256u
@@ -126,52 +127,6 @@ static __global__ void SparkLingHeadMaxlocUnpackKernel(
 		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
 }
 
-static __device__ __forceinline__ float2 SparkLingLoadBf16Pair(const void *base,uint64_t element)
-{
-	uint32_t packed = ((const uint32_t *)base)[element];
-	float2 pair;
-	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
-	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
-	return(pair);
-}
-
-static __device__ __forceinline__ void SparkLingStoreBf16Pair(void *base,uint64_t element,float x,float y)
-{
-	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
-		(__float_as_uint(x) >> 16u);
-	((uint32_t *)base)[element] = packed;
-}
-
-static __global__ void SparkLingAccumAddKernel(
-	void *destination_bf16,
-	const void *source_bf16,
-	uint32_t row_count,
-	uint32_t width)
-{
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		destination_pair = SparkLingLoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkLingLoadBf16Pair(source_bf16,offset + element);
-		SparkLingStoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
-	}
-}
-
-static __global__ void SparkLingAccumU64MaxKernel(
-	uint64_t *destination,
-	const uint64_t *source,
-	uint32_t element_count)
-{
-	uint32_t element;
-	element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < element_count && source[element] > destination[element] )
-		destination[element] = source[element];
-}
-
 extern "C" cudaError_t SparkLingLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset)
 {
 	if ( scores == 0 || token_ids == 0 || maxloc == 0 || row_count == 0u )
@@ -185,22 +140,6 @@ extern "C" cudaError_t SparkLingLaunchHeadMaxlocUnpack(cudaStream_t stream,const
 	if ( maxloc == 0 || token_ids == 0 || row_count == 0u )
 		return(cudaErrorInvalidValue);
 	SparkLingHeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,stream>>>(maxloc,token_ids,row_count);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkLingLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
-{
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkLingAccumAddKernel<<<row_count,256u,0u,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkLingLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
-{
-	if ( destination == 0 || source == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	SparkLingAccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,stream>>>(destination,source,element_count);
 	return(cudaPeekAtLastError());
 }
 

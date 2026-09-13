@@ -44,6 +44,18 @@
 #ifndef SPARK_PACK_LOAD_PREFLIGHT
 #error "SPARK_PACK_LOAD_PREFLIGHT must state the family pre-directory policy (empty where none)"
 #endif
+#ifndef SPARK_PACK_LOAD_SEEN_MTP_FIELD
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#endif
+#ifndef SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#endif
+#ifndef SPARK_PACK_LOAD_SEEN_LAYER_FIELD
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
+#endif
+#ifndef SPARK_PACK_LOAD_NO_LINEAR_VIEW
+static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) *view, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, void *payload, void *scale);
+#endif
 
 static SparkStatus SPARK_PACK_LOAD_FN(ValidateEntry)(
 	SPARK_PACK_LOAD_TYPE(ModuleState) *state,
@@ -66,7 +78,8 @@ static SparkStatus SPARK_PACK_LOAD_FN(BindLayer)(
 	void *scale);
 static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedGlobalBits)(
 	const SPARK_PACK_LOAD_TYPE(ModuleState) *state);
-static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedMtpBits)(void);
+static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedMtpBits)(
+	const SPARK_PACK_LOAD_TYPE(ModuleState) *state);
 static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedLayerBits)(
 	const SPARK_PACK_LOAD_TYPE(ModuleState) *state,
 	uint32_t layer);
@@ -84,7 +97,7 @@ static int SPARK_PACK_LOAD_REGION_HOOK(
 	void **scale);
 #endif
 
-#ifdef SPARK_PACK_LOAD_ORDINALS
+#ifndef SPARK_PACK_LOAD_NO_BUILD_ORDINALS
 static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) *state)
 {
 	uint32_t layer;
@@ -103,7 +116,7 @@ static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) 
 }
 #endif
 
-#ifdef SPARK_PACK_LOAD_LINEAR_VIEW
+#ifndef SPARK_PACK_LOAD_NO_LINEAR_VIEW
 static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) *view, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, void *payload, void *scale)
 {
 	view->abi_version = SPARK_PACK_LOAD_CONST(RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION);
@@ -154,15 +167,19 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 		return(status);
 	}
 	if ( entry->layer_index == SPARK_PACK_LOAD_CONST(STAGEPACK_MTP_LAYER) || (is_global != 0u && entry->tensor_kind >= SPARK_PACK_LOAD_CONST(STAGEPACK_TENSOR_MTP_FC) && entry->tensor_kind <= SPARK_PACK_LOAD_CONST(STAGEPACK_TENSOR_MTP_FINAL_NORM)) )
-		seen = &state->mtp_seen_bits;
+		seen = &state->SPARK_PACK_LOAD_SEEN_MTP_FIELD;
 	else
-		seen = is_global != 0u ? &state->global_seen_bits : &state->layer_seen_bits[entry->layer_index];
+		seen = is_global != 0u ? &state->SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD : &state->SPARK_PACK_LOAD_SEEN_LAYER_FIELD[entry->layer_index];
 	if ( (*seen & bit) != 0u )
 	{
 		fprintf(stderr,"%s pack_entry_duplicate kind=%u layer=%u\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),entry->tensor_kind,entry->layer_index);
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	*seen |= bit;
+#ifdef SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY
+	if ( SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY(entry) != 0u )
+		return(SPARK_STATUS_OK);
+#endif
 #ifdef SPARK_PACK_LOAD_REGION_HOOK
 	{
 		void *hook_payload = 0,*hook_scale = 0;
@@ -191,22 +208,22 @@ static SparkStatus SPARK_PACK_LOAD_FN(VerifyCoverage)(SPARK_PACK_LOAD_TYPE(Modul
 {
 	uint32_t layer;
 	SPARK_PACK_LOAD_SEEN_TYPE expected_layer;
-	if ( state->owns_final_head != 0u && state->mtp_seen_bits != SPARK_PACK_LOAD_FN(ExpectedMtpBits)() )
+	if ( state->owns_final_head != 0u && state->SPARK_PACK_LOAD_SEEN_MTP_FIELD != SPARK_PACK_LOAD_FN(ExpectedMtpBits)(state) )
 	{
-		fprintf(stderr,"%s pack_mtp_incomplete seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),SPARK_PACK_LOAD_SEEN_ARG(state->mtp_seen_bits),SPARK_PACK_LOAD_SEEN_ARG(SPARK_PACK_LOAD_FN(ExpectedMtpBits)()));
+		fprintf(stderr,"%s pack_mtp_incomplete seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),SPARK_PACK_LOAD_SEEN_ARG(state->SPARK_PACK_LOAD_SEEN_MTP_FIELD),SPARK_PACK_LOAD_SEEN_ARG(SPARK_PACK_LOAD_FN(ExpectedMtpBits)(state)));
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
-	if ( state->global_seen_bits != SPARK_PACK_LOAD_FN(ExpectedGlobalBits)(state) )
+	if ( state->SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD != SPARK_PACK_LOAD_FN(ExpectedGlobalBits)(state) )
 	{
-		fprintf(stderr,"%s pack_globals_incomplete seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),SPARK_PACK_LOAD_SEEN_ARG(state->global_seen_bits),SPARK_PACK_LOAD_SEEN_ARG(SPARK_PACK_LOAD_FN(ExpectedGlobalBits)(state)));
+		fprintf(stderr,"%s pack_globals_incomplete seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),SPARK_PACK_LOAD_SEEN_ARG(state->SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD),SPARK_PACK_LOAD_SEEN_ARG(SPARK_PACK_LOAD_FN(ExpectedGlobalBits)(state)));
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		expected_layer = SPARK_PACK_LOAD_FN(ExpectedLayerBits)(state,layer);
-		if ( state->layer_seen_bits[layer] != expected_layer )
+		if ( state->SPARK_PACK_LOAD_SEEN_LAYER_FIELD[layer] != expected_layer )
 		{
-			fprintf(stderr,"%s pack_layer_incomplete layer=%u seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),layer,SPARK_PACK_LOAD_SEEN_ARG(state->layer_seen_bits[layer]),SPARK_PACK_LOAD_SEEN_ARG(expected_layer));
+			fprintf(stderr,"%s pack_layer_incomplete layer=%u seen=" SPARK_PACK_LOAD_SEEN_FORMAT " expected=" SPARK_PACK_LOAD_SEEN_FORMAT "\n",SPARK_PACK_LOAD_CONST(MODULE_TAG),layer,SPARK_PACK_LOAD_SEEN_ARG(state->SPARK_PACK_LOAD_SEEN_LAYER_FIELD[layer]),SPARK_PACK_LOAD_SEEN_ARG(expected_layer));
 			return(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
@@ -227,6 +244,10 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadPack)(SPARK_PACK_LOAD_TYPE(ModuleState
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	status = SparkStageModulePackRead(SPARK_PACK_LOAD_CONST(MODULE_TAG),file,0u,&header,sizeof(header));
+#ifdef SPARK_PACK_LOAD_VALIDATE_HEADER
+	if ( status == SPARK_STATUS_OK )
+		status = SPARK_PACK_LOAD_VALIDATE_HEADER(state,file,&header);
+#endif
 	if ( status == SPARK_STATUS_OK )
 	{
 		SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,&expected);
@@ -242,6 +263,10 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadPack)(SPARK_PACK_LOAD_TYPE(ModuleState
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_PACK_LOAD_CONST(MODULE_TAG),file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SPARK_PACK_LOAD_TYPE(StagePackEntry)));
+#ifdef SPARK_PACK_LOAD_VALIDATE_RANGES
+	if ( status == SPARK_STATUS_OK )
+		status = SPARK_PACK_LOAD_VALIDATE_RANGES(directory,header.tensor_count);
+#endif
 	for (index = 0; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
 		status = SPARK_PACK_LOAD_FN(LoadEntry)(state,file,&directory[index],header.file_bytes);
 	if ( status == SPARK_STATUS_OK )
