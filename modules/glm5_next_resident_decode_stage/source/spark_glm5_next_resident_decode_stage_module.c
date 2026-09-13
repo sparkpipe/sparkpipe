@@ -3525,7 +3525,21 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 			}
 			state->epoch_validated = seen;
 		}
-		if ( async->output_token_destination != 0 )
+		if ( (state->hbound_probes & (1u << 28u)) == 0u )
+		{
+			uint64_t merged = 0ull;
+			state->hbound_probes |= 1u << 28u;
+			if ( cudaMemcpy(&merged,slot->head_maxloc_u64,
+			    sizeof(merged),cudaMemcpyDeviceToHost) == cudaSuccess )
+				fprintf(stderr,"MERGED u=%llu tok=%u\n",
+				    (unsigned long long)merged,
+				    slot->host_output_token_ids[0]);
+		}
+		if ( async->output_token_destination != 0 &&
+		     slot->host_output_token_ids[0] == 0xFFFFFFFFu )
+			async->completion.status = SPARK_STATUS_BUSY;
+		if ( async->completion.status == SPARK_STATUS_OK &&
+		     async->output_token_destination != 0 )
 		{
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)(async->burst_token_count != 0u ? async->burst_token_count : async->row_count) * sizeof(uint32_t));
 		}

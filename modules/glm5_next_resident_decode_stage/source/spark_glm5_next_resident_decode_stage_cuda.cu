@@ -278,6 +278,20 @@ __global__ void SparkGlm5NextMeshPublishKernel(
 	entry[0] = sequence;
 }
 
+__global__ void SparkGlm5NextMeshGuardKernel(
+    volatile unsigned long long *error_word,
+    unsigned long long *output)
+{
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	if ( *error_word != 0ull )
+	{
+		output[0] = 0xFFFFFFFFFFFFFFFFull;
+		*error_word = 0ull;
+		printf("MESH-GUARD-POISON\\n");
+	}
+}
+
 __global__ void SparkGlm5NextMeshWaitKernel(
 	volatile uint64_t *band_base,
 	uint64_t slot_bytes,
@@ -315,6 +329,15 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 			__nanosleep(200u);
 		}
 	}
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
+	volatile void *error_word,void *output)
+{
+	SparkGlm5NextMeshGuardKernel<<<1,32,0u,stream>>>(
+		(volatile unsigned long long *)error_word,
+		(unsigned long long *)output);
+	return cudaPeekAtLastError();
 }
 
 extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
