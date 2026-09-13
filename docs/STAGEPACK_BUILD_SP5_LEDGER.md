@@ -159,3 +159,23 @@ receipt output_sha256 (mtp stripped, 31 entries dropped, 30518614272 bytes).
   key (root ssh is not keyed between nodes; staging chowned to the node user
   for the hop). PLACE SPARK_OK on sparka 08:31Z; sparka + sparkb caches
   purged; sparkb staging removed.
+- 2026-09-13T09:05Z BUILD COMPLETE rankd sparkd: sha256 97a1ed249648cb162411
+  c2b55cf10f315a3b9ebfe74c8697b0397c0e7c828e37 (== pre-existing sidecar).
+  PLACE SPARK_OK; sparkd purged.
+- 2026-09-13T09:30Z BUILD COMPLETE ranke sparke: sha256 d7699a5cbc80630f09e2
+  de92a5e4551870b318b62a63e2480075b73d6e0ac2a9 (== pre-existing sidecar).
+  PLACE SPARK_OK; sparke purged.
+- 2026-09-13T09:40Z BUILD COMPLETE rank8 spark8 (retry sp5-ling-r8c, ran
+  12 MB/s alongside SP-4's fp8 rank0 --no-mtp verifier; the earlier stall
+  window did not recur): sha256 c1f89fb10d6c2f3d2fde11183de12791d55d6feda07
+  28b8017a301aa12e3a508 (== pre-existing sidecar). PLACE SPARK_OK; spark8
+  purged.
+- 2026-09-13T09:50Z FLEET VERIFICATION ling.bf16.tp16: all 16 nodes
+  sha256sum -c PASS on the placed pack + sidecar; every node holds exactly
+  its law rank (r -> spark r); 14 fresh emits byte-identical to the
+  pre-existing packs (determinism proven across ranks 1-9,a-e); rank0/rankf
+  byte-verified vs PROGRESS receipts.
+- 2026-09-13T09:55Z RE-PIN receipts for rank0 (spark0) and rankf (sparkf):
+  receipts/rank0.json + receipts/rank15.json written from PROGRESS.md packer
+  receipt fields + this wave's byte verification, marked "repin" in the JSON
+  (not fresh packer emits). Bytes re-hashed at write time: PASS both.
