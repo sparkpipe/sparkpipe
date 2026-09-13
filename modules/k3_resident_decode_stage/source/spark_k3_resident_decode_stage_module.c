@@ -22,7 +22,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	}
 	if ( state->pack.config.first_layer != first_layer ||
 		state->pack.config.layers != layer_count ||
-		state->pack.config.total_layers != 93u )
+		state->pack.config.total_layers != SPARK_K3_MODEL_LAYER_COUNT )
 	{
 		SparkK3ModuleDestroy(state);
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);

@@ -278,6 +278,7 @@ TEST_NAMES := \
     test_kv_cache \
     test_kv_page_layout \
 	test_k3_kv_cache \
+	test_k3_llm_defines \
 	test_k3_run_equivalence \
 	test_k3_attach_contract \
 	test_kv_model_table \
@@ -716,6 +717,9 @@ build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRAR
 
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_k3_llm_defines: tests/test_k3_llm_defines.c inference/llms/kimi_k3/config.h inference/llms/kimi_k3/generated_config.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
+	$(CC) -I. -Iinclude -Imodel-families/k3/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 # Host-executed KDA run-contract gate (the CUDA CPU shim needs GNU g++:
 # tests/host_cuda_compiler.py's search, as a make probe).

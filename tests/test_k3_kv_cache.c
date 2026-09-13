@@ -4,10 +4,57 @@
 #include <string.h>
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_k3_kv_geometry.h"
+#include "sparkpipe/spark_state_pool.h"
 
 #define K3_TEST_CONTEXT_TOKENS 4096u
 #define K3_TEST_BLOCK_TOKENS 64u
 #define K3_TEST_SEQUENCES 4u
+
+static void K3TestFillerPinsTheAbiContract(void)
+{
+	SparkKvCacheCapacityRequest request;
+	memset(&request,0,sizeof(request));
+	SparkK3KvFillCapacityRequest(&request);
+	assert(request.abi_version == SPARK_KV_CACHE_ABI_VERSION);
+	assert(request.descriptor_bytes ==
+		SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES);
+	assert(request.layout == SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE);
+	assert(request.layer_count == SPARK_K3_KV_MLA_LAYER_COUNT);
+	assert(request.compressed_dimension == SPARK_K3_KV_LATENT_DIMENSION);
+	assert(request.position_dimension == SPARK_K3_KV_ROPE_DIMENSION);
+	assert(request.bytes_per_scalar == SPARK_K3_KV_BYTES_PER_SCALAR);
+	printf("  filler: abi %u, %u latent layers, %u+%u latent token\n",
+		(unsigned)request.abi_version,(unsigned)request.layer_count,
+		(unsigned)request.compressed_dimension,
+		(unsigned)request.position_dimension);
+}
+
+static void K3TestEstimatorRejectsStaleContracts(void)
+{
+	SparkKvCacheCapacityRequest request;
+	SparkKvCacheCapacityEstimate estimate;
+	memset(&request,0,sizeof(request));
+	SparkK3KvFillCapacityRequest(&request);
+	request.context_token_count = K3_TEST_CONTEXT_TOKENS;
+	request.block_token_count = K3_TEST_BLOCK_TOKENS;
+	request.cache_bytes_per_rank = 8ull * 1024ull * 1024ull * 1024ull;
+	memset(&estimate,0,sizeof(estimate));
+	estimate.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	estimate.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES;
+	request.abi_version = SPARK_KV_CACHE_ABI_VERSION + 1u;
+	assert(SparkKvCacheEstimateCapacity(&request,&estimate) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	request.descriptor_bytes =
+		SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES + 1u;
+	assert(SparkKvCacheEstimateCapacity(&request,&estimate) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	request.descriptor_bytes =
+		SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
+	assert(SparkKvCacheEstimateCapacity(&request,&estimate) ==
+		SPARK_STATUS_OK);
+	printf("  estimator: stale abi and descriptor refused, filled pass\n");
+}
 
 static void K3TestEstimatorPricesTheLatentArena(void)
 {
@@ -15,8 +62,6 @@ static void K3TestEstimatorPricesTheLatentArena(void)
 	SparkKvCacheCapacityEstimate estimate;
 	uint64_t expected_token_layer_bytes;
 	memset(&request,0,sizeof(request));
-	request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
 	SparkK3KvFillCapacityRequest(&request);
 	request.context_token_count = K3_TEST_CONTEXT_TOKENS;
 	request.block_token_count = K3_TEST_BLOCK_TOKENS;
@@ -103,6 +148,8 @@ static void K3TestSlotPoolBudgetsKdaState(void)
 
 int main(void)
 {
+	K3TestFillerPinsTheAbiContract();
+	K3TestEstimatorRejectsStaleContracts();
 	K3TestEstimatorPricesTheLatentArena();
 	K3TestArenaPagesLatentTokens();
 	K3TestSlotPoolBudgetsKdaState();

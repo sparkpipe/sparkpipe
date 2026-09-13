@@ -16,7 +16,7 @@ FAMILIES = {
 	},
 	"k3": {
 		"config": "inference/llms/kimi_k3/config.h",
-		"host": "model-families/k3/include/sparkpipe/spark_k3_model.h",
+		"host": "model-families/k3/include/sparkpipe/spark_k3_llm_defines.h",
 		"module": None,
 		"pairs": [
 			("K3_HIDDEN", "SPARK_K3_MODEL_HIDDEN_DIMENSION"),

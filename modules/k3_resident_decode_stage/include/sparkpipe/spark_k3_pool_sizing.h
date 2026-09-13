@@ -1,8 +1,8 @@
-#ifndef SPARKPIPE_SPARK_K3_POOL_SIZING_H
-#define SPARKPIPE_SPARK_K3_POOL_SIZING_H
+#pragma once
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_k3_llm_defines.h"
 
 typedef struct SparkK3PoolSizing
 {
@@ -16,7 +16,7 @@ typedef struct SparkK3PoolSizing
 
 static inline uint32_t SparkK3LayerIsMla(uint32_t layer_index)
 {
-	return((layer_index % 4u) == 3u || layer_index == 92u);
+	return(SPARK_K3_MODEL_LAYER_IS_MLA(layer_index));
 }
 
 static inline uint32_t SparkK3MlaLayersInSlice(uint32_t first_layer,
@@ -34,10 +34,12 @@ static inline void SparkK3PoolSizingForSlice(uint32_t first_layer,
 {
 	uint32_t mla = SparkK3MlaLayersInSlice(first_layer, layer_count);
 	uint32_t kda = layer_count - mla;
-	const uint64_t kda_state_per_layer = 96ull * 128u * 128u * 4u;
+	const uint64_t kda_state_per_layer = SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER;
 	const uint64_t kda_conv_per_layer =
-		((2ull * 96u * 128u) + (96ull * 128u)) * 4u * 2u;
-	const uint64_t mla_entry_per_layer = (512u + 64u) * 2u;
+		SPARK_K3_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER;
+	const uint64_t mla_entry_per_layer =
+		(uint64_t)SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS *
+		SPARK_K3_KV_BYTES_PER_SCALAR;
 	sizing->first_layer = first_layer;
 	sizing->layer_count = layer_count;
 	sizing->mla_layer_count = mla;
@@ -46,5 +48,3 @@ static inline void SparkK3PoolSizingForSlice(uint32_t first_layer,
 		(uint64_t)kda * (kda_state_per_layer + kda_conv_per_layer);
 	sizing->mla_bytes_per_token = (uint64_t)mla * mla_entry_per_layer;
 }
-
-#endif

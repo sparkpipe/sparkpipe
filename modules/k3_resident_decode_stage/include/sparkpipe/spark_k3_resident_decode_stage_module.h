@@ -1,9 +1,9 @@
-#ifndef SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_MODULE_H
-#define SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_MODULE_H
+#pragma once
 
 #include <stdint.h>
 
 #include "sparkpipe/spark_k3_bind.h"
+#include "sparkpipe/spark_k3_llm_defines.h"
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
 #include "sparkpipe/spark_status.h"
@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_K3_MODULE_MAX_BOUND_LAYERS 93u
+#define SPARK_K3_MODULE_MAX_BOUND_LAYERS SPARK_K3_MODEL_LAYER_COUNT
 #define SPARK_K3_MODULE_DERIVE_SLICE UINT32_MAX
 
 typedef struct SparkK3ModuleState
@@ -32,6 +32,4 @@ void SparkK3ModuleDestroy(SparkK3ModuleState *state);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif
