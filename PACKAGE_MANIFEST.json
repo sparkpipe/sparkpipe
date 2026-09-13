@@ -1,5 +1,5 @@
 {
-  "file_count": 2171,
+  "file_count": 2173,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -785,6 +785,16 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/wave-b1-stagepack-rebuild-2026-09-12.md",
       "sha256": "dfb64f00506f1665c65b34f57fddd1220153a3b5e1b66b5508f4d03a622efa91",
       "size_bytes": 11539
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-seam2-seams-2026-09-13.md",
+      "sha256": "4c21b1fb610011e7e5e5c27bfbfd927f46b056dbe7f75a25ae3b7b52e5ef5a41",
+      "size_bytes": 31822
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-seam2-seams-2026-09-13.seams.json",
+      "sha256": "780fc3586148f47dca94b4ddaa61f6b3af5aab68df9a46b91b6b42d010c8531a",
+      "size_bytes": 19897
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/tickets/nvfp4-flash-module-port.md",
@@ -10860,5 +10870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35277369
+  "total_bytes": 35329088
 }
