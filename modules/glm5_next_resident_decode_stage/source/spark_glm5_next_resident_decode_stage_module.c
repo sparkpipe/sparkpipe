@@ -3073,13 +3073,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
 		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 		{
-			if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
-			{
-				SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
-				return;
-			}
 			if ( chain->wave.expert_lease_all != 0u )
 			{
+				if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
+				{
+					SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+					return;
+				}
 				if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
 				{
 					SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -3088,7 +3088,16 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				SparkGlm5NextTpChainReduceMlp(chain);
 				return;
 			}
-			launch_status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyWork,chain);
+			{
+				const uint32_t *cover_saved = chain->wave.expert_cover;
+				void *miss_saved = chain->wave.expert_miss;
+				chain->wave.expert_cover = 0;
+				chain->wave.expert_miss = 0;
+				launch_status = SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 ?
+				    SPARK_STATUS_INTERNAL_ERROR : SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm5NextLazyWork,chain);
+				chain->wave.expert_cover = cover_saved;
+				chain->wave.expert_miss = miss_saved;
+			}
 			if ( launch_status != SPARK_STATUS_OK )
 				SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
