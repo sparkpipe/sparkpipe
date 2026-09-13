@@ -680,14 +680,37 @@ void SparkWeightdMeshDoorbellLoop(void)
                     uint32_t posted_failed = 0u;
                     uint64_t last_addr = 0ull;
                     uint32_t last_rkey = 0u;
-                    uint32_t resync = seq -
-                        weightd_mesh.doorbell_posted[index] > 1ull;
-                    if ( resync != 0u )
+                    uint32_t resync_mask = 0u;
+                    {
+                        uint64_t key_lo = (seq & ~0xffffull) + 1ull;
+                        uint64_t first_missed =
+                            weightd_mesh.doorbell_posted[index] + 1ull;
+                        uint32_t missed_count;
+                        uint64_t missed;
+                        if ( first_missed < key_lo )
+                            first_missed = key_lo;
+                        if ( seq > first_missed )
+                        {
+                            missed_count = (uint32_t)(seq - first_missed);
+                            if ( missed_count >
+                                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK )
+                                first_missed = seq -
+                                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+                            for ( missed = first_missed; missed < seq;
+                                missed++ )
+                                resync_mask |=
+                                    (uint32_t)1u << (uint32_t)(missed &
+                                        (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+                        }
+                    }
+                    if ( resync_mask != 0u )
                     {
                         uint32_t ring;
                         for (ring = 0u; ring < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
                             ring++)
                         {
+                            if ( (resync_mask & (1u << ring)) == 0u )
+                                continue;
                             uint64_t rank_slots = slot -
                                 (slot % (uint64_t)
                                     SPARK_WEIGHTD_MESH_SLOTS_PER_RANK);
