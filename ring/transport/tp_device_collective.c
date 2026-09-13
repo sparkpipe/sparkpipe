@@ -445,6 +445,15 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
     }
     ordinal = submission->ordinal;
     slot_bytes = implementation->slot_bytes;
+    if ( implementation->maxloc_probe_done < 3u )
+    {
+        implementation->maxloc_probe_done++;
+        fprintf(stderr,
+            "OPPATH rank=%u kind=%u armed=%u seq=%llu\n",
+            implementation->tp_rank,(uint32_t)operation_kind,
+            implementation->capture_armed,
+            (unsigned long long)implementation->round_seq);
+    }
     if ( implementation->capture_armed != 0u )
     {
         band_index = (uint32_t)(implementation->band_base /
