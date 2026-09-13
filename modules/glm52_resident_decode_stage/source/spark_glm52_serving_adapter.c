@@ -15,20 +15,20 @@
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
-#ifndef GLM52_EXPERT_WEIGHT_CODEC
-#error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
+#ifndef GLM_EXPERT_WEIGHT_CODEC
+#error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
 #endif
-#ifndef GLM52_EXPERT_CODEC_NAME
-#error "GLM52_EXPERT_CODEC_NAME must name the exact package expert codec"
+#ifndef GLM_EXPERT_CODEC_NAME
+#error "GLM_EXPERT_CODEC_NAME must name the exact package expert codec"
 #endif
-#ifndef GLM52_MODEL_REVISION
-#error "GLM52_MODEL_REVISION must name the exact source snapshot"
+#ifndef GLM_MODEL_REVISION
+#error "GLM_MODEL_REVISION must name the exact source snapshot"
 #endif
-#ifndef GLM52_CONTRACT_SHA256
-#error "GLM52_CONTRACT_SHA256 must identify the exact package contract"
+#ifndef GLM_CONTRACT_SHA256
+#error "GLM_CONTRACT_SHA256 must identify the exact package contract"
 #endif
-#ifndef GLM52_MODEL_DESCRIPTION_SHA256
-#error "GLM52_MODEL_DESCRIPTION_SHA256 must identify the exact model description"
+#ifndef GLM_MODEL_DESCRIPTION_SHA256
+#error "GLM_MODEL_DESCRIPTION_SHA256 must identify the exact model description"
 #endif
 
 #define SPARK_GLM52_SERVING_FLAT_RANKS_ENV "SPARK_GLM52_SERVING_FLAT_RANKS"
@@ -38,7 +38,7 @@
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
 #define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
-#if GLM52_EXPERT_WEIGHT_CODEC == 1
+#if GLM_EXPERT_WEIGHT_CODEC == 1
 #define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
 	"zai.glm-5.3-full.resident-decode-stage-firmware"
 #else
@@ -48,7 +48,7 @@
 #define SPARK_GLM52_SERVING_STAGE_NAME "glm52_resident_decode_stage"
 #define SPARK_GLM52_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_GLM52_SERVING_TARGET \
-	"cuda.sm121.glm52.resident_decode_stage.bf16.expert_" GLM52_EXPERT_CODEC_NAME
+	"cuda.sm121.glm52.resident_decode_stage.bf16.expert_" GLM_EXPERT_CODEC_NAME
 #define SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS \
 	(SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED | \
@@ -152,9 +152,9 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
 		0,
 		SPARK_GLM52_SERVING_MODEL_ID,
-		GLM52_MODEL_REVISION,
+		GLM_MODEL_REVISION,
 		SPARK_GLM52_SERVING_PROGRAM_NAME,
-		GLM52_CONTRACT_SHA256),
+		GLM_CONTRACT_SHA256),
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
@@ -164,7 +164,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 	.boundary_element_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT,
 	.boundary_element_bytes = SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = GLM52_EXPERT_WEIGHT_CODEC,
+	.expert_weight_codec = GLM_EXPERT_WEIGHT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
@@ -204,7 +204,7 @@ static void SparkGlm52ServingDescriptorConfigure(void)
 		return;
 	}
 	(void)snprintf(SparkGlm52ServingAdapterId,sizeof(SparkGlm52ServingAdapterId),
-		"spark.glm52.serving-adapter.%s.expert_" GLM52_EXPERT_CODEC_NAME ".v1",
+		"spark.glm52.serving-adapter.%s.expert_" GLM_EXPERT_CODEC_NAME ".v1",
 		flat_ranks == (uint32_t)SPARK_GLM52_SERVING_FLAT_RANKS_TP16 ? "tp16" : "tp8");
 	SparkGlm52ServingDescriptor = SparkGlm52ServingDescriptorTemplate;
 	SparkGlm52ServingDescriptor.adapter_id = SparkGlm52ServingAdapterId;
@@ -286,10 +286,10 @@ static SparkStatus SparkGlm52ServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM52_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"model_revision") : -1;
-	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_MODEL_REVISION)) )
+	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"expert_weight_codec") : -1;
-	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM52_EXPERT_CODEC_NAME)) )
+	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,GLM_EXPERT_CODEC_NAME)) )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
@@ -554,10 +554,10 @@ static SparkStatus SparkGlm52ServingLoadDriver(
 	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
 	request.contract.driver_model_id = SPARK_GLM52_SERVING_DRIVER_MODEL_ID;
-	request.contract.driver_model_revision = GLM52_MODEL_REVISION;
+	request.contract.driver_model_revision = GLM_MODEL_REVISION;
 	request.contract.driver_stage_name = SPARK_GLM52_SERVING_STAGE_NAME;
 	request.contract.driver_target = SPARK_GLM52_SERVING_TARGET;
-	request.contract.model_description_sha256 = GLM52_MODEL_DESCRIPTION_SHA256;
+	request.contract.model_description_sha256 = GLM_MODEL_DESCRIPTION_SHA256;
 	request.node_context = &state->node_context;
 	request.completion_context = state;
 	request.completion_function = SparkGlm52ServingOrphanDriverCompletion;
@@ -632,7 +632,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.stage_index = 0u;
 		state->node_context.first_layer_index = 0u;
 		state->node_context.layer_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
-		state->node_context.expert_weight_codec = GLM52_EXPERT_WEIGHT_CODEC;
+		state->node_context.expert_weight_codec = GLM_EXPERT_WEIGHT_CODEC;
 		state->node_context.resident_sequence_capacity = state->resident_sequence_capacity;
 		state->node_context.pipeline_slot_count = state->pipeline_slot_count;
 		state->node_context.max_sequence_positions = max_sequence_positions;
@@ -641,7 +641,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.tp_degree = tp_degree;
 		state->node_context.tp_rank = tp_rank;
 		state->node_context.stage_pack_path = state->stage_pack_path;
-		state->node_context.model_revision = GLM52_MODEL_REVISION;
+		state->node_context.model_revision = GLM_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;
 		state->node_context.tp_collective_identifier = state->tp_collective_identifier;
 		state->node_context.tp_connect_timeout_milli = state->tp_connect_timeout_milli;

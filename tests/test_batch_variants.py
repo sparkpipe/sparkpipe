@@ -36,6 +36,9 @@ RULES_MAKEFILE = os.path.join(
     ROOT, "modules/resident_decode_stage_rules.mk")
 GLM52_MODULE_MAKEFILE = os.path.join(
     ROOT, "modules/glm52_resident_decode_stage/Makefile")
+GLM_WRAPPER_MAKEFILE = os.path.join(ROOT, "common/glm_resident_stage_wrapper.mk")
+GLM_COMMON_TUNING_HEADER = os.path.join(
+    ROOT, "common/common_glm_cuda_tree", "spark_glm_batch_tuning.h")
 DSV4_MODULE_MAKEFILE = os.path.join(
     ROOT, "modules/dsv4_resident_decode_stage/Makefile")
 GLM52_TUNING_HEADER = os.path.join(
@@ -138,9 +141,11 @@ def check_rules_makefile():
     return 1
 
 
-def check_family_makefile(path, family):
+def check_family_makefile(path, family, extra_paths=()):
     """The family's opt-in: one bucket list, identifier prefix/suffix once."""
     text = open(path).read()
+    for extra_path in extra_paths:
+        text += open(extra_path).read()
     rel = os.path.relpath(path, ROOT)
     upper = family.upper()
 
@@ -168,13 +173,15 @@ def check_family_makefile(path, family):
     return 1
 
 
-def check_tuning_header(path, family, id_prefix, id_suffix):
+def check_tuning_header(path, family, id_prefix, id_suffix, extra_paths=()):
     """The family's per-bucket truth, spelled once."""
     rel = os.path.relpath(path, ROOT)
     if not os.path.isfile(path):
         report("missing header", rel)
         return
     text = open(path).read()
+    for extra_path in extra_paths:
+        text += open(extra_path).read()
     upper = family.upper()
 
     if family == "dsv4":
@@ -335,8 +342,8 @@ int main(void)
            EXPECTED_COMPILED_BUCKET);
     assert(SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ==
            EXPECTED_SEQUENCE_CEILING);
-    check_ceiling(SparkGlm52BatchVariantBucketCeiling,
-                  SparkGlm52BatchVariantModuleId,
+    check_ceiling(SparkGlmBatchVariantBucketCeiling,
+                  SparkGlmBatchVariantModuleId,
                   "GLM52_PREFIX", "GLM52_SUFFIX");
     check_ceiling(SparkK3BatchVariantBucketCeiling,
                   SparkK3BatchVariantModuleId,
@@ -391,7 +398,7 @@ def check_selection_contract():
     ]
     # The glm52 variant module ID names the expert codec; the probe compiles
     # the mxfp4 spelling, the one the mxfp4 model description publishes.
-    codec_flag = '-DGLM52_EXPERT_CODEC_NAME="mxfp4"'
+    codec_flag = '-DGLM_EXPERT_CODEC_NAME="mxfp4"'
     with tempfile.TemporaryDirectory() as scratch:
         def _scratch(name):
             base = os.path.realpath(scratch)
@@ -497,10 +504,12 @@ int main(void)
 
 def main():
     check_rules_makefile()
-    check_family_makefile(GLM52_MODULE_MAKEFILE, "glm52")
+    check_family_makefile(GLM52_MODULE_MAKEFILE, "glm52",
+                          extra_paths=(GLM_WRAPPER_MAKEFILE,))
     check_family_makefile(DSV4_MODULE_MAKEFILE, "dsv4")
     check_tuning_header(GLM52_TUNING_HEADER, "glm52",
-                        GLM52_ID_PREFIX, GLM52_ID_SUFFIX)
+                        GLM52_ID_PREFIX, GLM52_ID_SUFFIX,
+                        extra_paths=(GLM_COMMON_TUNING_HEADER,))
     check_tuning_header(K3_TUNING_HEADER, "k3", K3_ID_PREFIX, K3_ID_SUFFIX)
     check_tuning_header(DSV4_TUNING_HEADER, "dsv4",
                         DSV4_ID_PREFIX, DSV4_ID_SUFFIX)

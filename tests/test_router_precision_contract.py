@@ -12,7 +12,7 @@ def main():
     launch = (ROOT / "runtime/gemm.cuh").read_text()
     models = {
         "glm52": (
-            "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+            "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
         ),
         "kimi_k3": "inference/llms/kimi_k3/layer.cuh",
         "mimo_2_5": "inference/llms/mimo_2_5/layer.cuh",

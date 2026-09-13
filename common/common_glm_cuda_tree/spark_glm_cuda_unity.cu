@@ -1,6 +1,6 @@
 
-#ifndef GLM52_EXPERT_WEIGHT_CODEC
-#error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
+#ifndef GLM_EXPERT_WEIGHT_CODEC
+#error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
 #endif
 
 #include "runtime/gemm.cuh"
@@ -14,39 +14,39 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/speculate.cuh"
 #include "inference/kernels/topk.cuh"
-#include "modules/glm52_resident_decode_stage/source/cuda/api.h"
-#include "modules/glm52_resident_decode_stage/source/cuda/config.h"
-#include "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+#include "common/common_glm_cuda_tree/spark_glm_cuda_api.h"
+#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
+#include "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
 
-#define GLM52_UNITY_TILE_N 128u
-#define GLM52_UNITY_TILE_K 64u
-#define GLM52_UNITY_STAGES 2u
-#define GLM52_UNITY_WARPS 8u
+#define GLM_UNITY_TILE_N SPARK_LLM_TILE_N
+#define GLM_UNITY_TILE_K SPARK_LLM_TILE_K
+#define GLM_UNITY_STAGES SPARK_LLM_TILE_STAGES
+#define GLM_UNITY_WARPS SPARK_LLM_TILE_WARPS
 
-using Glm52ExpertWeightFormat =
-    typename LmWeightCodec<GLM52_EXPERT_WEIGHT_CODEC>::Format;
+using GlmExpertWeightFormat =
+    typename LmWeightCodec<GLM_EXPERT_WEIGHT_CODEC>::Format;
 
 static_assert(
-    Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
-    "config.h and the GLM 5.2 KV geometry disagree");
+    GlmKv::kSlotBytes == GLM_KV_SLOT_BYTES,
+    "spark_glm_cuda_config.h and the GLM KV geometry disagree");
 static_assert(
-    GLM52_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
-    "GLM 5.2 BF16 tile depth must contain complete MMA steps");
-static_assert(GLM52_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
-    "GLM 5.2 routed experts require a package codec");
+    GLM_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
+    "GLM BF16 tile depth must contain complete MMA steps");
+static_assert(GLM_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
+    "GLM routed experts require a package codec");
 static_assert(
-    Glm52ExpertWeightFormat::kMmaK == LmBf16Format::kMmaK,
-    "GLM 5.2 expert codec must decode to the BF16 MMA geometry");
+    GlmExpertWeightFormat::kMmaK == LmBf16Format::kMmaK,
+    "GLM expert codec must decode to the BF16 MMA geometry");
 static_assert(
-    LmTileKIsSwizzleable(GLM52_UNITY_TILE_K, LmBf16Format::kStoredBits),
-    "GLM 5.2 BF16 activation tile must be TMA-swizzleable");
+    LmTileKIsSwizzleable(GLM_UNITY_TILE_K, LmBf16Format::kStoredBits),
+    "GLM BF16 activation tile must be TMA-swizzleable");
 
-extern "C" uint32_t Glm52ExpertWeightCodec(void)
+extern "C" uint32_t GlmExpertWeightCodec(void)
 {
-    return GLM52_EXPERT_WEIGHT_CODEC;
+    return GLM_EXPERT_WEIGHT_CODEC;
 }
 
-extern "C" int32_t Glm52GemmBf16(
+extern "C" int32_t GlmGemmBf16(
     LmGemmArguments *arguments,
     const void *activation_bf16,
     const void *weight_bf16,
@@ -61,16 +61,16 @@ extern "C" int32_t Glm52GemmBf16(
 {
     return LmGemmLaunch<
         LmBf16Format,
-        GLM52_UNITY_TILE_N,
-        GLM52_UNITY_TILE_K,
-        GLM52_UNITY_STAGES,
-        GLM52_UNITY_WARPS>(
+        GLM_UNITY_TILE_N,
+        GLM_UNITY_TILE_K,
+        GLM_UNITY_STAGES,
+        GLM_UNITY_WARPS>(
             arguments,
             activation_bf16,
             weight_bf16,
             packed_rows,
             tokens,
-            grouped ? GLM52_TOP_K : 1u,
+            grouped ? GLM_TOP_K : 1u,
             group_count,
             input_dimension,
             output_dimension,
@@ -79,7 +79,7 @@ extern "C" int32_t Glm52GemmBf16(
             (cudaStream_t)stream_handle);
 }
 
-extern "C" int32_t Glm52GemmExpertWeightBf16Activation(
+extern "C" int32_t GlmGemmExpertWeightBf16Activation(
     LmGemmArguments *arguments,
     const void *activation_bf16,
     const void *weight_payload,
@@ -97,16 +97,16 @@ extern "C" int32_t Glm52GemmExpertWeightBf16Activation(
         return LM_LAUNCH_ERR_SHAPE;
     }
     return LmGemmWeightOnlyLaunch<
-        Glm52ExpertWeightFormat,
-        GLM52_UNITY_TILE_N,
-        GLM52_UNITY_STAGES,
-        GLM52_UNITY_WARPS>(
+        GlmExpertWeightFormat,
+        GLM_UNITY_TILE_N,
+        GLM_UNITY_STAGES,
+        GLM_UNITY_WARPS>(
             arguments,
             activation_bf16,
             weight_payload,
             packed_rows,
             tokens,
-            GLM52_TOP_K,
+            GLM_TOP_K,
             group_count,
             input_dimension,
             output_dimension,
@@ -115,15 +115,15 @@ extern "C" int32_t Glm52GemmExpertWeightBf16Activation(
             (cudaStream_t)stream_handle);
 }
 
-extern "C" int32_t Glm52LayerAttentionBf16(
-    const Glm52LayerBuffers *buffers,
+extern "C" int32_t GlmLayerAttentionBf16(
+    const GlmLayerBuffers *buffers,
     uint32_t rows,
     uint32_t context,
     uint32_t layer_in_group,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    return Glm52LayerAttention(
+    return GlmLayerAttention(
         buffers,
         rows,
         context,
@@ -132,27 +132,27 @@ extern "C" int32_t Glm52LayerAttentionBf16(
         stream);
 }
 
-extern "C" int32_t Glm52LayerDenseMlpBf16(
-    const Glm52LayerBuffers *buffers,
+extern "C" int32_t GlmLayerDenseMlpBf16(
+    const GlmLayerBuffers *buffers,
     uint32_t rows,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    return Glm52LayerDenseMlp(
+    return GlmLayerDenseMlp(
         buffers,
         rows,
         multiprocessors,
         stream);
 }
 
-extern "C" int32_t Glm52LayerMoeExpertWeightBf16Activation(
-    const Glm52LayerBuffers *buffers,
+extern "C" int32_t GlmLayerMoeExpertWeightBf16Activation(
+    const GlmLayerBuffers *buffers,
     uint32_t rows,
     uint32_t packed_rows,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    return Glm52LayerMoe<GLM52_EXPERT_WEIGHT_CODEC>(
+    return GlmLayerMoe<GLM_EXPERT_WEIGHT_CODEC>(
         buffers,
         rows,
         packed_rows,
@@ -160,14 +160,14 @@ extern "C" int32_t Glm52LayerMoeExpertWeightBf16Activation(
         stream);
 }
 
-extern "C" int32_t Glm52HeadFullVocab(
-    const Glm52LayerBuffers *buffers,
+extern "C" int32_t GlmHeadFullVocab(
+    const GlmLayerBuffers *buffers,
     const void *norm_weight_bf16,
     const void *head_weight_bf16,
     uint32_t rows,
     cudaStream_t stream)
 {
-    return Glm52Head(
+    return GlmHead(
         buffers,
         norm_weight_bf16,
         head_weight_bf16,
@@ -177,13 +177,13 @@ extern "C" int32_t Glm52HeadFullVocab(
         stream);
 }
 
-extern "C" cudaError_t SparkGlm52LaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension)
+extern "C" cudaError_t SparkGlmLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension)
 {
     return SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,certified_payload,certified_scale_f32,certified_norm_f32,vocabulary,hidden_dimension);
 }
 
-extern "C" int32_t Glm52HeadRestricted(
-    const Glm52LayerBuffers *buffers,
+extern "C" int32_t GlmHeadRestricted(
+    const GlmLayerBuffers *buffers,
     const void *norm_weight_bf16,
     const void *head_weight_bf16,
     const uint32_t *token_ids,
@@ -192,11 +192,11 @@ extern "C" int32_t Glm52HeadRestricted(
     cudaStream_t stream)
 {
     if (token_ids == 0 || token_count == 0u ||
-        token_count > GLM52_RESTRICTED_VOCAB)
+        token_count > GLM_RESTRICTED_VOCAB)
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
-    return Glm52Head(
+    return GlmHead(
         buffers,
         norm_weight_bf16,
         head_weight_bf16,
@@ -206,9 +206,9 @@ extern "C" int32_t Glm52HeadRestricted(
         stream);
 }
 
-extern "C" int32_t Glm52LayerAttentionBf16Graphed(
+extern "C" int32_t GlmLayerAttentionBf16Graphed(
     LmGraphCache *graphs,
-    const Glm52LayerBuffers *buffers,
+    const GlmLayerBuffers *buffers,
     uint32_t rows,
     uint32_t context,
     uint32_t layer_in_group,
@@ -220,7 +220,7 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
 
     if (graphs == 0)
     {
-        return Glm52LayerAttention(
+        return GlmLayerAttention(
             buffers,
             rows,
             context,
@@ -232,15 +232,15 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
     key.rows = rows;
     key.layer_kind = 0u;
     key.format = 0u;
-    key.sparse = context > GLM52_DSA_SELECTED ? 1u : 0u;
-    key.context_bucket = LmGraphContextBucket(context, GLM52_DSA_SELECTED);
+    key.sparse = context > GLM_DSA_SELECTED ? 1u : 0u;
+    key.context_bucket = LmGraphContextBucket(context, GLM_DSA_SELECTED);
     if (LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK)
     {
         return LM_LAUNCH_OK;
     }
     if (LmGraphBeginCapture(stream) != LM_GRAPH_OK)
     {
-        return Glm52LayerAttention(
+        return GlmLayerAttention(
             buffers,
             rows,
             context,
@@ -248,7 +248,7 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
             multiprocessors,
             stream);
     }
-    status = Glm52LayerAttention(
+    status = GlmLayerAttention(
         buffers,
         rows,
         context,
@@ -262,7 +262,7 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
     }
     if ( LmGraphEndCapture(graphs, &key, stream) != LM_GRAPH_OK )
     {
-        return Glm52LayerAttention(
+        return GlmLayerAttention(
             buffers,
             rows,
             context,

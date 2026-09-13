@@ -1,0 +1,37 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "sparkpipe/llm_defines.h"
+
+#ifndef SPARK_BATCH_BUCKET
+#define SPARK_BATCH_BUCKET 1024u
+#endif
+
+#if SPARK_BATCH_BUCKET != 1u && SPARK_BATCH_BUCKET != 2u && \
+	SPARK_BATCH_BUCKET != 4u && SPARK_BATCH_BUCKET != 8u && \
+	SPARK_BATCH_BUCKET != 16u && SPARK_BATCH_BUCKET != 32u && \
+	SPARK_BATCH_BUCKET != 64u && SPARK_BATCH_BUCKET != 128u && \
+	SPARK_BATCH_BUCKET != 256u && SPARK_BATCH_BUCKET != 512u && \
+	SPARK_BATCH_BUCKET != 1024u
+#error SPARK_BATCH_BUCKET must name a built variant bucket: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+#endif
+
+#ifndef GLM_EXPERT_CODEC_NAME
+#error GLM_EXPERT_CODEC_NAME is required: the variant module identifier names the expert codec
+#endif
+
+#define SPARK_GLM_BATCH_VARIANT_MODULE_ID_PREFIX \
+	"spark." SPARK_LLM_FAMILY_NAME ".resident_decode_stage.bf16.expert_" \
+	GLM_EXPERT_CODEC_NAME SPARK_LLM_BATCH_MODULE_ID_SHAPE
+#define SPARK_GLM_BATCH_VARIANT_MODULE_ID_SUFFIX SPARK_LLM_BATCH_MODULE_ID_SUFFIX
+
+#define SPARK_BATCH_VARIANT_MODULE_ID_PREFIX \
+	SPARK_GLM_BATCH_VARIANT_MODULE_ID_PREFIX
+#define SPARK_BATCH_VARIANT_MODULE_ID_SUFFIX \
+	SPARK_GLM_BATCH_VARIANT_MODULE_ID_SUFFIX
+#define SPARK_BATCH_VARIANT_TOP_K SPARK_LLM_MOE_TOP_K
+#define SPARK_BATCH_VARIANT_EXPERT_COUNT SPARK_LLM_MOE_EXPERT_COUNT
+#define SPARK_BATCH_VARIANT_FN(name) SparkGlmBatchVariant##name
+
+#include "sparkpipe/spark_batch_variant_tuning_common.h"

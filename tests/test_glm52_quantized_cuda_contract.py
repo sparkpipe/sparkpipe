@@ -20,9 +20,9 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 
 def main() -> int:
-    cuda_source = ROOT / "modules/glm52_resident_decode_stage/source/cuda"
-    layer = (cuda_source / "layer.cuh").read_text()
-    unity = (cuda_source / "unity.cu").read_text()
+    cuda_source = ROOT / "common/common_glm_cuda_tree"
+    layer = (cuda_source / "spark_glm_cuda_layer.cuh").read_text()
+    unity = (cuda_source / "spark_glm_cuda_unity.cu").read_text()
     codec = (ROOT / "inference/kernels/weight_codec.cuh").read_text()
     packer = (ROOT / "tools/glm52_stagepack.py").read_text()
     targets = json.loads(
@@ -45,13 +45,13 @@ def main() -> int:
     require(layer, "LmGemmLaunch<\n        LmBf16Format,",
             "GLM BF16 router and nonexpert path")
 
-    require(unity, "Glm52ExpertWeightCodec(void)",
+    require(unity, "GlmExpertWeightCodec(void)",
             "GLM module codec identity")
-    require(unity, "Glm52GemmExpertWeightBf16Activation(",
+    require(unity, "GlmGemmExpertWeightBf16Activation(",
             "GLM generic expert GEMM export")
-    require(unity, "Glm52LayerMoeExpertWeightBf16Activation(",
+    require(unity, "GlmLayerMoeExpertWeightBf16Activation(",
             "GLM generic expert layer export")
-    require(unity, "Glm52LayerMoe<GLM52_EXPERT_WEIGHT_CODEC>(",
+    require(unity, "GlmLayerMoe<GLM_EXPERT_WEIGHT_CODEC>(",
             "GLM AOT layer specialization")
     for stale in ("GemmFp8Expert", "LayerMoeFp8", "LayerMoeInt8"):
         forbid(unity, stale, "GLM public CUDA surface")

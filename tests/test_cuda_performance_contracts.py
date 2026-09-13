@@ -215,10 +215,10 @@ def validate_quantizer_writes() -> None:
 
 def validate_model_precision_contracts() -> None:
     glm = read(
-        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
     )
     glm_unity = read(
-        "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
+        "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
     )
     glm_codec = read("inference/kernels/weight_codec.cuh")
     glm_module = read(
@@ -254,12 +254,12 @@ def validate_model_precision_contracts() -> None:
     )
     require(
         glm_unity,
-        '#error "GLM52_EXPERT_WEIGHT_CODEC must name the exact package expert codec"',
+        '#error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"',
         "GLM explicit codec build gate",
     )
     require(
         glm_module,
-        "context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC",
+        "context->expert_weight_codec != GLM_EXPERT_WEIGHT_CODEC",
         "GLM package/module codec equality",
     )
     for codec in (
@@ -337,7 +337,7 @@ def validate_grouped_moe_contract() -> None:
     gemm = read("inference/kernels/gemm.cuh")
     runtime = read("runtime/gemm.cuh")
     glm = read(
-        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
     )
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
