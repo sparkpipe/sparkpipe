@@ -259,3 +259,29 @@ for seamless production multi-model.
 - Deployed lane count is two; the eight-lane geometry is blocked on the
   engine-side cudaHostRegister invalid-argument at the 4 GB mapping (lane
   handoff Addendum 54).
+
+## Topology-aware lane sub-allocation
+
+- LANE_ACQUIRE today hands one whole lane (two mesh bands, sixteen rank
+  slots) to one engine. Extend the acquire to carry topology and rank
+  range: a residentd states TP degree plus the contiguous rank range it
+  occupies, and the allocator packs sub-ranges into bands (4xTP4, 2xTP8,
+  TP8+2xTP4 per lane), constraining TP8 ranges to start at rank 0 or 8.
+- Doorbell entries, mesh slots, and per-round ring positions are already
+  rank-indexed within a band, so sub-range packing is an allocator change
+  plus collective band/rank wiring; four TP4 drivers in one band must not
+  share sequence spaces (derive chain keys per sub-range owner).
+- Lane count verification: two lanes (1 GB page) proven; four lanes is one
+  define change and untested; the eight-lane attempt fails engine-side
+  cudaHostRegister with invalid argument on the 4 GB mapping while the
+  same registration shape succeeds standalone — isolate the in-engine
+  condition before assuming a size ceiling.
+
+## MPS evaluation on GB10
+
+- The CUDA MPS control and server binaries are present on the sparks.
+  Run a live evaluation: start the control daemon, run two CUDA
+  processes concurrently, confirm overlapping kernel execution and
+  per-process contexts. If GB10 supports MPS, cross-driver GPU
+  concurrency replaces driver time-slicing and the output-chunking
+  requirement shrinks to memory-bandwidth fairness.
