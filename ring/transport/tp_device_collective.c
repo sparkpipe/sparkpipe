@@ -14,6 +14,8 @@
 #define SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST 2
 extern int cudaGetLastError(void);
 extern const char *cudaGetErrorString(int error);
+extern int cudaMemsetAsync(void *destination,int value,size_t bytes,
+    void *stream);
 extern int cudaMemcpyAsync(void *destination,const void *source,
     size_t bytes,int kind,void *stream);
 extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
@@ -620,12 +622,14 @@ combine:
             (unsigned long long)staging->seq,
             (unsigned long long)staging->bytes,
             (unsigned long long)staging->slot);
-    for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
+    if ( cudaMemsetAsync(submission->full_device,0,(size_t)bytes,
+             submission->cuda_stream) != 0 )
+        return SPARK_STATUS_IO_ERROR;
+    for ( peer = 0u; peer < implementation->tp_degree; peer++ )
     {
         uint8_t *source = implementation->mesh_buffer +
             implementation->band_base +
-            ((uint64_t)(peer < implementation->tp_rank ?
-                peer : peer + 1u) *
+            ((uint64_t)peer *
                 SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
                 (round_seq &
                     (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *

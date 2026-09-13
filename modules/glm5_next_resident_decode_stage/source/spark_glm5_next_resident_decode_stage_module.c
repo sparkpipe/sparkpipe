@@ -3093,21 +3093,19 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			fprintf(stderr,"GRAPH-FALLBACK-TO-CHAIN status=%d\n",
 				(int32_t)graph_status);
 		}
-		if ( chain->sweep_submitted == 0u )
+		SparkGlm5NextBuildWave(chain);
+		if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
+		     chain->slot->route_recorded != 0u &&
+		     chain->sweep_submitted == 0u )
 		{
-			SparkGlm5NextBuildWave(chain);
-			if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
-			     chain->slot->route_recorded != 0u )
-			{
-				SparkStatus submit_status;
-				chain->sweep_submitted = 1u;
-				submit_status = SparkWeightdWorkerSubmit(
-					state->lazy_pack->worker,
-					SparkGlm5NextSweepWork,chain);
-				if ( submit_status != SPARK_STATUS_OK )
-					SparkGlm5NextTpChainFail(chain,submit_status);
-				return;
-			}
+			SparkStatus submit_status;
+			chain->sweep_submitted = 1u;
+			submit_status = SparkWeightdWorkerSubmit(
+				state->lazy_pack->worker,
+				SparkGlm5NextSweepWork,chain);
+			if ( submit_status != SPARK_STATUS_OK )
+				SparkGlm5NextTpChainFail(chain,submit_status);
+			return;
 		}
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
