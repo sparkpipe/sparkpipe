@@ -73,6 +73,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *error_word;
     uint32_t capture_armed;
     uint32_t round_rebased;
+    uint64_t opus_start_ns;
     uint64_t cancel_seen;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
@@ -392,7 +393,11 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkTpDeviceCollectiveRunRound(
+static uint64_t opus_op_count;
+static uint64_t opus_total_ns;
+static uint64_t opus_max_ns;
+
+SparkStatus SparkTpDeviceCollectiveRunRound(
     SparkTpDeviceCollectiveImplementation *implementation,
     SparkTpDeviceCollectiveSubmission *submission,
     uint32_t operation_kind)
@@ -418,6 +423,13 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             implementation->local_hidden_dimension * 2u;
     if ( bytes + 16u > implementation->slot_bytes )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
+    {
+        struct timespec opus_t0 = {0,0};
+        clock_gettime(CLOCK_MONOTONIC,&opus_t0);
+        implementation->opus_start_ns =
+            (uint64_t)opus_t0.tv_sec * UINT64_C(1000000000) +
+            (uint64_t)opus_t0.tv_nsec;
+    }
     if ( SparkTpDeviceCollectiveRegisteredRegion == 0 ||
          (operation_kind ==
                 SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 &&
@@ -728,6 +740,31 @@ combine_done:
          SparkGlm5NextLaunchMeshGuard(submission->cuda_stream,
              implementation->error_word,submission->full_device) != 0 )
         return(SPARK_STATUS_IO_ERROR);
+    {
+        struct timespec opus_t1 = {0,0};
+        uint64_t now_ns,delta;
+        clock_gettime(CLOCK_MONOTONIC,&opus_t1);
+        now_ns = (uint64_t)opus_t1.tv_sec * UINT64_C(1000000000) +
+            (uint64_t)opus_t1.tv_nsec;
+        delta = now_ns - implementation->opus_start_ns;
+        opus_op_count++;
+        opus_total_ns += delta;
+        if ( delta > opus_max_ns )
+            opus_max_ns = delta;
+        if ( (opus_op_count & 63u) == 0u )
+        {
+            fprintf(stderr,
+                "OPUS rank=%u ops=%llu mean_us=%llu max_us=%llu bytes=%llu\n",
+                implementation->tp_rank,
+                (unsigned long long)opus_op_count,
+                (unsigned long long)(opus_total_ns / opus_op_count / 1000u),
+                (unsigned long long)(opus_max_ns / 1000u),
+                (unsigned long long)bytes);
+            opus_total_ns = 0ull;
+            opus_op_count = 0ull;
+            opus_max_ns = 0ull;
+        }
+    }
     if ( implementation->capture_armed == 0u )
         SparkTpDeviceCollectiveQueueCompletion(implementation,submission,
             ordinal,SPARK_STATUS_OK);
