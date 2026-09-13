@@ -103,8 +103,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "a6498de512bce6115528dad5a87414bd989c825df9427607288ee61f37c16ebb",
-      "size_bytes": 12123
+      "sha256": "e224dedb7cc446597d2687e0aeaf8dc97c2371e62794c534199bdd529514d0b7",
+      "size_bytes": 14874
     },
     {
       "path": "UNIFIED.md",
@@ -10835,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35222884
+  "total_bytes": 35225635
 }

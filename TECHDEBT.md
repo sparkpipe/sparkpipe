@@ -212,3 +212,50 @@ retained as a progress diary.
   fabric enhancement under the same API and scheduler.
 - Retain upgrade and rollback receipts so a failed expansion returns to the
   prior ready deployment without mixed topology state.
+
+## Multi-model serving (parallel inference on shared Sparks)
+
+Assessed 2026-09-13 against the lane/mesh/weightd architecture (PRs
+#959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
+weight arenas shared by content identity (same model never loads twice),
+per-connection collectives (two engines of one model get distinct mesh
+pathways), swap-in loads that run daemon-side (a serving model does not
+stop while another loads), and per-engine continuous batching at
+MAXBATCHSIZE=128 with per-request completion. The gaps below are required
+for seamless production multi-model.
+
+- Lane-priority over-subscription policy: eviction is LRU plus epoch with
+  no lane awareness. Required rule: lane X may swap in only by evicting
+  weights whose owning lane is greater than X; when the evictable set
+  belongs to a lane currently executing, wait for its batch boundary, then
+  evict; when nothing greater than X is resident, the acquire errors
+  rather than thrashes.
+- Request queueing behind not-yet-live models: lane exhaustion fails the
+  residentd load closed and requests for that model see connection
+  refused at the router. Required: warm request queue that drains when the
+  model finishes loading (swap starts, requester waits, serving model
+  continues).
+- Load bandwidth fairness: swap-in reads run at full readahead with no
+  QoS; the serving model's page-cache and mesh traffic compete
+  unbounded. Required: a fair-share cap on loader throughput while any
+  lane is serving.
+- Output chunking for GPU fairness: decode chains hold the GPU for whole
+  tokens and cross-model sharing relies on driver time-slicing (no MPS).
+  Required: bounded output quanta analogous to prefill chunks so a lane
+  cannot lock the GPU for many tokens.
+- Pause and resume of output batches: token-boundary resume is structural
+  (sequence positions, prefix cache) but there is no pause/resume API, the
+  NVMe KV tier is disabled (kv_backing_maximum_bytes=0), and active-KV
+  protection is transaction-scoped rather than batch-scoped. Required:
+  resume without recomputation, with boundary-flushed KV protected from
+  eviction until the batch completes.
+- Same-model multi-engine has never been exercised end-to-end: two
+  residentds on one model (shared arena via identity match, distinct
+  lanes per connection) needs a live verification run, including the
+  MTP-debug use case.
+- Fleet tooling is single-model: the agent accepts multiple runtime roots
+  but release sync, health, and measurement lanes are per-root; no
+  multi-model deploy or update has been tested.
+- Deployed lane count is two; the eight-lane geometry is blocked on the
+  engine-side cudaHostRegister invalid-argument at the 4 GB mapping (lane
+  handoff Addendum 54).
