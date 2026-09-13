@@ -144,6 +144,22 @@ def anchor_layers(span: int) -> List[int]:
     return sorted({0, span // 2, span - 1} - {-1})
 
 
+def structural_parity(entries: List[dict], metas: List[dict],
+                      what: str) -> None:
+    """Every pack directory entry must equal the rebuilt plan item at the
+    same position (kind, layer, shape, size) before any content compare."""
+    if len(entries) != len(metas):
+        fail(f"{what}: {len(entries)} pack entries vs {len(metas)} plan items")
+    for index, (entry, meta) in enumerate(zip(entries, metas)):
+        mismatches = [f"{field} pack={entry[field]} plan={meta[field]}"
+                      for field in ("kind", "layer", "rows", "columns",
+                                    "payload_bytes")
+                      if entry[field] != meta[field]]
+        if mismatches:
+            fail(f"{what}: entry {index} directory/plan mismatch: "
+                 + "; ".join(mismatches))
+
+
 def compare_plan(plan_items, entries, pack_path: Path, expected_of,
                  label_of) -> dict:
     compared = 0
@@ -180,18 +196,20 @@ def profile_ling(pack_path: Path, source_dir: Path, tp_degree: int,
     if len(builder.plan) != len(entries):
         fail(f"ling {pack_path.name}: {len(entries)} pack entries vs "
              f"{len(builder.plan)} rebuilt plan items")
+    structural_parity(entries, [dict(kind=item.entry.kind, layer=item.entry.layer,
+                                     rows=item.entry.rows, columns=item.entry.columns,
+                                     payload_bytes=item.entry.payload_bytes)
+                                for item in builder.plan], f"ling {pack_path.name}")
     layers = {item.entry.layer for item in builder.plan
               if item.entry.layer != packer.GLOBAL_LAYER}
     picks = set(anchor_layers(max(layers) + 1))
     wanted = []
-    for item in builder.plan:
+    for position, item in enumerate(builder.plan):
         entry = item.entry
         if (entry.layer == packer.GLOBAL_LAYER
                 or entry.kind in (packer.K_ROUTER, packer.K_ROUTER_CORRECTION)
                 or entry.layer in picks):
-            wanted.append(dict(item=item, entry=entry))
-    wanted = [dict(index=i, item=w["item"], entry=w["entry"])
-              for i, w in enumerate(wanted)]
+            wanted.append(dict(index=position, item=item, entry=entry))
 
     def expected_of(item):
         return item["item"].produce_payload()
@@ -220,18 +238,19 @@ def profile_laguna(pack_path: Path, source_dir: Path, tp_degree: int,
     if len(builder.plan) != len(entries):
         fail(f"laguna {pack_path.name}: {len(entries)} pack entries vs "
              f"{len(builder.plan)} rebuilt plan items")
+    structural_parity(entries, [dict(kind=item.entry.kind, layer=item.entry.layer,
+                                     rows=item.entry.rows, columns=item.entry.columns,
+                                     payload_bytes=item.entry.payload_bytes)
+                                for item in builder.plan], f"laguna {pack_path.name}")
     picks = set(anchor_layers(layer_count))
     wanted = []
-    for item in builder.plan:
+    for position, item in enumerate(builder.plan):
         entry = item.entry
         relative = entry.layer - first_layer
-        global_hit = entry.layer == packer.GLOBAL_LAYER
-        anchor = relative in picks
-        router = entry.kind in (packer.K_ROUTER, packer.K_ROUTER_CORRECTION)
-        if global_hit or router or anchor:
-            wanted.append(dict(item=item, entry=entry))
-    wanted = [dict(index=i, item=w["item"], entry=w["entry"])
-              for i, w in enumerate(wanted)]
+        if (entry.layer == packer.GLOBAL_LAYER
+                or entry.kind in (packer.K_ROUTER, packer.K_ROUTER_CORRECTION)
+                or relative in picks):
+            wanted.append(dict(index=position, item=item, entry=entry))
 
     def expected_of(item):
         return item["item"].produce_payload()
@@ -260,6 +279,10 @@ def profile_muse(pack_path: Path, source_dir: Path, tp_degree: int,
     if len(records) != len(entries):
         fail(f"muse {pack_path.name}: {len(entries)} pack entries vs "
              f"{len(records)} rebuilt plan items")
+    structural_parity(entries, [dict(kind=record.kind, layer=record.layer,
+                                     rows=record.rows, columns=record.columns,
+                                     payload_bytes=record.payload_bytes)
+                                for record in records], f"muse {pack_path.name}")
     source = SafetensorsSource(source_dir)
     layers = {record.layer for record in records
               if record.layer != packer.GLOBAL_LAYER}
@@ -326,6 +349,7 @@ def profile_gemma4(pack_path: Path, source_dir: Path, model: str,
     if file_bytes != meta["file_bytes"]:
         fail(f"gemma4 {pack_path.name}: layout drift, rebuilt file_bytes "
              f"{file_bytes} != pack {meta['file_bytes']}")
+    structural_parity(entries, plan, f"gemma4 {pack_path.name}")
     source = SafetensorsSource(source_dir)
     picks = set(anchor_layers(layer_count))
     wanted = []
