@@ -219,6 +219,8 @@ struct SparkGlm5NextModuleState
 	uint64_t decode_route_leases[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 	uint32_t decode_route_lease_count;
 	uint32_t decode_union_count;
+	uint32_t rs_taken;
+	uint32_t rs_hit;
 	uint32_t decode_cover_words;
 	uint32_t *decode_cover_host;
 	uint32_t *decode_cover_device;
@@ -2598,6 +2600,7 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 	SparkWeightdMap *map;
 	SparkStatus status;
 	uint32_t delta = 0u;
+	uint32_t recorded = 0u;
 	uint32_t chunk;
 	uint32_t index;
 	uint32_t layer;
@@ -2702,6 +2705,8 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 			    UINT32_C(1) << (bit % 32u);
 		}
 	}
+	fprintf(stderr,"RS slot=%u taken=%u hit=%u miss=%u\n",
+	    chain->slot_index,state->rs_taken,state->rs_hit,recorded);
 	if ( delta != 0u )
 	{
 		index = 0u;
