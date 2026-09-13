@@ -1,0 +1,10 @@
+/tmp/nccl16.log
+/tmp/nccl_id.bin
+
+/tmp/nccllib:
+libnccl.so
+libnccl.so.2
+libnccl.so.2.28.9
+libnccl_static.a
+pkgconfig
+/home/spark0/g5_wave_nccl2.log
