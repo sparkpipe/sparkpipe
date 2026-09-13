@@ -5118,8 +5118,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "c60d45defb6a526f18a77d45f143ac3799188b7aae015f683ed14875fb66e550",
-      "size_bytes": 33535
+      "sha256": "84e2f4889ec6c8c30937d7b4cc8b22fba0161726646a0745a8998c2d521d4dd3",
+      "size_bytes": 34759
     },
     {
       "path": "node/weightd_spawn.c",
@@ -10835,5 +10835,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35219052
+  "total_bytes": 35220276
 }
