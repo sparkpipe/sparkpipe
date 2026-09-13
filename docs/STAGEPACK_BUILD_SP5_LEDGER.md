@@ -150,3 +150,12 @@ receipt output_sha256 (mtp stripped, 31 entries dropped, 30518614272 bytes).
   mid-wave. No work lost: both commits (e90b429, aa77753) were already pushed;
   worktree re-cloned from origin/lane/stagepack-build-sp5 at aa77753 and this
   entry recreates the only uncommitted ledger additions.
+- 2026-09-13T08:05Z BUILD rank10 RESTARTED on sparkb as staging (sp5-ling-r10s)
+  after the sparka build was starved by SP-4's in-flight rank10 verification
+  on that node; sparkb had zero busy python. 12 MB/s sustained, COMPLETE
+  08:26Z: sha256 47357715a2d8f2dafe10ac459df9757e1353a866bd0931dae4a1b7ae5587
+  2544 (== sparka's pre-existing sidecar; 10th consecutive determinism
+  match). DELIVERED sparkb->sparka via user rsync after pinning sparka's host
+  key (root ssh is not keyed between nodes; staging chowned to the node user
+  for the hop). PLACE SPARK_OK on sparka 08:31Z; sparka + sparkb caches
+  purged; sparkb staging removed.
