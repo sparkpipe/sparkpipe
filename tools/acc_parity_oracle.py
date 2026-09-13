@@ -394,8 +394,11 @@ def check_receipt(path: Path, result: dict) -> str:
         return "missing"
     receipt = json.loads(receipt_path.read_text())
     digest = result["sha256"]
-    if receipt.get("pack_sha256", receipt.get("sha256")) not in (None, digest):
-        return f"SHA MISMATCH receipt {receipt.get('pack_sha256', receipt.get('sha256'))}"
+    recorded = receipt.get("pack_sha256", receipt.get("sha256"))
+    if recorded is None:
+        return "no-digest-field"
+    if recorded != digest:
+        return f"SHA MISMATCH receipt {recorded}"
     if receipt.get("file_bytes") not in (None, path.stat().st_size):
         return f"BYTES MISMATCH {receipt.get('file_bytes')}"
     return "match"
