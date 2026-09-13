@@ -1797,6 +1797,55 @@ static SparkStatus SparkGlm5NextModuleCombineDirectBf16(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
 }
 
+static SparkStatus SparkGlm5NextModuleCombineF32Seed(
+	void *combine_context,
+	void *destination_f32_device,
+	const void *source_a_bf16_device,
+	const void *source_b_bf16_device,
+	uint32_t element_count,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkGlm5NextLaunchSeedF32((cudaStream_t)cuda_stream,
+	    (float *)destination_f32_device,source_a_bf16_device,
+	    source_b_bf16_device,element_count);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,
+	    "tp_all_reduce_f32_seed"));
+}
+
+static SparkStatus SparkGlm5NextModuleCombineF32Add(
+	void *combine_context,
+	void *destination_f32_device,
+	const void *source_bf16_device,
+	uint32_t element_count,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkGlm5NextLaunchAddF32((cudaStream_t)cuda_stream,
+	    (float *)destination_f32_device,source_bf16_device,
+	    element_count);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,
+	    "tp_all_reduce_f32_add"));
+}
+
+static SparkStatus SparkGlm5NextModuleRoundF32(
+	void *combine_context,
+	void *destination_bf16_device,
+	const void *source_f32_device,
+	uint32_t element_count,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkGlm5NextLaunchRoundF32((cudaStream_t)cuda_stream,
+	    destination_bf16_device,(const float *)source_f32_device,
+	    element_count);
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,
+	    "tp_all_reduce_f32_round"));
+}
+
 static SparkStatus SparkGlm5NextModuleCombineU64Max(
 	void *combine_context,
 	uint64_t *destination_device,
@@ -1903,9 +1952,15 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
+		configuration.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
+		configuration.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
+		configuration.round_f32_function = SparkGlm5NextModuleRoundF32;
 		configuration.combine_u64_max_function = SparkGlm5NextModuleCombineU64Max;
 		configuration.combine_tp4_bf16_function = SparkGlm5NextModuleCombineDirectBf16;
 		configuration.combine_context = state;
+		configuration_hc.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
+		configuration_hc.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
+		configuration_hc.round_f32_function = SparkGlm5NextModuleRoundF32;
 		configuration_hc.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
 		configuration_hc.combine_tp4_bf16_function = SparkGlm5NextModuleCombineDirectBf16;
 		configuration_hc.combine_context = state;

@@ -164,6 +164,77 @@ static __global__ void SparkGlm5NextAccumAddKernel(
 	}
 }
 
+static __global__ void SparkGlm5NextSeedF32Kernel(
+    float *destination_f32,
+    const void *source_a_bf16,
+    const void *source_b_bf16,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 a,b;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		a = SparkGlm5NextLoadBf16Pair(source_a_bf16,pair);
+		b = SparkGlm5NextLoadBf16Pair(source_b_bf16,pair);
+		destination_f32[2u * pair] = a.x + b.x;
+		destination_f32[2u * pair + 1u] = a.y + b.y;
+	}
+}
+
+static __global__ void SparkGlm5NextAddF32Kernel(
+    float *destination_f32,
+    const void *source_bf16,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 b;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		b = SparkGlm5NextLoadBf16Pair(source_bf16,pair);
+		destination_f32[2u * pair] += b.x;
+		destination_f32[2u * pair + 1u] += b.y;
+	}
+}
+
+static __global__ void SparkGlm5NextRoundF32Kernel(
+    void *destination_bf16,
+    const float *source_f32,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 v;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		v.x = source_f32[2u * pair];
+		v.y = source_f32[2u * pair + 1u];
+		SparkGlm5NextStoreBf16Pair(destination_bf16,pair,v.x,v.y);
+	}
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,
+    float *destination,const void *a,const void *b,uint32_t element_count)
+{
+	SparkGlm5NextSeedF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
+	    destination,a,b,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,
+    float *destination,const void *b,uint32_t element_count)
+{
+	SparkGlm5NextAddF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
+	    destination,b,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,
+    void *destination,const float *source,uint32_t element_count)
+{
+	SparkGlm5NextRoundF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
+	    destination,source,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
 static __global__ void SparkGlm5NextAccumU64MaxKernel(
 	uint64_t *destination,
 	const uint64_t *source,
