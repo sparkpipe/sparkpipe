@@ -3216,9 +3216,9 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		}
 		chain->next_layer++;
 		chain->sweep_retries = 0u;
-		if ( chain->next_layer >= 32u && chain->next_layer <= 44u )
+		if ( chain->next_layer >= 3u && chain->next_layer <= 31u )
 		{
-			uint32_t flag = 1u << (chain->next_layer - 32u);
+			uint32_t flag = 1u << chain->next_layer;
 			if ( (state->hbound_probes & flag) == 0u )
 			{
 				uint16_t h[4];

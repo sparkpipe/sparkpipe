@@ -368,10 +368,18 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     if ( epoch == 0ull ||
          epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    implementation->chain_epoch = epoch;
+    if ( epoch != implementation->chain_epoch )
+    {
+        fprintf(stderr,
+            "CKEY-ADOPT rank=%u epoch=%llu had=%llu\n",
+            implementation->tp_rank,
+            (unsigned long long)epoch,
+            (unsigned long long)implementation->chain_epoch);
+        implementation->chain_epoch = epoch;
+        implementation->round_index = 0ull;
+    }
     implementation->chain_key =
         (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
-    implementation->round_index = 0ull;
     return SPARK_STATUS_OK;
 }
 
