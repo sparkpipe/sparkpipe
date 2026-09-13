@@ -3093,19 +3093,21 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			fprintf(stderr,"GRAPH-FALLBACK-TO-CHAIN status=%d\n",
 				(int32_t)graph_status);
 		}
-		SparkGlm5NextBuildWave(chain);
-		if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
-		     chain->slot->route_recorded != 0u &&
-		     chain->sweep_submitted == 0u )
+		if ( chain->sweep_submitted == 0u )
 		{
-			SparkStatus submit_status;
-			chain->sweep_submitted = 1u;
-			submit_status = SparkWeightdWorkerSubmit(
-				state->lazy_pack->worker,
-				SparkGlm5NextSweepWork,chain);
-			if ( submit_status != SPARK_STATUS_OK )
-				SparkGlm5NextTpChainFail(chain,submit_status);
-			return;
+			SparkGlm5NextBuildWave(chain);
+			if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
+			     chain->slot->route_recorded != 0u )
+			{
+				SparkStatus submit_status;
+				chain->sweep_submitted = 1u;
+				submit_status = SparkWeightdWorkerSubmit(
+					state->lazy_pack->worker,
+					SparkGlm5NextSweepWork,chain);
+				if ( submit_status != SPARK_STATUS_OK )
+					SparkGlm5NextTpChainFail(chain,submit_status);
+				return;
+			}
 		}
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
@@ -3261,6 +3263,15 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
+		}
+		if ( (state->hbound_probes & (1u << 29u)) == 0u &&
+		     cudaStreamSynchronize((cudaStream_t)chain->slot->stream) == cudaSuccess )
+		{
+			uint32_t local_token = 0u;
+			state->hbound_probes |= 1u << 29u;
+			(void)cudaMemcpy(&local_token,chain->slot->output_token,
+			    sizeof(local_token),cudaMemcpyDeviceToHost);
+			fprintf(stderr,"HEADLOC v=%u\n",local_token);
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_HEAD;
 		launch_status = SparkGlm5NextModuleReduceHeadMax(chain);
