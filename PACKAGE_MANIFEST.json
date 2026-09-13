@@ -1,5 +1,5 @@
 {
-  "file_count": 2171,
+  "file_count": 2173,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -7287,6 +7287,11 @@
       "size_bytes": 6121
     },
     {
+      "path": "tests/test_acc_parity_oracle.py",
+      "sha256": "46e26423374a15b0f187100ce03722def2ad7597c858a9cd3c86a4f05d164c42",
+      "size_bytes": 6628
+    },
+    {
       "path": "tests/test_api_stress.py",
       "sha256": "5031cd0c41603aa005b192fdc3b8c94359a8b520211de5f2e77d308e1def3b5f",
       "size_bytes": 2638
@@ -8680,6 +8685,11 @@
       "path": "text/tokenizer_sidecar.c",
       "sha256": "c9e12edd388f2b54900214796bdf322154a34632e7db558810cbeb4bd568a304",
       "size_bytes": 8830
+    },
+    {
+      "path": "tools/acc_parity_oracle.py",
+      "sha256": "fc005c748079c435cbe529eb94d2d8edc3b373bb95acee044a2f52da2e2603eb",
+      "size_bytes": 19324
     },
     {
       "path": "tools/adapter_interface_probe.c",
@@ -10860,5 +10870,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35274665
+  "total_bytes": 35300617
 }
