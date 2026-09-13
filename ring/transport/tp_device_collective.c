@@ -67,6 +67,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     void *error_word;
     uint32_t capture_armed;
     uint32_t round_rebased;
+    uint32_t maxloc_probe_done;
     uint64_t cancel_seen;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
@@ -566,6 +567,38 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         }
     }
 combine:
+    if ( operation_kind ==
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
+         implementation->maxloc_probe_done == 0u )
+    {
+        uint32_t probe_peer;
+        implementation->maxloc_probe_done = 1u;
+        fprintf(stderr,
+            "MAXLOC rank=%u mi=%llu seq=%llu tails=",
+            implementation->tp_rank,
+            (unsigned long long)implementation->round_index,
+            (unsigned long long)round_seq);
+        for ( probe_peer = 0u;
+              probe_peer < implementation->tp_degree;
+              probe_peer++ )
+        {
+            uint64_t peer_rank =
+                probe_peer < implementation->tp_rank ?
+                probe_peer : probe_peer + 1u;
+            volatile uint64_t *peer_tail = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                implementation->band_base +
+                (peer_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+                    (round_seq &
+                        (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u))) *
+                    slot_bytes + 8u);
+            fprintf(stderr,"%llu/%llu,",
+                (unsigned long long)*peer_tail,
+                (unsigned long long)*(volatile uint64_t *)
+                    ((uint8_t *)peer_tail - 8u));
+        }
+        fprintf(stderr,"\n");
+    }
     if ( staging != 0 && (entry[1] != staging->bytes ||
          entry[2] != staging->slot || entry[0] != staging->seq) )
         fprintf(stderr,"MESH-ENTRY-READBACK rank=%u seq=%llu entry=(%llu,%llu,%llu) staged=(%llu,%llu,%llu)\n",
