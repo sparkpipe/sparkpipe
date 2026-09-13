@@ -217,14 +217,12 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
 {
-	static const uint32_t first[4] = { 0u, 24u, 47u, 70u };
-	return(first[stage_index % 4u]);
+	return(SPARK_K3_PP_STAGE_FIRST(stage_index % SPARK_K3_PP_STAGE_COUNT));
 }
 
 static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 {
-	static const uint32_t count[4] = { 24u, 23u, 23u, 23u };
-	return(count[stage_index % 4u]);
+	return(SPARK_K3_PP_STAGE_LAYERS(stage_index % SPARK_K3_PP_STAGE_COUNT));
 }
 
 static void K3RunnerEmbedCompletion(void *context,

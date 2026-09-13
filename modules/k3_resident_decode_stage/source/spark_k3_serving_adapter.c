@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_json.h"
+#include "sparkpipe/spark_k3_llm_defines.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
 #include "sparkpipe/spark_memory_buffer.h"
@@ -106,7 +107,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		int32_t dev = SparkJsonFindObjectMember(&doc, root, "device_collective");
 		if ( dev >= 0 )
 		{
-			uint32_t hidden = K3ServingJsonU32(&doc, root, "hidden", 7168u);
+			uint32_t hidden = K3ServingJsonU32(&doc, root, "hidden",
+				SPARK_K3_MODEL_HIDDEN_DIMENSION);
 			memset(&state->device_config, 0, sizeof(state->device_config));
 			memset(&state->device_topology, 0, sizeof(state->device_topology));
 			state->device_topology.abi_version =
@@ -612,9 +614,9 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
 	.stage_count = 16u,
-	.layer_count = 93u,
+	.layer_count = SPARK_K3_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = 7168u,
+	.boundary_element_count = SPARK_K3_MODEL_HIDDEN_DIMENSION,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1,
@@ -625,7 +627,17 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.stage_layer_counts = { 24u, 24u, 24u, 24u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u, 23u },
+	.stage_layer_counts =
+	{
+		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u),
+		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u),
+		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u),
+		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u),
+		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u),
+		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u),
+		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u),
+		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u)
+	},
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
 	.minimum_efficient_submission_row_count = 1u,
