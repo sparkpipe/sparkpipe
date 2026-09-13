@@ -35,13 +35,22 @@ extern "C" {
 	SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES 2u
 
-#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL UINT32_C(0x00000001)
-#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT UINT32_C(0x00000002)
-#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT UINT32_C(0x00000004)
+#define SPARK_FIRMWARE_LAYERS_PER_STAGE \
+	SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE
+#define SPARK_FIRMWARE_FRAME_KNOWN_FLAGS_MASK \
+	(SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL | \
+	 SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT | \
+	 SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT)
+#include "sparkpipe/spark_resident_decode_stage_firmware_common.h"
+
+#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL \
+	SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL
+#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT \
+	SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT
+#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT \
+	SPARK_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS \
-	(SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL | \
-	 SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT | \
-	 SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT)
+	SPARK_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS
 
 typedef struct SparkLagunaResidentDecodeStageNodeContext
 {
@@ -79,30 +88,8 @@ typedef struct SparkLagunaResidentDecodeStageNodeContext
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
 	((uint32_t)sizeof(SparkLagunaResidentDecodeStageNodeContext))
 
-typedef struct SparkLagunaResidentDecodeStageBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t active_sequence_count;
-	const uint32_t *token_ids;
-	const uint32_t *row_resident_slots;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkLagunaResidentDecodeStageBatchView;
-
-typedef struct SparkLagunaResidentDecodeStageFrameContext
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t flags;
-	uint32_t reserved0;
-	const SparkLagunaResidentDecodeStageBatchView *batch;
-	const void *hidden_input_bf16;
-	uint64_t hidden_input_bytes;
-	void *hidden_output_bf16;
-	uint64_t hidden_output_bytes;
-} SparkLagunaResidentDecodeStageFrameContext;
+typedef SparkResidentDecodeStageBatchView SparkLagunaResidentDecodeStageBatchView;
+typedef SparkResidentDecodeStageFrameContext SparkLagunaResidentDecodeStageFrameContext;
 
 typedef struct SparkLagunaLinearView
 {

@@ -315,9 +315,6 @@ static SparkStatus SparkGemma4ModuleConfigure(SparkGemma4ModuleState *state)
 #define gdn_layer_count sliding_layer_count
 #define attn_layer_count full_layer_count
 
-
-#define SPARK_PACK_LOAD_ORDINALS
-#define SPARK_PACK_LOAD_LINEAR_VIEW
 #include "sparkpipe/spark_pack_load_common.h"
 
 #undef gdn_ordinal_by_layer

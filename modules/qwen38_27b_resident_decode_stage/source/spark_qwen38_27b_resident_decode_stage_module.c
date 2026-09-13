@@ -464,9 +464,6 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 		} \
 	} while (0)
 
-
-#define SPARK_PACK_LOAD_ORDINALS
-#define SPARK_PACK_LOAD_LINEAR_VIEW
 #include "sparkpipe/spark_pack_load_common.h"
 
 static SparkStatus SparkQwen38_27bModuleValidateEntry(SparkQwen38_27bModuleState *state, const SparkQwen38_27bStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
@@ -586,8 +583,9 @@ static uint32_t SparkQwen38_27bModuleExpectedGlobalBits(const SparkQwen38_27bMod
 	return(bits);
 }
 
-static uint32_t SparkQwen38_27bModuleExpectedMtpBits(void)
+static uint32_t SparkQwen38_27bModuleExpectedMtpBits(const SparkQwen38_27bModuleState *state)
 {
+	(void)state;
 	return((1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_FC) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_FFN_GATE) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_FFN_UP) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_FFN_DOWN) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_ATTN_KEY_NORM));
 }
 

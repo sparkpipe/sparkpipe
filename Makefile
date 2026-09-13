@@ -302,6 +302,7 @@ TEST_NAMES := \
     test_glm52_mtp_tree \
     test_tp_collective \
     test_serving_tp_config \
+    test_rope_plan \
     test_glm52_stagepack \
     test_tokenizer \
     test_model_description \
@@ -339,6 +340,7 @@ PYTHON_TESTS := \
 	tests/test_qwen4_flash_model_header.py \
 	tests/test_gemma4_model_header.py \
 	tests/test_ling_model_header.py \
+	tests/test_laguna_model_header.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
 	tests/test_code_size.py \
@@ -1102,6 +1104,9 @@ build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_re
 
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
+build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_driver_defines.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include -Imodel-families/laguna/include $< -lm -o $@
 
 build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@

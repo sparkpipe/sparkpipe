@@ -431,7 +431,6 @@ static SparkStatus SparkLagunaModulePackPreflight(
 	const SparkLagunaStagePackHeader *header,
 	SparkStatus status)
 {
-	SparkLagunaStagePackEntry entries[SPARK_LAGUNA_STAGEPACK_MAX_TENSOR_COUNT];
 	uint64_t file_bytes,directory_end;
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -446,12 +445,18 @@ static SparkStatus SparkLagunaModulePackPreflight(
 	state->pack_directory_offset = header->directory_offset;
 	state->pack_directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
 	state->pack_tensor_count = header->tensor_count;
+	return(status);
+}
+
+static SparkStatus SparkLagunaModulePackRangesAndAttach(
+	SparkLagunaModuleState *state,
+	const SparkLagunaStagePackEntry *entries,
+	uint32_t entry_count)
+{
+	SparkStatus status;
+	status = SparkLagunaPackValidateRanges(entries,entry_count);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModulePackRead(SPARK_LAGUNA_MODULE_TAG,file,header->directory_offset,entries,(uint64_t)header->tensor_count * sizeof(entries[0]));
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaPackValidateRanges(entries,header->tensor_count);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaLazyOpen(state,state->pack_path,file_bytes,entries,header->tensor_count);
+		status = SparkLagunaLazyOpen(state,state->pack_path,state->pack_file_bytes,entries,entry_count);
 	return(status);
 }
 
@@ -464,8 +469,6 @@ static int SparkLagunaModuleRegionHook(
 {
 	SparkStatus status;
 	(void)file;
-	if ( entry->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT )
-		return(1);
 	if ( state->lazy_pack == 0 )
 		return(0);
 	if ( entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP || entry->tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
@@ -525,8 +528,9 @@ static uint64_t SparkLagunaModuleExpectedGlobalBits(const SparkLagunaModuleState
 	return(bits);
 }
 
-static uint64_t SparkLagunaModuleExpectedMtpBits(void)
+static uint64_t SparkLagunaModuleExpectedMtpBits(const SparkLagunaModuleState *state)
 {
+	(void)state;
 	return(0u);
 }
 
@@ -549,16 +553,20 @@ static uint64_t SparkLagunaModuleExpectedLayerBits(
 #define SPARK_PACK_LOAD_FN(name) SparkLagunaModule##name
 #define SPARK_PACK_LOAD_TYPE(name) SparkLaguna##name
 #define SPARK_PACK_LOAD_CONST(name) SPARK_LAGUNA_##name
+#define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
+#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
 #define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) (SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING(layer))
 #define SPARK_PACK_LOAD_SEEN_TYPE uint64_t
 #define SPARK_PACK_LOAD_SEEN_ONE UINT64_C(1)
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) ((entry)->payload_bytes != 0u)
+#define SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY(entry) ((entry)->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT)
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkLagunaModulePackExpectGeometry((state),(expected))
 #define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkLagunaModulePackGeometryMismatch((state),(header),(expected)) != 0u)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) SparkLagunaModulePackLogGeometryMismatch((state),(header),(expected))
 #define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do { (status) = SparkLagunaModulePackPreflight((state),(file),(header),(status)); } while (0)
+#define SPARK_PACK_LOAD_VALIDATE_RANGES(directory,count) SparkLagunaModulePackRangesAndAttach((state),(directory),(count))
 #define SPARK_PACK_LOAD_REGION_HOOK SparkLagunaModuleRegionHook
 
 #include "sparkpipe/spark_pack_load_common.h"

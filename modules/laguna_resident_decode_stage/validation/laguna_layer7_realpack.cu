@@ -368,9 +368,8 @@ static void L7SetupRun(L7LayerRun *run,L7Scratch *scratch,uint32_t tokens,uint32
 	L7Upload(scratch->dense_row_offset,host_dense_row_offset,8u,"upload row offset");
 	L7Upload(scratch->dense_tile_prefix,host_dense_tile_prefix,8u,"upload tile prefix");
 	free(host_positions);
-	LagunaBuildYarnInvFrequency(host_yarn,LAGUNA_ROPE_FULL_ROT,LAGUNA_ROPE_FULL_THETA,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
+	SparkRopePlanDomain l7_rope_domain = LagunaRopeFullDomain();
+	SparkRopePlanBuildYarnInvFrequency(&l7_rope_domain,host_yarn);
 	L7Upload(scratch->yarn_inv_freq,host_yarn,sizeof(host_yarn),"upload yarn");
 
 	memset(&run->buffers,0,sizeof(run->buffers));
@@ -997,9 +996,8 @@ static void L7RunRopeMode(const char *dump_prefix,const char *positions_text)
 	}
 	else
 	{
-		LagunaBuildYarnInvFrequency(host_yarn,LAGUNA_ROPE_FULL_ROT,LAGUNA_ROPE_FULL_THETA,
-			SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
-			SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
+		SparkRopePlanDomain l7_rope_domain = LagunaRopeFullDomain();
+		SparkRopePlanBuildYarnInvFrequency(&l7_rope_domain,host_yarn);
 		L7Alloc((void **)&device_yarn,sizeof(host_yarn),"alloc rope yarn");
 		L7Upload(device_yarn,host_yarn,sizeof(host_yarn),"upload rope yarn");
 		LM_LAUNCH((LmRopePerHeadKernel<LAGUNA_LAYER_THREADS,LM_ROPE_HALF_SPLIT>),dim3(count,heads),LAGUNA_LAYER_THREADS,0,0,

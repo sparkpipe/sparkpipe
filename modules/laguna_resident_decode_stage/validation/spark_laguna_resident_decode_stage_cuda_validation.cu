@@ -76,20 +76,9 @@ int main(int argc,char **argv)
 		fprintf(stderr,"laguna validation: device with %u SMs\n",multiprocessors);
 	else
 		fprintf(stderr,"laguna validation: no sm_121 device; host checks only\n");
-	LagunaBuildYarnInvFrequency(host_yarn,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_THETA,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
-	LagunaBuildYarnInvFrequency(host_yarn_second,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_THETA,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
+	SparkRopePlanDomain rope_domain = LagunaRopeFullDomain();
+	SparkRopePlanBuildYarnInvFrequency(&rope_domain,host_yarn);
+	SparkRopePlanBuildYarnInvFrequency(&rope_domain,host_yarn_second);
 	if ( memcmp(host_yarn,host_yarn_second,sizeof(host_yarn)) != 0 )
 	{
 		fprintf(stderr,"laguna validation: yarn table not deterministic\n");

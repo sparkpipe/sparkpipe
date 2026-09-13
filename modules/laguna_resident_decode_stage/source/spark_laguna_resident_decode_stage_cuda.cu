@@ -548,13 +548,8 @@ extern "C" SparkStatus SparkLagunaStageYarnTableUpload(float *device_inv_freq,vo
 	float host_inv_freq[SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION / 2u];
 	if ( device_inv_freq == 0 || stream == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	LagunaBuildYarnInvFrequency(host_inv_freq,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ROTARY_DIMENSION,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_THETA,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_FACTOR,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_ORIGINAL_POSITIONS,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_FAST,
-		SPARK_LAGUNA_MODEL_ROPE_FULL_BETA_SLOW);
+	SparkRopePlanDomain rope_domain = LagunaRopeFullDomain();
+	SparkRopePlanBuildYarnInvFrequency(&rope_domain,host_inv_freq);
 	if ( cudaMemcpy(device_inv_freq,host_inv_freq,sizeof(host_inv_freq),cudaMemcpyHostToDevice) != cudaSuccess )
 		return SPARK_STATUS_DRIVER_LOAD_ERROR;
 	return SPARK_STATUS_OK;

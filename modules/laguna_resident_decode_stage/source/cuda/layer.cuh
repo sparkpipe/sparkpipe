@@ -9,6 +9,7 @@
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "sparkpipe/spark_rope_plan.h"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
@@ -171,36 +172,17 @@ static inline int32_t LagunaLaunchBf16Linear(
 			stream);
 }
 
-static inline void LagunaBuildYarnInvFrequency(
-	float *inv_freq,
-	uint32_t rotary_dimension,
-	float theta,
-	float factor,
-	float original_positions,
-	float beta_fast,
-	float beta_slow)
+static inline SparkRopePlanDomain LagunaRopeFullDomain(void)
 {
-	float low_exact,high_exact;
-	float low,high;
-	uint32_t half,index;
-	if ( inv_freq == 0 || rotary_dimension < 2u || factor <= 1.0f )
-		return;
-	low_exact = ((float)rotary_dimension *
-		logf(original_positions / (beta_fast * 6.283185307179586f))) /
-		(2.0f * logf(theta));
-	high_exact = ((float)rotary_dimension *
-		logf(original_positions / (beta_slow * 6.283185307179586f))) /
-		(2.0f * logf(theta));
-	low = floorf(fmaxf(fminf(low_exact,(float)rotary_dimension - 1.0f),0.0f));
-	high = ceilf(fmaxf(fminf(high_exact,(float)rotary_dimension - 1.0f),0.0f));
-	half = rotary_dimension / 2u;
-	for (index = 0u; index < half; ++index)
-	{
-		float base = powf(theta,-2.0f * (float)index / (float)rotary_dimension);
-		float ramp = ((float)index - low) / fmaxf(high - low,1e-6f);
-		float blend = fminf(fmaxf(ramp,0.0f),1.0f);
-		inv_freq[index] = (base * (1.0f - blend)) + ((base / factor) * blend);
-	}
+	SparkRopePlanDomain domain;
+	domain.theta = LAGUNA_ROPE_FULL_THETA;
+	domain.yarn_factor = LAGUNA_ROPE_FULL_YARN_FACTOR;
+	domain.original_positions = LAGUNA_ROPE_FULL_ORIGINAL_POSITIONS;
+	domain.beta_fast = LAGUNA_ROPE_FULL_BETA_FAST;
+	domain.beta_slow = LAGUNA_ROPE_FULL_BETA_SLOW;
+	domain.attention_factor = LAGUNA_ROPE_FULL_ATTENTION_FACTOR;
+	domain.rotary_dimension = LAGUNA_ROPE_FULL_ROT;
+	return domain;
 }
 
 static int32_t LagunaLayerAttention(
