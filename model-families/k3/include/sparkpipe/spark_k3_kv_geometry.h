@@ -23,7 +23,8 @@
 	SPARK_K3_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER
 #define SPARK_K3_KV_KDA_SLOT_BYTES SPARK_K3_MODEL_KDA_SLOT_BYTES
 
-static inline void SparkK3KvFillCapacityRequest(SparkKvCacheCapacityRequest *request)
+static inline void SparkK3KvFillCapacityRequest(
+	SparkKvCacheCapacityRequest *request)
 {
 	request->abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	request->descriptor_bytes =
