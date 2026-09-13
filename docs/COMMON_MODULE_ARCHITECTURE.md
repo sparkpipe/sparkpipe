@@ -315,3 +315,34 @@ M-0 is the pilot of this system: extracted from glm5_next (fused FP32 sum by-val
 registration via `SparkTpMeshRegisterCommonCombines`, glm5_next converted (private
 copies deleted). Remaining adopters with the OLD precision bug: glm52, dsv4, ling,
 laguna, qwen38_27b — each is: add include, call register, delete private kernels.
+
+## 14. Canonical key space (binding for the validation wave)
+
+One generic key space: **`SPARK_LLM_<NAME>`** (the `llm_specifics.h` specimen's 52 keys +
+the per-module additions in section 11). Rules:
+
+1. Common modules consume ONLY `SPARK_LLM_*` keys — never family-prefixed names.
+2. A driver's `llm_defines.h` is the single file defining them. Thin-shim aliases
+   (`#define SPARK_QWEN38_X SPARK_LLM_X`) are MIGRATION AIDS only — deleted with the
+   family copy in the adoption PR (capability alignment: DONE = replaced deleted).
+   qwen3flash's misnamed `SPARK_QWEN38_ROUTER_SORT_CAPACITY` class dies here.
+3. `spark_driver_defines.h` (INFRA-MID) = the DRIVER-SURFACE subset (serving ports,
+   adapter descriptors, stage indices — keys 34-52 of the specimen). It defines the
+   same `SPARK_LLM_*` names, partitioned by ownership; it is not a second key space.
+4. Adding a key: specimen first (`SET_ME_*`), then the module's consumption, then the
+   seed's value. A key existing in one family file but not the specimen is a finding.
+
+## 15. Assets the wave builds on (from coredev's lane)
+
+- **M-0 mesh kernels** (`spark_tp_mesh_kernels.cuh` + `spark_tp_mesh_register.h`, this
+  branch): the fused FP32 allreduce + publish/wait/guard + u64 maxloc. CRITICAL: the
+  private copies in glm52/dsv4/ling/laguna/qwen38_27b carry the bf16-per-step
+  precision bug (deterministic wrong tokens — the [3764]-class lottery; found after a
+  30-window hunt in glm5_next, fixed by FP32 accumulation). INFRA-G should fold this
+  into the common GLM tree; INFRA-Q's kernel suite should consume the same combine
+  registration. Adoption = include + `SparkTpMeshRegisterCommonCombines()` + delete.
+- **glm5_next `llm_defines.h`** (this branch): the 52/52 seed pattern for INFRA-G.
+- **Transport stability fixes on `glm53flash-hill1`** (common code — affects every
+  adopter): rebase-at-first-round, ChainKey epoch adoption, resident-client reconnect,
+  240s request deadline, chain-retire bump. Merge to main before or with the wave so
+  adopters test on fixed transport, not the pre-fix classes.
