@@ -676,6 +676,8 @@ void SparkWeightdMeshDoorbellLoop(void)
                     struct ibv_send_wr work_request;
                     struct ibv_send_wr *bad;
                     uint32_t posted_failed = 0u;
+                    uint64_t last_addr = 0ull;
+                    uint32_t last_rkey = 0u;
                     memset(&scatter,0,sizeof(scatter));
                     scatter.addr = (uint64_t)(uintptr_t)
                         weightd_mesh.recv_buffer + slot_base;
@@ -693,6 +695,8 @@ void SparkWeightdMeshDoorbellLoop(void)
                             qp_snapshot[peer].remote_addr + slot_base;
                         work_request.wr.rdma.rkey =
                             qp_snapshot[peer].rkey;
+                        last_addr = qp_snapshot[peer].remote_addr;
+                        last_rkey = qp_snapshot[peer].rkey;
                         if ( ibv_post_send(weightd_mesh.send_qps[peer],
                                 &work_request,&bad) != 0 )
                         {
@@ -707,10 +711,12 @@ void SparkWeightdMeshDoorbellLoop(void)
                         weightd_mesh.doorbell_posted[index] = seq;
                         weightd_mesh.doorbell_stuck[index] = 0u;
                         weightd_mesh.ship_log_count++;
-                        if ( (weightd_mesh.ship_log_count % 512u) == 0u )
-                            fprintf(stderr,"WD-SHIP idx=%llu seq=%llu posted=%llu total=%llu\n",
+                        if ( (weightd_mesh.ship_log_count % 256u) == 0u )
+                            fprintf(stderr,"WD-SHIP idx=%llu seq=%llu addr=%llx rkey=%u posted=%llu total=%llu\n",
                                 (unsigned long long)index,
                                 (unsigned long long)seq,
+                                (unsigned long long)last_addr,
+                                last_rkey,
                                 (unsigned long long)weightd_mesh.doorbell_posted[index],
                                 (unsigned long long)weightd_mesh.ship_log_count);
                     }
