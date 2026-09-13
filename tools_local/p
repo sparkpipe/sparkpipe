@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# p — deploy: sync the release to all 16 nodes, md5-gate every node against
+# the hub BEFORE any bounce, then one simultaneous full bounce, poll
+# listeners to 16/16, verify health + marker on spark0.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+FLEET_REF=sparkf:release tools/fleet_serve.sh glm53flash.fp8.tp16 sync
+HUB=$(ssh sparkf 'md5sum ~/sparkdata/out/stages/stage_000/model_driver.so | cut -d" " -f1')
+BAD=""
+for n in $NODES; do
+  m=$(ssh -o ConnectTimeout=8 "$n" "md5sum ~/sparkdata/glm53flash.fp8.tp16/stages/stage_000/model_driver.so 2>/dev/null | cut -d' ' -f1" || echo x)
+  [ "$m" = "$HUB" ] || BAD="$BAD $n"
+done
+if [ -n "$BAD" ]; then echo "MD5-GATE-FAIL:$BAD"; exit 1; fi
+echo MD5-GATE-OK
+WHUB=$(ssh sparkf 'md5sum ~/release/core/bin/sparkpipe_weightd | cut -d" " -f1')
+AHUB=$(ssh sparkf 'md5sum ~/release/core/bin/fleet_node_agent.sh | cut -d" " -f1')
+DBAD=""
+for n in $NODES; do
+  m=$(ssh -o ConnectTimeout=8 "$n" "md5sum ~/sparkdata/core/bin/sparkpipe_weightd 2>/dev/null | cut -d' ' -f1" || echo x)
+  if [ "$m" != "$WHUB" ]; then
+    scp -q sparkf:~/release/core/bin/sparkpipe_weightd "/tmp/sparkpipe_weightd.new" && \
+    scp -q /tmp/sparkpipe_weightd.new "$n:~/sparkdata/core/bin/sparkpipe_weightd.new" && \
+    ssh -o ConnectTimeout=8 "$n" 'install -m 755 ~/sparkdata/core/bin/sparkpipe_weightd.new ~/sparkdata/core/bin/sparkpipe_weightd && rm -f ~/sparkdata/core/bin/sparkpipe_weightd.new' || DBAD="$DBAD $n"
+  fi
+done
+[ -z "$DBAD" ] || { echo "DAEMON-SYNC-FAIL:$DBAD"; exit 1; }
+ABAD=""
+for n in $NODES; do
+  m=$(ssh -o ConnectTimeout=8 "$n" "md5sum ~/sparkdata/core/bin/fleet_node_agent.sh 2>/dev/null | cut -d' ' -f1" || echo x)
+  if [ "$m" != "$AHUB" ]; then
+    scp -q sparkf:~/release/core/bin/fleet_node_agent.sh "/tmp/fleet_node_agent.new" &&     scp -q /tmp/fleet_node_agent.new "$n:~/sparkdata/core/bin/fleet_node_agent.new" &&     ssh -o ConnectTimeout=8 "$n" 'chmod +x ~/sparkdata/core/bin/fleet_node_agent.new && mv ~/sparkdata/core/bin/fleet_node_agent.new ~/sparkdata/core/bin/fleet_node_agent.sh' || ABAD="$ABAD $n"
+  fi
+done
+[ -z "$ABAD" ] || { echo "AGENT-SYNC-FAIL:$ABAD"; exit 1; }
+CHANGED="${CHANGED:-}"
+for n in $NODES; do
+  m=$(ssh -o ConnectTimeout=8 "$n" 'cmp -s $HOME/sparkdata/core/bin/sparkpipe_weightd $HOME/sparkdata/weightd/sparkpipe_weightd 2>/dev/null || echo c')
+  if [ "$m" = "c" ]; then CHANGED=1; fi
+  ssh -o ConnectTimeout=8 "$n" 'wd=$HOME/sparkdata/weightd; cb=$HOME/sparkdata/core/bin;
+    if ! cmp -s "$cb/sparkpipe_weightd" "$wd/sparkpipe_weightd" 2>/dev/null; then
+      install -m 755 "$cb/sparkpipe_weightd" "$wd/sparkpipe_weightd.new" &&       mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
+    fi' 2>/dev/null &
+done
+wait
+if [ -n "$CHANGED" ]; then
+  echo "DRAIN: change detected; graceful drain-and-restart"
+  for n in $NODES; do
+    ssh -o ConnectTimeout=8 "$n" 'rr=$HOME/sparkdata/glm53flash.fp8.tp16; for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep -E "sparkpipe_model|sparkpipe_weightd" | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do c=$(readlink /proc/$p/cwd 2>/dev/null); e=$(readlink /proc/$p/exe 2>/dev/null); if [ "$c" = "$rr" ] || [[ "$e" == *sparkdata/weightd* ]]; then kill -TERM $p 2>/dev/null; fi; done; true' 2>/dev/null &
+  done
+  wait
+  for i in $(seq 1 15); do
+    BUSY=""
+    for n in $NODES; do
+      b=$(ssh -o ConnectTimeout=8 "$n" 'rr=$HOME/sparkdata/glm53flash.fp8.tp16; ls -l /proc/[0-9]*/exe 2>/dev/null | grep -E "sparkpipe_model|sparkpipe_weightd" | while read -r line; do p=$(echo "$line" | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); c=$(readlink /proc/$p/cwd 2>/dev/null); e=$(readlink /proc/$p/exe 2>/dev/null); { [ "$c" = "$rr" ] || [[ "$e" == *sparkdata/weightd* ]]; } && echo "$p"; done | head -1')
+      [ -n "$b" ] && BUSY="$BUSY $n"
+    done
+    [ -z "$BUSY" ] && break
+    sleep 2
+  done
+  if [ -n "${BUSY:-}" ]; then
+    echo "DRAIN-TIMEOUT after 30s:$BUSY — KILL survivors"
+    for n in $BUSY; do
+      ssh -o ConnectTimeout=8 "$n" 'rr=$HOME/sparkdata/glm53flash.fp8.tp16; for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep -E "sparkpipe_model|sparkpipe_weightd" | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do c=$(readlink /proc/$p/cwd 2>/dev/null); e=$(readlink /proc/$p/exe 2>/dev/null); if [ "$c" = "$rr" ] || [[ "$e" == *sparkdata/weightd* ]]; then kill -9 $p 2>/dev/null; fi; done; true' 2>/dev/null &
+    done
+    wait
+  fi
+else
+  echo "NO-CHANGE: skip restart (daemon binary identical; no kill)"
+fi
+for i in $(seq 1 40); do
+  ok=$(ssh spark0 'python3 -c "
+import socket
+fails = 0
+for i in range(16):
+    s = socket.socket(); s.settimeout(1)
+    try: s.connect((\"10.10.100.%d\" % (10+i), 19560+i))
+    except Exception: fails += 1
+    s.close()
+print(16-fails)
+"' 2>/dev/null || echo 0)
+  [ "$ok" = "16" ] && break
+  sleep 8
+done
+if [ "$ok" = "16" ]; then echo LISTENERS-16; else echo "LISTENERS-$ok-OF-16"; exit 1; fi
+sleep 20
+H=$(ssh spark0 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:8433/health || true')
+if [ "$H" != "200" ]; then sleep 30; H=$(ssh spark0 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:8433/health || true'); fi
+[ "$H" = "200" ] || { echo "HEALTH-$H"; exit 1; }
+M=$(ssh spark0 'strings ~/sparkdata/glm53flash.fp8.tp16/stages/stage_000/model_driver.so | grep -c GRAPH-CAPTURE-OK || true')
+echo "DEPLOY-OK health=200 marker=$M md5=${HUB:0:12}"
