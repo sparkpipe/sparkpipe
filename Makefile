@@ -306,6 +306,7 @@ TEST_NAMES := \
     test_tokenizer \
     test_model_description \
     test_stage_module_common \
+    test_hy4_lifecycle_smoke \
     test_dsv4_w1_loader \
     test_weightd \
     test_weightd_lease \
@@ -1154,6 +1155,22 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) -o $@
+
+HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
+HY4_SMOKE_SOURCES := tests/test_hy4_lifecycle_smoke.c \
+	modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \
+	runtime/stage_module_lifecycle.c \
+	runtime/stage_module_common.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
+	src/spark_status.c \
+	src/spark_sha256.c \
+	src/spark_ck128.c \
+	runtime/json.c \
+	runtime/filesystem.c \
+	tests/cuda_stub/cuda_runtime_stub.c
+
+build/test_hy4_lifecycle_smoke: $(HY4_SMOKE_SOURCES) | build
+	$(CC) $(HY4_SMOKE_INCLUDE_FLAGS) $(CFLAGS) $(HY4_SMOKE_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/spark_status.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@
