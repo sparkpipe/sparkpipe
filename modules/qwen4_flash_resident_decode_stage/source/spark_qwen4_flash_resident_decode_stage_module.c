@@ -19,7 +19,8 @@
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_qwen4_flash_work_control.h"
-#include "spark_qwen4_flash_stagepack_format.h"
+#include "common/common_kv_frame.h"
+#include "common/common_stagepack_format_ext.h"
 
 #define SPARK_QWEN4_FLASH_MODULE_TAG "qwen4_flash_stage"
 
@@ -27,10 +28,10 @@
 #define SPARK_QWEN4_FLASH_MODULE_TP_RANK_REPLICATED 0u
 #define SPARK_QWEN4_FLASH_MODULE_TP_TIMEOUT_MILLI_DEFAULT 120000u
 
-#define SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS 16u
+#define SPARK_LLM_KV_STAGING_RECORDS 16u
 #define SPARK_QWEN4_FLASH_MODULE_KV_POLL_BOUND 10000u
 #define SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES 4096u
-#define SPARK_QWEN4_FLASH_MODULE_KV_MAX_BLOCKS_PER_LANE 4096u
+#define SPARK_LLM_KV_MAX_BLOCKS_PER_LANE 4096u
 #define SPARK_QWEN4_FLASH_MODULE_HEAD_SCREEN_CAP 4096u
 #define SPARK_QWEN4_FLASH_MODULE_HEAD_SHADOW_GROUP 32u
 #define SPARK_FRAME_ERROR_WORDS 6u
@@ -142,7 +143,6 @@ typedef struct SparkQwen4FlashModuleState
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	atomic_uint slot_states[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	uint32_t kv_block_count;
 	uint32_t cache_layer_count;
 	uint32_t mtp_cache_ordinal;
 	atomic_ullong submitted_count;
@@ -151,7 +151,6 @@ typedef struct SparkQwen4FlashModuleState
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
 	SparkQwen4FlashGdnStatePool gdn_pool;
-	void *kv_cache_bf16;
 	uint64_t cache_layer_stride;
 	uint64_t cache_block_stride;
 	uint32_t indexer_cache_layer_count;
@@ -203,29 +202,10 @@ typedef struct SparkQwen4FlashModuleState
 	SparkQwen4FlashGdnLayerWeights gdn_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen4FlashAttnLayerWeights attn_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	SparkQwen4FlashMoeWeights moe_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	SparkStageKvClient kv_client;
-	SparkQwen4FlashWorkControlKvState kv_work;
-	SparkQwen4FlashWorkControlKvPlanConfig kv_plan;
-	uint32_t kv_tier_active;
+	LmKvFrameState kv;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
 	uint64_t kv_backing_maximum_bytes;
-	uint32_t *kv_logical_to_slot;
-	uint64_t kv_logical_to_slot_capacity;
-	uint32_t kv_logical_stride;
-	uint32_t *kv_table_indices_device;
-	uint32_t *kv_table_counts_device;
-	uint32_t *kv_table_indices_host;
-	uint32_t *kv_slot_lane;
-	uint32_t *kv_slot_logical;
-	uint64_t *kv_slot_sequence;
-	uint8_t *kv_slot_dirty;
-	uint8_t *kv_slot_pinned;
-	uint32_t *kv_slot_free_stack;
-	uint32_t kv_slot_free_count;
-	uint32_t kv_evict_cursor;
-	void *kv_block_staging;
-	void *kv_gdn_staging;
 } SparkQwen4FlashModuleState;
 
 static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *state)
@@ -337,7 +317,7 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_PIPELINE_SLOTS",1u,SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv_block_count);
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv.block_count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( state->first_layer_index <= SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->first_layer_index + state->layer_count > SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
@@ -367,22 +347,31 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 	return(SPARK_STATUS_OK);
 }
 
+typedef SparkStagePackEntry SparkQwen4FlashStagePackEntry;
+typedef SparkStagePackHeaderCommon SparkQwen4FlashStagePackHeader;
 #define SPARK_PACK_LOAD_FN(name) SparkQwen4FlashModule##name
 #define SPARK_PACK_LOAD_TYPE(name) SparkQwen4Flash##name
-#define SPARK_PACK_LOAD_CONST(name) SPARK_QWEN4_FLASH_##name
+#define SPARK_PACK_LOAD_CONST(name) SPARK_PACK_LOAD_CONST_##name
+#define SPARK_PACK_LOAD_CONST_MODULE_TAG SPARK_QWEN4_FLASH_MODULE_TAG
+#define SPARK_PACK_LOAD_CONST_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_LLM_LAYER_COUNT
+#define SPARK_PACK_LOAD_CONST_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION SPARK_LLM_LINEAR_VIEW_ABI_VERSION
+#define SPARK_PACK_LOAD_CONST_STAGEPACK_GLOBAL_LAYER SPARK_STAGEPACK_LAYER_GLOBAL
+#define SPARK_PACK_LOAD_CONST_STAGEPACK_MTP_LAYER SPARK_STAGEPACK_LAYER_MTP
+#define SPARK_PACK_LOAD_CONST_STAGEPACK_TENSOR_MTP_FC SPARK_LLM_STAGEPACK_TENSOR_MTP_FC
+#define SPARK_PACK_LOAD_CONST_STAGEPACK_TENSOR_MTP_FINAL_NORM SPARK_LLM_STAGEPACK_TENSOR_MTP_FINAL_NORM
 #define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer)
 #define SPARK_PACK_LOAD_SEEN_TYPE uint64_t
 #define SPARK_PACK_LOAD_SEEN_ONE 1ull
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
-	((entry)->payload_bytes == SparkQwen4FlashStagePackPayloadBytes((entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkQwen4FlashStagePackScaleBytes((entry)->weight_format,(entry)->rows,(entry)->columns))
-#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkQwen4FlashStagePackExpectedGeometry((expected),(state)->first_layer_index,(state)->layer_count,(state)->allow_missing_ple == 0u ? 1u : 0u)
-#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen4FlashStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != SPARK_QWEN4_FLASH_STAGEPACK_HEADER_BYTES)
+	((entry)->payload_bytes == SparkStagePackFamilyPayloadBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkStagePackFamilyScaleBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns))
+#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,(expected),(state)->first_layer_index,(state)->layer_count,(state)->allow_missing_ple == 0u ? 1u : 0u)
+#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != SPARK_STAGEPACK_HEADER_BYTES)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) \
 	fprintf(stderr,"%s pack_geometry_mismatch code=%d slice=%u+%u tensor_count=%u/%u hidden=%u/%u layers=%u/%u first=%u/%u total=%u/%u mtp=%u/%u dir=%llu\n", \
 		SPARK_QWEN4_FLASH_MODULE_TAG, \
-		SparkQwen4FlashStagePackHeaderMatches((header),(expected)), \
+		SparkStagePackHeaderMatches((header),(expected)), \
 		(state)->first_layer_index,(state)->layer_count, \
 		(header)->tensor_count,(expected)->tensor_count, \
 		(header)->hidden_dimension,(expected)->hidden_dimension, \
@@ -395,18 +384,18 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 
 #include "sparkpipe/spark_pack_load_common.h"
 
-static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState *state, const SparkQwen4FlashStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
+static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState *state, const SparkStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)
 {
-	SparkQwen4FlashStagePackTensorShape shape;
-	uint32_t global = entry->layer_index == SPARK_QWEN4_FLASH_STAGEPACK_GLOBAL_LAYER ? 1u : 0u;
-	if ( SparkQwen4FlashStagePackResolvedShape(entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 )
+	SparkStagePackTensorShape shape;
+	uint32_t global = entry->layer_index == SPARK_STAGEPACK_LAYER_GLOBAL ? 1u : 0u;
+	if ( SparkStagePackFamilyResolvedShape(&SparkLlmStagePackFamilySpec,&SparkLlmStagePackKindTable,entry->tensor_kind,global != 0u ? 0u : entry->layer_index,global,&shape) != 0 )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	{
 		uint32_t full_rows = shape.rows;
-		SparkQwen4FlashStagePackNarrowShape(&shape,entry->tensor_kind,state->tp_degree,state->tp_rank);
+		SparkStagePackFamilyNarrowShape(&SparkLlmStagePackFamilySpec,&SparkLlmStagePackKindTable,entry->tensor_kind,&shape,state->tp_degree,state->tp_rank);
 		if ( entry->rows != shape.rows || entry->columns != shape.columns )
 		{
-			if ( entry->tensor_kind != SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE ||
+			if ( entry->tensor_kind != SPARK_STAGEPACK_TENSOR_MOE_GATE ||
 				entry->rows != full_rows || entry->columns != shape.columns ||
 				state->tp_degree == 1u )
 				SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
@@ -425,86 +414,86 @@ static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState
 	return(SparkQwen4FlashModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
 }
 
-static SparkStatus SparkQwen4FlashModuleBindMoe(SparkQwen4FlashMoeWeights *moe, const SparkQwen4FlashStagePackEntry *entry, void *payload, void *scale)
+static SparkStatus SparkQwen4FlashModuleBindMoe(SparkQwen4FlashMoeWeights *moe, const SparkStagePackEntry *entry, void *payload, void *scale)
 {
 	switch ( entry->tensor_kind )
 	{
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE: SparkQwen4FlashModuleFillLinearView(&moe->gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1: SparkQwen4FlashModuleFillLinearView(&moe->experts_w1,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3: SparkQwen4FlashModuleFillLinearView(&moe->experts_w3,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->experts_w2,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE: SparkQwen4FlashModuleFillLinearView(&moe->shared_gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP: SparkQwen4FlashModuleFillLinearView(&moe->shared_up,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->shared_down,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT: moe->shared_gate_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_GATE: SparkQwen4FlashModuleFillLinearView(&moe->gate,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_W1: SparkQwen4FlashModuleFillLinearView(&moe->experts_w1,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_W3: SparkQwen4FlashModuleFillLinearView(&moe->experts_w3,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->experts_w2,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE: SparkQwen4FlashModuleFillLinearView(&moe->shared_gate,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP: SparkQwen4FlashModuleFillLinearView(&moe->shared_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->shared_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT: moe->shared_gate_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 }
 
-static SparkStatus SparkQwen4FlashModuleBindMtp(SparkQwen4FlashModuleState *state, const SparkQwen4FlashStagePackEntry *entry, void *payload, void *scale)
+static SparkStatus SparkQwen4FlashModuleBindMtp(SparkQwen4FlashModuleState *state, const SparkStagePackEntry *entry, void *payload, void *scale)
 {
 	switch ( entry->tensor_kind )
 	{
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC: SparkQwen4FlashModuleFillLinearView(&state->mtp.fc,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM: state->mtp.attention_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM: state->mtp.mlp_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->mtp.indexer.index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->mtp.indexer.q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM: state->mtp.indexer.k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.query,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.key,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.value,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.output,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_FC: SparkQwen4FlashModuleFillLinearView(&state->mtp.fc,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_ATTENTION_NORM: state->mtp.attention_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MLP_NORM: state->mtp.mlp_hc.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mtp.mlp_hc.block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->mtp.indexer.index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->mtp.indexer.q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_K_NORM: state->mtp.indexer.k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.query,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.key,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.value,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->mtp.attention.output,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
 		return(SparkQwen4FlashModuleBindMoe(&state->mtp.moe,entry,payload,scale));
 	}
 }
 
-static SparkStatus SparkQwen4FlashModuleBindGlobal(SparkQwen4FlashModuleState *state, const SparkQwen4FlashStagePackEntry *entry, void *payload)
+static SparkStatus SparkQwen4FlashModuleBindGlobal(SparkQwen4FlashModuleState *state, const SparkStagePackEntry *entry, void *payload)
 {
 	switch ( entry->tensor_kind )
 	{
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING:
+	case SPARK_LLM_STAGEPACK_TENSOR_EMBEDDING:
 		if ( state->owns_embedding == 0u && state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->token_embedding_bf16 = payload;
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM:
+	case SPARK_LLM_STAGEPACK_TENSOR_FINAL_NORM:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->readout_mixer.hc_norm_weight_bf16 = payload;
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN:
+	case SPARK_LLM_STAGEPACK_TENSOR_MIXER_DOWN:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		SparkQwen4FlashModuleFillLinearView(&state->readout_mixer.mix_down,entry,payload,0);
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP:
+	case SPARK_LLM_STAGEPACK_TENSOR_MIXER_UP:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		SparkQwen4FlashModuleFillLinearView(&state->readout_mixer.mix_up,entry,payload,0);
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD:
+	case SPARK_LLM_STAGEPACK_TENSOR_LM_HEAD:
 		if ( state->owns_final_head == 0u )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		state->lm_head_weight_bf16 = payload;
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.readout_mixer.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN:
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.readout_mixer.hc_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_MIXER_DOWN:
 		SparkQwen4FlashModuleFillLinearView(&state->mtp.readout_mixer.mix_down,entry,payload,0);
 		return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP:
+	case SPARK_LLM_STAGEPACK_TENSOR_MTP_MIXER_UP:
 		SparkQwen4FlashModuleFillLinearView(&state->mtp.readout_mixer.mix_up,entry,payload,0);
 		return(SPARK_STATUS_OK);
 	default:
@@ -512,48 +501,48 @@ static SparkStatus SparkQwen4FlashModuleBindGlobal(SparkQwen4FlashModuleState *s
 	}
 }
 
-static SparkStatus SparkQwen4FlashModuleBindLayer(SparkQwen4FlashModuleState *state, const SparkQwen4FlashStagePackEntry *entry, void *payload, void *scale)
+static SparkStatus SparkQwen4FlashModuleBindLayer(SparkQwen4FlashModuleState *state, const SparkStagePackEntry *entry, void *payload, void *scale)
 {
 	uint32_t layer = entry->layer_index;
 	SparkStatus status;
 	switch ( entry->tensor_kind )
 	{
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM: state->attention_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM: state->mlp_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].qkv,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].beta,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].decay,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT: state->gdn_by_layer[layer].conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG: state->gdn_by_layer[layer].a_log_f32 = (const float *)payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS: state->gdn_by_layer[layer].dt_bias_f32 = (const float *)payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM: state->gdn_by_layer[layer].gdn_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].query,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].key,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].value,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->indexer_by_layer[layer].index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->indexer_by_layer[layer].q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM: state->indexer_by_layer[layer].k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY: SparkQwen4FlashModuleFillLinearView(&state->ple.key_proj,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE: SparkQwen4FlashModuleFillLinearView(&state->ple.value_proj,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY: state->ple.norm_key_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY: state->ple.norm_query_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV: state->ple.norm_conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV: state->ple.conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS: state->ple.layer_multipliers = (const int64_t *)payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS: state->ple.head_vocab_sizes = (const int64_t *)payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS: state->ple.head_offsets = (const int64_t *)payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM: state->ple.ngram_embedding_bf16 = payload; state->owns_ple = 1u; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_ATTENTION_NORM: state->attention_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_MLP_NORM: state->mlp_norm_by_layer[layer] = payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_QKV: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].qkv,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_GATE: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].gate,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_BETA: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].beta,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_DECAY: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].decay,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->gdn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_CONV_WEIGHT: state->gdn_by_layer[layer].conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_A_LOG: state->gdn_by_layer[layer].a_log_f32 = (const float *)payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_DT_BIAS: state->gdn_by_layer[layer].dt_bias_f32 = (const float *)payload; return(SPARK_STATUS_OK);
+	case SPARK_STAGEPACK_TENSOR_GDN_NORM: state->gdn_by_layer[layer].gdn_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].query,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].key,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].value,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen4FlashModuleFillLinearView(&state->attn_by_layer[layer].output,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->attn_by_layer[layer].query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->attn_by_layer[layer].key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->attn_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_DOWN: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_UP: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].mix_up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_INJECT: SparkQwen4FlashModuleFillLinearView(&state->mlp_hc_by_layer[layer].block_inject,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_QK: SparkQwen4FlashModuleFillLinearView(&state->indexer_by_layer[layer].index_qk,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_Q_NORM: state->indexer_by_layer[layer].q_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_INDEXER_K_NORM: state->indexer_by_layer[layer].k_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_KEY: SparkQwen4FlashModuleFillLinearView(&state->ple.key_proj,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_VALUE: SparkQwen4FlashModuleFillLinearView(&state->ple.value_proj,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_KEY: state->ple.norm_key_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_QUERY: state->ple.norm_query_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_CONV: state->ple.norm_conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_CONV: state->ple.conv_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_MULTIPLIERS: state->ple.layer_multipliers = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_VOCABS: state->ple.head_vocab_sizes = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS: state->ple.head_offsets = (const int64_t *)payload; return(SPARK_STATUS_OK);
+	case SPARK_LLM_STAGEPACK_TENSOR_PLE_NGRAM: state->ple.ngram_embedding_bf16 = payload; state->owns_ple = 1u; return(SPARK_STATUS_OK);
 	default:
 		status = SparkQwen4FlashModuleBindMoe(&state->moe_by_layer[layer],entry,payload,scale);
 		if ( status == SPARK_STATUS_OK )
@@ -566,12 +555,12 @@ static uint64_t SparkQwen4FlashModuleExpectedGlobalBits(const SparkQwen4FlashMod
 {
 	uint64_t bits = 0u;
 	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
-		bits |= 1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_EMBEDDING;
+		bits |= 1ull << SPARK_LLM_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MIXER_UP);
+		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_FINAL_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_LM_HEAD) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MIXER_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MIXER_UP);
 #if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT != 0
 	if ( state->owns_final_head != 0u )
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_MIXER_UP);
+		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_MIXER_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_MIXER_UP);
 #endif
 	return(bits);
 }
@@ -581,19 +570,19 @@ static uint64_t SparkQwen4FlashModuleExpectedMtpBits(void)
 #if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT == 0
 	return(0ull);
 #else
-	return((1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FC) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM));
+	return((1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_FC) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1ull << SPARK_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_K_NORM));
 #endif
 }
 
 static uint64_t SparkQwen4FlashModuleExpectedLayerBits(const SparkQwen4FlashModuleState *state, uint32_t layer)
 {
-	uint64_t bits = (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
+	uint64_t bits = (1ull << SPARK_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
 	if ( SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u )
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_QKV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_GATE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_BETA) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DECAY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_A_LOG) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_GDN_NORM);
+		bits |= (1ull << SPARK_STAGEPACK_TENSOR_GDN_QKV) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_BETA) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_DECAY) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_OUTPUT) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_A_LOG) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_NORM);
 	else
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM);
+		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_K_NORM);
 	if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->allow_missing_ple == 0u )
-		bits |= (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_VALUE) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_KEY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_QUERY) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NORM_CONV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_CONV) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_MULTIPLIERS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_VOCABS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS) | (1ull << SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_PLE_NGRAM);
+		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_VALUE) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_QUERY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_CONV) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_CONV) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_MULTIPLIERS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_VOCABS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NGRAM);
 	return(bits);
 }
 
@@ -603,15 +592,91 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 static SparkStatus SparkQwen4FlashModuleAllocateSlotHostMirrors(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 
 
+static SparkStatus SparkQwen4FlashModuleKvFrameBuildRestoreBatch(const LmKvFramePlanConfig *configuration, const LmKvFramePendingLane *pending_lanes, uint32_t pending_lane_count, const uint32_t *packet_lane_counts, uint32_t packet_count, void *block_staging, uint32_t block_staging_record_capacity, void *gdn_staging, uint32_t gdn_staging_record_capacity, SparkKvStoreBlock *blocks, uint32_t block_capacity, uint32_t *block_count, uint32_t *lanes_built)
+{
+	_Static_assert(sizeof(LmKvFramePlanConfig) == sizeof(SparkQwen4FlashWorkControlKvPlanConfig), "kv plan layout");
+	_Static_assert(sizeof(LmKvFramePendingLane) == sizeof(SparkQwen4FlashWorkControlPendingLane), "kv pending lane layout");
+	return(SparkQwen4FlashWorkControlBuildRestoreBatch((const SparkQwen4FlashWorkControlKvPlanConfig *)configuration,(const SparkQwen4FlashWorkControlPendingLane *)pending_lanes,pending_lane_count,packet_lane_counts,packet_count,block_staging,block_staging_record_capacity,gdn_staging,gdn_staging_record_capacity,blocks,block_capacity,block_count,lanes_built));
+}
+
+static SparkStatus SparkQwen4FlashModuleKvFrameBuildEvictBatch(const LmKvFramePlanConfig *configuration, uint64_t sequence_id, const uint32_t *resident_blocks, uint32_t resident_block_count, uint32_t include_gdn_state, const void *block_staging, const void *gdn_staging, SparkKvStoreBlock *blocks, uint32_t block_capacity, uint32_t *block_count)
+{
+	return(SparkQwen4FlashWorkControlBuildEvictBatch((const SparkQwen4FlashWorkControlKvPlanConfig *)configuration,sequence_id,resident_blocks,resident_block_count,include_gdn_state,block_staging,gdn_staging,blocks,block_capacity,block_count));
+}
+
+static SparkStatus SparkQwen4FlashModuleKvFrameSubmit(SparkStageKvClient *client, LmKvFrameBatchState *batch_state, uint32_t operation, const SparkKvStoreBlock *blocks, uint32_t block_count, uint32_t priority)
+{
+	_Static_assert(sizeof(LmKvFrameBatchState) == sizeof(SparkQwen4FlashWorkControlKvBatchState), "kv batch state layout");
+	return(SparkQwen4FlashWorkControlSubmit(client,(SparkQwen4FlashWorkControlKvBatchState *)batch_state,operation,blocks,block_count,priority));
+}
+
+static SparkStatus SparkQwen4FlashModuleKvFrameProgress(SparkStageKvClient *client, LmKvFrameWorkState *work)
+{
+	_Static_assert(sizeof(LmKvFrameWorkState) == sizeof(SparkQwen4FlashWorkControlKvState), "kv work state layout");
+	return(SparkQwen4FlashWorkControlProgress(client,(SparkQwen4FlashWorkControlKvState *)work));
+}
+
+static SparkStatus SparkQwen4FlashModuleKvFrameAcknowledge(LmKvFrameBatchState *batch_state)
+{
+	return(SparkQwen4FlashWorkControlAcknowledge((SparkQwen4FlashWorkControlKvBatchState *)batch_state));
+}
+
+static const LmKvFrameOps SparkQwen4FlashModuleKvFrameOps =
+{
+	"qwen4_flash_stage",
+	SparkQwen4FlashModuleKvFrameBuildRestoreBatch,
+	SparkQwen4FlashModuleKvFrameBuildEvictBatch,
+	SparkQwen4FlashModuleKvFrameSubmit,
+	SparkQwen4FlashModuleKvFrameProgress,
+	SparkQwen4FlashModuleKvFrameAcknowledge
+};
+
+static SparkStatus SparkQwen4FlashModuleKvPrepareFrame(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkQwen4FlashResidentDecodeStageFrameContext *context, SparkQwen4FlashKvBlockTableView *table, uint32_t rows)
+{
+	LmKvFrameSlot frame_slot;
+	LmKvFrameTable frame_table;
+	SparkStatus status;
+	if ( context == 0 || context->decode_batch == 0 || table == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	frame_slot.cuda_stream = slot->cuda_stream;
+	frame_slot.host_row_lane_indices = slot->host_row_lane_indices;
+	frame_slot.host_row_positions = slot->host_row_positions;
+	frame_slot.host_context_lengths = slot->host_context_lengths;
+	frame_slot.host_slot_mapping = slot->host_slot_mapping;
+	frame_slot.slot_mapping = slot->slot_mapping;
+	frame_table.lane_count = table->lane_count;
+	frame_table.lane_stride = table->lane_stride;
+	frame_table.host_physical_block_indices = table->host_physical_block_indices;
+	frame_table.host_lane_physical_block_counts = table->host_lane_physical_block_counts;
+	frame_table.physical_block_indices = table->physical_block_indices;
+	frame_table.lane_physical_block_counts = table->lane_physical_block_counts;
+	status = LmKvFramePrepareFrame(&state->kv,&frame_slot,context->decode_batch->row_sequence_ids,&frame_table,rows);
+	table->physical_block_indices = frame_table.physical_block_indices;
+	table->lane_physical_block_counts = frame_table.lane_physical_block_counts;
+	return(status);
+}
+
+static void SparkQwen4FlashModuleKvMarkWritten(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
+{
+	LmKvFrameSlot frame_slot;
+	frame_slot.cuda_stream = slot->cuda_stream;
+	frame_slot.host_row_lane_indices = slot->host_row_lane_indices;
+	frame_slot.host_row_positions = slot->host_row_positions;
+	frame_slot.host_context_lengths = slot->host_context_lengths;
+	frame_slot.host_slot_mapping = slot->host_slot_mapping;
+	frame_slot.slot_mapping = slot->slot_mapping;
+	LmKvFrameMarkWritten(&state->kv,&frame_slot,rows);
+}
+
 static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
-	SparkQwen4FlashStagePackHeader geometry;
+	SparkStagePackHeaderCommon geometry;
 	const char *provider = 0,*service = 0,*socket_path = 0;
 	uint64_t pool_bytes = 0u,model_fp,layout_fp,layout_bits[3],block_record_bytes,staging_bytes;
 	uint32_t workers = 0u,block_record_elements,index;
 	SparkStatus status;
 	static const char *none = "none";
-	state->kv_tier_active = 0u;
+	state->kv.tier_active = 0u;
 	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
 	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
 	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
@@ -621,7 +686,7 @@ static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *s
 	if ( provider == 0 )
 		provider = none;
 	if ( strcmp(provider,"none") == 0 )
-		return(SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,0u,0u,0u,0u,0u,0,0,0u,0u));
+		return(SparkStageKvClientOpen(&state->kv.client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,0u,0u,0u,0u,0u,0,0,0u,0u));
 	status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_SERVICE",&service);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_SOCKET",&socket_path);
@@ -631,383 +696,59 @@ static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *s
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_WORKERS",1u,64u,&workers);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	SparkQwen4FlashStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count,1u);
+	SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,&geometry,state->first_layer_index,state->layer_count,1u);
 	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
 	block_record_elements = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * state->attn_layer_count;
 	layout_bits[0] = block_record_elements;
 	layout_bits[1] = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	layout_bits[2] = state->kv_block_count;
+	layout_bits[2] = state->kv.block_count;
 	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
 	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
-	staging_bytes = block_record_bytes * SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS;
-	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
-		state->kv_block_count = state->kv_physical_page_capacity;
-	if ( state->kv_block_count == 0u )
+	staging_bytes = block_record_bytes * SPARK_LLM_KV_STAGING_RECORDS;
+	if ( state->kv_physical_page_capacity != 0u && state->kv.block_count > state->kv_physical_page_capacity )
+		state->kv.block_count = state->kv_physical_page_capacity;
+	if ( state->kv.block_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->kv_plan.model_fingerprint = model_fp;
-	state->kv_plan.cache_layout_fingerprint = layout_fp;
-	state->kv_plan.rank_index = state->stage_index;
-	state->kv_plan.block_record_bytes = (uint32_t)block_record_bytes;
-	state->kv_plan.gdn_record_bytes = SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES;
-	state->kv_plan.lookahead_packet_count = 3u;
-	state->kv_plan.physical_block_capacity = state->kv_block_count;
-	state->kv_plan.allocated_physical_block_count = 0u;
-	state->kv_plan.staging_block_capacity = SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS;
-	status = SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers);
+	state->kv.plan.model_fingerprint = model_fp;
+	state->kv.plan.cache_layout_fingerprint = layout_fp;
+	state->kv.plan.rank_index = state->stage_index;
+	state->kv.plan.block_record_bytes = (uint32_t)block_record_bytes;
+	state->kv.plan.gdn_record_bytes = SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES;
+	state->kv.plan.lookahead_packet_count = 3u;
+	state->kv.plan.physical_block_capacity = state->kv.block_count;
+	state->kv.plan.allocated_physical_block_count = 0u;
+	state->kv.plan.staging_block_capacity = SPARK_LLM_KV_STAGING_RECORDS;
+	status = SparkStageKvClientOpen(&state->kv.client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	state->kv_slot_lane = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_slot_logical = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_slot_sequence = (uint64_t *)malloc((size_t)state->kv_block_count * sizeof(uint64_t));
-	state->kv_slot_dirty = (uint8_t *)calloc((size_t)state->kv_block_count,sizeof(uint8_t));
-	state->kv_slot_pinned = (uint8_t *)calloc((size_t)state->kv_block_count,sizeof(uint8_t));
-	state->kv_slot_free_stack = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_block_staging = malloc((size_t)staging_bytes);
-	state->kv_gdn_staging = malloc(SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES);
-	if ( cudaMalloc((void **)&state->kv_table_indices_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t)) != cudaSuccess )
+	state->kv.slot_lane = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
+	state->kv.slot_logical = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
+	state->kv.slot_sequence = (uint64_t *)malloc((size_t)state->kv.block_count * sizeof(uint64_t));
+	state->kv.slot_dirty = (uint8_t *)calloc((size_t)state->kv.block_count,sizeof(uint8_t));
+	state->kv.slot_pinned = (uint8_t *)calloc((size_t)state->kv.block_count,sizeof(uint8_t));
+	state->kv.slot_free_stack = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
+	state->kv.block_staging = malloc((size_t)staging_bytes);
+	state->kv.gdn_staging = malloc(SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES);
+	if ( cudaMalloc((void **)&state->kv.table_indices_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaMalloc((void **)&state->kv_table_counts_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t)) != cudaSuccess )
+	if ( cudaMalloc((void **)&state->kv.table_counts_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->kv_table_indices_host = (uint32_t *)malloc((size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_QWEN4_FLASH_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
-	if ( state->kv_slot_lane == 0 || state->kv_slot_logical == 0 || state->kv_slot_sequence == 0 || state->kv_slot_dirty == 0 || state->kv_slot_pinned == 0 || state->kv_slot_free_stack == 0 || state->kv_block_staging == 0 || state->kv_gdn_staging == 0 || state->kv_table_indices_host == 0 )
+	state->kv.table_indices_host = (uint32_t *)malloc((size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
+	if ( state->kv.slot_lane == 0 || state->kv.slot_logical == 0 || state->kv.slot_sequence == 0 || state->kv.slot_dirty == 0 || state->kv.slot_pinned == 0 || state->kv.slot_free_stack == 0 || state->kv.block_staging == 0 || state->kv.gdn_staging == 0 || state->kv.table_indices_host == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index = 0u; index < state->kv_block_count; index++)
-		state->kv_slot_free_stack[index] = index;
-	state->kv_slot_free_count = state->kv_block_count;
-	state->kv_evict_cursor = 0u;
-	state->kv_tier_active = 1u;
-	fprintf(stderr,"%s kv_tier_open provider=%s window=%u logical=%u physical=%u backing_bytes=%llu\n",SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->kv_block_count,state->kv_logical_page_capacity,state->kv_physical_page_capacity,(unsigned long long)state->kv_backing_maximum_bytes);
+	for (index = 0u; index < state->kv.block_count; index++)
+		state->kv.slot_free_stack[index] = index;
+	state->kv.slot_free_count = state->kv.block_count;
+	state->kv.evict_cursor = 0u;
+	state->kv.tier_active = 1u;
+	state->kv.ops = SparkQwen4FlashModuleKvFrameOps;
+	fprintf(stderr,"%s kv_tier_open provider=%s window=%u logical=%u physical=%u backing_bytes=%llu\n",SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->kv.block_count,state->kv_logical_page_capacity,state->kv_physical_page_capacity,(unsigned long long)state->kv_backing_maximum_bytes);
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen4FlashModuleKvWaitBatch(SparkQwen4FlashModuleState *state, SparkQwen4FlashWorkControlKvBatchState *batch)
-{
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t polls = 0u;
-	struct timespec pause;
-	pause.tv_sec = 0;
-	pause.tv_nsec = 500000;
-	while ( batch->state == SPARK_QWEN4_FLASH_WORK_CONTROL_BATCH_SUBMITTED )
-	{
-		status = SparkQwen4FlashWorkControlProgress(&state->kv_client,&state->kv_work);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-		if ( batch->state == SPARK_QWEN4_FLASH_WORK_CONTROL_BATCH_READY )
-			break;
-		if ( ++polls >= SPARK_QWEN4_FLASH_MODULE_KV_POLL_BOUND )
-		{
-			fprintf(stderr,"%s kv_store_stall\n",SPARK_QWEN4_FLASH_MODULE_TAG);
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
-		nanosleep(&pause,0);
-	}
-	if ( batch->state != SPARK_QWEN4_FLASH_WORK_CONTROL_BATCH_READY || batch->status != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return(SparkQwen4FlashWorkControlAcknowledge(batch));
-}
 
-static SparkStatus SparkQwen4FlashModuleKvEvictSlot(SparkQwen4FlashModuleState *state, uint32_t slot)
-{
-	SparkQwen4FlashWorkControlKvBatchState *batch = &state->kv_work.evict;
-	SparkKvStoreBlock blocks[1];
-	uint32_t block_count = 0u,logical;
-	uint64_t sequence_id;
-	cudaError_t error;
-	SparkStatus status;
-	if ( state->kv_slot_dirty[slot] != 0u )
-	{
-		error = cudaMemcpy(state->kv_block_staging,(const uint8_t *)state->kv_cache_bf16 + (uint64_t)slot * state->kv_plan.block_record_bytes,(size_t)state->kv_plan.block_record_bytes,cudaMemcpyDeviceToHost);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_evict_copy"));
-		logical = state->kv_slot_logical[slot];
-		sequence_id = state->kv_slot_sequence[slot];
-		status = SparkQwen4FlashWorkControlBuildEvictBatch(&state->kv_plan,sequence_id,&logical,1u,0u,state->kv_block_staging,state->kv_gdn_staging,blocks,1u,&block_count);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkQwen4FlashWorkControlSubmit(&state->kv_client,batch,SPARK_KV_STORE_OPERATION_PUT,blocks,block_count,SPARK_QWEN4_FLASH_WORK_CONTROL_RESTORE_PRIORITY_SPECULATIVE);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkQwen4FlashModuleKvWaitBatch(state,batch);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-	}
-	if ( state->kv_logical_to_slot != 0 && state->kv_slot_lane[slot] != UINT32_MAX &&
-		state->kv_slot_logical[slot] != UINT32_MAX && state->kv_logical_stride != 0u )
-	{
-		uint64_t evict_index = (uint64_t)state->kv_slot_lane[slot] * state->kv_logical_stride + state->kv_slot_logical[slot];
-		if ( evict_index < state->kv_logical_to_slot_capacity &&
-			state->kv_logical_to_slot[evict_index] == slot + 1u )
-			state->kv_logical_to_slot[evict_index] = 0u;
-	}
-	state->kv_slot_dirty[slot] = 0u;
-	state->kv_slot_pinned[slot] = 0u;
-	state->kv_slot_lane[slot] = UINT32_MAX;
-	state->kv_slot_logical[slot] = UINT32_MAX;
-	state->kv_slot_sequence[slot] = 0u;
-	state->kv_slot_free_stack[state->kv_slot_free_count++] = slot;
-	return(SPARK_STATUS_OK);
-}
 
-static SparkStatus SparkQwen4FlashModuleKvPrepareFrame(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkQwen4FlashResidentDecodeStageFrameContext *context, SparkQwen4FlashKvBlockTableView *table, uint32_t rows)
-{
-	SparkQwen4FlashWorkControlKvBatchState *restore_batch = &state->kv_work.restore;
-	SparkKvStoreBlock blocks[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-	uint32_t packet_lane_counts[1],block_count,lanes_built;
-	uint32_t lane_required[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint64_t lane_sequence[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_list[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_count = 0u,row,lane_index,logical,slot_index;
-	uint64_t logical_capacity;
-	SparkStatus status;
-	cudaError_t error;
-	uint32_t uncommitted[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-	uint32_t uncommitted_count = 0u;
-	uint32_t unwind_index;
-	SparkStatus fail_status;
-	if ( state->kv_tier_active == 0u )
-		return(SPARK_STATUS_OK);
-	if ( context == 0 || context->decode_batch == 0 || context->decode_batch->row_sequence_ids == 0 || table == 0 || table->host_physical_block_indices == 0 || table->host_lane_physical_block_counts == 0 || table->physical_block_indices == 0 || table->lane_physical_block_counts == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	logical_capacity = (uint64_t)table->lane_count * table->lane_stride;
-	if ( logical_capacity == 0u || table->lane_count > SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || table->lane_stride > SPARK_QWEN4_FLASH_MODULE_KV_MAX_BLOCKS_PER_LANE )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( logical_capacity > state->kv_logical_to_slot_capacity )
-	{
-		uint32_t *grown = (uint32_t *)realloc(state->kv_logical_to_slot,(size_t)logical_capacity * sizeof(uint32_t));
-		if ( grown == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		memset(grown + state->kv_logical_to_slot_capacity,0,(size_t)(logical_capacity - state->kv_logical_to_slot_capacity) * sizeof(uint32_t));
-		state->kv_logical_to_slot = grown;
-		state->kv_logical_to_slot_capacity = logical_capacity;
-		state->kv_logical_stride = table->lane_stride;
-	}
-	state->kv_logical_stride = table->lane_stride;
-	for (row = 0u; row < rows; row++)
-	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint32_t required_for_row = (slot->host_context_lengths[row] + SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-		uint64_t sequence_id = context->decode_batch->row_sequence_ids[row];
-		if ( lane >= table->lane_count || required_for_row > table->lane_stride || sequence_id == 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
-			if ( lane_list[lane_index] == lane )
-				break;
-		if ( lane_index == lane_count )
-		{
-			lane_list[lane_count] = lane;
-			lane_required[lane_count] = 0u;
-			lane_sequence[lane_count] = sequence_id;
-			lane_count++;
-		}
-		if ( required_for_row > lane_required[lane_index] )
-			lane_required[lane_index] = required_for_row;
-	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 1u;
-		}
-	}
-	{
-		SparkQwen4FlashWorkControlPendingLane pending_lanes[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-		uint32_t pending_slots[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-		uint32_t pending_logical[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-		uint64_t pending_lane_index[SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS];
-		uint32_t batch_block_count = 0u,batch_index;
-		memset(pending_lanes,0,sizeof(pending_lanes));
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
-		{
-			uint32_t lane = lane_list[lane_index];
-			for (logical = 0u; logical < lane_required[lane_index]; logical++)
-			{
-				uint32_t *residency = &state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-				if ( *residency != 0u )
-					continue;
-				if ( state->kv_slot_free_count == 0u )
-				{
-					uint32_t scans = 0u;
-					while ( state->kv_slot_pinned[state->kv_evict_cursor] != 0u )
-					{
-						state->kv_evict_cursor = (state->kv_evict_cursor + 1u) % state->kv_block_count;
-						if ( ++scans > state->kv_block_count )
-							{
-								fail_status = SPARK_STATUS_CAPACITY_EXCEEDED;
-								goto fail;
-							}
-					}
-					status = SparkQwen4FlashModuleKvEvictSlot(state,state->kv_evict_cursor);
-					if ( status != SPARK_STATUS_OK )
-						{
-							fail_status = status;
-							goto fail;
-						}
-				}
-			slot_index = state->kv_slot_free_stack[--state->kv_slot_free_count];
-			uncommitted[uncommitted_count++] = slot_index;
-			pending_lanes[batch_block_count].sequence_id = lane_sequence[lane_index];
-			pending_lanes[batch_block_count].nonresident_blocks = &pending_logical[batch_block_count];
-			pending_lanes[batch_block_count].nonresident_block_count = 1u;
-			pending_lanes[batch_block_count].gdn_nonresident = 0u;
-			pending_logical[batch_block_count] = logical;
-			pending_slots[batch_block_count] = slot_index;
-			pending_lane_index[batch_block_count] = (uint64_t)lane_index;
-			batch_block_count++;
-			if ( batch_block_count == SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS )
-			{
-				packet_lane_counts[0] = batch_block_count;
-				block_count = 0u;
-				lanes_built = 0u;
-				status = SparkQwen4FlashWorkControlBuildRestoreBatch(&state->kv_plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->kv_block_staging,SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS,state->kv_gdn_staging,1u,blocks,SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS,&block_count,&lanes_built);
-				if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-					status = SPARK_STATUS_CAPACITY_EXCEEDED;
-				if ( status == SPARK_STATUS_OK )
-					status = SparkQwen4FlashWorkControlSubmit(&state->kv_client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_QWEN4_FLASH_WORK_CONTROL_RESTORE_PRIORITY_IMMEDIATE);
-				if ( status == SPARK_STATUS_OK )
-					status = SparkQwen4FlashModuleKvWaitBatch(state,restore_batch);
-				if ( status != SPARK_STATUS_OK )
-					{
-						fail_status = status;
-						goto fail;
-					}
-				for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-				{
-					error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-					if ( error != cudaSuccess )
-						{
-							fail_status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_restore_copy");
-							goto fail;
-						}
-					state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-					state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-					state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-					state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
-					state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-					for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-						if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-						{
-							uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-							break;
-						}
-				}
-				batch_block_count = 0u;
-			}
-		}
-	}
-	if ( batch_block_count != 0u )
-	{
-			packet_lane_counts[0] = batch_block_count;
-			block_count = 0u;
-			lanes_built = 0u;
-			status = SparkQwen4FlashWorkControlBuildRestoreBatch(&state->kv_plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->kv_block_staging,SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS,state->kv_gdn_staging,1u,blocks,SPARK_QWEN4_FLASH_MODULE_KV_STAGING_RECORDS,&block_count,&lanes_built);
-			if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-				status = SPARK_STATUS_CAPACITY_EXCEEDED;
-			if ( status == SPARK_STATUS_OK )
-				status = SparkQwen4FlashWorkControlSubmit(&state->kv_client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_QWEN4_FLASH_WORK_CONTROL_RESTORE_PRIORITY_IMMEDIATE);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkQwen4FlashModuleKvWaitBatch(state,restore_batch);
-			if ( status != SPARK_STATUS_OK )
-				{
-					fail_status = status;
-					goto fail;
-				}
-			for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-			{
-				error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-				if ( error != cudaSuccess )
-					{
-						fail_status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_restore_copy");
-						goto fail;
-					}
-				state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-				state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-				state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-				state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
-				for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-					if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-					{
-						uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-						break;
-					}
-				state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-			}
-		}
-	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		uint64_t lane_slice = (uint64_t)lane * table->lane_stride;
-		memcpy(state->kv_table_indices_host + lane_slice,table->host_physical_block_indices + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t));
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-			state->kv_table_indices_host[lane_slice + logical] = state->kv_logical_to_slot[lane_slice + logical] - 1u;
-		error = cudaMemcpyAsync((uint8_t *)state->kv_table_indices_device + (lane_slice * sizeof(uint32_t)),state->kv_table_indices_host + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-		if ( error != cudaSuccess )
-			{
-				fail_status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_table_upload");
-				goto fail;
-			}
-	}
-	table->physical_block_indices = state->kv_table_indices_device;
-	table->lane_physical_block_counts = state->kv_table_counts_device;
-	error = cudaMemcpyAsync((void *)state->kv_table_counts_device,(const void *)table->host_lane_physical_block_counts,(size_t)table->lane_count * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_table_upload");
-			goto fail;
-		}
-	for (row = 0u; row < rows; row++)
-	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint64_t position = slot->host_row_positions[row];
-		slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + (uint32_t)(position / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS)] - 1u;
-		slot->host_slot_mapping[row] = slot_index * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS + (uint32_t)(position % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
-	}
-	error = cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"kv_slot_upload");
-			goto fail;
-		}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 0u;
-		}
-	}
-	return(SPARK_STATUS_OK);
-fail:
-	for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-		state->kv_slot_free_stack[state->kv_slot_free_count++] = uncommitted[unwind_index];
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t fail_lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)fail_lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 0u;
-		}
-	}
-	return(fail_status);
-}
 
-static void SparkQwen4FlashModuleKvMarkWritten(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
-{
-	uint32_t row,slot_index;
-	if ( state->kv_tier_active == 0u )
-		return;
-	for (row = 0u; row < rows; row++)
-	{
-		slot_index = slot->host_slot_mapping[row] / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-		if ( slot_index < state->kv_block_count )
-			state->kv_slot_dirty[slot_index] = 1u;
-	}
-}
 
 extern cudaError_t SparkQwen4FlashLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen4FlashLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
@@ -1385,13 +1126,13 @@ static void SparkQwen4FlashModuleSnapshotExtend(
 	SparkModelDriverRuntimeSnapshot *snapshot)
 {
 	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
-	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	snapshot->kv_token_capacity = (uint64_t)state->kv.block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 }
 
 static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 {
 	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
-	SparkStageKvClientClose(&state->kv_client);
+	SparkStageKvClientClose(&state->kv.client);
 	free(state->ple_prev_context_u32);
 	{
 		uint32_t slot_index;
@@ -1400,20 +1141,20 @@ static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 	}
 	if ( state->tp_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-	free(state->kv_logical_to_slot);
-	free(state->kv_slot_lane);
-	free(state->kv_slot_logical);
-	free(state->kv_slot_sequence);
-	free(state->kv_slot_dirty);
-	free(state->kv_slot_pinned);
-	free(state->kv_slot_free_stack);
-	free(state->kv_block_staging);
-	free(state->kv_gdn_staging);
-	free(state->kv_table_indices_host);
-	if ( state->kv_table_indices_device != 0 )
-		cudaFree(state->kv_table_indices_device);
-	if ( state->kv_table_counts_device != 0 )
-		cudaFree(state->kv_table_counts_device);
+	free(state->kv.logical_to_slot);
+	free(state->kv.slot_lane);
+	free(state->kv.slot_logical);
+	free(state->kv.slot_sequence);
+	free(state->kv.slot_dirty);
+	free(state->kv.slot_pinned);
+	free(state->kv.slot_free_stack);
+	free(state->kv.block_staging);
+	free(state->kv.gdn_staging);
+	free(state->kv.table_indices_host);
+	if ( state->kv.table_indices_device != 0 )
+		cudaFree(state->kv.table_indices_device);
+	if ( state->kv.table_counts_device != 0 )
+		cudaFree(state->kv.table_counts_device);
 }
 
 static const SparkStageModuleLifecycleOps SparkQwen4FlashModuleLifecycle =
@@ -1573,7 +1314,7 @@ static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * state->indexer_mask_stride,(void **)&slot->indexer_mask_u8);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * state->kv_block_count * sizeof(uint32_t),(void **)&slot->indexer_scores_u32);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * state->kv.block_count * sizeof(uint32_t),(void **)&slot->indexer_scores_u32);
 	if ( status == SPARK_STATUS_OK && state->owns_ple != 0u )
 	{
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->ple_embedding_bf16);
@@ -1657,7 +1398,7 @@ static SparkStatus SparkQwen4FlashModuleRunAttnLayer(SparkQwen4FlashModuleState 
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchLinear(stream,&weights->value,slot->normalized_bf16,slot->v_bf16,rows);
 	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchAttnPrepare(stream,slot->q_fused_bf16,slot->k_bf16,slot->v_bf16,weights,state->kv_cache_bf16,rows_view->slot_mapping,rows_view->row_positions,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON,state->tp_degree,state->tp_rank);
+		error = SparkQwen4FlashLaunchAttnPrepare(stream,slot->q_fused_bf16,slot->k_bf16,slot->v_bf16,weights,state->kv.cache_bf16,rows_view->slot_mapping,rows_view->row_positions,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON,state->tp_degree,state->tp_rank);
 	if ( error == cudaSuccess && indexer != 0 )
 	{
 		void *raw_plane = (uint8_t *)state->indexer_raw_key_cache_bf16 + ((uint64_t)indexer_ordinal * state->indexer_raw_layer_stride * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
@@ -1666,12 +1407,12 @@ static SparkStatus SparkQwen4FlashModuleRunAttnLayer(SparkQwen4FlashModuleState 
 		if ( error == cudaSuccess )
 			error = SparkQwen4FlashLaunchIndexerPrepare(stream,slot->qkv_bf16,indexer,slot->indexer_query_bf16,raw_plane,pooled_plane,rows_view->slot_mapping,table->physical_block_indices,rows_view->row_positions,rows,table->lane_stride,state->indexer_raw_layer_stride / SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 		if ( error == cudaSuccess )
-			error = SparkQwen4FlashLaunchIndexerSelect(stream,slot->indexer_query_bf16,pooled_plane,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->indexer_mask_u8,slot->indexer_scores_u32,rows,state->indexer_mask_stride,state->kv_block_count);
+			error = SparkQwen4FlashLaunchIndexerSelect(stream,slot->indexer_query_bf16,pooled_plane,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->indexer_mask_u8,slot->indexer_scores_u32,rows,state->indexer_mask_stride,state->kv.block_count);
 		if ( error == cudaSuccess )
 			token_mask = slot->indexer_mask_u8;
 	}
 	if ( error == cudaSuccess )
-		error = SparkQwen4FlashLaunchAttnDecode(stream,slot->q_fused_bf16,state->kv_cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,state->tp_degree,state->tp_rank,token_mask,token_mask != 0 ? state->indexer_mask_stride : 0u);
+		error = SparkQwen4FlashLaunchAttnDecode(stream,slot->q_fused_bf16,state->kv.cache_bf16,table,rows_view->row_lane_indices,rows_view->context_lengths,slot->head_out_bf16,rows,ordinal,state->cache_layer_stride,state->cache_block_stride,state->tp_degree,state->tp_rank,token_mask,token_mask != 0 ? state->indexer_mask_stride : 0u);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchLinear(stream,&weights->output,slot->head_out_bf16,slot->delta_bf16,rows);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"attn_layer"));
@@ -1930,19 +1671,19 @@ static SparkStatus SparkQwen4FlashModuleAllocatePools(SparkQwen4FlashModuleState
 	{
 		state->cache_layer_stride = (uint64_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS;
 		state->cache_block_stride = state->cache_layer_stride * state->cache_layer_count;
-		cache_elements = state->cache_block_stride * state->kv_block_count;
-		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
+		cache_elements = state->cache_block_stride * state->kv.block_count;
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->kv.cache_bf16);
 	}
 	state->indexer_cache_layer_count = state->cache_layer_count;
-	state->indexer_mask_stride = state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	state->indexer_mask_stride = state->kv.block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 	if ( status == SPARK_STATUS_OK && state->indexer_cache_layer_count != 0u )
 	{
-		uint64_t raw_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count *
+		uint64_t raw_elements = (uint64_t)state->indexer_cache_layer_count * state->kv.block_count *
 			SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
 		uint64_t pooled_rows_per_block = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS / SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO;
-		uint64_t pooled_elements = (uint64_t)state->indexer_cache_layer_count * state->kv_block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
-		state->indexer_raw_layer_stride = (uint64_t)state->kv_block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
-		state->indexer_pooled_layer_stride = (uint64_t)state->kv_block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		uint64_t pooled_elements = (uint64_t)state->indexer_cache_layer_count * state->kv.block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		state->indexer_raw_layer_stride = (uint64_t)state->kv.block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
+		state->indexer_pooled_layer_stride = (uint64_t)state->kv.block_count * pooled_rows_per_block * SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION;
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,raw_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_raw_key_cache_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,pooled_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,&state->indexer_pooled_key_cache_bf16);

@@ -34,13 +34,13 @@ static __device__ __forceinline__ float LmGdnStageRopeFrequency(uint32_t pair)
 	return(exp2f(-((float)(2u * pair) / (float)SPARK_LLM_ROPE_DIMENSION) * log2f((float)SPARK_LLM_ROPE_THETA)));
 }
 
-static __global__ void LmGdnStageConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+static __global__ void LmGdnStageConvUpdateKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
 	uint32_t row = blockIdx.y,channel = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint64_t tail_base;
 	float window[4],accumulator;
 	uint32_t tap;
-	if ( row >= row_count || channel >= SPARK_LLM_GDN_CONV_CHANNELS )
+	if ( row >= row_count || channel >= SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree) )
 		return;
 	tail_base = ((uint64_t)row_lane_indices[row] * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * 3u);
 	if ( state_cold_by_row[row] != 0u )
@@ -55,28 +55,28 @@ static __global__ void LmGdnStageConvUpdateKernel(const void *qkv_bf16, const vo
 		window[1] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 1u);
 		window[2] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 2u);
 	}
-	window[3] = SparkLmBf16ToFloat(qkv_bf16,((uint64_t)row * SPARK_LLM_GDN_CONV_CHANNELS) + channel);
+	window[3] = SparkLmBf16ToFloat(qkv_bf16,((uint64_t)row * SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree)) + channel);
 	accumulator = 0.0f;
 	for (tap = 0; tap < SPARK_LLM_GDN_CONV_KERNEL; tap++)
 		accumulator += (window[tap] * SparkLmBf16ToFloat(conv_weight_bf16,((uint64_t)channel * SPARK_LLM_GDN_CONV_KERNEL) + tap));
-	SparkLmFloatToBf16(conv_out_bf16,((uint64_t)row * SPARK_LLM_GDN_CONV_CHANNELS) + channel,SparkLmSwish(accumulator));
+	SparkLmFloatToBf16(conv_out_bf16,((uint64_t)row * SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree)) + channel,SparkLmSwish(accumulator));
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[1]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[2]);
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[3]);
 }
 
-static __global__ void LmGdnStageDecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count)
+static __global__ void LmGdnStageDecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
 	uint32_t row = blockIdx.x,head = threadIdx.x;
 	uint64_t index;
-	if ( row >= row_count || head >= SPARK_LLM_GDN_VALUE_HEAD_COUNT )
+	if ( row >= row_count || head >= SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree) )
 		return;
-	index = ((uint64_t)row * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head;
+	index = ((uint64_t)row * SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree)) + head;
 	log_decay_f32[index] = -expf(a_log_f32[head]) * SparkLmSoftplus(SparkLmBf16ToFloat(decay_pre_bf16,index) + dt_bias_f32[head]);
 	beta_f32[index] = SparkLmSigmoid(SparkLmBf16ToFloat(beta_pre_bf16,index));
 }
 
-static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
     extern __shared__ float state_shared[];
     __shared__ float qn[SPARK_GDN_STAGE_CUDA_DK];
@@ -108,7 +108,7 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
         return;
     }
 
-    conv_row = (uint64_t)row * SPARK_LLM_GDN_CONV_CHANNELS;
+    conv_row = (uint64_t)row * SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree);
     value = SparkLmBf16ToFloat(
         conv_out_bf16,
         conv_row + ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + column);
@@ -118,7 +118,7 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
 
     value = SparkLmBf16ToFloat(
         conv_out_bf16,
-        conv_row + SPARK_LLM_GDN_QK_DIMENSION +
+        conv_row + SPARK_LLM_GDN_LOCAL_QK_DIMENSION(tp_degree) +
             ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + column);
     k_norm = SparkLmBlockReduceSum(value * value, reduce_scratch);
     kn[column] = value * rsqrtf(k_norm + 1.0e-6f);
@@ -131,9 +131,9 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
     decay = state_cold_by_row[row] != 0u
         ? 0.0f
         : expf(log_decay_f32[
-            ((uint64_t)row * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head]);
+            ((uint64_t)row * SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree)) + head]);
     beta = beta_f32[
-        ((uint64_t)row * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head];
+        ((uint64_t)row * SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree)) + head];
 
     kv_memory = 0.0f;
     for (element = 0u; element < SPARK_GDN_STAGE_CUDA_DK; ++element)
@@ -148,7 +148,7 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
 
     delta = (SparkLmBf16ToFloat(
         conv_out_bf16,
-        conv_row + (2u * SPARK_LLM_GDN_QK_DIMENSION) +
+        conv_row + (2u * SPARK_LLM_GDN_LOCAL_QK_DIMENSION(tp_degree)) +
             ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column) - kv_memory) * beta;
     output = 0.0f;
     for (element = 0u; element < SPARK_GDN_STAGE_CUDA_DK; ++element)
@@ -160,7 +160,7 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
     }
     SparkLmFloatToBf16(
         core_out_bf16,
-        ((uint64_t)row * SPARK_LLM_GDN_VALUE_DIMENSION) +
+        ((uint64_t)row * SPARK_LLM_GDN_LOCAL_VALUE_DIMENSION(tp_degree)) +
             ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column,
         output);
 
@@ -171,13 +171,13 @@ static __global__ void LmGdnStageGdnStepKernel(const void *conv_out_bf16, const 
     }
 }
 
-static __global__ void LmGdnStageGatedNormKernel(const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon)
+static __global__ void LmGdnStageGatedNormKernel(const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon, uint32_t local_value_heads, uint32_t local_value_dimension)
 {
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
 	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x;
-	uint64_t index = ((uint64_t)row * SPARK_LLM_GDN_VALUE_DIMENSION) + ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column;
+	uint64_t index = ((uint64_t)row * local_value_dimension) + ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column;
 	float value,variance;
-	if ( row >= row_count )
+	if ( row >= row_count || head >= local_value_heads )
 		return;
 	value = SparkLmBf16ToFloat(core_bf16,index);
 	variance = SparkLmBlockReduceSum(value * value,reduce_scratch) / (float)SPARK_GDN_STAGE_CUDA_DV;
@@ -740,15 +740,18 @@ static __device__ __forceinline__ uint64_t LmGdnStageChunkHeadOffset(uint32_t he
 	return((uint64_t)head * per_head_elements);
 }
 
-static __global__ void LmGdnStageChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, LmGdnStageChunkWorkspaceView views, uint32_t token_count)
+static __global__ void LmGdnStageChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, LmGdnStageChunkWorkspaceView views, uint32_t token_count, uint32_t tp_degree)
 {
+	const uint32_t local_value_heads = SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree);
+	const uint32_t local_qk = SPARK_LLM_GDN_LOCAL_QK_DIMENSION(tp_degree);
+	const uint32_t local_conv = SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree);
 	uint32_t head = blockIdx.x,row = threadIdx.x,key_head = head / SPARK_GDN_STAGE_CUDA_GVA_GROUP,element,column;
 	uint64_t conv_row,qk_base = LmGdnStageChunkHeadOffset(head,SPARK_GDN_STAGE_CUDA_CHUNK * SPARK_GDN_STAGE_CUDA_DK);
 	uint64_t mat_base = LmGdnStageChunkHeadOffset(head,SPARK_GDN_STAGE_CUDA_CHUNK * SPARK_GDN_STAGE_CUDA_CHUNK);
 	float total,value,product;
 	if ( row >= token_count )
 		return;
-	conv_row = (uint64_t)row * SPARK_LLM_GDN_CONV_CHANNELS;
+	conv_row = (uint64_t)row * local_conv;
 	total = 0.0f;
 	for (element = 0; element < SPARK_GDN_STAGE_CUDA_DK; element++)
 	{
@@ -761,18 +764,18 @@ static __global__ void LmGdnStageChunkPrepareKernel(const void *conv_out_bf16, c
 	total = 0.0f;
 	for (element = 0; element < SPARK_GDN_STAGE_CUDA_DK; element++)
 	{
-		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_LLM_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + element);
+		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + local_qk + ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + element);
 		total += (value * value);
 	}
 	total = rsqrtf(total + 1e-6f);
 	for (element = 0; element < SPARK_GDN_STAGE_CUDA_DK; element++)
-		views.kn[qk_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_LLM_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + element) * total;
+		views.kn[qk_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + local_qk + ((uint64_t)key_head * SPARK_GDN_STAGE_CUDA_DK) + element) * total;
 	if ( row == 0u )
 	{
 		total = 0.0f;
 		for (element = 0; element < token_count; element++)
 		{
-			total += log_decay_f32[((uint64_t)element * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head];
+			total += log_decay_f32[((uint64_t)element * local_value_heads) + head];
 			views.cum_g[LmGdnStageChunkHeadOffset(head,SPARK_GDN_STAGE_CUDA_CHUNK) + element] = total;
 		}
 	}
@@ -783,7 +786,7 @@ static __global__ void LmGdnStageChunkPrepareKernel(const void *conv_out_bf16, c
 		views.decay[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + column] = value;
 		product = 0.0f;
 		for (element = 0; element < SPARK_GDN_STAGE_CUDA_DK && column < row; element++)
-			product += (views.kn[qk_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DK) + element] * beta_f32[((uint64_t)row * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head] * views.kn[qk_base + ((uint64_t)column * SPARK_GDN_STAGE_CUDA_DK) + element]);
+			product += (views.kn[qk_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DK) + element] * beta_f32[((uint64_t)row * local_value_heads) + head] * views.kn[qk_base + ((uint64_t)column * SPARK_GDN_STAGE_CUDA_DK) + element]);
 		views.attn[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + column] = column < row ? -(product * value) : 0.0f;
 	}
 }
@@ -812,8 +815,11 @@ static __global__ void LmGdnStageChunkSolveKernel(LmGdnStageChunkWorkspaceView v
 		views.attn[mat_base + ((uint64_t)column * SPARK_GDN_STAGE_CUDA_CHUNK) + column] += 1.0f;
 }
 
-static __global__ void LmGdnStageChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, LmGdnStageChunkWorkspaceView views, uint32_t token_count)
+static __global__ void LmGdnStageChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, LmGdnStageChunkWorkspaceView views, uint32_t token_count, uint32_t tp_degree)
 {
+	const uint32_t local_value_heads = SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree);
+	const uint32_t local_qk = SPARK_LLM_GDN_LOCAL_QK_DIMENSION(tp_degree);
+	const uint32_t local_conv = SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree);
 	__shared__ float exp_cum_g[SPARK_GDN_STAGE_CUDA_CHUNK];
 	uint32_t head = blockIdx.x,row = blockIdx.y,column = threadIdx.x,element;
 	uint64_t mat_base = LmGdnStageChunkHeadOffset(head,SPARK_GDN_STAGE_CUDA_CHUNK * SPARK_GDN_STAGE_CUDA_CHUNK);
@@ -832,14 +838,14 @@ static __global__ void LmGdnStageChunkTransformKernel(const void *conv_out_bf16,
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
-		transform = views.attn[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head];
-		accumulator += (transform * SparkLmBf16ToFloat(conv_out_bf16,((uint64_t)element * SPARK_LLM_GDN_CONV_CHANNELS) + (2u * SPARK_LLM_GDN_QK_DIMENSION) + ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column));
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * local_value_heads) + head];
+		accumulator += (transform * SparkLmBf16ToFloat(conv_out_bf16,((uint64_t)element * local_conv) + (2u * local_qk) + ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column));
 	}
 	views.w[vec_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DV) + column] = accumulator;
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
-		transform = views.attn[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_LLM_GDN_VALUE_HEAD_COUNT) + head] * exp_cum_g[element];
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * local_value_heads) + head] * exp_cum_g[element];
 		accumulator += (transform * views.kn[vec_base + ((uint64_t)element * SPARK_GDN_STAGE_CUDA_DK) + column]);
 	}
 	views.kg[vec_base + ((uint64_t)row * SPARK_GDN_STAGE_CUDA_DK) + column] = accumulator;
@@ -909,7 +915,7 @@ static __global__ void LmGdnStageChunkQkDecayKernel(LmGdnStageChunkWorkspaceView
     }
 }
 
-static __global__ void LmGdnStageChunkStepKernel(const float *log_decay_f32, LmGdnStageChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+static __global__ void LmGdnStageChunkStepKernel(const float *log_decay_f32, LmGdnStageChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
     extern __shared__ float chunk_shared[];
     float *state_shared;
@@ -1010,7 +1016,7 @@ static __global__ void LmGdnStageChunkStepKernel(const float *log_decay_f32, LmG
         }
         SparkLmFloatToBf16(
             core_out_bf16,
-            ((uint64_t)row * SPARK_LLM_GDN_VALUE_DIMENSION) +
+            ((uint64_t)row * SPARK_LLM_GDN_LOCAL_VALUE_DIMENSION(tp_degree)) +
                 ((uint64_t)head * SPARK_GDN_STAGE_CUDA_DV) + column,
             accumulator);
     }
@@ -1035,12 +1041,13 @@ static __global__ void LmGdnStageChunkStepKernel(const float *log_decay_f32, LmG
     }
 }
 
-static __global__ void LmGdnStageChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+static __global__ void LmGdnStageChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
+	const uint32_t local_conv_channels = SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree);
 	uint32_t channel = (blockIdx.x * blockDim.x) + threadIdx.x,token,tap;
 	uint64_t tail_base,element;
 	float window[4],weight[4],accumulator;
-	if ( channel >= SPARK_LLM_GDN_CONV_CHANNELS )
+	if ( channel >= local_conv_channels )
 		return;
 	tail_base = ((uint64_t)lane_index * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * SPARK_LLM_GDN_CONV_TAIL_COLUMNS);
 	window[0] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 0u);
@@ -1050,7 +1057,7 @@ static __global__ void LmGdnStageChunkConvKernel(const void *qkv_bf16, const voi
 		weight[tap] = SparkLmBf16ToFloat(conv_weight_bf16,((uint64_t)channel * SPARK_LLM_GDN_CONV_KERNEL) + tap);
 	for (token = 0; token < token_count; token++)
 	{
-		element = ((uint64_t)token * SPARK_LLM_GDN_CONV_CHANNELS) + channel;
+		element = ((uint64_t)token * local_conv_channels) + channel;
 		window[3] = SparkLmBf16ToFloat(qkv_bf16,element);
 		accumulator = 0.0f;
 		for (tap = 0; tap < SPARK_LLM_GDN_CONV_KERNEL; tap++)
@@ -1281,23 +1288,24 @@ cudaError_t LmGdnStageLaunchLinear(cudaStream_t stream, const LmGdnStageLinearVi
 	return(SparkLmHostLaunchBatchedLinear<32u,SPARK_ACTIVATION_CODEC_NONE,1u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
-cudaError_t LmGdnStageLaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+cudaError_t LmGdnStageLaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
-	dim3 grid((SPARK_LLM_GDN_CONV_CHANNELS + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
-	LmGdnStageConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,conv_weight_bf16,conv_out_bf16,conv_tail_bf16,row_lane_indices,state_cold_by_row,row_count,gdn_layer_ordinal,tail_lane_stride,tail_layer_stride);
+	uint32_t local_conv_channels = SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree);
+	dim3 grid((local_conv_channels + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,row_count,1u);
+	LmGdnStageConvUpdateKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,conv_weight_bf16,conv_out_bf16,conv_tail_bf16,row_lane_indices,state_cold_by_row,row_count,gdn_layer_ordinal,tail_lane_stride,tail_layer_stride,tp_degree);
 	return(cudaGetLastError());
 }
 
-cudaError_t LmGdnStageLaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count)
+cudaError_t LmGdnStageLaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
-	LmGdnStageDecayBetaKernel<<<row_count,SPARK_LLM_GDN_VALUE_HEAD_COUNT,0,stream>>>(decay_pre_bf16,beta_pre_bf16,a_log_f32,dt_bias_f32,log_decay_f32,beta_f32,row_count);
+	LmGdnStageDecayBetaKernel<<<row_count,SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),0,stream>>>(decay_pre_bf16,beta_pre_bf16,a_log_f32,dt_bias_f32,log_decay_f32,beta_f32,row_count,tp_degree);
 	return(cudaGetLastError());
 }
 
-cudaError_t LmGdnStageLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+cudaError_t LmGdnStageLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *state_f32, void *core_out_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
 	dim3 grid(
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		row_count,
 		1u);
 	LmGdnStageGdnStepKernel<<<
@@ -1315,14 +1323,16 @@ cudaError_t LmGdnStageLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf
 			row_count,
 			gdn_layer_ordinal,
 			state_lane_stride,
-			state_layer_stride);
+			state_layer_stride,
+			tp_degree);
 	return cudaGetLastError();
 }
 
-cudaError_t LmGdnStageLaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon)
+cudaError_t LmGdnStageLaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const void *norm_weight_bf16, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
 {
-	dim3 grid(SPARK_LLM_GDN_VALUE_HEAD_COUNT,row_count,1u);
-	LmGdnStageGatedNormKernel<<<grid,SPARK_GDN_STAGE_CUDA_DV,0,stream>>>(core_bf16,z_bf16,norm_weight_bf16,output_bf16,row_count,epsilon);
+	uint32_t local_value_heads = SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree);
+	dim3 grid(local_value_heads,row_count,1u);
+	LmGdnStageGatedNormKernel<<<grid,SPARK_GDN_STAGE_CUDA_DV,0,stream>>>(core_bf16,z_bf16,norm_weight_bf16,output_bf16,row_count,epsilon,local_value_heads,SPARK_LLM_GDN_LOCAL_VALUE_DIMENSION(tp_degree));
 	return(cudaGetLastError());
 }
 
@@ -1370,20 +1380,20 @@ cudaError_t LmGdnStageLaunchAttnDecode(cudaStream_t stream, const void *q_fused_
 	return cudaGetLastError();
 }
 
-cudaError_t LmGdnStageLaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+cudaError_t LmGdnStageLaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride, uint32_t tp_degree)
 {
 	if ( token_count == 0u )
 		return(cudaErrorInvalidValue);
-	LmGdnStageChunkConvKernel<<<(SPARK_LLM_GDN_CONV_CHANNELS + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,conv_weight_bf16,conv_out_bf16,conv_tail_bf16,lane_index,token_count,gdn_layer_ordinal,tail_lane_stride,tail_layer_stride);
+	LmGdnStageChunkConvKernel<<<(SPARK_LLM_GDN_LOCAL_CONV_CHANNELS(tp_degree) + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,conv_weight_bf16,conv_out_bf16,conv_tail_bf16,lane_index,token_count,gdn_layer_ordinal,tail_lane_stride,tail_layer_stride,tp_degree);
 	return(cudaGetLastError());
 }
 
-cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride, uint32_t tp_degree)
 {
 	LmGdnStageChunkWorkspaceView views;
 	cudaError_t status;
 	dim3 transform_grid(
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		token_count,
 		1u);
 	views.qn = workspace_qn;
@@ -1396,15 +1406,15 @@ cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_b
 	if ( token_count == 0u || token_count > SPARK_GDN_STAGE_CUDA_CHUNK )
 		return(cudaErrorInvalidValue);
 	LmGdnStageChunkPrepareKernel<<<
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		SPARK_GDN_STAGE_CUDA_CHUNK,
 		0u,
-		stream>>>(conv_out_bf16, log_decay_f32, beta_f32, views, token_count);
+		stream>>>(conv_out_bf16, log_decay_f32, beta_f32, views, token_count, tp_degree);
 	status = cudaGetLastError();
 	if ( status != cudaSuccess )
 		return(status);
 	LmGdnStageChunkSolveKernel<<<
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		SPARK_GDN_STAGE_CUDA_CHUNK,
 		0u,
 		stream>>>(views, token_count);
@@ -1415,12 +1425,12 @@ cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_b
 		transform_grid,
 		SPARK_GDN_STAGE_CUDA_DV,
 		0u,
-		stream>>>(conv_out_bf16, beta_f32, views, token_count);
+		stream>>>(conv_out_bf16, beta_f32, views, token_count, tp_degree);
 	status = cudaGetLastError();
 	if ( status != cudaSuccess )
 		return(status);
 	LmGdnStageChunkQkDecayKernel<<<
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		SPARK_LM_CTA_THREADS,
 		SPARK_GDN_STAGE_CUDA_GDN_QK_SHARED_BYTES,
 		stream>>>(views, token_count);
@@ -1428,7 +1438,7 @@ cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_b
 	if ( status != cudaSuccess )
 		return(status);
 	LmGdnStageChunkStepKernel<<<
-		SPARK_LLM_GDN_VALUE_HEAD_COUNT,
+		SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree),
 		SPARK_GDN_STAGE_CUDA_DV,
 		SPARK_GDN_STAGE_CUDA_GDN_CHUNK_SHARED_BYTES,
 		stream>>>(
@@ -1440,7 +1450,8 @@ cudaError_t LmGdnStageLaunchGdnChunk(cudaStream_t stream, const void *conv_out_b
 			token_count,
 			gdn_layer_ordinal,
 			state_lane_stride,
-			state_layer_stride);
+			state_layer_stride,
+			tp_degree);
 	return(cudaGetLastError());
 }
 

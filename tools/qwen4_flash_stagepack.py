@@ -76,7 +76,7 @@ DEFAULT_CONTRACT = ROOT / "model_contracts" / "qwen4_flash_authoritative.json"
 INDEX_NAME = "model.safetensors.index.json"
 CONFIG_NAME = "config.json"
 
-# Wire constants, mirroring spark_qwen4_flash_stagepack_format.h.
+# Wire constants, mirroring common/common_stagepack_format_ext.h.
 MAGIC = 0x50533451  # 'Q4SP' little endian
 # v2: full-width hc norms, per-sublayer hc mixers, indexer, PLE, mixers.
 FORMAT_VERSION = 2
