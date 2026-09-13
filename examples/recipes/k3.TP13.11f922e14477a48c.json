@@ -1,0 +1,1499 @@
+{
+  "content_hash": "11f922e14477a48c",
+  "contract": {
+    "path": "model_contracts/k3_authoritative.json",
+    "sha256": "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
+  },
+  "datafile": "k3.TP13.11f922e14477a48c.json",
+  "degree": 13,
+  "family": "k3",
+  "geometry_hash": "a51181eba5d37614",
+  "kind": "sparkpipe.model_recipe",
+  "kv_entry_prefix": "k3.TP13.a51181eba5d37614/",
+  "kv_geometry": {
+    "attention_period": 4,
+    "global_phase": 3,
+    "kda_layer_count": 69,
+    "kda_state": {
+      "head_count": 96,
+      "key_dimension": 128,
+      "short_conv_kernel": 4,
+      "state_element_type": "fp32",
+      "state_layout": "transposed",
+      "value_dimension": 128
+    },
+    "kv_element_bits": 16,
+    "kv_lora_rank": 512,
+    "kv_page_slots": 64,
+    "layer_count": 93,
+    "layout": "mla_latent_bf16+kda_recurrent_state_fp32",
+    "mla_layer_count": 24,
+    "qk_nope_dimension": 128,
+    "qk_unrotated_dimension": 64,
+    "uses_nope": true,
+    "value_head_dimension": 128
+  },
+  "model": "k3",
+  "schema_version": 1,
+  "strategy": "TP",
+  "topology": {
+    "mode": "dual_switch",
+    "name": "dual_switch_16node_production",
+    "node_names": [
+      "spark-00",
+      "spark-01",
+      "spark-02",
+      "spark-03",
+      "spark-04",
+      "spark-05",
+      "spark-06",
+      "spark-07",
+      "spark-08",
+      "spark-09",
+      "spark-10",
+      "spark-11",
+      "spark-12"
+    ],
+    "nodes": 13,
+    "source": "examples/topologies/dual_switch_16node_production.json"
+  },
+  "tp": {
+    "collective": "all_reduce_sum_f32 closes every input-dimension split (SparkTpCollectiveAllReduceSumF32 on this ring)",
+    "ranks": [
+      {
+        "node": "spark-00",
+        "rank": 0,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-01",
+        "rank": 1,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-02",
+        "rank": 2,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-03",
+        "rank": 3,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-04",
+        "rank": 4,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-05",
+        "rank": 5,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-06",
+        "rank": 6,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-07",
+        "rank": 7,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-08",
+        "rank": 8,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-09",
+        "rank": 9,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-10",
+        "rank": 10,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-11",
+        "rank": 11,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      },
+      {
+        "node": "spark-12",
+        "rank": 12,
+        "slices": {
+          "dense_down": [
+            0,
+            33792
+          ],
+          "dense_gate_up": [
+            0,
+            67584
+          ],
+          "embed_and_head": [
+            0,
+            163840
+          ],
+          "expert_w1": [
+            0,
+            6144
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            0,
+            12288
+          ],
+          "heads_in:mla_out_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_decay_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_k_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_q_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            0,
+            36960
+          ],
+          "heads_out:kda_v_conv_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_gate_up_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            0,
+            12288
+          ],
+          "heads_out:mla_q_up_weight": [
+            0,
+            18432
+          ],
+          "routed_down": [
+            0,
+            3584
+          ],
+          "routed_up": [
+            0,
+            3584
+          ]
+        }
+      }
+    ],
+    "shard_classes": [
+      {
+        "degree_resolution": {
+          "reason": "norms, router, and the 128-wide bottlenecks every rank reads whole - replicating them is what keeps the latent KV identical per rank (tools/k3_shard.py)",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "attn_norm_weight",
+          "attnres_attn_weight",
+          "attnres_mlp_weight",
+          "kda_decay_bias",
+          "kda_decay_gate_down_weight",
+          "kda_head_log_scale",
+          "kda_out_norm_weight",
+          "mla_gate_down_weight",
+          "mla_kv_a_norm_weight",
+          "mla_kv_a_weight",
+          "mla_q_down_weight",
+          "mla_q_norm_weight",
+          "mlp_norm_weight",
+          "model.attnres_out_weight",
+          "model.norm.weight",
+          "routed_norm_weight",
+          "router_bias",
+          "router_weight"
+        ],
+        "name": "replicated",
+        "note": "norms, router, and the 128-wide bottlenecks every rank reads whole - replicating them is what keeps the latent KV identical per rank (tools/k3_shard.py)",
+        "quant_group": null,
+        "scope": "mixed",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      },
+      {
+        "degree_resolution": {
+          "reason": "163840 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 163840,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "model.embed_tokens.weight",
+          "lm_head.weight"
+        ],
+        "name": "embed_and_head",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_model",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 163840
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_decay_up_weight"
+        ],
+        "name": "heads_out:kda_decay_up_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_gate_up_weight"
+        ],
+        "name": "heads_out:kda_gate_up_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_k_conv_weight"
+        ],
+        "name": "heads_out:kda_k_conv_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_q_conv_weight"
+        ],
+        "name": "heads_out:kda_q_conv_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 36960,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_qkv_beta_weight"
+        ],
+        "name": "heads_out:kda_qkv_beta_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 36960
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_v_conv_weight"
+        ],
+        "name": "heads_out:kda_v_conv_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "mla_gate_up_weight"
+        ],
+        "name": "heads_out:mla_gate_up_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "mla_kv_b_value_weight"
+        ],
+        "name": "heads_out:mla_kv_b_value_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 18432,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "mla_q_up_weight"
+        ],
+        "name": "heads_out:mla_q_up_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 18432
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "kda_out_weight"
+        ],
+        "name": "heads_in:kda_out_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 96,
+        "instances_per_model": null,
+        "match": [
+          "mla_out_weight"
+        ],
+        "name": "heads_in:mla_out_weight",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3584,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "routed_down_weight"
+        ],
+        "name": "routed_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 3584
+      },
+      {
+        "degree_resolution": {
+          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3584,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "routed_up_weight"
+        ],
+        "name": "routed_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 3584
+      },
+      {
+        "degree_resolution": {
+          "reason": "split extent is not contract-derived; replicate until the pack pins it",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "shared_w1_weight"
+        ],
+        "name": "shared_w1",
+        "note": "[gate; up] halves split and re-concatenate per rank; the shared intermediate is pack-defined, not contract-pinned",
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "CONCAT_OUTPUT",
+        "split": "concat_output",
+        "split_extent": null
+      },
+      {
+        "degree_resolution": {
+          "reason": "67584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 67584,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "dense_gate_up_weight"
+        ],
+        "name": "dense_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "CONCAT_OUTPUT",
+        "split": "concat_output",
+        "split_extent": 67584
+      },
+      {
+        "degree_resolution": {
+          "reason": "split extent is not contract-derived; replicate until the pack pins it",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "shared_w2_weight"
+        ],
+        "name": "shared_w2",
+        "note": "input extent is the pack-defined shared intermediate",
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": null
+      },
+      {
+        "degree_resolution": {
+          "reason": "33792 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 33792,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "dense_down_weight"
+        ],
+        "name": "dense_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 33792
+      },
+      {
+        "degree_resolution": {
+          "reason": "6144 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 6144,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": 82432,
+        "match": [
+          "expert_w1_weight"
+        ],
+        "name": "expert_w1",
+        "note": "V2: one interleaved weight+scale stream (no scale plane); each expert's [gate; up] halves split on whole 16-neuron cells, the co-tiled scale rows riding with their payload",
+        "quant_group": null,
+        "scope": "per_expert_per_layer",
+        "shard_class": "CONCAT_OUTPUT",
+        "split": "concat_output",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3072,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "expert_w2_weight"
+        ],
+        "name": "expert_w2",
+        "note": "V2: per-rank K must be whole 128-element interleave k-tiles (the grid coarsened V1's 32-element groups), so K3's 24 tiles admit TP 1/2/4/8 and k3_shard refuses TP16",
+        "quant_group": 128,
+        "scope": "per_expert_per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 3072
+      }
+    ],
+    "unclassified_policy": "refuse"
+  }
+}

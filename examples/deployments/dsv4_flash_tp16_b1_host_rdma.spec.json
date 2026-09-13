@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/model_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/model_driver.so",
+    "program_name": "resident_decode"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 59000
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 1,
+    "max_active_sequences": 1,
+    "max_input_rows": 1,
+    "resident_sequence_capacity": 1,
+    "kv_logical_page_capacity": 1,
+    "kv_physical_page_capacity": 1
+  },
+  "topology": {
+    "rank_hosts": [
+      "spark0", "spark1", "spark2", "spark3", "spark4", "spark5",
+      "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb",
+      "sparkc", "sparkd", "sparke", "sparkf"
+    ],
+    "stage_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    "runtime_dataset": "dsv4_flash.fp8.tp16.b1",
+    "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+    "adapter_configuration_path_template": "config/dsv4_flash_tp16_stage.json",
+    "kv_backing_dataset": "dsv4_flash/tp16.bf16",
+    "kv_backing_maximum_bytes": 1073741824,
+    "control_endpoint": {
+      "kind": "tcp",
+      "host_template": "{host}",
+      "port": 18080
+    }
+  }
+}

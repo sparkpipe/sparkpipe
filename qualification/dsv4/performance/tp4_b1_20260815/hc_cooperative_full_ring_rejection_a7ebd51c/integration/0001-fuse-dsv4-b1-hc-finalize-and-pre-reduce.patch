@@ -1,0 +1,653 @@
+From 25bdc63d24bd79d4b5d9be7f5aaaed5cd1a83169 Mon Sep 17 00:00:00 2001
+From: ethpred <144991674+ethpred@users.noreply.github.com>
+Date: Fri, 14 Aug 2026 23:09:35 +0000
+Subject: [PATCH] fuse dsv4 b1 hc finalize and pre-reduce
+
+---
+ .../spark_dsv4_resident_decode_stage_cuda.cu       | 180 +++++++++++++---
+ .../spark_dsv4_resident_decode_stage_module.c      |  16 +-
+ ...k_dsv4_resident_decode_stage_cuda_validation.cu | 227 +++++++++++++++++++++
+ tests/test_dsv4_driver_source_contracts.py         |   4 +-
+ tests/test_dsv4_hc_residual_fusion_source.py       |  45 +++-
+ 5 files changed, 427 insertions(+), 45 deletions(-)
+
+diff --git a/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu b/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu
+index f7e9bc2..593be87 100644
+--- a/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu
++++ b/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu
+@@ -2003,16 +2003,15 @@ static __device__ __forceinline__ void SparkDsv4HcParallelSinkhorn(const float *
+ 		comb_f32[(uint64_t)row * SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT + lane] = comb[lane];
+ }
+ 
+-static __global__ void SparkDsv4HcMixSplitKFinalizeKernel(const float *partials_f32, const float *scale3_f32, const float *base_f32, uint32_t row_count, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *mixes_f32, float *pre_f32, float *post_f32, float *comb_f32)
++static __device__ __forceinline__ void SparkDsv4HcFinalizeRow(
++	const float *partials_f32,const float *scale3_f32,const float *base_f32,
++	uint32_t row,uint32_t iterations,float rms_epsilon,float hc_epsilon,
++	float *mixes_f32,float *pre_f32,float *post_f32,float *comb_f32,
++	float *mixes,float *comb,float *sums)
+ {
+-	__shared__ float mixes[SPARK_DSV4_MODEL_HC_MIX_ROWS];
+-	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+-	__shared__ float sums[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+-	uint32_t row = blockIdx.x,lane = threadIdx.x,split;
++	uint32_t lane = threadIdx.x,split;
+ 	uint64_t partial_base;
+ 	float total = 0.0f,inverse;
+-	if ( row >= row_count )
+-		return;
+ 	if ( lane < SPARK_DSV4_HC_SPLIT_K_PARTIALS )
+ 		for (split=0u; split<SPARK_DSV4_HC_SPLIT_K_COUNT; split++)
+ 		{
+@@ -2032,6 +2031,19 @@ static __global__ void SparkDsv4HcMixSplitKFinalizeKernel(const float *partials_
+ 	SparkDsv4HcParallelSinkhorn(mixes,scale3_f32,base_f32,iterations,hc_epsilon,pre_f32,post_f32,comb_f32,row,comb,sums);
+ }
+ 
++static __global__ void SparkDsv4HcMixSplitKFinalizeKernel(const float *partials_f32, const float *scale3_f32, const float *base_f32, uint32_t row_count, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *mixes_f32, float *pre_f32, float *post_f32, float *comb_f32)
++{
++	__shared__ float mixes[SPARK_DSV4_MODEL_HC_MIX_ROWS];
++	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT];
++	__shared__ float sums[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
++	uint32_t row = blockIdx.x;
++	if ( row >= row_count )
++		return;
++	SparkDsv4HcFinalizeRow(partials_f32,scale3_f32,base_f32,row,iterations,
++		rms_epsilon,hc_epsilon,mixes_f32,pre_f32,post_f32,comb_f32,mixes,
++		comb,sums);
++}
++
+ /*
+  * The split with inference Sinkhorn, one thread per row: sigmoid pre
+  * (+eps), doubled sigmoid post, comb row-softmax +eps then the iteration
+@@ -2090,20 +2102,15 @@ static __global__ void SparkDsv4HcSplitSinkhornKernel(const float *mixes_f32, co
+ 		comb_f32[((uint64_t)row * hc * hc) + i] = comb[i];
+ }
+ 
+-// Stream reduction by pre, expansion by post + transposed comb, and the
+-// sigmoid head reduction - three small element kernels.
+-static __global__ void SparkDsv4HcPreReduceKernel(
++static __device__ __forceinline__ void SparkDsv4HcPreReduceTile(
+ 	const void *streams_bf16,const float *pre_f32,void *reduced_bf16,
+-	void *residual_bf16,uint32_t row_count,uint32_t hc,uint32_t dimension,
+-	uint32_t tiles_per_row)
++	void *residual_bf16,uint32_t row,uint32_t hc,uint32_t dimension,
++	uint32_t tile,uint32_t tiles_per_row)
+ {
+-	uint32_t row = blockIdx.y;
+-	uint32_t tile = blockIdx.x,element,stream;
++	uint32_t element,stream;
+ 	uint64_t index;
+ 	__nv_bfloat16 raw;
+ 	float value;
+-	if ( row >= row_count )
+-		return;
+ 	for (element=tile * blockDim.x + threadIdx.x; element<dimension;
+ 		element+=tiles_per_row * blockDim.x)
+ 	{
+@@ -2120,6 +2127,41 @@ static __global__ void SparkDsv4HcPreReduceKernel(
+ 	}
+ }
+ 
++// Stream reduction by pre, expansion by post + transposed comb, and the
++// sigmoid head reduction - three small element kernels.
++static __global__ void SparkDsv4HcPreReduceKernel(
++	const void *streams_bf16,const float *pre_f32,void *reduced_bf16,
++	void *residual_bf16,uint32_t row_count,uint32_t hc,uint32_t dimension,
++	uint32_t tiles_per_row)
++{
++	uint32_t row = blockIdx.y;
++	if ( row >= row_count )
++		return;
++	SparkDsv4HcPreReduceTile(streams_bf16,pre_f32,reduced_bf16,
++		residual_bf16,row,hc,dimension,blockIdx.x,tiles_per_row);
++}
++
++static __global__ void SparkDsv4HcFinalizePreReduceCooperativeKernel(
++	const float *partials_f32,const float *scale3_f32,const float *base_f32,
++	const void *streams_bf16,uint32_t iterations,float rms_epsilon,
++	float hc_epsilon,float *mixes_f32,float *pre_f32,float *post_f32,
++	float *comb_f32,void *reduced_bf16,void *residual_bf16)
++{
++	__shared__ float mixes[SPARK_DSV4_MODEL_HC_MIX_ROWS];
++	__shared__ float comb[SPARK_DSV4_MODEL_HC_STREAM_COUNT *
++		SPARK_DSV4_MODEL_HC_STREAM_COUNT];
++	__shared__ float sums[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
++	cooperative_groups::grid_group grid = cooperative_groups::this_grid();
++	if ( blockIdx.x == 0u )
++		SparkDsv4HcFinalizeRow(partials_f32,scale3_f32,base_f32,0u,
++			iterations,rms_epsilon,hc_epsilon,mixes_f32,pre_f32,post_f32,
++			comb_f32,mixes,comb,sums);
++	grid.sync();
++	SparkDsv4HcPreReduceTile(streams_bf16,pre_f32,reduced_bf16,
++		residual_bf16,0u,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
++		SPARK_DSV4_MODEL_HIDDEN_DIMENSION,blockIdx.x,gridDim.x);
++}
++
+ static __global__ void SparkDsv4HcPostKernel(const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, uint32_t tiles_per_row)
+ {
+ 	__shared__ float post[SPARK_DSV4_MODEL_HC_STREAM_COUNT];
+@@ -3281,18 +3323,59 @@ extern "C" cudaError_t SparkDsv4LaunchHcSplitSinkhorn(cudaStream_t stream, const
+ 	return(cudaGetLastError());
+ }
+ 
++static cudaError_t SparkDsv4RequireHcMixShape(
++	const void *streams_bf16,const float *fn_f32,const float *scale3_f32,
++	const float *base_f32,float *partials_f32,float *mixes_f32,
++	uint32_t row_count,uint32_t flat_dimension,uint32_t mix_rows,uint32_t hc,
++	uint32_t iterations,float rms_epsilon,float hc_epsilon,float *pre_f32,
++	float *post_f32,float *comb_f32)
++{
++	if ( streams_bf16 == 0 || fn_f32 == 0 || scale3_f32 == 0 ||
++		base_f32 == 0 || partials_f32 == 0 || mixes_f32 == 0 ||
++		pre_f32 == 0 || post_f32 == 0 || comb_f32 == 0 || row_count == 0u ||
++		flat_dimension != SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS ||
++		mix_rows != SPARK_DSV4_MODEL_HC_MIX_ROWS ||
++		hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT || iterations == 0u ||
++		rms_epsilon <= 0.0f || hc_epsilon <= 0.0f )
++		return(cudaErrorInvalidValue);
++	return(cudaSuccess);
++}
++
++static cudaError_t SparkDsv4LaunchHcMixSplitKPartials(
++	cudaStream_t stream,const void *streams_bf16,const float *fn_f32,
++	float *partials_f32,uint32_t row_count,uint32_t flat_dimension)
++{
++	SparkDsv4HcMixSplitKKernel<<<row_count * SPARK_DSV4_HC_SPLIT_K_COUNT,
++		SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,fn_f32,partials_f32,
++		row_count,flat_dimension);
++	return(cudaGetLastError());
++}
++
++static cudaError_t SparkDsv4LaunchHcFinalize(
++	cudaStream_t stream,const float *partials_f32,const float *scale3_f32,
++	const float *base_f32,uint32_t row_count,uint32_t iterations,
++	float rms_epsilon,float hc_epsilon,float *mixes_f32,float *pre_f32,
++	float *post_f32,float *comb_f32)
++{
++	SparkDsv4HcMixSplitKFinalizeKernel<<<row_count,64u,0,stream>>>(partials_f32,
++		scale3_f32,base_f32,row_count,iterations,rms_epsilon,hc_epsilon,
++		mixes_f32,pre_f32,post_f32,comb_f32);
++	return(cudaGetLastError());
++}
++
+ extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32)
+ {
+ 	cudaError_t error;
+-	if ( streams_bf16 == 0 || fn_f32 == 0 || scale3_f32 == 0 || base_f32 == 0 || partials_f32 == 0 || mixes_f32 == 0 || pre_f32 == 0 || post_f32 == 0 || comb_f32 == 0 || row_count == 0u || flat_dimension != SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS || mix_rows != SPARK_DSV4_MODEL_HC_MIX_ROWS || hc != SPARK_DSV4_MODEL_HC_STREAM_COUNT || iterations == 0u || rms_epsilon <= 0.0f || hc_epsilon <= 0.0f )
+-		return(cudaErrorInvalidValue);
+-	SparkDsv4HcMixSplitKKernel<<<row_count * SPARK_DSV4_HC_SPLIT_K_COUNT,SPARK_LM_CTA_THREADS,0,stream>>>(streams_bf16,fn_f32,partials_f32,row_count,flat_dimension);
+-	error = cudaGetLastError();
++	error = SparkDsv4RequireHcMixShape(streams_bf16,fn_f32,scale3_f32,
++		base_f32,partials_f32,mixes_f32,row_count,flat_dimension,mix_rows,hc,
++		iterations,rms_epsilon,hc_epsilon,pre_f32,post_f32,comb_f32);
+ 	if ( error == cudaSuccess )
+-	{
+-		SparkDsv4HcMixSplitKFinalizeKernel<<<row_count,64u,0,stream>>>(partials_f32,scale3_f32,base_f32,row_count,iterations,rms_epsilon,hc_epsilon,mixes_f32,pre_f32,post_f32,comb_f32);
+-		error = cudaGetLastError();
+-	}
++		error = SparkDsv4LaunchHcMixSplitKPartials(stream,streams_bf16,fn_f32,
++			partials_f32,row_count,flat_dimension);
++	if ( error == cudaSuccess )
++		error = SparkDsv4LaunchHcFinalize(stream,partials_f32,scale3_f32,
++			base_f32,row_count,iterations,rms_epsilon,hc_epsilon,mixes_f32,
++			pre_f32,post_f32,comb_f32);
+ 	return(error);
+ }
+ 
+@@ -3316,6 +3399,55 @@ extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(
+ 	return(cudaGetLastError());
+ }
+ 
++static cudaError_t SparkDsv4LaunchHcFinalizePreReduceB1(
++	cudaStream_t stream,const float *partials_f32,const float *scale3_f32,
++	const float *base_f32,const void *streams_bf16,uint32_t iterations,
++	float rms_epsilon,float hc_epsilon,float *mixes_f32,float *pre_f32,
++	float *post_f32,float *comb_f32,void *reduced_bf16,void *residual_bf16)
++{
++	void *arguments[] = {(void *)&partials_f32,(void *)&scale3_f32,
++		(void *)&base_f32,(void *)&streams_bf16,(void *)&iterations,
++		(void *)&rms_epsilon,(void *)&hc_epsilon,(void *)&mixes_f32,
++		(void *)&pre_f32,(void *)&post_f32,(void *)&comb_f32,
++		(void *)&reduced_bf16,(void *)&residual_bf16};
++	return(cudaLaunchCooperativeKernel(
++		(void *)SparkDsv4HcFinalizePreReduceCooperativeKernel,
++		dim3(SPARK_DSV4_HC_MINIMUM_BLOCKS),dim3(SPARK_DSV4_HC_ELEMENT_TILE),
++		arguments,0u,stream));
++}
++
++extern "C" cudaError_t SparkDsv4LaunchHcEnter(
++	cudaStream_t stream,const void *streams_bf16,const float *fn_f32,
++	const float *scale3_f32,const float *base_f32,float *partials_f32,
++	float *mixes_f32,uint32_t row_count,uint32_t flat_dimension,
++	uint32_t mix_rows,uint32_t hc,uint32_t iterations,float rms_epsilon,
++	float hc_epsilon,float *pre_f32,float *post_f32,float *comb_f32,
++	void *reduced_bf16,void *residual_bf16,uint32_t dimension)
++{
++	cudaError_t error = SparkDsv4RequireHcMixShape(streams_bf16,fn_f32,
++		scale3_f32,base_f32,partials_f32,mixes_f32,row_count,flat_dimension,
++		mix_rows,hc,iterations,rms_epsilon,hc_epsilon,pre_f32,post_f32,
++		comb_f32);
++	if ( error == cudaSuccess && (reduced_bf16 == 0 || residual_bf16 == 0 ||
++		dimension != SPARK_DSV4_MODEL_HIDDEN_DIMENSION) )
++		error = cudaErrorInvalidValue;
++	if ( error == cudaSuccess )
++		error = SparkDsv4LaunchHcMixSplitKPartials(stream,streams_bf16,fn_f32,
++			partials_f32,row_count,flat_dimension);
++	if ( error == cudaSuccess && row_count == 1u )
++		return(SparkDsv4LaunchHcFinalizePreReduceB1(stream,partials_f32,
++			scale3_f32,base_f32,streams_bf16,iterations,rms_epsilon,hc_epsilon,
++			mixes_f32,pre_f32,post_f32,comb_f32,reduced_bf16,residual_bf16));
++	if ( error == cudaSuccess )
++		error = SparkDsv4LaunchHcFinalize(stream,partials_f32,scale3_f32,
++			base_f32,row_count,iterations,rms_epsilon,hc_epsilon,mixes_f32,
++			pre_f32,post_f32,comb_f32);
++	if ( error == cudaSuccess )
++		error = SparkDsv4LaunchHcPreReduce(stream,streams_bf16,pre_f32,
++			reduced_bf16,residual_bf16,row_count,hc,dimension);
++	return(error);
++}
++
+ extern "C" cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension)
+ {
+ 	dim3 grid;
+diff --git a/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c b/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c
+index 1791ce8..fa64ebf 100644
+--- a/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c
++++ b/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c
+@@ -482,11 +482,7 @@ extern cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *
+ extern cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count);
+ extern cudaError_t SparkDsv4LaunchHcMix(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon);
+ extern cudaError_t SparkDsv4LaunchHcSplitSinkhorn(cudaStream_t stream, const float *mixes_f32, const float *scale3_f32, const float *base_f32, uint32_t row_count, uint32_t hc, uint32_t iterations, float epsilon, float *pre_f32, float *post_f32, float *comb_f32);
+-extern cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32);
+-extern cudaError_t SparkDsv4LaunchHcPreReduce(
+-	cudaStream_t stream,const void *streams_bf16,const float *pre_f32,
+-	void *reduced_bf16,void *residual_bf16,uint32_t row_count,uint32_t hc,
+-	uint32_t dimension);
++extern cudaError_t SparkDsv4LaunchHcEnter(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32, void *reduced_bf16, void *residual_bf16, uint32_t dimension);
+ extern cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
+ extern cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const void *streams_bf16, const float *mixes_f32, float scale, const float *base_f32, float epsilon, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
+ 
+@@ -2280,18 +2276,14 @@ static cudaError_t SparkDsv4ModuleHcEnter(SparkDsv4ModuleSlot *slot, const void
+ 	cudaError_t error;
+ 	if ( streams_bf16 == 0 )
+ 		return(cudaErrorInvalidValue);
+-	error = SparkDsv4LaunchHcMixSplitKSinkhorn(stream,streams_bf16,
++	error = SparkDsv4LaunchHcEnter(stream,streams_bf16,
+ 		fn,scale3,base,slot->hc_partials_f32,
+ 		slot->mixes_f32,rows,SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,
+ 		SPARK_DSV4_MODEL_HC_MIX_ROWS,SPARK_DSV4_MODEL_HC_STREAM_COUNT,
+ 		SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS,
+ 		SPARK_DSV4_MODEL_RMS_NORM_EPSILON,SPARK_DSV4_MODEL_HC_EPSILON,
+-		slot->pre_f32,slot->post_f32,slot->comb_f32);
+-	if ( error == cudaSuccess )
+-		error = SparkDsv4LaunchHcPreReduce(stream,streams_bf16,slot->pre_f32,
+-			slot->reduced_bf16,slot->residual_bf16,rows,
+-			SPARK_DSV4_MODEL_HC_STREAM_COUNT,
+-			SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
++		slot->pre_f32,slot->post_f32,slot->comb_f32,slot->reduced_bf16,
++		slot->residual_bf16,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+ 	return(error);
+ }
+ 
+diff --git a/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu b/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu
+index f70d6b5..f1dc388 100644
+--- a/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu
++++ b/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu
+@@ -9,6 +9,7 @@
+ 
+ #include "sparkpipe/spark_dsv4_model.h"
+ #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
++#include "spark_dsv4_hc_splitk.h"
+ 
+ typedef struct SparkStageModuleCudaFork
+ {
+@@ -60,6 +61,8 @@ extern "C" void SparkStageModuleCudaForkDestroy(SparkStageModuleCudaFork *fork);
+ 	SPARK_DSV4_VALIDATION_POST_QUERY_ELEMENTS : \
+ 	SPARK_DSV4_VALIDATION_POST_INDEX_ELEMENTS)
+ #define SPARK_DSV4_VALIDATION_POST_CASE_COUNT 3u
++#define SPARK_DSV4_VALIDATION_HC_PARTIAL_COUNT \
++	(SPARK_DSV4_HC_SPLIT_K_COUNT * SPARK_DSV4_HC_SPLIT_K_PARTIALS)
+ 
+ extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
+ extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
+@@ -76,6 +79,9 @@ extern "C" cudaError_t SparkDsv4LaunchQueryHeadRmsRope(cudaStream_t stream, void
+ extern "C" cudaError_t SparkDsv4LaunchKvPost(cudaStream_t stream, void *data_bf16, const void *gain_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_dim, uint32_t rope_dim, uint32_t quant_width, uint32_t quant_block, float epsilon);
+ extern "C" cudaError_t SparkDsv4LaunchIndexerPost(cudaStream_t stream, void *data_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t rope_dim, uint32_t quant_block);
+ extern "C" cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_bf16, uint32_t vector_count, uint32_t width);
++extern "C" cudaError_t SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32);
++extern "C" cudaError_t SparkDsv4LaunchHcPreReduce(cudaStream_t stream, const void *streams_bf16, const float *pre_f32, void *reduced_bf16, void *residual_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
++extern "C" cudaError_t SparkDsv4LaunchHcEnter(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, const float *scale3_f32, const float *base_f32, float *partials_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, uint32_t hc, uint32_t iterations, float rms_epsilon, float hc_epsilon, float *pre_f32, float *post_f32, float *comb_f32, void *reduced_bf16, void *residual_bf16, uint32_t dimension);
+ 
+ typedef struct SparkDsv4ValidationCapture
+ {
+@@ -164,6 +170,27 @@ typedef struct SparkDsv4ValidationPostBuffers
+ 	uint16_t *gain;
+ } SparkDsv4ValidationPostBuffers;
+ 
++typedef struct SparkDsv4ValidationHcOutputs
++{
++	float *partials_f32;
++	float *mixes_f32;
++	float *pre_f32;
++	float *post_f32;
++	float *comb_f32;
++	void *reduced_bf16;
++	void *residual_bf16;
++} SparkDsv4ValidationHcOutputs;
++
++typedef struct SparkDsv4ValidationHcBuffers
++{
++	void *streams_bf16;
++	float *fn_f32;
++	float *scale3_f32;
++	float *base_f32;
++	SparkDsv4ValidationHcOutputs control;
++	SparkDsv4ValidationHcOutputs candidate;
++} SparkDsv4ValidationHcBuffers;
++
+ typedef struct SparkDsv4ValidationReferenceFrame
+ {
+ 	SparkDsv4PrefillBatchView batch;
+@@ -517,6 +544,204 @@ static int SparkDsv4ValidationGateRouteB1(void)
+ 	return(result);
+ }
+ 
++static void SparkDsv4ValidationHcOutputDestroy(
++	SparkDsv4ValidationHcOutputs *output)
++{
++	if ( output->partials_f32 != 0 ) cudaFree(output->partials_f32);
++	if ( output->mixes_f32 != 0 ) cudaFree(output->mixes_f32);
++	if ( output->pre_f32 != 0 ) cudaFree(output->pre_f32);
++	if ( output->post_f32 != 0 ) cudaFree(output->post_f32);
++	if ( output->comb_f32 != 0 ) cudaFree(output->comb_f32);
++	if ( output->reduced_bf16 != 0 ) cudaFree(output->reduced_bf16);
++	if ( output->residual_bf16 != 0 ) cudaFree(output->residual_bf16);
++	memset(output,0,sizeof(*output));
++}
++
++static cudaError_t SparkDsv4ValidationHcOutputAllocate(
++	SparkDsv4ValidationHcOutputs *output)
++{
++	uint64_t rows = SPARK_DSV4_VALIDATION_ROW_COUNT;
++	cudaError_t error;
++	memset(output,0,sizeof(*output));
++	error = cudaMalloc((void **)&output->partials_f32,rows *
++		SPARK_DSV4_VALIDATION_HC_PARTIAL_COUNT * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&output->mixes_f32,
++		rows * SPARK_DSV4_MODEL_HC_MIX_ROWS * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&output->pre_f32,
++		rows * SPARK_DSV4_MODEL_HC_STREAM_COUNT * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&output->post_f32,
++		rows * SPARK_DSV4_MODEL_HC_STREAM_COUNT * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&output->comb_f32,
++		rows * SPARK_DSV4_MODEL_HC_STREAM_COUNT *
++		SPARK_DSV4_MODEL_HC_STREAM_COUNT * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc(&output->reduced_bf16,rows *
++		SPARK_DSV4_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
++	if ( error == cudaSuccess ) error = cudaMalloc(&output->residual_bf16,rows *
++		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * sizeof(uint16_t));
++	return(error);
++}
++
++static void SparkDsv4ValidationHcDestroy(
++	SparkDsv4ValidationHcBuffers *buffers)
++{
++	SparkDsv4ValidationHcOutputDestroy(&buffers->candidate);
++	SparkDsv4ValidationHcOutputDestroy(&buffers->control);
++	if ( buffers->base_f32 != 0 ) cudaFree(buffers->base_f32);
++	if ( buffers->scale3_f32 != 0 ) cudaFree(buffers->scale3_f32);
++	if ( buffers->fn_f32 != 0 ) cudaFree(buffers->fn_f32);
++	if ( buffers->streams_bf16 != 0 ) cudaFree(buffers->streams_bf16);
++	memset(buffers,0,sizeof(*buffers));
++}
++
++static cudaError_t SparkDsv4ValidationHcDeviceAllocate(
++	SparkDsv4ValidationHcBuffers *buffers)
++{
++	uint64_t rows = SPARK_DSV4_VALIDATION_ROW_COUNT;
++	uint64_t flat = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
++	cudaError_t error = cudaMalloc(&buffers->streams_bf16,rows * flat *
++		sizeof(uint16_t));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->fn_f32,
++		flat * SPARK_DSV4_MODEL_HC_MIX_ROWS * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->scale3_f32,
++		3u * sizeof(float));
++	if ( error == cudaSuccess ) error = cudaMalloc((void **)&buffers->base_f32,
++		SPARK_DSV4_MODEL_HC_MIX_ROWS * sizeof(float));
++	if ( error == cudaSuccess )
++		error = SparkDsv4ValidationHcOutputAllocate(&buffers->control);
++	if ( error == cudaSuccess )
++		error = SparkDsv4ValidationHcOutputAllocate(&buffers->candidate);
++	return(error);
++}
++
++static int SparkDsv4ValidationHcAllocate(
++	SparkDsv4ValidationHcBuffers *buffers)
++{
++	static const uint16_t values[] = {0x3f00u,0xbf00u,0x3e80u,0xbe80u,
++		0x3f40u,0xbf40u,0x3e00u,0xbe00u};
++	uint64_t rows = SPARK_DSV4_VALIDATION_ROW_COUNT;
++	uint64_t flat = SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS;
++	uint64_t stream_count = rows * flat;
++	uint64_t fn_count = flat * SPARK_DSV4_MODEL_HC_MIX_ROWS,index;
++	uint16_t *streams = (uint16_t *)malloc(stream_count * sizeof(uint16_t));
++	float *fn = (float *)malloc(fn_count * sizeof(float));
++	float scale3[3] = {0.375f,0.625f,0.875f};
++	float base[SPARK_DSV4_MODEL_HC_MIX_ROWS];
++	cudaError_t error = cudaErrorMemoryAllocation;
++	memset(buffers,0,sizeof(*buffers));
++	if ( streams != 0 && fn != 0 ) error = SparkDsv4ValidationHcDeviceAllocate(buffers);
++	for (index=0u; streams != 0 && index<stream_count; index++)
++		streams[index] = values[(index * 5u + (index / flat) * 3u) % 8u];
++	for (index=0u; fn != 0 && index<fn_count; index++)
++		fn[index] = (float)((int32_t)((index * 29u + 7u) % 257u) - 128) /
++			1024.0f;
++	for (index=0u; index<SPARK_DSV4_MODEL_HC_MIX_ROWS; index++)
++		base[index] = (float)((int32_t)((index * 19u + 3u) % 53u) - 26) /
++			128.0f;
++	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->streams_bf16,
++		streams,stream_count * sizeof(uint16_t),cudaMemcpyHostToDevice);
++	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->fn_f32,fn,
++		fn_count * sizeof(float),cudaMemcpyHostToDevice);
++	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->scale3_f32,scale3,
++		sizeof(scale3),cudaMemcpyHostToDevice);
++	if ( error == cudaSuccess ) error = cudaMemcpy(buffers->base_f32,base,
++		sizeof(base),cudaMemcpyHostToDevice);
++	free(fn);
++	free(streams);
++	return(SparkDsv4ValidationRequireCuda(error,"hc_enter_allocate"));
++}
++
++static cudaError_t SparkDsv4ValidationHcControl(
++	const SparkDsv4ValidationHcBuffers *buffers,uint32_t rows)
++{
++	const SparkDsv4ValidationHcOutputs *output = &buffers->control;
++	cudaError_t error = SparkDsv4LaunchHcMixSplitKSinkhorn(cudaStreamPerThread,
++		buffers->streams_bf16,buffers->fn_f32,buffers->scale3_f32,
++		buffers->base_f32,output->partials_f32,output->mixes_f32,rows,
++		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,SPARK_DSV4_MODEL_HC_MIX_ROWS,
++		SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS,
++		SPARK_DSV4_MODEL_RMS_NORM_EPSILON,SPARK_DSV4_MODEL_HC_EPSILON,
++		output->pre_f32,output->post_f32,output->comb_f32);
++	if ( error == cudaSuccess ) error = SparkDsv4LaunchHcPreReduce(
++		cudaStreamPerThread,buffers->streams_bf16,output->pre_f32,
++		output->reduced_bf16,output->residual_bf16,rows,
++		SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
++	return(error);
++}
++
++static cudaError_t SparkDsv4ValidationHcCandidate(
++	const SparkDsv4ValidationHcBuffers *buffers,uint32_t rows)
++{
++	const SparkDsv4ValidationHcOutputs *output = &buffers->candidate;
++	return(SparkDsv4LaunchHcEnter(cudaStreamPerThread,buffers->streams_bf16,
++		buffers->fn_f32,buffers->scale3_f32,buffers->base_f32,
++		output->partials_f32,output->mixes_f32,rows,
++		SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS,SPARK_DSV4_MODEL_HC_MIX_ROWS,
++		SPARK_DSV4_MODEL_HC_STREAM_COUNT,SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS,
++		SPARK_DSV4_MODEL_RMS_NORM_EPSILON,SPARK_DSV4_MODEL_HC_EPSILON,
++		output->pre_f32,output->post_f32,output->comb_f32,
++		output->reduced_bf16,output->residual_bf16,
++		SPARK_DSV4_MODEL_HIDDEN_DIMENSION));
++}
++
++static int SparkDsv4ValidationDeviceExact(const void *first,const void *second,
++	uint64_t bytes,const char *message)
++{
++	uint8_t *a = (uint8_t *)malloc(bytes),*b = (uint8_t *)malloc(bytes);
++	cudaError_t error = a == 0 || b == 0 ? cudaErrorMemoryAllocation :
++		cudaSuccess;
++	int result;
++	if ( error == cudaSuccess ) error = cudaMemcpy(a,first,bytes,
++		cudaMemcpyDeviceToHost);
++	if ( error == cudaSuccess ) error = cudaMemcpy(b,second,bytes,
++		cudaMemcpyDeviceToHost);
++	result = SparkDsv4ValidationRequireCuda(error,message);
++	if ( result == 0 ) result = SparkDsv4ValidationRequire(
++		memcmp(a,b,bytes) == 0,message);
++	free(b);
++	free(a);
++	return(result);
++}
++
++static int SparkDsv4ValidationHcCheck(
++	const SparkDsv4ValidationHcBuffers *buffers,uint32_t rows)
++{
++	const SparkDsv4ValidationHcOutputs *a = &buffers->control;
++	const SparkDsv4ValidationHcOutputs *b = &buffers->candidate;
++	uint64_t hc = SPARK_DSV4_MODEL_HC_STREAM_COUNT;
++	if ( SparkDsv4ValidationDeviceExact(a->partials_f32,b->partials_f32,rows * SPARK_DSV4_VALIDATION_HC_PARTIAL_COUNT * sizeof(float),"hc_partials_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->mixes_f32,b->mixes_f32,rows * SPARK_DSV4_MODEL_HC_MIX_ROWS * sizeof(float),"hc_mixes_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->pre_f32,b->pre_f32,rows * hc * sizeof(float),"hc_pre_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->post_f32,b->post_f32,rows * hc * sizeof(float),"hc_post_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->comb_f32,b->comb_f32,rows * hc * hc * sizeof(float),"hc_comb_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->reduced_bf16,b->reduced_bf16,rows * SPARK_DSV4_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),"hc_reduced_exact") != 0 ) return(1);
++	if ( SparkDsv4ValidationDeviceExact(a->residual_bf16,b->residual_bf16,rows * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * sizeof(uint16_t),"hc_residual_exact") != 0 ) return(1);
++	return(SparkDsv4ValidationDeviceExact(b->residual_bf16,
++		buffers->streams_bf16,rows * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS *
++		sizeof(uint16_t),"hc_residual_raw_exact"));
++}
++
++static int SparkDsv4ValidationHcRunCase(
++	const SparkDsv4ValidationHcBuffers *buffers,uint32_t rows)
++{
++	cudaError_t error = SparkDsv4ValidationHcControl(buffers,rows);
++	if ( error == cudaSuccess ) error = SparkDsv4ValidationHcCandidate(buffers,rows);
++	if ( error == cudaSuccess ) error = cudaStreamSynchronize(cudaStreamPerThread);
++	if ( SparkDsv4ValidationRequireCuda(error,"hc_enter_launch") != 0 ) return(1);
++	return(SparkDsv4ValidationHcCheck(buffers,rows));
++}
++
++static int SparkDsv4ValidationHcEnter(void)
++{
++	SparkDsv4ValidationHcBuffers buffers;
++	int result = SparkDsv4ValidationHcAllocate(&buffers);
++	if ( result == 0 ) result = SparkDsv4ValidationHcRunCase(&buffers,1u);
++	if ( result == 0 && SPARK_DSV4_VALIDATION_ROW_COUNT > 1u )
++		result = SparkDsv4ValidationHcRunCase(&buffers,
++			SPARK_DSV4_VALIDATION_ROW_COUNT);
++	SparkDsv4ValidationHcDestroy(&buffers);
++	return(result);
++}
++
+ static void SparkDsv4ValidationPrecollectiveDestroy(
+ 	SparkDsv4ValidationPrecollectiveBuffers *buffers)
+ {
+@@ -1441,6 +1666,8 @@ int main(int argument_count,char **arguments)
+ 		return(1);
+ 	if ( SparkDsv4ValidationGateRouteB1() != 0 )
+ 		return(1);
++	if ( SparkDsv4ValidationHcEnter() != 0 )
++		return(1);
+ 	if ( SparkDsv4ValidationProjectionPrecollective() != 0 )
+ 		return(1);
+ 	if ( SparkDsv4ValidationPostFusions() != 0 )
+diff --git a/tests/test_dsv4_driver_source_contracts.py b/tests/test_dsv4_driver_source_contracts.py
+index 90b8408..a1f5f88 100644
+--- a/tests/test_dsv4_driver_source_contracts.py
++++ b/tests/test_dsv4_driver_source_contracts.py
+@@ -122,7 +122,9 @@ def main() -> None:
+ 	require(module, "SparkDsv4LaunchSparseAttn", "sparse attention execution")
+ 	require(cuda, "SparkDsv4SparseAttnMergeKernel", "split-KV sparse attention merge")
+ 	require(module, "SparkDsv4LaunchHcSplitSinkhorn", "inference mHC Sinkhorn")
+-	require(module, "SparkDsv4LaunchHcMixSplitKSinkhorn", "split-K inference mHC")
++	require(module, "SparkDsv4LaunchHcEnter", "single production mHC entrypoint")
++	reject(module, "SparkDsv4LaunchHcMixSplitKSinkhorn(stream", "split production mHC finalize launch")
++	reject(module, "SparkDsv4LaunchHcPreReduce(stream", "split production mHC pre-reduce launch")
+ 	require(cuda, "residual[source] = SparkLmBf16ToFloat", "mHC post residual reuse")
+ 	require(cuda, "__fmaf_rn(comb[source * SPARK_DSV4_MODEL_HC_STREAM_COUNT + stream],residual[source],value)", "mHC post register tile")
+ 	require(module, "metadata_rows = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT", "frame-sized metadata ownership")
+diff --git a/tests/test_dsv4_hc_residual_fusion_source.py b/tests/test_dsv4_hc_residual_fusion_source.py
+index 0afa69d..1c9826a 100644
+--- a/tests/test_dsv4_hc_residual_fusion_source.py
++++ b/tests/test_dsv4_hc_residual_fusion_source.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Fail-closed source contract for exact mHC residual preservation."""
++"""Fail-closed source contract for exact cooperative mHC entry."""
+ 
+ from pathlib import Path
+ import re
+@@ -8,6 +8,7 @@ import re
+ ROOT = Path(__file__).resolve().parents[1]
+ CUDA = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
+ MODULE = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c"
++VALIDATOR = ROOT / "modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu"
+ 
+ 
+ def body(source: str, name: str) -> str:
+@@ -29,17 +30,45 @@ def body(source: str, name: str) -> str:
+ def main() -> int:
+     cuda = CUDA.read_text(encoding="utf-8")
+     module = MODULE.read_text(encoding="utf-8")
+-    kernel = body(cuda, "SparkDsv4HcPreReduceKernel")
+-    enter = body(module, "SparkDsv4ModuleHcEnter")
+-    if "((__nv_bfloat16 *)residual_bf16)[index] = raw;" not in kernel:
++    validator = VALIDATOR.read_text(encoding="utf-8")
++    tile = body(cuda, "SparkDsv4HcPreReduceTile")
++    cooperative = body(cuda, "SparkDsv4HcFinalizePreReduceCooperativeKernel")
++    dispatch = body(cuda, "SparkDsv4LaunchHcEnter")
++    module_enter = body(module, "SparkDsv4ModuleHcEnter")
++    if "((__nv_bfloat16 *)residual_bf16)[index] = raw;" not in tile:
+         raise AssertionError("pre-reduce must preserve raw BF16 residual bits")
+-    if "__bfloat162float(raw)" not in kernel:
++    if "__bfloat162float(raw)" not in tile:
+         raise AssertionError("pre-reduce must accumulate the same preserved input")
+-    if "cudaMemcpyAsync" in enter:
++    if "cooperative_groups::this_grid()" not in cooperative or "grid.sync()" not in cooperative:
++        raise AssertionError("B1 finalize and pre-reduce require one cooperative grid")
++    if "SparkDsv4HcFinalizeRow" not in cooperative or "SparkDsv4HcPreReduceTile" not in cooperative:
++        raise AssertionError("cooperative path must reuse exact production device operations")
++    if "if ( error == cudaSuccess && row_count == 1u )" not in dispatch:
++        raise AssertionError("B1 cooperative selection must be runtime dispatched")
++    if "SparkDsv4LaunchHcFinalizePreReduceB1" not in dispatch:
++        raise AssertionError("B1 dispatch must issue the cooperative entry")
++    if "SparkDsv4LaunchHcFinalize" not in dispatch or "SparkDsv4LaunchHcPreReduce" not in dispatch:
++        raise AssertionError("larger row counts must retain the established sequence")
++    if "#if" in dispatch or "#if" in cooperative:
++        raise AssertionError("mHC dispatch must not contain a compile-time feature fork")
++    if "cudaMemcpyAsync" in module_enter:
+         raise AssertionError("mHC enter must not launch a separate residual copy")
+-    if "slot->reduced_bf16,slot->residual_bf16" not in enter:
++    if module_enter.count("SparkDsv4LaunchHcEnter(") != 1:
++        raise AssertionError("production mHC must issue exactly one runtime entrypoint")
++    if "SparkDsv4LaunchHcMixSplitKSinkhorn" in module_enter or "SparkDsv4LaunchHcPreReduce" in module_enter:
++        raise AssertionError("production mHC must not stack legacy launches around the entrypoint")
++    if "slot->reduced_bf16" not in module_enter or "slot->residual_bf16" not in module_enter:
+         raise AssertionError("mHC enter must pass caller-owned residual storage")
+-    print("DSV4 mHC residual fusion source contract: PASS")
++    validation_case = body(validator, "SparkDsv4ValidationHcRunCase")
++    validation_check = body(validator, "SparkDsv4ValidationHcCheck")
++    if "SparkDsv4ValidationHcControl" not in validation_case or "SparkDsv4ValidationHcCandidate" not in validation_case:
++        raise AssertionError("validator must compare split control with production dispatch")
++    for label in ("hc_partials_exact", "hc_mixes_exact", "hc_pre_exact",
++                  "hc_post_exact", "hc_comb_exact", "hc_reduced_exact",
++                  "hc_residual_exact", "hc_residual_raw_exact"):
++        if label not in validation_check:
++            raise AssertionError(f"validator is missing {label}")
++    print("DSV4 cooperative mHC entry source contract: PASS")
+     return 0
+ 
+ 
+-- 
+2.10.1
+

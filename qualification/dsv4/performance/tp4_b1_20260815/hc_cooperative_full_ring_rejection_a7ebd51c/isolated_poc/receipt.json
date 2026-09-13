@@ -1,0 +1,89 @@
+{
+  "schema": "sparkpipe.dsv4.hc_cooperative_fusion_poc.v1",
+  "timestamp_utc": "2026-08-14T22:53:00Z",
+  "decision": {
+    "status": "PASS",
+    "scope": "isolated_proof_of_concept",
+    "production_integration": false,
+    "reason": "The bounded grid-16 cooperative fusion is bit-exact and reduces the median target-chain latency in each of three independent processes."
+  },
+  "hardware": {
+    "host": "spark1",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.159.03",
+    "cooperative_capacity_blocks": 288
+  },
+  "workload": {
+    "batch": 1,
+    "streams": 4,
+    "hidden": 4096,
+    "boundaries_per_model_step": 86,
+    "independent_processes": 3,
+    "alternating_pairs_per_process": 31,
+    "total_final_pairs": 93,
+    "warmups": 4,
+    "l2_flush_bytes_per_trial": 268435456,
+    "input_pattern": "deterministic distinct tensors",
+    "precision_contract": "production FP32 operation order and Sinkhorn F32; BF16 outputs; raw residual bits"
+  },
+  "control": {
+    "launches": 2,
+    "sequence": [
+      "SparkDsv4HcMixSplitKFinalizeKernel<<<1,64>>>",
+      "SparkDsv4HcPreReduceKernel<<<16,256>>>"
+    ]
+  },
+  "candidate": {
+    "launches": 1,
+    "cooperative_grid_blocks": 16,
+    "threads_per_block": 256,
+    "description": "block zero performs the exact finalize and Sinkhorn sequence, grid sync, then the full grid performs the exact pre-reduce and raw-residual stores"
+  },
+  "exactness": {
+    "status": "PASS",
+    "pairs_exact": 93,
+    "pairs_total": 93,
+    "byte_compared_outputs": [
+      "mixes_f32",
+      "pre_f32",
+      "post_f32",
+      "comb_f32",
+      "reduced_bf16",
+      "residual_bf16"
+    ],
+    "raw_residual_matches_input": true
+  },
+  "tuning": [
+    {"grid_blocks": 1, "control_median_ms": 1.231200, "candidate_median_ms": 3.194208, "gain_percent": -159.438599, "model_step_saving_ms": -1.963008},
+    {"grid_blocks": 2, "control_median_ms": 1.230112, "candidate_median_ms": 2.115648, "gain_percent": -71.988251, "model_step_saving_ms": -0.885536},
+    {"grid_blocks": 4, "control_median_ms": 1.217632, "candidate_median_ms": 1.414336, "gain_percent": -16.154627, "model_step_saving_ms": -0.196704},
+    {"grid_blocks": 8, "control_median_ms": 1.216544, "candidate_median_ms": 1.232544, "gain_percent": -1.315194, "model_step_saving_ms": -0.016000},
+    {"grid_blocks": 12, "control_median_ms": 1.221376, "candidate_median_ms": 1.228896, "gain_percent": -0.615706, "model_step_saving_ms": -0.007520},
+    {"grid_blocks": 16, "control_median_ms": 1.215616, "candidate_median_ms": 1.058144, "gain_percent": 12.954092, "model_step_saving_ms": 0.157472}
+  ],
+  "final_processes": [
+    {"process": 1, "control_median_ms": 1.211456, "candidate_median_ms": 1.057760, "gain_percent": 12.686879, "saving_us_per_boundary": 1.787162, "model_step_saving_ms": 0.153696, "exact": true},
+    {"process": 2, "control_median_ms": 1.215392, "candidate_median_ms": 1.057664, "gain_percent": 12.977538, "saving_us_per_boundary": 1.834046, "model_step_saving_ms": 0.157728, "exact": true},
+    {"process": 3, "control_median_ms": 1.227648, "candidate_median_ms": 1.057408, "gain_percent": 13.867170, "saving_us_per_boundary": 1.979535, "model_step_saving_ms": 0.170240, "exact": true}
+  ],
+  "aggregate": {
+    "method": "mean of independent-process medians",
+    "control_ms_per_model_step": 1.218165333,
+    "candidate_ms_per_model_step": 1.057610667,
+    "saving_ms_per_model_step": 0.160554667,
+    "gain_percent": 13.180039053,
+    "saving_us_per_boundary": 1.866914729
+  },
+  "commands": {
+    "compile": "nvcc -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=compute_121a,code=sm_121a -DSPARK_BATCH_BUCKET=1u -I/tmp/dsv4-projection-final2-20260814/source/include -I/tmp/dsv4-projection-final2-20260814/source/model-families/common/include -I/tmp/dsv4-projection-final2-20260814/source/model-families/dsv4/include -I/tmp/dsv4-projection-final2-20260814/source/modules/dsv4_resident_decode_stage/include -I/tmp/dsv4-projection-final2-20260814/source/modules/dsv4_resident_decode_stage/source -I/tmp/dsv4-projection-final2-20260814/source /tmp/dsv4-hc-coop-poc/probe.cu -lcuda -lcudart -Xcompiler -pthread -o /tmp/dsv4-hc-coop-poc/probe",
+    "final_run": "/tmp/dsv4-hc-coop-poc/probe 16 31"
+  },
+  "sha256": {
+    "probe.cu": "81cb959bd71bba21b8fae3f6c5aa095df8e15c1dd8389be7718980b40b3e5572",
+    "remote_binary": "1e2f5714f800a9c8ab18be3f4e7d1d86693050a87e86e1fa7c87c8286455f5ed",
+    "run1.log": "cff8267f5467c74556c9208387020c5b24545831a30cdc98f39ac066bafa7728",
+    "run2.log": "aed7013a3d67ee77de3ae67efef2fb56c43717eb07fa5ffa22b8727c425a07ca",
+    "run3.log": "a50f7bcee223feb9349af68fbedf2fc045be6d1db69080a92d37b8d11c965d88",
+    "included_production_cuda": "aed6f6e34a075075fe5611e57af00337f73c3e0210718dede37633e15568f06b"
+  }
+}

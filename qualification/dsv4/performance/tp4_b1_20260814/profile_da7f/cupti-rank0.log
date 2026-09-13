@@ -1,0 +1,904 @@
+spark_cupti_ready
+hidden_spark_rdma_fabric_ready local_host=<redacted-direct> device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=<redacted-direct> device=rocep1s0f0 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=<redacted-switched> device=rocep1s0f1 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=<redacted-switched> device=rocep1s0f1 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=<redacted-switched> device=rocep1s0f1 port=1 gid_index=3
+hidden_spark_rdma_fabric_ready local_host=<redacted-switched> device=rocep1s0f1 port=1 gid_index=3
+dsv4_stage ready stage=0/4 slice=0+43 compress=41 csa=21 lanes=1 max_seq=4096 graphs=130 backing=1 page_kib=18344.0 state_gib=0.560 device_gib=38.5
+model_residentd ready rank=0 stage=0 inflight=1 active=1 rows=1 resident=1 adapter=spark.dsv4.flash-0731.serving-adapter.tp4.v1 model=deepseek-ai/DeepSeek-V4-Flash-0731 revision=7872f01b1d1fe23eabc4c98b48bffcef5a386062 tcp=spark4:18180
+spark_cupti_summary kernels=1086850 names=63 total_ns=13499167577 busy_ns=11135985942 span_ns=48898495052 dropped=0
+spark_cupti_decode_boundaries count=510
+spark_cupti_decode_window token=0 period_ns=34067518 busy_ns=21415007 idle_ns=12652511 busy_percent=62.860
+spark_cupti_decode_window token=1 period_ns=29140319 busy_ns=21458976 idle_ns=7681343 busy_percent=73.640
+spark_cupti_decode_window token=2 period_ns=28474238 busy_ns=20981662 idle_ns=7492576 busy_percent=73.686
+spark_cupti_decode_window token=3 period_ns=28277823 busy_ns=21592607 idle_ns=6685216 busy_percent=76.359
+spark_cupti_decode_window token=4 period_ns=27306910 busy_ns=20564894 idle_ns=6742016 busy_percent=75.310
+spark_cupti_decode_window token=5 period_ns=26962527 busy_ns=20574527 idle_ns=6388000 busy_percent=76.308
+spark_cupti_decode_window token=6 period_ns=27287710 busy_ns=21338046 idle_ns=5949664 busy_percent=78.197
+spark_cupti_decode_window token=7 period_ns=27579711 busy_ns=20921215 idle_ns=6658496 busy_percent=75.857
+spark_cupti_decode_window token=8 period_ns=27348414 busy_ns=21344414 idle_ns=6004000 busy_percent=78.046
+spark_cupti_decode_window token=9 period_ns=26544351 busy_ns=20720256 idle_ns=5824095 busy_percent=78.059
+spark_cupti_decode_window token=10 period_ns=27110235 busy_ns=20726236 idle_ns=6383999 busy_percent=76.452
+spark_cupti_decode_window token=11 period_ns=27386330 busy_ns=21565116 idle_ns=5821214 busy_percent=78.744
+spark_cupti_decode_window token=12 period_ns=27184251 busy_ns=20756668 idle_ns=6427583 busy_percent=76.355
+spark_cupti_decode_window token=13 period_ns=27033754 busy_ns=20786460 idle_ns=6247294 busy_percent=76.891
+spark_cupti_decode_window token=14 period_ns=26317564 busy_ns=20674461 idle_ns=5643103 busy_percent=78.558
+spark_cupti_decode_window token=15 period_ns=27224666 busy_ns=20943547 idle_ns=6281119 busy_percent=76.929
+spark_cupti_decode_window token=16 period_ns=26755963 busy_ns=20767708 idle_ns=5988255 busy_percent=77.619
+spark_cupti_decode_window token=17 period_ns=27115002 busy_ns=20744571 idle_ns=6370431 busy_percent=76.506
+spark_cupti_decode_window token=18 period_ns=36703357 busy_ns=21118685 idle_ns=15584672 busy_percent=57.539
+spark_cupti_decode_window token=19 period_ns=27030239 busy_ns=21187773 idle_ns=5842466 busy_percent=78.385
+spark_cupti_decode_window token=20 period_ns=26404927 busy_ns=20741693 idle_ns=5663234 busy_percent=78.552
+spark_cupti_decode_window token=21 period_ns=26572606 busy_ns=20913435 idle_ns=5659171 busy_percent=78.703
+spark_cupti_decode_window token=22 period_ns=26706367 busy_ns=20898684 idle_ns=5807683 busy_percent=78.254
+spark_cupti_decode_window token=23 period_ns=27001822 busy_ns=21079421 idle_ns=5922401 busy_percent=78.067
+spark_cupti_decode_window token=24 period_ns=26921279 busy_ns=20831132 idle_ns=6090147 busy_percent=77.378
+spark_cupti_decode_window token=25 period_ns=26572799 busy_ns=20832828 idle_ns=5739971 busy_percent=78.399
+spark_cupti_decode_window token=26 period_ns=26655614 busy_ns=20909917 idle_ns=5745697 busy_percent=78.445
+spark_cupti_decode_window token=27 period_ns=27457247 busy_ns=21125245 idle_ns=6332002 busy_percent=76.939
+spark_cupti_decode_window token=28 period_ns=26687294 busy_ns=20817499 idle_ns=5869795 busy_percent=78.005
+spark_cupti_decode_window token=29 period_ns=26628447 busy_ns=20743803 idle_ns=5884644 busy_percent=77.901
+spark_cupti_decode_window token=30 period_ns=26786687 busy_ns=20820765 idle_ns=5965922 busy_percent=77.728
+spark_cupti_decode_window token=31 period_ns=26920478 busy_ns=21099644 idle_ns=5820834 busy_percent=78.378
+spark_cupti_decode_window token=32 period_ns=26888927 busy_ns=21037500 idle_ns=5851427 busy_percent=78.239
+spark_cupti_decode_window token=33 period_ns=27986654 busy_ns=21686426 idle_ns=6300228 busy_percent=77.488
+spark_cupti_decode_window token=34 period_ns=26999583 busy_ns=21125341 idle_ns=5874242 busy_percent=78.243
+spark_cupti_decode_window token=35 period_ns=27093439 busy_ns=21328508 idle_ns=5764931 busy_percent=78.722
+spark_cupti_decode_window token=36 period_ns=33988190 busy_ns=21725595 idle_ns=12262595 busy_percent=63.921
+spark_cupti_decode_window token=37 period_ns=27528318 busy_ns=21449180 idle_ns=6079138 busy_percent=77.917
+spark_cupti_decode_window token=38 period_ns=27065119 busy_ns=21096957 idle_ns=5968162 busy_percent=77.949
+spark_cupti_decode_window token=39 period_ns=27347391 busy_ns=21417628 idle_ns=5929763 busy_percent=78.317
+spark_cupti_decode_window token=40 period_ns=27216542 busy_ns=21193916 idle_ns=6022626 busy_percent=77.871
+spark_cupti_decode_window token=41 period_ns=27181951 busy_ns=21211964 idle_ns=5969987 busy_percent=78.037
+spark_cupti_decode_window token=42 period_ns=27794174 busy_ns=21816671 idle_ns=5977503 busy_percent=78.494
+spark_cupti_decode_window token=43 period_ns=26923711 busy_ns=21369819 idle_ns=5553892 busy_percent=79.372
+spark_cupti_decode_window token=44 period_ns=27236830 busy_ns=21151643 idle_ns=6085187 busy_percent=77.658
+spark_cupti_decode_window token=45 period_ns=27021631 busy_ns=21123740 idle_ns=5897891 busy_percent=78.173
+spark_cupti_decode_window token=46 period_ns=27530495 busy_ns=21126300 idle_ns=6404195 busy_percent=76.738
+spark_cupti_decode_window token=47 period_ns=30706526 busy_ns=21412378 idle_ns=9294148 busy_percent=69.732
+spark_cupti_decode_window token=48 period_ns=27437759 busy_ns=21255356 idle_ns=6182403 busy_percent=77.468
+spark_cupti_decode_window token=49 period_ns=27314910 busy_ns=21278107 idle_ns=6036803 busy_percent=77.899
+spark_cupti_decode_window token=50 period_ns=27166783 busy_ns=21173723 idle_ns=5993060 busy_percent=77.940
+spark_cupti_decode_window token=51 period_ns=27809822 busy_ns=22100412 idle_ns=5709410 busy_percent=79.470
+spark_cupti_decode_window token=52 period_ns=27207679 busy_ns=21236986 idle_ns=5970693 busy_percent=78.055
+spark_cupti_decode_window token=53 period_ns=27665406 busy_ns=21291773 idle_ns=6373633 busy_percent=76.962
+spark_cupti_decode_window token=54 period_ns=29674335 busy_ns=21394620 idle_ns=8279715 busy_percent=72.098
+spark_cupti_decode_window token=55 period_ns=28887998 busy_ns=21939644 idle_ns=6948354 busy_percent=75.947
+spark_cupti_decode_window token=56 period_ns=27745087 busy_ns=21296156 idle_ns=6448931 busy_percent=76.756
+spark_cupti_decode_window token=57 period_ns=27510527 busy_ns=21278683 idle_ns=6231844 busy_percent=77.347
+spark_cupti_decode_window token=58 period_ns=27378910 busy_ns=21286173 idle_ns=6092737 busy_percent=77.747
+spark_cupti_decode_window token=59 period_ns=27907231 busy_ns=21495642 idle_ns=6411589 busy_percent=77.025
+spark_cupti_decode_window token=60 period_ns=27326142 busy_ns=21287869 idle_ns=6038273 busy_percent=77.903
+spark_cupti_decode_window token=61 period_ns=27318399 busy_ns=21266011 idle_ns=6052388 busy_percent=77.845
+spark_cupti_decode_window token=62 period_ns=27253886 busy_ns=21274878 idle_ns=5979008 busy_percent=78.062
+spark_cupti_decode_window token=63 period_ns=27469855 busy_ns=21519035 idle_ns=5950820 busy_percent=78.337
+spark_cupti_decode_window token=64 period_ns=27368959 busy_ns=21344477 idle_ns=6024482 busy_percent=77.988
+spark_cupti_decode_window token=65 period_ns=27830686 busy_ns=21387228 idle_ns=6443458 busy_percent=76.848
+spark_cupti_decode_window token=66 period_ns=27406367 busy_ns=21346203 idle_ns=6060164 busy_percent=77.888
+spark_cupti_decode_window token=67 period_ns=27503422 busy_ns=21617788 idle_ns=5885634 busy_percent=78.600
+spark_cupti_decode_window token=68 period_ns=27434207 busy_ns=21387099 idle_ns=6047108 busy_percent=77.958
+spark_cupti_decode_window token=69 period_ns=28046046 busy_ns=22000828 idle_ns=6045218 busy_percent=78.445
+spark_cupti_decode_window token=70 period_ns=27441951 busy_ns=21363485 idle_ns=6078466 busy_percent=77.850
+spark_cupti_decode_window token=71 period_ns=27343167 busy_ns=21618587 idle_ns=5724580 busy_percent=79.064
+spark_cupti_decode_window token=72 period_ns=27262910 busy_ns=21408635 idle_ns=5854275 busy_percent=78.527
+spark_cupti_decode_window token=73 period_ns=31585246 busy_ns=21861819 idle_ns=9723427 busy_percent=69.215
+spark_cupti_decode_window token=74 period_ns=27774431 busy_ns=21686014 idle_ns=6088417 busy_percent=78.079
+spark_cupti_decode_window token=75 period_ns=27689439 busy_ns=21650042 idle_ns=6039397 busy_percent=78.189
+spark_cupti_decode_window token=76 period_ns=27434270 busy_ns=21481020 idle_ns=5953250 busy_percent=78.300
+spark_cupti_decode_window token=77 period_ns=27115359 busy_ns=21430718 idle_ns=5684641 busy_percent=79.035
+spark_cupti_decode_window token=78 period_ns=27420318 busy_ns=21468508 idle_ns=5951810 busy_percent=78.294
+spark_cupti_decode_window token=79 period_ns=27508575 busy_ns=21639070 idle_ns=5869505 busy_percent=78.663
+spark_cupti_decode_window token=80 period_ns=27388286 busy_ns=21495580 idle_ns=5892706 busy_percent=78.485
+spark_cupti_decode_window token=81 period_ns=27674847 busy_ns=21501405 idle_ns=6173442 busy_percent=77.693
+spark_cupti_decode_window token=82 period_ns=27353343 busy_ns=21532795 idle_ns=5820548 busy_percent=78.721
+spark_cupti_decode_window token=83 period_ns=27604446 busy_ns=21762939 idle_ns=5841507 busy_percent=78.839
+spark_cupti_decode_window token=84 period_ns=28008063 busy_ns=21519133 idle_ns=6488930 busy_percent=76.832
+spark_cupti_decode_window token=85 period_ns=27611582 busy_ns=21577276 idle_ns=6034306 busy_percent=78.146
+spark_cupti_decode_window token=86 period_ns=28263647 busy_ns=21543260 idle_ns=6720387 busy_percent=76.223
+spark_cupti_decode_window token=87 period_ns=30766974 busy_ns=21798108 idle_ns=8968866 busy_percent=70.849
+spark_cupti_decode_window token=88 period_ns=27737727 busy_ns=21499356 idle_ns=6238371 busy_percent=77.509
+spark_cupti_decode_window token=89 period_ns=27435550 busy_ns=21470108 idle_ns=5965442 busy_percent=78.257
+spark_cupti_decode_window token=90 period_ns=27421119 busy_ns=21499259 idle_ns=5921860 busy_percent=78.404
+spark_cupti_decode_window token=91 period_ns=31212670 busy_ns=22135356 idle_ns=9077314 busy_percent=70.918
+spark_cupti_decode_window token=92 period_ns=28208127 busy_ns=21756763 idle_ns=6451364 busy_percent=77.129
+spark_cupti_decode_window token=93 period_ns=27259006 busy_ns=21568029 idle_ns=5690977 busy_percent=79.123
+spark_cupti_decode_window token=94 period_ns=27258047 busy_ns=21539483 idle_ns=5718564 busy_percent=79.021
+spark_cupti_decode_window token=95 period_ns=28137151 busy_ns=21835323 idle_ns=6301828 busy_percent=77.603
+spark_cupti_decode_window token=96 period_ns=27674910 busy_ns=21659581 idle_ns=6015329 busy_percent=78.264
+spark_cupti_decode_window token=97 period_ns=27770143 busy_ns=21705307 idle_ns=6064836 busy_percent=78.161
+spark_cupti_decode_window token=98 period_ns=27697406 busy_ns=21747163 idle_ns=5950243 busy_percent=78.517
+spark_cupti_decode_window token=99 period_ns=28081087 busy_ns=22015770 idle_ns=6065317 busy_percent=78.401
+spark_cupti_decode_window token=100 period_ns=27794558 busy_ns=21755838 idle_ns=6038720 busy_percent=78.274
+spark_cupti_decode_window token=101 period_ns=28042399 busy_ns=21686525 idle_ns=6355874 busy_percent=77.335
+spark_cupti_decode_window token=102 period_ns=27977374 busy_ns=21701980 idle_ns=6275394 busy_percent=77.570
+spark_cupti_decode_window token=103 period_ns=28003071 busy_ns=21970843 idle_ns=6032228 busy_percent=78.459
+spark_cupti_decode_window token=104 period_ns=27706335 busy_ns=21687834 idle_ns=6018501 busy_percent=78.278
+spark_cupti_decode_window token=105 period_ns=27700062 busy_ns=21709243 idle_ns=5990819 busy_percent=78.373
+spark_cupti_decode_window token=106 period_ns=28227231 busy_ns=21746235 idle_ns=6480996 busy_percent=77.040
+spark_cupti_decode_window token=107 period_ns=28022590 busy_ns=21924188 idle_ns=6098402 busy_percent=78.238
+spark_cupti_decode_window token=108 period_ns=27956959 busy_ns=21709116 idle_ns=6247843 busy_percent=77.652
+spark_cupti_decode_window token=109 period_ns=35131774 busy_ns=21991163 idle_ns=13140611 busy_percent=62.596
+spark_cupti_decode_window token=110 period_ns=34157726 busy_ns=22173627 idle_ns=11984099 busy_percent=64.915
+spark_cupti_decode_window token=111 period_ns=31168510 busy_ns=22058042 idle_ns=9110468 busy_percent=70.770
+spark_cupti_decode_window token=112 period_ns=27930847 busy_ns=21753660 idle_ns=6177187 busy_percent=77.884
+spark_cupti_decode_window token=113 period_ns=28094175 busy_ns=21867451 idle_ns=6226724 busy_percent=77.836
+spark_cupti_decode_window token=114 period_ns=27545470 busy_ns=21750940 idle_ns=5794530 busy_percent=78.964
+spark_cupti_decode_window token=115 period_ns=27885023 busy_ns=21995836 idle_ns=5889187 busy_percent=78.880
+spark_cupti_decode_window token=116 period_ns=27858110 busy_ns=21754747 idle_ns=6103363 busy_percent=78.091
+spark_cupti_decode_window token=117 period_ns=27885695 busy_ns=21681916 idle_ns=6203779 busy_percent=77.753
+spark_cupti_decode_window token=118 period_ns=27862046 busy_ns=21709914 idle_ns=6152132 busy_percent=77.919
+spark_cupti_decode_window token=119 period_ns=28535647 busy_ns=21931963 idle_ns=6603684 busy_percent=76.858
+spark_cupti_decode_window token=120 period_ns=27876862 busy_ns=21752347 idle_ns=6124515 busy_percent=78.030
+spark_cupti_decode_window token=121 period_ns=27747423 busy_ns=21686204 idle_ns=6061219 busy_percent=78.156
+spark_cupti_decode_window token=122 period_ns=27784031 busy_ns=21679419 idle_ns=6104612 busy_percent=78.028
+spark_cupti_decode_window token=123 period_ns=27988030 busy_ns=21948860 idle_ns=6039170 busy_percent=78.422
+spark_cupti_decode_window token=124 period_ns=27926687 busy_ns=21752573 idle_ns=6174114 busy_percent=77.892
+spark_cupti_decode_window token=125 period_ns=27715166 busy_ns=21704508 idle_ns=6010658 busy_percent=78.313
+spark_cupti_decode_window token=126 period_ns=27640159 busy_ns=21659866 idle_ns=5980293 busy_percent=78.364
+spark_cupti_decode_window token=127 period_ns=38428542 busy_ns=32511516 idle_ns=5917026 busy_percent=84.603
+spark_cupti_decode_window token=128 period_ns=31472125 busy_ns=22442300 idle_ns=9029825 busy_percent=71.308
+spark_cupti_decode_window token=129 period_ns=33597786 busy_ns=26424091 idle_ns=7173695 busy_percent=78.648
+spark_cupti_decode_window token=130 period_ns=26756795 busy_ns=21789214 idle_ns=4967581 busy_percent=81.434
+spark_cupti_decode_window token=131 period_ns=27375354 busy_ns=22088091 idle_ns=5287263 busy_percent=80.686
+spark_cupti_decode_window token=132 period_ns=26616411 busy_ns=21790525 idle_ns=4825886 busy_percent=81.869
+spark_cupti_decode_window token=133 period_ns=26612922 busy_ns=21785499 idle_ns=4827423 busy_percent=81.861
+spark_cupti_decode_window token=134 period_ns=30445979 busy_ns=22446941 idle_ns=7999038 busy_percent=73.727
+spark_cupti_decode_window token=135 period_ns=33575447 busy_ns=22454555 idle_ns=11120892 busy_percent=66.878
+spark_cupti_decode_window token=136 period_ns=31940732 busy_ns=21945564 idle_ns=9995168 busy_percent=68.707
+spark_cupti_decode_window token=137 period_ns=27490266 busy_ns=21753115 idle_ns=5737151 busy_percent=79.130
+spark_cupti_decode_window token=138 period_ns=26799451 busy_ns=21819165 idle_ns=4980286 busy_percent=81.416
+spark_cupti_decode_window token=139 period_ns=26897051 busy_ns=22068317 idle_ns=4828734 busy_percent=82.047
+spark_cupti_decode_window token=140 period_ns=27029179 busy_ns=21777467 idle_ns=5251712 busy_percent=80.570
+spark_cupti_decode_window token=141 period_ns=26418522 busy_ns=21698075 idle_ns=4720447 busy_percent=82.132
+spark_cupti_decode_window token=142 period_ns=26951387 busy_ns=21699867 idle_ns=5251520 busy_percent=80.515
+spark_cupti_decode_window token=143 period_ns=28389113 busy_ns=22417499 idle_ns=5971614 busy_percent=78.965
+spark_cupti_decode_window token=144 period_ns=26894397 busy_ns=21899132 idle_ns=4995265 busy_percent=81.426
+spark_cupti_decode_window token=145 period_ns=26515066 busy_ns=21729434 idle_ns=4785632 busy_percent=81.951
+spark_cupti_decode_window token=146 period_ns=27454085 busy_ns=21875134 idle_ns=5578951 busy_percent=79.679
+spark_cupti_decode_window token=147 period_ns=29297182 busy_ns=22070238 idle_ns=7226944 busy_percent=75.332
+spark_cupti_decode_window token=148 period_ns=26791391 busy_ns=21809695 idle_ns=4981696 busy_percent=81.406
+spark_cupti_decode_window token=149 period_ns=26768126 busy_ns=21930143 idle_ns=4837983 busy_percent=81.926
+spark_cupti_decode_window token=150 period_ns=26613599 busy_ns=21831487 idle_ns=4782112 busy_percent=82.031
+spark_cupti_decode_window token=151 period_ns=27758047 busy_ns=21981632 idle_ns=5776415 busy_percent=79.190
+spark_cupti_decode_window token=152 period_ns=27134366 busy_ns=21757278 idle_ns=5377088 busy_percent=80.183
+spark_cupti_decode_window token=153 period_ns=26593375 busy_ns=21795360 idle_ns=4798015 busy_percent=81.958
+spark_cupti_decode_window token=154 period_ns=26743358 busy_ns=21845950 idle_ns=4897408 busy_percent=81.687
+spark_cupti_decode_window token=155 period_ns=27377727 busy_ns=22137279 idle_ns=5240448 busy_percent=80.859
+spark_cupti_decode_window token=156 period_ns=26504511 busy_ns=21795071 idle_ns=4709440 busy_percent=82.232
+spark_cupti_decode_window token=157 period_ns=26557374 busy_ns=21847231 idle_ns=4710143 busy_percent=82.264
+spark_cupti_decode_window token=158 period_ns=26997567 busy_ns=21804767 idle_ns=5192800 busy_percent=80.766
+spark_cupti_decode_window token=159 period_ns=27722177 busy_ns=22061568 idle_ns=5660609 busy_percent=79.581
+spark_cupti_decode_window token=160 period_ns=26604444 busy_ns=21834431 idle_ns=4770013 busy_percent=82.071
+spark_cupti_decode_window token=161 period_ns=26494207 busy_ns=21801632 idle_ns=4692575 busy_percent=82.288
+spark_cupti_decode_window token=162 period_ns=26642526 busy_ns=21755903 idle_ns=4886623 busy_percent=81.659
+spark_cupti_decode_window token=163 period_ns=26733599 busy_ns=22099871 idle_ns=4633728 busy_percent=82.667
+spark_cupti_decode_window token=164 period_ns=27386910 busy_ns=21840671 idle_ns=5546239 busy_percent=79.749
+spark_cupti_decode_window token=165 period_ns=29892223 busy_ns=21852799 idle_ns=8039424 busy_percent=73.105
+spark_cupti_decode_window token=166 period_ns=31376286 busy_ns=21795264 idle_ns=9581022 busy_percent=69.464
+spark_cupti_decode_window token=167 period_ns=33059685 busy_ns=22068575 idle_ns=10991110 busy_percent=66.754
+spark_cupti_decode_window token=168 period_ns=28804792 busy_ns=21871902 idle_ns=6932890 busy_percent=75.931
+spark_cupti_decode_window token=169 period_ns=26567071 busy_ns=21846303 idle_ns=4720768 busy_percent=82.231
+spark_cupti_decode_window token=170 period_ns=26748830 busy_ns=21842334 idle_ns=4906496 busy_percent=81.657
+spark_cupti_decode_window token=171 period_ns=26845279 busy_ns=22078175 idle_ns=4767104 busy_percent=82.242
+spark_cupti_decode_window token=172 period_ns=26654270 busy_ns=21786174 idle_ns=4868096 busy_percent=81.736
+spark_cupti_decode_window token=173 period_ns=27077247 busy_ns=21784607 idle_ns=5292640 busy_percent=80.454
+spark_cupti_decode_window token=174 period_ns=26566207 busy_ns=21781536 idle_ns=4784671 busy_percent=81.990
+spark_cupti_decode_window token=175 period_ns=27749255 busy_ns=22083678 idle_ns=5665577 busy_percent=79.583
+spark_cupti_decode_window token=176 period_ns=26641974 busy_ns=21755936 idle_ns=4886038 busy_percent=81.660
+spark_cupti_decode_window token=177 period_ns=27493278 busy_ns=22663582 idle_ns=4829696 busy_percent=82.433
+spark_cupti_decode_window token=178 period_ns=26589823 busy_ns=21809535 idle_ns=4780288 busy_percent=82.022
+spark_cupti_decode_window token=179 period_ns=26863839 busy_ns=22012511 idle_ns=4851328 busy_percent=81.941
+spark_cupti_decode_window token=180 period_ns=27561886 busy_ns=22204639 idle_ns=5357247 busy_percent=80.563
+spark_cupti_decode_window token=181 period_ns=26621439 busy_ns=21895807 idle_ns=4725632 busy_percent=82.249
+spark_cupti_decode_window token=182 period_ns=28140350 busy_ns=22008191 idle_ns=6132159 busy_percent=78.209
+spark_cupti_decode_window token=183 period_ns=30358220 busy_ns=22223935 idle_ns=8134285 busy_percent=73.206
+spark_cupti_decode_window token=184 period_ns=27324881 busy_ns=21813536 idle_ns=5511345 busy_percent=79.830
+spark_cupti_decode_window token=185 period_ns=30447423 busy_ns=21845055 idle_ns=8602368 busy_percent=71.747
+spark_cupti_decode_window token=186 period_ns=26672894 busy_ns=21861662 idle_ns=4811232 busy_percent=81.962
+spark_cupti_decode_window token=187 period_ns=30666111 busy_ns=22077823 idle_ns=8588288 busy_percent=71.994
+spark_cupti_decode_window token=188 period_ns=31107070 busy_ns=21772128 idle_ns=9334942 busy_percent=69.991
+spark_cupti_decode_window token=189 period_ns=31659263 busy_ns=21859519 idle_ns=9799744 busy_percent=69.046
+spark_cupti_decode_window token=190 period_ns=27807326 busy_ns=21833598 idle_ns=5973728 busy_percent=78.517
+spark_cupti_decode_window token=191 period_ns=28086543 busy_ns=22206592 idle_ns=5879951 busy_percent=79.065
+spark_cupti_decode_window token=192 period_ns=26865006 busy_ns=21729599 idle_ns=5135407 busy_percent=80.884
+spark_cupti_decode_window token=193 period_ns=26537279 busy_ns=21739551 idle_ns=4797728 busy_percent=81.921
+spark_cupti_decode_window token=194 period_ns=26533022 busy_ns=21733086 idle_ns=4799936 busy_percent=81.910
+spark_cupti_decode_window token=195 period_ns=26810399 busy_ns=22008960 idle_ns=4801439 busy_percent=82.091
+spark_cupti_decode_window token=196 period_ns=26645119 busy_ns=21815263 idle_ns=4829856 busy_percent=81.873
+spark_cupti_decode_window token=197 period_ns=26577950 busy_ns=21785054 idle_ns=4792896 busy_percent=81.967
+spark_cupti_decode_window token=198 period_ns=26744543 busy_ns=21847232 idle_ns=4897311 busy_percent=81.689
+spark_cupti_decode_window token=199 period_ns=27730130 busy_ns=22032319 idle_ns=5697811 busy_percent=79.453
+spark_cupti_decode_window token=200 period_ns=26838251 busy_ns=21777536 idle_ns=5060715 busy_percent=81.144
+spark_cupti_decode_window token=201 period_ns=29399839 busy_ns=21970240 idle_ns=7429599 busy_percent=74.729
+spark_cupti_decode_window token=202 period_ns=29165374 busy_ns=21890142 idle_ns=7275232 busy_percent=75.055
+spark_cupti_decode_window token=203 period_ns=26946879 busy_ns=22045087 idle_ns=4901792 busy_percent=81.809
+spark_cupti_decode_window token=204 period_ns=26656126 busy_ns=21799486 idle_ns=4856640 busy_percent=81.780
+spark_cupti_decode_window token=205 period_ns=26599903 busy_ns=21814367 idle_ns=4785536 busy_percent=82.009
+spark_cupti_decode_window token=206 period_ns=26582590 busy_ns=21842463 idle_ns=4740127 busy_percent=82.168
+spark_cupti_decode_window token=207 period_ns=27847158 busy_ns=22044511 idle_ns=5802647 busy_percent=79.163
+spark_cupti_decode_window token=208 period_ns=26728328 busy_ns=21745183 idle_ns=4983145 busy_percent=81.356
+spark_cupti_decode_window token=209 period_ns=27380094 busy_ns=21812542 idle_ns=5567552 busy_percent=79.666
+spark_cupti_decode_window token=210 period_ns=27005343 busy_ns=21774719 idle_ns=5230624 busy_percent=80.631
+spark_cupti_decode_window token=211 period_ns=26809342 busy_ns=22096158 idle_ns=4713184 busy_percent=82.420
+spark_cupti_decode_window token=212 period_ns=26571103 busy_ns=21818847 idle_ns=4752256 busy_percent=82.115
+spark_cupti_decode_window token=213 period_ns=26556959 busy_ns=21838399 idle_ns=4718560 busy_percent=82.232
+spark_cupti_decode_window token=214 period_ns=26561630 busy_ns=21822015 idle_ns=4739615 busy_percent=82.156
+spark_cupti_decode_window token=215 period_ns=27799353 busy_ns=21972511 idle_ns=5826842 busy_percent=79.040
+spark_cupti_decode_window token=216 period_ns=27131812 busy_ns=21821279 idle_ns=5310533 busy_percent=80.427
+spark_cupti_decode_window token=217 period_ns=31509631 busy_ns=21787008 idle_ns=9722623 busy_percent=69.144
+spark_cupti_decode_window token=218 period_ns=31943550 busy_ns=21828606 idle_ns=10114944 busy_percent=68.335
+spark_cupti_decode_window token=219 period_ns=29927167 busy_ns=22185536 idle_ns=7741631 busy_percent=74.132
+spark_cupti_decode_window token=220 period_ns=28585854 busy_ns=21826655 idle_ns=6759199 busy_percent=76.355
+spark_cupti_decode_window token=221 period_ns=26750175 busy_ns=21803327 idle_ns=4946848 busy_percent=81.507
+spark_cupti_decode_window token=222 period_ns=26656318 busy_ns=21744608 idle_ns=4911710 busy_percent=81.574
+spark_cupti_decode_window token=223 period_ns=28020253 busy_ns=22055615 idle_ns=5964638 busy_percent=78.713
+spark_cupti_decode_window token=224 period_ns=26898112 busy_ns=21784254 idle_ns=5113858 busy_percent=80.988
+spark_cupti_decode_window token=225 period_ns=27638943 busy_ns=22156991 idle_ns=5481952 busy_percent=80.166
+spark_cupti_decode_window token=226 period_ns=26812959 busy_ns=21937663 idle_ns=4875296 busy_percent=81.817
+spark_cupti_decode_window token=227 period_ns=27767486 busy_ns=22166143 idle_ns=5601343 busy_percent=79.828
+spark_cupti_decode_window token=228 period_ns=26786303 busy_ns=21953919 idle_ns=4832384 busy_percent=81.959
+spark_cupti_decode_window token=229 period_ns=27226046 busy_ns=21839358 idle_ns=5386688 busy_percent=80.215
+spark_cupti_decode_window token=230 period_ns=26909631 busy_ns=21824607 idle_ns=5085024 busy_percent=81.103
+spark_cupti_decode_window token=231 period_ns=31132544 busy_ns=22136990 idle_ns=8995554 busy_percent=71.106
+spark_cupti_decode_window token=232 period_ns=26978813 busy_ns=21815327 idle_ns=5163486 busy_percent=80.861
+spark_cupti_decode_window token=233 period_ns=26628319 busy_ns=21778751 idle_ns=4849568 busy_percent=81.788
+spark_cupti_decode_window token=234 period_ns=26604222 busy_ns=21779102 idle_ns=4825120 busy_percent=81.863
+spark_cupti_decode_window token=235 period_ns=26890879 busy_ns=22086783 idle_ns=4804096 busy_percent=82.135
+spark_cupti_decode_window token=236 period_ns=26577662 busy_ns=21822526 idle_ns=4755136 busy_percent=82.109
+spark_cupti_decode_window token=237 period_ns=27075075 busy_ns=22019611 idle_ns=5055464 busy_percent=81.328
+spark_cupti_decode_window token=238 period_ns=27949663 busy_ns=21831040 idle_ns=6118623 busy_percent=78.108
+spark_cupti_decode_window token=239 period_ns=27652383 busy_ns=22034143 idle_ns=5618240 busy_percent=79.683
+spark_cupti_decode_window token=240 period_ns=26694175 busy_ns=21841792 idle_ns=4852383 busy_percent=81.822
+spark_cupti_decode_window token=241 period_ns=26452991 busy_ns=21753471 idle_ns=4699520 busy_percent=82.234
+spark_cupti_decode_window token=242 period_ns=27296351 busy_ns=22511423 idle_ns=4784928 busy_percent=82.470
+spark_cupti_decode_window token=243 period_ns=26757343 busy_ns=22045183 idle_ns=4712160 busy_percent=82.389
+spark_cupti_decode_window token=244 period_ns=26573087 busy_ns=21813919 idle_ns=4759168 busy_percent=82.090
+spark_cupti_decode_window token=245 period_ns=26879967 busy_ns=21821887 idle_ns=5058080 busy_percent=81.183
+spark_cupti_decode_window token=246 period_ns=26607135 busy_ns=21869407 idle_ns=4737728 busy_percent=82.194
+spark_cupti_decode_window token=247 period_ns=30217567 busy_ns=22776127 idle_ns=7441440 busy_percent=75.374
+spark_cupti_decode_window token=248 period_ns=31512478 busy_ns=21843967 idle_ns=9668511 busy_percent=69.318
+spark_cupti_decode_window token=249 period_ns=32228864 busy_ns=21888608 idle_ns=10340256 busy_percent=67.916
+spark_cupti_decode_window token=250 period_ns=28366527 busy_ns=21804704 idle_ns=6561823 busy_percent=76.868
+spark_cupti_decode_window token=251 period_ns=26878430 busy_ns=22073695 idle_ns=4804735 busy_percent=82.124
+spark_cupti_decode_window token=252 period_ns=26615232 busy_ns=21823937 idle_ns=4791295 busy_percent=81.998
+spark_cupti_decode_window token=253 period_ns=26926719 busy_ns=21796159 idle_ns=5130560 busy_percent=80.946
+spark_cupti_decode_window token=254 period_ns=5592257263 busy_ns=22761022 idle_ns=5569496241 busy_percent=0.407
+spark_cupti_decode_window token=255 period_ns=27856127 busy_ns=20712223 idle_ns=7143904 busy_percent=74.354
+spark_cupti_decode_window token=256 period_ns=30051615 busy_ns=21350398 idle_ns=8701217 busy_percent=71.046
+spark_cupti_decode_window token=257 period_ns=26950047 busy_ns=20675967 idle_ns=6274080 busy_percent=76.720
+spark_cupti_decode_window token=258 period_ns=28366238 busy_ns=21678815 idle_ns=6687423 busy_percent=76.425
+spark_cupti_decode_window token=259 period_ns=28492190 busy_ns=21253663 idle_ns=7238527 busy_percent=74.595
+spark_cupti_decode_window token=260 period_ns=28474527 busy_ns=21312926 idle_ns=7161601 busy_percent=74.849
+spark_cupti_decode_window token=261 period_ns=27520415 busy_ns=20774783 idle_ns=6745632 busy_percent=75.489
+spark_cupti_decode_window token=262 period_ns=27711455 busy_ns=21486815 idle_ns=6224640 busy_percent=77.538
+spark_cupti_decode_window token=263 period_ns=27150783 busy_ns=20691327 idle_ns=6459456 busy_percent=76.209
+spark_cupti_decode_window token=264 period_ns=27225407 busy_ns=20727710 idle_ns=6497697 busy_percent=76.134
+spark_cupti_decode_window token=265 period_ns=26852191 busy_ns=20685695 idle_ns=6166496 busy_percent=77.035
+spark_cupti_decode_window token=266 period_ns=26978175 busy_ns=20910847 idle_ns=6067328 busy_percent=77.510
+spark_cupti_decode_window token=267 period_ns=27498653 busy_ns=20767007 idle_ns=6731646 busy_percent=75.520
+spark_cupti_decode_window token=268 period_ns=27461343 busy_ns=21390272 idle_ns=6071071 busy_percent=77.892
+spark_cupti_decode_window token=269 period_ns=26661759 busy_ns=20671455 idle_ns=5990304 busy_percent=77.532
+spark_cupti_decode_window token=270 period_ns=28075423 busy_ns=21330687 idle_ns=6744736 busy_percent=75.976
+spark_cupti_decode_window token=271 period_ns=26915999 busy_ns=20848319 idle_ns=6067680 busy_percent=77.457
+spark_cupti_decode_window token=272 period_ns=28013535 busy_ns=21507550 idle_ns=6505985 busy_percent=76.776
+spark_cupti_decode_window token=273 period_ns=26723199 busy_ns=20789374 idle_ns=5933825 busy_percent=77.795
+spark_cupti_decode_window token=274 period_ns=28408670 busy_ns=21232511 idle_ns=7176159 busy_percent=74.740
+spark_cupti_decode_window token=275 period_ns=27322975 busy_ns=20836319 idle_ns=6486656 busy_percent=76.259
+spark_cupti_decode_window token=276 period_ns=26937982 busy_ns=20876255 idle_ns=6061727 busy_percent=77.497
+spark_cupti_decode_window token=277 period_ns=26777503 busy_ns=20892575 idle_ns=5884928 busy_percent=78.023
+spark_cupti_decode_window token=278 period_ns=27831679 busy_ns=21809247 idle_ns=6022432 busy_percent=78.361
+spark_cupti_decode_window token=279 period_ns=27441759 busy_ns=20890815 idle_ns=6550944 busy_percent=76.128
+spark_cupti_decode_window token=280 period_ns=27066143 busy_ns=20975360 idle_ns=6090783 busy_percent=77.497
+spark_cupti_decode_window token=281 period_ns=27262271 busy_ns=20905726 idle_ns=6356545 busy_percent=76.684
+spark_cupti_decode_window token=282 period_ns=27227102 busy_ns=21168126 idle_ns=6058976 busy_percent=77.747
+spark_cupti_decode_window token=283 period_ns=27086527 busy_ns=20876928 idle_ns=6209599 busy_percent=77.075
+spark_cupti_decode_window token=284 period_ns=26648671 busy_ns=20824511 idle_ns=5824160 busy_percent=78.145
+spark_cupti_decode_window token=285 period_ns=26949887 busy_ns=20871327 idle_ns=6078560 busy_percent=77.445
+spark_cupti_decode_window token=286 period_ns=27312510 busy_ns=21159038 idle_ns=6153472 busy_percent=77.470
+spark_cupti_decode_window token=287 period_ns=27595775 busy_ns=21075742 idle_ns=6520033 busy_percent=76.373
+spark_cupti_decode_window token=288 period_ns=27203519 busy_ns=21074848 idle_ns=6128671 busy_percent=77.471
+spark_cupti_decode_window token=289 period_ns=27112607 busy_ns=21154879 idle_ns=5957728 busy_percent=78.026
+spark_cupti_decode_window token=290 period_ns=27581214 busy_ns=21394654 idle_ns=6186560 busy_percent=77.570
+spark_cupti_decode_window token=291 period_ns=27474047 busy_ns=21135390 idle_ns=6338657 busy_percent=76.929
+spark_cupti_decode_window token=292 period_ns=27570591 busy_ns=21213568 idle_ns=6357023 busy_percent=76.943
+spark_cupti_decode_window token=293 period_ns=27910879 busy_ns=21157791 idle_ns=6753088 busy_percent=75.805
+spark_cupti_decode_window token=294 period_ns=27178431 busy_ns=21502559 idle_ns=5675872 busy_percent=79.116
+spark_cupti_decode_window token=295 period_ns=27199806 busy_ns=21221214 idle_ns=5978592 busy_percent=78.020
+spark_cupti_decode_window token=296 period_ns=26931807 busy_ns=21295028 idle_ns=5636779 busy_percent=79.070
+spark_cupti_decode_window token=297 period_ns=28505055 busy_ns=21951903 idle_ns=6553152 busy_percent=77.011
+spark_cupti_decode_window token=298 period_ns=27700382 busy_ns=21620831 idle_ns=6079551 busy_percent=78.052
+spark_cupti_decode_window token=299 period_ns=33294591 busy_ns=26486333 idle_ns=6808258 busy_percent=79.551
+spark_cupti_decode_window token=300 period_ns=27009855 busy_ns=21229504 idle_ns=5780351 busy_percent=78.599
+spark_cupti_decode_window token=301 period_ns=27128255 busy_ns=21180959 idle_ns=5947296 busy_percent=78.077
+spark_cupti_decode_window token=302 period_ns=27256767 busy_ns=21483968 idle_ns=5772799 busy_percent=78.821
+spark_cupti_decode_window token=303 period_ns=27366815 busy_ns=21312830 idle_ns=6053985 busy_percent=77.878
+spark_cupti_decode_window token=304 period_ns=27108861 busy_ns=21239998 idle_ns=5868863 busy_percent=78.351
+spark_cupti_decode_window token=305 period_ns=27182719 busy_ns=21257279 idle_ns=5925440 busy_percent=78.201
+spark_cupti_decode_window token=306 period_ns=27393887 busy_ns=21541727 idle_ns=5852160 busy_percent=78.637
+spark_cupti_decode_window token=307 period_ns=27188959 busy_ns=21281695 idle_ns=5907264 busy_percent=78.273
+spark_cupti_decode_window token=308 period_ns=28311839 busy_ns=21302589 idle_ns=7009250 busy_percent=75.243
+spark_cupti_decode_window token=309 period_ns=27260127 busy_ns=21319391 idle_ns=5940736 busy_percent=78.207
+spark_cupti_decode_window token=310 period_ns=28053535 busy_ns=21709727 idle_ns=6343808 busy_percent=77.387
+spark_cupti_decode_window token=311 period_ns=28217278 busy_ns=21383199 idle_ns=6834079 busy_percent=75.781
+spark_cupti_decode_window token=312 period_ns=27007327 busy_ns=21259134 idle_ns=5748193 busy_percent=78.716
+spark_cupti_decode_window token=313 period_ns=26965054 busy_ns=21288222 idle_ns=5676832 busy_percent=78.947
+spark_cupti_decode_window token=314 period_ns=27345919 busy_ns=21540512 idle_ns=5805407 busy_percent=78.770
+spark_cupti_decode_window token=315 period_ns=28644607 busy_ns=21670783 idle_ns=6973824 busy_percent=75.654
+spark_cupti_decode_window token=316 period_ns=27584383 busy_ns=21506206 idle_ns=6078177 busy_percent=77.965
+spark_cupti_decode_window token=317 period_ns=27104671 busy_ns=21330559 idle_ns=5774112 busy_percent=78.697
+spark_cupti_decode_window token=318 period_ns=28426206 busy_ns=22314623 idle_ns=6111583 busy_percent=78.500
+spark_cupti_decode_window token=319 period_ns=27465535 busy_ns=21426751 idle_ns=6038784 busy_percent=78.013
+spark_cupti_decode_window token=320 period_ns=27288447 busy_ns=21453855 idle_ns=5834592 busy_percent=78.619
+spark_cupti_decode_window token=321 period_ns=27606399 busy_ns=21390911 idle_ns=6215488 busy_percent=77.485
+spark_cupti_decode_window token=322 period_ns=27591934 busy_ns=21674814 idle_ns=5917120 busy_percent=78.555
+spark_cupti_decode_window token=323 period_ns=27620159 busy_ns=21411871 idle_ns=6208288 busy_percent=77.523
+spark_cupti_decode_window token=324 period_ns=27481663 busy_ns=21437215 idle_ns=6044448 busy_percent=78.006
+spark_cupti_decode_window token=325 period_ns=27145279 busy_ns=21437246 idle_ns=5708033 busy_percent=78.972
+spark_cupti_decode_window token=326 period_ns=27801726 busy_ns=21636895 idle_ns=6164831 busy_percent=77.826
+spark_cupti_decode_window token=327 period_ns=27538335 busy_ns=21473183 idle_ns=6065152 busy_percent=77.976
+spark_cupti_decode_window token=328 period_ns=30161983 busy_ns=21544287 idle_ns=8617696 busy_percent=71.429
+spark_cupti_decode_window token=329 period_ns=27975135 busy_ns=21602015 idle_ns=6373120 busy_percent=77.219
+spark_cupti_decode_window token=330 period_ns=29231775 busy_ns=21688735 idle_ns=7543040 busy_percent=74.196
+spark_cupti_decode_window token=331 period_ns=27464382 busy_ns=21512223 idle_ns=5952159 busy_percent=78.328
+spark_cupti_decode_window token=332 period_ns=27582590 busy_ns=21502495 idle_ns=6080095 busy_percent=77.957
+spark_cupti_decode_window token=333 period_ns=31868287 busy_ns=21505408 idle_ns=10362879 busy_percent=67.482
+spark_cupti_decode_window token=334 period_ns=32630367 busy_ns=21737728 idle_ns=10892639 busy_percent=66.618
+spark_cupti_decode_window token=335 period_ns=30904990 busy_ns=21586110 idle_ns=9318880 busy_percent=69.847
+spark_cupti_decode_window token=336 period_ns=27358751 busy_ns=21517215 idle_ns=5841536 busy_percent=78.648
+spark_cupti_decode_window token=337 period_ns=27591103 busy_ns=21601183 idle_ns=5989920 busy_percent=78.290
+spark_cupti_decode_window token=338 period_ns=27342687 busy_ns=21854623 idle_ns=5488064 busy_percent=79.929
+spark_cupti_decode_window token=339 period_ns=27357822 busy_ns=21547005 idle_ns=5810817 busy_percent=78.760
+spark_cupti_decode_window token=340 period_ns=27131871 busy_ns=21558623 idle_ns=5573248 busy_percent=79.459
+spark_cupti_decode_window token=341 period_ns=27434175 busy_ns=21577472 idle_ns=5856703 busy_percent=78.652
+spark_cupti_decode_window token=342 period_ns=27823231 busy_ns=21763904 idle_ns=6059327 busy_percent=78.222
+spark_cupti_decode_window token=343 period_ns=27477822 busy_ns=21545727 idle_ns=5932095 busy_percent=78.411
+spark_cupti_decode_window token=344 period_ns=27591679 busy_ns=21487038 idle_ns=6104641 busy_percent=77.875
+spark_cupti_decode_window token=345 period_ns=27601471 busy_ns=21527167 idle_ns=6074304 busy_percent=77.993
+spark_cupti_decode_window token=346 period_ns=27898111 busy_ns=21841567 idle_ns=6056544 busy_percent=78.290
+spark_cupti_decode_window token=347 period_ns=28111263 busy_ns=21683710 idle_ns=6427553 busy_percent=77.135
+spark_cupti_decode_window token=348 period_ns=28344574 busy_ns=21575936 idle_ns=6768638 busy_percent=76.120
+spark_cupti_decode_window token=349 period_ns=27471135 busy_ns=21573151 idle_ns=5897984 busy_percent=78.530
+spark_cupti_decode_window token=350 period_ns=27731454 busy_ns=21835168 idle_ns=5896286 busy_percent=78.738
+spark_cupti_decode_window token=351 period_ns=28141215 busy_ns=21695743 idle_ns=6445472 busy_percent=77.096
+spark_cupti_decode_window token=352 period_ns=27880063 busy_ns=21807232 idle_ns=6072831 busy_percent=78.218
+spark_cupti_decode_window token=353 period_ns=27936607 busy_ns=21790270 idle_ns=6146337 busy_percent=77.999
+spark_cupti_decode_window token=354 period_ns=28493279 busy_ns=22057887 idle_ns=6435392 busy_percent=77.414
+spark_cupti_decode_window token=355 period_ns=30790430 busy_ns=21867038 idle_ns=8923392 busy_percent=71.019
+spark_cupti_decode_window token=356 period_ns=27482303 busy_ns=21747231 idle_ns=5735072 busy_percent=79.132
+spark_cupti_decode_window token=357 period_ns=28448382 busy_ns=22410718 idle_ns=6037664 busy_percent=78.777
+spark_cupti_decode_window token=358 period_ns=27910655 busy_ns=22010527 idle_ns=5900128 busy_percent=78.861
+spark_cupti_decode_window token=359 period_ns=27681695 busy_ns=21743167 idle_ns=5938528 busy_percent=78.547
+spark_cupti_decode_window token=360 period_ns=28718079 busy_ns=22143360 idle_ns=6574719 busy_percent=77.106
+spark_cupti_decode_window token=361 period_ns=30910334 busy_ns=21956128 idle_ns=8954206 busy_percent=71.032
+spark_cupti_decode_window token=362 period_ns=32958111 busy_ns=22067903 idle_ns=10890208 busy_percent=66.957
+spark_cupti_decode_window token=363 period_ns=32951423 busy_ns=21786015 idle_ns=11165408 busy_percent=66.116
+spark_cupti_decode_window token=364 period_ns=27872703 busy_ns=21835583 idle_ns=6037120 busy_percent=78.340
+spark_cupti_decode_window token=365 period_ns=28686238 busy_ns=21914879 idle_ns=6771359 busy_percent=76.395
+spark_cupti_decode_window token=366 period_ns=28730366 busy_ns=22043838 idle_ns=6686528 busy_percent=76.727
+spark_cupti_decode_window token=367 period_ns=28561215 busy_ns=22514495 idle_ns=6046720 busy_percent=78.829
+spark_cupti_decode_window token=368 period_ns=28218495 busy_ns=21842559 idle_ns=6375936 busy_percent=77.405
+spark_cupti_decode_window token=369 period_ns=28126079 busy_ns=21816704 idle_ns=6309375 busy_percent=77.568
+spark_cupti_decode_window token=370 period_ns=28333886 busy_ns=22034239 idle_ns=6299647 busy_percent=77.766
+spark_cupti_decode_window token=371 period_ns=27755903 busy_ns=21797151 idle_ns=5958752 busy_percent=78.532
+spark_cupti_decode_window token=372 period_ns=28379647 busy_ns=21771615 idle_ns=6608032 busy_percent=76.716
+spark_cupti_decode_window token=373 period_ns=27897631 busy_ns=21696063 idle_ns=6201568 busy_percent=77.770
+spark_cupti_decode_window token=374 period_ns=27969823 busy_ns=21972959 idle_ns=5996864 busy_percent=78.560
+spark_cupti_decode_window token=375 period_ns=27663262 busy_ns=21724415 idle_ns=5938847 busy_percent=78.532
+spark_cupti_decode_window token=376 period_ns=27695135 busy_ns=21727647 idle_ns=5967488 busy_percent=78.453
+spark_cupti_decode_window token=377 period_ns=27758750 busy_ns=21738206 idle_ns=6020544 busy_percent=78.311
+spark_cupti_decode_window token=378 period_ns=28192735 busy_ns=22022943 idle_ns=6169792 busy_percent=78.116
+spark_cupti_decode_window token=379 period_ns=27930303 busy_ns=21802399 idle_ns=6127904 busy_percent=78.060
+spark_cupti_decode_window token=380 period_ns=27488767 busy_ns=21798303 idle_ns=5690464 busy_percent=79.299
+spark_cupti_decode_window token=381 period_ns=27624351 busy_ns=21715423 idle_ns=5908928 busy_percent=78.610
+spark_cupti_decode_window token=382 period_ns=37843614 busy_ns=31942750 idle_ns=5900864 busy_percent=84.407
+spark_cupti_decode_window token=383 period_ns=27507582 busy_ns=21939135 idle_ns=5568447 busy_percent=79.757
+spark_cupti_decode_window token=384 period_ns=28994783 busy_ns=21858463 idle_ns=7136320 busy_percent=75.388
+spark_cupti_decode_window token=385 period_ns=27158463 busy_ns=21778239 idle_ns=5380224 busy_percent=80.190
+spark_cupti_decode_window token=386 period_ns=26887039 busy_ns=22173311 idle_ns=4713728 busy_percent=82.468
+spark_cupti_decode_window token=387 period_ns=26547711 busy_ns=21861216 idle_ns=4686495 busy_percent=82.347
+spark_cupti_decode_window token=388 period_ns=26756063 busy_ns=21852480 idle_ns=4903583 busy_percent=81.673
+spark_cupti_decode_window token=389 period_ns=26915774 busy_ns=21835422 idle_ns=5080352 busy_percent=81.125
+spark_cupti_decode_window token=390 period_ns=28230170 busy_ns=22036383 idle_ns=6193787 busy_percent=78.060
+spark_cupti_decode_window token=391 period_ns=26598852 busy_ns=21820031 idle_ns=4778821 busy_percent=82.034
+spark_cupti_decode_window token=392 period_ns=26504702 busy_ns=21747902 idle_ns=4756800 busy_percent=82.053
+spark_cupti_decode_window token=393 period_ns=26556447 busy_ns=21808639 idle_ns=4747808 busy_percent=82.122
+spark_cupti_decode_window token=394 period_ns=30756287 busy_ns=22125311 idle_ns=8630976 busy_percent=71.938
+spark_cupti_decode_window token=395 period_ns=31429598 busy_ns=21861982 idle_ns=9567616 busy_percent=69.559
+spark_cupti_decode_window token=396 period_ns=31492671 busy_ns=21756511 idle_ns=9736160 busy_percent=69.084
+spark_cupti_decode_window token=397 period_ns=26813247 busy_ns=21831327 idle_ns=4981920 busy_percent=81.420
+spark_cupti_decode_window token=398 period_ns=27928408 busy_ns=22055296 idle_ns=5873112 busy_percent=78.971
+spark_cupti_decode_window token=399 period_ns=26691270 busy_ns=21770015 idle_ns=4921255 busy_percent=81.562
+spark_cupti_decode_window token=400 period_ns=26510271 busy_ns=21781344 idle_ns=4728927 busy_percent=82.162
+spark_cupti_decode_window token=401 period_ns=26465374 busy_ns=21760830 idle_ns=4704544 busy_percent=82.224
+spark_cupti_decode_window token=402 period_ns=27440414 busy_ns=22286622 idle_ns=5153792 busy_percent=81.218
+spark_cupti_decode_window token=403 period_ns=32231551 busy_ns=21888480 idle_ns=10343071 busy_percent=67.910
+spark_cupti_decode_window token=404 period_ns=27578175 busy_ns=21900639 idle_ns=5677536 busy_percent=79.413
+spark_cupti_decode_window token=405 period_ns=27508511 busy_ns=22153471 idle_ns=5355040 busy_percent=80.533
+spark_cupti_decode_window token=406 period_ns=27871797 busy_ns=22178815 idle_ns=5692982 busy_percent=79.574
+spark_cupti_decode_window token=407 period_ns=27296265 busy_ns=21768703 idle_ns=5527562 busy_percent=79.750
+spark_cupti_decode_window token=408 period_ns=26565726 busy_ns=21776926 idle_ns=4788800 busy_percent=81.974
+spark_cupti_decode_window token=409 period_ns=27387423 busy_ns=22520543 idle_ns=4866880 busy_percent=82.230
+spark_cupti_decode_window token=410 period_ns=27600414 busy_ns=22116543 idle_ns=5483871 busy_percent=80.131
+spark_cupti_decode_window token=411 period_ns=26570335 busy_ns=21796544 idle_ns=4773791 busy_percent=82.033
+spark_cupti_decode_window token=412 period_ns=27147423 busy_ns=21861632 idle_ns=5285791 busy_percent=80.529
+spark_cupti_decode_window token=413 period_ns=26555039 busy_ns=21790720 idle_ns=4764319 busy_percent=82.059
+spark_cupti_decode_window token=414 period_ns=27805170 busy_ns=22097631 idle_ns=5707539 busy_percent=79.473
+spark_cupti_decode_window token=415 period_ns=28297388 busy_ns=21835840 idle_ns=6461548 busy_percent=77.166
+spark_cupti_decode_window token=416 period_ns=31799358 busy_ns=21845854 idle_ns=9953504 busy_percent=68.699
+spark_cupti_decode_window token=417 period_ns=31750079 busy_ns=21801375 idle_ns=9948704 busy_percent=68.666
+spark_cupti_decode_window token=418 period_ns=29254463 busy_ns=22109791 idle_ns=7144672 busy_percent=75.577
+spark_cupti_decode_window token=419 period_ns=26414462 busy_ns=21759230 idle_ns=4655232 busy_percent=82.376
+spark_cupti_decode_window token=420 period_ns=29312222 busy_ns=21986206 idle_ns=7326016 busy_percent=75.007
+spark_cupti_decode_window token=421 period_ns=29717343 busy_ns=21825407 idle_ns=7891936 busy_percent=73.443
+spark_cupti_decode_window token=422 period_ns=28726802 busy_ns=22832863 idle_ns=5893939 busy_percent=79.483
+spark_cupti_decode_window token=423 period_ns=27017356 busy_ns=21864511 idle_ns=5152845 busy_percent=80.928
+spark_cupti_decode_window token=424 period_ns=26657407 busy_ns=21864991 idle_ns=4792416 busy_percent=82.022
+spark_cupti_decode_window token=425 period_ns=26643007 busy_ns=21835359 idle_ns=4807648 busy_percent=81.955
+spark_cupti_decode_window token=426 period_ns=26750527 busy_ns=22036223 idle_ns=4714304 busy_percent=82.377
+spark_cupti_decode_window token=427 period_ns=27382110 busy_ns=21801854 idle_ns=5580256 busy_percent=79.621
+spark_cupti_decode_window token=428 period_ns=26576670 busy_ns=21839742 idle_ns=4736928 busy_percent=82.176
+spark_cupti_decode_window token=429 period_ns=26696831 busy_ns=21793823 idle_ns=4903008 busy_percent=81.634
+spark_cupti_decode_window token=430 period_ns=27820815 busy_ns=22052000 idle_ns=5768815 busy_percent=79.264
+spark_cupti_decode_window token=431 period_ns=26794415 busy_ns=21753183 idle_ns=5041232 busy_percent=81.186
+spark_cupti_decode_window token=432 period_ns=26668191 busy_ns=21910783 idle_ns=4757408 busy_percent=82.161
+spark_cupti_decode_window token=433 period_ns=27097535 busy_ns=21831551 idle_ns=5265984 busy_percent=80.567
+spark_cupti_decode_window token=434 period_ns=26838655 busy_ns=22044287 idle_ns=4794368 busy_percent=82.136
+spark_cupti_decode_window token=435 period_ns=26589151 busy_ns=21833791 idle_ns=4755360 busy_percent=82.115
+spark_cupti_decode_window token=436 period_ns=29729662 busy_ns=21839008 idle_ns=7890654 busy_percent=73.459
+spark_cupti_decode_window token=437 period_ns=27089406 busy_ns=21883870 idle_ns=5205536 busy_percent=80.784
+spark_cupti_decode_window token=438 period_ns=28364876 busy_ns=22310559 idle_ns=6054317 busy_percent=78.656
+spark_cupti_decode_window token=439 period_ns=27804658 busy_ns=21865087 idle_ns=5939571 busy_percent=78.638
+spark_cupti_decode_window token=440 period_ns=26391903 busy_ns=21804543 idle_ns=4587360 busy_percent=82.618
+spark_cupti_decode_window token=441 period_ns=26424607 busy_ns=21843776 idle_ns=4580831 busy_percent=82.665
+spark_cupti_decode_window token=442 period_ns=26729567 busy_ns=22081407 idle_ns=4648160 busy_percent=82.610
+spark_cupti_decode_window token=443 period_ns=26407775 busy_ns=21750687 idle_ns=4657088 busy_percent=82.365
+spark_cupti_decode_window token=444 period_ns=26496543 busy_ns=21794079 idle_ns=4702464 busy_percent=82.253
+spark_cupti_decode_window token=445 period_ns=26460958 busy_ns=21764063 idle_ns=4696895 busy_percent=82.250
+spark_cupti_decode_window token=446 period_ns=28649000 busy_ns=22075711 idle_ns=6573289 busy_percent=77.056
+spark_cupti_decode_window token=447 period_ns=31924085 busy_ns=21763391 idle_ns=10160694 busy_percent=68.172
+spark_cupti_decode_window token=448 period_ns=31731967 busy_ns=21810175 idle_ns=9921792 busy_percent=68.733
+spark_cupti_decode_window token=449 period_ns=29204222 busy_ns=21766398 idle_ns=7437824 busy_percent=74.532
+spark_cupti_decode_window token=450 period_ns=27737663 busy_ns=22394719 idle_ns=5342944 busy_percent=80.738
+spark_cupti_decode_window token=451 period_ns=26780927 busy_ns=21927647 idle_ns=4853280 busy_percent=81.878
+spark_cupti_decode_window token=452 period_ns=26660767 busy_ns=21858175 idle_ns=4802592 busy_percent=81.986
+spark_cupti_decode_window token=453 period_ns=26731519 busy_ns=21885503 idle_ns=4846016 busy_percent=81.872
+spark_cupti_decode_window token=454 period_ns=27909799 busy_ns=22075871 idle_ns=5833928 busy_percent=79.097
+spark_cupti_decode_window token=455 period_ns=26687062 busy_ns=21774238 idle_ns=4912824 busy_percent=81.591
+spark_cupti_decode_window token=456 period_ns=27500639 busy_ns=22013407 idle_ns=5487232 busy_percent=80.047
+spark_cupti_decode_window token=457 period_ns=27677054 busy_ns=21967326 idle_ns=5709728 busy_percent=79.370
+spark_cupti_decode_window token=458 period_ns=28736543 busy_ns=22154623 idle_ns=6581920 busy_percent=77.096
+spark_cupti_decode_window token=459 period_ns=26834463 busy_ns=21825215 idle_ns=5009248 busy_percent=81.333
+spark_cupti_decode_window token=460 period_ns=26609503 busy_ns=21834495 idle_ns=4775008 busy_percent=82.055
+spark_cupti_decode_window token=461 period_ns=26587519 busy_ns=21867839 idle_ns=4719680 busy_percent=82.249
+spark_cupti_decode_window token=462 period_ns=28012900 busy_ns=22054591 idle_ns=5958309 busy_percent=78.730
+spark_cupti_decode_window token=463 period_ns=26728474 busy_ns=21759455 idle_ns=4969019 busy_percent=81.409
+spark_cupti_decode_window token=464 period_ns=26541342 busy_ns=21842526 idle_ns=4698816 busy_percent=82.296
+spark_cupti_decode_window token=465 period_ns=26583134 busy_ns=21776158 idle_ns=4806976 busy_percent=81.917
+spark_cupti_decode_window token=466 period_ns=26844031 busy_ns=22095103 idle_ns=4748928 busy_percent=82.309
+spark_cupti_decode_window token=467 period_ns=26638559 busy_ns=21856351 idle_ns=4782208 busy_percent=82.048
+spark_cupti_decode_window token=468 period_ns=26611967 busy_ns=21857119 idle_ns=4754848 busy_percent=82.133
+spark_cupti_decode_window token=469 period_ns=26593439 busy_ns=21853599 idle_ns=4739840 busy_percent=82.177
+spark_cupti_decode_window token=470 period_ns=27799169 busy_ns=22026719 idle_ns=5772450 busy_percent=79.235
+spark_cupti_decode_window token=471 period_ns=26856061 busy_ns=21819647 idle_ns=5036414 busy_percent=81.247
+spark_cupti_decode_window token=472 period_ns=26467999 busy_ns=21788383 idle_ns=4679616 busy_percent=82.320
+spark_cupti_decode_window token=473 period_ns=26473471 busy_ns=21809023 idle_ns=4664448 busy_percent=82.381
+spark_cupti_decode_window token=474 period_ns=26744926 busy_ns=22064447 idle_ns=4680479 busy_percent=82.500
+spark_cupti_decode_window token=475 period_ns=30845694 busy_ns=22033983 idle_ns=8811711 busy_percent=71.433
+spark_cupti_decode_window token=476 period_ns=34803999 busy_ns=21815008 idle_ns=12988991 busy_percent=62.680
+spark_cupti_decode_window token=477 period_ns=31724191 busy_ns=21770015 idle_ns=9954176 busy_percent=68.623
+spark_cupti_decode_window token=478 period_ns=29280095 busy_ns=22062207 idle_ns=7217888 busy_percent=75.349
+spark_cupti_decode_window token=479 period_ns=26713214 busy_ns=21757023 idle_ns=4956191 busy_percent=81.447
+spark_cupti_decode_window token=480 period_ns=26607935 busy_ns=21775552 idle_ns=4832383 busy_percent=81.839
+spark_cupti_decode_window token=481 period_ns=26610207 busy_ns=21873535 idle_ns=4736672 busy_percent=82.200
+spark_cupti_decode_window token=482 period_ns=26939102 busy_ns=22205310 idle_ns=4733792 busy_percent=82.428
+spark_cupti_decode_window token=483 period_ns=31846495 busy_ns=26427679 idle_ns=5418816 busy_percent=82.985
+spark_cupti_decode_window token=484 period_ns=27475774 busy_ns=22588254 idle_ns=4887520 busy_percent=82.212
+spark_cupti_decode_window token=485 period_ns=26724287 busy_ns=21840831 idle_ns=4883456 busy_percent=81.727
+spark_cupti_decode_window token=486 period_ns=27852989 busy_ns=22063583 idle_ns=5789406 busy_percent=79.214
+spark_cupti_decode_window token=487 period_ns=26973121 busy_ns=21835775 idle_ns=5137346 busy_percent=80.954
+spark_cupti_decode_window token=488 period_ns=26681183 busy_ns=21788095 idle_ns=4893088 busy_percent=81.661
+spark_cupti_decode_window token=489 period_ns=27328383 busy_ns=22536319 idle_ns=4792064 busy_percent=82.465
+spark_cupti_decode_window token=490 period_ns=26791071 busy_ns=22050207 idle_ns=4740864 busy_percent=82.304
+spark_cupti_decode_window token=491 period_ns=27309598 busy_ns=22586431 idle_ns=4723167 busy_percent=82.705
+spark_cupti_decode_window token=492 period_ns=26559935 busy_ns=21880032 idle_ns=4679903 busy_percent=82.380
+spark_cupti_decode_window token=493 period_ns=27308406 busy_ns=22051169 idle_ns=5257237 busy_percent=80.749
+spark_cupti_decode_window token=494 period_ns=32262211 busy_ns=22442274 idle_ns=9819937 busy_percent=69.562
+spark_cupti_decode_window token=495 period_ns=27841442 busy_ns=22247330 idle_ns=5594112 busy_percent=79.907
+spark_cupti_decode_window token=496 period_ns=26595043 busy_ns=21906114 idle_ns=4688929 busy_percent=82.369
+spark_cupti_decode_window token=497 period_ns=26592802 busy_ns=21875650 idle_ns=4717152 busy_percent=82.262
+spark_cupti_decode_window token=498 period_ns=26900419 busy_ns=22140450 idle_ns=4759969 busy_percent=82.305
+spark_cupti_decode_window token=499 period_ns=26612450 busy_ns=21851906 idle_ns=4760544 busy_percent=82.112
+spark_cupti_decode_window token=500 period_ns=26952834 busy_ns=21906051 idle_ns=5046783 busy_percent=81.276
+spark_cupti_decode_window token=501 period_ns=26778050 busy_ns=21858786 idle_ns=4919264 busy_percent=81.629
+spark_cupti_decode_window token=502 period_ns=27962435 busy_ns=22116769 idle_ns=5845666 busy_percent=79.095
+spark_cupti_decode_window token=503 period_ns=26774018 busy_ns=21852353 idle_ns=4921665 busy_percent=81.618
+spark_cupti_decode_window token=504 period_ns=26548514 busy_ns=21849154 idle_ns=4699360 busy_percent=82.299
+spark_cupti_decode_window token=505 period_ns=28059619 busy_ns=21798915 idle_ns=6260704 busy_percent=77.688
+spark_cupti_decode_window token=506 period_ns=31960739 busy_ns=22089409 idle_ns=9871330 busy_percent=69.114
+spark_cupti_decode_window token=507 period_ns=32063587 busy_ns=21851203 idle_ns=10212384 busy_percent=68.150
+spark_cupti_decode_window token=508 period_ns=28154435 busy_ns=21808833 idle_ns=6345602 busy_percent=77.461
+spark_cupti_decode_transition rank=0 total_ns=5564771537 count=1 average_ns=5564771537 median_ns=5564771537 p95_ns=5564771537 maximum_ns=5564771537 path=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj -> _Z30SparkDsv4UpdatePageTableKernelPjPKjS1_j
+spark_cupti_decode_transition rank=1 total_ns=1001494992 count=45761 average_ns=21885 median_ns=16576 p95_ns=61056 maximum_ns=3587103 path=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj -> _Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj
+spark_cupti_decode_transition rank=2 total_ns=819164857 count=43772 average_ns=18714 median_ns=17632 p95_ns=20256 maximum_ns=2663456 path=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj -> _Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj
+spark_cupti_decode_transition rank=3 total_ns=344293504 count=17051 average_ns=20191 median_ns=18784 p95_ns=24800 maximum_ns=2563744 path=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj -> _Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj
+spark_cupti_decode_transition rank=4 total_ns=241066301 count=254 average_ns=949079 median_ns=954352 p95_ns=1098278 maximum_ns=1968543 path=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj -> _Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj
+spark_cupti_decode_transition rank=5 total_ns=113393275 count=4836 average_ns=23447 median_ns=22880 p95_ns=26048 maximum_ns=2691168 path=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj -> _Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj
+spark_cupti_decode_transition rank=6 total_ns=74375576 count=43265 average_ns=1719 median_ns=1696 p95_ns=1856 maximum_ns=31008 path=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj -> _Z26SparkDsv4HcMixSplitKKernelPKvPKfPfjj
+spark_cupti_decode_transition rank=7 total_ns=51325848 count=21887 average_ns=2345 median_ns=2272 p95_ns=3200 maximum_ns=419872 path=_Z29SparkDsv4ProjectionPackKernelPKtS0_S0_S0_S0_S0_Ptjjjjj -> _Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj
+spark_cupti_decode_transition rank=8 total_ns=51028091 count=21887 average_ns=2331 median_ns=2304 p95_ns=3232 maximum_ns=22112 path=_Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj -> _Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj
+spark_cupti_decode_transition rank=9 total_ns=50873115 count=21887 average_ns=2324 median_ns=2272 p95_ns=3232 maximum_ns=15616 path=_Z26SparkLmMoePairReduceKernelPKvPKjPKfPvjjj -> _Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj
+spark_cupti_decode_transition rank=10 total_ns=30586836 count=30 average_ns=1019561 median_ns=1023489 p95_ns=1145726 maximum_ns=1182112 path=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj -> _Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj
+spark_cupti_decode_transition rank=11 total_ns=22586588 count=43774 average_ns=515 median_ns=480 p95_ns=608 maximum_ns=9056 path=_Z26SparkDsv4HcMixSplitKKernelPKvPKfPfjj -> _Z34SparkDsv4HcMixSplitKFinalizeKernelPKfS0_S0_jjffPfS1_S1_S1_
+spark_cupti_decode_transition rank=12 total_ns=22113726 count=43774 average_ns=505 median_ns=480 p95_ns=512 maximum_ns=24256 path=_Z34SparkDsv4HcMixSplitKFinalizeKernelPKfS0_S0_jjffPfS1_S1_S1_ -> _Z26SparkDsv4HcPreReduceKernelPKvPKfPvjjjj
+spark_cupti_decode_transition rank=13 total_ns=21811805 count=43774 average_ns=498 median_ns=480 p95_ns=512 maximum_ns=19008 path=_Z26SparkDsv4HcPreReduceKernelPKvPKfPvjjjj -> _Z20SparkLmRmsNormKernelPKvS0_Pvjjf
+spark_cupti_decode_transition rank=14 total_ns=18899103 count=509 average_ns=37129 median_ns=20480 p95_ns=136864 maximum_ns=723072 path=_Z26SparkDsv4AccumU64MaxKernelPmPKmj -> _Z26SparkDsv4AccumU64MaxKernelPmPKmj
+spark_cupti_decode_transition rank=15 total_ns=16012829 count=11735 average_ns=1364 median_ns=1408 p95_ns=1504 maximum_ns=11456 path=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj -> _Z20SparkLmRmsNormKernelPKvS0_Pvjjf
+spark_cupti_decode_transition rank=16 total_ns=14490015 count=509 average_ns=28467 median_ns=18624 p95_ns=74400 maximum_ns=757696 path=_Z29SparkDsv4HeadMaxlocPackKernelPKfPKjPmj -> _Z26SparkDsv4AccumU64MaxKernelPmPKmj
+spark_cupti_decode_transition rank=17 total_ns=11137246 count=21887 average_ns=508 median_ns=512 p95_ns=544 maximum_ns=15776 path=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf -> _Z35SparkLmSm121FusedDenseW13GemvKernelILj8EEvPKhS1_S1_S1_PKvPvjjf
+spark_cupti_decode_transition rank=18 total_ns=11041374 count=11135 average_ns=991 median_ns=992 p95_ns=1088 maximum_ns=18496 path=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj -> _Z27SparkDsv4CacheScatterKernelPKtPKjPtmS2_PKmjjmjj
+spark_cupti_decode_transition rank=19 total_ns=10972060 count=20869 average_ns=525 median_ns=512 p95_ns=544 maximum_ns=27776 path=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf -> _Z27SparkLmBf16LinearPairKernelPKvS0_S0_PvS1_jjj
+spark_cupti_decode_transition rank=20 total_ns=10952415 count=21887 average_ns=500 median_ns=480 p95_ns=512 maximum_ns=21536 path=_Z25SparkDsv4SparseAttnKernelPKvS0_mPKjS2_S2_jjPKiS2_jPKffPvPfjjjj -> _Z30SparkDsv4SparseAttnMergeKernelPKfPKjS0_Pvjjjj
+spark_cupti_decode_transition rank=21 total_ns=10900608 count=21887 average_ns=498 median_ns=480 p95_ns=512 maximum_ns=21696 path=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj -> _Z26SparkLmStridedLinearKernelILj128ELj0EEvjPKvPKhmmS1_mjjPvmjjjjj
+spark_cupti_decode_transition rank=22 total_ns=10889151 count=21887 average_ns=497 median_ns=480 p95_ns=512 maximum_ns=17920 path=_Z30SparkDsv4SparseAttnMergeKernelPKfPKjS0_Pvjjjj -> _Z19SparkDsv4RopeKernelPvPKfPKmjjjjj
+spark_cupti_decode_transition rank=23 total_ns=10816636 count=21887 average_ns=494 median_ns=480 p95_ns=512 maximum_ns=19008 path=_Z27SparkDsv4CacheScatterKernelPKtPKjPtmS2_PKmjjmjj -> _Z25SparkDsv4SparseAttnKernelPKvS0_mPKjS2_S2_jjPKiS2_jPKffPvPfjjjj
+spark_cupti_decode_transition rank=24 total_ns=10768384 count=21887 average_ns=491 median_ns=480 p95_ns=512 maximum_ns=16864 path=_Z28SparkLmSm121B1ExpertW2KernelILj128EEvPKhS1_PKvPKjS5_Pvjjj -> _Z26SparkLmMoePairReduceKernelPKvPKjPKfPvjjj
+spark_cupti_decode_transition rank=25 total_ns=10738720 count=21887 average_ns=490 median_ns=480 p95_ns=512 maximum_ns=16800 path=_Z29SparkLmSm121B1ExpertW13KernelILj32EEvPKhS1_S1_S1_PKvPKjS5_S5_Pvjjjjf -> _Z28SparkLmSm121B1ExpertW2KernelILj128EEvPKhS1_PKvPKjS5_Pvjjj
+spark_cupti_decode_transition rank=26 total_ns=10677503 count=21887 average_ns=487 median_ns=480 p95_ns=544 maximum_ns=24000 path=_Z26SparkLmStridedLinearKernelILj128ELj0EEvjPKvPKhmmS1_mjjPvmjjjjj -> _Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj
+spark_cupti_decode_transition rank=27 total_ns=10350367 count=10689 average_ns=968 median_ns=960 p95_ns=1024 maximum_ns=3680 path=_Z19SparkDsv4TopKKernelPKfPKjjjiPimj -> _Z27SparkDsv4CacheScatterKernelPKtPKjPtmS2_PKmjjmjj
+spark_cupti_decode_transition rank=28 total_ns=10304164 count=20864 average_ns=493 median_ns=480 p95_ns=544 maximum_ns=13152 path=_Z27SparkLmBf16LinearPairKernelPKvS0_S0_PvS1_jjj -> _Z29SparkDsv4ProjectionPackKernelPKtS0_S0_S0_S0_S0_Ptjjjjj
+spark_cupti_decode_transition rank=29 total_ns=10211644 count=20363 average_ns=501 median_ns=480 p95_ns=512 maximum_ns=18272 path=_Z18LmRouteBuildKernelILj256ELj256EEvPKjjjPjS2_S2_jjS2_jS2_ -> _Z29SparkLmSm121B1ExpertW13KernelILj32EEvPKhS1_S1_S1_PKvPKjS5_S5_Pvjjjjf
+spark_cupti_decode_transition rank=30 total_ns=7690176 count=287 average_ns=26795 median_ns=24128 p95_ns=37632 maximum_ns=59648 path=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj -> _Z28SparkLmEmbeddingGatherKernelPKjPKvPvjj
+spark_cupti_decode_transition rank=31 total_ns=6663006 count=10152 average_ns=656 median_ns=608 p95_ns=704 maximum_ns=28192 path=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj -> _Z27SparkDsv4CompressStepKernelPKvS0_PKfPfS3_mPKjPKmjjjjPvPj
+spark_cupti_decode_transition rank=32 total_ns=5334336 count=10730 average_ns=497 median_ns=480 p95_ns=512 maximum_ns=4800 path=_Z27SparkDsv4CompressStepKernelPKvS0_PKfPfS3_mPKjPKmjjjjPvPj -> _Z25SparkDsv4KvEmissionKernelPvPKjPKvPKfPKmPtmS1_S7_jjmjjj
+spark_cupti_decode_transition rank=33 total_ns=5325375 count=10596 average_ns=502 median_ns=512 p95_ns=512 maximum_ns=19008 path=_Z23SparkDsv4QuantSimKernelPvjjjjfj -> _Z19SparkLmLinearKernelILj32ELj0ELj8EEvjPKvS1_S1_Pvjjj
+spark_cupti_decode_transition rank=34 total_ns=5297984 count=10689 average_ns=495 median_ns=480 p95_ns=512 maximum_ns=16800 path=_Z19SparkLmLinearKernelILj32ELj0ELj8EEvjPKvS1_S1_Pvjjj -> _Z20SparkDsv4WidenKernelPKvPfjjf
+spark_cupti_decode_transition rank=35 total_ns=5260608 count=10688 average_ns=492 median_ns=480 p95_ns=512 maximum_ns=8800 path=_Z25SparkDsv4KvEmissionKernelPvPKjPKvPKfPKmPtmS1_S7_jjmjjj -> _Z27SparkDsv4IndexerScoreKernelPKvS0_mPKjS2_jjS2_PKfPfjjjj
+spark_cupti_decode_transition rank=36 total_ns=5258112 count=10689 average_ns=491 median_ns=480 p95_ns=512 maximum_ns=18112 path=_Z27SparkDsv4IndexerScoreKernelPKvS0_mPKjS2_jjS2_PKfPfjjjj -> _Z19SparkDsv4TopKKernelPKfPKjjjiPimj
+spark_cupti_decode_transition rank=37 total_ns=5252063 count=10689 average_ns=491 median_ns=480 p95_ns=512 maximum_ns=12192 path=_Z20SparkDsv4WidenKernelPKvPfjjf -> _Z27SparkDsv4CompressStepKernelPKvS0_PKfPfS3_mPKjPKmjjjjPvPj
+spark_cupti_decode_transition rank=38 total_ns=5044991 count=10130 average_ns=498 median_ns=480 p95_ns=512 maximum_ns=5888 path=_Z23SparkDsv4HadamardKernelPvjj -> _Z23SparkDsv4QuantSimKernelPvjjjjfj
+spark_cupti_decode_transition rank=39 total_ns=4676319 count=9523 average_ns=491 median_ns=480 p95_ns=512 maximum_ns=5344 path=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj -> _Z23SparkDsv4HadamardKernelPvjj
+spark_cupti_decode_transition rank=40 total_ns=4390528 count=8872 average_ns=494 median_ns=480 p95_ns=512 maximum_ns=9280 path=_Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj -> _Z19SparkDsv4RopeKernelPvPKfPKmjjjjj
+spark_cupti_decode_transition rank=41 total_ns=3574334 count=8635 average_ns=413 median_ns=416 p95_ns=480 maximum_ns=7424 path=_Z23SparkDsv4QuantSimKernelPvjjjjfj -> _Z19SparkDsv4RopeKernelPvPKfPKmjjjjj
+spark_cupti_decode_transition rank=42 total_ns=3525696 count=6671 average_ns=528 median_ns=512 p95_ns=608 maximum_ns=736 path=_Z27SparkDsv4QueryHeadRmsKernelPvjjjf -> _Z19SparkDsv4RopeKernelPvPKfPKmjjjjj
+spark_cupti_decode_transition rank=43 total_ns=3296287 count=509 average_ns=6476 median_ns=6432 p95_ns=6624 maximum_ns=10432 path=_Z28SparkLmEmbeddingGatherKernelPKjPKvPvjj -> _Z26SparkDsv4HcMixSplitKKernelPKvPKfPfjj
+spark_cupti_decode_transition rank=44 total_ns=3227936 count=509 average_ns=6341 median_ns=6144 p95_ns=7104 maximum_ns=60928 path=_Z26SparkDsv4AccumU64MaxKernelPmPKmj -> _Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj
+spark_cupti_decode_transition rank=45 total_ns=2245375 count=222 average_ns=10114 median_ns=10112 p95_ns=12800 maximum_ns=17056 path=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj -> _Z28SparkLmEmbeddingGatherKernelPKjPKvPvjj
+spark_cupti_decode_transition rank=46 total_ns=1881732 count=7381 average_ns=254 median_ns=256 p95_ns=448 maximum_ns=640 path=_Z27SparkDsv4CompressStepKernelPKvS0_PKfPfS3_mPKjPKmjjjjPvPj -> _Z20SparkLmRmsNormKernelPKvS0_Pvjjf
+spark_cupti_decode_transition rank=47 total_ns=1775706 count=2 average_ns=887853 median_ns=917018 p95_ns=917018 maximum_ns=917018 path=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj -> _Z30SparkDsv4UpdatePageTableKernelPjPKjS1_j
+spark_cupti_decode_transition rank=48 total_ns=1701790 count=13682 average_ns=124 median_ns=96 p95_ns=288 maximum_ns=3456 path=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj -> _Z27SparkDsv4QueryHeadRmsKernelPvjjjf
+spark_cupti_decode_transition rank=49 total_ns=1274304 count=3156 average_ns=403 median_ns=416 p95_ns=480 maximum_ns=2560 path=_Z27SparkDsv4QueryHeadRmsKernelPvjjjf -> _Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj
+spark_cupti_decode_transition rank=50 total_ns=826752 count=1651 average_ns=500 median_ns=480 p95_ns=512 maximum_ns=14016 path=_Z25SparkDsv4GateSelectKernelPKfS0_PKjS2_jjjfPjPf -> _Z18LmRouteBuildKernelILj256ELj256EEvPKjjjPjS2_S2_jjS2_jS2_
+spark_cupti_decode_transition rank=51 total_ns=552576 count=253 average_ns=2184 median_ns=1632 p95_ns=3104 maximum_ns=42912 path=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj -> _Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj
+spark_cupti_decode_transition rank=52 total_ns=520256 count=1034 average_ns=503 median_ns=512 p95_ns=544 maximum_ns=704 path=_Z36SparkDsv4BuildAttentionIndicesKernelPKmPiPjS2_jjjj -> _Z20SparkLmRmsNormKernelPKvS0_Pvjjf
+spark_cupti_decode_transition rank=53 total_ns=510336 count=1023 average_ns=498 median_ns=480 p95_ns=544 maximum_ns=672 path=_Z26SparkLmFp8LinearPairKernelILj128ELj0EEvPKvPKhS1_S3_S1_PvS4_jjj -> _Z29SparkDsv4ProjectionPackKernelPKtS0_S0_S0_S0_S0_Ptjjjjj
+spark_cupti_decode_transition rank=54 total_ns=507680 count=1018 average_ns=498 median_ns=480 p95_ns=512 maximum_ns=704 path=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf -> _Z26SparkLmFp8LinearPairKernelILj128ELj0EEvPKvPKhS1_S3_S1_PvS4_jjj
+spark_cupti_decode_transition rank=55 total_ns=506688 count=1022 average_ns=495 median_ns=480 p95_ns=576 maximum_ns=1824 path=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf -> _Z36SparkDsv4BuildAttentionIndicesKernelPKmPiPjS2_jjjj
+spark_cupti_decode_transition rank=56 total_ns=360449 count=1029 average_ns=350 median_ns=352 p95_ns=448 maximum_ns=576 path=_Z36SparkDsv4BuildAttentionIndicesKernelPKmPiPjS2_jjjj -> _Z25SparkDsv4KvEmissionKernelPvPKjPKvPKfPKmPtmS1_S7_jjmjjj
+spark_cupti_decode_transition rank=57 total_ns=275232 count=509 average_ns=540 median_ns=512 p95_ns=576 maximum_ns=10112 path=_Z27SparkDsv4HcHeadReduceKernelPKvPKffS2_fPvjjj -> _Z20SparkLmRmsNormKernelPKvS0_Pvjjf
+spark_cupti_decode_transition rank=58 total_ns=271008 count=509 average_ns=532 median_ns=512 p95_ns=608 maximum_ns=3584 path=_Z32SparkLmHeadCertifiedScreenKernelPKfS0_PjS1_j -> _Z33SparkLmHeadCertifiedRescoreKernelPKvS0_PKjS2_PfPjj
+spark_cupti_decode_transition rank=59 total_ns=259264 count=509 average_ns=509 median_ns=480 p95_ns=512 maximum_ns=7904 path=_Z33SparkLmHeadCertifiedRescoreKernelPKvS0_PKjS2_PfPjj -> _Z32SparkLmHeadCertifiedReduceKernelPKfPKjPjPfj
+spark_cupti_decode_transition rank=60 total_ns=258944 count=509 average_ns=508 median_ns=512 p95_ns=512 maximum_ns=960 path=_Z36SparkLmHeadCertifiedHiddenNormKernelPKvPfj -> _Z34SparkLmHeadCertifiedFp8ScoreKernelPKvPKhPKfS4_S4_PfS5_jj
+spark_cupti_decode_transition rank=61 total_ns=258272 count=509 average_ns=507 median_ns=512 p95_ns=512 maximum_ns=3232 path=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf -> _Z36SparkLmHeadCertifiedHiddenNormKernelPKvPfj
+spark_cupti_decode_transition rank=62 total_ns=254976 count=509 average_ns=500 median_ns=480 p95_ns=544 maximum_ns=3392 path=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj -> _Z20SparkDsv4HcMixKernelPKvPKfPfjjjf
+spark_cupti_decode_transition rank=63 total_ns=252608 count=509 average_ns=496 median_ns=480 p95_ns=512 maximum_ns=640 path=_Z20SparkDsv4HcMixKernelPKvPKfPfjjjf -> _Z27SparkDsv4HcHeadReduceKernelPKvPKffS2_fPvjjj
+spark_cupti_decode_gap rank=0 token=254 duration_ns=5564771537 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4UpdatePageTableKernelPjPKjS1_j grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_decode_gap rank=1 token=73 duration_ns=3587103 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=2 token=18 duration_ns=3483359 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=3 token=36 duration_ns=3392991 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=4 token=109 duration_ns=3389503 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=5 token=91 duration_ns=2982462 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=6 token=0 duration_ns=2691168 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_decode_gap rank=7 token=494 duration_ns=2663456 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=8 token=128 duration_ns=2593727 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=9 token=18 duration_ns=2563744 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_decode_gap rank=10 token=201 duration_ns=2492000 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_decode_gap rank=11 token=328 duration_ns=2489248 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=12 token=54 duration_ns=2452384 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=13 token=36 duration_ns=2415936 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_decode_gap rank=14 token=420 duration_ns=2322656 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=15 token=475 duration_ns=2306367 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=16 token=0 duration_ns=1968543 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=17 token=421 duration_ns=1865632 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=18 token=403 duration_ns=1837408 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=19 token=18 duration_ns=1824384 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_decode_gap rank=20 token=476 duration_ns=1821792 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=21 token=202 duration_ns=1653984 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=22 token=165 duration_ns=1571872 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=23 token=183 duration_ns=1503968 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=24 token=384 duration_ns=1479360 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=25 token=147 duration_ns=1475104 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=26 token=220 duration_ns=1242528 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=27 token=247 duration_ns=1182112 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=28 token=129 duration_ns=1181984 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=29 token=0 duration_ns=1179008 before=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18 after=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=30 token=293 duration_ns=1158667 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=31 token=298 duration_ns=1151339 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=32 token=223 duration_ns=1145726 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=33 token=312 duration_ns=1141615 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=34 token=311 duration_ns=1140686 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=35 token=323 duration_ns=1130417 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=36 token=256 duration_ns=1129540 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=37 token=288 duration_ns=1122634 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=38 token=308 duration_ns=1117679 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=39 token=328 duration_ns=1114898 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=40 token=327 duration_ns=1104050 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=41 token=330 duration_ns=1100928 before=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40 after=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_decode_gap rank=42 token=462 duration_ns=1099973 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=43 token=207 duration_ns=1099575 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=44 token=329 duration_ns=1099187 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=45 token=265 duration_ns=1098278 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=46 token=107 duration_ns=1093896 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=47 token=494 duration_ns=1091584 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=48 token=239 duration_ns=1090368 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=49 token=454 duration_ns=1081224 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=50 token=287 duration_ns=1080074 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=51 token=257 duration_ns=1077860 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=52 token=274 duration_ns=1075399 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=53 token=167 duration_ns=1074726 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=54 token=297 duration_ns=1070028 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=55 token=281 duration_ns=1069417 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=56 token=390 duration_ns=1069403 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=57 token=353 duration_ns=1067512 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=58 token=1 duration_ns=1061632 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=59 token=110 duration_ns=1057493 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=60 token=486 duration_ns=1054878 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=61 token=348 duration_ns=1053047 before=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=62 token=215 duration_ns=1050746 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_decode_gap rank=63 token=470 duration_ns=1049218 before=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22 after=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_kernel rank=0 total_ns=1679077745 count=21930 average_ns=76565 maximum_ns=204832 name=_Z29SparkLmSm121B1ExpertW13KernelILj32EEvPKhS1_S1_S1_PKvPKjS5_S5_Pvjjjjf grid=96,1,1 block=256,1,1 shared=16384 registers=67
+spark_cupti_kernel rank=1 total_ns=1275403197 count=65280 average_ns=19537 maximum_ns=213888 name=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=48,1,1 block=256,1,1 shared=0 registers=18
+spark_cupti_kernel rank=2 total_ns=1027712780 count=21930 average_ns=46863 maximum_ns=127648 name=_Z28SparkLmSm121B1ExpertW2KernelILj128EEvPKhS1_PKvPKjS5_Pvjjj grid=192,1,1 block=256,1,1 shared=2048 registers=54
+spark_cupti_kernel rank=3 total_ns=926516127 count=21930 average_ns=42248 maximum_ns=128672 name=_Z26SparkLmStridedLinearKernelILj128ELj0EEvjPKvPKhmmS1_mjjPvmjjjjj grid=1,128,2 block=256,1,1 shared=16384 registers=44
+spark_cupti_kernel rank=4 total_ns=868880804 count=21930 average_ns=39620 maximum_ns=201408 name=_Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj grid=1,512,1 block=256,1,1 shared=8192 registers=48
+spark_cupti_kernel rank=5 total_ns=716122520 count=21930 average_ns=32654 maximum_ns=208992 name=_Z35SparkLmSm121FusedDenseW13GemvKernelILj8EEvPKhS1_S1_S1_PKvPvjjf grid=16,1,1 block=1024,1,1 shared=16384 registers=40
+spark_cupti_kernel rank=6 total_ns=705874623 count=32640 average_ns=21626 maximum_ns=126560 name=_Z19SparkLmLinearKernelILj128ELj0ELj8EEvjPKvS1_S1_Pvjjj grid=1,1024,1 block=256,1,1 shared=4096 registers=48
+spark_cupti_kernel rank=7 total_ns=643043518 count=21930 average_ns=29322 maximum_ns=205408 name=_Z25SparkDsv4GateScoresKernelPKvS0_Pfjjj grid=1,32,1 block=256,1,1 shared=16384 registers=42
+spark_cupti_kernel rank=8 total_ns=605726005 count=20910 average_ns=28968 maximum_ns=228416 name=_Z25SparkDsv4SparseAttnKernelPKvS0_mPKjS2_S2_jjPKiS2_jPKffPvPfjjjj grid=1,4,12 block=256,1,1 shared=73728 registers=40
+spark_cupti_kernel rank=9 total_ns=573316090 count=21930 average_ns=26143 maximum_ns=175648 name=_Z26SparkLmFp8LinearPairKernelILj128ELj0EEvPKvPKhS1_S3_S1_PvS4_jjj grid=48,1,1 block=256,1,1 shared=16384 registers=39
+spark_cupti_kernel rank=10 total_ns=395007558 count=10710 average_ns=36882 maximum_ns=180896 name=_Z27SparkLmBf16LinearPairKernelPKvS0_S0_PvS1_jjj grid=1,64,1 block=256,1,1 shared=16384 registers=44
+spark_cupti_kernel rank=11 total_ns=378302344 count=10710 average_ns=35322 maximum_ns=179360 name=_Z27SparkLmBf16LinearPairKernelPKvS0_S0_PvS1_jjj grid=1,16,1 block=256,1,1 shared=16384 registers=44
+spark_cupti_kernel rank=12 total_ns=359796071 count=510 average_ns=705482 maximum_ns=799424 name=_Z34SparkLmHeadCertifiedFp8ScoreKernelPKvPKhPKfS4_S4_PfS5_jj grid=1012,1,1 block=1024,1,1 shared=0 registers=37
+spark_cupti_kernel rank=13 total_ns=294098650 count=21930 average_ns=13410 maximum_ns=66848 name=_Z19SparkLmLinearKernelILj128ELj1ELj8EEvjPKvS1_S1_Pvjjj grid=1,512,1 block=256,1,1 shared=2048 registers=44
+spark_cupti_kernel rank=14 total_ns=286172717 count=43860 average_ns=6524 maximum_ns=45664 name=_Z34SparkDsv4HcMixSplitKFinalizeKernelPKfS0_S0_jjffPfS1_S1_S1_ grid=1,1,1 block=64,1,1 shared=0 registers=40
+spark_cupti_kernel rank=15 total_ns=268440169 count=21930 average_ns=12240 maximum_ns=36160 name=_Z18LmRouteBuildKernelILj256ELj256EEvPKjjjPjS2_S2_jjS2_jS2_ grid=1,1,1 block=256,1,1 shared=0 registers=38
+spark_cupti_kernel rank=16 total_ns=249052495 count=65790 average_ns=3785 maximum_ns=53856 name=_Z30SparkDsv4AccumAddTp4TreeKernelPvPKvS1_S1_S1_jjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=17 total_ns=242096014 count=10200 average_ns=23734 maximum_ns=97984 name=_Z27SparkLmBf16LinearPairKernelPKvS0_S0_PvS1_jjj grid=1,32,1 block=256,1,1 shared=16384 registers=44
+spark_cupti_kernel rank=18 total_ns=174417806 count=31620 average_ns=5516 maximum_ns=128096 name=_Z27SparkDsv4CompressStepKernelPKvS0_PKfPfS3_mPKjPKmjjjjPvPj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=19 total_ns=166972274 count=10710 average_ns=15590 maximum_ns=29792 name=_Z27SparkDsv4IndexerScoreKernelPKvS0_mPKjS2_jjS2_PKfPfjjjj grid=1,128,1 block=256,1,1 shared=32768 registers=45
+spark_cupti_kernel rank=20 total_ns=155878541 count=21930 average_ns=7108 maximum_ns=41792 name=_Z25SparkDsv4GateSelectKernelPKfS0_PKjS2_jjjfPjPf grid=1,1,1 block=256,1,1 shared=0 registers=31
+spark_cupti_kernel rank=21 total_ns=149378230 count=21930 average_ns=6811 maximum_ns=45056 name=_Z30SparkDsv4SparseAttnMergeKernelPKfPKjS0_Pvjjjj grid=1,4,1 block=256,1,1 shared=0 registers=38
+spark_cupti_kernel rank=22 total_ns=138251029 count=43860 average_ns=3152 maximum_ns=33280 name=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj grid=1,16,1 block=32,1,1 shared=0 registers=25
+spark_cupti_kernel rank=23 total_ns=130724758 count=21930 average_ns=5961 maximum_ns=86176 name=_Z26SparkLmMoePairReduceKernelPKvPKjPKfPvjjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=24 total_ns=115694616 count=44370 average_ns=2607 maximum_ns=64128 name=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf grid=1,1,1 block=256,1,1 shared=16384 registers=38
+spark_cupti_kernel rank=25 total_ns=105988023 count=43860 average_ns=2416 maximum_ns=31552 name=_Z26SparkDsv4HcMixSplitKKernelPKvPKfPfjj grid=64,1,1 block=256,1,1 shared=0 registers=28
+spark_cupti_kernel rank=26 total_ns=102897497 count=10710 average_ns=9607 maximum_ns=66016 name=_Z19SparkLmLinearKernelILj32ELj0ELj8EEvjPKvS1_S1_Pvjjj grid=1,8,1 block=256,1,1 shared=16384 registers=48
+spark_cupti_kernel rank=27 total_ns=61359004 count=43860 average_ns=1398 maximum_ns=12864 name=_Z21SparkDsv4HcPostKernelPKvS0_PKfS2_Pvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=28 total_ns=57555835 count=21930 average_ns=2624 maximum_ns=19072 name=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj grid=1,1,1 block=32,1,1 shared=0 registers=25
+spark_cupti_kernel rank=29 total_ns=56712987 count=20910 average_ns=2712 maximum_ns=28512 name=_Z25SparkDsv4KvEmissionKernelPvPKjPKvPKfPKmPtmS1_S7_jjmjjj grid=1,1,1 block=256,1,1 shared=2048 registers=40
+spark_cupti_kernel rank=30 total_ns=51758524 count=21930 average_ns=2360 maximum_ns=33728 name=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf grid=1,1,1 block=256,1,1 shared=4096 registers=38
+spark_cupti_kernel rank=31 total_ns=43591422 count=43860 average_ns=993 maximum_ns=84288 name=_Z26SparkDsv4HcPreReduceKernelPKvPKfPvjjjj grid=16,1,1 block=256,1,1 shared=0 registers=36
+spark_cupti_kernel rank=32 total_ns=42408155 count=21930 average_ns=1933 maximum_ns=43424 name=_Z27SparkDsv4QueryHeadRmsKernelPvjjjf grid=1,16,1 block=256,1,1 shared=0 registers=18
+spark_cupti_kernel rank=33 total_ns=39737150 count=21930 average_ns=1811 maximum_ns=15968 name=_Z20SparkLmRmsNormKernelPKvS0_Pvjjf grid=1,1,1 block=256,1,1 shared=2048 registers=38
+spark_cupti_kernel rank=34 total_ns=37528891 count=510 average_ns=73586 maximum_ns=106208 name=_Z32SparkLmHeadCertifiedScreenKernelPKfS0_PjS1_j grid=1,1,1 block=256,1,1 shared=0 registers=19
+spark_cupti_kernel rank=35 total_ns=35680892 count=10710 average_ns=3331 maximum_ns=25344 name=_Z19SparkDsv4TopKKernelPKfPKjjjiPimj grid=1,1,1 block=256,1,1 shared=0 registers=30
+spark_cupti_kernel rank=36 total_ns=34138301 count=1 average_ns=34138301 maximum_ns=34138301 name=_Z37SparkLmHeadCertifiedFp8QuantizeKernelPKvPhPfS2_jj grid=4048,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=37 total_ns=34092123 count=21930 average_ns=1554 maximum_ns=19104 name=_Z23SparkDsv4QuantSimKernelPvjjjjfj grid=1,7,1 block=32,1,1 shared=0 registers=38
+spark_cupti_kernel rank=38 total_ns=31466555 count=21930 average_ns=1434 maximum_ns=24064 name=_Z36SparkDsv4BuildAttentionIndicesKernelPKmPiPjS2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=39 total_ns=30433691 count=21930 average_ns=1387 maximum_ns=25152 name=_Z27SparkDsv4CacheScatterKernelPKtPKjPtmS2_PKmjjmjj grid=1,1,1 block=256,1,1 shared=0 registers=20
+spark_cupti_kernel rank=40 total_ns=28677760 count=1020 average_ns=28115 maximum_ns=38880 name=_Z25SparkDsv4SparseAttnKernelPKvS0_mPKjS2_S2_jjPKiS2_jPKffPvPfjjjj grid=1,4,8 block=256,1,1 shared=73728 registers=40
+spark_cupti_kernel rank=41 total_ns=26557280 count=21930 average_ns=1211 maximum_ns=35520 name=_Z29SparkDsv4ProjectionPackKernelPKtS0_S0_S0_S0_S0_Ptjjjjj grid=1,16,1 block=256,1,1 shared=0 registers=24
+spark_cupti_kernel rank=42 total_ns=22462750 count=21930 average_ns=1024 maximum_ns=25408 name=_Z31SparkDsv4ProjectionUnpackKernelPKtPtS1_S1_S1_S1_S1_jjj grid=1,16,1 block=256,1,1 shared=0 registers=20
+spark_cupti_kernel rank=43 total_ns=21050589 count=10710 average_ns=1965 maximum_ns=22848 name=_Z25SparkDsv4KvEmissionKernelPvPKjPKvPKfPKmPtmS1_S7_jjmjjj grid=1,1,1 block=256,1,1 shared=512 registers=40
+spark_cupti_kernel rank=44 total_ns=18614942 count=10710 average_ns=1738 maximum_ns=21696 name=_Z23SparkDsv4HadamardKernelPvjj grid=64,1,1 block=256,1,1 shared=512 registers=31
+spark_cupti_kernel rank=45 total_ns=17874527 count=288 average_ns=62064 maximum_ns=7818879 name=_Z30SparkDsv4InitializePagesKernelPjmPKjS1_jPK23SparkDsv4PagedScoreSpanj grid=1,1,1 block=256,1,1 shared=0 registers=26
+spark_cupti_kernel rank=46 total_ns=17116288 count=10710 average_ns=1598 maximum_ns=11456 name=_Z23SparkDsv4QuantSimKernelPvjjjjfj grid=1,256,1 block=32,1,1 shared=0 registers=38
+spark_cupti_kernel rank=47 total_ns=12289183 count=10710 average_ns=1147 maximum_ns=10400 name=_Z19SparkDsv4RopeKernelPvPKfPKmjjjjj grid=1,64,1 block=32,1,1 shared=0 registers=25
+spark_cupti_kernel rank=48 total_ns=9038496 count=510 average_ns=17722 maximum_ns=26144 name=_Z20SparkDsv4HcMixKernelPKvPKfPfjjjf grid=1,1,1 block=256,1,1 shared=65536 registers=39
+spark_cupti_kernel rank=49 total_ns=9037632 count=10710 average_ns=843 maximum_ns=16032 name=_Z20SparkDsv4WidenKernelPKvPfjjf grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=50 total_ns=7527680 count=510 average_ns=14760 maximum_ns=275840 name=_Z33SparkLmHeadCertifiedRescoreKernelPKvS0_PKjS2_PfPjj grid=128,1,1 block=256,1,1 shared=16384 registers=42
+spark_cupti_kernel rank=51 total_ns=7309695 count=510 average_ns=14332 maximum_ns=15360 name=_Z27SparkDsv4HcHeadReduceKernelPKvPKffS2_fPvjjj grid=1,1,1 block=256,1,1 shared=0 registers=23
+spark_cupti_kernel rank=52 total_ns=2598144 count=1 average_ns=2598144 maximum_ns=2598144 name=_Z31SparkLmHeadShadowQuantizeKernelPKvPhS1_Pfjj grid=4048,1,1 block=256,1,1 shared=0 registers=39
+spark_cupti_kernel rank=53 total_ns=2051520 count=510 average_ns=4022 maximum_ns=11712 name=_Z28SparkLmEmbeddingGatherKernelPKjPKvPvjj grid=1,1,1 block=256,1,1 shared=0 registers=40
+spark_cupti_kernel rank=54 total_ns=1384672 count=510 average_ns=2715 maximum_ns=4096 name=_Z28SparkLmWeightReadAheadKernelPK5uint4mS1_mPj grid=32,1,1 block=256,1,1 shared=0 registers=18
+spark_cupti_kernel rank=55 total_ns=1189696 count=1020 average_ns=1166 maximum_ns=3392 name=_Z26SparkDsv4AccumU64MaxKernelPmPKmj grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=56 total_ns=941504 count=510 average_ns=1846 maximum_ns=1888 name=_Z36SparkLmHeadCertifiedHiddenNormKernelPKvPfj grid=16,1,1 block=256,1,1 shared=0 registers=18
+spark_cupti_kernel rank=57 total_ns=707488 count=510 average_ns=1387 maximum_ns=1408 name=_Z32SparkLmHeadCertifiedReduceKernelPKfPKjPjPfj grid=1,1,1 block=256,1,1 shared=0 registers=28
+spark_cupti_kernel rank=58 total_ns=586400 count=510 average_ns=1149 maximum_ns=12416 name=_Z29SparkDsv4HeadMaxlocPackKernelPKfPKjPmj grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=59 total_ns=461536 count=510 average_ns=904 maximum_ns=1216 name=_Z31SparkDsv4HeadMaxlocUnpackKernelPKmPjj grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=60 total_ns=321504 count=254 average_ns=1265 maximum_ns=1536 name=_Z36SparkDsv4ResidentTokenFeedbackKernelPKjPjS1_PmS2_S2_jjjj grid=1,1,1 block=256,1,1 shared=0 registers=22
+spark_cupti_kernel rank=61 total_ns=59072 count=3 average_ns=19690 maximum_ns=20640 name=_Z30SparkDsv4ValidateTid2EidKernelPKjmjPj grid=256,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_kernel rank=62 total_ns=3488 count=3 average_ns=1162 maximum_ns=1184 name=_Z30SparkDsv4UpdatePageTableKernelPjPKjS1_j grid=1,1,1 block=256,1,1 shared=0 registers=16
+spark_cupti_stream stream=13 total_ns=5768310620 count=536560 maximum_ns=34138301
+spark_cupti_stream stream=15 total_ns=115854550 count=33150 maximum_ns=35968
+spark_cupti_stream stream=16 total_ns=133197945 count=32640 maximum_ns=53856
+spark_cupti_stream stream=20 total_ns=1276787869 count=65790 maximum_ns=213888
+spark_cupti_stream stream=23 total_ns=7603584 count=1530 maximum_ns=39616
+spark_cupti_stream stream=25 total_ns=85448730 count=2550 maximum_ns=101792
+spark_cupti_stream stream=28 total_ns=7436861 count=1530 maximum_ns=12416
+spark_cupti_stream stream=30 total_ns=84670105 count=2550 maximum_ns=149376
+spark_cupti_stream stream=32 total_ns=17449823 count=510 maximum_ns=51360
+spark_cupti_stream stream=33 total_ns=16167615 count=510 maximum_ns=47456
+spark_cupti_stream stream=35 total_ns=46711802 count=7650 maximum_ns=65664
+spark_cupti_stream stream=36 total_ns=12425887 count=1530 maximum_ns=19616
+spark_cupti_stream stream=38 total_ns=87458778 count=2550 maximum_ns=115872
+spark_cupti_stream stream=40 total_ns=11160992 count=510 maximum_ns=26496
+spark_cupti_stream stream=42 total_ns=4841728 count=2550 maximum_ns=18944
+spark_cupti_stream stream=43 total_ns=7663518 count=1530 maximum_ns=29280
+spark_cupti_stream stream=45 total_ns=85601655 count=2550 maximum_ns=96928
+spark_cupti_stream stream=47 total_ns=17922815 count=510 maximum_ns=72032
+spark_cupti_stream stream=48 total_ns=16429439 count=510 maximum_ns=63616
+spark_cupti_stream stream=50 total_ns=46095677 count=7650 maximum_ns=69856
+spark_cupti_stream stream=51 total_ns=11695583 count=1530 maximum_ns=24480
+spark_cupti_stream stream=53 total_ns=88087478 count=2550 maximum_ns=107296
+spark_cupti_stream stream=55 total_ns=10289439 count=510 maximum_ns=63392
+spark_cupti_stream stream=57 total_ns=4778944 count=2550 maximum_ns=15040
+spark_cupti_stream stream=58 total_ns=7694624 count=1530 maximum_ns=29792
+spark_cupti_stream stream=60 total_ns=85773877 count=2550 maximum_ns=112288
+spark_cupti_stream stream=62 total_ns=18019199 count=510 maximum_ns=64416
+spark_cupti_stream stream=63 total_ns=16578591 count=510 maximum_ns=57696
+spark_cupti_stream stream=65 total_ns=46514941 count=7650 maximum_ns=59040
+spark_cupti_stream stream=66 total_ns=11556703 count=1530 maximum_ns=20000
+spark_cupti_stream stream=68 total_ns=87751706 count=2550 maximum_ns=116896
+spark_cupti_stream stream=70 total_ns=9996895 count=510 maximum_ns=28704
+spark_cupti_stream stream=72 total_ns=4892575 count=2550 maximum_ns=3200
+spark_cupti_stream stream=73 total_ns=7672991 count=1530 maximum_ns=12384
+spark_cupti_stream stream=75 total_ns=86531349 count=2550 maximum_ns=87840
+spark_cupti_stream stream=77 total_ns=17668894 count=510 maximum_ns=41312
+spark_cupti_stream stream=78 total_ns=16063679 count=510 maximum_ns=36096
+spark_cupti_stream stream=80 total_ns=46187932 count=7650 maximum_ns=98656
+spark_cupti_stream stream=81 total_ns=11485631 count=1530 maximum_ns=23360
+spark_cupti_stream stream=83 total_ns=87423993 count=2550 maximum_ns=86016
+spark_cupti_stream stream=85 total_ns=10256510 count=510 maximum_ns=30976
+spark_cupti_stream stream=87 total_ns=4813951 count=2550 maximum_ns=7584
+spark_cupti_stream stream=88 total_ns=7589885 count=1530 maximum_ns=22016
+spark_cupti_stream stream=90 total_ns=86112892 count=2550 maximum_ns=105728
+spark_cupti_stream stream=92 total_ns=17443999 count=510 maximum_ns=40448
+spark_cupti_stream stream=93 total_ns=17443455 count=510 maximum_ns=47296
+spark_cupti_stream stream=95 total_ns=46238204 count=7650 maximum_ns=52064
+spark_cupti_stream stream=96 total_ns=11769055 count=1530 maximum_ns=24224
+spark_cupti_stream stream=98 total_ns=88388861 count=2550 maximum_ns=113440
+spark_cupti_stream stream=100 total_ns=10854559 count=510 maximum_ns=50432
+spark_cupti_stream stream=102 total_ns=4812863 count=2550 maximum_ns=16384
+spark_cupti_stream stream=103 total_ns=7674910 count=1530 maximum_ns=12288
+spark_cupti_stream stream=105 total_ns=86633940 count=2550 maximum_ns=116800
+spark_cupti_stream stream=107 total_ns=17789056 count=510 maximum_ns=39552
+spark_cupti_stream stream=108 total_ns=16172032 count=510 maximum_ns=37376
+spark_cupti_stream stream=110 total_ns=46119615 count=7650 maximum_ns=68256
+spark_cupti_stream stream=111 total_ns=12305727 count=1530 maximum_ns=18944
+spark_cupti_stream stream=113 total_ns=88379926 count=2550 maximum_ns=149376
+spark_cupti_stream stream=115 total_ns=10435423 count=510 maximum_ns=28960
+spark_cupti_stream stream=117 total_ns=4896928 count=2550 maximum_ns=14464
+spark_cupti_stream stream=118 total_ns=7656798 count=1530 maximum_ns=19232
+spark_cupti_stream stream=120 total_ns=86778103 count=2550 maximum_ns=158592
+spark_cupti_stream stream=122 total_ns=17985695 count=510 maximum_ns=76800
+spark_cupti_stream stream=123 total_ns=16333215 count=510 maximum_ns=74112
+spark_cupti_stream stream=125 total_ns=46086718 count=7650 maximum_ns=66016
+spark_cupti_stream stream=126 total_ns=11780000 count=1530 maximum_ns=26848
+spark_cupti_stream stream=128 total_ns=89452857 count=2550 maximum_ns=120992
+spark_cupti_stream stream=130 total_ns=10511968 count=510 maximum_ns=39232
+spark_cupti_stream stream=132 total_ns=4864960 count=2550 maximum_ns=15264
+spark_cupti_stream stream=133 total_ns=7628736 count=1530 maximum_ns=16960
+spark_cupti_stream stream=135 total_ns=87003926 count=2550 maximum_ns=115904
+spark_cupti_stream stream=137 total_ns=18374815 count=510 maximum_ns=76576
+spark_cupti_stream stream=138 total_ns=16790047 count=510 maximum_ns=59968
+spark_cupti_stream stream=140 total_ns=47141949 count=7650 maximum_ns=52928
+spark_cupti_stream stream=141 total_ns=12174303 count=1530 maximum_ns=18528
+spark_cupti_stream stream=143 total_ns=89655962 count=2550 maximum_ns=109120
+spark_cupti_stream stream=145 total_ns=11107296 count=510 maximum_ns=81280
+spark_cupti_stream stream=147 total_ns=4879200 count=2550 maximum_ns=14976
+spark_cupti_stream stream=148 total_ns=7674080 count=1530 maximum_ns=45216
+spark_cupti_stream stream=150 total_ns=87702391 count=2550 maximum_ns=205408
+spark_cupti_stream stream=152 total_ns=18097566 count=510 maximum_ns=73856
+spark_cupti_stream stream=153 total_ns=16204126 count=510 maximum_ns=74112
+spark_cupti_stream stream=155 total_ns=46655898 count=7650 maximum_ns=58688
+spark_cupti_stream stream=156 total_ns=11876350 count=1530 maximum_ns=46688
+spark_cupti_stream stream=158 total_ns=89709592 count=2550 maximum_ns=121184
+spark_cupti_stream stream=160 total_ns=11010208 count=510 maximum_ns=70368
+spark_cupti_stream stream=162 total_ns=4801697 count=2550 maximum_ns=17184
+spark_cupti_stream stream=163 total_ns=7632417 count=1530 maximum_ns=14752
+spark_cupti_stream stream=165 total_ns=87624630 count=2550 maximum_ns=172576
+spark_cupti_stream stream=167 total_ns=18440093 count=510 maximum_ns=179360
+spark_cupti_stream stream=168 total_ns=16775005 count=510 maximum_ns=175648
+spark_cupti_stream stream=170 total_ns=45911164 count=7650 maximum_ns=72384
+spark_cupti_stream stream=171 total_ns=12329532 count=1530 maximum_ns=23296
+spark_cupti_stream stream=173 total_ns=88569720 count=2550 maximum_ns=153920
+spark_cupti_stream stream=175 total_ns=10020382 count=510 maximum_ns=23488
+spark_cupti_stream stream=177 total_ns=4790112 count=2550 maximum_ns=12800
+spark_cupti_stream stream=178 total_ns=7691711 count=1530 maximum_ns=20128
+spark_cupti_stream stream=180 total_ns=86593625 count=2550 maximum_ns=189600
+spark_cupti_stream stream=182 total_ns=17038239 count=510 maximum_ns=63456
+spark_cupti_stream stream=183 total_ns=16939359 count=510 maximum_ns=50016
+spark_cupti_stream stream=185 total_ns=48181083 count=7650 maximum_ns=109344
+spark_cupti_stream stream=186 total_ns=12243519 count=1530 maximum_ns=33536
+spark_cupti_stream stream=188 total_ns=89788116 count=2550 maximum_ns=167008
+spark_cupti_stream stream=190 total_ns=11163007 count=510 maximum_ns=45056
+spark_cupti_stream stream=192 total_ns=4798367 count=2550 maximum_ns=8608
+spark_cupti_stream stream=193 total_ns=7668831 count=1530 maximum_ns=16768
+spark_cupti_stream stream=195 total_ns=89727096 count=2550 maximum_ns=190272
+spark_cupti_stream stream=197 total_ns=18036639 count=510 maximum_ns=71584
+spark_cupti_stream stream=198 total_ns=16461407 count=510 maximum_ns=70592
+spark_cupti_stream stream=200 total_ns=47404156 count=7650 maximum_ns=66592
+spark_cupti_stream stream=201 total_ns=12451872 count=1530 maximum_ns=43424
+spark_cupti_stream stream=203 total_ns=90871637 count=2550 maximum_ns=124832
+spark_cupti_stream stream=205 total_ns=10632192 count=510 maximum_ns=53440
+spark_cupti_stream stream=207 total_ns=4855262 count=2550 maximum_ns=8384
+spark_cupti_stream stream=208 total_ns=7442528 count=1530 maximum_ns=26432
+spark_cupti_stream stream=210 total_ns=88418263 count=2550 maximum_ns=204832
+spark_cupti_stream stream=212 total_ns=18081759 count=510 maximum_ns=61920
+spark_cupti_stream stream=213 total_ns=15917248 count=510 maximum_ns=49568
+spark_cupti_stream stream=215 total_ns=44004924 count=7650 maximum_ns=65216
+spark_cupti_stream stream=216 total_ns=10738783 count=1530 maximum_ns=15488
+spark_cupti_stream stream=218 total_ns=89697532 count=2550 maximum_ns=159264
+spark_cupti_stream stream=220 total_ns=10971615 count=510 maximum_ns=81440
+spark_cupti_stream stream=222 total_ns=4879264 count=2550 maximum_ns=10432
+spark_cupti_stream stream=223 total_ns=7737919 count=1530 maximum_ns=36544
+spark_cupti_stream stream=225 total_ns=88772441 count=2550 maximum_ns=186720
+spark_cupti_stream stream=227 total_ns=18676831 count=510 maximum_ns=58144
+spark_cupti_stream stream=228 total_ns=16818879 count=510 maximum_ns=56480
+spark_cupti_stream stream=230 total_ns=46497532 count=7650 maximum_ns=71712
+spark_cupti_stream stream=231 total_ns=11603616 count=1530 maximum_ns=16480
+spark_cupti_stream stream=233 total_ns=89417110 count=2550 maximum_ns=168928
+spark_cupti_stream stream=235 total_ns=11203262 count=510 maximum_ns=33024
+spark_cupti_stream stream=237 total_ns=4904608 count=2550 maximum_ns=19104
+spark_cupti_stream stream=238 total_ns=7627328 count=1530 maximum_ns=16352
+spark_cupti_stream stream=240 total_ns=85225401 count=2550 maximum_ns=200096
+spark_cupti_stream stream=242 total_ns=17874687 count=510 maximum_ns=84192
+spark_cupti_stream stream=243 total_ns=17111167 count=510 maximum_ns=50560
+spark_cupti_stream stream=245 total_ns=46361724 count=7650 maximum_ns=126560
+spark_cupti_stream stream=246 total_ns=11618143 count=1530 maximum_ns=33280
+spark_cupti_stream stream=248 total_ns=88740567 count=2550 maximum_ns=136448
+spark_cupti_stream stream=250 total_ns=10459519 count=510 maximum_ns=50080
+spark_cupti_stream stream=252 total_ns=5002943 count=2550 maximum_ns=4864
+spark_cupti_stream stream=253 total_ns=7640703 count=1530 maximum_ns=13088
+spark_cupti_stream stream=255 total_ns=87681113 count=2550 maximum_ns=106624
+spark_cupti_stream stream=257 total_ns=18221728 count=510 maximum_ns=61792
+spark_cupti_stream stream=258 total_ns=16026048 count=510 maximum_ns=55904
+spark_cupti_stream stream=260 total_ns=45244892 count=7650 maximum_ns=99776
+spark_cupti_stream stream=261 total_ns=11467870 count=1530 maximum_ns=26336
+spark_cupti_stream stream=263 total_ns=89381051 count=2550 maximum_ns=148640
+spark_cupti_stream stream=265 total_ns=10900446 count=510 maximum_ns=31872
+spark_cupti_stream stream=267 total_ns=4928192 count=2550 maximum_ns=12256
+spark_cupti_stream stream=268 total_ns=7462719 count=1530 maximum_ns=13056
+spark_cupti_stream stream=270 total_ns=85963708 count=2550 maximum_ns=127648
+spark_cupti_stream stream=272 total_ns=18793278 count=510 maximum_ns=47200
+spark_cupti_stream stream=273 total_ns=17043646 count=510 maximum_ns=44096
+spark_cupti_stream stream=275 total_ns=46914393 count=7650 maximum_ns=78816
+spark_cupti_stream stream=276 total_ns=12388030 count=1530 maximum_ns=24576
+spark_cupti_stream stream=278 total_ns=88555769 count=2550 maximum_ns=153440
+spark_cupti_stream stream=280 total_ns=10436256 count=510 maximum_ns=44608
+spark_cupti_stream stream=282 total_ns=4791743 count=2550 maximum_ns=3040
+spark_cupti_stream stream=283 total_ns=7663039 count=1530 maximum_ns=15200
+spark_cupti_stream stream=285 total_ns=85980281 count=2550 maximum_ns=147136
+spark_cupti_stream stream=287 total_ns=17470976 count=510 maximum_ns=89728
+spark_cupti_stream stream=288 total_ns=17484799 count=510 maximum_ns=69088
+spark_cupti_stream stream=290 total_ns=46463261 count=7650 maximum_ns=98240
+spark_cupti_stream stream=291 total_ns=11541086 count=1530 maximum_ns=20992
+spark_cupti_stream stream=293 total_ns=88386072 count=2550 maximum_ns=133728
+spark_cupti_stream stream=295 total_ns=11427295 count=510 maximum_ns=52128
+spark_cupti_stream stream=297 total_ns=4894142 count=2550 maximum_ns=18368
+spark_cupti_stream stream=298 total_ns=7625664 count=1530 maximum_ns=19520
+spark_cupti_stream stream=300 total_ns=85852604 count=2550 maximum_ns=102176
+spark_cupti_stream stream=302 total_ns=18790432 count=510 maximum_ns=70272
+spark_cupti_stream stream=303 total_ns=17241312 count=510 maximum_ns=72128
+spark_cupti_stream stream=305 total_ns=46585310 count=7650 maximum_ns=68256
+spark_cupti_stream stream=306 total_ns=11566400 count=1530 maximum_ns=17792
+spark_cupti_stream stream=308 total_ns=89195415 count=2550 maximum_ns=182880
+spark_cupti_stream stream=310 total_ns=10016096 count=510 maximum_ns=35424
+spark_cupti_stream stream=312 total_ns=4895199 count=2550 maximum_ns=10464
+spark_cupti_stream stream=313 total_ns=7688287 count=1530 maximum_ns=14880
+spark_cupti_stream stream=315 total_ns=85981147 count=2550 maximum_ns=85024
+spark_cupti_stream stream=317 total_ns=18367486 count=510 maximum_ns=68032
+spark_cupti_stream stream=318 total_ns=16674046 count=510 maximum_ns=65248
+spark_cupti_stream stream=320 total_ns=47231197 count=7650 maximum_ns=63744
+spark_cupti_stream stream=321 total_ns=12774976 count=1530 maximum_ns=40928
+spark_cupti_stream stream=323 total_ns=88348667 count=2550 maximum_ns=157056
+spark_cupti_stream stream=325 total_ns=10724864 count=510 maximum_ns=24352
+spark_cupti_stream stream=327 total_ns=4888992 count=2550 maximum_ns=5152
+spark_cupti_stream stream=328 total_ns=7647136 count=1530 maximum_ns=12416
+spark_cupti_stream stream=330 total_ns=87056600 count=2550 maximum_ns=112896
+spark_cupti_stream stream=332 total_ns=17758334 count=510 maximum_ns=71424
+spark_cupti_stream stream=333 total_ns=16019487 count=510 maximum_ns=71008
+spark_cupti_stream stream=335 total_ns=46821053 count=7650 maximum_ns=84384
+spark_cupti_stream stream=336 total_ns=12086240 count=1530 maximum_ns=16352
+spark_cupti_stream stream=338 total_ns=89758067 count=2550 maximum_ns=107520

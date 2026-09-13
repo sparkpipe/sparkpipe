@@ -1,0 +1,89 @@
+{
+  "entries": [
+    {
+      "config_sha256": "e25d19d0e8300bb88cf4d6d9960ce1ffdd0a8cf0c989f3729c1be8263f5b6fa7",
+      "node": "spark0",
+      "path": "spark0.json",
+      "rank": 0
+    },
+    {
+      "config_sha256": "cd5fa8b18c269c41765d00c0f596e719ca7ef4d40b84bcbb176b25b85ef6a0b0",
+      "node": "spark1",
+      "path": "spark1.json",
+      "rank": 1
+    },
+    {
+      "config_sha256": "575fc94c7ebb04197d14d4f2fb5e33cab8fc5c28cae7fd0163a22eacd37c812f",
+      "node": "spark2",
+      "path": "spark2.json",
+      "rank": 2
+    },
+    {
+      "config_sha256": "7e9d82c80f1b1753b15ca2c012997faad8f2b6dd29d1b37f8f811da151c7a23d",
+      "node": "spark3",
+      "path": "spark3.json",
+      "rank": 3
+    },
+    {
+      "config_sha256": "8d522b0a475ef0363d29098617527971cfc35989bf1316e37a5d41ba906658be",
+      "node": "spark4",
+      "path": "spark4.json",
+      "rank": 4
+    },
+    {
+      "config_sha256": "89ed1d0a7754ef298473884aa32350705dda99bc6a1b658a00f8fb711ae653b6",
+      "node": "spark5",
+      "path": "spark5.json",
+      "rank": 5
+    },
+    {
+      "config_sha256": "d32cd2bd3ae45835d67f00c1da351a886f8318021798648f027487b10ea69e27",
+      "node": "spark6",
+      "path": "spark6.json",
+      "rank": 6
+    },
+    {
+      "config_sha256": "d795ffd0a054ac3cd1a96b7491590eab224c02bdbfb112e31af4a6f12014baa4",
+      "node": "spark7",
+      "path": "spark7.json",
+      "rank": 7
+    },
+    {
+      "config_sha256": "15ca9c12dd0c065073a7431bf85e413b2c3da8d0577149bc826f0aee59c70f28",
+      "node": "spark8",
+      "path": "spark8.json",
+      "rank": 8
+    },
+    {
+      "config_sha256": "505a9c389187822ba2e6f94ad0fc3d5270580a16eed02ad700e225e61d89ab72",
+      "node": "spark9",
+      "path": "spark9.json",
+      "rank": 9
+    },
+    {
+      "config_sha256": "4ba096a64b753cdafb90896cf9243e5ee0f30814a6fb54cad7bedecf2a0e328b",
+      "node": "sparka",
+      "path": "sparka.json",
+      "rank": 10
+    },
+    {
+      "config_sha256": "ca44622bf7cace4e1c27c1c8c7f278fd0677722789f8480f67e8e41fcd1f1954",
+      "node": "sparkb",
+      "path": "sparkb.json",
+      "rank": 11
+    },
+    {
+      "config_sha256": "ae072fcdd33340d03fb881fe11edba2b174b3c6097d36a0a8a43f0819f9ad05e",
+      "node": "sparkc",
+      "path": "sparkc.json",
+      "rank": 12
+    }
+  ],
+  "index_kind": "spark_hardware_runner_config_index",
+  "index_sha256": "aa341150953d452706532027a6fe6c84d5f2a54cd3c278aea1778e81f891d741",
+  "node_count": 13,
+  "run_id": "ring-handoff-template",
+  "schema_version": 1,
+  "topology": "ring_13node_bringup",
+  "topology_mode": "ring"
+}

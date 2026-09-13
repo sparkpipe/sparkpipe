@@ -1,0 +1,57 @@
+{
+  "case": {
+    "answer": "907",
+    "choices": [],
+    "domain": "Combinatorics",
+    "id": "aime2025-25",
+    "index": 51,
+    "question": "Sixteen chairs are arranged in a row. Eight people each select a chair in which to sit so that no person sits next to two other people. Let $N$ be the number of subsets of the 16 chairs that could be selected. Find the remainder when $N$ is divided by $1000$.",
+    "source": "AIME2025",
+    "title": "Sixteen chairs are arranged in a row. Eight people each select a"
+  },
+  "elapsed_ms": 36394.689,
+  "finished_at": "2026-07-28T17:41:29.988747+00:00",
+  "format": "ds4-eval-kimi-result-v1",
+  "prompt": {
+    "sha256": "fda6e793b4c7df3dbe24597553bc34abe220843e3227f1bfc93a6df7ee20c089",
+    "system": "You are solving a hard benchmark question. Reason carefully. The final answer must follow the requested format exactly.",
+    "user": "Sixteen chairs are arranged in a row. Eight people each select a chair in which to sit so that no person sits next to two other people. Let $N$ be the number of subsets of the 16 chairs that could be selected. Find the remainder when $N$ is divided by $1000$.\n\nSolve the problem. At the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <integer>"
+  },
+  "request": {
+    "attempts": 1,
+    "endpoint": "https://api.kimi.com/coding/v1/chat/completions",
+    "max_tokens": 16000,
+    "model": "k3",
+    "stream": true,
+    "temperature": 1.0
+  },
+  "response": {
+    "content": "Represent selected chairs as runs of consecutive occupied chairs. Since no person can sit between two other people, no run may contain three or more chairs. Thus every run has length \\(1\\) or \\(2\\).\n\nSuppose there are \\(a\\) runs of length \\(2\\) and \\(b\\) runs of length \\(1\\). Then\n\\[\n2a+b=8,\n\\]\nso \\(b=8-2a\\), and the total number of runs is\n\\[\nr=a+b=8-a.\n\\]\nSince \\(b\\ge 0\\), we have \\(0\\le a\\le 4\\).\n\nFor fixed \\(a\\):\n\n- The run lengths can be ordered in \\(\\binom{r}{a}\\) ways.\n- There are \\(8\\) unoccupied chairs. One is required between each pair of occupied runs, leaving\n  \\[\n  8-(r-1)=9-r\n  \\]\n  unoccupied chairs to distribute among \\(r+1\\) gaps. This can be done in\n  \\[\n  \\binom{(9-r)+(r+1)-1}{(r+1)-1}=\\binom{9}{r}\n  \\]\n  ways.\n\nTherefore,\n\\[\nN=\\sum_{a=0}^{4}\\binom{8-a}{a}\\binom{9}{8-a}.\n\\]\nEvaluating,\n\\[\n\\begin{aligned}\nN\n&=\\binom80\\binom98+\\binom71\\binom97+\\binom62\\binom96\\\\\n&\\quad+\\binom53\\binom95+\\binom44\\binom94\\\\\n&=9+252+1260+1260+630\\\\\n&=3411.\n\\end{aligned}\n\\]\nThus the remainder when \\(N\\) is divided by \\(1000\\) is \\(411\\).\n\nAnswer: 411",
+    "created": 1785260455,
+    "finish_reason": "stop",
+    "reasoning": "We need solve. Need interpret no person sits next to two other people. Selected size 8 chairs from 16 such that no selected chair has both adjacent chairs selected? Equiv no run of 3 consecutive occupied. Need number 8-subsets of [16] avoiding 3 consecutive. Count binary strings length16 weight8 no 111.\n\nNeed calculate modulo 1000 exact maybe. Runs composition. Number for 8 ones divided into runs lengths 1 or2; zeros separators and endpoints.\n\nLet r number runs. If a runs length2, b length1, 2a+b=8, r=a+b=8-a. Number binary strings with r one-runs length specs. Zeros count 8, require internal zero gaps >=1, ends >=0. Number for specified run length composition order: distribute remaining zeros after r-1 internal: 8-(r-1) =9-r extras among r+1 slots: C((9-r)+(r+1)-1, (r+1)-1)=C(9,r)? Let's calculate extras=9-r, slots r+1, C(extras+slots-1, slots-1)=C(9,r). Number order compositions of 8 with a twos and b ones = C(r,a) (r choices placement). Sum a=0..4: r 8,7,6,5,4; C(r,a)*C(9,r). a=0 1*C9,8=9. a1 r7:7*C9,7=7*36=252. a2 r6:15*C9,6=15*84=1260. a3 r5:10*C9,5=10*126=1260. a4 r4:5*C9,4=5*126=630. total 3411? 9+252=261 +1260=1521 +1260=2781 +630=3411. mod1000=411.\n\nNeed ensure phrase ambiguity: \"no person sits next to two other people\" means no one has people on both sides. End person cannot sit next to two anyway; so no 3 consecutive. yes.\n\nNeed provide solution and exact final line only after. User says at end exactly line no anything after. We can explain. Need perhaps combinatorial derivation. Ensure count subsets. Could use run.\n\nLet's craft. Let r runs of occupied chairs, isolated or pairs because triple violates. Let a pairs, bsingletons. 2a+b=8, r=a+b=8-a, a=0..4.\n\nFor fixed a,b, number ways arrange run types = binomial r a. There are 8 empty chairs. To separate r runs, one empty in each r-1 internal gap. Remaining 8-(r-1)=9-r empties can go into r+1 gaps (before, after, internal), stars bars C((9-r)+(r+1)-1, (r+1)-1)=C(9,r). Check internal gap preallocated one and extras. Sum. Arithmetic table. 3411. Remainder 411. Final exact line.",
+    "response_id": "chatcmpl-2cbr35zfOHR3Jp4jijcg92Nz",
+    "response_model": "k3",
+    "usage": {
+      "completion_tokens": 1035,
+      "completion_tokens_details": {
+        "reasoning_tokens": 660
+      },
+      "prompt_tokens": 211,
+      "total_tokens": 1246
+    }
+  },
+  "score": {
+    "expected": "907",
+    "extracted": "411",
+    "passed": false,
+    "text_source": "content"
+  },
+  "source": {
+    "commit": "54b36ed9ba42da31b24f2d1a5feb075c2475dbb1",
+    "ds4_eval_c_sha256": "19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23",
+    "repository": "https://github.com/antirez/ds4"
+  },
+  "started_at": "2026-07-28T17:40:53.594113+00:00",
+  "status": "ok"
+}

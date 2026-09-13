@@ -1,0 +1,2119 @@
+{
+  "schema_version": 1,
+  "command": [
+    "ssh",
+    "spark0",
+    "/tmp/sparkpipe-main-7bf94d8b/build/sparkpipe_model_batch",
+    "--deployment",
+    "/tmp/dsv4-full-graph-runtime/config/model_resident.json",
+    "--runtime-root",
+    "/tmp/dsv4-full-graph-runtime",
+    "--batch",
+    "/tmp/dsv4-tp4-pp4-b1-compsec076-o128.json"
+  ],
+  "process_status": 0,
+  "token_count": 128,
+  "token_ids": [
+    48582,
+    223,
+    2892,
+    201,
+    223,
+    20,
+    28,
+    539,
+    223,
+    21,
+    28,
+    2771,
+    336,
+    1095,
+    65,
+    34958,
+    5165,
+    126017,
+    875,
+    223,
+    22,
+    28,
+    290,
+    3815,
+    982,
+    52430,
+    510,
+    223,
+    23,
+    28,
+    16273,
+    223,
+    24,
+    28,
+    539,
+    223,
+    25,
+    28,
+    105624,
+    2771,
+    336,
+    1095,
+    65,
+    34958,
+    5165,
+    126017,
+    982,
+    73,
+    1095,
+    65,
+    34958,
+    5165,
+    3682,
+    510,
+    223,
+    26,
+    28,
+    539,
+    223,
+    27,
+    28,
+    2771,
+    494,
+    19793,
+    15810,
+    1095,
+    65,
+    34958,
+    875,
+    223,
+    553,
+    28,
+    361,
+    688,
+    7622,
+    510,
+    223,
+    779,
+    28,
+    361,
+    688,
+    12971,
+    510,
+    223,
+    736,
+    28,
+    361,
+    688,
+    4008,
+    510,
+    223,
+    907,
+    28,
+    361,
+    688,
+    678,
+    348,
+    510,
+    223,
+    929,
+    28,
+    361,
+    1679,
+    982,
+    58616,
+    3567,
+    510,
+    223,
+    856,
+    28,
+    361,
+    688,
+    50325,
+    65,
+    32272,
+    510,
+    223,
+    926,
+    28,
+    16273,
+    223,
+    1002,
+    28,
+    539,
+    223,
+    864,
+    28,
+    688
+  ],
+  "ttft_seconds": 4.416405125,
+  "total_seconds": 8.345427667,
+  "decode_seconds_after_first": 3.916140709,
+  "decode_tokens_per_second": 32.42988682917624,
+  "inter_token_median_seconds": 0.030638625,
+  "inter_token_p95_seconds": 0.031698792,
+  "stderr": "sparkpipe_model_batch_status=0 terminal=1 requests=1\n",
+  "events": [
+    {
+      "elapsed_seconds": 0.555657667,
+      "event": {
+        "schema_version": 1,
+        "event": "ready",
+        "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+        "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+        "stage_count": 4,
+        "linear_weight_codec": 5,
+        "expert_weight_codec": 7,
+        "kv_cache_codec": 1
+      }
+    },
+    {
+      "elapsed_seconds": 0.555720042,
+      "event": {
+        "schema_version": 1,
+        "event": "accepted",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 0,
+        "token_index": 0,
+        "generated_token_count": 0,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.416405125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 48582,
+        "token_index": 0,
+        "generated_token_count": 1,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.455104292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 1,
+        "generated_token_count": 2,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.486036667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 2892,
+        "token_index": 2,
+        "generated_token_count": 3,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.516799042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 201,
+        "token_index": 3,
+        "generated_token_count": 4,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.547066334,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 4,
+        "generated_token_count": 5,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.578182584,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 20,
+        "token_index": 5,
+        "generated_token_count": 6,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.608388084,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 6,
+        "generated_token_count": 7,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.639385167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 539,
+        "token_index": 7,
+        "generated_token_count": 8,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.670853375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 8,
+        "generated_token_count": 9,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.701605125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 21,
+        "token_index": 9,
+        "generated_token_count": 10,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.731671167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 10,
+        "generated_token_count": 11,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.762715042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 2771,
+        "token_index": 11,
+        "generated_token_count": 12,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.798500542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 336,
+        "token_index": 12,
+        "generated_token_count": 13,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.829007792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1095,
+        "token_index": 13,
+        "generated_token_count": 14,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.859429209,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 65,
+        "token_index": 14,
+        "generated_token_count": 15,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.889546917,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 34958,
+        "token_index": 15,
+        "generated_token_count": 16,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.920557584,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 5165,
+        "token_index": 16,
+        "generated_token_count": 17,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.951196209,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 126017,
+        "token_index": 17,
+        "generated_token_count": 18,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 4.981944417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 875,
+        "token_index": 18,
+        "generated_token_count": 19,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.012434084,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 19,
+        "generated_token_count": 20,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.04269025,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 22,
+        "token_index": 20,
+        "generated_token_count": 21,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.072241709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 21,
+        "generated_token_count": 22,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.103362125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 290,
+        "token_index": 22,
+        "generated_token_count": 23,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.133646042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 3815,
+        "token_index": 23,
+        "generated_token_count": 24,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.163873459,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 982,
+        "token_index": 24,
+        "generated_token_count": 25,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.1934325,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 52430,
+        "token_index": 25,
+        "generated_token_count": 26,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.223798209,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 26,
+        "generated_token_count": 27,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.254042417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 27,
+        "generated_token_count": 28,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.284852375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 23,
+        "token_index": 28,
+        "generated_token_count": 29,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.314980167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 29,
+        "generated_token_count": 30,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.344915334,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 16273,
+        "token_index": 30,
+        "generated_token_count": 31,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.375828167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 31,
+        "generated_token_count": 32,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.406086834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 24,
+        "token_index": 32,
+        "generated_token_count": 33,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.436606792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 33,
+        "generated_token_count": 34,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.466606084,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 539,
+        "token_index": 34,
+        "generated_token_count": 35,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.496600375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 35,
+        "generated_token_count": 36,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.527661792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 25,
+        "token_index": 36,
+        "generated_token_count": 37,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.557905667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 37,
+        "generated_token_count": 38,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.5886775,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 105624,
+        "token_index": 38,
+        "generated_token_count": 39,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.619451875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 2771,
+        "token_index": 39,
+        "generated_token_count": 40,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.6502055,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 336,
+        "token_index": 40,
+        "generated_token_count": 41,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.680720417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1095,
+        "token_index": 41,
+        "generated_token_count": 42,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.710947834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 65,
+        "token_index": 42,
+        "generated_token_count": 43,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.741817834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 34958,
+        "token_index": 43,
+        "generated_token_count": 44,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.7722885,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 5165,
+        "token_index": 44,
+        "generated_token_count": 45,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.802600125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 126017,
+        "token_index": 45,
+        "generated_token_count": 46,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.832930292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 982,
+        "token_index": 46,
+        "generated_token_count": 47,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.863224667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 73,
+        "token_index": 47,
+        "generated_token_count": 48,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.893599459,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1095,
+        "token_index": 48,
+        "generated_token_count": 49,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.924154625,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 65,
+        "token_index": 49,
+        "generated_token_count": 50,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.955003584,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 34958,
+        "token_index": 50,
+        "generated_token_count": 51,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 5.98453875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 5165,
+        "token_index": 51,
+        "generated_token_count": 52,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.0146695,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 3682,
+        "token_index": 52,
+        "generated_token_count": 53,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.044679125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 53,
+        "generated_token_count": 54,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.075236375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 54,
+        "generated_token_count": 55,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.105576042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 26,
+        "token_index": 55,
+        "generated_token_count": 56,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.135969625,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 56,
+        "generated_token_count": 57,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.166979542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 539,
+        "token_index": 57,
+        "generated_token_count": 58,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.197059417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 58,
+        "generated_token_count": 59,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.2271725,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 27,
+        "token_index": 59,
+        "generated_token_count": 60,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.257919167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 60,
+        "generated_token_count": 61,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.288540542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 2771,
+        "token_index": 61,
+        "generated_token_count": 62,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.319667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 494,
+        "token_index": 62,
+        "generated_token_count": 63,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.350486125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 19793,
+        "token_index": 63,
+        "generated_token_count": 64,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.381004792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 15810,
+        "token_index": 64,
+        "generated_token_count": 65,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.412339875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1095,
+        "token_index": 65,
+        "generated_token_count": 66,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.442848542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 65,
+        "token_index": 66,
+        "generated_token_count": 67,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.474136542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 34958,
+        "token_index": 67,
+        "generated_token_count": 68,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.505150459,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 875,
+        "token_index": 68,
+        "generated_token_count": 69,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.535448834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 69,
+        "generated_token_count": 70,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.566086375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 553,
+        "token_index": 70,
+        "generated_token_count": 71,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.597224625,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 71,
+        "generated_token_count": 72,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.628158,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 72,
+        "generated_token_count": 73,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.658600542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 73,
+        "generated_token_count": 74,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.690299334,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 7622,
+        "token_index": 74,
+        "generated_token_count": 75,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.721984167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 75,
+        "generated_token_count": 76,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.75750825,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 76,
+        "generated_token_count": 77,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.788647709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 779,
+        "token_index": 77,
+        "generated_token_count": 78,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.818726167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 78,
+        "generated_token_count": 79,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.849372542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 79,
+        "generated_token_count": 80,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.880413834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 80,
+        "generated_token_count": 81,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.911771667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 12971,
+        "token_index": 81,
+        "generated_token_count": 82,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.942458209,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 82,
+        "generated_token_count": 83,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 6.974558834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 83,
+        "generated_token_count": 84,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.008416917,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 736,
+        "token_index": 84,
+        "generated_token_count": 85,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.039529417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 85,
+        "generated_token_count": 86,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.071613709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 86,
+        "generated_token_count": 87,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.102129792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 87,
+        "generated_token_count": 88,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.133560667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 4008,
+        "token_index": 88,
+        "generated_token_count": 89,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.163546875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 89,
+        "generated_token_count": 90,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.194919709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 90,
+        "generated_token_count": 91,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.225076625,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 907,
+        "token_index": 91,
+        "generated_token_count": 92,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.256594834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 92,
+        "generated_token_count": 93,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.287894625,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 93,
+        "generated_token_count": 94,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.318525375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 94,
+        "generated_token_count": 95,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.349530792,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 678,
+        "token_index": 95,
+        "generated_token_count": 96,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.380224875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 348,
+        "token_index": 96,
+        "generated_token_count": 97,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.41078975,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 97,
+        "generated_token_count": 98,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.441069209,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 98,
+        "generated_token_count": 99,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.471957375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 929,
+        "token_index": 99,
+        "generated_token_count": 100,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.503169584,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 100,
+        "generated_token_count": 101,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.534291292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 101,
+        "generated_token_count": 102,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.564793709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1679,
+        "token_index": 102,
+        "generated_token_count": 103,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.595518709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 982,
+        "token_index": 103,
+        "generated_token_count": 104,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.626024417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 58616,
+        "token_index": 104,
+        "generated_token_count": 105,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.656501375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 3567,
+        "token_index": 105,
+        "generated_token_count": 106,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.687213042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 106,
+        "generated_token_count": 107,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.71802275,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 107,
+        "generated_token_count": 108,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.749624042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 856,
+        "token_index": 108,
+        "generated_token_count": 109,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.780629667,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 109,
+        "generated_token_count": 110,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.811526292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 361,
+        "token_index": 110,
+        "generated_token_count": 111,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.842133834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 111,
+        "generated_token_count": 112,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.872468292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 50325,
+        "token_index": 112,
+        "generated_token_count": 113,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.90400475,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 65,
+        "token_index": 113,
+        "generated_token_count": 114,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.933991875,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 32272,
+        "token_index": 114,
+        "generated_token_count": 115,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.964014125,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 510,
+        "token_index": 115,
+        "generated_token_count": 116,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 7.995026334,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 116,
+        "generated_token_count": 117,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.026021375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 926,
+        "token_index": 117,
+        "generated_token_count": 118,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.056570375,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 118,
+        "generated_token_count": 119,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.086678167,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 16273,
+        "token_index": 119,
+        "generated_token_count": 120,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.117682042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 120,
+        "generated_token_count": 121,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.148172709,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 1002,
+        "token_index": 121,
+        "generated_token_count": 122,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.178574292,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 122,
+        "generated_token_count": 123,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.210070042,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 539,
+        "token_index": 123,
+        "generated_token_count": 124,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.240363917,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 124,
+        "generated_token_count": 125,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.271005542,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 864,
+        "token_index": 125,
+        "generated_token_count": 126,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.302044959,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 28,
+        "token_index": 126,
+        "generated_token_count": 127,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.332545834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 688,
+        "token_index": 127,
+        "generated_token_count": 128,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 8.333925584,
+      "event": {
+        "schema_version": 1,
+        "event": "completed",
+        "status": 0,
+        "request_id": 760128,
+        "sequence_id": 760128,
+        "request_handle": 4294967297,
+        "token_id": 0,
+        "token_index": 127,
+        "generated_token_count": 128,
+        "stop_token": false
+      }
+    }
+  ]
+}

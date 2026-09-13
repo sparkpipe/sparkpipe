@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "topology": {
+    "name": "ring_13node_bringup",
+    "mode": "ring",
+    "description": "The July GLM bring-up ring: 13 spark nodes direct-cabled into a single rail, port 0 facing the counter-clockwise neighbor and port 1 the clockwise one, matching the route resolution in ring/transport/fabric_topology.c. Each link is its own point-to-point /30 under 10.13.<link>.0/30. Node names follow the bring-up hosts spark0..sparkc.",
+    "runtime_projection": {
+      "path": "examples/runtime_configs/ring_debug_single_rail.json",
+      "mode": "ring_debug_single_rail",
+      "link_speed_key": "link_speed_gbps",
+      "include_mtu": true,
+      "extra": {
+        "debug_only": true
+      },
+      "description": "Direct-cable ring for bring-up. Pipeline order should follow ring order to avoid multi-hop forwarding."
+    }
+  },
+  "node_types": [
+    {
+      "name": "spark",
+      "memory_bandwidth_gb_s": 273,
+      "bf16_tflops": 125,
+      "fp8_tflops": 250,
+      "fp4_tflops": 500,
+      "unified_memory_bytes": 137438953472,
+      "nvme_read_gb_s": 6,
+      "network_port_count": 2,
+      "provenance": "Bandwidth/compute per docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified; 250 TFLOP/s FP8 dense (1 PFLOP FP4 sparse, halved for dense, halved again FP4 to FP8); BF16 halved once more on the same public-spec chain. 128 GB unified per README. NVMe 6 GB/s is the midpoint of the unpinned 5-7 GB/s assumption in docs/archive/PERF_ROADMAP_2026-08-01.md."
+    }
+  ],
+  "fabrics": [
+    {
+      "name": "ring_links",
+      "kind": "direct",
+      "speed_gbps": 100,
+      "latency_ns": 500,
+      "mtu_bytes": 9000,
+      "provenance": "Direct point-to-point 100 Gbps links, no switch. Speed/MTU match the qualified ring runtime config; latency is assumed, unpinned - no in-repo direct-link latency measurement exists yet."
+    }
+  ],
+  "compute_nodes": [
+    {
+      "name": "spark0",
+      "node_type": "spark",
+      "rank": 0,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.12.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.0.2" }
+      ]
+    },
+    {
+      "name": "spark1",
+      "node_type": "spark",
+      "rank": 1,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.0.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.1.2" }
+      ]
+    },
+    {
+      "name": "spark2",
+      "node_type": "spark",
+      "rank": 2,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.1.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.2.2" }
+      ]
+    },
+    {
+      "name": "spark3",
+      "node_type": "spark",
+      "rank": 3,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.2.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.3.2" }
+      ]
+    },
+    {
+      "name": "spark4",
+      "node_type": "spark",
+      "rank": 4,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.3.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.4.2" }
+      ]
+    },
+    {
+      "name": "spark5",
+      "node_type": "spark",
+      "rank": 5,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.4.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.5.2" }
+      ]
+    },
+    {
+      "name": "spark6",
+      "node_type": "spark",
+      "rank": 6,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.5.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.6.2" }
+      ]
+    },
+    {
+      "name": "spark7",
+      "node_type": "spark",
+      "rank": 7,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.6.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.7.2" }
+      ]
+    },
+    {
+      "name": "spark8",
+      "node_type": "spark",
+      "rank": 8,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.7.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.8.2" }
+      ]
+    },
+    {
+      "name": "spark9",
+      "node_type": "spark",
+      "rank": 9,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.8.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.9.2" }
+      ]
+    },
+    {
+      "name": "sparka",
+      "node_type": "spark",
+      "rank": 10,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.9.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.10.2" }
+      ]
+    },
+    {
+      "name": "sparkb",
+      "node_type": "spark",
+      "rank": 11,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.10.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.11.2" }
+      ]
+    },
+    {
+      "name": "sparkc",
+      "node_type": "spark",
+      "rank": 12,
+      "nvme_device": "/dev/nvme0n1",
+      "ports": [
+        { "fabric": "ring_links", "ipv4": "10.13.11.1" },
+        { "fabric": "ring_links", "ipv4": "10.13.12.2" }
+      ]
+    }
+  ]
+}

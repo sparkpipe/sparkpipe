@@ -1,0 +1,592 @@
+{
+  "binding_kind": "spark_hardware_assumption_bindings",
+  "bindings": [
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "tools/cuda13_sm121a_compile_gate.sh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/gemm.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "collect",
+      "policy_path": "hardware.gb10.identity",
+      "primary_metric": "device_count",
+      "question_id": "GB10-IDENTITY-001",
+      "unit": "count"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "tools/perf_estimate.py"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "tests/studies/sparkpipe_glm52_batchplane_model.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.memory_bandwidth",
+      "primary_metric": "read_gb_s",
+      "question_id": "GB10-MEM-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/gemm.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/gqa.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.reuse",
+      "primary_metric": "reuse_gain",
+      "question_id": "GB10-MEM-002",
+      "unit": "ratio"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/gqa.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "hardware.gb10.sparse_memory",
+      "primary_metric": "pointer_chase_ns_per_step",
+      "question_id": "GB10-MEM-003",
+      "unit": "ns/step"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.cpu_gpu_contention",
+      "primary_metric": "gpu_bandwidth_ratio",
+      "question_id": "GB10-UMEM-001",
+      "unit": "ratio"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_hidden_transport.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.mapped_host",
+      "primary_metric": "throughput_gb_s",
+      "question_id": "GB10-MAPPED-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_model_driver.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.copy",
+      "primary_metric": "throughput_gb_s",
+      "question_id": "GB10-COPY-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/launch.h"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "hardware.gb10.launch",
+      "primary_metric": "latency_p50_ns",
+      "question_id": "GB10-LAUNCH-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "src/spark_driver_loader.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_model_driver.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "hardware.gb10.graph",
+      "primary_metric": "latency_p50_ns",
+      "question_id": "GB10-GRAPH-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_model_driver.h"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "hardware.gb10.completion",
+      "primary_metric": "latency_p99_ns",
+      "question_id": "GB10-CALLBACK-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/model_batch_engine.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.concurrency",
+      "primary_metric": "aggregate_throughput_gb_s",
+      "question_id": "GB10-CONCURRENCY-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/launch.h"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/gemm.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.shared_memory",
+      "primary_metric": "active_blocks_per_sm",
+      "question_id": "GB10-SMEM-001",
+      "unit": "blocks/SM"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/topk.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/distributed_work.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.atomic",
+      "primary_metric": "operations_per_second",
+      "question_id": "GB10-ATOMIC-001",
+      "unit": "ops/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/model_batch_engine.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "tools/perf_estimate.py"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "hardware.gb10.thermal",
+      "primary_metric": "steady_state_throughput_ratio",
+      "question_id": "GB10-THERMAL-001",
+      "unit": "ratio"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/gemm.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/gqa.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/llms/kimi_k3/layer.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "kernels.resources",
+      "primary_metric": "tokens_per_second",
+      "question_id": "GB10-REG-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/gemm.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "docs/archive/PERF_ROADMAP_2026-08-01.md"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "kernels.native_mma",
+      "primary_metric": "tokens_per_second",
+      "question_id": "GB10-NATIVE-MMA-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/gqa.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/llms/qwen_3_6/layer.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "kernels.gqa",
+      "primary_metric": "tokens_per_second",
+      "question_id": "MODEL-GQA-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/topk.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/llms/kimi_k3/layer.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "kernels.moe",
+      "primary_metric": "tokens_per_second",
+      "question_id": "MODEL-MOE-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/kernels/linear_attn.cuh"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "inference/llms/kimi_k3/layer.cuh"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "kernels.kda",
+      "primary_metric": "tokens_per_second",
+      "question_id": "MODEL-KDA-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "cache/nvme_tier.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_nvme_tier.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "storage.nvme.raw",
+      "primary_metric": "throughput_gb_s",
+      "question_id": "NVME-RAW-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "cache/nvme_tier.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_nvme_tier.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "storage.nvme.gpu_pipeline",
+      "primary_metric": "throughput_gb_s",
+      "question_id": "NVME-GPU-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/hidden_transport.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "network.tcp",
+      "primary_metric": "latency_p99_ns",
+      "question_id": "NET-TCP-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "include/sparkpipe/spark_hidden_transport.h"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "network.rdma",
+      "primary_metric": "latency_p99_ns",
+      "question_id": "NET-RDMA-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "network.mr_cache",
+      "primary_metric": "registration_time_ns",
+      "question_id": "NET-MR-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "network.lanes",
+      "primary_metric": "throughput_gb_s",
+      "question_id": "NET-LANES-001",
+      "unit": "GB/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "network.cq",
+      "primary_metric": "latency_p99_ns",
+      "question_id": "NET-CQ-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "minimize",
+      "policy_path": "network.progress",
+      "primary_metric": "latency_p99_ns",
+      "question_id": "NET-PROGRESS-001",
+      "unit": "ns"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/rdma.cu"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/hidden_transport.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "network.pmtu",
+      "primary_metric": "maximum_payload_bytes",
+      "question_id": "NET-PMTU-001",
+      "unit": "bytes"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/fabric_topology.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "topology.ring",
+      "primary_metric": "tokens_per_second",
+      "question_id": "NET-RING-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/fabric_topology.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "topology.single_switch",
+      "primary_metric": "tokens_per_second",
+      "question_id": "NET-SWITCH-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/pipeline_runtime.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/fabric_topology.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "topology.pipeline_degree",
+      "primary_metric": "tokens_per_second",
+      "question_id": "TOPO-PP-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/distributed_work.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "node/model_residentd.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "topology.transport_window",
+      "primary_metric": "tokens_per_second",
+      "question_id": "TOPO-WINDOW-001",
+      "unit": "tokens/s"
+    },
+    {
+      "consumers": [
+        {
+          "binding_mode": "generated_policy",
+          "path": "ring/transport/fabric_topology.c"
+        },
+        {
+          "binding_mode": "generated_policy",
+          "path": "runtime/pipeline_runtime.c"
+        }
+      ],
+      "fallback": "forbidden",
+      "objective": "maximize",
+      "policy_path": "topology.stage_placement",
+      "primary_metric": "tokens_per_second",
+      "question_id": "TOPO-PLACEMENT-001",
+      "unit": "tokens/s"
+    }
+  ],
+  "schema_version": 1
+}

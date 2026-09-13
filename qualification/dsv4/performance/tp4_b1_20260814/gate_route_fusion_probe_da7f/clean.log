@@ -1,0 +1,6 @@
+load=actual_gate_and_shared_expert_weights
+exact=all_43_layers_both_candidates
+capture=production_overlap_graph
+capture=score_then_fused_select_route
+capture=cooperative_all_fused_gate_route
+timing=interleaved_full_43_layer_overlap_graphs

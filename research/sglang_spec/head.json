@@ -1,0 +1,113 @@
+{
+  "sha": "443527af0c11e0c0806d2545e926db1f99e38906",
+  "node_id": "C_kwDOLCAjRtoAKDQ0MzUyN2FmMGMxMWUwYzA4MDZkMjU0NWU5MjZkYjFmOTllMzg5MDY",
+  "commit": {
+    "author": {
+      "name": "Cheng Wan",
+      "email": "54331508+ch-wan@users.noreply.github.com",
+      "date": "2026-08-25T10:18:28Z"
+    },
+    "committer": {
+      "name": "GitHub",
+      "email": "noreply@github.com",
+      "date": "2026-08-25T10:18:28Z"
+    },
+    "message": "config: the model-config cache keys on the path the record carried (#36300)",
+    "tree": {
+      "sha": "cef1ea704435d095605a2c50234da09653000f43",
+      "url": "https://api.github.com/repos/sgl-project/sglang/git/trees/cef1ea704435d095605a2c50234da09653000f43"
+    },
+    "url": "https://api.github.com/repos/sgl-project/sglang/git/commits/443527af0c11e0c0806d2545e926db1f99e38906",
+    "comment_count": 0,
+    "verification": {
+      "verified": true,
+      "reason": "valid",
+      "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqjWv0CRC1aQ7uu5UhlAAAPGsQACkSpO+T17tgHOekFeb2IDMN\ndRZHfogqnSR8HdI+r4hRKALEgYF6ybRbIaf9Qv6FPOhzjPIG6gR9Gk1It4en+lej\nLgXhkb5GG920jEjMSZ2Pgu6aKHUP6f34VvkEPtfDol2PhE7O+96GMj6SRXdXZ/UN\nw91573DrIPCIkN/G7636V/uBjDYdHS5zoG1tvrLAhFDWAU7J6uUHTnsIcFk2maJC\nzR+OPGgN1809Yl1/qdLodxCQ6YlcSkWUVQtorl/bVTbRwPB6plSSb1p/rAonXrud\nNZVZ2Q2bHeeGyaCC9/Dv2+AuId4rOy3pVVUYjxfKUGROQ22uGq90YKQwO0dHZ25I\nhaKNelC17fzZ94/lyFWOjk57csZAuvMyuFbeQLJzLE1+c6k1sMgOlGL3kRFneFTJ\nt8eD7sadxAosG+s0VebfVFcXD7sG3xKVkG9UxVqGGvAf15sZ6jE9ePqQAODkzgO3\nv8u6hDji9tj9+wM6gVCJHIa5D8hl+s83ZNTA4ld7wUNZsa0aHhYXEf9TMwStoD5O\nU4DJiYVm+S2MR4xe4igS8NCJsWG+/Mo1J2wqIBOnVA3wLkoVbYORiewmI6X5FuJh\nnXVk6TQfvj61JiYMFvWNUtw9bHmNB+GT7EQ+VduKE/bMDIq7MszHk1L0JtuvqF+Q\nRR+1pYl4vpTSorxd7bqf\n=1Ija\n-----END PGP SIGNATURE-----\n",
+      "payload": "tree cef1ea704435d095605a2c50234da09653000f43\nparent 6a810383176a4e2a5b88f4a28ccf42cce2c1c538\nauthor Cheng Wan <54331508+ch-wan@users.noreply.github.com> 1787653108 -0700\ncommitter GitHub <noreply@github.com> 1787653108 -0700\n\nconfig: the model-config cache keys on the path the record carried (#36300)",
+      "verified_at": "2026-08-25T10:18:29Z"
+    }
+  },
+  "url": "https://api.github.com/repos/sgl-project/sglang/commits/443527af0c11e0c0806d2545e926db1f99e38906",
+  "html_url": "https://github.com/sgl-project/sglang/commit/443527af0c11e0c0806d2545e926db1f99e38906",
+  "comments_url": "https://api.github.com/repos/sgl-project/sglang/commits/443527af0c11e0c0806d2545e926db1f99e38906/comments",
+  "author": {
+    "login": "ch-wan",
+    "id": 54331508,
+    "node_id": "MDQ6VXNlcjU0MzMxNTA4",
+    "avatar_url": "https://avatars.githubusercontent.com/u/54331508?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/ch-wan",
+    "html_url": "https://github.com/ch-wan",
+    "followers_url": "https://api.github.com/users/ch-wan/followers",
+    "following_url": "https://api.github.com/users/ch-wan/following{/other_user}",
+    "gists_url": "https://api.github.com/users/ch-wan/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/ch-wan/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/ch-wan/subscriptions",
+    "organizations_url": "https://api.github.com/users/ch-wan/orgs",
+    "repos_url": "https://api.github.com/users/ch-wan/repos",
+    "events_url": "https://api.github.com/users/ch-wan/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/ch-wan/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "web-flow",
+    "id": 19864447,
+    "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+    "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/web-flow",
+    "html_url": "https://github.com/web-flow",
+    "followers_url": "https://api.github.com/users/web-flow/followers",
+    "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+    "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+    "organizations_url": "https://api.github.com/users/web-flow/orgs",
+    "repos_url": "https://api.github.com/users/web-flow/repos",
+    "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/web-flow/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "6a810383176a4e2a5b88f4a28ccf42cce2c1c538",
+      "url": "https://api.github.com/repos/sgl-project/sglang/commits/6a810383176a4e2a5b88f4a28ccf42cce2c1c538",
+      "html_url": "https://github.com/sgl-project/sglang/commit/6a810383176a4e2a5b88f4a28ccf42cce2c1c538"
+    }
+  ],
+  "stats": {
+    "total": 212,
+    "additions": 198,
+    "deletions": 14
+  },
+  "files": [
+    {
+      "sha": "769a3b4047dd2484ca87a74e595cc1069324f83b",
+      "filename": "python/sglang/srt/server_args.py",
+      "status": "modified",
+      "additions": 27,
+      "deletions": 14,
+      "changes": 41,
+      "blob_url": "https://github.com/sgl-project/sglang/blob/443527af0c11e0c0806d2545e926db1f99e38906/python%2Fsglang%2Fsrt%2Fserver_args.py",
+      "raw_url": "https://github.com/sgl-project/sglang/raw/443527af0c11e0c0806d2545e926db1f99e38906/python%2Fsglang%2Fsrt%2Fserver_args.py",
+      "contents_url": "https://api.github.com/repos/sgl-project/sglang/contents/python%2Fsglang%2Fsrt%2Fserver_args.py?ref=443527af0c11e0c0806d2545e926db1f99e38906",
+      "patch": "@@ -9643,22 +9643,26 @@ def get_model_config(self):\n \n         memo = getattr(self, \"model_config\", None)\n         if memo is not None:\n-            # A configuration built before resolution describes the path the\n-            # caller typed; the GGUF and ModelScope handlers declare a\n-            # different `model_path`, and every later decision keyed on the\n-            # architecture would read the wrong contents. Only a real\n-            # `ModelConfig` is checked -- a fixture's stand-in stays untouched.\n-            if not (\n-                isinstance(memo, ModelConfig) and memo.model_path != self.model_path\n-            ):\n+            # The key is the path this record carried when the cache was\n+            # filled. The GGUF and ModelScope handlers declare a different\n+            # `model_path`, and a configuration built before them describes\n+            # another checkpoint. `ModelConfig` re-points its own `model_path`\n+            # at the local pull directory when the weights sit behind an\n+            # object-store URI, so its field is not the key. A configuration a\n+            # fixture supplied carries no key and is handed back as it is.\n+            built_from = getattr(self, \"_model_config_built_from\", None)\n+            if built_from is None or built_from == self.model_path:\n                 return memo\n-        self.model_config = ModelConfig.from_server_args(self)\n-        if self.model_config.is_hybrid_swa:\n+\n+        model_config = ModelConfig.from_server_args(self)\n+        self.model_config = model_config\n+        self._model_config_built_from = self.model_path\n+        if model_config.is_hybrid_swa:\n             logger.info(\n                 \"Hybrid SWA model detected. architectures=%s\",\n-                self.model_config.hf_config.architectures,\n+                model_config.hf_config.architectures,\n             )\n-        return self.model_config\n+        return model_config\n \n     def _resolved(self):\n         \"\"\"Read-only view of the resolving configuration: declared fields\n@@ -9686,6 +9690,7 @@ def __setattr__(self, name, value):\n         if (\n             getattr(self, \"_declarations_materialized\", False)\n             and not getattr(self, \"_internal_write\", False)\n+            and name not in _CACHE_SLOTS\n             and (not name.startswith(\"_\") or name in _underscore_field_names())\n         ):\n             raise AttributeError(\n@@ -10481,6 +10486,14 @@ def m3_fp8_attn_gemm_enabled(args) -> bool:\n     )\n \n \n+# Caches, which the read-only guard lets through: a value the record derived\n+# from itself is not resolved configuration, and a key that can invalidate on a\n+# resolved record needs the refill to be storable there. Only the public-named\n+# ones are listed -- a cache key spelled with a leading underscore is already\n+# exempt.\n+_CACHE_SLOTS = frozenset({\"model_config\"})\n+\n+\n # NOTE: The process-wide ServerArgs is owned by the runtime context\n # (sglang.srt.runtime_context). The two functions below are LEGACY shims kept\n # for the existing call-sites; they publish/read the same live object by\n@@ -10492,8 +10505,8 @@ def _underscore_field_names() -> frozenset:\n     \"\"\"Real dataclass fields whose names start with an underscore.\n \n     The read-only guard exempts underscore names because they are the record's\n-    own bookkeeping (the stash, the flags, the memoized model config). A *field*\n-    that happens to start with an underscore is still resolved configuration --\n+    own bookkeeping (the stash, the flags, the cache keys). A *field* that\n+    happens to start with an underscore is still resolved configuration --\n     `_speculative_draft_quantization_explicitly_set` is one -- and exempting it\n     by spelling would leave exactly one leaf writable on a read-only record.\n     \"\"\""
+    },
+    {
+      "sha": "fa08028a9fb5e26df58536d5be592345adf88c02",
+      "filename": "test/registered/unit/server_args/test_model_config_cache.py",
+      "status": "added",
+      "additions": 171,
+      "deletions": 0,
+      "changes": 171,
+      "blob_url": "https://github.com/sgl-project/sglang/blob/443527af0c11e0c0806d2545e926db1f99e38906/test%2Fregistered%2Funit%2Fserver_args%2Ftest_model_config_cache.py",
+      "raw_url": "https://github.com/sgl-project/sglang/raw/443527af0c11e0c0806d2545e926db1f99e38906/test%2Fregistered%2Funit%2Fserver_args%2Ftest_model_config_cache.py",
+      "contents_url": "https://api.github.com/repos/sgl-project/sglang/contents/test%2Fregistered%2Funit%2Fserver_args%2Ftest_model_config_cache.py?ref=443527af0c11e0c0806d2545e926db1f99e38906",
+      "patch": "@@ -0,0 +1,171 @@\n+\"\"\"`get_model_config()` caches, and the key is the path the record carried.\n+\n+Two movements of a `model_path` reach this cache, and only the first one means\n+the cached configuration describes the wrong checkpoint:\n+\n+- the record's own path moves, because the GGUF and ModelScope handlers declare\n+  a local path for a Hub reference;\n+- `ModelConfig` moves its own path to the local pull directory when the weights\n+  sit behind an object-store URI, while still describing the checkpoint the\n+  record asked for.\n+\n+So the key is the path the record carried when the cache was filled, and these\n+cases pin both movements against it, on a raw record and on a resolved one.\n+\"\"\"\n+\n+import json\n+import os\n+import shutil\n+import tempfile\n+import unittest\n+from types import SimpleNamespace\n+\n+from sglang.srt.configs.model_config import ModelConfig\n+from sglang.srt.environ import EnvField, envs\n+from sglang.srt.server_args import ServerArgs\n+from sglang.srt.utils import runai_utils\n+from sglang.test.ci.ci_register import register_cpu_ci\n+from sglang.test.test_utils import CustomTestCase\n+\n+register_cpu_ci(est_time=10, suite=\"base-a-test-cpu\")\n+\n+_MINI_CONFIG = {\n+    \"architectures\": [\"LlamaForCausalLM\"],\n+    \"model_type\": \"llama\",\n+    \"hidden_size\": 16,\n+    \"intermediate_size\": 32,\n+    \"num_attention_heads\": 2,\n+    \"num_key_value_heads\": 2,\n+    \"num_hidden_layers\": 2,\n+    \"vocab_size\": 128,\n+    \"max_position_embeddings\": 2048,\n+}\n+\n+_OBJECT_STORE_URI = \"gs://sglang-test-bucket/mini-llama/\"\n+\n+\n+class TestTheModelConfigCache(CustomTestCase):\n+    def setUp(self):\n+        # Resolution writes the environment on the way through\n+        # (`SGLANG_USE_CUDA_IPC_TRANSPORT` among others) and flips the\n+        # descriptor-level flag `EnvField.set()` keeps, which `os.environ` does\n+        # not carry. The cases that resolve put both back.\n+        fields = {}\n+        for klass in reversed(type(envs).__mro__):\n+            for name, field in vars(klass).items():\n+                if isinstance(field, EnvField):\n+                    fields[name] = field\n+        state = (\n+            dict(os.environ),\n+            {name: field._set_to_none for name, field in fields.items()},\n+        )\n+        self.addCleanup(self._restore, state)\n+\n+    @staticmethod\n+    def _restore(state):\n+        saved_environ, saved_none_flags = state\n+        os.environ.clear()\n+        os.environ.update(saved_environ)\n+        for name, was_none in saved_none_flags.items():\n+            getattr(type(envs), name)._set_to_none = was_none\n+\n+    def _checkpoint(self) -> str:\n+        directory = tempfile.mkdtemp(prefix=\"model_config_cache_\")\n+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)\n+        with open(os.path.join(directory, \"config.json\"), \"w\") as handle:\n+            json.dump(_MINI_CONFIG, handle)\n+        return directory\n+\n+    def _pulled_to(self, directory: str) -> None:\n+        \"\"\"The launcher has already pulled the metadata for the URI.\n+\n+        Both entry points answer with the local directory, which is what a\n+        second process on the same host sees: the download runs once, in the\n+        launcher, and everything after it resolves the path.\n+        \"\"\"\n+        for name in (\"download_and_get_path\", \"get_path\"):\n+            original = getattr(runai_utils.ObjectStorageModel, name)\n+            self.addCleanup(setattr, runai_utils.ObjectStorageModel, name, original)\n+            setattr(\n+                runai_utils.ObjectStorageModel,\n+                name,\n+                classmethod(lambda cls, model_path, _dir=directory: _dir),\n+            )\n+\n+    def _resolved(self, **kwargs) -> ServerArgs:\n+        # device=\"cuda\" keeps the golden path host-independent: an\n+        # accelerator-less runner resolves only the base platform, where\n+        # get_device() raises.\n+        kwargs.setdefault(\"device\", \"cuda\")\n+        kwargs.setdefault(\"random_seed\", 42)\n+        server_args = ServerArgs(**kwargs)\n+        server_args.resolve_once()\n+        return server_args\n+\n+    def test_a_configuration_that_repoints_itself_stays_cached(self):\n+        \"\"\"The object-store shape: the configuration's own path moved.\"\"\"\n+        pulled = self._checkpoint()\n+        self._pulled_to(pulled)\n+\n+        server_args = self._resolved(\n+            model_path=_OBJECT_STORE_URI, load_format=\"runai_streamer\"\n+        )\n+        cached = server_args.__dict__[\"model_config\"]\n+        self.assertIsInstance(cached, ModelConfig)\n+        # The record still carries the URI the operator typed, and the\n+        # configuration carries the directory it read the metadata from.\n+        self.assertEqual(server_args.model_path, _OBJECT_STORE_URI)\n+        self.assertEqual(cached.model_path, pulled)\n+\n+        self.assertIs(server_args.get_model_config(), cached)\n+\n+    def test_a_declared_model_path_rebuilds_the_configuration(self):\n+        \"\"\"The GGUF and ModelScope shape: the record's own path moved.\"\"\"\n+        first_checkpoint = self._checkpoint()\n+        second_checkpoint = self._checkpoint()\n+\n+        server_args = ServerArgs(model_path=first_checkpoint, device=\"cuda\")\n+        first = server_args.get_model_config()\n+        self.assertEqual(first.model_path, first_checkpoint)\n+\n+        server_args._declare(\n+            \"test_a_declared_model_path_rebuilds_the_configuration\",\n+            model_path=second_checkpoint,\n+        )\n+        second = server_args.get_model_config()\n+        self.assertIsNot(second, first)\n+        self.assertEqual(second.model_path, second_checkpoint)\n+\n+    def test_the_cache_refills_on_a_resolved_record(self):\n+        \"\"\"A rebuild has to be storable wherever the key can invalidate.\n+\n+        The record is read-only once resolution has finished, and the cache is\n+        the record's own bookkeeping, so the guard lets the refill through.\n+        \"\"\"\n+        first_checkpoint = self._checkpoint()\n+        second_checkpoint = self._checkpoint()\n+\n+        server_args = self._resolved(model_path=first_checkpoint)\n+        copy_ = server_args.replace_resolved(\n+            \"test_the_cache_refills_on_a_resolved_record\",\n+            model_path=second_checkpoint,\n+        )\n+\n+        rebuilt = copy_.get_model_config()\n+        self.assertEqual(rebuilt.model_path, second_checkpoint)\n+        self.assertIs(copy_.get_model_config(), rebuilt)\n+        # The parent keeps the configuration it resolved with.\n+        self.assertEqual(server_args.get_model_config().model_path, first_checkpoint)\n+\n+    def test_a_supplied_configuration_is_handed_back(self):\n+        \"\"\"A configuration nothing in here built carries no key, so nothing\n+        invalidates it.\"\"\"\n+        server_args = ServerArgs(model_path=self._checkpoint(), device=\"cuda\")\n+        stand_in = SimpleNamespace(model_path=\"somewhere/else\")\n+        server_args.model_config = stand_in\n+\n+        self.assertIs(server_args.get_model_config(), stand_in)\n+\n+\n+if __name__ == \"__main__\":\n+    unittest.main()"
+    }
+  ]
+}

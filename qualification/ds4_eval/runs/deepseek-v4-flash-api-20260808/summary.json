@@ -1,0 +1,31 @@
+{
+  "accuracy": 0.76087,
+  "completed_successfully": 92,
+  "completion_tokens": 58964,
+  "families": {
+    "AIME2025": {"passed": 15, "total": 25},
+    "COMPSEC": {"passed": 17, "total": 17},
+    "GPQA Diamond": {"passed": 16, "total": 24},
+    "GPQA Diamond (modified)": {"passed": 1, "total": 1},
+    "SuperGPQA": {"passed": 21, "total": 25}
+  },
+  "format": "deepseek-api-ds4-eval-92-summary-v1",
+  "model": "deepseek-v4-flash",
+  "parameters": {
+    "max_tokens": 4096,
+    "reasoning_effort": null,
+    "stream": false,
+    "temperature": 0,
+    "thinking": {"type": "disabled"}
+  },
+  "prompt_tokens": 23885,
+  "request_count": 92,
+  "requests_per_s": 2.955539,
+  "response_models": ["deepseek-v4-flash"],
+  "results_jsonl_sha256": "51132398130046fc61678c1e15a52f1fd664c62d512dc6a20db4eb94a443ede7",
+  "source_fixture_sha256": "138ae8bcb92503a4ff8bd8dd5607fb0b58af118cb34f5ab3e9d89c92e615c22a",
+  "status": "completed",
+  "suite_manifest_sha256": "f4be71b690044f30f78d08fbc13571b41fb241494c9f7e1128e0ea0ea8ec9918",
+  "system_fingerprints": ["fp_a18b46594c_prod0820_fp8_kvcache_20260402"],
+  "wall_s": 31.127991
+}

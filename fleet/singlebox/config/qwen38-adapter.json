@@ -1,0 +1,6 @@
+{
+  "schema_version": 3,
+  "model_revision": "d2dc35658bcf77e66643428cb52e774cc3b5bd29",
+  "stage_pack_path": "/data/singlebox/packs/qwen38_stage.qwen38sp",
+  "max_sequence_positions": 8192
+}

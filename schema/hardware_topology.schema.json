@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sparkpipe.local/schema/hardware-topology-v1.json",
+  "title": "SparkPipe hardware topology",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "topology",
+    "node_types",
+    "fabrics",
+    "compute_nodes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "topology": {
+      "type": "object",
+      "required": [
+        "name",
+        "mode"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ring",
+            "single_switch",
+            "dual_switch"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "runtime_projection": {
+          "type": "object",
+          "required": [
+            "path",
+            "mode",
+            "description"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "ring_debug_single_rail",
+                "single_switch_single_rail",
+                "dual_switch_dual_rail_future"
+              ]
+            },
+            "link_speed_key": {
+              "type": "string",
+              "enum": [
+                "link_speed_gbps",
+                "link_speed_gbps_per_rail"
+              ]
+            },
+            "include_mtu": {
+              "type": "boolean"
+            },
+            "extra": {
+              "type": "object"
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "node_types": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "memory_bandwidth_gb_s",
+          "bf16_tflops",
+          "fp8_tflops",
+          "fp4_tflops",
+          "unified_memory_bytes",
+          "nvme_read_gb_s",
+          "network_port_count"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "memory_bandwidth_gb_s": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bf16_tflops": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fp8_tflops": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fp4_tflops": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unified_memory_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "nvme_read_gb_s": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "network_port_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          },
+          "provenance": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "fabrics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "speed_gbps",
+          "latency_ns",
+          "mtu_bytes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "switch"
+            ]
+          },
+          "speed_gbps": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "latency_ns": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "mtu_bytes": {
+            "type": "integer",
+            "minimum": 1500,
+            "maximum": 9600
+          },
+          "provenance": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "compute_nodes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "node_type",
+          "rank",
+          "nvme_device",
+          "ports"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "node_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nvme_device": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ports": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "required": [
+                "fabric",
+                "ipv4"
+              ],
+              "properties": {
+                "fabric": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ipv4": {
+                  "type": "string",
+                  "minLength": 7
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "overrides": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

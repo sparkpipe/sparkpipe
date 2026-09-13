@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "qwen.qwen3.8-2.4t-a95b.resident-decode-stage-firmware",
+    "revision": "fp8-h8192-l92-gdn69-full23-e512k10-v248320-mtp1-d2dc3565-v1"
+  },
+  "metadata": {
+    "architecture": "qwen38_resident_decode_stage",
+    "purpose": "resident decode-stage firmware for Qwen3.8-2.4T-A95B: 3:1 Gated DeltaNet to gated full attention, routed MoE (512 experts, top-10, one shared), vendor block-128 FP8 expert weights, BF16 spine, one-layer MTP",
+    "provenance": {
+      "status": "in bring-up; module loader + execution core compile, pack pipeline verified against the vendor FP8 checkpoint",
+      "disclosed_source": [
+        "local vendor FP8 checkpoint /home/spark9/extnvme/models/hf/Qwen/Qwen3.8-2.4T-A95B-FP8, HF revision d2dc35658bcf77e66643428cb52e774cc3b5bd29, 224/224 files hash-verified"
+      ]
+    },
+    "module_geometry": {
+      "hidden_dimension": 8192,
+      "layer_count": 92,
+      "gdn_layer_count": 69,
+      "full_attention_layer_count": 23,
+      "attention_period": 4,
+      "full_attention_phase": 3,
+      "gdn_key_head_count": 16,
+      "gdn_value_head_count": 128,
+      "gdn_head_key_dimension": 128,
+      "gdn_head_value_dimension": 128,
+      "gdn_conv_kernel": 4,
+      "gdn_chunk_tokens": 64,
+      "attn_query_head_count": 64,
+      "attn_kv_head_count": 4,
+      "attn_head_dimension": 256,
+      "attn_rope_dimension": 64,
+      "routed_expert_count": 512,
+      "experts_per_token": 10,
+      "expert_intermediate_dimension": 2048,
+      "shared_expert_count": 1,
+      "output_vocab_count": 248320,
+      "mtp_layer_count": 1
+    },
+    "precision": {
+      "routed_expert_weight_codec": "fp8_e4m3",
+      "routed_expert_scale": "f32_block_128x128_scale_inv",
+      "non_expert_weight_format": "bf16",
+      "activation_format": "bf16",
+      "kv_cache_codec": "bf16",
+      "accumulator_format": "fp32"
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "schema": "sparkpipe.dsv4.tp4_b1.combined_candidate.v1",
+  "timestamp_utc": "2026-08-14T21:02:06Z",
+  "status": "ready_exact_smoke_pass",
+  "source": {
+    "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+    "frozen_archive": "/private/tmp/dsv4-combined-da7f-4fbf00fc-source.tar.gz",
+    "frozen_archive_sha256": "eb64714fa11997e56345c6f775e1d20ac8d04f18127b2e76cab795416c872c35",
+    "package_manifest_sha256": "cdf90e6572e3072e65bf754c7e4593eb430af172aa6556e9169afe054dfa882b",
+    "package_sha256s_sha256": "b763ed4895427fa44eaed08bc2438c91a8e40fff10c51de5310973b36489d07d",
+    "archive_verification": "PASS: 866 payload files, 14224693 bytes, 1000 archive members"
+  },
+  "module": {
+    "batch_bucket": 1,
+    "cuda_arch": "sm_121a",
+    "archive_sha256": "0f3abd164027be219aede0c12707954525c33d10ea349b8bd2f231812ef2f3c4",
+    "validator_receipt": "/private/tmp/dsv4-combined-validator-bisect-receipt.json",
+    "validator_receipt_sha256": "d1320dd2aa4dcebbcfe802f37139da47e8474f4367ea2067872976e53b471426",
+    "validation_configuration_sha256": "c49841460e26ed2ff26d64326fd68419fc56f0f828ceaff87fdd47e3172d8da3",
+    "published_record_sha256": "6ecd05dbf6323764641e05bb1658f0ae8a5b638192b970519305facf68dc3334",
+    "validation": "executed_pass"
+  },
+  "driver": {
+    "path": "/private/tmp/dsv4-combined-da7f-4fbf00fc-model_driver.so",
+    "sha256": "4fbf00fc4198bf767acc631aa7819d9b793bac79eac10946c2e68c89d6f48f19",
+    "compiled_manifest_sha256": "7bc7f1b1990080e4dae411d5cba00f72072a85cef5e2a3870968e0acfa0be746",
+    "model_description_sha256": "dd6e9fd0c238c9ae28c16d5276a2d49f112097c0682e142b0b86bfa7eb5b334c",
+    "compiled_program_sha256": "ea9fd40ae75ac26e38ea31b2949d5f7cd3ea2a569fdf282855f14138a2cf8e98",
+    "driver_abi_version": 12,
+    "module_abi_version": 4,
+    "inspector": "PASS"
+  },
+  "configuration": {
+    "runtime_root": "/tmp/dsv4-combined-da7f-4fbf00fc-runtime",
+    "api_port": 18180,
+    "deployment_control_port_base": 59400,
+    "tp_collective_ports": [62320, 62321, 62322, 62323],
+    "deployment_sha256": "7aa419e9327cc3be4b2c900a3ef914b9dbe7d085861451cedc89828e38b4f9b8",
+    "stage_configuration_sha256": "41cd1cef89f7bdf80c18245ef8e47f4eed22f670a58d1ed0e929078748f8626c",
+    "runtime_limits": {
+      "max_inflight_submissions": 1,
+      "max_active_sequences": 1,
+      "max_input_rows": 1,
+      "resident_sequence_capacity": 1,
+      "kv_logical_page_capacity": 32,
+      "kv_physical_page_capacity": 32
+    },
+    "candidate_kv_path": "/tmp/dsv4-combined-da7f-4fbf00fc-runtime/kv",
+    "candidate_kv_mode": "0700",
+    "live_kv_path": "/home/sparkN/kvcache/dsv4_flash/tp4.bf16",
+    "writable_kv_paths_distinct": true,
+    "symlink_count": 0
+  },
+  "ranks": [
+    {
+      "host": "spark4",
+      "rank": 0,
+      "candidate_pid": 260905,
+      "control_pid": 214277,
+      "candidate_ready": true,
+      "control_18080_unchanged": true,
+      "pack_device_inode_size_links": "66306:197533604:40130454508:11",
+      "pack_matches_control_inode": true,
+      "candidate_kv_device_inode": "66306:197545997",
+      "live_kv_device_inode": "66306:154680024",
+      "pack_inventory_receipt_sha256": "181fcb0f188ecc3dbf3ccfb446a8b8a031098d2741e2a3718cd6301bf13520c2"
+    },
+    {
+      "host": "spark5",
+      "rank": 1,
+      "candidate_pid": 940276,
+      "control_pid": 887753,
+      "candidate_ready": true,
+      "control_18080_unchanged": true,
+      "pack_device_inode_size_links": "66306:132908397:40130454508:11",
+      "pack_matches_control_inode": true,
+      "candidate_kv_device_inode": "66306:132911244",
+      "live_kv_device_inode": "66306:168953391",
+      "pack_inventory_receipt_sha256": "d626bebb2c4ee2aa66167245c9d92c77c70861334c9bf6f995ef3804d80f81c1"
+    },
+    {
+      "host": "spark6",
+      "rank": 2,
+      "candidate_pid": 932555,
+      "control_pid": 879887,
+      "candidate_ready": true,
+      "control_18080_unchanged": true,
+      "pack_device_inode_size_links": "66306:197133828:40129405932:11",
+      "pack_matches_control_inode": true,
+      "candidate_kv_device_inode": "66306:197136825",
+      "live_kv_device_inode": "66306:154666818",
+      "pack_inventory_receipt_sha256": "f16ca7d0456ddeedde6651d238d35d10049ba5eee781dc5a90d0d98e9487bba5"
+    },
+    {
+      "host": "spark7",
+      "rank": 3,
+      "candidate_pid": 3025918,
+      "control_pid": 2981550,
+      "candidate_ready": true,
+      "control_18080_unchanged": true,
+      "pack_device_inode_size_links": "66306:173278549:40129405932:11",
+      "pack_matches_control_inode": true,
+      "candidate_kv_device_inode": "66306:173281382",
+      "live_kv_device_inode": "66306:53870837",
+      "pack_inventory_receipt_sha256": "9b89942e0cf6b3578cfc7a808375761a7d65baf2a8dcab89d4fa253667d1707c"
+    }
+  ],
+  "smoke": {
+    "batch_sha256": "7038e942883b38445056ac4ebdfa5f159217fcab7c4ea1ab2333b9bdb4694163",
+    "request_id": 760131,
+    "prompt_tokens": 128,
+    "output_token_budget": 1,
+    "status": 0,
+    "generated_token_count": 1,
+    "token_id": 48582,
+    "expected_control_token_id": 48582,
+    "exact": true,
+    "canonical_csv_newline_sha256": "7c329138ea45aafae2fab29c551d9272bdbc448c0b84028d273ae2102336afb6",
+    "u32le_sha256": "ead91b8c13aed06beb83eab150d320b6f1ec0cca4c609eddec8b4de3eeebd12a",
+    "raw_jsonl": "/private/tmp/dsv4-combined-da7f-4fbf00fc-o1-raw.jsonl",
+    "raw_jsonl_sha256": "5ced8ea2f3eea6a50dff1af9a9466a2bdf0517d48141da0a03da2f6a41522616"
+  }
+}

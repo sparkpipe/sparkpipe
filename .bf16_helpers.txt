@@ -1,0 +1,19 @@
+
+/* Host bf16 conversions for main's select-path dumps (from origin/main). */
+static inline float SparkQwen36ModuleBf16ToFloat(uint16_t h)
+{
+	uint32_t u = (uint32_t)h << 16u;
+	float f;
+	memcpy(&f,&u,sizeof(f));
+	return(f);
+}
+
+static inline uint16_t SparkQwen36ModuleFloatToBf16(float f)
+{
+	uint32_t u,lsb;
+	memcpy(&u,&f,sizeof(u));
+	lsb = (u >> 16u) & 1u;
+	u += 0x7FFFu + lsb;
+	return((uint16_t)(u >> 16u));
+}
+

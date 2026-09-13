@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "sparkpipe.link-unit.demo",
+    "revision": "1"
+  },
+  "metadata": {
+    "architecture": "test_static_archive",
+    "purpose": "prove that one validated firmware module may contain several linked objects"
+  },
+  "stages": [
+    {
+      "name": "archive_stage",
+      "target": "host.cpu",
+      "programs": [
+        {
+          "name": "decode",
+          "id": 1,
+          "max_inflight": 4,
+          "completion": "submit_return",
+          "operations": [
+            {
+              "name": "affine",
+              "module": "spark.test.affine.archive.v1",
+              "configuration": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

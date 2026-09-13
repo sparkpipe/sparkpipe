@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "mode": "dual_switch_dual_rail_future",
+  "rail_count": 2,
+  "switch_count": 2,
+  "active_ports_per_node": 2,
+  "link_speed_gbps_per_rail": 100,
+  "enabled": false,
+  "description": "Future topology. Current code recognizes it only to fail closed until dual-rail ownership and failover are qualified."
+}

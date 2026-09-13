@@ -1,0 +1,125 @@
+@@ -741,6 +741,35 @@
+ 			return(SPARK_STATUS_VALIDATION_FAILED);
+ 		}
+ 	}
++	return(SPARK_STATUS_OK);
++}
++
++/* Per-entry law for the DSpark drafter pack, mirroring the main loader:
++ * the compiled kind table pins the shape, byte accounting pins both declared
++ * extents against that shape, group-size zero matches the plain classes and
++ * both spans must sit inside the file. Duplicate bindings are refused by the
++ * seen-bits sweep and cross-entry aliasing by SweepDirectory in
++ * LoadDsparkPack. Drafter tensors ship BF16 only (the stagepack minter
++ * writes format 0 for every kind); the compressed formats belong to the main
++ * pack's RANS path and have no drafter consumer. Shapes are pinned BEFORE
++ * byte accounting, so the flat byte helpers are never reached with
++ * file-controlled dimensions. */
++static SparkStatus SparkQwen36ModuleValidateDsparkEntry(const SparkQwen36StagePackEntry *entry,uint64_t file_bytes)
++{
++	uint32_t rows,columns;
++	if ( entry->tensor_kind >= SPARK_QWEN36_DSPARK_TENSOR_KIND_COUNT || (entry->layer_index >= SPARK_QWEN36_DSPARK_LAYER_COUNT && entry->layer_index != 0xFFFFFFFFu) )
++		return(SPARK_STATUS_VALIDATION_FAILED);
++	if ( entry->weight_format != SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 || entry->scale_group_size != 0u )
++		return(SPARK_STATUS_VALIDATION_FAILED);
++	SparkQwen36DsparkKindShape(entry->tensor_kind,&rows,&columns);
++	if ( entry->rows != rows || entry->columns != columns )
++		return(SPARK_STATUS_VALIDATION_FAILED);
++	if ( entry->payload_bytes != SparkQwen36StagePackPayloadBytes(entry->weight_format,rows,columns) || entry->scale_bytes != SparkQwen36StagePackScaleBytes(entry->weight_format,rows,columns) )
++		return(SPARK_STATUS_VALIDATION_FAILED);
++	if ( entry->payload_offset > file_bytes || entry->payload_bytes > file_bytes - entry->payload_offset )
++		return(SPARK_STATUS_VALIDATION_FAILED);
++	if ( entry->scale_bytes != 0u && (entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset) )
++		return(SPARK_STATUS_VALIDATION_FAILED);
+ 	return(SPARK_STATUS_OK);
+ }
+ 
+@@ -790,9 +819,12 @@
+ {
+ 	SparkQwen36StagePackHeader header;
+ 	SparkQwen36StagePackEntry *directory;
++	const SparkQwen36StagePackEntry *entry;
+ 	FILE *file;
+ 	SparkStatus status;
+-	uint32_t index;
++	uint64_t file_bytes;
++	uint32_t index,bit,dspark_seen_global,*seen;
++	uint32_t dspark_seen_layer[SPARK_QWEN36_DSPARK_LAYER_COUNT];
+ 	if ( path == 0 || path[0] == '\0' )
+ 		return(SPARK_STATUS_OK);
+ 	file = fopen(path,"rb");
+@@ -801,23 +833,64 @@
+ 		fprintf(stderr,"%s dspark_pack_open_failed path=%s\n",SPARK_QWEN36_MODULE_TAG,path);
+ 		return(SPARK_STATUS_IO_ERROR);
+ 	}
+-	status = SparkStageModulePackRead(SPARK_QWEN36_MODULE_TAG,file,0u,&header,sizeof(header));
+-	if ( status == SPARK_STATUS_OK && (header.magic != SPARK_QWEN36_STAGEPACK_MAGIC || header.hidden_dimension != SPARK_QWEN36_MODEL_HIDDEN_DIMENSION || header.layer_count != SPARK_QWEN36_DSPARK_LAYER_COUNT || header.attn_query_head_count != SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS || header.attn_kv_head_count != SPARK_QWEN36_DSPARK_ATTN_KV_HEADS || header.attn_head_dimension != SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION || header.ffn_intermediate_dimension != SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE || header.output_vocab_count != SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT) )
+-		status = SPARK_STATUS_VALIDATION_FAILED;
+-	directory = status == SPARK_STATUS_OK ? (SparkQwen36StagePackEntry *)malloc((size_t)header.tensor_count * sizeof(SparkQwen36StagePackEntry)) : 0;
++	/* Pin the real file extent first: every range law below subtracts
++	 * against it, and the directory allocation is bounded by it. */
++	{
++		off_t end;
++		if ( fseeko(file,0,SEEK_END) != 0 || (end = ftello(file)) < 0 )
++		{
++			fprintf(stderr,"%s dspark_pack_size_failed path=%s\n",SPARK_QWEN36_MODULE_TAG,path);
++			fclose(file);
++			return(SPARK_STATUS_IO_ERROR);
++		}
++		file_bytes = (uint64_t)end;
++	}
++	memset(dspark_seen_layer,0,sizeof(dspark_seen_layer));
++	dspark_seen_global = 0u;
++	status = SparkStageModulePackRead(SPARK_QWEN36_MODULE_TAG,file,0u,&header,sizeof(header));
++	if ( status == SPARK_STATUS_OK && (header.magic != SPARK_QWEN36_STAGEPACK_MAGIC || header.hidden_dimension != SPARK_QWEN36_MODEL_HIDDEN_DIMENSION || header.layer_count != SPARK_QWEN36_DSPARK_LAYER_COUNT || header.attn_query_head_count != SPARK_QWEN36_DSPARK_ATTN_QUERY_HEADS || header.attn_kv_head_count != SPARK_QWEN36_DSPARK_ATTN_KV_HEADS || header.attn_head_dimension != SPARK_QWEN36_DSPARK_ATTN_HEAD_DIMENSION || header.ffn_intermediate_dimension != SPARK_QWEN36_DSPARK_FFN_INTERMEDIATE || header.output_vocab_count != SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT || header.directory_offset != SPARK_QWEN36_STAGEPACK_HEADER_BYTES || header.file_bytes != file_bytes) )
++		status = SPARK_STATUS_VALIDATION_FAILED;
++	/* Bound tensor_count by the pinned directory offset and the real file
++	 * extent before allocating the directory (the glm52 discipline): a
++	 * hostile count must not drive the malloc. */
++	directory = status == SPARK_STATUS_OK && (uint64_t)header.tensor_count <= (file_bytes - SPARK_QWEN36_STAGEPACK_HEADER_BYTES) / SPARK_QWEN36_STAGEPACK_ENTRY_BYTES ?
++		(SparkQwen36StagePackEntry *)malloc((size_t)header.tensor_count * sizeof(SparkQwen36StagePackEntry)) : 0;
+ 	if ( status == SPARK_STATUS_OK && directory == 0 )
+-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
++	{
++		fprintf(stderr,"%s dspark_pack_directory_out_of_bounds tensors=%u file=%llu\n",SPARK_QWEN36_MODULE_TAG,header.tensor_count,(unsigned long long)file_bytes);
++		status = SPARK_STATUS_VALIDATION_FAILED;
++	}
+ 	if ( status == SPARK_STATUS_OK )
+ 		status = SparkStageModulePackRead(SPARK_QWEN36_MODULE_TAG,file,header.directory_offset,directory,(uint64_t)header.tensor_count * sizeof(SparkQwen36StagePackEntry));
+ 	for (index = 0u; status == SPARK_STATUS_OK && index < header.tensor_count; index++)
+ 	{
+ 		void *payload = 0, *scale = 0;
+-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,directory[index].payload_offset,directory[index].payload_bytes,&payload);
+-		if ( status == SPARK_STATUS_OK && directory[index].scale_bytes != 0u )
+-			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,directory[index].scale_offset,directory[index].scale_bytes,&scale);
+-		if ( status == SPARK_STATUS_OK )
+-			status = SparkQwen36ModuleLoadDsparkEntry(state,&directory[index],payload,scale);
++		entry = &directory[index];
++		/* Shape/bytes/range law first - no device region is loaded for an
++		 * entry the binder would refuse anyway. */
++		status = SparkQwen36ModuleValidateDsparkEntry(entry,file_bytes);
++		if ( status != SPARK_STATUS_OK )
++		{
++			fprintf(stderr,"%s dspark_entry_invalid kind=%u layer=%u\n",SPARK_QWEN36_MODULE_TAG,entry->tensor_kind,entry->layer_index);
++			break;
++		}
++		bit = 1u << entry->tensor_kind;
++		seen = entry->layer_index == 0xFFFFFFFFu ? &dspark_seen_global : &dspark_seen_layer[entry->layer_index];
++		if ( (*seen & bit) != 0u )
++		{
++			fprintf(stderr,"%s dspark_entry_duplicate kind=%u layer=%u\n",SPARK_QWEN36_MODULE_TAG,entry->tensor_kind,entry->layer_index);
++			status = SPARK_STATUS_VALIDATION_FAILED;
++			break;
++		}
++		*seen |= bit;
++		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
++		if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
++			status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
++		if ( status == SPARK_STATUS_OK )
++			status = SparkQwen36ModuleLoadDsparkEntry(state,entry,payload,scale);
+ 	}
++	if ( status == SPARK_STATUS_OK )
++		status = SparkQwen36ModuleSweepDirectory(directory,header.tensor_count,(uint64_t)header.directory_offset + (uint64_t)header.tensor_count * SPARK_QWEN36_STAGEPACK_ENTRY_BYTES);
+ 	if ( status == SPARK_STATUS_OK )
+ 		state->dspark_weights.armed = 1u;
+ 	if ( status == SPARK_STATUS_OK )

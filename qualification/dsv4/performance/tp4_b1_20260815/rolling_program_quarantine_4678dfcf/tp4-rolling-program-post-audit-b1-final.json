@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "base_commit": "da7f910",
+  "candidate_scope": "unmerged reusable TP collective program after concurrency and lifecycle audit",
+  "hardware": "four NVIDIA GB10 nodes",
+  "topology": "TP4 paired direct rail plus switched rail",
+  "payload_bytes": 8192,
+  "steps_per_launch": 130,
+  "credits": 2,
+  "algorithm": "catalog-selected direct all-to-all",
+  "precision": "exact BF16 sum",
+  "single_launch": {
+    "rank_average_us": [36.845, 36.890, 36.925, 36.863],
+    "rank_mean_us": 36.88075,
+    "terminal_callbacks_by_rank": [1, 1, 1, 1],
+    "program_rearms_by_rank": [0, 0, 0, 0]
+  },
+  "rearmed_second_launch": {
+    "rank_average_us": [34.735, 34.739, 34.707, 34.753],
+    "rank_mean_us": 34.7335,
+    "terminal_callbacks_by_rank": [2, 2, 2, 2],
+    "program_rearms_by_rank": [1, 1, 1, 1]
+  },
+  "status_by_rank": [0, 0, 0, 0],
+  "result_by_rank": [10.0, 10.0, 10.0, 10.0],
+  "mismatch_count_by_rank": [0, 0, 0, 0],
+  "result_hash": "22b433e29b34c383",
+  "valid": true,
+  "tp_device_collective_source_sha256": "d297fc1adeee69910b2810e0e89143ad1b45aac8f17b44f1e2e941d8baa83387",
+  "tp_device_collective_header_sha256": "cb3b7d2f306b21526bef171364b907510298ca28f379a84747d7805b76474235",
+  "characterizer_source_sha256": "2ebd0dc02c208fccdd801e03112b4d70e8bc03d9f685a2a68e3609a80981bcc0"
+}

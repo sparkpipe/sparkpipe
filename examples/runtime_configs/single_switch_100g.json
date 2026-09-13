@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "single_switch_single_rail",
+  "rail_count": 1,
+  "switch_count": 1,
+  "active_ports_per_node": 1,
+  "link_speed_gbps": 100,
+  "mtu_bytes": 9000,
+  "switch_family": "MikroTik 804",
+  "description": "Initial switched deployment. Every Spark has one direct 100 Gbit/s path to every peer through one switch."
+}

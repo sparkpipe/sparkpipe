@@ -1,0 +1,852 @@
+{
+  "content_hash": "5f83fd0a9d5cdb24",
+  "contract": {
+    "path": "model_contracts/dsv4_pro_authoritative.json",
+    "sha256": "7624dd8c34d96636d46be1c265f1bdfc43a5d33cf08000e3e44cbc26ad181c55"
+  },
+  "datafile": "dsv4pro.TP16.5f83fd0a9d5cdb24.json",
+  "degree": 16,
+  "family": "dsv4_pro",
+  "geometry_hash": "832ca3ef908912cc",
+  "kind": "sparkpipe.model_recipe",
+  "kv_entry_prefix": "dsv4pro.TP16.832ca3ef908912cc/",
+  "kv_geometry": {
+    "compressed_rope_theta": 160000,
+    "compression_ratios": [
+      128,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      0
+    ],
+    "head_dimension": 512,
+    "index_head_count": 64,
+    "index_head_dimension": 128,
+    "index_top_k": 1024,
+    "kv_head_count": 1,
+    "layer_count": 61,
+    "layout": "compressed_sparse_history",
+    "qk_rope_head_dimension": 64,
+    "rope_theta": 10000,
+    "sliding_window_tokens": 128,
+    "yarn_factor": 16,
+    "yarn_original_context_tokens": 65536
+  },
+  "model": "dsv4pro",
+  "schema_version": 1,
+  "strategy": "TP",
+  "topology": {
+    "mode": "dual_switch",
+    "name": "dual_switch_16node_production",
+    "node_names": [
+      "spark-00",
+      "spark-01",
+      "spark-02",
+      "spark-03",
+      "spark-04",
+      "spark-05",
+      "spark-06",
+      "spark-07",
+      "spark-08",
+      "spark-09",
+      "spark-10",
+      "spark-11",
+      "spark-12",
+      "spark-13",
+      "spark-14",
+      "spark-15"
+    ],
+    "nodes": 16,
+    "source": "examples/topologies/dual_switch_16node_production.json"
+  },
+  "tp": {
+    "collective": "all_reduce_sum_f32 closes every input-dimension split (SparkTpCollectiveAllReduceSumF32 on this ring)",
+    "ranks": [
+      {
+        "node": "spark-00",
+        "rank": 0,
+        "slices": {
+          "embed_and_head": [
+            0,
+            8080
+          ],
+          "expert_down": [
+            0,
+            192
+          ],
+          "expert_gate_up": [
+            0,
+            192
+          ],
+          "heads_in:o": [
+            0,
+            4096
+          ],
+          "heads_out:q_up": [
+            0,
+            4608
+          ],
+          "shared_down": [
+            0,
+            192
+          ],
+          "shared_gate_up": [
+            0,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-01",
+        "rank": 1,
+        "slices": {
+          "embed_and_head": [
+            8080,
+            8080
+          ],
+          "expert_down": [
+            192,
+            192
+          ],
+          "expert_gate_up": [
+            192,
+            192
+          ],
+          "heads_in:o": [
+            4096,
+            4096
+          ],
+          "heads_out:q_up": [
+            4608,
+            4608
+          ],
+          "shared_down": [
+            192,
+            192
+          ],
+          "shared_gate_up": [
+            192,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-02",
+        "rank": 2,
+        "slices": {
+          "embed_and_head": [
+            16160,
+            8080
+          ],
+          "expert_down": [
+            384,
+            192
+          ],
+          "expert_gate_up": [
+            384,
+            192
+          ],
+          "heads_in:o": [
+            8192,
+            4096
+          ],
+          "heads_out:q_up": [
+            9216,
+            4608
+          ],
+          "shared_down": [
+            384,
+            192
+          ],
+          "shared_gate_up": [
+            384,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-03",
+        "rank": 3,
+        "slices": {
+          "embed_and_head": [
+            24240,
+            8080
+          ],
+          "expert_down": [
+            576,
+            192
+          ],
+          "expert_gate_up": [
+            576,
+            192
+          ],
+          "heads_in:o": [
+            12288,
+            4096
+          ],
+          "heads_out:q_up": [
+            13824,
+            4608
+          ],
+          "shared_down": [
+            576,
+            192
+          ],
+          "shared_gate_up": [
+            576,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-04",
+        "rank": 4,
+        "slices": {
+          "embed_and_head": [
+            32320,
+            8080
+          ],
+          "expert_down": [
+            768,
+            192
+          ],
+          "expert_gate_up": [
+            768,
+            192
+          ],
+          "heads_in:o": [
+            16384,
+            4096
+          ],
+          "heads_out:q_up": [
+            18432,
+            4608
+          ],
+          "shared_down": [
+            768,
+            192
+          ],
+          "shared_gate_up": [
+            768,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-05",
+        "rank": 5,
+        "slices": {
+          "embed_and_head": [
+            40400,
+            8080
+          ],
+          "expert_down": [
+            960,
+            192
+          ],
+          "expert_gate_up": [
+            960,
+            192
+          ],
+          "heads_in:o": [
+            20480,
+            4096
+          ],
+          "heads_out:q_up": [
+            23040,
+            4608
+          ],
+          "shared_down": [
+            960,
+            192
+          ],
+          "shared_gate_up": [
+            960,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-06",
+        "rank": 6,
+        "slices": {
+          "embed_and_head": [
+            48480,
+            8080
+          ],
+          "expert_down": [
+            1152,
+            192
+          ],
+          "expert_gate_up": [
+            1152,
+            192
+          ],
+          "heads_in:o": [
+            24576,
+            4096
+          ],
+          "heads_out:q_up": [
+            27648,
+            4608
+          ],
+          "shared_down": [
+            1152,
+            192
+          ],
+          "shared_gate_up": [
+            1152,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-07",
+        "rank": 7,
+        "slices": {
+          "embed_and_head": [
+            56560,
+            8080
+          ],
+          "expert_down": [
+            1344,
+            192
+          ],
+          "expert_gate_up": [
+            1344,
+            192
+          ],
+          "heads_in:o": [
+            28672,
+            4096
+          ],
+          "heads_out:q_up": [
+            32256,
+            4608
+          ],
+          "shared_down": [
+            1344,
+            192
+          ],
+          "shared_gate_up": [
+            1344,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-08",
+        "rank": 8,
+        "slices": {
+          "embed_and_head": [
+            64640,
+            8080
+          ],
+          "expert_down": [
+            1536,
+            192
+          ],
+          "expert_gate_up": [
+            1536,
+            192
+          ],
+          "heads_in:o": [
+            32768,
+            4096
+          ],
+          "heads_out:q_up": [
+            36864,
+            4608
+          ],
+          "shared_down": [
+            1536,
+            192
+          ],
+          "shared_gate_up": [
+            1536,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-09",
+        "rank": 9,
+        "slices": {
+          "embed_and_head": [
+            72720,
+            8080
+          ],
+          "expert_down": [
+            1728,
+            192
+          ],
+          "expert_gate_up": [
+            1728,
+            192
+          ],
+          "heads_in:o": [
+            36864,
+            4096
+          ],
+          "heads_out:q_up": [
+            41472,
+            4608
+          ],
+          "shared_down": [
+            1728,
+            192
+          ],
+          "shared_gate_up": [
+            1728,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-10",
+        "rank": 10,
+        "slices": {
+          "embed_and_head": [
+            80800,
+            8080
+          ],
+          "expert_down": [
+            1920,
+            192
+          ],
+          "expert_gate_up": [
+            1920,
+            192
+          ],
+          "heads_in:o": [
+            40960,
+            4096
+          ],
+          "heads_out:q_up": [
+            46080,
+            4608
+          ],
+          "shared_down": [
+            1920,
+            192
+          ],
+          "shared_gate_up": [
+            1920,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-11",
+        "rank": 11,
+        "slices": {
+          "embed_and_head": [
+            88880,
+            8080
+          ],
+          "expert_down": [
+            2112,
+            192
+          ],
+          "expert_gate_up": [
+            2112,
+            192
+          ],
+          "heads_in:o": [
+            45056,
+            4096
+          ],
+          "heads_out:q_up": [
+            50688,
+            4608
+          ],
+          "shared_down": [
+            2112,
+            192
+          ],
+          "shared_gate_up": [
+            2112,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-12",
+        "rank": 12,
+        "slices": {
+          "embed_and_head": [
+            96960,
+            8080
+          ],
+          "expert_down": [
+            2304,
+            192
+          ],
+          "expert_gate_up": [
+            2304,
+            192
+          ],
+          "heads_in:o": [
+            49152,
+            4096
+          ],
+          "heads_out:q_up": [
+            55296,
+            4608
+          ],
+          "shared_down": [
+            2304,
+            192
+          ],
+          "shared_gate_up": [
+            2304,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-13",
+        "rank": 13,
+        "slices": {
+          "embed_and_head": [
+            105040,
+            8080
+          ],
+          "expert_down": [
+            2496,
+            192
+          ],
+          "expert_gate_up": [
+            2496,
+            192
+          ],
+          "heads_in:o": [
+            53248,
+            4096
+          ],
+          "heads_out:q_up": [
+            59904,
+            4608
+          ],
+          "shared_down": [
+            2496,
+            192
+          ],
+          "shared_gate_up": [
+            2496,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-14",
+        "rank": 14,
+        "slices": {
+          "embed_and_head": [
+            113120,
+            8080
+          ],
+          "expert_down": [
+            2688,
+            192
+          ],
+          "expert_gate_up": [
+            2688,
+            192
+          ],
+          "heads_in:o": [
+            57344,
+            4096
+          ],
+          "heads_out:q_up": [
+            64512,
+            4608
+          ],
+          "shared_down": [
+            2688,
+            192
+          ],
+          "shared_gate_up": [
+            2688,
+            192
+          ]
+        }
+      },
+      {
+        "node": "spark-15",
+        "rank": 15,
+        "slices": {
+          "embed_and_head": [
+            121200,
+            8080
+          ],
+          "expert_down": [
+            2880,
+            192
+          ],
+          "expert_gate_up": [
+            2880,
+            192
+          ],
+          "heads_in:o": [
+            61440,
+            4096
+          ],
+          "heads_out:q_up": [
+            69120,
+            4608
+          ],
+          "shared_down": [
+            2880,
+            192
+          ],
+          "shared_gate_up": [
+            2880,
+            192
+          ]
+        }
+      }
+    ],
+    "shard_classes": [
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 4608,
+          "status": "sharded"
+        },
+        "head_count": 128,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.q_up.weight"
+        ],
+        "name": "heads_out:q_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 73728
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 4096,
+          "status": "sharded"
+        },
+        "head_count": 128,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.o_proj.weight"
+        ],
+        "name": "heads_in:o",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 65536
+      },
+      {
+        "degree_resolution": {
+          "reason": "one compressed KV head: replicating keeps the compressed history identical per rank, the k3/glm52 latent argument",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.kv_a.weight",
+          "self_attn.kv_b.weight"
+        ],
+        "name": "compressed_kv",
+        "note": "one compressed KV head: replicating keeps the compressed history identical per rank, the k3/glm52 latent argument",
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 192,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": 23424,
+        "match": [
+          "mlp.experts.gate_proj.weight",
+          "mlp.experts.up_proj.weight"
+        ],
+        "name": "expert_gate_up",
+        "note": "checkpoint_fp4 group is checkpoint-defined, not contract-pinned; the slicer must refuse a per-rank K that breaks the group (k3_shard's rule) once pinned",
+        "quant_group": null,
+        "scope": "per_expert_per_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 3072
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 192,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": 23424,
+        "match": [
+          "mlp.experts.down_proj.weight"
+        ],
+        "name": "expert_down",
+        "note": "same checkpoint_fp4 group caveat as expert_gate_up",
+        "quant_group": null,
+        "scope": "per_expert_per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 3072
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 192,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.shared_experts.gate_proj.weight",
+          "mlp.shared_experts.up_proj.weight"
+        ],
+        "name": "shared_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 3072
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 192,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.shared_experts.down_proj.weight"
+        ],
+        "name": "shared_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 3072
+      },
+      {
+        "degree_resolution": {
+          "reason": null,
+          "rows_per_rank": 8080,
+          "status": "sharded"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "model.embed_tokens.weight",
+          "lm_head.weight"
+        ],
+        "name": "embed_and_head",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_model",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 129280
+      },
+      {
+        "degree_resolution": {
+          "reason": "norms, routers (learned and hash), the sparse indexer, hyper-connection tables and the MTP layer",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "input_layernorm",
+          "post_attention_layernorm",
+          "model.norm.weight",
+          "mlp.gate",
+          "self_attn.indexer",
+          "hyper_connections",
+          "mtp."
+        ],
+        "name": "replicated",
+        "note": "norms, routers (learned and hash), the sparse indexer, hyper-connection tables and the MTP layer",
+        "quant_group": null,
+        "scope": "mixed",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      }
+    ],
+    "unclassified_policy": "refuse"
+  }
+}

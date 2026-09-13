@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "test": "dsv4_tp4_fused_bf16_tree_vs_recursive_accumulator",
+  "source_base_sha": "6cfd216bab72368923aff08819de08ea331d26b2",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver_version": "580.159.03",
+    "cuda_compiler": "13.0.88"
+  },
+  "command": "build/spark_dsv4_tp4_tree_bitwise",
+  "seed": "0x6d5a56e9",
+  "elements_per_rank": 262144,
+  "finite_input_values": 1048576,
+  "adversarial_tuples": 16,
+  "rank_mismatches": [0, 0, 0, 0],
+  "reference_hashes": [
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa"
+  ],
+  "fused_hashes": [
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa",
+    "db7d1d991894e3aa"
+  ],
+  "status": "pass"
+}

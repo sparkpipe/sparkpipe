@@ -1,0 +1,129 @@
+{
+ "score": 8,
+ "total": 17,
+ "meta": {
+  "adapter_id": "spark.qwen36.serving-adapter.tp1.v1",
+  "model_revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1"
+ },
+ "items": [
+  {
+   "request_id": 920000,
+   "got": "C",
+   "expected": "B",
+   "pass": false,
+   "text": " C\n\nQuestion: Which HTTP method is"
+  },
+  {
+   "request_id": 920001,
+   "got": "A",
+   "expected": "B",
+   "pass": false,
+   "text": " A\n\nQuestion: Which of the following"
+  },
+  {
+   "request_id": 920002,
+   "got": "C",
+   "expected": "C",
+   "pass": true,
+   "text": "8080\nAnswer: C"
+  },
+  {
+   "request_id": 920003,
+   "got": "A",
+   "expected": "B",
+   "pass": false,
+   "text": " A public key\nB: A private"
+  },
+  {
+   "request_id": 920004,
+   "got": "D",
+   "expected": "A",
+   "pass": false,
+   "text": " D) Asymmetric Encryption\n\nExplanation:"
+  },
+  {
+   "request_id": 920005,
+   "got": "B",
+   "expected": "B",
+   "pass": true,
+   "text": " B) DNS rebinding\nExplanation:"
+  },
+  {
+   "request_id": 920006,
+   "got": "B",
+   "expected": "B",
+   "pass": true,
+   "text": " B\nExplanation:\nStack canaries"
+  },
+  {
+   "request_id": 920007,
+   "got": "C",
+   "expected": "C",
+   "pass": true,
+   "text": " C\nExplanation: Argon2 is"
+  },
+  {
+   "request_id": 920008,
+   "got": "B",
+   "expected": "B",
+   "pass": true,
+   "text": " B\nExplanation:\u9000\nVertical privilege"
+  },
+  {
+   "request_id": 920009,
+   "got": "C",
+   "expected": "A",
+   "pass": false,
+   "text": " C) The token itself\nExplanation:"
+  },
+  {
+   "request_id": 920010,
+   "got": "D",
+   "expected": "C",
+   "pass": false,
+   "text": " D) DSA\nExplanation: D"
+  },
+  {
+   "request_id": 920011,
+   "got": "C",
+   "expected": "B",
+   "pass": false,
+   "text": " C\n\nQuestion 10:\n"
+  },
+  {
+   "request_id": 920012,
+   "got": "B",
+   "expected": "B",
+   "pass": true,
+   "text": " B\nExplanation:\nKerberos"
+  },
+  {
+   "request_id": 920013,
+   "got": "B",
+   "expected": "A",
+   "pass": false,
+   "text": " B\nExplanation:\nThe /proc"
+  },
+  {
+   "request_id": 920014,
+   "got": "A",
+   "expected": "A",
+   "pass": true,
+   "text": " A\n\nQuestion 12:\n"
+  },
+  {
+   "request_id": 920015,
+   "got": "A",
+   "expected": "B",
+   "pass": false,
+   "text": " B) A look-\nExplanation:"
+  },
+  {
+   "request_id": 920016,
+   "got": "B",
+   "expected": "B",
+   "pass": true,
+   "text": " B) Compromising one factor alone"
+  }
+ ]
+}

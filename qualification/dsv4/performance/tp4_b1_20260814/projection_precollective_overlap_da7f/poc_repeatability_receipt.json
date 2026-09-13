@@ -1,0 +1,131 @@
+{
+  "schema": "sparkpipe.dsv4.projection-prologue-overlap-poc.v1",
+  "result": "qualified_repeatable_exact_gain",
+  "source_base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark1",
+  "device": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "cuda_arch": "sm_121a",
+  "scope": {
+    "rows": 1,
+    "tp_degree": 4,
+    "layers": 43,
+    "csa_layers": 21,
+    "collective_payload_bytes": 8192,
+    "query_consumer_payload_bytes_per_layer": 8388608,
+    "index_query_consumer_payload_bytes_per_csa_layer": 8388608,
+    "index_weight_payload_bytes_per_csa_layer": 524288,
+    "warmups_per_target": 4,
+    "alternating_control_candidate_pairs_per_run": 31,
+    "independent_process_runs": 3
+  },
+  "hazard_trace": {
+    "reduced_buffer": "slot->ffn_accum_bf16",
+    "dependent_after_collective": [
+      "unpack projection shards",
+      "query-rank RMS",
+      "local WQ_B projection",
+      "KV RMS/RoPE/quant-sim",
+      "compressor post",
+      "CSA index-query WQ_B and its downstream arithmetic"
+    ],
+    "independent_before_collective_completion": [
+      "BuildAttentionIndices for every layer",
+      "CSA index weights BF16 linear from slot->normalized_bf16",
+      "CSA index weights BF16-to-F32 widen"
+    ],
+    "arithmetic_change": false,
+    "target_or_kv_quantization_change": false
+  },
+  "runs": [
+    {
+      "collective_target_ns": 44000,
+      "collective_actual_mean_ns": 44008,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.123616,
+      "candidate_median_ms": 4.760320,
+      "gain_percent": 7.631755,
+      "control_p10_ms": 5.105216,
+      "control_p90_ms": 5.363136,
+      "candidate_p10_ms": 4.750848,
+      "candidate_p90_ms": 4.845056
+    },
+    {
+      "collective_target_ns": 60000,
+      "collective_actual_mean_ns": 60026,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.866048,
+      "candidate_median_ms": 5.429344,
+      "gain_percent": 8.043396,
+      "control_p10_ms": 5.855456,
+      "control_p90_ms": 5.881792,
+      "candidate_p10_ms": 5.421056,
+      "candidate_p90_ms": 5.441792
+    },
+    {
+      "collective_target_ns": 44000,
+      "collective_actual_mean_ns": 44038,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.138336,
+      "candidate_median_ms": 4.759680,
+      "gain_percent": 7.955503,
+      "control_p10_ms": 5.117024,
+      "control_p90_ms": 5.165760,
+      "candidate_p10_ms": 4.746336,
+      "candidate_p90_ms": 4.851776
+    },
+    {
+      "collective_target_ns": 60000,
+      "collective_actual_mean_ns": 60029,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.877760,
+      "candidate_median_ms": 5.436320,
+      "gain_percent": 8.120203,
+      "control_p10_ms": 5.866144,
+      "control_p90_ms": 5.887936,
+      "candidate_p10_ms": 5.426848,
+      "candidate_p90_ms": 5.478016
+    },
+    {
+      "collective_target_ns": 44000,
+      "collective_actual_mean_ns": 44028,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.127328,
+      "candidate_median_ms": 4.761952,
+      "gain_percent": 7.672822,
+      "control_p10_ms": 5.119872,
+      "control_p90_ms": 5.142720,
+      "candidate_p10_ms": 4.748032,
+      "candidate_p90_ms": 4.957152
+    },
+    {
+      "collective_target_ns": 60000,
+      "collective_actual_mean_ns": 60034,
+      "exact_all_bf16_f32_and_metadata": true,
+      "control_median_ms": 5.869088,
+      "candidate_median_ms": 5.429664,
+      "gain_percent": 8.093023,
+      "control_p10_ms": 5.857920,
+      "control_p90_ms": 5.879392,
+      "candidate_p10_ms": 5.419648,
+      "candidate_p90_ms": 5.439264
+    }
+  ],
+  "aggregate": {
+    "gain_percent_44000ns_min": 7.631755,
+    "gain_percent_44000ns_max": 7.955503,
+    "gain_percent_60000ns_min": 8.043396,
+    "gain_percent_60000ns_max": 8.120203,
+    "exact_runs": 6,
+    "failed_runs": 0
+  },
+  "artifacts": {
+    "source": "/private/tmp/dsv4_projection_prologue_overlap_probe.cu",
+    "source_sha256": "c26313094d3b5f945d62c10fa6f174a538b4ca88736b6efe58aa6b5d776c050e",
+    "remote_binary": "/tmp/dsv4_projection_prologue_overlap_probe",
+    "remote_binary_sha256": "5bf0687dd062edf22ca98eb6141353cef9b1aff6b4272142b79c1f19da74abe6"
+  },
+  "production_source_modified_by_this_probe": false,
+  "live_rank_modified": false,
+  "ci_or_github_used": false
+}

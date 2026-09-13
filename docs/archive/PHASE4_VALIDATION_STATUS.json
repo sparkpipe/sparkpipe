@@ -1,0 +1,82 @@
+{
+  "cuda_only_skips": [
+    "ptx_capability_gate",
+    "grouped_topk_build",
+    "k3_replay_fold_build",
+    "complete_sm_121a_build"
+  ],
+  "generated_at_utc": "2026-07-31T19:10:41Z",
+  "mandatory_targets": [
+    "kimi_k3_mxfp4_experts_bf16_rest",
+    "glm52_fp8_experts_bf16_rest",
+    "qwen38_27b_27b_bf16",
+    "dsv4_flash_native_mixed_precision",
+    "dsv4_pro_native_mixed_precision"
+  ],
+  "observations": [
+    "The final retained host suite and architecture gates were serialized; no make-clean/build overlap was present.",
+    "An earlier transient test_tp_collective IO_ERROR was not reproduced in 30 standalone repetitions or the retained complete binary inventory; no product-code fix is claimed."
+  ],
+  "schema_version": 1,
+  "source_identity": {
+    "byte_count": 7670877,
+    "excluded_artifact_suffixes": [
+      ".pyc",
+      ".pyo",
+      ".o",
+      ".a",
+      ".so",
+      ".dylib",
+      ".dll",
+      ".exe"
+    ],
+    "excluded_directories": [
+      ".git",
+      "build",
+      ".audit",
+      "__pycache__",
+      ".pytest_cache",
+      ".mypy_cache"
+    ],
+    "excluded_exact_paths": [
+      "PACKAGE_MANIFEST.json",
+      "SHA256SUMS",
+      "docs/VALIDATION_STATUS.md",
+      "docs/VALIDATION_STATUS.json",
+      "docs/PHASE4_VALIDATION_STATUS.md",
+      "docs/PHASE4_VALIDATION_STATUS.json",
+      "docs/PHASE4_CHANGE_MANIFEST.md"
+    ],
+    "excluded_prefixes": [
+      "qualification/phase4/"
+    ],
+    "file_count": 655,
+    "fingerprint_sha256": "74aaacc38be53f1cb9d1b00209033421a2fb82d2048eaf4f48758c216bc4ae1e"
+  },
+  "status": "HOST_VALIDATED_SOURCE_CANDIDATE",
+  "validation": {
+    "architecture_source_gates": {
+      "failed": 0,
+      "passed": 66,
+      "skipped": 4
+    },
+    "blackwell_execution": "NOT_MEASURED",
+    "c_cpp_test_binaries": {
+      "passed": 42,
+      "total": 42
+    },
+    "clean_host_build": "PASS",
+    "clean_make_all": "PASS",
+    "core_boundary_audit": "PASS",
+    "cuda13_compute_121a": "NOT_RUN",
+    "cuda13_sm_121a": "NOT_RUN",
+    "memory_contract_audit": "PASS",
+    "network_execution": "NOT_MEASURED",
+    "non_glm_model_driver_contracts": "PASS",
+    "production_ready": false,
+    "python_tests": {
+      "passed": 49,
+      "total": 49
+    }
+  }
+}

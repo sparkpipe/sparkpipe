@@ -1,0 +1,16 @@
+spark0   free
+spark1   unreachable
+spark2   residentd rank=0 cwd=/home/spark2/sparkdata/qwen38.fp8.tp1
+spark3   free
+spark4   free
+spark5   free
+spark6   free
+spark7   free
+spark8   unreachable
+spark9   unreachable
+sparka   unreachable
+sparkb   unreachable
+sparkc   unreachable
+sparkd   unreachable
+sparke   unreachable
+sparkf   unreachable

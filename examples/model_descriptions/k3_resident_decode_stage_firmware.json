@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "moonshot.kimi-k3.resident-decode-stage-firmware",
+    "revision": "mxfp4-routed-bf16-rest-h7168-l93-e896-k16-kda69-mla24-v2"
+  },
+  "metadata": {
+    "architecture": "k3_resident_decode_stage",
+    "purpose": "Kimi K3 text decode firmware with MXFP4 routed experts, BF16 non-expert tensors, FP32 accumulation and recurrent state",
+    "generated_from": "model_contracts/k3_authoritative.json",
+    "provenance": {
+      "technical_report": "Kimi K3: Open Frontier Intelligence, sections 2 and 5, Table 1",
+      "checkpoint_config": "moonshotai/Kimi-K3-MXFP4 config.json and modeling_kimi_linear.py",
+      "status": "source-integrated, CUDA and target-hardware qualification not measured"
+    },
+    "module_geometry": {
+      "hidden_dimension": 7168,
+      "layer_count": 93,
+      "kda_layer_count": 69,
+      "mla_layer_count": 24,
+      "kda_head_count": 96,
+      "kda_head_key_dimension": 128,
+      "kda_head_value_dimension": 128,
+      "mla_head_count": 96,
+      "mla_query_a_dimension": 1536,
+      "mla_latent_dimension": 512,
+      "mla_qk_nope_head_dimension": 128,
+      "mla_unrotated_dimension": 64,
+      "mla_value_head_dimension": 128,
+      "moe_expert_count": 896,
+      "moe_top_k": 16,
+      "moe_shared_expert_count": 2,
+      "moe_latent_dimension": 3584,
+      "moe_intermediate_dimension": 3072,
+      "dense_intermediate_dimension": 33792,
+      "attnres_block_layers": 12,
+      "attnres_block_count": 8,
+      "attnres_max_representations": 9,
+      "vocab_count": 163840
+    },
+    "precision_contract": {
+      "routed_expert_weights": "mxfp4_e2m1",
+      "routed_expert_scales": "e8m0",
+      "routed_expert_group_size": 32,
+      "routed_expert_activations": "bf16",
+      "non_expert_weights": "bf16",
+      "non_expert_activations": "bf16",
+      "accumulator": "fp32",
+      "kda_state": "fp32"
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "cuda13_sm121a_compile": "NOT_RUN",
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED"
+    }
+  },
+  "stages": [
+    {
+      "name": "k3_resident_decode_stage",
+      "target": "cuda.sm121.k3.resident_decode_stage.mxfp4_routed_bf16_rest",
+      "programs": [
+        {
+          "name": "resident_decode",
+          "id": 1,
+          "max_inflight": 1,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_hybrid_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
+          },
+          "operations": [
+            {
+              "name": "k3_resident_decode_stage",
+              "module": "spark.k3.resident_decode_stage.mxfp4_routed_bf16_rest.h7168.l93.kda69.mla24.v2",
+              "configuration": {
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "config_kind": "spark_hardware_runner_config",
+  "config_sha256": "8d522b0a475ef0363d29098617527971cfc35989bf1316e37a5d41ba906658be",
+  "executables": {
+    "cuda_characterize": "../../../../build/spark_cuda_characterize",
+    "model_kernel_characterize": "../../../../build/spark_model_kernel_characterize",
+    "nvme_characterize": "../../../../build/spark_nvme_characterize",
+    "pmtu_characterize": "../../../../build/spark_pmtu_characterize",
+    "topology_characterize": "../../../../build/spark_topology_characterize",
+    "transport_characterize": "../../../../build/spark_transport_characterize"
+  },
+  "node": "spark4",
+  "nvme": {
+    "cuda_device": 0,
+    "file_bytes": 8589934592,
+    "file_path": "/mnt/nvme/sparkpipe-hardware-probe.bin",
+    "prepare": false
+  },
+  "peer_addresses": {
+    "spark3": "10.13.3.2",
+    "spark5": "10.13.4.1"
+  },
+  "pmtu": {
+    "local_bind_address": "127.0.0.1",
+    "port_base": 47000,
+    "port_span": 1000,
+    "remote_command_template": [
+      "ssh",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      "{peer}",
+      "--"
+    ],
+    "remote_executable": "/opt/sparkpipe/bin/spark_pmtu_characterize",
+    "server_idle_timeout_seconds": 60,
+    "startup_seconds": 10.0
+  },
+  "probe_timeout_seconds": 7200,
+  "probe_timeouts_seconds": {
+    "cuda_characterize": 3600,
+    "model_kernel_characterize": 3600,
+    "nvme_characterize": 7200,
+    "pmtu_characterize": 120,
+    "topology_characterize": 14400,
+    "transport_characterize": 3600
+  },
+  "production_providers_required": true,
+  "providers": {
+    "model_kernel_characterize": {
+      "dsv4_flash_native_mixed_precision": "../../../../build/hardware/providers/libspark_dsv4_flash_production_probe.so",
+      "dsv4_pro_native_mixed_precision": "../../../../build/hardware/providers/libspark_dsv4_pro_production_probe.so",
+      "glm52_fp8_experts_bf16_rest": "../../../../build/hardware/providers/libspark_glm52_production_probe.so",
+      "kimi_k3_mxfp4_experts_bf16_rest": "../../../../build/hardware/providers/libspark_k3_production_probe.so",
+      "qwen38_27b_27b_bf16": "../../../../build/hardware/providers/libspark_qwen38_27b_production_probe.so"
+    },
+    "topology_characterize": {
+      "default": "../../../../build/hardware/providers/libspark_topology_production_probe.so"
+    },
+    "transport_characterize": {
+      "gpudirect": "../../../../build/hardware/providers/libspark_gpudirect_rdma_production_probe.so",
+      "mapped_host": "../../../../build/hardware/providers/libspark_mapped_host_rdma_production_probe.so",
+      "tcp": "../../../../build/hardware/providers/libspark_tcp_production_probe.so"
+    }
+  },
+  "rank": 4,
+  "receipt_directory": "../../../receipts/ring_13node_bringup/spark4",
+  "run_id": "ring-handoff-template",
+  "schema_version": 1,
+  "topology": "ring_13node_bringup",
+  "topology_mode": "ring"
+}

@@ -1,0 +1,220 @@
+/*
+ * spark_dsv4_rocm_kernels_common.hiph
+ *
+ * Shared device-side helpers for the DSV4 ROCm island translation units.
+ * Included ONLY by .hip files under source/rocm/.
+ *
+ * Contract position:
+ * - Self-contained by design. spark_lm_kernels.cuh still carries SPARK_LM_SM121_*
+ *   selectors (landmine rule, hwiface_v1_freeze.md section F4), so no ROCm TU may
+ *   include it until the coordinator-owned split lands. Everything needed below
+ *   the island entries is re-derived here for gfx950.
+ * - Wave size 64 (advisor-provided CDNA4 fact). Every reduction tree below is a
+ *   target-fixed choice recorded once here: block reduce walks 4 waves of 64
+ *   lanes (CTA 256 threads), wave reduce is a full 64-lane butterfly. The tree
+ *   is fixed per shape bucket by construction (one code path); do not add
+ *   runtime-conditional reduction shapes.
+ * - bf16 access mirrors the shared kernels: raw uint16 bit moves, no implicit
+ *   conversion round trips on copy paths.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <math.h>
+
+#include "sparkpipe/spark_hw_iface.h"
+
+/* ------------------------------------------------------------------ */
+/* Target identity (freeze F3: fail-closed inside the target)          */
+/* ------------------------------------------------------------------ */
+
+#define SPARK_DSV4_ROCM_TARGET_ID "rocm.gfx950.mi350p"
+#define SPARK_DSV4_ROCM_ABI_VERSION 1u
+
+/* Wave/block shape: fixed for all DSV4 ROCm islands. */
+#define SPARK_ROCM_WAVE_LANES 64u
+#define SPARK_ROCM_CTA_THREADS 256u
+#define SPARK_ROCM_CTA_WARPS (SPARK_ROCM_CTA_THREADS / SPARK_ROCM_WAVE_LANES)
+
+/* Flash-model geometry this archive is compiled against (measured,
+ * model-families/dsv4/include/sparkpipe/spark_dsv4_model.h). The CUDA side
+ * receives these through its own headers; the ROCm archive pins the same
+ * numbers as compile-time facts of the flash deployment and validates every
+ * entry argument against them. */
+#define ROCM_MODEL_HIDDEN_DIMENSION 4096u
+#define ROCM_MODEL_HC_STREAM_COUNT 4u
+#define ROCM_MODEL_BOUNDARY_ELEMENTS (ROCM_MODEL_HC_STREAM_COUNT * ROCM_MODEL_HIDDEN_DIMENSION)
+#define ROCM_MODEL_QUERY_LORA_RANK 1024u
+#define ROCM_MODEL_ATTN_HEAD_DIMENSION 512u
+#define ROCM_MODEL_ATTN_QUERY_HEAD_COUNT 64u
+#define ROCM_MODEL_ATTN_QUERY_DIMENSION (ROCM_MODEL_ATTN_QUERY_HEAD_COUNT * ROCM_MODEL_ATTN_HEAD_DIMENSION)
+#define ROCM_MODEL_ATTN_ROPE_DIMENSION 64u
+#define ROCM_MODEL_INDEX_HEAD_COUNT 64u
+#define ROCM_MODEL_INDEX_HEAD_DIMENSION 128u
+#define ROCM_MODEL_KV_QUANT_BLOCK 64u
+#define ROCM_MODEL_RMS_NORM_EPSILON 1e-06f
+
+/* ------------------------------------------------------------------ */
+/* Status mapping                                                      */
+/* ------------------------------------------------------------------ */
+
+__host__ static inline SparkHwStatus SparkRocmStatusFromHip(hipError_t error)
+{
+	if (error == hipSuccess)
+		return(SPARK_HW_OK);
+	if (error == hipErrorNotReady)
+		return(SPARK_HW_NOT_READY);
+	return(SPARK_HW_INVALID);
+}
+
+/* ------------------------------------------------------------------ */
+/* bf16 access                                                         */
+/* ------------------------------------------------------------------ */
+
+__device__ static inline float RocmBf16ToFloat(const void *base, uint64_t index)
+{
+	uint16_t bits = ((const uint16_t *)base)[index];
+	uint32_t wide = (uint32_t)bits << 16u;
+	return(__uint_as_float(wide));
+}
+
+__device__ static inline void RocmFloatToBf16(void *base, uint64_t index, float value)
+{
+	/* Round-to-nearest-even, matching the shared kernels' conversion. */
+	uint32_t bits = __float_as_uint(value);
+	uint32_t rounding = ((bits >> 16u) & 1u) + UINT32_C(0x7FFF);
+	((uint16_t *)base)[index] = (uint16_t)((bits + rounding) >> 16u);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reductions: fixed wave64 trees                                      */
+/* ------------------------------------------------------------------ */
+
+__device__ static inline float RocmWaveReduceSum(float value)
+{
+	/* Fixed butterfly: lane deltas 32,16,8,4,2,1 (wave64). */
+	#pragma unroll
+	for (uint32_t delta = SPARK_ROCM_WAVE_LANES / 2u; delta >= 1u; delta >>= 1u)
+		value += __shfl_down(value, delta);
+	return(value);
+}
+
+__device__ static inline float RocmBlockReduceSum(float value, float *scratch)
+{
+	value = RocmWaveReduceSum(value);
+	if ((threadIdx.x & (SPARK_ROCM_WAVE_LANES - 1u)) == 0u)
+		scratch[threadIdx.x / SPARK_ROCM_WAVE_LANES] = value;
+	__syncthreads();
+	if (threadIdx.x == 0u)
+	{
+		float total = scratch[0];
+		for (uint32_t wave = 1u; wave < SPARK_ROCM_CTA_WARPS; wave++)
+			total += scratch[wave];
+		scratch[0] = total;
+	}
+	__syncthreads();
+	return(scratch[0]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared GEMV row kernel: bf16 weights, f32 accumulation              */
+/*                                                                     */
+/* One block per (row, neuron stripe); each wave owns neurons           */
+/* stride-wise, lanes walk the input dimension. Fixed tree: lane        */
+/* strided f32 accumulation -> wave butterfly -> lane 0 broadcast.      */
+/* Used by L1 projections and L2 wo_a/wo_b until the LDS-budget         */
+/* re-tiling lands (S8 perf work); correctness path first.             */
+/* ------------------------------------------------------------------ */
+
+__global__ void SparkDsv4RocmLinearRowsKernel(
+	const void *weight_bf16,      /* [rows_out][columns] bf16 */
+	const void *input_bf16,       /* [row_count][columns] bf16 */
+	void *output_bf16,            /* [row_count][rows_out] bf16 */
+	uint32_t row_count,
+	uint32_t columns,
+	uint32_t rows_out)
+{
+	uint32_t row = blockIdx.x;
+	uint32_t neuron_block = blockIdx.y;
+	__shared__ float wave_partial[SPARK_ROCM_CTA_WARPS];
+	uint64_t weight_base;
+	float accumulator;
+	if (row >= row_count || neuron_block >= rows_out)
+		return;
+	weight_base = (uint64_t)neuron_block * columns;
+	accumulator = 0.0f;
+	for (uint32_t element = threadIdx.x; element < columns;
+		element += SPARK_ROCM_CTA_THREADS)
+		accumulator += RocmBf16ToFloat(input_bf16, (uint64_t)row * columns + element) *
+			RocmBf16ToFloat(weight_bf16, weight_base + element);
+	accumulator = RocmWaveReduceSum(accumulator);
+	if ((threadIdx.x & (SPARK_ROCM_WAVE_LANES - 1u)) == 0u)
+		wave_partial[threadIdx.x / SPARK_ROCM_WAVE_LANES] = accumulator;
+	__syncthreads();
+	if (threadIdx.x == 0u)
+	{
+		float total = 0.0f;
+		for (uint32_t w = 0u; w < SPARK_ROCM_CTA_WARPS; w++)
+			total += wave_partial[w];
+		RocmFloatToBf16(output_bf16, (uint64_t)row * rows_out + neuron_block, total);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Provisional island entry spellings                                  */
+/*                                                                     */
+/* Freeze F1 fixes each island's declared inputs/outputs/handles; the   */
+/* exact C spelling below is PROVISIONAL until the interface session    */
+/* pins entry prototypes against dsv4_core call sites (S2). Names are   */
+/* frozen-island names; signatures follow the declared surface only.    */
+/* All entries take the executor queue explicitly and enqueue only;     */
+/* success paths never synchronize (freeze F2 semantic note).          */
+/* ------------------------------------------------------------------ */
+
+typedef struct SparkDsv4RocmL1Io
+{
+	uint32_t row_count;
+	const void *boundary_in_bf16;     /* [rows][BOUNDARY_ELEMENTS] */
+	void *boundary_out_bf16;          /* [rows][BOUNDARY_ELEMENTS] */
+	const float *post_f32;            /* [rows][HC_STREAM_COUNT] */
+	const float *comb_f32;            /* [rows][HC_STREAM_COUNT*HC_STREAM_COUNT] */
+	const void *norm_gain_bf16;       /* [hidden] */
+	const void *q_lora_weight_bf16;   /* [QUERY_LORA_RANK][hidden] */
+	const void *kv_weight_bf16;       /* [ATTN_HEAD_DIMENSION][hidden] */
+	void *q_proj_bf16;                /* [rows][QUERY_LORA_RANK] sink */
+	void *kv_proj_bf16;               /* [rows][ATTN_HEAD_DIMENSION] sink */
+	void *packed_shards_bf16;         /* [rows][hidden] frozen interleave layout */
+} SparkDsv4RocmL1Io;
+
+SparkHwStatus SparkDsv4RocmIslandL1(SparkHwQueue queue,
+	const SparkDsv4RocmL1Io *io);
+
+typedef struct SparkDsv4RocmL2Io
+{
+	uint32_t row_count;
+	uint32_t requested_caps;          /* caller-required SPARK_DSV4_ROCM_L2_CAP_* */
+	void *query_bf16;                 /* [rows][ATTN_QUERY_DIMENSION], in/out */
+	void *kv_post_bf16;               /* [rows][ATTN_HEAD_DIMENSION], in/out */
+	const void *kv_gain_bf16;         /* [ATTN_HEAD_DIMENSION] norm gain */
+	const float *freqs_f32;           /* YaRN table, rope_dim/2 entries */
+	const uint64_t *row_positions_u64;/* [rows] */
+	void *wo_a_output_bf16;           /* wo_a projection output */
+	const void *wo_a_weight_bf16;
+	void *wo_b_output_bf16;
+	const void *wo_b_weight_bf16;
+	uint32_t wo_a_rows_out;
+	uint32_t wo_b_rows_out;
+} SparkDsv4RocmL2Io;
+
+SparkHwStatus SparkDsv4RocmIslandL2QkvProjection(SparkHwQueue queue,
+	const SparkDsv4RocmL2Io *io);
+
+/* Indexer top-k slice (S8 first landing): byte-radix top-k over per-row
+ * indexer score rows, canonical lower-slot tie breaking. Struct defined
+ * next to its kernel in the L2 translation unit; caps bit
+ * SPARK_DSV4_ROCM_L2_CAP_INDEXER_TOPK lives there too until S8 pins the
+ * full L2 slice map. */
+typedef struct SparkDsv4RocmL2IndexerTopKIo SparkDsv4RocmL2IndexerTopKIo;
+
+SparkHwStatus SparkDsv4RocmIslandL2IndexerTopK(SparkHwQueue queue,
+	const SparkDsv4RocmL2IndexerTopKIo *io);

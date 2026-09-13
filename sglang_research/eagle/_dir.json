@@ -1,0 +1,578 @@
+[
+  {
+    "name": "adaptive_runtime_state.py",
+    "path": "python/sglang/srt/speculative/adaptive_runtime_state.py",
+    "sha": "fa9211dd39c7b857feb9b8f46db1090a37652915",
+    "size": 5121,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/adaptive_runtime_state.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/adaptive_runtime_state.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/fa9211dd39c7b857feb9b8f46db1090a37652915",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/adaptive_runtime_state.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/adaptive_runtime_state.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/fa9211dd39c7b857feb9b8f46db1090a37652915",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/adaptive_runtime_state.py"
+    }
+  },
+  {
+    "name": "adaptive_spec_params.py",
+    "path": "python/sglang/srt/speculative/adaptive_spec_params.py",
+    "sha": "d8b24dce01009d92a53aa90761e25b4681cfca0c",
+    "size": 12494,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/adaptive_spec_params.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/adaptive_spec_params.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/d8b24dce01009d92a53aa90761e25b4681cfca0c",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/adaptive_spec_params.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/adaptive_spec_params.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/d8b24dce01009d92a53aa90761e25b4681cfca0c",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/adaptive_spec_params.py"
+    }
+  },
+  {
+    "name": "base_spec_worker.py",
+    "path": "python/sglang/srt/speculative/base_spec_worker.py",
+    "sha": "ba0ffd616e61cf836d0341c4f6dae1c781e8607e",
+    "size": 12570,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/base_spec_worker.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/base_spec_worker.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/ba0ffd616e61cf836d0341c4f6dae1c781e8607e",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/base_spec_worker.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/base_spec_worker.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/ba0ffd616e61cf836d0341c4f6dae1c781e8607e",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/base_spec_worker.py"
+    }
+  },
+  {
+    "name": "cpp_ngram",
+    "path": "python/sglang/srt/speculative/cpp_ngram",
+    "sha": "79e33be3c384a3b2aa8f324cb34b7f0d8f87d215",
+    "size": 0,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/cpp_ngram?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/speculative/cpp_ngram",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/trees/79e33be3c384a3b2aa8f324cb34b7f0d8f87d215",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/cpp_ngram?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/trees/79e33be3c384a3b2aa8f324cb34b7f0d8f87d215",
+      "html": "https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/speculative/cpp_ngram"
+    }
+  },
+  {
+    "name": "decoupled_spec_io.py",
+    "path": "python/sglang/srt/speculative/decoupled_spec_io.py",
+    "sha": "65744bbb5e62f91abcf7b785da53c5719d7b2495",
+    "size": 13475,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/decoupled_spec_io.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/decoupled_spec_io.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/65744bbb5e62f91abcf7b785da53c5719d7b2495",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/decoupled_spec_io.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/decoupled_spec_io.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/65744bbb5e62f91abcf7b785da53c5719d7b2495",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/decoupled_spec_io.py"
+    }
+  },
+  {
+    "name": "dflash_disaggregation.py",
+    "path": "python/sglang/srt/speculative/dflash_disaggregation.py",
+    "sha": "1cb2be7b2675aa940ce3731b2ffc99d80872f17d",
+    "size": 1028,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_disaggregation.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_disaggregation.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/1cb2be7b2675aa940ce3731b2ffc99d80872f17d",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dflash_disaggregation.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_disaggregation.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/1cb2be7b2675aa940ce3731b2ffc99d80872f17d",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_disaggregation.py"
+    }
+  },
+  {
+    "name": "dflash_info.py",
+    "path": "python/sglang/srt/speculative/dflash_info.py",
+    "sha": "21baee79c23794c14e1b5ee8df9bfc6b34f61570",
+    "size": 7584,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_info.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_info.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/21baee79c23794c14e1b5ee8df9bfc6b34f61570",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dflash_info.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_info.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/21baee79c23794c14e1b5ee8df9bfc6b34f61570",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_info.py"
+    }
+  },
+  {
+    "name": "dflash_info_v2.py",
+    "path": "python/sglang/srt/speculative/dflash_info_v2.py",
+    "sha": "7dba1d74b2dd2bbe5552b53765d9ddcbab9cb7ca",
+    "size": 11707,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_info_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_info_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/7dba1d74b2dd2bbe5552b53765d9ddcbab9cb7ca",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dflash_info_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_info_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/7dba1d74b2dd2bbe5552b53765d9ddcbab9cb7ca",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_info_v2.py"
+    }
+  },
+  {
+    "name": "dflash_utils.py",
+    "path": "python/sglang/srt/speculative/dflash_utils.py",
+    "sha": "f8ce936c5dbdf90ae4d73adabeccf363cba5ad38",
+    "size": 40163,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/f8ce936c5dbdf90ae4d73adabeccf363cba5ad38",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dflash_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/f8ce936c5dbdf90ae4d73adabeccf363cba5ad38",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_utils.py"
+    }
+  },
+  {
+    "name": "dflash_worker_v2.py",
+    "path": "python/sglang/srt/speculative/dflash_worker_v2.py",
+    "sha": "33bcdbda9ef47d76b51890373855c147a46e4b3f",
+    "size": 93615,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_worker_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_worker_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/33bcdbda9ef47d76b51890373855c147a46e4b3f",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dflash_worker_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dflash_worker_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/33bcdbda9ef47d76b51890373855c147a46e4b3f",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dflash_worker_v2.py"
+    }
+  },
+  {
+    "name": "draft_utils.py",
+    "path": "python/sglang/srt/speculative/draft_utils.py",
+    "sha": "13de33ad6ef7ca21000bf70bc6f729e716cdcba9",
+    "size": 19588,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/draft_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/draft_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/13de33ad6ef7ca21000bf70bc6f729e716cdcba9",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/draft_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/draft_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/13de33ad6ef7ca21000bf70bc6f729e716cdcba9",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/draft_utils.py"
+    }
+  },
+  {
+    "name": "draft_worker_common.py",
+    "path": "python/sglang/srt/speculative/draft_worker_common.py",
+    "sha": "c7c1c14fedcc3f0d06afe077ff30558cc185a6f7",
+    "size": 5511,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/draft_worker_common.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/draft_worker_common.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/c7c1c14fedcc3f0d06afe077ff30558cc185a6f7",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/draft_worker_common.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/draft_worker_common.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/c7c1c14fedcc3f0d06afe077ff30558cc185a6f7",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/draft_worker_common.py"
+    }
+  },
+  {
+    "name": "dspark_components",
+    "path": "python/sglang/srt/speculative/dspark_components",
+    "sha": "359a15d6577978b6bbe965c03567be89ad40e8a5",
+    "size": 0,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dspark_components?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/speculative/dspark_components",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/trees/359a15d6577978b6bbe965c03567be89ad40e8a5",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dspark_components?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/trees/359a15d6577978b6bbe965c03567be89ad40e8a5",
+      "html": "https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/speculative/dspark_components"
+    }
+  },
+  {
+    "name": "dspark_disaggregation.py",
+    "path": "python/sglang/srt/speculative/dspark_disaggregation.py",
+    "sha": "0d001b6bab1de6dac62a71b415d23ad8daceacba",
+    "size": 1055,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dspark_disaggregation.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dspark_disaggregation.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/0d001b6bab1de6dac62a71b415d23ad8daceacba",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/dspark_disaggregation.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/dspark_disaggregation.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/0d001b6bab1de6dac62a71b415d23ad8daceacba",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/dspark_disaggregation.py"
+    }
+  },
+  {
+    "name": "eagle_disaggregation.py",
+    "path": "python/sglang/srt/speculative/eagle_disaggregation.py",
+    "sha": "afec8205b221ff35f52602ed1fa1034f60e89268",
+    "size": 4036,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_disaggregation.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_disaggregation.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/afec8205b221ff35f52602ed1fa1034f60e89268",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_disaggregation.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_disaggregation.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/afec8205b221ff35f52602ed1fa1034f60e89268",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_disaggregation.py"
+    }
+  },
+  {
+    "name": "eagle_draft_cuda_graph_runner.py",
+    "path": "python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py",
+    "sha": "87a7011fb2b26c015b3b3f0a2252375b67671551",
+    "size": 28772,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/87a7011fb2b26c015b3b3f0a2252375b67671551",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/87a7011fb2b26c015b3b3f0a2252375b67671551",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py"
+    }
+  },
+  {
+    "name": "eagle_draft_extend_cuda_graph_runner.py",
+    "path": "python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py",
+    "sha": "642c0954fe1a6f508e0d4d64832277ac900ea5e5",
+    "size": 24944,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/642c0954fe1a6f508e0d4d64832277ac900ea5e5",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/642c0954fe1a6f508e0d4d64832277ac900ea5e5",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py"
+    }
+  },
+  {
+    "name": "eagle_info.py",
+    "path": "python/sglang/srt/speculative/eagle_info.py",
+    "sha": "a927efc8bf4885fb29cd79138ebedd3ffd4c83df",
+    "size": 15203,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_info.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_info.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/a927efc8bf4885fb29cd79138ebedd3ffd4c83df",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_info.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_info.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/a927efc8bf4885fb29cd79138ebedd3ffd4c83df",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_info.py"
+    }
+  },
+  {
+    "name": "eagle_utils.py",
+    "path": "python/sglang/srt/speculative/eagle_utils.py",
+    "sha": "28cf4610c791a1c186f685f0c01baec1893ead37",
+    "size": 37023,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/28cf4610c791a1c186f685f0c01baec1893ead37",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/28cf4610c791a1c186f685f0c01baec1893ead37",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_utils.py"
+    }
+  },
+  {
+    "name": "eagle_worker_common.py",
+    "path": "python/sglang/srt/speculative/eagle_worker_common.py",
+    "sha": "91ce8a1476955e5ed57951aa92ff66f1e5a47a7b",
+    "size": 25645,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_worker_common.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_worker_common.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/91ce8a1476955e5ed57951aa92ff66f1e5a47a7b",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_worker_common.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_worker_common.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/91ce8a1476955e5ed57951aa92ff66f1e5a47a7b",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_worker_common.py"
+    }
+  },
+  {
+    "name": "eagle_worker_v2.py",
+    "path": "python/sglang/srt/speculative/eagle_worker_v2.py",
+    "sha": "9ad5e5275b1a783aa5a9406ecf293929b3091c3c",
+    "size": 65583,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_worker_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_worker_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/9ad5e5275b1a783aa5a9406ecf293929b3091c3c",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/eagle_worker_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/eagle_worker_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/9ad5e5275b1a783aa5a9406ecf293929b3091c3c",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/eagle_worker_v2.py"
+    }
+  },
+  {
+    "name": "external_corpus_manager.py",
+    "path": "python/sglang/srt/speculative/external_corpus_manager.py",
+    "sha": "b268af5e131e42fc69358948a96fc4a405bd669e",
+    "size": 4081,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/external_corpus_manager.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/external_corpus_manager.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/b268af5e131e42fc69358948a96fc4a405bd669e",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/external_corpus_manager.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/external_corpus_manager.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/b268af5e131e42fc69358948a96fc4a405bd669e",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/external_corpus_manager.py"
+    }
+  },
+  {
+    "name": "frozen_kv_mtp_cuda_graph_runner.py",
+    "path": "python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py",
+    "sha": "4317e56290fc64423281711bfec7dfc648879e2d",
+    "size": 20367,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/4317e56290fc64423281711bfec7dfc648879e2d",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/4317e56290fc64423281711bfec7dfc648879e2d",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_cuda_graph_runner.py"
+    }
+  },
+  {
+    "name": "frozen_kv_mtp_info.py",
+    "path": "python/sglang/srt/speculative/frozen_kv_mtp_info.py",
+    "sha": "dc9cc184d9ebaaac3a88ef86e90bb3e14d4ebefd",
+    "size": 2192,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_info.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_info.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/dc9cc184d9ebaaac3a88ef86e90bb3e14d4ebefd",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/frozen_kv_mtp_info.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_info.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/dc9cc184d9ebaaac3a88ef86e90bb3e14d4ebefd",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_info.py"
+    }
+  },
+  {
+    "name": "frozen_kv_mtp_utils.py",
+    "path": "python/sglang/srt/speculative/frozen_kv_mtp_utils.py",
+    "sha": "c0f48b2b59ed3b05fd42e455abf18f2a9c9ae4bc",
+    "size": 6124,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/c0f48b2b59ed3b05fd42e455abf18f2a9c9ae4bc",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/frozen_kv_mtp_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/c0f48b2b59ed3b05fd42e455abf18f2a9c9ae4bc",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_utils.py"
+    }
+  },
+  {
+    "name": "frozen_kv_mtp_worker_v2.py",
+    "path": "python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py",
+    "sha": "e36995737e208961b7d37353231f313db0d2cc32",
+    "size": 32507,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/e36995737e208961b7d37353231f313db0d2cc32",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/e36995737e208961b7d37353231f313db0d2cc32",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/frozen_kv_mtp_worker_v2.py"
+    }
+  },
+  {
+    "name": "multi_layer_eagle_draft_extend_cuda_graph_runner.py",
+    "path": "python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py",
+    "sha": "63d8853ec86158dc5b600038debe3a5c281ed9e0",
+    "size": 41139,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/63d8853ec86158dc5b600038debe3a5c281ed9e0",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/63d8853ec86158dc5b600038debe3a5c281ed9e0",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_draft_extend_cuda_graph_runner.py"
+    }
+  },
+  {
+    "name": "multi_layer_eagle_utils.py",
+    "path": "python/sglang/srt/speculative/multi_layer_eagle_utils.py",
+    "sha": "5c93c5fa6821c3e6173f20161fb590133ba1cc37",
+    "size": 2153,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/5c93c5fa6821c3e6173f20161fb590133ba1cc37",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/multi_layer_eagle_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/5c93c5fa6821c3e6173f20161fb590133ba1cc37",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_utils.py"
+    }
+  },
+  {
+    "name": "multi_layer_eagle_worker_v2.py",
+    "path": "python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py",
+    "sha": "057e7310ce3fd59ddbd41541ece7ee0ae89b1a0e",
+    "size": 43887,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/057e7310ce3fd59ddbd41541ece7ee0ae89b1a0e",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/057e7310ce3fd59ddbd41541ece7ee0ae89b1a0e",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py"
+    }
+  },
+  {
+    "name": "ngram_info.py",
+    "path": "python/sglang/srt/speculative/ngram_info.py",
+    "sha": "6cb9ebe0f70b766fa80aa2ad4d0fdcd004f3cbfc",
+    "size": 5240,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ngram_info.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ngram_info.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/6cb9ebe0f70b766fa80aa2ad4d0fdcd004f3cbfc",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/ngram_info.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ngram_info.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/6cb9ebe0f70b766fa80aa2ad4d0fdcd004f3cbfc",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ngram_info.py"
+    }
+  },
+  {
+    "name": "ngram_worker.py",
+    "path": "python/sglang/srt/speculative/ngram_worker.py",
+    "sha": "382a5e02b543c66d2c7bd3d900f47f4e356ddd5b",
+    "size": 24072,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ngram_worker.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ngram_worker.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/382a5e02b543c66d2c7bd3d900f47f4e356ddd5b",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/ngram_worker.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ngram_worker.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/382a5e02b543c66d2c7bd3d900f47f4e356ddd5b",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ngram_worker.py"
+    }
+  },
+  {
+    "name": "ragged_verify.py",
+    "path": "python/sglang/srt/speculative/ragged_verify.py",
+    "sha": "92542e55304016493287193acb934530bb7964c5",
+    "size": 11273,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ragged_verify.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ragged_verify.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/92542e55304016493287193acb934530bb7964c5",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/ragged_verify.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/ragged_verify.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/92542e55304016493287193acb934530bb7964c5",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/ragged_verify.py"
+    }
+  },
+  {
+    "name": "spec_info.py",
+    "path": "python/sglang/srt/speculative/spec_info.py",
+    "sha": "03967668e83ce6c3304d5d8d1a94a656e7580252",
+    "size": 16708,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_info.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_info.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/03967668e83ce6c3304d5d8d1a94a656e7580252",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/spec_info.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_info.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/03967668e83ce6c3304d5d8d1a94a656e7580252",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_info.py"
+    }
+  },
+  {
+    "name": "spec_registry.py",
+    "path": "python/sglang/srt/speculative/spec_registry.py",
+    "sha": "1e3b84853c60b7f026dbaecbbab7bf7f66883e9d",
+    "size": 9375,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_registry.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_registry.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/1e3b84853c60b7f026dbaecbbab7bf7f66883e9d",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/spec_registry.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_registry.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/1e3b84853c60b7f026dbaecbbab7bf7f66883e9d",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_registry.py"
+    }
+  },
+  {
+    "name": "spec_utils.py",
+    "path": "python/sglang/srt/speculative/spec_utils.py",
+    "sha": "b0fb39c53915578e6485b8c7cb52a570843e3ef8",
+    "size": 40627,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_utils.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_utils.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/b0fb39c53915578e6485b8c7cb52a570843e3ef8",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/spec_utils.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/spec_utils.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/b0fb39c53915578e6485b8c7cb52a570843e3ef8",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/spec_utils.py"
+    }
+  },
+  {
+    "name": "standalone_worker_v2.py",
+    "path": "python/sglang/srt/speculative/standalone_worker_v2.py",
+    "sha": "e8b3a11cd0c7cdf19098c244986e215cad5a1b50",
+    "size": 8769,
+    "url": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/standalone_worker_v2.py?ref=main",
+    "html_url": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/standalone_worker_v2.py",
+    "git_url": "https://api.github.com/repos/sgl-project/sglang/git/blobs/e8b3a11cd0c7cdf19098c244986e215cad5a1b50",
+    "download_url": "https://raw.githubusercontent.com/sgl-project/sglang/main/python/sglang/srt/speculative/standalone_worker_v2.py",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/sgl-project/sglang/contents/python/sglang/srt/speculative/standalone_worker_v2.py?ref=main",
+      "git": "https://api.github.com/repos/sgl-project/sglang/git/blobs/e8b3a11cd0c7cdf19098c244986e215cad5a1b50",
+      "html": "https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/speculative/standalone_worker_v2.py"
+    }
+  }
+]

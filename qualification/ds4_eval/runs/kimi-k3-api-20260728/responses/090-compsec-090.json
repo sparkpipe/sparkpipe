@@ -1,0 +1,57 @@
+{
+  "case": {
+    "answer": "12-13",
+    "choices": [],
+    "domain": "Linux kernel",
+    "id": "compsec-090",
+    "index": 90,
+    "question": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```",
+    "source": "COMPSEC",
+    "title": "handle_one_ule_extension() reduction"
+  },
+  "elapsed_ms": 25992.072,
+  "finished_at": "2026-07-28T18:04:30.717894+00:00",
+  "format": "ds4-eval-kimi-result-v1",
+  "prompt": {
+    "sha256": "c3d9c436c2b7617e4eb5cfcbe05c7115908780777f2ed14d359fa0d1064fedcf",
+    "system": "You are solving a hard benchmark question. Reason carefully. The final answer must follow the requested format exactly.",
+    "user": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+  },
+  "request": {
+    "attempts": 1,
+    "endpoint": "https://api.kimi.com/coding/v1/chat/completions",
+    "max_tokens": 16000,
+    "model": "k3",
+    "stream": true,
+    "temperature": 1.0
+  },
+  "response": {
+    "content": "Answer: 12",
+    "created": 1785261846,
+    "finish_reason": "stop",
+    "reasoning": "We need answer benchmark. Need reason. We can think there. Let's analyze thoroughly.\n\nWe have reduced C function. Need identify vulnerability line(s). Stated assumptions: extension type is low byte of 16-bit protocol field. mandatory-extension table has handlers for values 0 through 254. Code:\n1 typedef handler\n2 static ule_handler mandatory_handlers[255];\n4 func handle_ule_ext(skb, uint16_t type, p,len)\n7 uint8_t htype = (uint8_t)(type & 0x00ff);\n9 if (htype < 0x80) return optional...\n12 if (mandatory_handlers[htype] != NULL)\n13 return mandatory_handlers[htype](...)\n15 return -EINVAL\n\nPotential bug: mandatory_handlers array size 255 indices 0..254. htype is uint8_t 0..255. If htype==255 (0xff), line 12 accesses mandatory_handlers[255] out-of-bounds. Since htype>=0x80 mandatory path; no explicit bound check htype <255. Table has handlers 0..254, so value 255 not covered. The primary bug introduced at line 12 (OOB read) or line 7? Need determine best line. Extension type low byte of 16-bit field. mandatory table 0 through 254. htype can be 255 due to low byte; line 12 uses as index without checking. So answer likely 12. But need carefully assess if line 2 is bug (array size should be 256) or line 12. Prompt: single best line number where primary bug is introduced; if only clear from small group adjacent lines, smallest comma-separated set. Here line 12 is OOB access. Could line 2 size 255 be root cause? Table defined 255 per stated mandatory handlers values 0 through 254, so size 255 correct. htype=255 is reserved/invalid but must be rejected; code fails to bound check before indexing. At line 12, mandatory_handlers[htype] with htype==255 OOB read; then line 13 maybe call if non-NULL. Primary introduced at 12.\n\nNeed consider optional path: htype<0x80 (0..127) goes optional. mandatory for 128..255. Table handlers 0..254, so 255 is outside. Since htype uint8_t max 255. Array indexed by htype directly at line 12. No check htype != 0xff or < ARRAY_SIZE. OOB read of function pointer at line 12; if memory non-NULL, line13 arbitrary call. Even NULL check itself OOB. Answer line 12.\n\nNeed final exactly one line 'Answer: 12'. No extra. Ensure final line format. No markdown? It says at end write exactly one final line and nothing after. We can just output that. Need no explanation? The user asks analyze and final. We should output only final line likely. Final with Answer: 12. Ensure exact. ",
+    "response_id": "chatcmpl-p4ucFunLHHS14TkbuOe1hkGM",
+    "response_model": "k3",
+    "usage": {
+      "completion_tokens": 647,
+      "completion_tokens_details": {
+        "reasoning_tokens": 628
+      },
+      "prompt_tokens": 432,
+      "total_tokens": 1079
+    }
+  },
+  "score": {
+    "expected": "12-13",
+    "extracted": "12",
+    "passed": true,
+    "text_source": "content"
+  },
+  "source": {
+    "commit": "54b36ed9ba42da31b24f2d1a5feb075c2475dbb1",
+    "ds4_eval_c_sha256": "19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23",
+    "repository": "https://github.com/antirez/ds4"
+  },
+  "started_at": "2026-07-28T18:04:04.725850+00:00",
+  "status": "ok"
+}

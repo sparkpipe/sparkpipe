@@ -1,0 +1,682 @@
+{
+  "schema_version": 1,
+  "registry_id": "spark_hardware_truth_v1",
+  "questions": [
+    {
+      "id": "GB10-IDENTITY-001",
+      "category": "identity",
+      "question": "What exact GB10 device, driver, CUDA runtime, memory capacity, SM count, clock limits, and capability set is present?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "tools/cuda13_sm121a_compile_gate.sh",
+        "runtime/gemm.cuh"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.identity",
+        "primary_metric": "device_count",
+        "objective": "collect",
+        "unit": "count",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-MEM-001",
+      "category": "memory",
+      "question": "What sustained device-memory read, write, and copy bandwidth is available for the working sets SparkPipe actually uses?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "tools/perf_estimate.py",
+        "tests/studies/sparkpipe_glm52_batchplane_model.c"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.memory_bandwidth",
+        "primary_metric": "read_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-MEM-002",
+      "category": "memory",
+      "question": "At what working-set sizes does repeated reuse materially reduce DRAM traffic, and what reuse gain is sustainable?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/gemm.cuh",
+        "inference/kernels/gqa.cuh"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.reuse",
+        "primary_metric": "reuse_gain",
+        "objective": "maximize",
+        "unit": "ratio",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-MEM-003",
+      "category": "memory",
+      "question": "What latency and effective bandwidth does sparse pointer-chasing achieve at model-relevant working sets?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "inference/kernels/gqa.cuh",
+        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.sparse_memory",
+        "primary_metric": "pointer_chase_ns_per_step",
+        "objective": "minimize",
+        "unit": "ns/step",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-UMEM-001",
+      "category": "memory",
+      "question": "How much CPU traffic over shared memory reduces GPU bandwidth, and which host access patterns are safe during decode?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "node/model_residentd.c",
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.cpu_gpu_contention",
+        "primary_metric": "gpu_bandwidth_ratio",
+        "objective": "maximize",
+        "unit": "ratio",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "GB10-MAPPED-001",
+      "category": "memory",
+      "question": "For model-sized payloads, when is mapped pinned host memory faster than an explicit copy?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu",
+        "include/sparkpipe/spark_hidden_transport.h"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.mapped_host",
+        "primary_metric": "throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-COPY-001",
+      "category": "memory",
+      "question": "What are the H2D, D2H, and bidirectional copy crossovers for actual pipeline payloads?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu",
+        "include/sparkpipe/spark_model_driver.h"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.copy",
+        "primary_metric": "throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-LAUNCH-001",
+      "category": "cuda_runtime",
+      "question": "What is the direct CUDA launch overhead under idle and loaded conditions?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/launch.h",
+        "docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.launch",
+        "primary_metric": "latency_p50_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-GRAPH-001",
+      "category": "cuda_runtime",
+      "question": "At which batch and kernel-count buckets does CUDA Graph replay beat direct launch?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "src/spark_driver_loader.c",
+        "include/sparkpipe/spark_model_driver.h"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.graph",
+        "primary_metric": "latency_p50_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "GB10-CALLBACK-001",
+      "category": "cuda_runtime",
+      "question": "Which completion mechanism\u2014stream synchronization, event polling, or host callback\u2014has the best p99 and CPU cost?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "include/sparkpipe/spark_model_driver.h",
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.completion",
+        "primary_metric": "latency_p99_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "GB10-CONCURRENCY-001",
+      "category": "cuda_runtime",
+      "question": "How many independent compute/copy streams can overlap before memory bandwidth or launch progress regresses?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/model_batch_engine.c",
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.concurrency",
+        "primary_metric": "aggregate_throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate",
+          "stream_count"
+        ]
+      }
+    },
+    {
+      "id": "GB10-SMEM-001",
+      "category": "cuda_runtime",
+      "question": "Which dynamic shared-memory sizes preserve useful occupancy and avoid launch rejection on GB10?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/launch.h",
+        "runtime/gemm.cuh"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.shared_memory",
+        "primary_metric": "active_blocks_per_sm",
+        "objective": "maximize",
+        "unit": "blocks/SM",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-ATOMIC-001",
+      "category": "cuda_runtime",
+      "question": "What is the throughput crossover between contended and distributed atomics for routing and completion counters?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "inference/kernels/topk.cuh",
+        "ring/distributed_work.c"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.atomic",
+        "primary_metric": "operations_per_second",
+        "objective": "maximize",
+        "unit": "ops/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "GB10-THERMAL-001",
+      "category": "thermal",
+      "question": "What sustained thermal and clock derating applies during a long, memory-bandwidth-saturating GB10 workload?",
+      "probe": "cuda_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/model_batch_engine.c",
+        "tools/perf_estimate.py"
+      ],
+      "decision": {
+        "policy_path": "hardware.gb10.thermal",
+        "primary_metric": "steady_state_throughput_ratio",
+        "objective": "maximize",
+        "unit": "ratio",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-REG-001",
+      "category": "kernel",
+      "question": "What registers, local memory, spills, shared memory, occupancy, and p99 latency does each exact production kernel use?",
+      "probe": "model_kernel_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/gemm.cuh",
+        "inference/kernels/gqa.cuh",
+        "inference/llms/kimi_k3/layer.cuh"
+      ],
+      "decision": {
+        "policy_path": "kernels.resources",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "GB10-NATIVE-MMA-001",
+      "category": "kernel",
+      "question": "For each model and batch bucket, when do native Blackwell block-scaled MMA/TMA kernels beat BF16-dequantized or token-centric paths?",
+      "probe": "model_kernel_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/gemm.cuh",
+        "docs/archive/PERF_ROADMAP_2026-08-01.md"
+      ],
+      "decision": {
+        "policy_path": "kernels.native_mma",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "MODEL-GQA-001",
+      "category": "kernel",
+      "question": "Which exact GQA schedule\u2014query-head, grouped-KV, or split-key grouped-KV\u2014wins by model, batch, and context?",
+      "probe": "model_kernel_characterize",
+      "production_required": true,
+      "consumers": [
+        "inference/kernels/gqa.cuh",
+        "inference/llms/qwen_3_6/layer.cuh"
+      ],
+      "decision": {
+        "policy_path": "kernels.gqa",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "MODEL-MOE-001",
+      "category": "kernel",
+      "question": "Which expert schedule\u2014token-centric, grouped tile, or sealed weight-stationary queue\u2014wins by model, batch, and routing skew?",
+      "probe": "model_kernel_characterize",
+      "production_required": true,
+      "consumers": [
+        "inference/kernels/topk.cuh",
+        "inference/llms/kimi_k3/layer.cuh"
+      ],
+      "decision": {
+        "policy_path": "kernels.moe",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "MODEL-KDA-001",
+      "category": "kernel",
+      "question": "Which KDA decode, replay, and chunk strategy minimizes recurrent-state traffic while preserving exact numerics?",
+      "probe": "model_kernel_characterize",
+      "production_required": true,
+      "consumers": [
+        "inference/kernels/linear_attn.cuh",
+        "inference/llms/kimi_k3/layer.cuh"
+      ],
+      "decision": {
+        "policy_path": "kernels.kda",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "id": "NVME-RAW-001",
+      "category": "nvme",
+      "question": "What direct-I/O bandwidth, latency distribution, and queue-depth crossover does the installed NVMe device sustain?",
+      "probe": "nvme_characterize",
+      "production_required": true,
+      "consumers": [
+        "cache/nvme_tier.c",
+        "include/sparkpipe/spark_nvme_tier.h"
+      ],
+      "decision": {
+        "policy_path": "storage.nvme.raw",
+        "primary_metric": "throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "block_bytes",
+          "queue_depth",
+          "worker_count"
+        ]
+      }
+    },
+    {
+      "id": "NVME-GPU-001",
+      "category": "nvme",
+      "question": "Which block size, queue depth, and buffer count maximizes verified NVMe-to-device throughput without corrupting bytes?",
+      "probe": "nvme_characterize",
+      "production_required": true,
+      "consumers": [
+        "cache/nvme_tier.c",
+        "include/sparkpipe/spark_nvme_tier.h"
+      ],
+      "decision": {
+        "policy_path": "storage.nvme.gpu_pipeline",
+        "primary_metric": "throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "block_bytes",
+          "queue_depth",
+          "worker_count"
+        ]
+      }
+    },
+    {
+      "id": "NET-TCP-001",
+      "category": "network",
+      "question": "What p50/p99 latency, message rate, and throughput does the exact production TCP transport achieve for model payloads?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/hidden_transport.c",
+        "node/model_residentd.c"
+      ],
+      "decision": {
+        "policy_path": "network.tcp",
+        "primary_metric": "latency_p99_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "window_depth"
+        ]
+      }
+    },
+    {
+      "id": "NET-RDMA-001",
+      "category": "network",
+      "question": "What p50/p99 latency and throughput do mapped-host and GPUDirect production RDMA paths achieve?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu",
+        "include/sparkpipe/spark_hidden_transport.h"
+      ],
+      "decision": {
+        "policy_path": "network.rdma",
+        "primary_metric": "latency_p99_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate",
+          "lane_count",
+          "window_depth"
+        ]
+      }
+    },
+    {
+      "id": "NET-MR-001",
+      "category": "network",
+      "question": "What MR-cache size and eviction policy avoid registration stalls under real boundary-buffer churn?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "network.mr_cache",
+        "primary_metric": "registration_time_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate",
+          "registered_region_count"
+        ]
+      }
+    },
+    {
+      "id": "NET-LANES-001",
+      "category": "network",
+      "question": "How many QPs/lanes minimize p99 for B1 while sustaining large-batch throughput?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "network.lanes",
+        "primary_metric": "throughput_gb_s",
+        "objective": "maximize",
+        "unit": "GB/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "lane_count"
+        ]
+      }
+    },
+    {
+      "id": "NET-CQ-001",
+      "category": "network",
+      "question": "What CQ polling batch and wakeup policy minimizes CPU cost without adding tail latency?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu"
+      ],
+      "decision": {
+        "policy_path": "network.cq",
+        "primary_metric": "latency_p99_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "cq_batch"
+        ]
+      }
+    },
+    {
+      "id": "NET-PROGRESS-001",
+      "category": "network",
+      "question": "Does autonomous network progress outperform caller-driven progress for each payload and window?",
+      "probe": "transport_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu",
+        "node/model_residentd.c"
+      ],
+      "decision": {
+        "policy_path": "network.progress",
+        "primary_metric": "latency_p99_ns",
+        "objective": "minimize",
+        "unit": "ns",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "progress_mode",
+          "window_depth"
+        ]
+      }
+    },
+    {
+      "id": "NET-PMTU-001",
+      "category": "network",
+      "question": "What path MTU is actually usable between every required peer without fragmentation or black-holing?",
+      "probe": "pmtu_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/rdma.cu",
+        "ring/transport/hidden_transport.c"
+      ],
+      "decision": {
+        "policy_path": "network.pmtu",
+        "primary_metric": "maximum_payload_bytes",
+        "objective": "maximize",
+        "unit": "bytes",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "NET-RING-001",
+      "category": "topology",
+      "question": "What end-to-end latency, throughput, retry, and failure-recovery behavior does the direct single-rail ring provide?",
+      "probe": "topology_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/fabric_topology.c",
+        "node/model_residentd.c"
+      ],
+      "decision": {
+        "policy_path": "topology.ring",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "NET-SWITCH-001",
+      "category": "topology",
+      "question": "What end-to-end latency, throughput, and failure behavior does the one-switch 100-Gbit/s topology provide?",
+      "probe": "topology_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/fabric_topology.c",
+        "node/model_residentd.c"
+      ],
+      "decision": {
+        "policy_path": "topology.single_switch",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": []
+      }
+    },
+    {
+      "id": "TOPO-PP-001",
+      "category": "topology",
+      "question": "Which PP degree maximizes committed decode throughput for each model, batch, and context bucket?",
+      "probe": "topology_characterize",
+      "production_required": true,
+      "consumers": [
+        "runtime/pipeline_runtime.c",
+        "ring/transport/fabric_topology.c"
+      ],
+      "decision": {
+        "policy_path": "topology.pipeline_degree",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate",
+          "pipeline_degree"
+        ]
+      }
+    },
+    {
+      "id": "TOPO-WINDOW-001",
+      "category": "topology",
+      "question": "How many acknowledged pipeline transactions should be in flight for each model, batch, PP degree, and topology?",
+      "probe": "topology_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/distributed_work.c",
+        "node/model_residentd.c"
+      ],
+      "decision": {
+        "policy_path": "topology.transport_window",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate",
+          "window_depth"
+        ]
+      }
+    },
+    {
+      "id": "TOPO-PLACEMENT-001",
+      "category": "topology",
+      "question": "Which stage placement minimizes the bottleneck stage and network path while preserving ring adjacency constraints?",
+      "probe": "topology_characterize",
+      "production_required": true,
+      "consumers": [
+        "ring/transport/fabric_topology.c",
+        "runtime/pipeline_runtime.c"
+      ],
+      "decision": {
+        "policy_path": "topology.stage_placement",
+        "primary_metric": "tokens_per_second",
+        "objective": "maximize",
+        "unit": "tokens/s",
+        "minimum_coverage": 1.0,
+        "selection_parameters": [
+          "candidate"
+        ]
+      }
+    }
+  ]
+}

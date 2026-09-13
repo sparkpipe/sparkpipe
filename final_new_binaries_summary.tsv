@@ -1,0 +1,7 @@
+cell	rc	wall_ms	submitted	admitted	rejected	status_line	rd_peak_rss_mb	rd_hwm_mb	bat_peak_rss_mb	bat_hwm_mb	rd_gpu_mib	bat_gpu_mib	guard_waits	attempts
+ctx512_b1	0	74611	537	537	0	sparkpipe_model_batch_status=0 terminal=1 requests=1	385	385	3	3	79550	0	2	1
+ctx512_b4	0	292408	2200	2200	0	sparkpipe_model_batch_status=0 terminal=4 requests=4	384	384	3	3	79736	0	0	4
+ctx512_b16	0	1173429	8617	8617	0	sparkpipe_model_batch_status=0 terminal=16 requests=16	384	384	3	3	79736	0	0	2
+ctx512_b1_prefill	0	64169	513	513	0	sparkpipe_model_batch_status=0 terminal=1 requests=1	384	384	3	3	79544	0	0	1
+ctx2048_b1	1	56883	257	257	0	sparkpipe_model_batch_status=17 terminal=1 requests=1	384	384	3	3	79736	0	0	5
+ctx2048_b4	1	214755	1025	1025	0	sparkpipe_model_batch_status=17 terminal=4 requests=4	384	384	3	3	79730	0	0	5

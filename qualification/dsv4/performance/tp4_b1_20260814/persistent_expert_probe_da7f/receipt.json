@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_tp4_b1_persistent_exact_expert_w13_w2_chain",
+  "status": "REJECTED_BY_CONCURRENT_SHARED_EXPERT_GATE",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "combined_plus_linear_worktree_diff_sha256": "dfa3346fedea53641b7a90dcdfbe95d82b791f51b9b3fa704fb13b75b3795d2d",
+  "host": "spark1",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "sm_count": 48,
+  "cuda": "13.0 V13.0.88",
+  "source": "/private/tmp/dsv4_persistent_expert_chain_probe.cu",
+  "source_sha256": "b171f1e9bc4bd678f8011c1b004d011b217041429efaa51b13e801a2335e31f0",
+  "production_kernel_header_sha256": "a7261f234ac6515fa4eda8daf6d543977511bdc6e73e6ec579d69a70c8bd3b0f",
+  "binary_sha256": "d0abea1e66943981f861e5484a04665dee4a9e9f5363451b38a612f7c112e19f",
+  "overlap_source": "/private/tmp/dsv4_persistent_expert_chain_overlap_probe.cu",
+  "overlap_source_sha256": "8d0c64ca1414dea90bea0f2d955af33a112d801907631a9966acfd043e2e3719",
+  "overlap_binary_sha256": "7bd5ee8aff41ee642b37d508fe2b01f4ad3aba2fbae306ac5f48e56b8f301b44",
+  "build_command": "nvcc -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=compute_121a,code=sm_121a -I<source> -I<source>/include -I<source>/model-families/common/include probe.cu -o probe",
+  "shape": {
+    "rows": 1,
+    "group_capacity": 256,
+    "active_routes": 6,
+    "active_group_ids": [7, 43, 91, 129, 186, 241],
+    "hidden_dimension": 4096,
+    "tp4_expert_dimension": 512,
+    "w13": "4096x512 fused W1/W3 plus SiLU",
+    "w2": "512x4096",
+    "weights": "MXFP4 E2M1 with E8M0 group-32 scales",
+    "activations": "BF16",
+    "allocated_expert_weight_bytes": 855638016,
+    "active_expert_weight_bytes": 20054016
+  },
+  "control": {
+    "schedule": "two production kernels on one CUDA stream",
+    "w13_tile_n": 32,
+    "w13_blocks_per_sm": 2,
+    "w13_blocks": 96,
+    "w2_tile_n": 128,
+    "w2_blocks_per_sm": 4,
+    "w2_blocks": 192
+  },
+  "candidate": {
+    "schedule": "one cooperative persistent CTA grid with device grid barrier between exact W13 and W2 tasks",
+    "w13_tile_n": 32,
+    "w2_tile_n": 128,
+    "blocks_per_sm": 2,
+    "blocks": 96,
+    "maximum_resident_blocks_per_sm": 3,
+    "host_phase_boundary": false,
+    "target_or_spine_quantization_change": false
+  },
+  "measurement": {
+    "independent_runs": 3,
+    "repetitions_per_variant_per_run": 101,
+    "order": "interleaved and alternating control-candidate/candidate-control",
+    "cache_condition": "256 MiB device flush before every timed variant",
+    "flush_inside_timed_region": false,
+    "statistic": "CUDA event median",
+    "w13_boundary_bitwise_exact": true,
+    "w2_output_bitwise_exact": true,
+    "w13_digest_fnv1a64": "f457d291d1136e59",
+    "w2_digest_fnv1a64": "cfe7f952d1809d70"
+  },
+  "runs": [
+    {
+      "control_median_ms": 0.112448,
+      "candidate_median_ms": 0.108352,
+      "gain_percent": 3.7802717070,
+      "control_p10_ms": 0.112448,
+      "control_p90_ms": 0.115520,
+      "candidate_p10_ms": 0.108352,
+      "candidate_p90_ms": 0.115360,
+      "control_mean_ms": 0.116316,
+      "candidate_mean_ms": 0.114581
+    },
+    {
+      "control_median_ms": 0.114528,
+      "candidate_median_ms": 0.110432,
+      "gain_percent": 3.7090698348,
+      "control_p10_ms": 0.113472,
+      "control_p90_ms": 0.116608,
+      "candidate_p10_ms": 0.109376,
+      "candidate_p90_ms": 0.111936,
+      "control_mean_ms": 0.116529,
+      "candidate_mean_ms": 0.114598
+    },
+    {
+      "control_median_ms": 0.113344,
+      "candidate_median_ms": 0.110400,
+      "gain_percent": 2.6666666667,
+      "control_p10_ms": 0.112384,
+      "control_p90_ms": 0.114816,
+      "candidate_p10_ms": 0.108448,
+      "candidate_p90_ms": 0.111584,
+      "control_mean_ms": 0.116422,
+      "candidate_mean_ms": 0.112779
+    }
+  ],
+  "routed_only_aggregate": {
+    "control_mean_of_medians_ms": 0.113440,
+    "candidate_mean_of_medians_ms": 0.109728,
+    "saving_us_per_expert_chain": 3.712,
+    "gain_percent": 3.3829104695,
+    "all_independent_runs_positive": true,
+    "projected_43_moe_layer_saving_ms_per_token": 0.159616,
+    "projection_only": true
+  },
+  "production_overlap_gate": {
+    "shared_branch": "accepted exact FP8 shared W13 plus activation plus FP8 W2 on the production auxiliary stream",
+    "timing_scope": "wall-critical union of concurrent routed and shared expert streams",
+    "cooperative_two_blocks_per_sm_runs": [
+      {
+        "control_median_ms": 0.132288,
+        "candidate_median_ms": 0.133472,
+        "gain_percent": -0.8870774395
+      },
+      {
+        "control_median_ms": 0.135360,
+        "candidate_median_ms": 0.136480,
+        "gain_percent": -0.8206330598
+      },
+      {
+        "control_median_ms": 0.133280,
+        "candidate_median_ms": 0.134336,
+        "gain_percent": -0.7860886136
+      }
+    ],
+    "cooperative_two_blocks_per_sm_aggregate": {
+      "control_mean_of_medians_ms": 0.1336426667,
+      "candidate_mean_of_medians_ms": 0.1347626667,
+      "gain_percent": -0.8310907076,
+      "regression_us_per_layer": 1.120,
+      "all_independent_runs_negative": true
+    },
+    "non_grid_cooperative_cluster_design": {
+      "description": "six independent expert-local 8-CTA clusters; exact W13 then cluster-local barrier then exact W2; no grid residency or grid barrier",
+      "runs": [
+        {
+          "control_median_ms": 0.131424,
+          "candidate_median_ms": 0.151840,
+          "gain_percent": -13.4457323498
+        },
+        {
+          "control_median_ms": 0.135392,
+          "candidate_median_ms": 0.156896,
+          "gain_percent": -13.7058943504
+        },
+        {
+          "control_median_ms": 0.132320,
+          "candidate_median_ms": 0.153792,
+          "gain_percent": -13.9617145235
+        }
+      ],
+      "aggregate_gain_percent": -13.7055486371,
+      "w13_boundary_bitwise_exact": true,
+      "w2_output_bitwise_exact": true
+    }
+  },
+  "decision": {
+    "worth_full_ring_integration": false,
+    "reason": "The routed-only launch saving is consumed by lost overlap with the concurrently executing shared expert. Both clean persistent designs fail the required production-shaped overlap gate.",
+    "ci": "NOT_RUN",
+    "github": "NOT_RUN",
+    "full_ring": "NOT_RUN"
+  }
+}

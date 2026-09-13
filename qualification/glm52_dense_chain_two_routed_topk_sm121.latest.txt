@@ -1,0 +1,85 @@
+GLM52 dense-prefix to two routed-NVFP4 layers qualification
+============================================================
+
+Date: 2026-06-29
+Host class: DGX Spark / GB10, CUDA 13.0, sm_121
+Model artifact: GLM-5.2-NVFP4 official checkpoint
+Target:
+  modules/glm52_resident_decode_stage
+  package_dense_chain_two_routed_expert_nvfp4_topk
+
+Command shape:
+  GLM52_MODEL_DIR=/home/spark1/models/hf/nvidia/GLM-5.2-NVFP4
+  GLM52_INPUT_TOKEN_ID=1000
+  MAX_STAGE_MICROSECONDS=10000000
+  make package_dense_chain_two_routed_expert_nvfp4_topk CUDA_ARCH=sm_121
+
+Result: PASS
+
+Raw backend pass:
+  dense_chain_layers=3
+  routed_chain_layers=2
+  total_submissions=28
+  total_us=129621.823
+  maximum_us=7022.400
+  restricted_token=1228
+  input_embedding_token=1000
+  final_checked_selected_expert=84
+  final_checked_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Generated model-driver package pass:
+  dense_chain_layers=3
+  routed_chain_layers=2
+  total_submissions=28
+  total_us=145156.894
+  maximum_us=7195.776
+  restricted_token=1228
+  input_embedding_token=1000
+  final_checked_selected_expert=84
+  final_checked_bound_experts=8
+  real_lm_head=1
+  real_lm_head_max_logit_error=0.00000048
+
+Current-token checked routed layer 3:
+  ids=148,186,174,229,72,61,93,130
+  weights=0.54191142,0.21207391,0.20646937,0.57307100,0.22290768,0.22326396,0.22612713,0.29417551
+  route_count=8
+  gate_scratch_nonzero=16217
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=6483
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49143
+  up_checksum64=6.62191010
+  intermediate_checksum64=-0.29188293
+  route_checksum64=-0.06892185
+  layer_checksum64=-1.60612869
+
+Current-token checked routed layer 4:
+  ids=84,199,203,47,5,177,49,206
+  weights=0.31406090,0.27729136,0.45596755,0.49512649,0.18138967,0.20516402,0.17928141,0.39171860
+  route_count=8
+  gate_scratch_nonzero=16304
+  up_nonzero=16384
+  intermediate_nonzero=16384
+  intermediate_fp4_payload_nonzero=7057
+  intermediate_fp4_scale_nonzero=1024
+  route_nonzero=49147
+  up_checksum64=-3.45466900
+  intermediate_checksum64=-0.35047221
+  route_checksum64=-0.31488931
+  layer_checksum64=-0.93349648
+
+Scope:
+  This qualifies checkpoint-backed progression through:
+    input embedding
+    dense layers 0,1,2
+    routed layer 3 attention/router/dynamic NVFP4 top-k experts
+    routed layer 4 attention/router/dynamic NVFP4 top-k experts
+    restricted LM-head check
+
+  It proves the validator and generated driver can advance across more than one
+  routed MoE layer with separate KV caches and per-token dynamic expert binding.
+  It is not yet full 78-layer GLM 5.2 inference.

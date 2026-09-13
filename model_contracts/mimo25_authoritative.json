@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "model_id": "XiaomiMiMo/MiMo-V2.5-Base",
+  "architecture": "MiMoV2ForCausalLM (hybrid full/sliding-window GQA, MoE; text stack of the multimodal checkpoint)",
+  "sources": {
+    "host_geometry": "model-families/mimo25/include/sparkpipe/spark_mimo25_model.h, derived 2026-07-19 from the released config.json, modeling_mimo_v2.py and the safetensors shard headers (ranged fetch - exact dtypes and shapes, not inference)",
+    "contract_note": "transcribed from the family header so tools/generate_recipe.py has one authoritative JSON per served model; every value below cites that header, which remains the ground truth the C side compiles against",
+    "precision_policy": "linear weights FP8 E4M3 with F32 scale_inv per [128,128] block; embeddings, head, norms and sink biases BF16; router gate and bias F32; GEMM accumulation FP32"
+  },
+  "model": {
+    "hidden_dimension": 4096,
+    "layer_count": 48,
+    "vocabulary_size": 152576,
+    "maximum_context_tokens": 1048576,
+    "rms_norm_epsilon": 0.00001,
+    "first_routed_layer": 1,
+    "dense_intermediate_dimension": 16384,
+    "mtp_layer_count": 3
+  },
+  "hybrid_attention": {
+    "full_layer_count": 9,
+    "swa_layer_count": 39,
+    "full_layer_indices": [0, 5, 11, 17, 23, 29, 35, 41, 47],
+    "sliding_window_tokens": 128,
+    "layer_kind_note": "SPARK_MIMO25_MODEL_LAYER_KIND in the family header: 9 full-attention layers, not the 7 an early estimate assumed"
+  },
+  "attention": {
+    "query_head_count": 64,
+    "head_dimension": 192,
+    "value_head_dimension": 128,
+    "full_kv_head_count": 4,
+    "swa_kv_head_count": 8,
+    "rope_dimension": 64,
+    "rope_convention": "half_split_rotate_half_first_dims",
+    "full_rope_theta": 10000000.0,
+    "swa_rope_theta": 10000.0,
+    "cached_value_scale": 0.707,
+    "swa_sink_bias": true,
+    "full_qkv_rows": 13568,
+    "swa_qkv_rows": 14848,
+    "o_input_dimension": 8192
+  },
+  "moe": {
+    "routed_expert_count": 256,
+    "experts_per_token": 8,
+    "shared_expert_count": 0,
+    "expert_intermediate_dimension": 2048,
+    "routed_scaling_factor": 1.0,
+    "router_activation": "sigmoid",
+    "router_bias": "e_score_correction_bias",
+    "router_norm_epsilon": 1e-20,
+    "routing_weight_position": "expert_output"
+  },
+  "precision": {
+    "linear_weight_format": "fp8_e4m3_block_128x128",
+    "scale_format": "f32_scale_inv",
+    "fp8_scale_block": 128,
+    "non_linear_weight_format": "bf16",
+    "router_format": "fp32",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_element_source": "SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES in the family header; KV is cached pre-scaled BF16 (value scale folded before the cache write)"
+  }
+}

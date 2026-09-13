@@ -1,0 +1,30 @@
+import re
+src = open('.tmp-build/dbg/glm52_dbg_w2p2.cu').read()
+anchor = 'fprintf(stderr,"DBG w2 identity-ish hits=%.0f/%d' + chr(92) + 'n",hit,SPARK_GLM52_VHIDDEN);'
+idx = src.find(anchor)
+assert idx > 0, 'anchor missing'
+L = []
+L.append('				{')
+L.append('					uint32_t wi; double si = 0.0, sa = 0.0, worst;')
+L.append('					int wj = -1;')
+L.append('					fprintf(stderr,"DBG raw act0..3=%.6g,%.6g,%.6g,%.6g ref0..3=%.6g,%.6g,%.6g,%.6g' + chr(92) + 'n",')
+L.append('						actual[0],actual[1],actual[2],actual[3],')
+L.append('						reference[0],reference[1],reference[2],reference[3]);')
+L.append('					fprintf(stderr,"DBG oracle.inter0..3=%.6g,%.6g,%.6g,%.6g' + chr(92) + 'n",')
+L.append('						oracle.intermediate[0],oracle.intermediate[1],oracle.intermediate[2],oracle.intermediate[3]);')
+L.append('					for (wi = 0u; wi < SPARK_GLM52_VEXPERT_INTER; wi++)')
+L.append('						si += oracle.intermediate[wi];')
+L.append('					worst = 0.0; wj = -1;')
+L.append('					for (wi = 0u; wi < SPARK_GLM52_VHIDDEN; wi++)')
+L.append('					{')
+L.append('						double d = fabs((double)actual[wi] - reference[wi]);')
+L.append('						sa += (double)actual[wi] * actual[wi];')
+L.append('						if ( d > worst ) { worst = d; wj = (int)wi; }')
+L.append('					}')
+L.append('					fprintf(stderr,"DBG |act|=%.6g sum_inter_oracle=%.6g worst_j=%d worst_d=%.6g act_wj=%.6g ref_wj=%.6g' + chr(92) + 'n",')
+L.append('						sqrt(sa),si,wj,worst,actual[wj],reference[wj]);')
+L.append('				}')
+insert = chr(10).join(L)
+src = src[:idx + len(anchor)] + chr(10) + insert + src[idx + len(anchor):]
+open('.tmp-build/dbg/glm52_dbg_w2p3.cu','w').write(src)
+print('ok', len(src))

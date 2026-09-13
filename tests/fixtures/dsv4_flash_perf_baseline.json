@@ -1,0 +1,43 @@
+{
+  "schema": "sparkpipe.perf-baseline/1",
+  "metric": "decode_tokens_per_second",
+  "workload": {
+    "family": "dsv4-flash-0731",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "topology": "tp4",
+    "bucket": "B1",
+    "output_tokens": 128,
+    "batch": 1,
+    "sequences": 1,
+    "input_rows": 1,
+    "prompt_kv": "cached-resident",
+    "speculation": "off",
+    "transport": "host-rdma",
+    "hosts": ["spark4", "spark5", "spark6", "spark7"]
+  },
+  "baseline_mean_tokens_per_second": 40.6691,
+  "baseline_runs": [
+    {"name": "o128-r1", "tokens_per_second": 40.6932, "token_hash_prefix": "exact"},
+    {"name": "o128-r2", "tokens_per_second": 40.7386, "token_hash_prefix": "exact"},
+    {"name": "o128-r3", "tokens_per_second": 40.5755, "token_hash_prefix": "exact"}
+  ],
+  "regression_policy": {
+    "fail_below_pct_of_baseline": 95.0,
+    "warn_below_pct_of_baseline": 97.0,
+    "require_exact_tokens": true
+  },
+  "gates": {
+    "o24_hash": "6f2cfd844a2c296feaf9dd05a04d7888b87c906dcfee947d5cc6de28f541e538",
+    "o24_rate_tokens_per_second": 39.57,
+    "o128_hash": "a9385d0b296ca083e577e715d2f6335067691dce0e0dd5ab1394a102a3d3631f"
+  },
+  "provenance": {
+    "measured_utc": "2026-08-25",
+    "milestone_commit": "c834436",
+    "receipt_document": ".agents/coord/dsv4flash_serving_result.md",
+    "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+    "harness": "tools/devcycle.sh run lean 3 (tools/model_stream_decode_benchmark.py)",
+    "notes": "Mean headline rounds to 40.67 tok/s (docs/WBS.md C4). nvcc driver sha differs per rebuild by design; source identity pinned by devcycle templates."
+  }
+}

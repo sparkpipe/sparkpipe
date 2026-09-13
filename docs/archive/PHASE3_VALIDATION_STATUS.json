@@ -1,0 +1,46 @@
+{
+  "schema": "sparkpipe.phase3.validation.v1",
+  "date": "2026-07-31",
+  "baseline_archive": {
+    "file": "sparkpipe-main-8.zip",
+    "sha256": "a823c7d2feacaa4ce1c7dc33adda9e6258c20ce80d2f19048f8942bda64640ed"
+  },
+  "status": {
+    "host_targeted_validated": true,
+    "host_complete_suite_passed": false,
+    "cuda13_sm121a_compile_run": false,
+    "blackwell_execution_measured": false,
+    "production_ready": false
+  },
+  "implemented": [
+    "DSV4 Flash and Pro class-exact cache planning",
+    "DSV4 exact three-arena allocation with rollback",
+    "shared device route construction for K3, GLM 5.2, DSV4 and MiMo",
+    "GLM 5.2 sealed-batch expert queue",
+    "GLM 5.2 one-sweep-per-active-expert batch-plane estimator",
+    "geometry-aware GLM stage-plan test repair",
+    "generic GLM TP-shard test repair",
+    "hidden-transport stale module-ID test repair",
+    "malformed orphan GLM stagepack test removal"
+  ],
+  "representative_dsv4_reservation": {
+    "flash": {
+      "exact_bytes": 6601342976,
+      "worst_class_bytes": 13424975872,
+      "saved_bytes": 6823632896,
+      "reduction_percent": 50.8
+    },
+    "pro": {
+      "exact_bytes": 9455022080,
+      "worst_class_bytes": 18917011456,
+      "saved_bytes": 9461989376,
+      "reduction_percent": 50.0
+    }
+  },
+  "full_suite_blocker": {
+    "file": "tests/test_glm52_ring_runtime.c",
+    "reason": "malformed source and obsolete SparkRingRuntimeBuildRankPlan call signature",
+    "log": "qualification/phase3_full_make_test_failure.log"
+  },
+  "targeted_validation_log": "qualification/phase3_targeted_validation.log"
+}

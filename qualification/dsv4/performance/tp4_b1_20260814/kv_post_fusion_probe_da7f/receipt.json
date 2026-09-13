@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_kv_rms_rope_quantsim_exact_fusion",
+  "status": "REPEATABLE_EXACT_ISOLATED_GAIN",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark2",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "workload": {
+    "layers": 43,
+    "rows": 1,
+    "kv_head_count": 1,
+    "head_dimension": 512,
+    "quantized_dimension": 448,
+    "rope_dimension": 64,
+    "quant_block": 64,
+    "l2_flush_bytes_before_trial": 134217728
+  },
+  "control": "production BF16 weighted RMSNorm, forward RoPE, then FP8 quantize-dequantize simulation as three launches per layer",
+  "candidate": "one CTA per layer; identical RMSNorm and intermediate BF16 rounding, then disjoint seven-warp quantize-sim and one-warp RoPE in parallel",
+  "measurement": {
+    "independent_process_runs": 3,
+    "alternating_pairs_per_run": 31,
+    "warmups_per_run": 4,
+    "all_kv_output_bytes_exact": true,
+    "run_median_results": [
+      {
+        "control_ms": 0.485568,
+        "candidate_ms": 0.177120,
+        "gain_percent": 63.523132
+      },
+      {
+        "control_ms": 0.484192,
+        "candidate_ms": 0.176896,
+        "gain_percent": 63.465733
+      },
+      {
+        "control_ms": 0.485536,
+        "candidate_ms": 0.176832,
+        "gain_percent": 63.580044
+      }
+    ],
+    "control_mean_of_medians_ms": 0.485098667,
+    "candidate_mean_of_medians_ms": 0.176949333,
+    "aggregate_gain_percent": 63.523022121,
+    "absolute_saving_ms_per_model_step": 0.308149333,
+    "all_independent_median_deltas_positive": true
+  },
+  "decision": {
+    "isolated_gate": "PASS",
+    "production_integration": "PENDING",
+    "full_ring_end_to_end": "NOT_MEASURED",
+    "quality": "no precision change; weighted RMS, intermediate BF16 rounding, RoPE, and declared FP8 cache simulation are byte exact"
+  },
+  "identity": {
+    "probe_source": "/private/tmp/dsv4_kv_post_fusion_probe.cu",
+    "probe_source_sha256": "dd1b54552ed65009a8fba4e61225eda11b8926a3c6e767eb1712f507b2a4e2e6",
+    "binary_sha256": "5e3d251b0e9ce73860b42fd96a31ce8a9aa27ab8b7e0c666022ff1701fe66017",
+    "included_production_cuda_sha256": "01ec33e97c27afa872e757110353093898596e8a51c25c50247b34654ea2ec9d",
+    "run_log_sha256": [
+      "186344a69a252dd61c7f18984611ba12fe6f502823626f3dd3276f024ce0d646",
+      "07b7a791d990d551b2542af7748750256a1f8ac14d237ff81412d0dd7dc4b464",
+      "b4db7be7e7ca947a29f3687be553e9c6b1a48b72577d465e965579c3e533dfd2"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+.env
+.audit/
+build/
+__pycache__/
+*.pyc
+diagnostics/
+tools/devcycle/drivers/
+.agents/
+.codex/
+.tshome/

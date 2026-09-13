@@ -1,0 +1,471 @@
+--- /dev/null
++++ b/include/sparkpipe/spark_hardware_topology.h
+@@ -0,0 +1,139 @@
++#ifndef SPARKPIPE_SPARK_HARDWARE_TOPOLOGY_H
++#define SPARKPIPE_SPARK_HARDWARE_TOPOLOGY_H
++
++/*
++ * Compile-time hardware topology, parameterized by target id.
++ *
++ * One profile per frozen target id (hwiface_v1.md section 6):
++ *
++ *     cuda.sm121.gb10      NVIDIA GB10 (Spark workstation GPU), SM 12.1
++ *     rocm.gfx950.mi350p   AMD Instinct MI350P (gfx950 / CDNA4)
++ *
++ * Why this header exists: hwiface_v1.md binding rule 4 forbids a target
++ * numeric constant in portable-core code, and section 5 lists the constants
++ * that must move into a target-controlled home. This header is that home for
++ * the values that are compile-time facts of the deployment. What a launch
++ * consumes at runtime still comes from the SparkHwTarget descriptor filled
++ * from the live device at ModuleInitialize (hwiface_v1.md section 4.1);
++ * descriptor and header agree because both derive from this one table.
++ *
++ * Selection: pass -DSPARK_HW_TARGET_ID=SPARK_HW_TARGET_ROCM_GFX950_MI350P
++ * (or the GB10 spelling) to pick the deployment explicitly. Without it the
++ * header autodetects from the accelerator compiler (__HIP__, then
++ * __CUDACC__) and otherwise falls back to cuda.sm121.gb10 - every
++ * translation unit in today's tree is a GB10 deployment, so the fallback
++ * only names existing reality. A ROCm build must set the macro or compile
++ * under hipcc.
++ *
++ * Sentinel contract: a 0 value means "this profile does not pin the number
++ * at compile time". Treat 0 as unpinned - size requests from the device
++ * descriptor instead; never use 0 as a budget or bound.
++ *
++ * Provenance is cited per constant: "measured" values come from receipts or
++ * docs in-tree; "advisory" values are the frozen advisor notes awaiting
++ * on-hardware confirmation (docs/coord/plan_amd_gfx950_mi350p.md section
++ * 3.3: measure, then pin).
++ */
++
++/* Frozen target ids (hwiface_v1.md section 6). */
++#define SPARK_HW_TARGET_CUDA_SM121_GB10    1
++#define SPARK_HW_TARGET_ROCM_GFX950_MI350P 2
++
++#if !defined(SPARK_HW_TARGET_ID)
++# if defined(__HIP__)
++#  define SPARK_HW_TARGET_ID SPARK_HW_TARGET_ROCM_GFX950_MI350P
++# elif defined(__CUDACC__)
++#  define SPARK_HW_TARGET_ID SPARK_HW_TARGET_CUDA_SM121_GB10
++# else
++#  define SPARK_HW_TARGET_ID SPARK_HW_TARGET_CUDA_SM121_GB10
++# endif
++#endif
++
++#if SPARK_HW_TARGET_ID == SPARK_HW_TARGET_CUDA_SM121_GB10
++
++/*
++ * NVIDIA GB10, compute capability 12.1.
++ */
++
++#define SPARK_HW_TARGET_NAME_STRING "cuda.sm121.gb10"
++
++/* 48 SMs (docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md:23, measured).
++ * Launch geometry still takes its count from the runtime query into the
++ * descriptor (multiprocessor_count); this pin exists for capacity math,
++ * occupancy estimates and tests. */
++#define SPARK_HW_MULTIPROCESSOR_COUNT 48u
++
++/* Warp width. */
++#define SPARK_HW_WAVEFRONT_LANES 32u
++
++/* Fail-closed capability gate pins (hwiface_v1.md sections 4.1 and 5(a)). */
++#define SPARK_HW_COMPUTE_CAPABILITY_MAJOR 12u
++#define SPARK_HW_COMPUTE_CAPABILITY_MINOR 1u
++
++/* Static __shared__ ceiling ptxas enforces per block (48 KB). */
++#define SPARK_HW_STATIC_SHARED_LIMIT_BYTES 49152u
++
++/* Dynamic shared-memory opt-in ceiling after
++ * cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize):
++ * 101376 B measured on GB10, frozen in hwiface_v1.md section 4.1. */
++#define SPARK_HW_MAX_DYNAMIC_SHARED_BYTES 101376ull
++
++/* L1/shared total per SM: 128 KB (GB10_CUDA_COST_MODEL_CALIBRATION.md:23;
++ * formerly LM_SMEM_SM_TOTAL in inference/kernels/layout.cuh). */
++#define SPARK_HW_SHARED_PER_SM_BYTES 131072u
++
++/* L2 cache size: no in-tree measurement pins it yet; query
++ * cudaDevAttrL2CacheSize into the descriptor instead. */
++#define SPARK_HW_L2_CACHE_BYTES 0ull
++
++/* Boost clock, kHz to match cudaDeviceProp::clockRate units:
++ * up to 2.55 GHz (GB10_CUDA_COST_MODEL_CALIBRATION.md:23). */
++#define SPARK_HW_MAX_CLOCK_KHZ 2550000u
++
++/* Unified LPDDR5X memory bandwidth, GB/s (roadmap:29 via
++ * tools/perf_estimate.py NODE_BW_GBPS). Informational/perf-model use. */
++#define SPARK_HW_MEMORY_BANDWIDTH_GBPS 273.0
++
++#elif SPARK_HW_TARGET_ID == SPARK_HW_TARGET_ROCM_GFX950_MI350P
++
++/*
++ * AMD Instinct MI350P (gfx950 / CDNA4). Numbers are advisor-provided until
++ * measured on hardware (docs/coord/advisor_amd.md;
++ * docs/coord/plan_amd_gfx950_mi350p.md section 3.3: measure, then pin).
++ */
++
++#define SPARK_HW_TARGET_NAME_STRING "rocm.gfx950.mi350p"
++
++/* CU count: queried at init and pinned there (plan section 3.3), so the
++ * compile-time value stays unpinned. */
++#define SPARK_HW_MULTIPROCESSOR_COUNT 0u
++
++/* 64-lane wavefronts (frozen descriptor note, hwiface_v1.md section 4.1;
++ * informational per REV2 A12 - it must feed no gate). */
++#define SPARK_HW_WAVEFRONT_LANES 64u
++
++/* Capability pins deliberately unset until measured on gfx950 hardware
++ * (plan section 3.3); the target's fail-closed guard fills them from the
++ * device query at init. */
++#define SPARK_HW_COMPUTE_CAPABILITY_MAJOR 0u
++#define SPARK_HW_COMPUTE_CAPABILITY_MINOR 0u
++
++/* LDS budgets are the gfx950 target's own, never imported from GB10
++ * (hwiface_v1.md section 5(a)); pin them here only after measuring via
++ * hipDeviceGetAttribute. */
++#define SPARK_HW_STATIC_SHARED_LIMIT_BYTES 0u
++#define SPARK_HW_MAX_DYNAMIC_SHARED_BYTES 0ull
++#define SPARK_HW_SHARED_PER_SM_BYTES 0u
++
++#define SPARK_HW_L2_CACHE_BYTES 0ull
++#define SPARK_HW_MAX_CLOCK_KHZ 0u
++#define SPARK_HW_MEMORY_BANDWIDTH_GBPS 0.0
++
++#else
++#error "SPARK_HW_TARGET_ID must be SPARK_HW_TARGET_CUDA_SM121_GB10 or SPARK_HW_TARGET_ROCM_GFX950_MI350P"
++#endif
++
++/* Explicit check for the sentinel contract at use sites. */
++#define SPARK_HW_VALUE_IS_PINNED(value) ((value) != 0)
++
++#endif /* SPARKPIPE_SPARK_HARDWARE_TOPOLOGY_H */
+--- a/inference/kernels/layout.cuh
++++ b/inference/kernels/layout.cuh
+@@ -14,11 +14,21 @@
+ 
+ #include <stdint.h>
+ 
+-// Shared memory. The STATIC __shared__ limit is 48 KB per block, not the 128 KB
+-// of L1/shared an SM has - ptxas enforces it as "uses too much shared data
+-// (0xc000 max)". Exceeding it requires dynamic shared plus a runtime opt-in.
+-#define LM_SMEM_STATIC_LIMIT 49152u
+-#define LM_SMEM_SM_TOTAL 131072u
++// Shared memory. The STATIC __shared__ limit is far below what an SM has in
++// total - ptxas enforces it as "uses too much shared data (0xc000 max)".
++// Exceeding it requires dynamic shared plus a runtime opt-in. Both numbers are
++// properties of the compiled-for target, so they come from the topology
++// profile (sparkpipe/spark_hardware_topology.h): cuda.sm121.gb10 pins the
++// 48 KB static ceiling and the 128 KB L1/shared total; an unpinned profile
++// yields 0 and fails the static_asserts below loudly instead of silently
++// assuming GB10's budgets (hwiface_v1.md section 5).
++#include "sparkpipe/spark_hardware_topology.h"
++#define LM_SMEM_STATIC_LIMIT SPARK_HW_STATIC_SHARED_LIMIT_BYTES
++#define LM_SMEM_SM_TOTAL SPARK_HW_SHARED_PER_SM_BYTES
++static_assert(LM_SMEM_STATIC_LIMIT != 0u,
++	"target profile must pin the static shared limit to use this header");
++static_assert(LM_SMEM_SM_TOTAL != 0u,
++	"target profile must pin the per-SM shared total to use this header");
+ 
+ #define LM_SWIZZLE_CHUNK_BYTES 16u
+ #define LM_SWIZZLE_SECTOR_BYTES 128u
+--- a/model-families/common/include/sparkpipe/spark_lm_kernels.cuh
++++ b/model-families/common/include/sparkpipe/spark_lm_kernels.cuh
+@@ -10,6 +10,7 @@
+ 
+ #include "inference/kernels/activation.cuh"
+ #include "sparkpipe/spark_head_screen.h"
++#include "sparkpipe/spark_hardware_topology.h"
+ 
+ /*
+  * Shared device kernels for the sparkpipe model-driver family.
+@@ -27,7 +28,19 @@
+  * these functions remain the audited originals this file was taken from.
+  */
+ 
+-#define SPARK_LM_WARP_LANES 32u
++/*
++ * Landmine rule (hwiface_v1.md section 5): this header carries SM121
++ * tile/shape/format selection, so no non-cuda.sm121.gb10 translation unit may
++ * evaluate it. The guard turns a violation into a build error instead of
++ * silently applying CUDA's warp/tile choices on another target; the header
++ * split owed before migration step S6 moves the selectors under target
++ * control.
++ */
++#if SPARK_HW_TARGET_ID != SPARK_HW_TARGET_CUDA_SM121_GB10
++#error "spark_lm_kernels.cuh evaluates SM121 selectors and must compile only under cuda.sm121.gb10 (hwiface_v1.md section 5 landmine rule)"
++#endif
++
++#define SPARK_LM_WARP_LANES SPARK_HW_WAVEFRONT_LANES
+ #define SPARK_LM_CTA_THREADS 256u
+ #define SPARK_LM_CTA_WARPS (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES)
+ #define SPARK_LM_SCALAR_CTA_THREADS 1024u
+--- a/runtime/workspace.h
++++ b/runtime/workspace.h
+@@ -20,13 +20,18 @@
+ 
+ #include <stdint.h>
+ 
++#include "sparkpipe/spark_hardware_topology.h"
++
+ #define LM_WS_ALIGNMENT 256u
+ #define LM_WS_NVFP4_GROUP 16u
+ #define LM_WS_REGION_COUNT 9u
+ #define LM_WS_NVFP4_TILE_K 256u
+ #define SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL 4u
+-// 128 KB of L1/shared per SM on GB10, per docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md.
+-#define LM_WS_SHARED_LIMIT 131072u
++// L1/shared per SM, a property of the compiled-for target
++// (sparkpipe/spark_hardware_topology.h): cuda.sm121.gb10 pins the 128 KB of
++// docs/archive/GB10_CUDA_COST_MODEL_CALIBRATION.md; an unpinned profile yields
++// 0, which fails stage selection loudly instead of assuming GB10's budget.
++#define LM_WS_SHARED_LIMIT SPARK_HW_SHARED_PER_SM_BYTES
+ 
+ #define LM_WS_REGION_PACKED_HIDDEN 0u
+ #define LM_WS_REGION_PACKED_HIDDEN_SCALE 1u
+--- a/modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_cuda.cu
++++ b/modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_cuda.cu
+@@ -3,6 +3,7 @@
+ 
+ #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
+ #include "sparkpipe/spark_lm_kernels.cuh"
++#include "sparkpipe/spark_hardware_topology.h"
+ #include "spark_qwen36_dspark_cuda.cuh"
+ #include "spark_qwen36_native_ws.cuh"
+ 
+@@ -906,9 +907,16 @@
+     ((SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS + \
+       (SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DV) + \
+       (2u * SPARK_QWEN36_CUDA_CHUNK)) * sizeof(float))
++/* Geometry pin: catches accidental drift in the chunk staging formula. */
+ static_assert(
+     SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES == 98816u,
+-    "Qwen GDN chunk shared layout must fit the SM 12.x 99-KB block limit");
++    "Qwen GDN chunk shared layout formula drifted");
++/* Target pin: the same budget must fit the compiled-for target's
++ * dynamic-shared opt-in ceiling (cuda.sm121.gb10 pins 101376 B; see
++ * sparkpipe/spark_hardware_topology.h). */
++static_assert(
++    SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES <= SPARK_HW_MAX_DYNAMIC_SHARED_BYTES,
++    "Qwen GDN chunk shared layout exceeds the target dynamic-shared opt-in ceiling");
+ 
+ typedef struct SparkQwen36ChunkWorkspaceView
+ {
+@@ -1969,7 +1977,8 @@
+ 		(view->output_dimension % SPARK_QWEN36_SMALL_BATCH_TILE_N) == 0u )
+ 		return(SparkQwen36LaunchSmallBatchLinear(stream,view->weight_payload,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
+ 	/* Wide-input B1 (DSpark projector fc 25600) exceeds scalar shared-memory budget on
+-	 * GB10 (101376 opt-in cap); the lean B1 kernel tiles K and needs no dynamic shared. */
++	 * the target (SPARK_HW_MAX_DYNAMIC_SHARED_BYTES opt-in ceiling); the lean B1
++	 * kernel tiles K and needs no dynamic shared. */
+ 	if ( (gate == 0 || strcmp(gate,"0") != 0) &&
+ 		view->weight_format == SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 &&
+ 		row_count == 1u && view->input_dimension > 24576u &&
+--- a/modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu
++++ b/modules/qwen38_resident_decode_stage/source/spark_qwen38_resident_decode_stage_cuda.cu
+@@ -3,6 +3,7 @@
+ 
+ #include "sparkpipe/spark_qwen38_resident_decode_stage_firmware.h"
+ #include "sparkpipe/spark_lm_kernels.cuh"
++#include "sparkpipe/spark_hardware_topology.h"
+ #include "inference/kernels/route.cuh"
+ #include "runtime/launch.h"
+ 
+@@ -799,9 +800,16 @@
+     ((SPARK_QWEN38_CUDA_GDN_STATE_ELEMENTS + \
+       (SPARK_QWEN38_CUDA_CHUNK * SPARK_QWEN38_CUDA_DV) + \
+       (2u * SPARK_QWEN38_CUDA_CHUNK)) * sizeof(float))
++/* Geometry pin: catches accidental drift in the chunk staging formula. */
+ static_assert(
+     SPARK_QWEN38_CUDA_GDN_CHUNK_SHARED_BYTES == 98816u,
+-    "Qwen GDN chunk shared layout must fit the SM 12.x 99-KB block limit");
++    "Qwen GDN chunk shared layout formula drifted");
++/* Target pin: the same budget must fit the compiled-for target's
++ * dynamic-shared opt-in ceiling (cuda.sm121.gb10 pins 101376 B; see
++ * sparkpipe/spark_hardware_topology.h). */
++static_assert(
++    SPARK_QWEN38_CUDA_GDN_CHUNK_SHARED_BYTES <= SPARK_HW_MAX_DYNAMIC_SHARED_BYTES,
++    "Qwen GDN chunk shared layout exceeds the target dynamic-shared opt-in ceiling");
+ 
+ typedef struct SparkQwen38ChunkWorkspaceView
+ {
+--- a/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu
++++ b/modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu
+@@ -1,10 +1,11 @@
+ #include "sparkpipe/spark_lm_kernels.cuh"
++#include "sparkpipe/spark_hardware_topology.h"
+ #include "sparkpipe/spark_row_compaction.cuh"
+ #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+ #include "spark_dsv4_pool_layout.h"
+ #include "spark_dsv4_hc_splitk.h"
+ #include "spark_dsv4_sparse_attention_split.h"
+-#include "spark_dsv4_stagepack_format.h"
++#include "spark_dsv4_resident_decode_stage_internal.h" /* former spark_dsv4_stagepack_format.h; mechanics via runtime/spark_stagepack_reader.h */
+ #include "inference/kernels/route.cuh"
+ #include "inference/kernels/weight_codec.cuh"
+ #include "runtime/gemm.cuh"
+@@ -148,8 +149,11 @@
+ 	cached = cudaGetDevice(&device);
+ 	if ( cached == cudaSuccess )
+ 		cached = cudaGetDeviceProperties(&properties,device);
+-	if ( cached != cudaSuccess || properties.major != 12 ||
+-		properties.minor != 1 )
++	/* Fail-closed against the compiled-for target profile's pinned
++	 * capability (cuda.sm121.gb10 pins 12.1 in sparkpipe/spark_hardware_topology.h). */
++	if ( cached != cudaSuccess ||
++		properties.major != SPARK_HW_COMPUTE_CAPABILITY_MAJOR ||
++		properties.minor != SPARK_HW_COMPUTE_CAPABILITY_MINOR )
+ 		cached = cudaErrorInvalidValue;
+ 	return(cached);
+ }
+@@ -1907,9 +1911,13 @@
+  * reference order. One block per row, one warp per mix row.
+  */
+ /* Pro tiles the HcMix staging: 4096 floats = 16 KB shared, safely under the
+- * GB10 99 KB dynamic-shared limit for any hidden size. Flash builds ignore it. */
++ * target dynamic-shared opt-in ceiling (SPARK_HW_MAX_DYNAMIC_SHARED_BYTES;
++ * 101376 B on cuda.sm121.gb10) for any hidden size. Flash builds ignore it. */
+ #define SPARK_DSV4_HC_MIX_TILE 4096u
+ #define SPARK_LM_HC_MIX_ROWS_PER_WARP 3u
++static_assert((uint64_t)SPARK_DSV4_HC_MIX_TILE * sizeof(float) <=
++	SPARK_HW_MAX_DYNAMIC_SHARED_BYTES,
++	"HcMix staging tile exceeds the target dynamic-shared opt-in ceiling");
+ 
+ static __global__ void SparkDsv4HcMixKernel(const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
+ {
+@@ -1921,8 +1929,8 @@
+ 		return;
+ #if defined(SPARK_DSV4_PRO_BUILD)
+ 	/* Pro's flat dimension (4 streams x 7168 = 28672 floats = 112 KB) exceeds
+-	 * the GB10 dynamic-shared limit (101376 B), so tile the staging. Flash
+-	 * builds keep the original single-pass path. */
++	 * the target dynamic-shared ceiling (101376 B on GB10), so tile the
++	 * staging. Flash builds keep the original single-pass path. */
+ 	float mix_accum[SPARK_LM_HC_MIX_ROWS_PER_WARP];
+ 	uint32_t tile,tile_end,tile_elements,mix_index,mix_row;
+ 	total = 0.0f;
+--- a/modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu
++++ b/modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu
+@@ -6,6 +6,7 @@
+ #include "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
+ #include "spark_glm52_resident_decode_stage_internal.h"
+ #include "runtime/stage_module_kernels.cuh"
++#include "sparkpipe/spark_hardware_topology.h"
+ 
+ #define SPARK_GLM52_CUDA_THREADS 256u
+ 
+@@ -485,7 +486,13 @@
+ 	error = cudaGetDevice(&device);
+ 	if ( error == cudaSuccess )
+ 		error = cudaGetDeviceProperties(&properties,device);
+-	if ( error != cudaSuccess || properties.major != 12 || properties.minor != 1 || properties.multiProcessorCount <= 0 )
++	/* Fail-closed against the compiled-for target profile's pinned capability
++	 * and a live multiprocessor count (cuda.sm121.gb10 pins 12.1; see
++	 * sparkpipe/spark_hardware_topology.h). */
++	if ( error != cudaSuccess ||
++		properties.major != SPARK_HW_COMPUTE_CAPABILITY_MAJOR ||
++		properties.minor != SPARK_HW_COMPUTE_CAPABILITY_MINOR ||
++		properties.multiProcessorCount <= 0 )
+ 		return(LM_LAUNCH_ERR_LAUNCH);
+ 	*multiprocessor_count = (uint32_t)properties.multiProcessorCount;
+ 	return(LM_LAUNCH_OK);
+--- a/tools/hardware/spark_cuda_characterize.cu
++++ b/tools/hardware/spark_cuda_characterize.cu
+@@ -1,4 +1,6 @@
+ #include <cuda_runtime.h>
++
++#include "sparkpipe/spark_hardware_topology.h"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -1894,7 +1896,12 @@
+     {
+         bool identity_pass;
+ 
+-        identity_pass = properties.major == 12 && properties.minor == 1 &&
++        /* Expected signature comes from the compiled-for target profile
++         * (cuda.sm121.gb10 pins capability 12.1); the GB10 name probe stays
++         * literal because identity is exactly what this question measures. */
++        identity_pass =
++            properties.major == SPARK_HW_COMPUTE_CAPABILITY_MAJOR &&
++            properties.minor == SPARK_HW_COMPUTE_CAPABILITY_MINOR &&
+             std::strstr(properties.name, "GB10") != nullptr;
+         SparkCudaProbeWriteReceiptPrefix(output, options, "measured", "{}");
+         std::fprintf(output,
+--- a/Makefile
++++ b/Makefile
+@@ -315,6 +315,7 @@ PYTHON_TESTS := \
+ 	tests/test_spark_transport_probe.py \
+ 	tests/test_spark_topology_probe.py \
+ 	tests/test_spark_pmtu_probe.py \
++	tests/test_k3_bind_fixture.py \
+ 	tests/test_k3_driver_contracts.py \
+ 	tests/test_k3_engine.py \
+ 	tests/test_k3_kv_geometry.py \
+@@ -322,6 +323,7 @@ PYTHON_TESTS := \
+ 	tests/test_k3_pack.py \
+ 	tests/test_k3_pack_layout.py \
+ 	tests/test_k3_quant_recipe.py \
++	tests/test_k3_ridealong_contracts.py \
+ 	tests/test_k3_shard.py \
+ 	tests/test_k3_slice_host.py \
+ 	tests/test_kda_bf16_state.py \
+@@ -575,7 +577,7 @@ hardware_cuda_tools:
+ 	else \
+ 		set -e; \
+ 		mkdir -p build; \
+-		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware tools/hardware/spark_cuda_characterize.cu -o build/spark_cuda_characterize; \
++		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Iinclude tools/hardware/spark_cuda_characterize.cu -o build/spark_cuda_characterize; \
+ 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Xcompiler=-pthread tools/hardware/spark_nvme_characterize.cu -o build/spark_nvme_characterize -lpthread; \
+ 		$(MAKE) build/spark_tp_device_collective_characterize; \
+ 	fi
+@@ -910,8 +912,8 @@ build/test_tp_device_collective_nccl: tests/test_tp_device_collective_nccl.c inc
+ build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
+ 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+ 
+-build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h
+-	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \
++build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h runtime/spark_stagepack_reader.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h
++	$(CC) $(GLM52_INCLUDE_FLAGS) -Itests/cuda_stub -Imodules/glm52_resident_decode_stage/source \
+ 		-Imodules/glm52_resident_decode_stage/include \
+ 		-D'GLM52_EXPERT_CODEC_NAME="host"' \
+ 		$(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+--- a/tests/test_launch.c
++++ b/tests/test_launch.c
+@@ -85,10 +85,10 @@ int main(void)
+ 		expect(matched != 0u, "32/64/128-byte TMA selectors follow 128-byte sectors");
+ 	}
+ 
+-	printf("\nshared memory is dynamic, so it may exceed the 48 KB static cap\n");
++	printf("\nshared memory is dynamic, so it may exceed the static cap\n");
+ 	shape_for(&shape, 1024u, 16u, 64u);
+ 	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_OK, "BF16 plans at the production tile depth");
+-	expect(plan.shared_bytes > 49152u, "and needs more than the static limit allows");
++	expect(plan.shared_bytes > LM_SMEM_STATIC_LIMIT, "and needs more than the static limit allows");
+ 	expect(plan.shared_bytes <= LM_SMEM_SM_TOTAL, "while fitting what the SM has");
+ 
+ 	printf("\neach format's declared TILE_K must be swizzleable at its stored width\n");
+--- a/tools/qwen36_native_staged_bench.cu
++++ b/tools/qwen36_native_staged_bench.cu
+@@ -31,7 +31,8 @@ static double now_s(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+  *   4-byte loads (direct)                   83-92
+  *   pure coalesced reads                   266-276 GB/s
+  * THE LAW AND THE TENSION: effective bandwidth ~= (in-flight/latency) x
+- * CTAs, and the 101376B/SM shared budget caps in-flight x occupancy - every
++ * CTAs, and the target dynamic-shared ceiling (SPARK_HW_MAX_DYNAMIC_SHARED_BYTES,
++ * 101376 B on cuda.sm121.gb10) caps in-flight x occupancy - every
+  * extra ring stage steals a resident CTA. D=2 x 2 CTAs (72KB in flight/SM)
+  * is the budget's sweet spot and it lands at ~127: past this, the design
+  * must ESCAPE the shared budget - warp-specialized producer/consumer stages
+--- a/tools/qwen36_native_warp_specialized_bench.cu
++++ b/tools/qwen36_native_warp_specialized_bench.cu
+@@ -83,7 +83,8 @@ __device__ uint32_t g_ws_dbg[4];
+  *   4-byte loads (direct)                   83-92
+  *   pure coalesced reads                   266-276 GB/s
+  * THE LAW AND THE TENSION: effective bandwidth ~= (in-flight/latency) x
+- * CTAs, and the 101376B/SM shared budget caps in-flight x occupancy - every
++ * CTAs, and the target dynamic-shared ceiling (SPARK_HW_MAX_DYNAMIC_SHARED_BYTES,
++ * 101376 B on cuda.sm121.gb10) caps in-flight x occupancy - every
+  * extra ring stage steals a resident CTA. D=2 x 2 CTAs (72KB in flight/SM)
+  * is the budget's sweet spot and it lands at ~127: past this, the design
+  * must ESCAPE the shared budget - warp-specialized producer/consumer stages

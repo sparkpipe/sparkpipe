@@ -1,0 +1,692 @@
+{
+  "content_hash": "fc3590b53fbbc3c0",
+  "contract": {
+    "path": "model_contracts/glm52.json",
+    "sha256": "7f5754c9f7e630bf5a9da39ee610b7349f02f6b9c6c49b10027841fb778e012a"
+  },
+  "datafile": "glm52.TP13.fc3590b53fbbc3c0.json",
+  "degree": 13,
+  "family": "glm52",
+  "geometry_hash": "b4acf6a8d34afd3e",
+  "kind": "sparkpipe.model_recipe",
+  "kv_entry_prefix": "glm52.TP13.b4acf6a8d34afd3e/",
+  "kv_geometry": {
+    "dsa_index_head_count": 32,
+    "dsa_index_head_dimension": 128,
+    "dsa_rope_interleave": true,
+    "head_count": 64,
+    "kv_element_bits": 16,
+    "latent_dimension": 512,
+    "layer_count": 78,
+    "layout": "mla_compressed_bf16",
+    "qk_nope_head_dimension": 192,
+    "rope_dimension": 64,
+    "rope_interleave": true,
+    "rope_theta": 8000000.0,
+    "value_head_dimension": 256
+  },
+  "model": "glm52",
+  "schema_version": 1,
+  "strategy": "TP",
+  "topology": {
+    "mode": "dual_switch",
+    "name": "dual_switch_16node_production",
+    "node_names": [
+      "spark-00",
+      "spark-01",
+      "spark-02",
+      "spark-03",
+      "spark-04",
+      "spark-05",
+      "spark-06",
+      "spark-07",
+      "spark-08",
+      "spark-09",
+      "spark-10",
+      "spark-11",
+      "spark-12"
+    ],
+    "nodes": 13,
+    "source": "examples/topologies/dual_switch_16node_production.json"
+  },
+  "tp": {
+    "collective": "all_reduce_sum_f32 closes every input-dimension split (SparkTpCollectiveAllReduceSumF32 on this ring)",
+    "ranks": [
+      {
+        "node": "spark-00",
+        "rank": 0,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-01",
+        "rank": 1,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-02",
+        "rank": 2,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-03",
+        "rank": 3,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-04",
+        "rank": 4,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-05",
+        "rank": 5,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-06",
+        "rank": 6,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-07",
+        "rank": 7,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-08",
+        "rank": 8,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-09",
+        "rank": 9,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-10",
+        "rank": 10,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-11",
+        "rank": 11,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      },
+      {
+        "node": "spark-12",
+        "rank": 12,
+        "slices": {
+          "dense_down": [
+            0,
+            12288
+          ],
+          "dense_gate_up": [
+            0,
+            12288
+          ],
+          "heads_in:o": [
+            0,
+            16384
+          ],
+          "heads_out:kv_b": [
+            0,
+            28672
+          ],
+          "heads_out:q_b": [
+            0,
+            16384
+          ],
+          "shared_down": [
+            0,
+            2048
+          ],
+          "shared_gate_up": [
+            0,
+            2048
+          ]
+        }
+      }
+    ],
+    "shard_classes": [
+      {
+        "degree_resolution": {
+          "reason": "64 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 16384,
+          "status": "replicated"
+        },
+        "head_count": 64,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.q_b_proj.weight"
+        ],
+        "name": "heads_out:q_b",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 16384
+      },
+      {
+        "degree_resolution": {
+          "reason": "64 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 28672,
+          "status": "replicated"
+        },
+        "head_count": 64,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.kv_b_proj.weight"
+        ],
+        "name": "heads_out:kv_b",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 28672
+      },
+      {
+        "degree_resolution": {
+          "reason": "64 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 16384,
+          "status": "replicated"
+        },
+        "head_count": 64,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.o_proj.weight"
+        ],
+        "name": "heads_in:o",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 16384
+      },
+      {
+        "degree_resolution": {
+          "reason": "12288 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.gate_proj.weight",
+          "mlp.up_proj.weight"
+        ],
+        "name": "dense_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_dense_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "2048 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 2048,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.shared_experts.gate_proj.weight",
+          "mlp.shared_experts.up_proj.weight"
+        ],
+        "name": "shared_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_routed_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 2048
+      },
+      {
+        "degree_resolution": {
+          "reason": "12288 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.down_proj.weight"
+        ],
+        "name": "dense_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_dense_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "2048 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 2048,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.shared_experts.down_proj.weight"
+        ],
+        "name": "shared_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_routed_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 2048
+      },
+      {
+        "degree_resolution": {
+          "reason": "the MLA latent paths, router, norms, embedding and MTP projections - the engine table's own replicated set",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "self_attn.q_a_proj.weight",
+          "self_attn.kv_a_proj_with_mqa.weight",
+          "self_attn.q_a_layernorm.weight",
+          "self_attn.kv_a_layernorm.weight",
+          "self_attn.indexer.k_norm.weight",
+          "self_attn.indexer.k_norm.bias",
+          "self_attn.indexer.weights_proj.weight",
+          "self_attn.indexer.wk.weight",
+          "self_attn.indexer.wq_b.weight",
+          "mlp.gate.weight",
+          "mlp.gate.e_score_correction_bias",
+          "input_layernorm.weight",
+          "post_attention_layernorm.weight",
+          "model.norm.weight",
+          "model.embed_tokens.weight",
+          "enorm.weight",
+          "hnorm.weight",
+          "eh_proj.weight"
+        ],
+        "name": "replicated",
+        "note": "the MLA latent paths, router, norms, embedding and MTP projections - the engine table's own replicated set",
+        "quant_group": null,
+        "scope": "mixed",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      },
+      {
+        "degree_resolution": {
+          "reason": "the engine TP classifier returns UNKNOWN for routed expert tensors today (fail-closed); expert placement is stagepack/EP-owned, so this recipe shreds nothing it cannot name",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": 19200,
+        "match": [
+          "mlp.experts."
+        ],
+        "name": "routed_experts",
+        "note": "the engine TP classifier returns UNKNOWN for routed expert tensors today (fail-closed); expert placement is stagepack/EP-owned, so this recipe shreds nothing it cannot name",
+        "quant_group": null,
+        "scope": "per_expert_per_layer",
+        "shard_class": "ENGINE_UNCLASSIFIED",
+        "split": "none",
+        "split_extent": null
+      }
+    ],
+    "unclassified_policy": "refuse"
+  }
+}

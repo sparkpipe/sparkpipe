@@ -1,0 +1,35 @@
+Script started on 2026-08-15 07:42:16+09:00 [COMMAND="/tmp/dsv4-indexer-post-probe-da7f/probe" <not executed on terminal>]
+pair=1 control_ms=0.258208 candidate_ms=0.129728 gain_percent=49.758335 exact=1
+pair=2 control_ms=0.259776 candidate_ms=0.128320 gain_percent=50.603600 exact=1
+pair=3 control_ms=0.258272 candidate_ms=0.129568 gain_percent=49.832733 exact=1
+pair=4 control_ms=0.259424 candidate_ms=0.125728 gain_percent=51.535709 exact=1
+pair=5 control_ms=0.259008 candidate_ms=0.127872 gain_percent=50.630093 exact=1
+pair=6 control_ms=0.256832 candidate_ms=0.128288 gain_percent=50.049839 exact=1
+pair=7 control_ms=0.257088 candidate_ms=0.126656 gain_percent=50.734383 exact=1
+pair=8 control_ms=0.258816 candidate_ms=0.127808 gain_percent=50.618198 exact=1
+pair=9 control_ms=0.256256 candidate_ms=0.128800 gain_percent=49.737762 exact=1
+pair=10 control_ms=0.258848 candidate_ms=0.128256 gain_percent=50.451237 exact=1
+pair=11 control_ms=0.260096 candidate_ms=0.127968 gain_percent=50.799709 exact=1
+pair=12 control_ms=0.258944 candidate_ms=0.129216 gain_percent=50.098862 exact=1
+pair=13 control_ms=0.306560 candidate_ms=0.329184 gain_percent=-7.379954 exact=1
+pair=14 control_ms=0.259360 candidate_ms=0.132544 gain_percent=48.895741 exact=1
+pair=15 control_ms=0.397344 candidate_ms=0.130688 gain_percent=67.109604 exact=1
+pair=16 control_ms=0.258944 candidate_ms=0.186976 gain_percent=27.792883 exact=1
+pair=17 control_ms=0.256512 candidate_ms=0.127680 gain_percent=50.224545 exact=1
+pair=18 control_ms=0.256832 candidate_ms=0.127680 gain_percent=50.286568 exact=1
+pair=19 control_ms=0.256960 candidate_ms=0.129984 gain_percent=49.414692 exact=1
+pair=20 control_ms=0.258784 candidate_ms=0.127104 gain_percent=50.884132 exact=1
+pair=21 control_ms=0.259488 candidate_ms=0.129984 gain_percent=49.907505 exact=1
+pair=22 control_ms=0.259424 candidate_ms=0.130848 gain_percent=49.562103 exact=1
+pair=23 control_ms=0.258752 candidate_ms=0.200704 gain_percent=22.433836 exact=1
+pair=24 control_ms=0.442016 candidate_ms=0.154112 gain_percent=65.134293 exact=1
+pair=25 control_ms=0.262912 candidate_ms=0.129440 gain_percent=50.766800 exact=1
+pair=26 control_ms=0.298016 candidate_ms=0.135552 gain_percent=54.515194 exact=1
+pair=27 control_ms=0.258304 candidate_ms=0.130016 gain_percent=49.665512 exact=1
+pair=28 control_ms=0.256416 candidate_ms=0.129184 gain_percent=49.619370 exact=1
+pair=29 control_ms=0.256992 candidate_ms=0.129504 gain_percent=49.607777 exact=1
+pair=30 control_ms=0.258496 candidate_ms=0.130272 gain_percent=49.603859 exact=1
+pair=31 control_ms=0.260288 candidate_ms=0.129248 gain_percent=50.344238 exact=1
+summary control_median_ms=0.258848 candidate_median_ms=0.129440 gain_percent=49.993824 exact=1 csa_layers=21 index_heads=64 head_dim=128
+
+Script done on 2026-08-15 07:42:17+09:00 [COMMAND_EXIT_CODE="0"]

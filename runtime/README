@@ -1,0 +1,17 @@
+Host-side runtime. Model-agnostic by construction, not by convention.
+
+These files were in model-families/common, which is how a transport, a
+tokenizer, a KV store and a kernel library came to share a directory and a fate:
+deleting the library for being redundant took the other thirteen with it, and no
+gate noticed because none compiled the tree that used them.
+
+  transport/   hidden state between pipeline ranks, TP collectives, memlink
+  kv/          KV block store and its client
+  text/        tokenizer
+  workspace.h  pool layout for the grouped GEMM
+  launch.h     launch planning, arithmetic only, host-testable
+  gemm.cuh     the four CUDA calls a GEMM needs
+  tensor_map.h cuTensorMapEncodeTiled
+
+Nothing here knows which model is running. Anything that would have to belongs
+in llms/<model>/.

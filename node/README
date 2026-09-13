@@ -1,0 +1,13 @@
+What runs on one spark.
+
+  rank_daemon.c   the process that owns a pipeline rank: hosts the stage module,
+                  connects the ring, serves work
+  residentd.c     holds model weights resident in GPU memory across processes, so
+                  a restarting rank does not re-read a terabyte
+  rank_runtime.c  per-rank runtime state
+  memlink_tool.c  shared-memory link inspection
+
+These were in tools/ because they have a main(), and then briefly in ring/
+because they talk to it. Neither is what they are: ring/ is HOW NODES TALK and
+node/ is WHAT RUNS ON ONE. A rank daemon uses the transport the way it uses
+CUDA - as a thing it needs, not a thing it is.

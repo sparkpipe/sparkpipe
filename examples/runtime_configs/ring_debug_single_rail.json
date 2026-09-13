@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "ring_debug_single_rail",
+  "rail_count": 1,
+  "switch_count": 0,
+  "active_ports_per_node": 2,
+  "link_speed_gbps": 100,
+  "mtu_bytes": 9000,
+  "debug_only": true,
+  "description": "Direct-cable ring for bring-up. Pipeline order should follow ring order to avoid multi-hop forwarding."
+}

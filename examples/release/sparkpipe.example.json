@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "release_id": "model-resident-production-001",
+  "git_commit": "0000000000000000000000000000000000000000",
+  "install_root": "/home/{host}/sparkdata/example.pp13",
+  "state_root": "/home/{host}/sparkdata/.layout/sparkpipe_state/example.pp13",
+  "rank_count": 13,
+  "max_active_sequence_count": 128,
+  "poll_interval_ms": 1000,
+  "stop_grace_ms": 5000,
+  "files": [
+    {
+      "path": "bin/sparkpipe_model_residentd",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "executable": true,
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "bin/sparkpipe_release_manager",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "executable": true
+    },
+    {
+      "path": "lib/model_serving_adapter.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "lib/model_driver.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "resident_reload_boundary": true
+    },
+    {
+      "path": "lib/hidden_transport.so",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "config/model_resident.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "restart_on_change": true
+    }
+  ],
+  "roles": [
+    {
+      "name": "model_resident",
+      "selector": "rank",
+      "command": "bin/sparkpipe_model_residentd",
+      "argv": [
+        "--deployment",
+        "{install_root}/config/model_resident.json",
+        "--rank-index",
+        "{rank}"
+      ],
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs"
+      ]
+    }
+  ]
+}

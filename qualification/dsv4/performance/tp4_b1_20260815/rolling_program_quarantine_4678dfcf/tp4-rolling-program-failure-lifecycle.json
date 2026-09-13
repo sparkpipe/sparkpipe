@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "receipt_kind": "asserted_host_unit_contract",
+  "command": "make -B build/test_tp_device_collective && ./build/test_tp_device_collective",
+  "result": "PASS",
+  "failure_status": "SPARK_STATUS_VALIDATION_FAILED",
+  "cases": [
+    {"submitted_steps_before_failure":0,"terminal_callbacks":1,"destroy_before_graph_drain":"BUSY","destroy_after_graph_drain":"OK"},
+    {"submitted_steps_before_failure":1,"terminal_callbacks":1,"destroy_before_graph_drain":"BUSY","destroy_after_graph_drain":"OK"},
+    {"submitted_steps_before_failure":2,"terminal_callbacks":1,"destroy_before_graph_drain":"BUSY","destroy_after_graph_drain":"OK"},
+    {"submitted_steps_before_failure":5,"terminal_callbacks":1,"destroy_before_graph_drain":"BUSY","destroy_after_graph_drain":"OK"}
+  ],
+  "operation_failure_without_result_signal": {
+    "submitted_steps_before_failure": 1,
+    "result_signal_published_by_test": false,
+    "terminal_callbacks": 1,
+    "destroy_before_graph_drain": "BUSY",
+    "destroy_after_graph_drain": "OK"
+  },
+  "graph_cancellation_contract": "remaining send-reuse, receive-ready, and result-ready generations are published before terminal drain",
+  "terminal_callback_contract": "one callback after released_count equals submitted_count and both graph drain words are observed"
+}

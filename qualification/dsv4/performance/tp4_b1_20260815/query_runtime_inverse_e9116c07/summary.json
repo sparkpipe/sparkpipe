@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "rejected_incremental_exact_full_ring",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "layout": "TP4",
+    "ranks": ["spark4", "spark5", "spark6", "spark7"],
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "short_gate_token_count": 24,
+    "short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8"
+  },
+  "identity": {
+    "control_driver_sha256": "a2bfd99f328100a7d53c16b48c3de5fdc6eb140c474b43b222a654f5b118037f",
+    "candidate_driver_sha256": "e9116c07abe478b3e57c4fee5faa83e9160b897763444581ff0e7cc6d57a9a68",
+    "candidate_cuda_source_sha256": "e4282e9f96bc4486fb1a2e2068623b26a4af34fcacc8f13c6b9292a1da3dd450",
+    "candidate_module_source_sha256": "aefa1706e392b541c60fd818d454c6a077ec4c57eae287b758956904ed887b7b",
+    "compiled_manifest_sha256": "0e94dee2e22ea9ac14436942e7028aa02b6bf4172092b9670cdc05c2b92c9687",
+    "module_record_sha256": "2e30f93e306a994106b0456b97b68ef86674ba7ee46bac0c1c6c6b5b355cead0"
+  },
+  "result": {
+    "control_tokens_per_second": [37.910772175554015, 37.91115364424136, 38.01352398462547],
+    "candidate_tokens_per_second": [40.25661425974932, 40.365793023758684, 40.2974624394714],
+    "paired_delta_percent": [6.187798215589946, 6.4747156009856255, 6.008226061255639],
+    "control_mean_tokens_per_second": 37.94514993480695,
+    "candidate_mean_tokens_per_second": 40.30662324099313,
+    "aggregate_delta_percent": 6.223386414978993,
+    "mean_paired_delta_percent": 6.22357995927707,
+    "positive_pairs": 3,
+    "pair_count": 3
+  },
+  "incremental_attribution": {
+    "control": "same exact stack with canonical separate Query RMS and RoPE",
+    "candidate": "same stack with fixed fused Query RMS plus RoPE",
+    "control_tokens_per_second": [40.29087739423447, 40.409500973686015, 40.33058376138267],
+    "candidate_tokens_per_second": [40.13780382608874, 39.9284850399255, 40.089367204746246],
+    "paired_delta_percent": [-0.3799211584497142, -1.1903535608463578, -0.5980983515229799],
+    "control_mean_tokens_per_second": 40.343654043101054,
+    "candidate_mean_tokens_per_second": 40.05188535692016,
+    "aggregate_delta_percent": -0.7232083783714427,
+    "positive_pairs": 0,
+    "pair_count": 3,
+    "all_128_token_vectors_bitwise_exact": true,
+    "decision": "reject standalone query fusion because all three exact end-to-end pairs regressed"
+  },
+  "receipt_sha256": {
+    "control-run1.json": "fdadc121cb28f80533cb52e756ace9cc13ec4bac2d5cc9880f7627e7ce73e257",
+    "candidate-run1.json": "8946ede56bd401948aa17587752ffb752226992a4207ef57fa869cf8b383ba4d",
+    "control-run2.json": "8afc2d2c408915b1b8c0accb12a75716366bfffa457f6acf008a66e3bc7ce084",
+    "candidate-run2.json": "00401da8f5d310e4eb0ba34cc491834176575a805862afc8f098f04dfa2abf55",
+    "control-run3.json": "90cda4194e8ec1aa8db650b5f2449efb44ae83e2315b5ac5d9aeb26e4c882ce2",
+    "candidate-run3.json": "2af8b16727dd562c663a4c1e927e33fc0d3cdea358a0e2220a4733c56a84da40",
+    "exact-smoke-o24.json": "60e953252583d8fee3b7272c82b9a61ecd48b033f3375c2ee511ebd8d709b471",
+    "exact-smoke-o128.json": "2d16410746bb1c8181653272ddd8fd76cfc6bc54670cfce1515a7e4c054f26cd",
+    "attribution-control-warm-o24.json": "48e43318e4888acc8747693e5a7cac5590ed0db476a1a0e5adfd5dd4142cbb14",
+    "attribution-candidate-warm-o24.json": "a1ab42a1dd78a91ac81a759b43a2a485ddd920b1bfb32578a42c73ac74e499b8",
+    "attribution-control-run1.json": "61c72f3ff003133128b300f5987551e1a548074f6d00baf2d8366f2aa99948c6",
+    "attribution-candidate-run1.json": "6addcbaf4723e79162f0916fe0d2a0bb050797030457ba751c10765631055123",
+    "attribution-control-run2.json": "8bd6ecb131bc0c50ce9d6d60e1f7afd422f9b5b8aaf7154e9ec52057946e9c8d",
+    "attribution-candidate-run2.json": "03c442056270d678879da98ba668713eddd63ac7b53817d005d92feb7a023ecf",
+    "attribution-control-run3.json": "dfe31171cbe6459f4ef64d7d56dfd6279620e441f5c4ce35d09db2cd9175a343",
+    "attribution-candidate-run3.json": "2f15208a246898df6d30c2f4a27e0a4673fa514ec3a07cc84de2bf0ed2b3ee5a"
+  },
+  "notes": [
+    "The candidate stack includes the retained exact compute work plus the corrected query RMS plus RoPE fusion.",
+    "The prior fused query implementation was rejected because constant inverse zero selected a different large-angle trigonometric code path.",
+    "The correction preserves one fused launch and passes the full live token gate by passing inverse as a runtime value.",
+    "The aggregate comparison establishes that the surrounding stack beats the resident control, but does not attribute that gain to query fusion.",
+    "A direct interleaved comparison against the exact pre-query stack measured a 0.723208% regression, so query fusion is not accepted as a standalone optimization."
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "accepted_unmerged_exact_increment",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "layout": "TP4",
+    "ranks": ["spark4", "spark5", "spark6", "spark7"],
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127
+  },
+  "comparison": {
+    "control": "exact retained stack before Query, KV, and indexer post fusions",
+    "candidate": "fixed Query, KV, and indexer post fusions with runtime inverse kernel ABI"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "short_gate_token_count": 24,
+    "short_gate_token_csv_newline_sha256": "18cd1dfc7c7fce04adf200916184cee952a185367412a1780c0d28486c42cbd8",
+    "actual_shape_ga_frequency_cases_per_fusion": 18048,
+    "old_archive_rejected_by_strengthened_validator": true,
+    "fixed_archive_ga_validator": "PASS"
+  },
+  "identity": {
+    "control_driver_sha256": "53c758ae8f8e84ec950e3103a009c0189758ac8a11698f5cd416105a8cf4eb87",
+    "candidate_driver_sha256": "7bc3485df59b0556dfb6381a908d8ebe32a6e8c75289583f3f7152818c3fd52b",
+    "candidate_cuda_source_sha256": "81dc95083e353f6a0edf991d31c5a6f36731aafd0a36069104e2957e1cd52311",
+    "candidate_module_source_sha256": "85a785a88e44f85102f4ecfb8d78dd18e17c964647a6492afd05fdf933c5eee0",
+    "candidate_validator_source_sha256": "f9c6d83b6bad0def16897eac8775b49372238a8c265ff504c58dfc68a7ef2cdd",
+    "compiled_manifest_sha256": "abeae8ead50843e1b2d241b4e29f12f94de439e4ea9decf45b41d917ac49d04f",
+    "module_record_sha256": "9ed65cdb2a73eb88ed854f017a78aad0b1844b226166d68cdd960e8d20467099",
+    "module_artifact_sha256": "ea5cffd808381c4235229f3e475e25c6d28f0a6b45ac42925b0483bc579a6ba9",
+    "compiled_program_sha256": "3193fa45c6152b49a98a7fc1b3c769c1b8ce5324feac0abb1858073bcb32e2b7"
+  },
+  "result": {
+    "control_tokens_per_second": [40.366339353936716, 40.099745217680464, 40.137459738098336],
+    "candidate_tokens_per_second": [40.521328162098, 40.62170940264595, 40.26660667394611],
+    "paired_delta_percent": [0.38395556952124377, 1.301664591961904, 0.32176160796042463],
+    "control_mean_tokens_per_second": 40.20118143657184,
+    "candidate_mean_tokens_per_second": 40.46988141289668,
+    "aggregate_delta_percent": 0.6683882580635014,
+    "mean_paired_delta_percent": 0.6691272564811909,
+    "positive_pairs": 3,
+    "pair_count": 3
+  },
+  "receipt_sha256": {
+    "control-run1.json": "3bf429dca8f4405993fc4fa25bfec54ee83a757d5509ff39206b233edb2e4c4a",
+    "candidate-run1.json": "4c21ca30694e928e371c30974182aad87ecca0ba4ec3fcf235e7b39319af0bcc",
+    "control-run2.json": "78652a4b999098028e26e633f1d129351e4fd789718b707564f4a0bbb26d8d93",
+    "candidate-run2.json": "1370d15f2d5f3ade6f9016e5eac46dd8b784c4b6418c0e0cd2fad1c566be6a61",
+    "control-run3.json": "46e519361dd77f16b7f61897b9b507f3d8e229aff26a87d010e40e9ae6a8abdd",
+    "candidate-run3.json": "ab7a6fc28805ab1b0fef854d1b3b85f63f54ee1391e67b478061d0ed2fffa814",
+    "exact-smoke-o24.json": "8cbf4f4de2b01df00471ee889cbf3f32245b48ed85ac567da69df2e79db3994d"
+  },
+  "decision": "retain because every repeatable bit-exact positive end-to-end delta counts, regardless of magnitude"
+}

@@ -1,0 +1,68 @@
+{
+  "case": {
+    "answer": "J",
+    "choices": [
+      "Shuowen Jiezhi",
+      "Shuowen Jiezao",
+      "Shuowen Jiejiu",
+      "Shuowen Jiezhuo",
+      "Shuowen Jieziu",
+      "Shuowen Jiezong",
+      "Shuowen Jieji",
+      "Shuowen Jiezhu",
+      "Shuowen Jiezian",
+      "Shuowen Jiezi"
+    ],
+    "domain": "Literature and Arts",
+    "id": "bebf1ed45ae14ad7b4f205f3909cb58a",
+    "index": 14,
+    "question": "Which character book did the Eastern Han person Xu Shen innovate with the radical method?",
+    "source": "SuperGPQA",
+    "title": "Which character book did the Eastern Han person Xu Shen innovate"
+  },
+  "elapsed_ms": 8030.382,
+  "finished_at": "2026-07-28T17:20:47.969512+00:00",
+  "format": "ds4-eval-kimi-result-v1",
+  "prompt": {
+    "sha256": "83ea0b85d40d4501123433e4ff44b35984dc67a4b66440882652ff48f8f36daf",
+    "system": "You are solving a hard benchmark question. Reason carefully. The final answer must follow the requested format exactly.",
+    "user": "Which character book did the Eastern Han person Xu Shen innovate with the radical method?\n\nChoices:\nA. Shuowen Jiezhi\nB. Shuowen Jiezao\nC. Shuowen Jiejiu\nD. Shuowen Jiezhuo\nE. Shuowen Jieziu\nF. Shuowen Jiezong\nG. Shuowen Jieji\nH. Shuowen Jiezhu\nI. Shuowen Jiezian\nJ. Shuowen Jiezi\n\nSolve the question. At the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <letter>"
+  },
+  "request": {
+    "attempts": 1,
+    "endpoint": "https://api.kimi.com/coding/v1/chat/completions",
+    "max_tokens": 16000,
+    "model": "k3",
+    "stream": true,
+    "temperature": 1.0
+  },
+  "response": {
+    "content": "Xu Shen (许慎) of the Eastern Han dynasty compiled the pioneering Chinese character dictionary organized by radicals (部首), known as *Shuowen Jiezi* (说文解字).\n\nAnswer: J",
+    "created": 1785259242,
+    "finish_reason": "stop",
+    "reasoning": "The question asks about Xu Shen, an Eastern Han dynasty scholar, who created a character book using the radical (部首) method. This is the famous \"Shuowen Jiezi\" (说文解字), the first Chinese dictionary organized by radicals.\n\nLooking at the choices:\nA. Shuowen Jiezhi\nB. Shuowen Jiezao\nC. Shuowen Jiejiu\nD. Shuowen Jiezhuo\nE. Shuowen Jieziu\nF. Shuowen Jiezong\nG. Shuowen Jieji\nH. Shuowen Jiezhu\nI. Shuowen Jiezian\nJ. Shuowen Jiezi\n\nThe correct answer is J. Shuowen Jiezi (说文解字).",
+    "response_id": "chatcmpl-uOkDlBvGx4PvQ9JRpFgUqXO9",
+    "response_model": "k3",
+    "usage": {
+      "completion_tokens": 233,
+      "completion_tokens_details": {
+        "reasoning_tokens": 174
+      },
+      "prompt_tokens": 263,
+      "total_tokens": 496
+    }
+  },
+  "score": {
+    "expected": "J",
+    "extracted": "J",
+    "passed": true,
+    "text_source": "content"
+  },
+  "source": {
+    "commit": "54b36ed9ba42da31b24f2d1a5feb075c2475dbb1",
+    "ds4_eval_c_sha256": "19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23",
+    "repository": "https://github.com/antirez/ds4"
+  },
+  "started_at": "2026-07-28T17:20:39.939239+00:00",
+  "status": "ok"
+}

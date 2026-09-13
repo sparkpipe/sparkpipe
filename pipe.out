@@ -1,0 +1,4 @@
+model_residentd initialize=driver_load_error status=13 phase=transport_load rank=1 stage=2
+model_residentd initialize=driver_load_error status=13 phase=transport_load rank=2 stage=1
+model_residentd initialize=driver_load_error status=13 phase=transport_load rank=0 stage=0
+Assertion failed: (0 && "model pipeline sockets did not become ready"), function TestModelPipelineWaitForSockets, file test_model_pipeline_client.c, line 414.

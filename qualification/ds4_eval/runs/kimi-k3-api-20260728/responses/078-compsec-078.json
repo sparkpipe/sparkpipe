@@ -1,0 +1,57 @@
+{
+  "case": {
+    "answer": "11",
+    "choices": [],
+    "domain": "Botan",
+    "id": "compsec-078",
+    "index": 78,
+    "question": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```",
+    "source": "COMPSEC",
+    "title": "sm2_decrypt_and_check_c3() reduction"
+  },
+  "elapsed_ms": 8025.043,
+  "finished_at": "2026-07-28T17:59:42.016332+00:00",
+  "format": "ds4-eval-kimi-result-v1",
+  "prompt": {
+    "sha256": "02c37c95b4a2cab618f86d4a2075145dd72fb8b79bc616f0c457e0888227f787",
+    "system": "You are solving a hard benchmark question. Reason carefully. The final answer must follow the requested format exactly.",
+    "user": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+  },
+  "request": {
+    "attempts": 1,
+    "endpoint": "https://api.kimi.com/coding/v1/chat/completions",
+    "max_tokens": 16000,
+    "model": "k3",
+    "stream": true,
+    "temperature": 1.0
+  },
+  "response": {
+    "content": "Answer: 11",
+    "created": 1785261575,
+    "finish_reason": "stop",
+    "reasoning": "The function computes expected hash (32 bytes) into expected, then compares expected with ct->c3.data using ct_memcmp over SM3_DIGEST_LEN bytes. Assumption: parse_sm2_ciphertext may return c3 field of any length. If c3 length is less than 32, ct->c3.data may point to a buffer shorter than 32, causing out-of-bounds read in ct_memcmp. The bug introduced at line 11 where it unconditionally reads 32 bytes from ct->c3.data without checking ct->c3.len == SM3_DIGEST_LEN. Need answer line number. Could include 8? sm3_c3_hash uses lengths probably okay. Primary bug line 11. Need final exact only. Ensure no extra after final line. Final concise.",
+    "response_id": "chatcmpl-6aeOyMpq85o11N2mzVn1fN01",
+    "response_model": "k3",
+    "usage": {
+      "completion_tokens": 179,
+      "completion_tokens_details": {
+        "reasoning_tokens": 160
+      },
+      "prompt_tokens": 432,
+      "total_tokens": 611
+    }
+  },
+  "score": {
+    "expected": "11",
+    "extracted": "11",
+    "passed": true,
+    "text_source": "content"
+  },
+  "source": {
+    "commit": "54b36ed9ba42da31b24f2d1a5feb075c2475dbb1",
+    "ds4_eval_c_sha256": "19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23",
+    "repository": "https://github.com/antirez/ds4"
+  },
+  "started_at": "2026-07-28T17:59:33.991365+00:00",
+  "status": "ok"
+}

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "command": [
+    "ssh",
+    "-o",
+    "BatchMode=yes",
+    "spark4",
+    "/tmp/dsv4-integrated-lean-3d962820-runtime/bin/sparkpipe_model_batch",
+    "--deployment",
+    "/tmp/dsv4-integrated-lean-3d962820-runtime/config/model_resident.json",
+    "--runtime-root",
+    "/tmp/dsv4-integrated-lean-3d962820-runtime",
+    "--batch",
+    "/tmp/matrix-live-batch.json"
+  ],
+  "process_status": 0,
+  "token_count": 2,
+  "token_ids": [
+    201,
+    223
+  ],
+  "ttft_seconds": 55.689445834,
+  "total_seconds": 55.742081,
+  "decode_seconds_after_first": 0.036899583,
+  "decode_tokens_per_second": 27.100577261266068,
+  "inter_token_median_seconds": 0.036899583,
+  "inter_token_p95_seconds": 0.036899583,
+  "stderr": "sparkpipe_model_batch_pipeline submitted=2050 continued=2048 admitted=2050 rejected=0 leases=0\nsparkpipe_model_batch_status=0 terminal=1 requests=1\n",
+  "events": [
+    {
+      "elapsed_seconds": 0.561630875,
+      "event": {
+        "schema_version": 1,
+        "event": "ready",
+        "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+        "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+        "stage_count": 4,
+        "linear_weight_codec": 5,
+        "expert_weight_codec": 7,
+        "kv_cache_codec": 1
+      }
+    },
+    {
+      "elapsed_seconds": 0.561791292,
+      "event": {
+        "schema_version": 1,
+        "event": "accepted",
+        "status": 0,
+        "request_id": 761060,
+        "sequence_id": 761060,
+        "request_handle": 4294967297,
+        "token_id": 0,
+        "token_index": 0,
+        "generated_token_count": 0,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 55.689445834,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 761060,
+        "sequence_id": 761060,
+        "request_handle": 4294967297,
+        "token_id": 201,
+        "token_index": 0,
+        "generated_token_count": 1,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 55.726345417,
+      "event": {
+        "schema_version": 1,
+        "event": "token",
+        "status": 0,
+        "request_id": 761060,
+        "sequence_id": 761060,
+        "request_handle": 4294967297,
+        "token_id": 223,
+        "token_index": 1,
+        "generated_token_count": 2,
+        "stop_token": false
+      }
+    },
+    {
+      "elapsed_seconds": 55.72831825,
+      "event": {
+        "schema_version": 1,
+        "event": "completed",
+        "status": 0,
+        "request_id": 761060,
+        "sequence_id": 761060,
+        "request_handle": 4294967297,
+        "token_id": 0,
+        "token_index": 1,
+        "generated_token_count": 2,
+        "stop_token": false
+      }
+    }
+  ]
+}

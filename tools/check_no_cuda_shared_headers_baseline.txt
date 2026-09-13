@@ -1,0 +1,56 @@
+# Baseline for tools/check_no_cuda_in_shared_headers.sh
+# Enforcement arm of hwiface_v1_freeze §F4 landmine rule + r2c2 (see script header).
+#
+# Measured at unified head 229526d, 2026-08-23: every path below was produced by
+# `tools/check_no_cuda_in_shared_headers.sh --list` at that tree — nothing here is
+# speculative. Any path NOT listed below that picks up cudaStream_t / cudaEvent_t /
+# __global__ / <<< makes the gate fail as NEW LEAK.
+#
+# Format:
+#   [allow] <path> [@MISSING-OK]  # reason   — permanently exempt (CUDA-by-design)
+#   [pending-r2c2] <path>         # reason   — known leak; goes STALE-fail once fixed
+#
+# RULES for editing this file:
+#   * Adding an [allow] entry requires a one-line measured justification AND the
+#     same freeze-§F4 argument ("no ROCm TU may include this unguarded"); a new
+#     shared/portable header is never a valid [allow] candidate.
+#   * When r2c2 lands, delete its [pending-r2c2] entry in the same commit — the
+#     gate fails on stale entries to force exactly that.
+#   * spark_lm_kernels.cuh stays [allow] only until its §F4 split/guard lands
+#     (before S6); revisit then.
+
+[allow] inference/kernels/attn.cuh                      # CUDA kernel chain, included only from nvcc TUs
+[allow] inference/kernels/gemm.cuh                      # ditto
+[allow] inference/kernels/gqa.cuh                       # ditto
+[allow] inference/kernels/graph.cuh                     # ditto
+[allow] inference/kernels/head.cuh                      # ditto
+[allow] inference/kernels/linear_attn.cuh               # ditto
+[allow] inference/kernels/norm.cuh                      # ditto
+[allow] inference/kernels/project.cuh                   # ditto
+[allow] inference/kernels/route.cuh                     # ditto
+[allow] inference/kernels/speculate.cuh                 # ditto
+[allow] inference/kernels/topk.cuh                      # ditto
+[allow] inference/llms/kimi_k3/layer.cuh                # per-model CUDA layer kernels
+[allow] inference/llms/kimi_k3/slice.cuh                # ditto
+[allow] inference/llms/mimo_2_5/layer.cuh               # ditto
+[allow] inference/llms/qwen_3_6/layer.cuh               # ditto
+[allow] inference/llms/qwen_3_8/layer.cuh               # ditto
+[allow] model-families/common/include/sparkpipe/spark_lm_kernels.cuh  # freeze F4 named artifact: SM121 selectors live here; only the CUDA .cu includes it today — split/guard due before S6
+[allow] model-families/common/include/sparkpipe/spark_row_compaction.cuh  # CUDA kernel machinery, same include discipline as spark_lm_kernels.cuh
+[allow] modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_kernels.cuh       # DSV4 CUDA device kernels
+[allow] modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_pro_kernels.cuh   # DSV4-PRO CUDA device kernels
+[allow] modules/glm52_resident_decode_stage/source/cuda/layer.cuh                     # lives under source/cuda/ — CUDA-only by location
+[allow] modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_internal.h  # internal launch-helper decls consumed only by the module .cu
+[allow] modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h  # *_cuda.h: K3 CUDA launcher decls
+[allow] modules/qwen36_resident_decode_stage/source/spark_qwen36_dspark_cuda.cuh      # qwen36 drafter CUDA kernels
+[allow] modules/qwen36_resident_decode_stage/source/spark_qwen36_dspark_selector_host.h  # selector "host sequence" runs as two DEVICE launches (W7) — CUDA-only despite the name
+[allow] modules/qwen36_resident_decode_stage/source/spark_qwen36_native_ws.cuh        # qwen36 native workspace kernels
+[allow] runtime/gemm.cuh                               # shared-source GEMM templates launched via LM_LAUNCH under __CUDACC__ in consumers; nvcc-only TU input
+[allow] tests/cuda_stub/cuda_runtime_api.h             # host-side fake CUDA API for stub builds — defines the tokens on purpose
+[allow] tests/hardware_cuda_stub/cuda_runtime.h        # ditto
+[allow] tests/host_cuda/lm_host_cuda.cuh               # host-side CUDA shim for lm tests
+[allow] tests/host_cuda/shim/runtime/gemm.cuh          # host shim mirroring runtime/gemm.cuh signatures
+[allow] tests/rdma_syntax_stub/cuda_runtime_api.h      # syntax-check stub defining minimal CUDA API surface
+[allow] include/sparkpipe/spark_stage_module_cuda.h @MISSING-OK  # r2c2 CUDA-only sub-header; created when tools/../.agents/coord/hwiface_evidence_r2c2_*_cuda_guard_split.patch lands — MUST be the only home of stage-module CUDA stream/event types
+
+[pending-r2c2] include/sparkpipe/spark_stage_module_common.h  # KNOWN LEAK: unguarded <cuda_runtime.h> + cudaStream_t/cudaEvent_t fork/read-ahead structs; r2c2 split moves them into spark_stage_module_cuda.h — delete this entry in the landing commit

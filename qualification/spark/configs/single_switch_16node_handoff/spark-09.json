@@ -1,0 +1,86 @@
+{
+  "config_kind": "spark_hardware_runner_config",
+  "config_sha256": "fc8a30297ab3bc19c4b1e0bd4aa6293fa35401634165943a88c570e0f60b4acf",
+  "executables": {
+    "cuda_characterize": "../../../../build/spark_cuda_characterize",
+    "model_kernel_characterize": "../../../../build/spark_model_kernel_characterize",
+    "nvme_characterize": "../../../../build/spark_nvme_characterize",
+    "pmtu_characterize": "../../../../build/spark_pmtu_characterize",
+    "topology_characterize": "../../../../build/spark_topology_characterize",
+    "transport_characterize": "../../../../build/spark_transport_characterize"
+  },
+  "node": "spark-09",
+  "nvme": {
+    "cuda_device": 0,
+    "file_bytes": 8589934592,
+    "file_path": "/mnt/nvme/sparkpipe-hardware-probe.bin",
+    "prepare": false
+  },
+  "peer_addresses": {
+    "spark-00": "10.16.0.10",
+    "spark-01": "10.16.0.11",
+    "spark-02": "10.16.0.12",
+    "spark-03": "10.16.0.13",
+    "spark-04": "10.16.0.14",
+    "spark-05": "10.16.0.15",
+    "spark-06": "10.16.0.16",
+    "spark-07": "10.16.0.17",
+    "spark-08": "10.16.0.18",
+    "spark-10": "10.16.0.20",
+    "spark-11": "10.16.0.21",
+    "spark-12": "10.16.0.22",
+    "spark-13": "10.16.0.23",
+    "spark-14": "10.16.0.24",
+    "spark-15": "10.16.0.25"
+  },
+  "pmtu": {
+    "local_bind_address": "127.0.0.1",
+    "port_base": 47000,
+    "port_span": 1000,
+    "remote_command_template": [
+      "ssh",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      "{peer}",
+      "--"
+    ],
+    "remote_executable": "/opt/sparkpipe/bin/spark_pmtu_characterize",
+    "server_idle_timeout_seconds": 60,
+    "startup_seconds": 10.0
+  },
+  "probe_timeout_seconds": 7200,
+  "probe_timeouts_seconds": {
+    "cuda_characterize": 3600,
+    "model_kernel_characterize": 3600,
+    "nvme_characterize": 7200,
+    "pmtu_characterize": 120,
+    "topology_characterize": 14400,
+    "transport_characterize": 3600
+  },
+  "production_providers_required": true,
+  "providers": {
+    "model_kernel_characterize": {
+      "dsv4_flash_native_mixed_precision": "../../../../build/hardware/providers/libspark_dsv4_flash_production_probe.so",
+      "dsv4_pro_native_mixed_precision": "../../../../build/hardware/providers/libspark_dsv4_pro_production_probe.so",
+      "glm52_fp8_experts_bf16_rest": "../../../../build/hardware/providers/libspark_glm52_production_probe.so",
+      "kimi_k3_mxfp4_experts_bf16_rest": "../../../../build/hardware/providers/libspark_k3_production_probe.so",
+      "qwen38_27b_27b_bf16": "../../../../build/hardware/providers/libspark_qwen38_27b_production_probe.so"
+    },
+    "topology_characterize": {
+      "default": "../../../../build/hardware/providers/libspark_topology_production_probe.so"
+    },
+    "transport_characterize": {
+      "gpudirect": "../../../../build/hardware/providers/libspark_gpudirect_rdma_production_probe.so",
+      "mapped_host": "../../../../build/hardware/providers/libspark_mapped_host_rdma_production_probe.so",
+      "tcp": "../../../../build/hardware/providers/libspark_tcp_production_probe.so"
+    }
+  },
+  "rank": 9,
+  "receipt_directory": "../../../receipts/single_switch_16node/spark-09",
+  "run_id": "switch-handoff-template",
+  "schema_version": 1,
+  "topology": "single_switch_16node",
+  "topology_mode": "single_switch"
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_hc_residual_copy_fused_into_pre_reduce",
+  "status": "REPEATABLE_EXACT_ISOLATED_GAIN",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark2",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "workload": {
+    "rows": 1,
+    "boundaries_per_model_step": 86,
+    "hidden_dimension": 4096,
+    "hc_stream_count": 4,
+    "residual_bytes_per_boundary": 32768,
+    "residual_bytes_per_model_step": 2818048,
+    "distinct_hc_function_weights_per_boundary": true,
+    "simulated_collective_nanoseconds_per_boundary": 60000,
+    "l2_flush_bytes_before_trial": 268435456
+  },
+  "control": "one stream-ordered D2D residual copy, production HcMixSplitK+Sinkhorn, production HcPreReduce, collective window, production HcPost",
+  "candidate": "production HcMixSplitK+Sinkhorn, exact raw-BF16 residual write fused into HcPreReduce, collective window, production HcPost",
+  "measurement": {
+    "independent_process_runs": 3,
+    "alternating_pairs_per_run": 31,
+    "warmups_per_run": 4,
+    "all_output_stream_residual_and_reduced_bytes_exact": true,
+    "run_median_results": [
+      {
+        "control_ms": 7.650880,
+        "candidate_ms": 7.635680,
+        "gain_percent": 0.198666
+      },
+      {
+        "control_ms": 7.633440,
+        "candidate_ms": 7.629024,
+        "gain_percent": 0.057851
+      },
+      {
+        "control_ms": 7.661632,
+        "candidate_ms": 7.631488,
+        "gain_percent": 0.393444
+      }
+    ],
+    "control_mean_of_medians_ms": 7.648650667,
+    "candidate_mean_of_medians_ms": 7.632064000,
+    "aggregate_gain_percent": 0.216857422,
+    "all_independent_median_deltas_positive": true
+  },
+  "decision": {
+    "isolated_gate": "PASS",
+    "production_integration": "PENDING",
+    "full_ring_end_to_end": "NOT_MEASURED",
+    "policy": "retain every repeatable bit-exact positive delta; final acceptance requires positive end-to-end TP4 O128 evidence"
+  },
+  "identity": {
+    "probe_source": "/private/tmp/dsv4_hc_residual_fusion_probe.cu",
+    "probe_source_sha256": "3ca44cccdec0c309f46ffc0a30edba64cbef91797465fa0e1fb6d365eae88473",
+    "binary_sha256": "d6a423c5bf065fe68ab85d7dd729aeccff3f2ae1477dd01cc34dec31252703a9",
+    "included_production_cuda_sha256": "01ec33e97c27afa872e757110353093898596e8a51c25c50247b34654ea2ec9d",
+    "run_log_sha256": [
+      "1f5067ca754fec019d1e1b1955f10f1581913a62be5a4fe4e3fde830b39ecb49",
+      "d4a2e74ce14749eb677d8b65b2cffaf1b3a444bf7759f3d1b20c18dbc8d911d9",
+      "75e858dcd7108ed3c93bbcc0cf0cab1d103b2772b754e3f503a1b2e8269c48b0"
+    ]
+  }
+}

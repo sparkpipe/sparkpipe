@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "xiaomi.mimo-2.5.resident-decode-stage-firmware",
+    "revision": "h4096-l48-swa128-e256k8-mtp3-v152576-v1"
+  },
+  "metadata": {
+    "architecture": "mimo25_resident_decode_stage",
+    "purpose": "resident decode-stage firmware for MiMo 2.5: interleaved full and sliding-window attention with per-branch kv head counts and rope thetas, 256-expert MoE, three MTP layers with per-layer sliding rings, screened exact full-vocabulary head",
+    "provenance": {
+      "status": "implemented driver, codex/model-driver-family (PR #491)",
+      "disclosed_source": [
+        "hugging face model config"
+      ]
+    },
+    "module_geometry": {
+      "hidden_dimension": 4096,
+      "layer_count": 48,
+      "attn_head_count": 64,
+      "attn_head_dimension": 192,
+      "attn_value_dimension": 128,
+      "attn_rope_dimension": 64,
+      "full_kv_head_count": 4,
+      "swa_kv_head_count": 8,
+      "full_qkv_dimension": 13568,
+      "swa_qkv_dimension": 14848,
+      "q_dimension": 12288,
+      "sliding_window_tokens": 128,
+      "attn_value_scale": 0.707,
+      "full_rope_theta": 10000000.0,
+      "swa_rope_theta": 10000.0,
+      "dense_intermediate_dimension": 16384,
+      "expert_intermediate_dimension": 2048,
+      "routed_expert_count": 256,
+      "experts_per_token": 8,
+      "fp8_scale_block": 128,
+      "mtp_layer_count": 3,
+      "vocab_count": 152576,
+      "head_screen_cap": 4096
+    },
+    "hf_config_geometry": {
+      "hidden_size": 4096,
+      "num_hidden_layers": 48,
+      "vocab_size": 152576,
+      "num_attention_heads": 64,
+      "head_dim": 192,
+      "v_head_dim": 128,
+      "partial_rotary_factor": 0.3333,
+      "sliding_window": 128,
+      "rms_norm_eps": 1e-05,
+      "max_position_embeddings": 1048576,
+      "n_routed_experts": 256,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 2048,
+      "intermediate_size": 16384,
+      "mtp_num_hidden_layers": 3,
+      "routed_scaling_factor": null
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false,
+      "gpu_numerical_correctness": "NOT_MEASURED",
+      "gpu_latency": "NOT_MEASURED",
+      "gpu_throughput": "NOT_MEASURED",
+      "controlled_bring_up_only": true
+    },
+    "runtime_contract": {
+      "firmware_module_abi": 4,
+      "firmware_host_services_abi": 2,
+      "model_driver_abi": 7,
+      "completion": "submit_return",
+      "fallback_allowed": false,
+      "runtime_backend_selection": "forbidden",
+      "model_frame_context": "SparkMimo25ResidentDecodeStageFrameContext",
+      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
+      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
+      "required_environment": [
+        "SPARK_MIMO25_ALLOW_UNQUALIFIED_EXECUTION",
+        "SPARK_MIMO25_STAGE_PACK_PATH",
+        "SPARK_MIMO25_STAGE_COUNT",
+        "SPARK_MIMO25_STAGE_INDEX",
+        "SPARK_MIMO25_STAGE_FIRST_LAYER",
+        "SPARK_MIMO25_STAGE_LAYER_COUNT",
+        "SPARK_MIMO25_STAGE_MAX_ACTIVE_SEQUENCES",
+        "SPARK_MIMO25_STAGE_MAX_SEQ",
+        "SPARK_MIMO25_STAGE_PIPELINE_SLOTS",
+        "SPARK_MIMO25_STAGE_MTP",
+        "SPARK_MIMO25_STAGE_GRAPHS"
+      ],
+      "notes": [
+        "decode only; prefill execution fails closed until qualified",
+        "lane identities are carried by the model-specific decode batch, never by driver_dispatch_slot",
+        "MTP fields must be canonically empty unless the final-head stage is explicitly armed for MTP"
+      ]
+    }
+  },
+  "stages": [
+    {
+      "name": "mimo25_resident_decode_stage",
+      "target": "cuda.sm121.mimo25.resident_decode_stage.bf16",
+      "programs": [
+        {
+          "name": "resident_decode",
+          "id": 1,
+          "max_inflight": 1,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ]
+          },
+          "operations": [
+            {
+              "name": "mimo25_resident_decode_stage",
+              "module": "spark.mimo25.resident_decode_stage.bf16.h4096.l48.e256.k8.mtp3.v1",
+              "configuration": {
+                "qualification_status": "NOT_MEASURED",
+                "production_ready": false,
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

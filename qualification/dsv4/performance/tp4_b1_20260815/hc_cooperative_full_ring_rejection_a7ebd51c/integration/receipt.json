@@ -1,0 +1,74 @@
+{
+  "schema": "sparkpipe.dsv4.hc_cooperative_integration.v1",
+  "timestamp_utc": "2026-08-14T23:15:00Z",
+  "scope": {
+    "worktree": "/private/tmp/dsv4-hc-coop-integration",
+    "accepted_tree": "/private/tmp/dsv4-combined-plus-linear",
+    "accepted_tree_modified": false,
+    "ci_run": false,
+    "github_used": false
+  },
+  "git": {
+    "accepted_head": "da7f91090c0d40729352b4e4180ad231971c90a2",
+    "accepted_snapshot_commit": "6a55803471b110eb95b5f844abcb841fb3c87d60",
+    "integration_commit": "25bdc63d24bd79d4b5d9be7f5aaaed5cd1a83169",
+    "integration_tree": "3c919276934c038812fa013119cf7527559a6c14",
+    "patch": "/private/tmp/dsv4-hc-coop-integration-evidence/0001-fuse-dsv4-b1-hc-finalize-and-pre-reduce.patch",
+    "patch_apply_check_against_accepted_tree": "PASS"
+  },
+  "implementation": {
+    "production_entrypoint": "SparkDsv4LaunchHcEnter",
+    "b1_path": "16-block cooperative finalize plus exact pre-reduce and raw residual store",
+    "larger_row_path": "existing split-K finalize followed by row-adaptive pre-reduce",
+    "compile_time_feature_fork": false,
+    "compatibility_fallback": false,
+    "shared_exact_helpers": [
+      "SparkDsv4HcFinalizeRow",
+      "SparkDsv4HcPreReduceTile"
+    ]
+  },
+  "source_compile": {
+    "host": "spark1",
+    "architecture": "sm_121a",
+    "b1": {
+      "batch_bucket": 1,
+      "exit_code": 0,
+      "object": "/tmp/dsv4-hc-coop-integration/dsv4_b1.o"
+    },
+    "b1024": {
+      "batch_bucket": 1024,
+      "exit_code": 0,
+      "object": "/tmp/dsv4-hc-coop-integration/dsv4_b1024.o"
+    },
+    "note": "Both source-only nvcc compiles completed before the parent requested that further remote build activity pause."
+  },
+  "tests": {
+    "local_pass": [
+      "tests/test_dsv4_hc_residual_fusion_source.py",
+      "tests/test_dsv4_driver_source_contracts.py",
+      "tests/test_dsv4_native_compute_source.py",
+      "tests/test_dsv4_indexer_post_fusion_source.py",
+      "tests/test_dsv4_projection_precollective_source.py",
+      "git diff --check"
+    ],
+    "added_numerical_validator": "SparkDsv4ValidationHcEnter",
+    "numerical_validator_contract": "control split sequence versus production runtime dispatch; exact partials, mixes, pre, post, comb, reduced BF16, residual BF16, and residual versus raw input; B1 and batched cases",
+    "integrated_numerical_execution": "DEFERRED_BY_PARENT_RESOURCE_REQUEST"
+  },
+  "isolated_poc_evidence": {
+    "receipt": "/private/tmp/dsv4-hc-coop-poc/receipt.json",
+    "receipt_sha256": "a911869842e6f5af6451815a3117e71c9a29fb89cee612ca63e310a0e9d74564",
+    "exact_pairs": 93,
+    "total_pairs": 93,
+    "gain_percent": 13.180039053,
+    "saving_ms_per_model_step": 0.160554667
+  },
+  "sha256": {
+    "patch": "250098a4ec16449b8b2365c819b3af29a197fbf6320cc267587cc251cc1d031f",
+    "spark_dsv4_resident_decode_stage_cuda.cu": "34800f0427adeafc24d4f19c09e430967c6800af1e15d591d837ab0102e66523",
+    "spark_dsv4_resident_decode_stage_module.c": "ec355400d58d2ecaae8b08c94f5daf23a69a4821dd9545f5333ad6bece0f8b5d",
+    "spark_dsv4_resident_decode_stage_cuda_validation.cu": "035bf6882e6ff39d6390170eb13060cfadad8aded843586e337d3df8742d3903",
+    "test_dsv4_hc_residual_fusion_source.py": "97f90ce038da7c2d7ced2e65d0dfaad3490566abe9cadff8183ab45a97525daf",
+    "test_dsv4_driver_source_contracts.py": "154ed62ccbf17e37872d78f3de35a2ffd40827822b0dec1c52ef956399f0bef7"
+  }
+}

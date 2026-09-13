@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "driver_abi_version": 12,
+  "model_id": "deepseek.v4.flash.resident-decode-stage-firmware",
+  "model_revision": "h4096-l43-dsa-e256k6-hash3-v129280-ga0731-v4",
+  "stage": "dsv4_resident_decode_stage",
+  "target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+  "model_description_sha256": "dd6e9fd0c238c9ae28c16d5276a2d49f112097c0682e142b0b86bfa7eb5b334c",
+  "compiled_program_sha256": "66d711890ec4dc89403fe980d672b84798f676e44649c7484983777b7d5acf9f",
+  "driver_sha256": "6a12048a037eb661961f64c22136fcc0a842c3adc783343cf01b13babc851da3",
+  "driver": "model_driver.so",
+  "modules": [
+    { "operation_index": 0, "program": "resident_decode", "program_id": 1, "program_max_inflight": 1, "program_completion": "external", "program_flags": 459022, "max_active_slots": 1, "max_new_tokens": 65536, "target_latency_ns": 0, "host_staging_bytes_per_submit_ceiling": 0, "device_memcpy_bytes_per_submit_ceiling": 0, "operation": "dsv4_resident_decode_stage", "module_id": "spark.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731.b1.v4", "configuration": {
+                "activation_codec": "bf16",
+                "expert_activation_codec": "fp8_e4m3_ue8m0",
+                "expert_weight_codec": "mxfp4_e2m1",
+                "fallback_allowed": false,
+                "kv_cache_codec": "bf16",
+                "linear_weight_codec": "fp8_e4m3",
+                "output_composition_activation_codec": "bf16",
+                "runtime_backend_selection": "forbidden",
+                "runtime_precision_selection": "forbidden"
+              }, "target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16", "module_abi_version": 4, "validation_recipe": "dsv4.resident_decode_stage.sm_121a.gpu.config_056da5f4e95d94bcb879407fdd63db5f5e67a58443e9433c5d3c5d403bc77adc.v1", "artifact_sha256": "aa7e8991b19ca38e49135bfd0508bd69801b79777adde86d488003a2bbecf11c", "link_unit_kind": "static_archive", "initialize_symbol": "SparkDsv4ResidentDecodeStageInitialize", "execute_symbol": "SparkDsv4ResidentDecodeStageExecute", "admit_symbol": "SparkDsv4ResidentDecodeStageAdmit", "snapshot_symbol": "SparkDsv4ResidentDecodeStageSnapshot", "destroy_symbol": "SparkDsv4ResidentDecodeStageDestroy", "link_unit": "link_units/aa7e8991b19ca38e49135bfd0508bd69801b79777adde86d488003a2bbecf11c.a" }
+  ]
+}

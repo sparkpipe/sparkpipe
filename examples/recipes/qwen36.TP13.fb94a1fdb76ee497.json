@@ -1,0 +1,813 @@
+{
+  "content_hash": "fb94a1fdb76ee497",
+  "contract": {
+    "path": "model_contracts/qwen38_27b_authoritative.json",
+    "sha256": "e162bb750570d6435697ac0f9da5b021cffb29f2f5480ffc937d11a9603aa577"
+  },
+  "datafile": "qwen38_27b.TP13.fb94a1fdb76ee497.json",
+  "degree": 13,
+  "family": "qwen38_27b",
+  "geometry_hash": "ff786ac12a1d6e13",
+  "kind": "sparkpipe.model_recipe",
+  "kv_entry_prefix": "qwen38_27b.TP13.ff786ac12a1d6e13/",
+  "kv_geometry": {
+    "attention_period": 4,
+    "full_layer_count": 16,
+    "full_phase": 3,
+    "gdn_layer_count": 48,
+    "gdn_state": {
+      "key_dimension": 128,
+      "key_head_count": 16,
+      "short_conv_kernel": 4,
+      "state_element_type": "fp32",
+      "value_dimension": 128,
+      "value_head_count": 48
+    },
+    "head_dimension": 256,
+    "kv_element_bits": 16,
+    "kv_head_count": 4,
+    "kv_page_slots": 64,
+    "layer_count": 64,
+    "layout": "gqa_full_kv_bf16+gdn_recurrent_state_fp32",
+    "rope_convention": "partial_rotary_first_dims",
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0
+  },
+  "model": "qwen38_27b",
+  "schema_version": 1,
+  "strategy": "TP",
+  "topology": {
+    "mode": "dual_switch",
+    "name": "dual_switch_16node_production",
+    "node_names": [
+      "spark-00",
+      "spark-01",
+      "spark-02",
+      "spark-03",
+      "spark-04",
+      "spark-05",
+      "spark-06",
+      "spark-07",
+      "spark-08",
+      "spark-09",
+      "spark-10",
+      "spark-11",
+      "spark-12"
+    ],
+    "nodes": 13,
+    "source": "examples/topologies/dual_switch_16node_production.json"
+  },
+  "tp": {
+    "collective": "all_reduce_sum_f32 closes every input-dimension split (SparkTpCollectiveAllReduceSumF32 on this ring)",
+    "ranks": [
+      {
+        "node": "spark-00",
+        "rank": 0,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-01",
+        "rank": 1,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-02",
+        "rank": 2,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-03",
+        "rank": 3,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-04",
+        "rank": 4,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-05",
+        "rank": 5,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-06",
+        "rank": 6,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-07",
+        "rank": 7,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-08",
+        "rank": 8,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-09",
+        "rank": 9,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-10",
+        "rank": 10,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-11",
+        "rank": 11,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      },
+      {
+        "node": "spark-12",
+        "rank": 12,
+        "slices": {
+          "dense_down": [
+            0,
+            17408
+          ],
+          "dense_gate_up": [
+            0,
+            17408
+          ],
+          "embed_and_head": [
+            0,
+            248320
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            0,
+            6144
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            0,
+            2048
+          ],
+          "heads_out:gdn_v": [
+            0,
+            6144
+          ]
+        }
+      }
+    ],
+    "shard_classes": [
+      {
+        "degree_resolution": {
+          "reason": "24 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
+        },
+        "head_count": 24,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.q_proj.weight"
+        ],
+        "name": "heads_out:full_q",
+        "note": "24 query heads split at degrees 1/2/4/8 only; at 16/13 the recipe replicates attention and the MLP carries the sharding",
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 12288
+      },
+      {
+        "degree_resolution": {
+          "reason": "4 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 1024,
+          "status": "replicated"
+        },
+        "head_count": 4,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.k_proj.weight",
+          "full_attn.v_proj.weight"
+        ],
+        "name": "heads_out:full_kv",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 1024
+      },
+      {
+        "degree_resolution": {
+          "reason": "24 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 6144,
+          "status": "replicated"
+        },
+        "head_count": 24,
+        "instances_per_model": null,
+        "match": [
+          "full_attn.o_proj.weight"
+        ],
+        "name": "heads_in:full_o",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_full_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": "16 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 2048,
+          "status": "replicated"
+        },
+        "head_count": 16,
+        "instances_per_model": null,
+        "match": [
+          "gdn.q_proj.weight",
+          "gdn.k_proj.weight"
+        ],
+        "name": "heads_out:gdn_qk",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 2048
+      },
+      {
+        "degree_resolution": {
+          "reason": "48 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 6144,
+          "status": "replicated"
+        },
+        "head_count": 48,
+        "instances_per_model": null,
+        "match": [
+          "gdn.v_proj.weight"
+        ],
+        "name": "heads_out:gdn_v",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "OUTPUT_DIM_HEADS",
+        "split": "output_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": "48 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 6144,
+          "status": "replicated"
+        },
+        "head_count": 48,
+        "instances_per_model": null,
+        "match": [
+          "gdn.out_proj.weight"
+        ],
+        "name": "heads_in:gdn_out",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_gdn_layer",
+        "shard_class": "INPUT_DIM_HEADS",
+        "split": "input_heads",
+        "split_extent": 6144
+      },
+      {
+        "degree_resolution": {
+          "reason": "17408 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 17408,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.gate_proj.weight",
+          "mlp.up_proj.weight"
+        ],
+        "name": "dense_gate_up",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 17408
+      },
+      {
+        "degree_resolution": {
+          "reason": "17408 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 17408,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "mlp.down_proj.weight"
+        ],
+        "name": "dense_down",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_layer",
+        "shard_class": "INPUT_DIM",
+        "split": "input",
+        "split_extent": 17408
+      },
+      {
+        "degree_resolution": {
+          "reason": "248320 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 248320,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "model.embed_tokens.weight",
+          "lm_head.weight"
+        ],
+        "name": "embed_and_head",
+        "note": null,
+        "quant_group": null,
+        "scope": "per_model",
+        "shard_class": "OUTPUT_DIM",
+        "split": "output",
+        "split_extent": 248320
+      },
+      {
+        "degree_resolution": {
+          "reason": "norms, short-conv state, the GDN forget/write gates (which have no producer yet - see the contract's known_gaps) and the MTP layer",
+          "rows_per_rank": null,
+          "status": "replicated"
+        },
+        "head_count": null,
+        "instances_per_model": null,
+        "match": [
+          "layernorm",
+          "norm.weight",
+          "conv",
+          "gate",
+          "model.norm.weight",
+          "mtp."
+        ],
+        "name": "replicated",
+        "note": "norms, short-conv state, the GDN forget/write gates (which have no producer yet - see the contract's known_gaps) and the MTP layer",
+        "quant_group": null,
+        "scope": "mixed",
+        "shard_class": "REPLICATED",
+        "split": "none",
+        "split_extent": null
+      }
+    ],
+    "unclassified_policy": "refuse"
+  }
+}

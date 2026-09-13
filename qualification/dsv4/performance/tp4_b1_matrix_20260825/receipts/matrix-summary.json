@@ -1,0 +1,54 @@
+[
+  {
+    "cell": "live-d2048b1",
+    "kind": "decode",
+    "ctx": 2048,
+    "batch": 1,
+    "decode_tok_per_s_mean": 37.444,
+    "per_request_tok_per_s": 37.444,
+    "prefill_eff_tok_per_s": null,
+    "ttft_s_mean": 55.7639,
+    "accepted_to_first_token_s_mean": 55.2928,
+    "e2e_total_completion_s_mean": 59.158,
+    "runs": 3
+  },
+  {
+    "cell": "live-d512b1",
+    "kind": "decode",
+    "ctx": 512,
+    "batch": 1,
+    "decode_tok_per_s_mean": 39.149,
+    "per_request_tok_per_s": 39.149,
+    "prefill_eff_tok_per_s": null,
+    "ttft_s_mean": 13.9464,
+    "accepted_to_first_token_s_mean": 13.5641,
+    "e2e_total_completion_s_mean": 17.193,
+    "runs": 3
+  },
+  {
+    "cell": "live-p2048b1",
+    "kind": "prefill",
+    "ctx": 2048,
+    "batch": 1,
+    "decode_tok_per_s_mean": 27.133,
+    "per_request_tok_per_s": 27.133,
+    "prefill_eff_tok_per_s": 37.05,
+    "ttft_s_mean": 55.7418,
+    "accepted_to_first_token_s_mean": 55.2768,
+    "e2e_total_completion_s_mean": 55.7801,
+    "runs": 3
+  },
+  {
+    "cell": "live-p512b1",
+    "kind": "prefill",
+    "ctx": 512,
+    "batch": 1,
+    "decode_tok_per_s_mean": 28.217,
+    "per_request_tok_per_s": 28.217,
+    "prefill_eff_tok_per_s": 37.647,
+    "ttft_s_mean": 13.9124,
+    "accepted_to_first_token_s_mean": 13.6001,
+    "e2e_total_completion_s_mean": 13.9501,
+    "runs": 3
+  }
+]

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "model_id": "Qwen/Qwen3.6-27B",
+  "architecture": "GatedDeltaNet hybrid, dense FFN",
+  "sources": {
+    "checkpoint_config": "inference/llms/qwen_3_6/config.h, AUDITED against Qwen/Qwen3.6-27B on 2026-07-27",
+    "host_geometry": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h (held in lockstep with the firmware config by the family conformance gate)",
+    "variant_note": "the 27B with the dense FFN; the 35B-A3B shares the name prefix and is a different model (hidden 2048, 40 layers, 256 experts) - layer.cuh implements the dense path only",
+    "known_gaps": [
+      "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode; multimodal input is not this path"
+    ],
+    "precision_policy": "all weights and activations BF16, GEMM accumulation and GDN recurrent state FP32"
+  },
+  "model": {
+    "hidden_dimension": 5120,
+    "layer_count": 64,
+    "vocabulary_size": 248320,
+    "rms_norm_epsilon": 0.000001,
+    "dense_intermediate_dimension": 17408,
+    "mtp_layer_count": 1
+  },
+  "hybrid_attention": {
+    "period": 4,
+    "full_phase": 3,
+    "gdn_layer_count": 48,
+    "full_layer_count": 16
+  },
+  "gdn": {
+    "key_head_count": 16,
+    "value_head_count": 48,
+    "key_dimension": 128,
+    "value_dimension": 128,
+    "short_conv_kernel": 4,
+    "state_element_type": "fp32"
+  },
+  "attention": {
+    "query_head_count": 24,
+    "kv_head_count": 4,
+    "head_dimension": 256,
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0,
+    "rope_convention": "partial_rotary_first_dims",
+    "output_gate": true
+  },
+  "precision": {
+    "weight_format": "bf16",
+    "activation_format": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  }
+}

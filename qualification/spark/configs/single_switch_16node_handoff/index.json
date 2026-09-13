@@ -1,0 +1,107 @@
+{
+  "entries": [
+    {
+      "config_sha256": "9e56559e9dd01e33040b542cc57b72e2352214d6739215dace780b62f22543d3",
+      "node": "spark-00",
+      "path": "spark-00.json",
+      "rank": 0
+    },
+    {
+      "config_sha256": "c79a72463ca55dd328e27b7f9628050d48d9e9c7502fde396012bb3fb5b37d5f",
+      "node": "spark-01",
+      "path": "spark-01.json",
+      "rank": 1
+    },
+    {
+      "config_sha256": "4720ec761ebf9234f659d0c3d9a20230f9d85fbdcd2ba23c1bf89810ab55d2ee",
+      "node": "spark-02",
+      "path": "spark-02.json",
+      "rank": 2
+    },
+    {
+      "config_sha256": "d3da3835055dbe470382d68b274a5300fc1f200807f0d6119c848b5d27dd5720",
+      "node": "spark-03",
+      "path": "spark-03.json",
+      "rank": 3
+    },
+    {
+      "config_sha256": "691a951b603b2876987ab10301dd0a9ad628efcb5670ac453f45d6d49e4ffca1",
+      "node": "spark-04",
+      "path": "spark-04.json",
+      "rank": 4
+    },
+    {
+      "config_sha256": "baf4c900032ba816661c2ff050713ad8e750f0c674859f4835ddd2e1f5f94149",
+      "node": "spark-05",
+      "path": "spark-05.json",
+      "rank": 5
+    },
+    {
+      "config_sha256": "747820fea06ae21f0ebf86bbd2d88619e333811fb2a78c3a5132ba41c56ee96d",
+      "node": "spark-06",
+      "path": "spark-06.json",
+      "rank": 6
+    },
+    {
+      "config_sha256": "03034727b9e184393bd1f8abd38b0afe2e4f9eaa64d178b3212a0bf5220aff01",
+      "node": "spark-07",
+      "path": "spark-07.json",
+      "rank": 7
+    },
+    {
+      "config_sha256": "2e40a49f8e4707472730bdb9cc3a610cea320c5cbed5b2f95ba1299d21c3eaf4",
+      "node": "spark-08",
+      "path": "spark-08.json",
+      "rank": 8
+    },
+    {
+      "config_sha256": "fc8a30297ab3bc19c4b1e0bd4aa6293fa35401634165943a88c570e0f60b4acf",
+      "node": "spark-09",
+      "path": "spark-09.json",
+      "rank": 9
+    },
+    {
+      "config_sha256": "6f5e485f9ea5c4a8fb4e53fcdddef970401f25986a93ccd68ca4bbcad5f094da",
+      "node": "spark-10",
+      "path": "spark-10.json",
+      "rank": 10
+    },
+    {
+      "config_sha256": "da21335557afa86c9effb56a8c0e5c5d38cc8b62ddbe492665bdc48414f68353",
+      "node": "spark-11",
+      "path": "spark-11.json",
+      "rank": 11
+    },
+    {
+      "config_sha256": "b607fb6ff89aeb384eba72c0b3bbc4af7bc48c109032385de47ac0b031cc2861",
+      "node": "spark-12",
+      "path": "spark-12.json",
+      "rank": 12
+    },
+    {
+      "config_sha256": "f190333ab51753bc499f75158184102d7560248784723d9e4953bd01791b16c1",
+      "node": "spark-13",
+      "path": "spark-13.json",
+      "rank": 13
+    },
+    {
+      "config_sha256": "d481183bb824270c242afd52391a68c54296aeeaa8446b80aa77163dd92fffd9",
+      "node": "spark-14",
+      "path": "spark-14.json",
+      "rank": 14
+    },
+    {
+      "config_sha256": "63e20768ad55119cbfb892cdd275032f86ed3340a08f93b288a517b0d57a6f28",
+      "node": "spark-15",
+      "path": "spark-15.json",
+      "rank": 15
+    }
+  ],
+  "index_kind": "spark_hardware_runner_config_index",
+  "index_sha256": "6d1f714315f437960a786f2f308b2dd58a0413851bf575c0b884a5d2f92d34e1",
+  "node_count": 16,
+  "run_id": "switch-handoff-template",
+  "schema_version": 1,
+  "topology": "single_switch_16node",
+  "topology_mode": "single_switch"
+}

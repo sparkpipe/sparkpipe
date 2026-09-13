@@ -1,0 +1,17 @@
+{
+  "schema":"dsv4_b1_gate_route_fusion_fast_gate_v1",
+  "source_commit":"da7f91090c0d40729352b4e4180ad231971c90a2",
+  "source_sha256":"1eb2a971da392b4c0901670d6870775864f678b931ff22396a83877a9b0ec3b9",
+  "binary_sha256":"5a26bd409f5cc2d613dfbd17ccacc81a096282deddc2ec6f739c4c63851944d1",
+  "model_revision":"7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+  "device":{"host":"spark3","name":"NVIDIA GB10","cc":"12.1","sm_count":48},
+  "pack":{"path":"/home/spark3/sparkdata/dsv4_flash.fp8.tp4_pp4.b1/packs/dsv4_flash_tp4_pp4_stage.spstage","file_bytes":11141244176,"first_layer":0,"layer_count":11,"payload_source":"actual_ga_tp4_pp4_stagepack_rows_cycled_to_43_layers"},
+  "actual_sources":{"gate":11,"bias":8,"tid2eid":3,"shared_expert":11,"source_fnv64":"91b0a2e94a68133f"},
+  "shape":{"layers":43,"rows":1,"hidden":4096,"experts":256,"topk":6,"hash_layers":3,"tp4_shared_expert_width":512,"route_tile_m":16,"route_up_tiles_per_expert":16,"route_down_tiles_per_expert":32},
+  "method":{"control":"accepted_gate_scores_then_gate_select_then_route_build_on_primary","overlap":"actual_fp8_shared_expert_w13_then_w2_on_auxiliary_with_per_layer_join","quality":"unchanged_fp32_score_accumulation_sort_ties_route_order_and_bf16_spine","chain_repeats_per_sample":8,"discovery_rounds":9,"validation_rounds":15,"exact_seeds":7,"acceptance":"positive_validation_median_and_at_least_11_of_15_paired_wins_no_minimum_gain"},
+  "exact_digest_fnv64":"0d8906c9f54a67f4",
+  "candidates":[
+    {"name":"score_then_fused_select_route","bitwise_exact":true,"discovery_control_round_ms":[2.041115999,1.978127956,2.029479980,1.958691955,1.947064042,1.943879962,1.945368052,1.945459962,1.945404053],"discovery_candidate_round_ms":[1.956344008,1.914499998,1.955515981,1.947083950,1.862035990,1.954355955,1.867187977,1.864488006,1.956015944],"validation_control_round_ms":[1.944180012,2.010792017,1.943591952,1.979303956,1.944463968,1.944491982,1.946676016,1.945703983,1.947639942,1.945659995,1.948395967,1.950412035,1.946084023,1.945351958,1.948711991],"validation_candidate_round_ms":[1.858932018,1.894379973,1.864976048,1.916252017,1.867784023,1.866096020,1.865736008,1.867040038,1.867707968,1.865419984,1.866039991,1.889603972,1.868155956,1.866963983,1.863744020],"control_median_ms":1.946084023,"candidate_median_ms":1.866963983,"gain_percent":4.237902164,"candidate_wins":15,"accepted":true},
+    {"name":"cooperative_all_fused_gate_route","bitwise_exact":true,"discovery_control_round_ms":[2.028579950,1.943403959,1.945144057,1.947703958,1.944219947,1.947136045,1.944751978,1.946004033,1.947407961],"discovery_candidate_round_ms":[1.854724050,1.855612040,1.854796052,1.850283980,1.851979971,1.853603959,1.854120016,1.855144024,1.855648041],"validation_control_round_ms":[1.946123958,1.947463989,1.944836020,1.947280049,1.946635962,1.943140030,1.945268035,1.945775986,2.031464100,1.946619987,1.945711970,1.943660021,1.948564053,1.945500016,1.948171973],"validation_candidate_round_ms":[1.933243990,1.867136002,1.854904056,1.852084041,1.854032040,1.853688002,1.854616046,1.855039954,1.852031946,1.853968024,1.853135943,1.854480028,1.857424021,1.855159998,1.854132056],"control_median_ms":1.946123958,"candidate_median_ms":1.854480028,"gain_percent":4.941761494,"candidate_wins":15,"accepted":true}
+  ]
+}

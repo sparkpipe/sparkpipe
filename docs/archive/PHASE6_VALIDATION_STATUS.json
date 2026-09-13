@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-08-01T01:19:33Z",
+  "phase": 6,
+  "status": "HOST_TRANSACTIONAL_COMPLETION_VALIDATED",
+  "host": {
+    "strict_compilation_passed": true,
+    "clean_make_all_passed": true,
+    "c_cpp_test_binaries_passed": 46,
+    "c_cpp_test_binaries_total": 46,
+    "python_tests_passed": 49,
+    "python_tests_total": 49,
+    "architecture_gates_passed": 69,
+    "architecture_gates_skipped_cuda_only": 4,
+    "architecture_gates_failed": 0,
+    "core_boundary_audit_passed": true,
+    "dry_naming_law_passed": true
+  },
+  "transaction_protocol": {
+    "canonical_identity": true,
+    "packet_fingerprint_bound_acknowledgement": true,
+    "reconnect_exact_replay_deduplication": true,
+    "conflicting_identity_reuse_rejected": true,
+    "local_multi_lane_completion_ownership": true,
+    "lossless_final_event_backpressure": true,
+    "credit_domains_separated": true,
+    "all_rank_prepare_reserve": false,
+    "global_all_rank_commit": false,
+    "restart_persistent_tombstones": false,
+    "native_driver_completion_identity": false,
+    "resident_submit_result_nonblocking": false
+  },
+  "source": {
+    "file_count": 559,
+    "byte_count": 6524239,
+    "fingerprint_sha256": "72e8ec734e31badc7231f000925e8739a3df365c39bd8bb20746721ce75e6aaf"
+  },
+  "cuda": {
+    "cuda13_compute_121a_compile_run": false,
+    "cuda13_sm121a_assemble_link_run": false,
+    "blackwell_execution_measured": false
+  },
+  "network": {
+    "physical_ring_measured": false,
+    "single_switch_100g_measured": false,
+    "dual_rail_enabled": false
+  },
+  "production_ready": false
+}

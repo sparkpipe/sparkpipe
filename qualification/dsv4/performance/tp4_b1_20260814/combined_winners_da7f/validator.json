@@ -1,0 +1,90 @@
+{
+  "schema": "sparkpipe.dsv4.validator-bisect.v1",
+  "timestamp_utc": "2026-08-14T20:44:10Z",
+  "host": {
+    "name": "sparkc",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.159.03"
+  },
+  "source": {
+    "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+    "batch_bucket": 1,
+    "cuda_arch": "sm_121a"
+  },
+  "stage_pack": {
+    "path": "/home/sparkc/sparkdata/dsv4_flash.fp8.pp13/packs/dsv4_flash_stage.spstage",
+    "sha256": "aeb9670b248498fe8a943cc901d4504e379aab39ec357d07c9e0137355bc87af",
+    "stage_count": 13,
+    "stage_index": 12,
+    "first_layer": 41,
+    "layer_count": 2
+  },
+  "validator": {
+    "original_sha256": "47a75534da89e46118cc8a170501bd54e012a9a33a2e48ec7f21064dd7bc8274",
+    "corrected_sha256": "ab932e07c9e3f3c49ecd09772f39455c9d07f6cf11ed02fc7d4d93b17973d0b7",
+    "configuration_sha256": "c49841460e26ed2ff26d64326fd68419fc56f0f828ceaff87fdd47e3172d8da3",
+    "correction": "Set tokens_per_sequence=1 in both real one-token validator frame builders; the module contract rejects zero. This completes the submitted shape and does not relax a check."
+  },
+  "root_cause": {
+    "change": "The generic B1 patch changed SparkLmLinearKernel neuron indexing to eight warps while the head compatibility caller retained a 32-warp block and 32-neuron grid.",
+    "effect": "Only eight neurons in each 32-neuron grid span were written, leaving coarse logits unwritten and causing head_screen_branch candidate-count failure.",
+    "correction": "Template SparkLmLinearKernel on explicit CTA_WARPS. The measured generic B1 caller selects 8; the existing head caller explicitly selects 32."
+  },
+  "matrix": [
+    {
+      "variant": "clean_da7f910",
+      "archive_sha256": "33f3b0b0c90d547a819709d56edda82f0a1a72e91646ecb03ba4d9dd22ce90da",
+      "original_validator": "head suite passed; later execute=invalid_argument from missing validator tokens_per_sequence",
+      "corrected_validator": "PASS; output_token=128818"
+    },
+    {
+      "variant": "csa_only",
+      "archive_sha256": "d80db1b8a6d79b2212c37b9671d92fa29afb5f2d48c385f46eab9cc44edcd692",
+      "original_validator": "head suite passed; later execute=invalid_argument from missing validator tokens_per_sequence",
+      "corrected_validator": "PASS; output_token=128818"
+    },
+    {
+      "variant": "compressor_only",
+      "archive_sha256": "2817f770348ae72eb69ab18d88980c85fabdad23448628e797a3b55216ae5685",
+      "original_validator": "head suite passed; later execute=invalid_argument from missing validator tokens_per_sequence",
+      "corrected_validator": "PASS; output_token=128818"
+    },
+    {
+      "variant": "generic_b1_original_bug",
+      "archive_sha256": "48efb35609192c3c84ed7210c16094a58b97d14c1bdb24d7c5e1e1bada5d2e9d",
+      "original_validator": "FAIL head_screen_branch",
+      "corrected_validator": "FAIL head_screen_branch"
+    },
+    {
+      "variant": "combined_original_bug",
+      "archive_sha256": "41d7281a9c954be1af00ee17ddd9bb4bb034143f15b972629e7a5b549a7055e6",
+      "original_validator": "FAIL head_screen_branch"
+    },
+    {
+      "variant": "generic_b1_fixed",
+      "archive_sha256": "37027cc793776efa34298f47b2c6212d7095c4a482040b0cbebd914fffeffacd",
+      "corrected_validator": "PASS; output_token=128818"
+    },
+    {
+      "variant": "combined_fixed_before_head_v2",
+      "archive_sha256": "4b6bd6d4d65b0a788551c93da605274ddd8de551b2648e3d628e147ab2df23f3",
+      "corrected_validator": "PASS; output_token=128818"
+    },
+    {
+      "variant": "combined_fixed_with_head_v2",
+      "archive_sha256": "0f3abd164027be219aede0c12707954525c33d10ea349b8bd2f231812ef2f3c4",
+      "common_kernel_sha256": "eb691bd1034da3b15c762f2b86292d9de76e1df5a2fa47fadbd9125d2eb84053",
+      "head_policy_sha256": "8d1d6caa837313307392ea61611318a85a2e008a274cb48f5195d9b6b4bd852c",
+      "corrected_validator": "PASS config=c49841460e26ed2ff26d64326fd68419fc56f0f828ceaff87fdd47e3172d8da3 stage=12 slice=41+2 rows=1 output_token=128818"
+    }
+  ],
+  "commands": {
+    "build": "make -C SOURCE/modules/dsv4_resident_decode_stage variants MODULE_BATCH_VARIANT_BUCKETS=1 BUILD_DIRECTORY=BUILD CUDA_ARCH=sm_121a",
+    "validate": "env SPARK_MODULE_BATCH_BUCKET=1 and the recorded stage geometry/digests validate_dsv4_resident_decode_stage_cuda.sh CONFIG_SHA256 ARCHIVE"
+  },
+  "local_checks": [
+    "python3 tests/test_dsv4_native_compute_source.py",
+    "python3 tests/test_dsv4_driver_source_contracts.py",
+    "git diff --check"
+  ]
+}

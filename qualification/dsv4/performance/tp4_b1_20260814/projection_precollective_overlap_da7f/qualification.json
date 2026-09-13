@@ -1,0 +1,70 @@
+{
+  "schema": "sparkpipe.dsv4.projection-precollective-overlap-qualified.v1",
+  "result": "isolated_poc_exact_positive_but_rejected_full_ring_e2e",
+  "source_base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark1",
+  "device": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "cuda_arch": "sm_121a",
+  "batch_bucket": 1,
+  "performance": {
+    "scope": "actual-shape standalone kernel schedule; not an end-to-end token-rate claim",
+    "rows": 1,
+    "tp_degree": 4,
+    "collective_payload_bytes": 8192,
+    "alternating_pairs_per_run": 31,
+    "all_bf16_f32_and_metadata_exact": true,
+    "clean_gain_percent": [8.009041, 8.080137],
+    "replay_gain_percent": [8.263612, 8.207596],
+    "collective_targets_ns": [44000, 60000]
+  },
+  "full_ring_end_to_end": {
+    "status": "rejected_production_candidate",
+    "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+    "control_mean_tokens_per_second": 40.416391959637714,
+    "candidate_mean_tokens_per_second": 40.183479901429195,
+    "aggregate_delta_percent": -0.5762811743342255,
+    "paired_delta_percent": [
+      -0.6321088779291495,
+      -0.9573611368784873,
+      -0.14004180572614322
+    ],
+    "positive_pairs": 0,
+    "pair_count": 3,
+    "all_runs_exact": true,
+    "receipt": "full_ring_rejection_5e0a3b14/summary.json",
+    "decision": "restore the exact serial production schedule"
+  },
+  "correctness": {
+    "stage_pack_validated": true,
+    "source_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "stage_count": 13,
+    "stage_index": 1,
+    "first_layer": 3,
+    "layer_count": 3,
+    "configuration_sha256": "056da5f4e95d94bcb879407fdd63db5f5e67a58443e9433c5d3c5d403bc77adc",
+    "ga_validator": "PASS",
+    "focused_projection_precollective_parity": "PASS"
+  },
+  "package": {
+    "published_to_fresh_scratch_library": true,
+    "validation": "executed",
+    "deployed": false,
+    "driver_inspector": "PASS",
+    "driver_abi_version": 12,
+    "module_abi_version": 4,
+    "model_description_sha256": "dd6e9fd0c238c9ae28c16d5276a2d49f112097c0682e142b0b86bfa7eb5b334c",
+    "compiled_program_sha256": "66d711890ec4dc89403fe980d672b84798f676e44649c7484983777b7d5acf9f"
+  },
+  "artifact_sha256": {
+    "module_source": "907ae652cef32bda9f13c24525c1662d70fa8310ddd6edb04a11ea67c375eb8e",
+    "cuda_source": "aed6f6e34a075075fe5611e57af00337f73c3e0210718dede37633e15568f06b",
+    "validator_source": "bd1b0f2fad0c5342b4c2a3f6467582427151ea3958c5813286b40098e79b52a5",
+    "b1_archive": "aa7e8991b19ca38e49135bfd0508bd69801b79777adde86d488003a2bbecf11c",
+    "published_record": "53cb9478223aaf6e3a2542905727b332727ca7c76a4b261502240d4be86aa66f",
+    "model_driver_so": "6a12048a037eb661961f64c22136fcc0a842c3adc783343cf01b13babc851da3",
+    "compiled_manifest": "4f2cc42c685d2abddc71bddbe3f3a2a9e252539de56095c3a188afe04ccd1cd1",
+    "probe_source": "c26313094d3b5f945d62c10fa6f174a538b4ca88736b6efe58aa6b5d776c050e",
+    "probe_binary": "748defd5e4cc3ac0569a16871f082c73f0d09b5773a0d0827f3108d6db7ce5c0"
+  }
+}

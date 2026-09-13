@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "model_id": "moonshotai/Kimi-K3-MXFP4",
+  "architecture": "KimiK3ForCausalLM",
+  "sources": {
+    "technical_report": "Kimi K3: Open Frontier Intelligence, sections 2 and 5, Table 1",
+    "checkpoint_config": "moonshotai/Kimi-K3-MXFP4 config.json and modeling_kimi_linear.py",
+    "precision_policy": "routed expert weights MXFP4 E2M1 with E8M0 scale, group 32; all other weights and activations BF16; GEMM accumulation and KDA recurrent state FP32"
+  },
+  "model": {
+    "total_parameters": 2780000000000,
+    "active_parameters": 104200000000,
+    "hidden_dimension": 7168,
+    "layer_count": 93,
+    "vocabulary_size": 163840,
+    "maximum_context_tokens": 1048576,
+    "rms_norm_epsilon": 0.00001,
+    "lora_rms_norm_epsilon": 0.000001,
+    "first_routed_layer": 1
+  },
+  "hybrid_attention": {
+    "period": 4,
+    "global_phase": 3,
+    "kda_layer_count": 69,
+    "mla_layer_count": 24,
+    "final_layer_is_global": true,
+    "uses_position_encoding": false
+  },
+  "kda": {
+    "head_count": 96,
+    "key_dimension": 128,
+    "value_dimension": 128,
+    "short_conv_kernel": 4,
+    "minimum_log_decay": -5.0,
+    "a_log_source_head_count": 128,
+    "qk_l2_normalized": true,
+    "full_rank_output_gate": true,
+    "state_element_type": "fp32",
+    "state_layout": "transposed"
+  },
+  "mla": {
+    "query_head_count": 96,
+    "query_lora_rank": 1536,
+    "kv_lora_rank": 512,
+    "qk_nope_dimension": 128,
+    "qk_unrotated_dimension": 64,
+    "value_head_dimension": 128,
+    "output_gate": true,
+    "uses_nope": true
+  },
+  "attnres": {
+    "block_size_layers": 12,
+    "layer_block_count": 8,
+    "embedding_representation_count": 1,
+    "maximum_candidate_representations": 9,
+    "retrieval_sites_per_layer": 2,
+    "final_output_retrieval": true
+  },
+  "moe": {
+    "routed_expert_count": 896,
+    "experts_per_token": 16,
+    "shared_expert_count": 2,
+    "latent_dimension": 3584,
+    "expert_intermediate_dimension": 3072,
+    "dense_intermediate_dimension": 33792,
+    "routed_scaling_factor": 1.0,
+    "router_activation": "sigmoid",
+    "router_bias": "frozen_quantile_balancing_bias",
+    "renormalize_selected_probabilities": true,
+    "activation": "situ_glu",
+    "situ_gate_beta": 4.0,
+    "situ_up_beta": 25.0
+  },
+  "quantization": {
+    "routed_expert_weight_format": "mxfp4_e2m1",
+    "routed_expert_scale_format": "e8m0",
+    "routed_expert_group_size": 32,
+    "routed_expert_activation_format": "bf16",
+    "non_expert_weight_format": "bf16",
+    "non_expert_activation_format": "bf16",
+    "accumulator_format": "fp32",
+    "quantized_components": [
+      "routed_experts"
+    ]
+  },
+  "speculation": {
+    "base_checkpoint_mtp_layer_count": 0,
+    "optional_external_draft_architecture": "eagle3",
+    "optional_external_draft_layer_count": 1,
+    "training_unroll_steps": 7
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  },
+  "tokens": {
+    "end_of_text": 163585
+  }
+}

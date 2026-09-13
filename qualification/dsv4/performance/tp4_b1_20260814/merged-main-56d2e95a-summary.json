@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-14",
+  "source": {
+    "repository": "https://github.com/sparkpipe/sparkpipe",
+    "commit": "56d2e95a7d6afd3f12404e782a36c146389bc21a",
+    "pull_request": 637,
+    "pull_request_head": "beb2607f5b76cb59b8e1eff093a9177c78306c11",
+    "cuda_ci": "https://github.com/sparkpipe/sparkpipe/actions/runs/31773357512",
+    "cuda_ci_result": "success",
+    "cuda_target": "sm_121a",
+    "node_checkouts_clean": true
+  },
+  "model": {
+    "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "tp_size": 4,
+    "pp_size": 1,
+    "active_requests": 1,
+    "speculation": false
+  },
+  "workload": {
+    "input": "qualification/dsv4/performance/tp4_b1_20260813/dsv4-tp4-pp4-b1-compsec076-o128.json",
+    "input_sha256": "e498f1fc88854044eafa64c41ce308b73d54f0a351fe156a513d7ff7ca630ead",
+    "generated_tokens": 128,
+    "timed_post_first_token_intervals": 127,
+    "cached_prefill": true
+  },
+  "runs": [
+    {
+      "receipt": "merged-main-56d2e95a-run1.json",
+      "receipt_sha256": "5976ae0ae7c3d76867b7531e44b1dda3887716d0f6b65ae3c4fe7f6f9764d436",
+      "decode_tokens_per_second": 33.13658558698103,
+      "decode_seconds_after_first": 3.832621791,
+      "inter_token_median_seconds": 0.03005025,
+      "inter_token_p95_seconds": 0.031082458
+    },
+    {
+      "receipt": "merged-main-56d2e95a-run2.json",
+      "receipt_sha256": "8e522ec392dc8cedc2be2b49d9987caf97843b6cf8e7de94f989d21000e19351",
+      "decode_tokens_per_second": 32.87577545249978,
+      "decode_seconds_after_first": 3.86302675,
+      "inter_token_median_seconds": 0.030246583,
+      "inter_token_p95_seconds": 0.031394875
+    },
+    {
+      "receipt": "merged-main-56d2e95a-run3.json",
+      "receipt_sha256": "8849040c96cf33f0559de8592b9525a5fe1f8a60b78caca99c36862c15f85031",
+      "decode_tokens_per_second": 32.85407842235821,
+      "decode_seconds_after_first": 3.865577916,
+      "inter_token_median_seconds": 0.030222042,
+      "inter_token_p95_seconds": 0.031778417
+    }
+  ],
+  "result": {
+    "decode_tokens_per_second_mean": 32.95547982061301,
+    "decode_tokens_per_second_median": 32.87577545249978,
+    "prior_main_commit": "6cfd216bab72368923aff08819de08ea331d26b2",
+    "prior_main_mean_tokens_per_second": 31.6733423610704,
+    "mean_gain_percent": 4.048001770468268,
+    "all_runs_token_identical_to_prior_main": true,
+    "token_count": 128,
+    "token_ids_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083"
+  },
+  "rank_artifacts": [
+    {
+      "rank": 0,
+      "model_driver_sha256": "33f39f2fe92d9e77a49722ac90c4732d7c57ec453a239ed24a35e9c981ae30c7",
+      "hidden_transport_sha256": "77ef43d5646ad56dddde4003785463e8a3a3a569596f34e87f4a2ca94b8cdf27"
+    },
+    {
+      "rank": 1,
+      "model_driver_sha256": "be93a1bbf0712278582f39cf9d358771f42e4c751d704c4801a805ecfd0faa34",
+      "hidden_transport_sha256": "dec2a64d68639d2f8defbb7ea9aab450b8136efbbfa4d56fc00821abb2a6f9d5"
+    },
+    {
+      "rank": 2,
+      "model_driver_sha256": "d012b405e6f65b133c5261a9baa7f675b8ecb7bf40e004c8c41154f33a573fe4",
+      "hidden_transport_sha256": "5bfb6e5c27f5c06e00f60c9ac465e24208546e88b77b94f0dc065a6b208d08d8"
+    },
+    {
+      "rank": 3,
+      "model_driver_sha256": "4d36783c4ecd723abaca26763348f78d3f86587fb366ae8595b8fc466daaee64",
+      "hidden_transport_sha256": "ced4e62ed58ad1e00441314c323353fb39353287d583b0096871900be9bb0376"
+    }
+  ],
+  "common_artifacts": {
+    "model_residentd_sha256": "e2e0fefd5f8370263421788229b325e3929be672b1d6c8852ef6e0d9f4f73468",
+    "model_batch_sha256": "acf37e13ff0d63e30516090bb5f2c92eb6d0ac610c325c7c9e420f84513bd37d",
+    "serving_adapter_sha256": "cf7b2f5d3f135d545b454ea5e00ddf5785f9c51867b1e657ff8d7d44fa527ba9",
+    "deployment_sha256": "8140a51e1effc12a03b34fa303808c828943c21050dcee957fae85ecd45a2b49",
+    "stage_config_sha256": "1a9ecf04c7fe3b5efeb6f0a3857319c028fc9f84338c915162351452ee9eb5c9"
+  },
+  "notes": [
+    "Throughput excludes time to first token and uses one real request without speculation.",
+    "Every rank cloned and detached the exact merged main commit, remained clean, and rebuilt locally with CUDA 13 for sm_121a.",
+    "Rank-local driver and transport builds are hashed separately because their native link products are not reproducible across hosts.",
+    "Raw receipts contain all ready, accepted, token, and terminal events and no credentials or private network addresses."
+  ]
+}

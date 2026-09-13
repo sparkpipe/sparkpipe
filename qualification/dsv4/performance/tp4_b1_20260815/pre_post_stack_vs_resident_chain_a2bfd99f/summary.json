@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-08-15",
+  "status": "retained_exact_pre_post_stack",
+  "measurement_kind": "direct_interleaved_end_to_end_cached_kv_decode",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "workload": {
+    "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+    "adapter_id": "spark.dsv4.flash-0731.serving-adapter.tp4.v1",
+    "layout": "TP4",
+    "ranks": [
+      "spark4",
+      "spark5",
+      "spark6",
+      "spark7"
+    ],
+    "stage_count": 4,
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "generated_tokens": 128,
+    "batch_sha256": "ad47693813d04ed65fc67178ab2d783e633282c14ed5445f092f67939aa40b7d",
+    "speculation": false,
+    "prefill": "resident cached prompt KV",
+    "timed_intervals": 127,
+    "linear_weight_codec": 5,
+    "expert_weight_codec": 7,
+    "kv_cache_codec": 1
+  },
+  "comparison": {
+    "control": "resident-chain combined control",
+    "candidate": "retained pre-post compute stack with canonical separate Query, KV, and indexer post operations"
+  },
+  "correctness": {
+    "token_count": 128,
+    "token_vector_encoding": "comma-separated decimal token IDs plus trailing newline",
+    "token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "all_control_runs_exact": true,
+    "all_candidate_runs_exact": true,
+    "all_process_status_zero": true
+  },
+  "identity": {
+    "control_driver_sha256": "a2bfd99f328100a7d53c16b48c3de5fdc6eb140c474b43b222a654f5b118037f",
+    "candidate_driver_sha256": "53c758ae8f8e84ec950e3103a009c0189758ac8a11698f5cd416105a8cf4eb87",
+    "control_runtime_root": "/tmp/dsv4-chain-combined-a14c-runtime",
+    "candidate_runtime_root": "/tmp/dsv4-no-postfusions-53c758ae-runtime"
+  },
+  "result": {
+    "control_tokens_per_second": [
+      37.910521318921965,
+      38.0169913326657,
+      38.07812887092195
+    ],
+    "candidate_tokens_per_second": [
+      40.33489449298977,
+      40.25983974464909,
+      40.16752651941226
+    ],
+    "paired_delta_percent": [
+      6.394987696615351,
+      5.899594716366341,
+      5.487133192844107
+    ],
+    "control_mean_tokens_per_second": 38.0018805075032,
+    "candidate_mean_tokens_per_second": 40.25408691901704,
+    "aggregate_delta_percent": 5.92656568947727,
+    "mean_paired_delta_percent": 5.927238535275266,
+    "positive_pairs": 3,
+    "pair_count": 3,
+    "directly_measured": true
+  },
+  "receipt_sha256": {
+    "no-post-interleaved-pair1-control-o128.json": "474cea51d8b8ef62c2bb2c7aa64a258119ab124467c56f7890c8d3898a959aea",
+    "no-post-interleaved-pair1-candidate-o128.json": "50510ebb5f1c9026a4b4451f87a5ae443c0cf65d78abb3b7ae638e98f98808de",
+    "no-post-interleaved-pair2-control-o128.json": "9eabd22864890183370975857323273c2a37624bfb0c546e6a691c80627862e7",
+    "no-post-interleaved-pair2-candidate-o128.json": "0df60d44f2cca1613650c47c6355212ae85095f3944c9091a084a7b289c21eaf",
+    "no-post-interleaved-pair3-control-o128.json": "bcf4f72c1a4c5de1fcb6ed5302b68f366062aa6bf9d12124d2f0b8107406c94a",
+    "no-post-interleaved-pair3-candidate-o128.json": "6ee7bb6125bfbdcde02cdc01f98c0151fb480e492cd15bca12ec162bea52fcb1"
+  },
+  "decision": "retain the exact pre-post stack; this direct comparison already contains retained component work, so component deltas must not be added to it"
+}

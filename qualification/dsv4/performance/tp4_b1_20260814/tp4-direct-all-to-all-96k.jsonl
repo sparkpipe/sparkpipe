@@ -1,0 +1,4 @@
+{"rank":0,"operation":"bf16-sum","payload_bytes":98304,"iterations":1000,"credits":1,"inflight":1,"direct_all_to_all_max_payload_bytes":98304,"split_ring_min_payload_bytes":655360,"memory_mode":1,"status":0,"result":10.0,"average_us":75.861}
+{"rank":1,"operation":"bf16-sum","payload_bytes":98304,"iterations":1000,"credits":1,"inflight":1,"direct_all_to_all_max_payload_bytes":98304,"split_ring_min_payload_bytes":655360,"memory_mode":1,"status":0,"result":10.0,"average_us":75.860}
+{"rank":2,"operation":"bf16-sum","payload_bytes":98304,"iterations":1000,"credits":1,"inflight":1,"direct_all_to_all_max_payload_bytes":98304,"split_ring_min_payload_bytes":655360,"memory_mode":1,"status":0,"result":10.0,"average_us":75.864}
+{"rank":3,"operation":"bf16-sum","payload_bytes":98304,"iterations":1000,"credits":1,"inflight":1,"direct_all_to_all_max_payload_bytes":98304,"split_ring_min_payload_bytes":655360,"memory_mode":1,"status":0,"result":10.0,"average_us":75.862}

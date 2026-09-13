@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "experiment": "dsv4_tp4_b1_weight_read_ahead_device_queue",
+  "status": "REJECTED_BY_PRODUCTION_OVERLAP_GATE",
+  "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+  "host": "spark1",
+  "gpu": "NVIDIA GB10",
+  "driver": "580.159.03",
+  "compute_capability": "12.1",
+  "sm_count": 48,
+  "source": "/private/tmp/dsv4_weight_readahead_queue_probe.cu",
+  "source_sha256": "b0c639b1a342ee7e732c19244f7f6a8c2ff1bf3793ca80375bee0999fb6bbd4c",
+  "binary_sha256": "584fea8fb050675f5c65d1f6dead03eff79b782d390fbc7141a7cd4dca69c727",
+  "production_read_ahead_kernel_sha256": "a7261f234ac6515fa4eda8daf6d543977511bdc6e73e6ec579d69a70c8bd3b0f",
+  "production_read_ahead_runtime_sha256": "cf0d00b4491665a8d2533e4503e3c0e7ee48bd76a07d012ab593ab988722adac",
+  "production_dsv4_module_sha256": "34351078e4d56eed410a533fa0b23c29e3e12aa239c7867fdf3382f5d089b909",
+  "production_trace": {
+    "read_ahead_launches_per_full_step": 129,
+    "launches_per_layer": 3,
+    "phase_0": "TP-sharded attention WQ_B payload and E8M0 scales under the attention-projection collective",
+    "phase_1": "HC FFN function bytes under the attention-output collective",
+    "phase_2": "next-layer HC attention function bytes, or final HC head bytes, under the FFN-output collective",
+    "arm": "primary records source-ready; auxiliary stream waits and launches read-ahead; auxiliary records completion",
+    "join": "collective continuation makes primary wait for read-ahead completion before the consumer island"
+  },
+  "shape": {
+    "layers": 43,
+    "tasks": 129,
+    "tp_degree": 4,
+    "rows": 1,
+    "wq_b_payload_bytes_per_layer": 8388608,
+    "wq_b_scale_bytes_per_layer": 65536,
+    "hc_function_bytes": 1572864,
+    "hc_head_bytes": 262144,
+    "distinct_weight_storage_bytes": 497483776,
+    "read_ahead_sector_bytes": 32,
+    "collective_window_ns": 60000,
+    "consumer": "48-CTA full-payload and auxiliary-byte consumer after collective and read-ahead completion"
+  },
+  "control": {
+    "description": "production source-event, one read-ahead kernel launch per task, completion-event join",
+    "read_ahead_block_capacity": 48,
+    "launches_per_step": 129
+  },
+  "candidate": {
+    "description": "immutable preallocated descriptors and one persistent device task-queue kernel per model step",
+    "publication": "primary-stream device generation write",
+    "completion": "device generation word waited by the primary stream",
+    "target_or_spine_quantization_change": false,
+    "read_ahead_bytes_or_consumer_change": false,
+    "kernel_launches_per_step": 1
+  },
+  "measurement": {
+    "independent_process_runs": 3,
+    "paired_repetitions_per_candidate_per_run": 31,
+    "order": "interleaved and alternating control-candidate/candidate-control",
+    "cache_condition": "256 MiB device flush before each model step; 497.5 MB distinct sequential task storage",
+    "timed_scope": "all 129 collective waits, read-aheads, completion joins, and full-byte consumers",
+    "statistic": "CUDA event median",
+    "all_129_consumer_checksums_exact": true
+  },
+  "first_run_residency_sweep": [
+    {
+      "persistent_blocks": 1,
+      "control_median_ms": 9.000704,
+      "candidate_median_ms": 38.888962,
+      "gain_percent": -76.855377
+    },
+    {
+      "persistent_blocks": 2,
+      "control_median_ms": 9.001184,
+      "candidate_median_ms": 27.122911,
+      "gain_percent": -66.813354
+    },
+    {
+      "persistent_blocks": 4,
+      "control_median_ms": 9.004256,
+      "candidate_median_ms": 17.184511,
+      "gain_percent": -47.602486
+    },
+    {
+      "persistent_blocks": 8,
+      "control_median_ms": 9.006112,
+      "candidate_median_ms": 13.472512,
+      "gain_percent": -33.151947
+    }
+  ],
+  "best_candidate_repeat_runs": [
+    {
+      "persistent_blocks": 8,
+      "control_median_ms": 9.006112,
+      "candidate_median_ms": 13.472512,
+      "gain_percent": -33.1519467194
+    },
+    {
+      "persistent_blocks": 8,
+      "control_median_ms": 9.004768,
+      "candidate_median_ms": 13.415392,
+      "gain_percent": -32.8773397005
+    },
+    {
+      "persistent_blocks": 8,
+      "control_median_ms": 9.004512,
+      "candidate_median_ms": 13.477472,
+      "gain_percent": -33.1884199055
+    }
+  ],
+  "best_candidate_aggregate": {
+    "persistent_blocks": 8,
+    "control_mean_of_medians_ms": 9.0051306667,
+    "candidate_mean_of_medians_ms": 13.4551253333,
+    "gain_percent": -33.0728592742,
+    "regression_ms_per_step": 4.4499946667,
+    "all_independent_runs_negative": true
+  },
+  "diagnosis": {
+    "one_to_four_blocks": "insufficient read-ahead throughput misses the 60 us collective window",
+    "eight_or_more_blocks": "resident polling and worker CTAs contend with the full-byte consumers; initial 12, 24, and 48 block probes regressed further",
+    "fundamental_issue": "a CUDA CTA cannot relinquish occupancy while waiting for the next task, so eliminating launches converts an intermittent overlap kernel into permanent consumer interference"
+  },
+  "decision": {
+    "worth_production_integration": false,
+    "worth_full_ring_test": false,
+    "ci": "NOT_RUN",
+    "github": "NOT_RUN",
+    "production_source_edit": "NOT_MADE",
+    "live_ranks": "NOT_TOUCHED"
+  }
+}

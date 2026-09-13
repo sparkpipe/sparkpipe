@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "provider_map_kind": "spark_hardware_provider_map",
+  "executables": {
+    "cuda_characterize": "build/spark_cuda_characterize",
+    "model_kernel_characterize": "build/spark_model_kernel_characterize",
+    "nvme_characterize": "build/spark_nvme_characterize",
+    "transport_characterize": "build/spark_transport_characterize",
+    "pmtu_characterize": "build/spark_pmtu_characterize",
+    "topology_characterize": "build/spark_topology_characterize"
+  },
+  "providers": {
+    "model_kernel_characterize": {
+      "kimi_k3_mxfp4_experts_bf16_rest": "build/hardware/providers/libspark_k3_production_probe.so",
+      "glm52_fp8_experts_bf16_rest": "build/hardware/providers/libspark_glm52_production_probe.so",
+      "qwen38_27b_27b_bf16": "build/hardware/providers/libspark_qwen38_27b_production_probe.so",
+      "dsv4_flash_native_mixed_precision": "build/hardware/providers/libspark_dsv4_flash_production_probe.so",
+      "dsv4_pro_native_mixed_precision": "build/hardware/providers/libspark_dsv4_pro_production_probe.so"
+    },
+    "transport_characterize": {
+      "tcp": "build/hardware/providers/libspark_tcp_production_probe.so",
+      "mapped_host": "build/hardware/providers/libspark_mapped_host_rdma_production_probe.so",
+      "gpudirect": "build/hardware/providers/libspark_gpudirect_rdma_production_probe.so"
+    },
+    "topology_characterize": {
+      "default": "build/hardware/providers/libspark_topology_production_probe.so"
+    }
+  },
+  "pmtu": {
+    "remote_command_template": [
+      "ssh",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      "{peer}",
+      "--"
+    ],
+    "remote_executable": "/opt/sparkpipe/bin/spark_pmtu_characterize",
+    "port_base": 47000,
+    "port_span": 1000,
+    "startup_seconds": 10.0,
+    "server_idle_timeout_seconds": 60,
+    "local_bind_address": "127.0.0.1"
+  }
+}

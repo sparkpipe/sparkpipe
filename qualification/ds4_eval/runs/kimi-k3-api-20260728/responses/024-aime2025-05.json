@@ -1,0 +1,61 @@
+{
+  "case": {
+    "answer": "279",
+    "choices": [],
+    "domain": "Combinatorics, Number Theory",
+    "id": "aime2025-05",
+    "index": 24,
+    "question": "There are $8!= 40320$ eight-digit positive integers that use each of the digits 1, 2, 3, 4, 5, 6, 7, 8 exactly once. Let N be the number of these integers that are divisible by $22$. Find the difference between $N$ and 2025.",
+    "source": "AIME2025",
+    "title": "There are $8!= 40320$ eight-digit positive integers that use"
+  },
+  "elapsed_ms": 69945.118,
+  "finished_at": "2026-07-28T17:33:03.176912+00:00",
+  "format": "ds4-eval-kimi-result-v1",
+  "prompt": {
+    "sha256": "fa46a8e6ec18f74e8e0f4ec1109067d451e78a4d1b80d7f08f563ad2119eee61",
+    "system": "You are solving a hard benchmark question. Reason carefully. The final answer must follow the requested format exactly.",
+    "user": "There are $8!= 40320$ eight-digit positive integers that use each of the digits 1, 2, 3, 4, 5, 6, 7, 8 exactly once. Let N be the number of these integers that are divisible by $22$. Find the difference between $N$ and 2025.\n\nSolve the problem. At the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <integer>"
+  },
+  "request": {
+    "attempts": 1,
+    "endpoint": "https://api.kimi.com/coding/v1/chat/completions",
+    "max_tokens": 16000,
+    "model": "k3",
+    "stream": true,
+    "temperature": 1.0
+  },
+  "response": {
+    "content": "Divisibility by \\(22\\) requires divisibility by both \\(2\\) and \\(11\\).\n\nFor divisibility by \\(11\\), let \\(A\\) be the sum of digits in odd positions. Since the total digit sum is \\(36\\), the alternating sum is\n\n\\[\nA-(36-A)=2A-36.\n\\]\n\nThis must be a multiple of \\(11\\). The only possible value is \\(0\\), so \\(A=18\\). Thus the digits in odd positions must be a 4-element subset of \\(\\{1,\\dots,8\\}\\) summing to \\(18\\).\n\nThere are \\(8\\) such subsets, and each contains exactly \\(2\\) even and \\(2\\) odd digits; hence the complementary even-position set also has exactly \\(2\\) even digits.\n\nFor each subset:\n- arrange odd-position digits: \\(4!\\)\n- choose the last digit from the \\(2\\) even digits in the even-position set: \\(2\\)\n- arrange the remaining even-position digits: \\(3!\\)\n\nSo\n\n\\[\nN=8\\cdot 4!\\cdot 2\\cdot 3! = 8\\cdot24\\cdot12=2304.\n\\]\n\nTherefore,\n\n\\[\nN-2025=2304-2025=279.\n\\]\n\nAnswer: 279",
+    "created": 1785259915,
+    "finish_reason": "stop",
+    "reasoning": "We need solve combinatorics. Need provide final answer only with line. Need think carefully. Problem: permutations of digits 1..8, 8-digit numbers. Divisible by 22 = 2*11. Since 22=2*11 coprime. Need count permutations divisible by 2 and 11.\nDivisible by 2: last digit even {2,4,6,8}. Divisible by 11: for 8-digit number digits d1...d8, alternating sum (d1 - d2 + d3 - d4 + d5 - d6 + d7 - d8) multiple of 11. Sum digits=36. Let S_odd positions sum A = d1+d3+d5+d7, even positions sum B=36-A. Alternating sum = A-B = 2A-36. Need ≡0 mod11 => 2A-36 ≡0 mod11 => 2A ≡36≡3 mod11 => A ≡ 3*6? inverse of 2 mod11=6 => A≡18≡7 mod11. A is sum of 4 distinct digits 1..8 min 10 max 26. Values congruent 7 mod11 in [10,26]: 18 only? 7,18,29; within 10-26 only18. So odd-position digits must sum 18, even-position sum 18 too. Need count permutations where positions odd set has sum 18, and last digit (position8 even) even.\nNeed count 4-subsets of {1..8} sum 18 for odd positions. Then assign to odd positions 4!, even positions 4!, but restrict d8 even. Need careful count directly.\nTotal without divisibility by 2 but 11: number of 4-subsets sum18 *4!*4!. Then among those, last digit even probability? Need count exactly.\nLet's enumerate 4-subsets sum18. Then count arrangements with pos8 even. Could count: choose odd set O sum18, even set E complement sum18 automatically. Need arrange odds in positions 1,3,5,7 (4!) and evens in positions 2,4,6,8 with position8 even (3! * number of even digits in E? Actually position8 must be one of even digits in E; count = e_E * 3! where e_E = number of even digits in E, because choose d8 among even digits in E, arrange remaining 3 in other even positions). Since complement of O. Need sum over O sum18 of 24 * 6 * e_E =144 * e_E? Wait 4! * (e_E*3!) =24*6*e=144 e. If e_E maybe related to e_O (number even in O): total evens=4, e_E=4-e_O. Sum over subsets. Could enumerate.\nAlternative count total divisible by 22 = total 11-divisible * fraction last even maybe not uniform because parity distribution correlated with sum? Need enumerate.\nLet's list 4-subsets of 1..8 sum18. Number? Let's compute systematically.\nAll 4-subsets sum18. Use complement also sum18 (since total36), so subsets pair up complement, self none (cannot equal complement as sets). Need list.\nGenerate by include 8 maybe.\nSubsets size4 sum18.\nWith 8: need 3 from1..7 sum10. Triples from1..7 sum10: {1,2,7},{1,3,6},{1,4,5},{2,3,5}. ({2,4,4} no) So with8: {8,1,2,7}, {8,1,3,6}, {8,1,4,5}, {8,2,3,5}. 4 subsets.\nWithout 8: need 4 from1..7 sum18. Max 7+6+5+4=22. Enumerate maybe include7: need 3 from1..6 sum11: triples sum11 from1..6: {1,4,6},{2,3,6},{2,4,5}. ({1,5,5} no,{3,4,4} no) => {7,1,4,6},{7,2,3,6},{7,2,4,5}. Without 8 and7: need 4 from1..6 sum18 max 6+5+4+3=18 exactly {6,5,4,3}=18. So one {3,4,5,6}. Total without8:4. Total 8 subsets. Complement pairing? List:\nA {1,2,7,8} complement {3,4,5,6} both in list yes.\nB {1,3,6,8} complement {2,4,5,7} (in list {7,2,4,5}) yes.\nC {1,4,5,8} complement {2,3,6,7} (list {7,2,3,6}) yes.\nD {2,3,5,8} complement {1,4,6,7} (list {7,1,4,6}) yes. 8 subsets =4 complementary pairs.\nNeed for each subset O, e_E = number even in complement = 4 - e_O. Compute e_O (# even digits among {2,4,6,8} in O):\nA {1,2,7,8}: evens 2,8 => e_O=2, e_E=2 (comp {3,4,5,6} evens4,6=2)\nB {1,3,6,8}: evens6,8=2, comp {2,4,5,7} evens2,4=2\nC {1,4,5,8}: evens4,8=2, comp {2,3,6,7} evens2,6=2\nD {2,3,5,8}: evens2,8=2, comp {1,4,6,7} evens4,6=2\nInteresting every sum18 4-subset has exactly 2 evens? Check {3,4,5,6}: evens4,6=2 yes. Seems all have 2 even. Because sum even 18, number of odd in subset even? Size4, sum even implies #odd even (0,2,4). Could be 4 odd sum? odd digits 1+3+5+7=16 not18; 0 odd all evens sum20; so #odd=2 #even=2. Yes. Thus every even-position set E also has exactly 2 even digits. Then for each O, position8 choices =2, remaining evens arrange 3! =6 =>12 even arrangements; odd arrangements24. Per subset 288. 8 subsets => N=2304. Difference N-2025=279. Need verify.\nLet's double-check divisibility by 11 condition and position parity. For an 8-digit number, standard test: (sum digits in odd places - sum even places) multiple of 11, where places counted from left? It doesn't matter sign; odd positions d1,d3,d5,d7 vs even d2,d4,d6,d8. Need A-B multiple 11. Total36. A-B range? A min10 max26 => diff -16 to16. Multiples of 11 possible -11,0,11. Our congruence gave A≡7 mod11 -> A=18 only within 10..26? Wait A-B=2A-36. If A=18 diff0. But could diff=±11? Then 2A-36=11 -> A=23.5 no; = -11 -> A=12.5 no. Since A integer and total even, diff even? A-B=2A-36 even indeed cannot be ±11 odd. So only 0. Good. A=18. Fine.\nCount maybe alternative: total 11-divisible = 8*24*24=4608. Among these exactly half end even? Since every position parity sets have two even two odd? For each 11-divisible permutation, odd set has 2 even 2 odd and even set has 2 even 2 odd. Last digit position8 is in even-position set; among 4 positions assigned to E with exactly 2 even digits, probability last even =1/2 for random arrangement, so N=2304. Yes.\nNeed final answer exactly one line format. Could include concise reasoning then final line. User says solve problem, at end write exactly one final line and do not write anything after it. We can provide explanation before final. Ensure final line exactly Answer: 279. Need no extra after. Keep moderate explanation. Need be careful no markdown interfering? final line exact.\nLet's craft with reasoning concise. Final line only at end. Ensure difference between N and 2025 could mean absolute difference? N-2025=279 positive. If N were less? no. Answer 279.\nNeed final channel only. Done.",
+    "response_id": "chatcmpl-K5y1hr1pXfPPglnwiea14ers",
+    "response_model": "k3",
+    "usage": {
+      "cached_tokens": 219,
+      "completion_tokens": 2238,
+      "completion_tokens_details": {
+        "reasoning_tokens": 1956
+      },
+      "prompt_tokens": 219,
+      "prompt_tokens_details": {
+        "cached_tokens": 219
+      },
+      "total_tokens": 2457
+    }
+  },
+  "score": {
+    "expected": "279",
+    "extracted": "279",
+    "passed": true,
+    "text_source": "content"
+  },
+  "source": {
+    "commit": "54b36ed9ba42da31b24f2d1a5feb075c2475dbb1",
+    "ds4_eval_c_sha256": "19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23",
+    "repository": "https://github.com/antirez/ds4"
+  },
+  "started_at": "2026-07-28T17:31:53.231661+00:00",
+  "status": "ok"
+}

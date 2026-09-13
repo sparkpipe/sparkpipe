@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/model_serving_adapter.so"
+  },
+  "driver": {
+    "shared_object_path": "lib/model_driver.so",
+    "program_name": "resident_decode"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-rdma",
+    "control_port_base": 59700
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 1,
+    "max_active_sequences": 1,
+    "max_input_rows": 1,
+    "resident_sequence_capacity": 1,
+    "kv_logical_page_capacity": 32,
+    "kv_physical_page_capacity": 32
+  },
+  "nodes": [
+    {
+      "rank_index": 0,
+      "stage_index": 0,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark4",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark4",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 1,
+      "stage_index": 1,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark5",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark5",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 2,
+      "stage_index": 2,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark6",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark6",
+        "port": 18480
+      }
+    },
+    {
+      "rank_index": 3,
+      "stage_index": 3,
+      "runtime_root": "/tmp/dsv4-integrated-lean-3d962820-runtime",
+      "node_target": "cuda.sm121.dsv4.flash.resident_decode_stage.linear_fp8.expert_mxfp4.kv_bf16",
+      "transport_host": "spark7",
+      "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
+      "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_backing_maximum_bytes": 1073741824,
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "spark7",
+        "port": 18480
+      }
+    }
+  ]
+}
+
+

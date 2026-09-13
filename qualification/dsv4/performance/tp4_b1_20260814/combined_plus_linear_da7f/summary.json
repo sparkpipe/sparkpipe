@@ -1,0 +1,84 @@
+{
+  "schema": "sparkpipe.dsv4.tp4_b1.combined_plus_linear.full_ring.v1",
+  "timestamp_utc": "2026-08-14T21:28:37Z",
+  "status": "accepted_full_ring",
+  "workload": {
+    "topology": "TP4 PP1 on spark4-spark7",
+    "batch_size": 1,
+    "request_count": 1,
+    "prompt_tokens": 128,
+    "output_tokens": 128,
+    "timed_decode_intervals": 127,
+    "prompt_kv_resident": true,
+    "speculation": false,
+    "target_spine_precision": "BF16",
+    "kv_precision": "BF16"
+  },
+  "identity": {
+    "base_commit": "da7f91090c0d40729352b4e4180ad231971c90a2",
+    "candidate_archive_sha256": "5615871cf7e38ecf4b85cdd7d11494455c6a6e248461b6be8ffbceae46481295",
+    "candidate_driver_sha256": "045b31d3a68c2cf41f79caa96af9471388b7410496d09c54108c4e31b2aad6fe",
+    "validator_receipt_sha256": "0deb54f8ab2ebc6b87068f85a0cf62a4cef47b9404c9fea413d2bac291c0c27a",
+    "validator_result": "PASS"
+  },
+  "control": {
+    "description": "retained resident chain control",
+    "mean_decode_tokens_per_second": 37.979691893948036,
+    "mean_milliseconds_per_token": 26.329857577283122,
+    "rates": [
+      37.9478844820082,
+      37.976487648898846,
+      38.01470355093706
+    ]
+  },
+  "candidate": {
+    "description": "accepted combined exact wins plus common runtime LinearPair shape selector",
+    "mean_decode_tokens_per_second": 39.52016926439891,
+    "mean_milliseconds_per_token": 25.30352827952756,
+    "rates": [
+      39.67503440175373,
+      39.28468314563749,
+      39.6007902458055
+    ]
+  },
+  "comparison": {
+    "delta_percent": 4.056055469729447,
+    "milliseconds_saved_per_token": 1.026329297755561,
+    "paired_delta_percent": [
+      4.551373398863379,
+      3.4447511545385723,
+      4.17229794451297
+    ],
+    "positive_pairs": 3,
+    "pair_count": 3,
+    "previous_accepted_combined_delta_percent": 2.711998614256461,
+    "normalized_incremental_delta_percent": 1.3085684959950106
+  },
+  "correctness": {
+    "all_measured_vectors_token_count": 128,
+    "all_six_vectors_bitwise_exact": true,
+    "canonical_token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083",
+    "smoke_token_csv_newline_sha256": "211462f2525f73b76137ee1ce9bd4e015ad8a3fd825a7c45d38fff0488598083"
+  },
+  "acceptance": {
+    "policy": "retain every repeatable bit-exact positive end-to-end delta",
+    "decision": "accepted",
+    "reason": "all paired full-ring deltas are positive and all token vectors are bitwise exact"
+  },
+  "artifacts": {
+    "control_warmup_sha256": "40e4331bb28fe196c889b8fd0431135a1ee473b7532ff75cb7e0f2ce65909a3f",
+    "candidate_warmup_sha256": "7d3b3458a77bc3e232a0a9a2512e6302e976ac62393b24032e6b6c11f92eebcb",
+    "exact_smoke_sha256": "76ce03b4935dfa7a7ce5ed0410980f6b56ce96413aa574efe3254a227a2036b1",
+    "control_run_sha256": [
+      "b94f34225fbd6679b57561a339a6c5ae3ce9d78c009cffb5a7126540aa47fdbd",
+      "5c4dc592a567124cf7659f231e592d4b7d63121b5229f9a66fbef98251d3af80",
+      "1018977a8b7915934a6bae5829ef0033fdec62170cc8ee736ba32bcdd90e0e76"
+    ],
+    "candidate_run_sha256": [
+      "c81a884d703d3d84769df276ec7b86384b6843297c6cbbd80711224122ff4918",
+      "9a0f28260f082d3233874b12d89a483410c55280e823cedf0bef6afe1fcd5f70",
+      "7d48545ae817011d150e739cfdc3c9cf3b16d5fdd60a99215c52ce704841fb08"
+    ]
+  },
+  "qualification_state": "branch evidence; merged-main zero-drift qualification pending"
+}

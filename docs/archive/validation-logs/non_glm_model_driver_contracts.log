@@ -1,0 +1,5 @@
+cc -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Itests -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -mcpu=native tests/test_model_description.c build/libsparkpipe_compiler.a build/libglm52_host.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/test_model_description
+cc -Iinclude -Isrc -Imodel-families/common/include -Itests/cuda_stub -Itests -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -mcpu=native tests/test_stage_module_common.c model-families/common/src/spark_stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c  -o build/test_stage_module_common
+./build/test_stage_module_common
+python3 tests/test_model_driver_contracts.py
+PASS model-driver contracts: DSV4, K3, MiMo 2.5, and Qwen 3.6 compile under strict host syntax, match their package descriptors, and publish only through fail-closed ABI-4/ABI-6 rules

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "registry_kind": "spark_hardware_probe_registry",
+  "probes": [
+    {
+      "id": "cuda_characterize",
+      "executable": "build/spark_cuda_characterize",
+      "components": [
+        {"source": "tools/hardware/spark_cuda_characterize.cu", "role": "probe"}
+      ]
+    },
+    {
+      "id": "model_kernel_characterize",
+      "executable": "build/spark_model_kernel_characterize",
+      "components": [
+        {"source": "include/sparkpipe/spark_hardware_kernel_probe.h", "role": "provider_abi"},
+        {"source": "tools/hardware/spark_model_kernel_characterize.c", "role": "probe"}
+      ]
+    },
+    {
+      "id": "nvme_characterize",
+      "executable": "build/spark_nvme_characterize",
+      "components": [
+        {"source": "tools/hardware/spark_nvme_characterize.cu", "role": "probe"}
+      ]
+    },
+    {
+      "id": "transport_characterize",
+      "executable": "build/spark_transport_characterize",
+      "components": [
+        {"source": "include/sparkpipe/spark_hardware_transport_probe.h", "role": "provider_abi"},
+        {"source": "tools/hardware/spark_transport_characterize.c", "role": "probe"}
+      ]
+    },
+    {
+      "id": "pmtu_characterize",
+      "executable": "build/spark_pmtu_characterize",
+      "components": [
+        {"source": "tools/hardware/spark_pmtu_characterize.c", "role": "probe"}
+      ]
+    },
+    {
+      "id": "topology_characterize",
+      "executable": "build/spark_topology_characterize",
+      "components": [
+        {"source": "include/sparkpipe/spark_hardware_topology_probe.h", "role": "provider_abi"},
+        {"source": "tools/hardware/spark_topology_characterize.c", "role": "probe"}
+      ]
+    }
+  ]
+}

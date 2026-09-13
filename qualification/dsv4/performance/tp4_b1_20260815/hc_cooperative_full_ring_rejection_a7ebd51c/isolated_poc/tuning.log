@@ -1,0 +1,6 @@
+grid=1 control_median_ms=1.231200 candidate_median_ms=3.194208 gain_percent=-159.438599 model_step_saving_ms=-1.963008 exact=1
+grid=2 control_median_ms=1.230112 candidate_median_ms=2.115648 gain_percent=-71.988251 model_step_saving_ms=-0.885536 exact=1
+grid=4 control_median_ms=1.217632 candidate_median_ms=1.414336 gain_percent=-16.154627 model_step_saving_ms=-0.196704 exact=1
+grid=8 control_median_ms=1.216544 candidate_median_ms=1.232544 gain_percent=-1.315194 model_step_saving_ms=-0.016000 exact=1
+grid=12 control_median_ms=1.221376 candidate_median_ms=1.228896 gain_percent=-0.615706 model_step_saving_ms=-0.007520 exact=1
+grid=16 control_median_ms=1.215616 candidate_median_ms=1.058144 gain_percent=12.954092 model_step_saving_ms=0.157472 exact=1

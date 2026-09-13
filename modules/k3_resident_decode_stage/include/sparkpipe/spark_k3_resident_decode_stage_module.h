@@ -1,0 +1,48 @@
+#ifndef SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_MODULE_H
+#define SPARKPIPE_SPARK_K3_RESIDENT_DECODE_STAGE_MODULE_H
+
+#include <stdint.h>
+
+#include "sparkpipe/spark_k3_bind.h"
+#include "sparkpipe/spark_k3_pack_load.h"
+#include "sparkpipe/spark_k3_pool_sizing.h"
+#include "sparkpipe/spark_status.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * K3 resident decode stage module: pack loading, per-layer binding, and the
+ * slice-scaled pool sizing. The dispatch into the CUDA driver family
+ * (K3StageSlice from inference/llms/kimi_k3/bind.cu) lives in the module's
+ * CUDA translation unit; this header is the CUDA-free core shared with host
+ * gates.
+ */
+
+/* The full K3 stack (93 layers) must fit one bound slice for the PP1
+ * placements (TP16); the PP4 stages bind at most 24. */
+#define SPARK_K3_MODULE_MAX_BOUND_LAYERS 93u
+/* Pass as first_layer/layer_count to SparkK3ModuleInitialize to take the
+ * slice bounds from the pack manifest (PP1 / TP16 placements). */
+#define SPARK_K3_MODULE_DERIVE_SLICE UINT32_MAX
+
+typedef struct SparkK3ModuleState
+{
+	SparkK3Pack pack;
+	SparkK3PoolSizing sizing;
+	uint32_t first_layer;
+	uint32_t layer_count;
+	uint32_t bound_count;
+	SparkK3BoundLayer bound[SPARK_K3_MODULE_MAX_BOUND_LAYERS];
+} SparkK3ModuleState;
+
+SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
+	const char *pack_path, uint32_t first_layer, uint32_t layer_count);
+void SparkK3ModuleDestroy(SparkK3ModuleState *state);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

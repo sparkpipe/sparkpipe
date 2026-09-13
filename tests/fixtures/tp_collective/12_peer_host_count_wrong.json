@@ -1,0 +1,20 @@
+{
+ "tp_collective": {
+  "backend": "nccl",
+  "backend_module_path": "lib/tp_device_collective.so",
+  "collective_identifier": 1001,
+  "listen_port": 5400,
+  "connect_timeout_milli": 5000,
+  "operation_timeout_milli": 30000,
+  "peer_hosts": [
+   "host0",
+   "host1",
+   "host2"
+  ],
+  "peer_ports": [
+   5000,
+   5001,
+   5002
+  ]
+ }
+}
