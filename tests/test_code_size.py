@@ -1544,6 +1544,13 @@ CEILING = 281184
 # in favor of main's better-attributed 281184). Measured exact: 283170 on
 # the rebased tree (1986 over the r23 pin).
 CEILING = 283170
+# wave-acc2 accuracy lane (lane/wave-acc2-accuracy): the 283170 pin was born
+# stale — pristine origin/main d1c3822 (post-#982/#983 wave-r3 roofline
+# merges) already measures 284757 (+1587 over the pin; the ratchet was not
+# re-run at those landings). The lane adds +436 authored lines
+# (tools/acc_parity_oracle.py + tests/test_acc_parity_oracle.py); measured
+# 285193 exact on this tree.
+CEILING = 285193
 
 
 ROOT = Path(__file__).resolve().parent.parent
