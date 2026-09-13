@@ -41,6 +41,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t cache_prefix_token_count;
 	uint32_t cache_published_token_count;
 	uint64_t cache_lookup_epoch;
+	uint64_t inflight_since_ns;
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelServingCacheIdentity cache_prefix_identity;
@@ -1966,6 +1967,38 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	return(SparkModelBatchSchedulerChooseWorkKind(available_by_kind,minimum_by_kind,engine->admission_open,engine->inflight_submission_count,engine->submission_capacity,&engine->next_work_kind,engine->work_kind_bypass_counts));
 }
 
+static void SparkModelBatchExpireStalledRequests(
+	SparkModelBatchEngine *engine)
+{
+	struct timespec timestamp = {0,0};
+	uint64_t now = 0ull;
+	uint32_t index,state;
+	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) == 0 )
+		now = (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) +
+		    (uint64_t)timestamp.tv_nsec;
+	if ( now == 0ull )
+		return;
+	for (index=0u; index<engine->request_capacity; index++)
+	{
+		state = engine->requests[index].state;
+		if ( state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT &&
+		     state != SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT )
+			continue;
+		if ( engine->requests[index].inflight_since_ns == 0ull )
+			engine->requests[index].inflight_since_ns = now;
+		else if ( now - engine->requests[index].inflight_since_ns >
+		          UINT64_C(240) * UINT64_C(1000000000) )
+		{
+			fprintf(stderr,
+			    "batch request expired id=%llu state=%u\n",
+			    (unsigned long long)engine->requests[index].request_id,
+			    state);
+			SparkModelBatchFailRequest(engine,
+			    &engine->requests[index],SPARK_STATUS_BUSY);
+		}
+	}
+}
+
 static void SparkModelBatchFailIdleRequests(
 	SparkModelBatchEngine *engine,
 	SparkStatus status)
@@ -1999,6 +2032,7 @@ SparkStatus SparkModelBatchEngineProgress(
 		SparkModelBatchFailIdleRequests(engine,(SparkStatus)engine->failed_status);
 		return((SparkStatus)engine->failed_status);
 	}
+	SparkModelBatchExpireStalledRequests(engine);
 	SparkModelBatchRefreshInflightKvPageCount(engine);
 	step = 0u;
 	misses = 0u;
