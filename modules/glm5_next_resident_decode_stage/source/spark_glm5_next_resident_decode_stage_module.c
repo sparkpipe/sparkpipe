@@ -2331,8 +2331,16 @@ static SparkStatus SparkGlm5NextLazyExperts(SparkGlm5NextTpChain *chain)
 	chain->wave.expert_lease_local_layer = chain->next_layer;
 	if ( chain->state->decode_lease_base_saved == 0 )
 		chain->state->decode_lease_base_saved = (const uint8_t *)address;
-	if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	{
+		const uint32_t *cover_saved = chain->wave.expert_cover;
+		void *miss_saved = chain->wave.expert_miss;
+		chain->wave.expert_cover = 0;
+		chain->wave.expert_miss = 0;
+		if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		chain->wave.expert_cover = cover_saved;
+		chain->wave.expert_miss = miss_saved;
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -2365,6 +2373,39 @@ static void SparkGlm5NextLazyWork(void *context)
 	fprintf(stderr,"LAZY enter slot=%u layer=%u\n",chain->slot_index,chain->next_layer);
 	status = SparkGlm5NextLazyExperts(chain);
 	fprintf(stderr,"LAZY experts slot=%u layer=%u status=%d\n",chain->slot_index,chain->next_layer,(int32_t)status);
+	if ( status == SPARK_STATUS_OK && chain->state->decode_cover_host != 0 )
+	{
+		SparkGlm5NextModuleState *st = chain->state;
+		SparkWeightdExpertKey ukeys[SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT];
+		uint32_t ucount = 0u,index,bit,appended = 0u;
+		SparkWeightdRouteKeys(chain->wave.first_layer_index + chain->next_layer,
+			chain->slot->host_group_row_offset +
+			    (chain->wave.first_layer_index + chain->next_layer) *
+			        (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u),
+			SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,
+			chain->wave.row_count * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,
+			ukeys,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,&ucount);
+		for (index=0u; index<ucount; index++)
+		{
+			bit = ukeys[index].layer *
+			    SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT +
+			    ukeys[index].expert;
+			if ( (st->decode_cover_host[bit / 32u] &
+			        (UINT32_C(1) << (bit % 32u))) != 0u )
+				continue;
+			if ( st->decode_union_count >= 1888u )
+				SparkGlm5NextGraphLeaseTrim(st);
+			if ( st->decode_union_count >= 2400u )
+				break;
+			st->decode_union_keys[st->decode_union_count] =
+				ukeys[index];
+			st->decode_union_count++;
+			st->decode_cover_host[bit / 32u] |=
+				UINT32_C(1) << (bit % 32u);
+			appended++;
+		}
+		chain->union_fed = appended;
+	}
 	cleanup = SparkGlm5NextLazyRelease(chain);
 	if ( cleanup == SPARK_STATUS_IO_ERROR || cleanup == SPARK_STATUS_BUSY )
 		cleanup = SparkGlm5NextLazyRelease(chain);
@@ -3019,21 +3060,19 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			fprintf(stderr,"GRAPH-FALLBACK-TO-CHAIN status=%d\n",
 				(int32_t)graph_status);
 		}
-		if ( chain->sweep_submitted == 0u )
+		SparkGlm5NextBuildWave(chain);
+		if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
+		     chain->slot->route_recorded != 0u &&
+		     chain->sweep_submitted == 0u )
 		{
-			SparkGlm5NextBuildWave(chain);
-			if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
-			     chain->slot->route_recorded != 0u )
-			{
-				SparkStatus submit_status;
-				chain->sweep_submitted = 1u;
-				submit_status = SparkWeightdWorkerSubmit(
-					state->lazy_pack->worker,
-					SparkGlm5NextSweepWork,chain);
-				if ( submit_status != SPARK_STATUS_OK )
-					SparkGlm5NextTpChainFail(chain,submit_status);
-				return;
-			}
+			SparkStatus submit_status;
+			chain->sweep_submitted = 1u;
+			submit_status = SparkWeightdWorkerSubmit(
+				state->lazy_pack->worker,
+				SparkGlm5NextSweepWork,chain);
+			if ( submit_status != SPARK_STATUS_OK )
+				SparkGlm5NextTpChainFail(chain,submit_status);
+			return;
 		}
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
@@ -3070,7 +3109,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 		{
 			if ( chain->wave.expert_lease_all != 0u &&
-			     chain->wave_rows == 1u )
+			     chain->wave_rows == 1u &&
+			     chain->next_layer >= 900u )
 			{
 				SparkStatus submit_status;
 				if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 ||
