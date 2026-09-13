@@ -372,6 +372,9 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 #define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 #define SPARK_PACK_LOAD_REGION_HOOK SparkQwen38MaxModuleRegionHook
 
+
+#define SPARK_PACK_LOAD_ORDINALS
+#define SPARK_PACK_LOAD_LINEAR_VIEW
 #include "sparkpipe/spark_pack_load_common.h"
 
 static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *state, const SparkQwen38MaxStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)

@@ -464,6 +464,9 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 		} \
 	} while (0)
 
+
+#define SPARK_PACK_LOAD_ORDINALS
+#define SPARK_PACK_LOAD_LINEAR_VIEW
 #include "sparkpipe/spark_pack_load_common.h"
 
 static SparkStatus SparkQwen38_27bModuleValidateEntry(SparkQwen38_27bModuleState *state, const SparkQwen38_27bStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)

@@ -393,6 +393,9 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 		(unsigned long long)(header)->directory_offset)
 #define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 
+
+#define SPARK_PACK_LOAD_ORDINALS
+#define SPARK_PACK_LOAD_LINEAR_VIEW
 #include "sparkpipe/spark_pack_load_common.h"
 
 static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState *state, const SparkQwen4FlashStagePackEntry *entry, uint64_t file_bytes, uint32_t *is_global)

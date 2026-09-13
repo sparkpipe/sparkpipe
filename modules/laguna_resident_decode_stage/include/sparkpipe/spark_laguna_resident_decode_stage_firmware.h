@@ -16,7 +16,10 @@ extern "C" {
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS UINT32_C(0)
+#define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYER_COUNT \
+	SPARK_LAGUNA_MODEL_LAYER_COUNT
 #ifndef SPARK_LAGUNA_RESIDENT_DECODE_STAGE_STAGE_COUNT
 #define SPARK_LAGUNA_RESIDENT_DECODE_STAGE_STAGE_COUNT 1u
 #endif
@@ -100,6 +103,18 @@ typedef struct SparkLagunaResidentDecodeStageFrameContext
 	void *hidden_output_bf16;
 	uint64_t hidden_output_bytes;
 } SparkLagunaResidentDecodeStageFrameContext;
+
+typedef struct SparkLagunaLinearView
+{
+	uint32_t abi_version;
+	uint32_t weight_format;
+	uint32_t input_dimension;
+	uint32_t output_dimension;
+	const void *weight_payload;
+	const uint8_t *weight_scale_e8m0;
+	uint64_t weight_payload_bytes;
+	uint64_t weight_scale_bytes;
+} SparkLagunaLinearView;
 
 static inline uint32_t SparkLagunaResidentDecodeStageSpanIsValid(uint32_t stage_count,uint32_t stage_index,uint32_t first_layer,uint32_t layer_count)
 {
