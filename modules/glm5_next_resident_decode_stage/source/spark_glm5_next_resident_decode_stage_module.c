@@ -2420,6 +2420,8 @@ static void SparkGlm5NextLazyWork(void *context)
 			st->decode_union_keys[st->decode_union_count] =
 				ukeys[index];
 			st->decode_union_count++;
+			st->decode_cover_host[bit / 32u] |=
+				UINT32_C(1) << (bit % 32u);
 			appended++;
 		}
 		chain->union_fed = appended;
