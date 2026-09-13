@@ -3211,6 +3211,20 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		    "HILL slot=%u rows=%u cov=%u lz=%u sw=%u\n",
 		    chain->slot_index,chain->wave_rows,chain->hill_covered,
 		    chain->hill_lazy,chain->hill_sweeps);
+		if ( (state->hbound_probes & (1u << 30u)) == 0u )
+		{
+			uint32_t local_token = 0u;
+			state->hbound_probes |= 1u << 30u;
+			if ( SparkGlm5NextLaunchCudaWaveHead(&chain->wave) == 0 &&
+			     cudaStreamSynchronize((cudaStream_t)chain->slot->stream) == cudaSuccess )
+			{
+				(void)cudaMemcpy(&local_token,chain->slot->output_token,sizeof(local_token),cudaMemcpyDeviceToHost);
+				fprintf(stderr,"HEADLOC v=%u\n",local_token);
+				chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_HEAD;
+				SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+				return;
+			}
+		}
 		if ( SparkGlm5NextLaunchCudaWaveHead(&chain->wave) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -3226,6 +3240,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( error == cudaSuccess && state->owns_final_head != 0u )
 			error = cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
 		launch_status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_head_unpack");
+		if ( (state->hbound_probes & (1u << 31u)) == 0u &&
+		     cudaStreamSynchronize((cudaStream_t)chain->slot->stream) == cudaSuccess )
+		{
+			state->hbound_probes |= 1u << 31u;
+			fprintf(stderr,"HEADFIN v=%u\n",
+			    chain->slot->host_output_token_ids[chain->first_row]);
+		}
 		if ( launch_status != SPARK_STATUS_OK )
 		{
 			SparkGlm5NextTpChainFail(chain,launch_status);
