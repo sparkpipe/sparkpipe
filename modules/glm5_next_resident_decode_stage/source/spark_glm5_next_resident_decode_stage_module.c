@@ -1634,6 +1634,7 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t active;
 	uint32_t union_fed;
 	uint32_t sweep_submitted;
+	uint32_t sweep_retries;
 
 	uint32_t spec_verify;
 	uint32_t tp_op_index;
@@ -3073,20 +3074,45 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_MLP:
 		if ( state->lazy_pack != 0 && (chain->wave.first_layer_index + chain->next_layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 		{
-			if ( chain->wave.expert_lease_all != 0u )
+			if ( chain->wave.expert_lease_all != 0u &&
+			     chain->wave_rows == 1u )
 			{
-				if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 )
+				SparkStatus submit_status;
+				if ( SparkGlm5NextLaunchCudaLayerMlpRoute(&chain->wave,chain->next_layer) != 0 ||
+				     cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
 				{
 					SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 					return;
 				}
-				if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+				if ( state->decode_miss_host != 0 &&
+				     state->decode_miss_host[0] != 0u )
 				{
-					SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+					if ( chain->sweep_retries <
+					     SPARK_GLM5_NEXT_ROUTE_SWEEP_RETRY_MAX )
+					{
+						chain->sweep_retries++;
+						submit_status =
+						    SparkWeightdWorkerSubmit(
+						        state->lazy_pack->worker,
+						        SparkGlm5NextSweepWork,
+						        chain);
+						if ( submit_status != SPARK_STATUS_OK )
+							SparkGlm5NextTpChainFail(
+							    chain,submit_status);
+						return;
+					}
+					chain->wave.expert_lease_all = 0u;
+				}
+				else
+				{
+					if ( SparkGlm5NextLaunchCudaLayerMlpExperts(&chain->wave,chain->next_layer) != 0 )
+					{
+						SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+						return;
+					}
+					SparkGlm5NextTpChainReduceMlp(chain);
 					return;
 				}
-				SparkGlm5NextTpChainReduceMlp(chain);
-				return;
 			}
 			{
 				const uint32_t *cover_saved = chain->wave.expert_cover;
@@ -3116,6 +3142,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->next_layer++;
+		chain->sweep_retries = 0u;
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
 			chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION;
