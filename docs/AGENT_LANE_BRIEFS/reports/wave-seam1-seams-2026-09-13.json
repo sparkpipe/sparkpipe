@@ -1,0 +1,257 @@
+{
+  "survey": "wave-seam1-common-module-survey",
+  "date": "2026-09-13",
+  "baseline_commit": "6dbb58e",
+  "families": ["qwen38_max", "qwen4_flash", "qwen38_27b", "glm52", "glm5_next", "hy4"],
+  "method": "difflib SequenceMatcher on lines after family-token normalization; per-function extraction for kernel/module clusters",
+  "corpus_loc": {
+    "qwen38_max": 6322,
+    "qwen4_flash": 8771,
+    "qwen38_27b": 11683,
+    "glm52": 9373,
+    "glm5_next": 15923,
+    "hy4": 1709,
+    "total": 53781,
+    "estimated_recoverable": "15000-17000"
+  },
+  "clusters": [
+    {
+      "id": "A",
+      "name": "qwen_cuda_kernel_suite",
+      "proposed_common": "common_gdn_stage_kernels.cu",
+      "members": [
+        "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
+        "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_cuda.cu",
+        "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_cuda.cu"
+      ],
+      "loc": [1668, 2587, 2154],
+      "divergence": {
+        "qwen38_max_vs_qwen4_flash_whole": 63.6,
+        "qwen4_flash_vs_qwen38_27b_whole": 51.0,
+        "qwen38_max_vs_qwen38_27b_whole": 54.4,
+        "identical_kernels_max_vs_flash": 22,
+        "identical_kernels_flash_vs_27b": 19,
+        "notable": "AttnDecode 98.3, AttnPrepare 96.9, ChunkStep 98.4, GdnStep 89.2; 22 kernels at 100.0 normalized"
+      },
+      "family_local": {
+        "qwen4_flash": ["PleConvChunk", "PleConvUpdate", "PleGate", "PleHashGather", "IndexerPrepare", "IndexerSelect", "HcGroupNorm", "HcInject", "HcMix", "HcSiluQuarter", "HcStreamReplicate", "HeadMaxLocPack", "HeadMaxLocUnpack", "GroupedScalarE8m0", "EmbeddingGatherSharded", "TpCombineU64Max"],
+        "qwen38_27b": ["RansBuildTable", "RansStageChunk", "RansDecodeTileHalf", "SmallBatchLean1", "SmallBatchTiled", "SmallBatchFfnGateUp", "AccumAdd", "AccumAddRelay", "AccumAddTp4", "AccumU64Max", "FrameError"]
+      },
+      "parameter_keys": ["HIDDEN_DIMENSION", "LAYER_COUNT", "VOCAB_COUNT", "ATTN_HEAD_COUNT", "KV_HEAD_COUNT", "HEAD_DIMENSION", "ROPE_DIMENSION", "ROPE_THETA", "GDN_KEY_HEAD_COUNT", "GDN_VALUE_HEAD_COUNT", "GDN_HEAD_KEY_DIMENSION", "GDN_HEAD_VALUE_DIMENSION", "GDN_CONV_KERNEL", "GDN_CHUNK_TOKENS", "ATTN_PERIOD", "FULL_ATTN_PHASE", "ROUTED_EXPERT_COUNT", "EXPERTS_PER_TOKEN", "SHARED_EXPERT_COUNT", "EXPERT_INTERMEDIATE", "SHARED_INTERMEDIATE", "MXFP4_GROUP_SIZE", "FP8_BLOCK", "SWIGLU_LIMIT", "RMS_NORM_EPSILON", "ROUTER_SORT_CAPACITY", "MAXIMUM_CONTEXT_TOKENS", "TP_DEGREE", "TP_RANK", "LAUNCH_BLOCK_SIZES"],
+      "parameter_key_count": 45,
+      "interface_sketch": "kernels take geometry from a single llm_defines.h include; launchers exported as LmGdnLaunch* with a geometry struct; family arms remain driver-local .cu linked alongside"
+    },
+    {
+      "id": "B",
+      "name": "glm_cuda_tree",
+      "proposed_common": "common_glm_cuda_tree (config.h key space + unity.cu + layer template)",
+      "members": [
+        "modules/glm52_resident_decode_stage/source/cuda/config.h",
+        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh",
+        "modules/glm52_resident_decode_stage/source/cuda/unity.cu",
+        "modules/glm52_resident_decode_stage/source/cuda/api.h",
+        "modules/glm52_resident_decode_stage/source/cuda/launch_shape.h",
+        "modules/glm5_next_resident_decode_stage/source/cuda/config.h",
+        "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
+        "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
+        "modules/glm5_next_resident_decode_stage/source/cuda/api.h",
+        "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
+      ],
+      "loc": [1713, 2950],
+      "divergence": {
+        "unity_cu": 87.4,
+        "api_h": 92.9,
+        "batch_tuning_h": 90.9,
+        "config_h": 50.0,
+        "internal_h": 61.6,
+        "layer_cuh": 51.6,
+        "makefile": 83.5,
+        "notable": "unity.cu is a pure token rename; identical tiles 128/64/2/8 and HEAD_TILE 1024"
+      },
+      "family_local": {
+        "glm5_next": ["KDA recurrent + replay layout", "HcSplitSinkhorn + HcMix + HcPreReduce", "index_kv latent index"]
+      },
+      "parameter_keys": ["MLA/DSA dimensions", "MLA_LATENT_DIMENSION", "KDA_LAYER_COUNT", "DSA_LAYER_COUNT", "HC_SINKHORN_ITERATIONS", "HC_STREAM_COUNT", "HC_LOWRANK_DIMENSION", "INDEXER dims", "EXPERT_WEIGHT_CODEC", "TILE_N", "TILE_K", "STAGES", "WARPS", "HEAD_TILE", "KV_SLOT_BYTES", "KV_PAGE_SLOTS", "KV_BITS"],
+      "parameter_key_count": 60,
+      "interface_sketch": "one config.h mapping llm_defines.h keys to short tokens; unity.cu becomes a single file compiled per family with only the codec name and geometry varying"
+    },
+    {
+      "id": "C",
+      "name": "qwen_module_kv_frame",
+      "proposed_common": "common_kv_frame.c",
+      "members": [
+        "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
+        "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c",
+        "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c"
+      ],
+      "loc": [2031, 2530, 3326],
+      "divergence": {
+        "qwen38_max_vs_qwen4_flash_whole": 53.8,
+        "qwen38_max_vs_qwen38_27b_whole": 10.7,
+        "notable": "SparkModuleKvPrepareFrame 249 lines byte-identical modulo names in max and flash; 8 shared functions at 100%; 27b is a third-generation rewrite"
+      },
+      "parameter_keys": ["KV_BLOCK_COUNT", "KV_PAGE_SLOTS", "KV_SLOT_BYTES", "LANE_COUNT", "CACHE_LAYER_STRIDE", "CACHE_BLOCK_STRIDE", "MAX_ACTIVE_SEQUENCE_COUNT", "PIPELINE_SLOTS"],
+      "parameter_key_count": 10,
+      "interface_sketch": "frame prepare/evict/mark/page-table/slot-pool as LmKvFrame* functions over a geometry struct; per-family layer loop stays driver-side"
+    },
+    {
+      "id": "D",
+      "name": "glm_module_pair",
+      "proposed_common": "common_glm_stage_module.c",
+      "members": [
+        "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
+        "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
+      ],
+      "loc": [2157, 4010],
+      "divergence": {
+        "whole_file": 42.9,
+        "notable": "26 shared functions, 17 at 100% (PackValidateRanges, PrepareAsyncCompletion, ValidateFrame, AllocateSlotHead, BuildHeadShadow, CombineBf16/U64Max); glm52 is a strict subset"
+      },
+      "family_local": {
+        "glm5_next": ["CUDA graph capture SparkGraph*", "MTP tree drive SparkMtp*", "KDA recurrent SparkRecurrent*", "device page copy"]
+      },
+      "parameter_keys": ["STAGE_LAYER_COUNT", "FIRST_LAYER_INDEX", "PACK_KIND_MAP", "TP_CHAIN_ROLES", "CONTRACT_HASH_SCOPE"],
+      "parameter_key_count": 15,
+      "interface_sketch": "pack assign/load/validate + slot allocation + async completion + TP chain as one module; graph/MTP/KDA hooks behind optional vtable entries"
+    },
+    {
+      "id": "E",
+      "name": "serving_adapters",
+      "proposed_common": "common_serving_frame.c + common_serving_tp_config.c",
+      "members": [
+        "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
+        "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_serving_adapter.c",
+        "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c",
+        "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
+        "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c"
+      ],
+      "loc": [374, 288, 2322, 990, 1409],
+      "divergence": {
+        "glm52_vs_glm5_next_whole": 48.4,
+        "qwen38_27b_vs_glm52_whole": 16.9,
+        "notable": "isomorphic 27-handler skeleton in the glm pair; qwen38_max and qwen4_flash already thin template users; qwen38-27b is a parallel third-generation frame server"
+      },
+      "bypass": "glm5_next hand-rolls ~370 LOC of TP collective/rails/session-ports JSON parsing that SparkServingAdapterTemplateLoadTpCollective + policy provides (used by glm52 in the same tree)",
+      "parameter_keys": ["SCHEMA_VERSION", "MODEL_ID", "MODEL_REVISION", "STAGE_PACK_PATH", "EXPERT_WEIGHT_CODEC", "MAX_SEQUENCE_POSITIONS", "EXECUTION_ROW_CAPACITY", "DECODE_SPLIT_CONTEXT_THRESHOLD", "TP_DEGREE", "TP_RANK", "DRAFT_BRIDGE_HOST", "DRAFT_BRIDGE_PORT", "TP_BACKEND", "TP_BACKEND_MODULE_PATH", "TP_COLLECTIVE_IDENTIFIER", "TP_LISTEN_PORT", "TP_PEER_PORTS", "TP_ALGORITHMS", "TP_THRESHOLDS", "TP_CONNECT_TIMEOUT_MS", "TP_OPERATION_TIMEOUT_MS", "TP_CONTROL_PORT_BASE", "TP_TOPOLOGY", "TP_STEP_RAILS", "TP_RAIL_HOSTS", "TP_SESSION_PORTS", "TP_SESSION_PORTS_HC", "TP_SPLIT_RING_MIN_PAYLOAD_BYTES", "TP_DIRECT_ALL_TO_ALL_MAX_PAYLOAD_BYTES", "SEAM_DRAFT_TIME_BUDGET_MS", "SEAM_DRAFT_MAX_DEPTH", "SEAM_DRAFT_MAX_NODE_COUNT"],
+      "parameter_key_count": 34,
+      "interface_sketch": "one adapter skeleton: configuration policy struct + optional rails/session-ports policy + pending/completion/wake machinery; families supply identity, capability extras, and speculation provider"
+    },
+    {
+      "id": "F",
+      "name": "stagepack_format_headers",
+      "proposed_common": "common_stagepack_format_ext.h",
+      "members": [
+        "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_stagepack_format.h",
+        "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_stagepack_format.h",
+        "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+        "modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h",
+        "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
+        "modules/hy4_resident_decode_stage/source/spark_hy4_stagepack_format.h"
+      ],
+      "loc": [319, 548, 476, 286, 486, 472],
+      "divergence": {
+        "qwen_max_vs_qwen4_flash": 63.0,
+        "qwen_max_vs_qwen38_27b": 51.1,
+        "qwen4_flash_vs_qwen38_27b": 42.0,
+        "notable": "qwen trio + hy4 extend include/sparkpipe/spark_stagepack_format.h; glm pair restate their own enums; DRY-1 proved the 64-byte directory entry cross-family identical"
+      },
+      "parameter_keys": ["STAGEPACK_MAGIC", "STAGEPACK_FORMAT_VERSION", "ALIGNMENT_BYTES", "MODEL_REVISION_BYTES", "SHA256_BYTES", "GLOBAL_LAYER", "KNOWN_FLAGS", "PAYLOAD_TYPES", "TENSOR_KIND_MAP", "HEADER_SIZES", "GEOMETRY_TABLE"],
+      "parameter_key_count": 25,
+      "interface_sketch": "descriptor-driven: one kind map + entry packer in common code, families declare only magic/version/flags/kind-rows; matches DRY-1 descriptor-verify"
+    },
+    {
+      "id": "G",
+      "name": "validation_and_oracle",
+      "proposed_common": "common_validation_oracle.c + harness script",
+      "members": [
+        "modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_reference.c",
+        "modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_reference.c",
+        "modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu",
+        "modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu",
+        "modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu",
+        "modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu",
+        "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu",
+        "validation/validate_*.sh sextuplet"
+      ],
+      "loc": [507, 507, 1363, 1684, 1180, 2554, 1829, 466],
+      "divergence": {
+        "reference_c_pair": 83.2,
+        "val_cu_qwen_max_vs_flash": 31.7,
+        "val_cu_qwen4_flash_vs_27b": 66.6,
+        "val_cu_glm_pair": 14.5,
+        "val_sh_qwen_flash_vs_27b": 86.4,
+        "val_sh_glm_pair": 69.3
+      },
+      "parameter_keys": ["GEOMETRY_SUBSET", "TOLERANCE_TABLE", "LAYER_MIX", "TOKEN_COUNTS", "SEEDS"],
+      "parameter_key_count": 12,
+      "interface_sketch": "one CPU GDN/attention oracle compiled per geometry; one harness shell parameterized by module target and gate list"
+    },
+    {
+      "id": "H",
+      "name": "kv_geometry_headers",
+      "proposed_common": "common_kv_geometry.h",
+      "members": [
+        "model-families/glm52/include/sparkpipe/spark_glm52_kv_geometry.h",
+        "model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_geometry.h"
+      ],
+      "loc": [41, 46],
+      "divergence": {
+        "normalized": 78.2,
+        "notable": "FillCapacityRequest twins differing in exactly 7 constants; both use #ifndef guards"
+      },
+      "parameter_keys": ["KV_LAYOUT", "KV_LAYER_COUNT", "KV_COMPRESSED_DIMENSION", "KV_POSITION_DIMENSION", "KV_BYTES_PER_SCALAR", "KV_FP8_SCALE_BLOCK_SIZE", "KV_BLOCK_TOKEN_COUNT", "KV_ARENA_HEAD_DIM", "KV_INDEX_KEY_TRIPLE"],
+      "parameter_key_count": 9,
+      "interface_sketch": "one inline capacity-request builder over llm_defines keys"
+    },
+    {
+      "id": "I",
+      "name": "small_constants_restatement",
+      "proposed_common": "folded into llm_defines.h keys",
+      "members": [
+        "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu:1341",
+        "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_cuda.cu:2063",
+        "qwen firmware.h trio (MAX_ACTIVE_SEQUENCE_COUNT 512 x3)",
+        "rope frequency formula x5",
+        "model-families qwen trio + glm pair + hy4 launch/cap constants"
+      ],
+      "divergence": {
+        "notable": "SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u copied verbatim into qwen4_flash under the qwen38 name; rope formula exp2f(-(2*pair/dim)*log2f(theta)) copied 5x"
+      },
+      "parameter_keys": ["ROUTER_SORT_CAPACITY", "MAX_ACTIVE_SEQUENCE_COUNT", "MAX_INPUT_ROW_COUNT", "ROPE_DIMENSION", "ROPE_THETA", "PIPELINE_SLOTS"],
+      "parameter_key_count": 6,
+      "interface_sketch": "runtime caps and math constants become named llm_defines keys, no per-family restatement"
+    }
+  ],
+  "parameter_surface": {
+    "per_family_define_counts": {
+      "qwen38_max": {"model_h": 47, "firmware_h": 34, "total": 81},
+      "qwen4_flash": {"model_h": 66, "firmware_h": 37, "total": 103},
+      "qwen38_27b": {"model_h": 38, "firmware_h": 48, "serving_constants_h": 16, "total": 102},
+      "glm52": {"model_h": 77, "firmware_h": 23, "cuda_config_h": 38, "batch_tuning_h": 23, "total": 161},
+      "glm5_next": {"model_h": 101, "firmware_h": 33, "cuda_config_h": 55, "batch_tuning_h": 22, "total": 211},
+      "hy4": {"model_h": 48, "firmware_h": 16, "fp8_scale_contract_h": 6, "total": 70}
+    },
+    "llm_defines_union_estimate": 200,
+    "carrier": "one include-path llm_defines.h per driver; per-family headers become shims"
+  },
+  "already_common": [
+    {"seam": "modules/resident_decode_stage_rules.mk", "used_by": ["all six"], "bypass": "none; glm pair duplicates target blocks on top (Makefiles 83.5% similar)"},
+    {"seam": "include/sparkpipe/spark_stage_module_common.h", "used_by": ["all six"], "bypass": "env-flag sets restated per family (50 getenv calls)"},
+    {"seam": "include/sparkpipe/spark_serving_adapter_template.h", "used_by": ["qwen38_max", "qwen4_flash", "qwen38_27b", "glm52"], "bypass": "glm5_next (~370 LOC hand-rolled TP JSON)"},
+    {"seam": "include/sparkpipe/spark_stagepack_format.h", "used_by": ["qwen38_max", "qwen4_flash", "qwen38_27b", "hy4"], "bypass": "glm52, glm5_next (own kind enums)"},
+    {"seam": "spark_tp_device_collective + ring/transport", "used_by": ["qwen38_27b (wrapper tp.c/h)", "glm52", "glm5_next", "qwen modules"], "bypass": "none found at transport level"},
+    {"seam": "weightd client (attach/lazy_pack/lease/map)", "used_by": ["qwen38_max", "glm52", "glm5_next"], "bypass": "qwen4_flash, qwen38_27b direct pack read"},
+    {"seam": "runtime/model_resident_client + adapter registry", "used_by": ["module side uniform via SparkModelServingAdapterGetInterface"], "bypass": "hy4 has no adapter yet"},
+    {"seam": "tools/spark_pack_common.py", "used_by": ["14 tools per DRY-1"], "bypass": "per DRY-1"}
+  ],
+  "unique_math": [
+    {"math": "GPU rANS entropy decoder", "family": "qwen38_27b", "files": ["modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_cuda.cu", "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_dspark_cuda.cuh"]},
+    {"math": "Sinkhorn-normalized routing (HC)", "family": "glm5_next", "files": ["modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh"]},
+    {"math": "KDA chunked recurrent replay", "family": "glm5_next", "files": ["modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh", "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu"], "specs": ["docs/GLM_KDA_REFERENCE.md", "docs/GLM_KDA_STATE_LAYOUT.md"]},
+    {"math": "certified FP8 screened argmax head", "family": "qwen trio + glm5_next", "files": ["qwen cuda.cu trio (HeadScreenedArgmax family)", "glm layer.cuh SparkLmHostLaunchHeadCertifiedFp8B1WithScore"]},
+    {"math": "FP8 2D block scale contract (e4m3/e8m0)", "family": "hy4", "files": ["modules/hy4_resident_decode_stage/source/spark_hy4_fp8_scale_contract.h"]},
+    {"math": "interleaved RoPE table builder", "family": "glm52 (+5 copied frequency formulas)", "files": ["model-families/glm52/include/sparkpipe/spark_glm52_rope.h"]},
+    {"math": "chat template renderer", "family": "glm52", "files": ["model-families/glm52/src/spark_glm52_chat_template.c"]}
+  ],
+  "conversion_order": ["glm unity/api/batch_tuning", "common_kv_frame (KvPrepareFrame twins)", "common_validation_oracle", "glm5_next adapter onto serving template", "qwen max+flash module merge", "qwen kernel suite (after llm_defines key space)", "stagepack_format_ext with DRY-1 descriptor-verify", "qwen38-27b reabsorption last"]
+}
