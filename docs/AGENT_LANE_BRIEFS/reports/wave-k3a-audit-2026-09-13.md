@@ -19,11 +19,18 @@ deliverables are this report, the oracle tool, and corrected arithmetic.
    (see §3): 54.2 ms implies 173 GB/s effective = 70% of the measured triad.
    Verdict class: PLAUSIBLE-BUT-UNPROVEN; it is NOT "measured" in the sense
    I46 requires (no preserved command/output/pack identity).
-3. **Accuracy oracle (first content verification of k3 packs):** the stage2
-   build generation verifies byte-exact against the /mnt/model-warm/kimi-k3
-   checkpoint at ALL FOUR ranks, and stage3 at both completed ranks — every
-   full-file digest matches the Wave-P ledger. Remaining ranks were in
-   flight at commit time (table in §4).
+3. **Accuracy oracle — the decisive test (mgr2 scope refinement):** the two
+   questions are SEPARABLE and both are now answered with receipts.
+   (a) FORMAT GENERATION: all 16 placed packs carry manifest length exactly
+   262128 B (payload base 262144) — the pre-2b27e64 (08-31) sharder reserve
+   — so byte-identity to the CURRENT packer fails for all 16, as expected.
+   (b) CONTENT FIDELITY: the oracle is header-driven (it reads each pack
+   through its own manifest, so the reserve skew cannot bias it) and
+   verifies byte-exact against /mnt/model-warm/kimi-k3: the stage2 build
+   generation PASSES at ALL FOUR ranks and stage3 at both completed ranks;
+   every full-file digest matches the Wave-P ledger. **The placed k3
+   content is checkpoint-faithful: content-fine, format-skewed,
+   rebuild-on-place — not 4-way build chaos.**
 4. **Corrected budget:** worst-stage B1 stream is 9.39 GB per rank (not
    8.04-8.57 GB as the tool prices it). Honest floors: TP4xPP4 26.4 tok/s
    ceiling at the measured 247.5 GB/s triad (23.4 with the 100 us AR
@@ -150,8 +157,32 @@ faithful at both completed ranks. Remaining ranks were still executing at
 commit time (three concurrent verification waves share the ceph warm-store
 mount; the processes were in uninterruptible ceph reads with IO progressing,
 not dead); their JSON receipts land in /tmp/k3a-tools/result_<node>.json.
-The wave that inherits this lane runs the same command to finish rows 7-9
-of the table; nothing else is pending.
+The wave that inherits this lane runs the same command to finish the
+in-flight rows and the six untested nodes (spark1-3 stage0 r1-3, spark5-7
+stage1 r1-3); nothing else is pending.
+
+### 4.1 Content fidelity vs format generation — two separable verdicts
+
+mgr2 scope refinement (SP-4R ground truth): the 16 packs have no replicas
+(16 distinct stage x rank shards — confirmed in this table's file map), and
+ALL placed packs predate k3_shard 2b27e64 (2026-08-31), which raised the
+rank manifest reserve 262128 -> 1048560 and thereby shifts every payload
+offset. This audit anchored that per pack: the manifest length field is
+EXACTLY 262128 on all 16 placed packs (payload base 262144 on every node).
+So:
+
+- **Byte-identity to the CURRENT packer: FAIL 16/16** — by format
+  generation, not by content. A re-slice with the current sharder produces
+  identical per-tensor bytes at different offsets (different file sha256).
+- **Content fidelity to the checkpoint: PASS on every pack verified** —
+  the oracle reads each pack through its OWN manifest, so the offset skew
+  cannot bias the comparison. The failed expectation is pack==packer; the
+  pack==checkpoint half of the law HOLDS for the placed generation.
+
+Risk statement for the lane: k3 flips from "4-way build chaos" to
+"**content-fine, format-skewed, rebuild-on-place**". The placed packs are
+content-trustworthy for serving; SP-4R's fresh rebuilds are needed for
+format uniformity (and fresh receipts), not to fix content.
 
 Per-class coverage on a rank pack (e.g. spark8): 81 norm, 46 gamma-fold,
 261 expert_w1 + 261 expert_w2 cell samples (payload + scale lanes),
@@ -293,17 +324,25 @@ that is exactly why T2 receipts are mandatory.
 
 ## 7. Blockers and handoff
 
-- spark0/spark4 (stage0/stage1 builds) oracle runs were still executing at
-  report-writing time (ceph-cold checkpoint index reads); final verdicts
-  for ALL ranks are in the per-node JSON receipts (/tmp/k3a-tools/) and
-  the run log; the commit on this branch carries the state as of the
-  timestamps below.
+- At final commit, four oracle runs (spark0, spark4 — stage0/stage1 rank0;
+  sparkd, sparke — stage3 rank1/2) were still in uninterruptible ceph reads
+  with IO progressing (spark0: 192 MB read and climbing). Root cause: three
+  concurrent waves share the ceph warm-store mount — SP-4R's k3 stage
+  rebuild scopes (sp4r_k3_stage.sh -> tools/k3_pack.py on
+  /mnt/model-warm/kimi-k3, confirmed live on sparkd) and the acc1 glm53full
+  verify both read the same store. The runs were left alive on purpose;
+  their verdicts land in /tmp/k3a-tools/result_<node>.json on each node.
+  The same one-line command finishes the six untested nodes (spark1-3 =
+  stage0 ranks 1-3, spark5-7 = stage1 ranks 1-3).
 - The 247.5 GB/s triad has no repo artifact yet (T2 item 6).
-- tests/test_k3_runner_step.cu no longer exists on main; the gate arm of
-  T2 needs it restored or superseded before the re-measurement.
-- SP-4R: treat §4 as the canonicalization input — content-faithful builds
-  need receipt re-anchoring, not re-placement; any build that FAILED the
-  oracle in the final table must be re-packed from /mnt/model-warm/kimi-k3
+- tests/test_k3_runner_step.cu no longer exists on main (a29ea53 stripped
+  it); the T2 single-rank gate arm needs it restored or superseded.
+- SP-4R handoff: §4/§4.1 are the canonicalization input. The placed
+  generation is CONTENT-FAITHFUL where verified (stage2 4/4, stage3 2/2)
+  and format-skewed 16/16 (manifest 262128 / base 262144 receipts taken).
+  Nothing verified needs re-placement for content; the rebuilds are for
+  format uniformity and fresh receipts. If any in-flight row returns
+  MISMATCH, that stage alone gets re-packed from /mnt/model-warm/kimi-k3
   with current tools/k3_pack.py before placement.
 
 Run identity: audit clone /Users/mac/k3a @ lane/wave-k3a-audit; oracle
