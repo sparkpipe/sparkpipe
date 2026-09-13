@@ -267,6 +267,23 @@ def profile_laguna(pack_path: Path, source_dir: Path, tp_degree: int,
                 sha256=sha256_file(pack_path), revision=meta["revision"])
 
 
+def rows_span(source, name: str, first_row: int, row_count: int) -> bytes:
+    """Contiguous bf16 row span read straight from the safetensors shard
+    (row-major payloads), so a rank slice never materializes a whole
+    multi-GiB checkpoint plane."""
+    shard, meta, data_start = source.resolve(name)
+    shape = meta["shape"]
+    cols = shape[1] if len(shape) > 1 else shape[0]
+    row_bytes = cols * 2
+    fd = os.open(source.root / shard, os.O_RDONLY)
+    try:
+        return pread_tolerant(fd, row_count * row_bytes,
+                              data_start + first_row * row_bytes,
+                              f"{name} rows[{first_row},{first_row + row_count})")
+    finally:
+        os.close(fd)
+
+
 def profile_muse(pack_path: Path, source_dir: Path, tp_degree: int,
                  tp_rank: int) -> dict:
     import numpy as np
@@ -289,31 +306,34 @@ def profile_muse(pack_path: Path, source_dir: Path, tp_degree: int,
     picks = set(anchor_layers(packer.LAYER_COUNT))
 
     def matrix(name):
-        return packer.read_matrix(source, name)
+        shard, meta, data_start = source.resolve(name)
+        shape = meta["shape"]
+        fd = os.open(source.root / shard, os.O_RDONLY)
+        try:
+            raw = pread_tolerant(fd, meta["data_offsets"][1] - meta["data_offsets"][0],
+                                 data_start, f"{name} full")
+        finally:
+            os.close(fd)
+        return np.frombuffer(raw, dtype="<u2").reshape(shape[0], -1)
 
     def expected_of(item):
         record = item["record"]
         plan = record.plan
         if "whole" in plan:
-            return np.ascontiguousarray(matrix(record.names[0])).tobytes()
+            return rows_span(source, record.names[0], 0, record.rows)
         if "row_slice" in plan:
             first, count = plan["row_slice"]
-            return np.ascontiguousarray(
-                matrix(record.names[0])[first:first + count, :]).tobytes()
+            return rows_span(source, record.names[0], first, count)
         if "qgkv" in plan:
-            planes = {"q": matrix(record.names[0]),
-                      "gate": matrix(record.names[1]),
-                      "k": matrix(record.names[2]),
-                      "v": matrix(record.names[3])}
-            blocks = [planes[name][first:first + count, :]
+            planes = {"q": record.names[0], "gate": record.names[1],
+                      "k": record.names[2], "v": record.names[3]}
+            blocks = [rows_span(source, planes[name], first, count)
                       for name, first, count in plan["qgkv"]]
-            return np.ascontiguousarray(np.concatenate(blocks, axis=0)).tobytes()
+            return b"".join(blocks)
         if "gate_up" in plan:
             gate_start, count = plan["gate_up"]
-            gate = matrix(record.names[0])[gate_start:gate_start + count, :]
-            up = matrix(record.names[1])[gate_start:gate_start + count, :]
-            return np.ascontiguousarray(
-                np.concatenate((gate, up), axis=0)).tobytes()
+            return (rows_span(source, record.names[0], gate_start, count)
+                    + rows_span(source, record.names[1], gate_start, count))
         start, count = plan["columns"]
         return np.ascontiguousarray(
             matrix(record.names[0])[:, start:start + count]).tobytes()
