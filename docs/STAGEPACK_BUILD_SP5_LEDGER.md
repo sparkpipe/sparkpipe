@@ -124,3 +124,29 @@ receipt output_sha256 (mtp stripped, 31 entries dropped, 30518614272 bytes).
   stray rank0 duplicates on spark4 in both qwen3flash.bf16 arms; spark9 holds
   fp8 rank01+rank03+rank05. All left in place pending SP-4 refinement; nothing
   deleted outside SP-5's own arm targets.
+- 2026-09-13T06:40Z BUILD COMPLETE rank7 spark7: sha256
+  20de00d7f794461d5088e5380df774d793856f0156c0da04df9c2cce605cd15c (==
+  pre-existing sidecar). PLACE SPARK_OK 06:42Z, spark7 cache purged.
+- 2026-09-13T06:47Z BUILD rank8 on spark8 STALLED: two attempts (sp5-ling-r8,
+  sp5-ling-r8b) both reached <300 MB then 0 MB/s over 45 s+ windows on the
+  warm ceph read while spark7's paired build ran normally; ceph mount itself
+  healthy (small reads fast). Stopped both; staging partials removed.
+- 2026-09-13T07:12Z WAVE 5 contention finding: the paired rank8-staging build
+  on sparke (sp5-ling-r8s) stalled the same way; ps showed SP-4's
+  verification (qwen4_flash_pack_verify.py against /mnt/model-warm/
+  qwen3.8-flash-next, D-state) consuming sparke's warm-ceph client at the
+  same time. Yielded: stopped sp5-ling-r8s, removed its staging dir; the
+  fleet heavy-read budget stays with the verification wave. Remaining ling
+  builds run SEQUENTIALLY (1 stream).
+- 2026-09-13T07:33Z BUILD COMPLETE rank9 spark9: sha256
+  cf62a57278306601f7f1fbc8790860b1a5aef22f730c6a1cc8224a9336282800 (==
+  pre-existing sidecar -> the placed rank9.sp was genuine; the audit's
+  mislabel was the .lspk duplicate, not rank9.sp). PLACE SPARK_OK; REMOVED
+  ling_stage.tp16.rank0.lspk (rank0 duplicate, 15725069824 bytes, sha256
+  1f0642fb...; justification above); staging partials removed; spark9 cache
+  purged.
+- 2026-09-13T07:36Z BUILD rank10 on sparka (sp5-ling-ra, solo).
+- 2026-09-13T07:50Z WORKTREE EVENT: /Users/mac/wave-b1 was deleted externally
+  mid-wave. No work lost: both commits (e90b429, aa77753) were already pushed;
+  worktree re-cloned from origin/lane/stagepack-build-sp5 at aa77753 and this
+  entry recreates the only uncommitted ledger additions.
