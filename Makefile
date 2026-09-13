@@ -328,7 +328,8 @@ TEST_NAMES := \
     test_tensor_map_geometry \
     test_weight_codec \
     test_topology_switch \
-    test_qwen38_math_kernels
+    test_qwen38_math_kernels \
+    test_llm_module_contract
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -1079,6 +1080,11 @@ build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixture
 
 # Numeric verification of the math-audit fixes: includes the module's CUDA
 # source, so the tested code IS the production code.
+build/test_llm_module_contract: tests/test_llm_module_contract.c tests/test_llm_module_contract_negative.c common/common_kv_frame.h model-families/qwen38_max/include/sparkpipe/llm_defines.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I model-families/qwen38_max/include -I . -c tests/test_llm_module_contract.c -o build/test_llm_module_contract_main.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I model-families/qwen38_max/include -I . -DSPARK_LLM_KV_BLOCK_TOKENS=65u -c tests/test_llm_module_contract_negative.c -o build/test_llm_module_contract_negative.o
+	$(CC) $(CFLAGS) build/test_llm_module_contract_main.o build/test_llm_module_contract_negative.o tests/cuda_stub/cuda_runtime_stub.c -o $@
+
 build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_qwen38_math_kernels (no nvcc on this host)"; fi
 

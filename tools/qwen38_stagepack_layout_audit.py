@@ -125,10 +125,12 @@ def probe_offsets(probe_bin):
     return meta, offsets
 
 
-def codec_check(firmware_header, py_packer, label):
+def codec_check(firmware_header, py_packer, label, llm_defines_header=None):
     """Compare WEIGHT_FORMAT_* codes between the C firmware ABI and the
     python packer constants (name-mapped; python drops the common prefix)."""
     c_text = open(firmware_header).read()
+    if llm_defines_header is not None and llm_defines_header.is_file():
+        c_text += open(llm_defines_header).read()
     py_text = open(py_packer).read()
     c_codes = dict(re.findall(
         r"WEIGHT_FORMAT_([A-Z0-9_]+)\s+(\d+)u", c_text))
@@ -220,8 +222,11 @@ def git_ref_audit(git_ref, repo):
         return 1
     rc_layout = run_probe_check(str(probe_bin), inferred,
                                 f"{git_ref}: C header vs python {inferred}")
+    llm_defines = (work / "model-families/qwen38_max/include/sparkpipe/"
+                   "llm_defines.h")
     rc_codec = codec_check(str(firmware), str(packer),
-                           f"{git_ref}: C firmware vs python packer")
+                           f"{git_ref}: C firmware vs python packer",
+                           llm_defines_header=llm_defines)
     return rc_layout or rc_codec
 
 
