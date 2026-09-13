@@ -55,8 +55,12 @@ if _TOOLS_DIR not in sys.path:
 from spark_pack_common import (  # noqa: E402
     PackFailure,
     SafetensorsSource as _BaseSafetensorsSource,
+    TpPlan,
     align_up,
+    packed_tp_shape,
+    pump,
     sha256_file,
+    tp_window,
     write_receipt,
 )
 
@@ -874,17 +878,6 @@ HEADER2_BYTES = 128
 HEADER2_STRUCT = struct.Struct("<28I2Q")
 assert HEADER2_STRUCT.size == HEADER2_BYTES
 
-def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
-    assert total % degree == 0, f"tp_window: {total} not divisible by {degree}"
-    per = total // degree
-    return rank * per, per
-
-class TpPlan:
-    """RowWindow / ColWindow / ExpertRange / QkvSegments / None(replicated)."""
-    def __init__(self, kind: str, **kw):
-        self.kind = kind
-        self.__dict__.update(kw)
-
 def build_tp_plan(ref, degree: int, rank: int):
     if degree <= 1:
         return None
@@ -914,37 +907,6 @@ def build_tp_plan(ref, degree: int, rank: int):
                                 (qk + qk_off, qk_count),
                                 (2 * qk + v_off, v_count)))
     return None  # norms, router, shared-gate-weight, conv, a_log/dt_bias, embed
-
-def packed_tp_shape(ref, plan):
-    if plan is None:
-        return ref.rows, ref.columns
-    if plan.kind == "rows":
-        return plan.row_count, ref.columns
-    if plan.kind == "cols":
-        return ref.rows, plan.col_count
-    if plan.kind == "experts":
-        return plan.row_count, ref.columns
-    if plan.kind == "qkv":
-        return sum(c for _, c in plan.segments), ref.columns
-    raise PackFailure(f"unknown tp plan {plan.kind}")
-
-def pump(fd, offset: int, length: int, out) -> None:
-    """Stream fd[offset:offset+length) to out in small chunks, evicting
-    each chunk from the page cache (DONTNEED) so warm reads never pile up
-    resident memory on the 119G nodes."""
-    remaining = length
-    while remaining > 0:
-        step = min(remaining, CHUNK_BYTES)
-        raw = os.pread(fd, step, offset)
-        if len(raw) != step:
-            raise PackFailure(f"short read at {offset}")
-        out.write(raw)
-        try:
-            os.posix_fadvise(fd, offset, step, os.POSIX_FADV_DONTNEED)
-        except (AttributeError, OSError):
-            pass
-        offset += step
-        remaining -= step
 
 def copy_row_window(source: SafetensorsSource, ref, plan, out) -> None:
     """Contiguous row-axis slice of a whole-row-packed tensor."""

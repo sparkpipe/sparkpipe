@@ -68,6 +68,7 @@ from spark_pack_common import (  # noqa: E402
     sha256_file,
     tp_shard_range,
     write_receipt,
+    pump,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1025,22 +1026,7 @@ def copy_mtp_fc(source: SafetensorsSource, ref: TensorRef, out) -> None:
     out.write(fused.astype("<u2").tobytes())
 
 
-def pump_read(fd, offset: int, length: int, out) -> None:
-    """Stream fd[offset:offset+length) to out in small chunks, evicting
-    each chunk from the page cache (memory law: no big warm streams)."""
-    remaining = length
-    while remaining > 0:
-        step = min(remaining, 512 * 1024)
-        raw = os.pread(fd, step, offset)
-        if len(raw) != step:
-            raise PackFailure(f"short read at {offset}")
-        out.write(raw)
-        try:
-            os.posix_fadvise(fd, offset, step, os.POSIX_FADV_DONTNEED)
-        except (AttributeError, OSError):
-            pass
-        offset += step
-        remaining -= step
+pump_read = pump
 
 def copy_nvfp4_official_experts(source, ref: TensorRef, out) -> None:
     """nvfp4-official arm: gather the rank's SPLIT per-expert U8-packed

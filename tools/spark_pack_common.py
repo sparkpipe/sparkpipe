@@ -293,6 +293,57 @@ def spark_pack_replicated_draft_rows(
     return False
 
 
+# -- topology plan primitives (promoted from qwen38_stagepack: the TP slice
+#    math and plan structure every TP packer shares; build_tp_plan stays
+#    family-side as the kind->plan plug-in) ------------------------------------
+
+def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
+    assert total % degree == 0, f"tp_window: {total} not divisible by {degree}"
+    per = total // degree
+    return rank * per, per
+
+
+class TpPlan:
+    """RowWindow / ColWindow / ExpertRange / QkvSegments / None(replicated)."""
+    def __init__(self, kind: str, **kw):
+        self.kind = kind
+        self.__dict__.update(kw)
+
+
+def packed_tp_shape(ref, plan):
+    if plan is None:
+        return ref.rows, ref.columns
+    if plan.kind == "rows":
+        return plan.row_count, ref.columns
+    if plan.kind == "cols":
+        return ref.rows, plan.col_count
+    if plan.kind == "experts":
+        return plan.row_count, ref.columns
+    if plan.kind == "qkv":
+        return sum(c for _, c in plan.segments), ref.columns
+    raise PackFailure(f"unknown tp plan {plan.kind}")
+
+
+def pump(fd, offset: int, length: int, out) -> None:
+    """Stream fd[offset:offset+length) to out in small chunks, evicting
+    each chunk from the page cache (DONTNEED) so warm reads never pile up
+    resident memory on the 119G nodes."""
+    chunk_bytes = 1 << 20
+    remaining = length
+    while remaining > 0:
+        step = min(remaining, chunk_bytes)
+        raw = os.pread(fd, step, offset)
+        if len(raw) != step:
+            raise PackFailure(f"short read at {offset}")
+        out.write(raw)
+        try:
+            os.posix_fadvise(fd, offset, step, os.POSIX_FADV_DONTNEED)
+        except (AttributeError, OSError):
+            pass
+        offset += step
+        remaining -= step
+
+
 __all__ = [
     "GLOBAL_LAYER",
     "PackFailure",
@@ -306,4 +357,8 @@ __all__ = [
     "write_receipt",
     "tp_shard_range",
     "spark_pack_replicated_draft_rows",
+    "tp_window",
+    "TpPlan",
+    "packed_tp_shape",
+    "pump",
 ]
