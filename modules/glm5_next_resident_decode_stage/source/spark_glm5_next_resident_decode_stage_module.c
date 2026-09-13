@@ -1778,6 +1778,24 @@ static SparkStatus SparkGlm5NextModuleCombineBf16(
 }
 
 
+static SparkStatus SparkGlm5NextModuleCombineFusedBf16(
+	void *combine_context,
+	void *destination_device,
+	const void *const *source_devices,
+	uint32_t source_count,
+	uint32_t active_sequence_count,
+	uint32_t hidden_dimension,
+	void *cuda_stream)
+{
+	cudaError_t error;
+	(void)combine_context;
+	error = SparkGlm5NextLaunchSumRanksF32((cudaStream_t)cuda_stream,
+	    destination_device,source_devices,source_count,
+	    (uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,
+	    "tp_all_reduce_fused"));
+}
+
 static SparkStatus SparkGlm5NextModuleCombineF32Seed(
 	void *combine_context,
 	void *destination_f32_device,
@@ -1933,11 +1951,13 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
 		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
+		configuration.combine_fused_bf16_function = SparkGlm5NextModuleCombineFusedBf16;
 		configuration.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
 		configuration.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
 		configuration.round_f32_function = SparkGlm5NextModuleRoundF32;
 		configuration.combine_u64_max_function = SparkGlm5NextModuleCombineU64Max;
 		configuration.combine_context = state;
+		configuration_hc.combine_fused_bf16_function = SparkGlm5NextModuleCombineFusedBf16;
 		configuration_hc.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
 		configuration_hc.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
 		configuration_hc.round_f32_function = SparkGlm5NextModuleRoundF32;

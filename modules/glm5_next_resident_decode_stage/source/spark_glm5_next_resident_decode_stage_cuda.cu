@@ -164,6 +164,56 @@ static __global__ void SparkGlm5NextAccumAddKernel(
 	}
 }
 
+struct SparkGlm5NextRankSources
+{
+	const void *pointer[16u];
+};
+
+static __global__ void SparkGlm5NextSumRanksF32Kernel(
+    void *destination_bf16,
+    SparkGlm5NextRankSources sources,
+    uint32_t source_count,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 acc,v;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		uint32_t source;
+		acc.x = 0.0f;
+		acc.y = 0.0f;
+		for ( source = 0u; source < source_count; source++ )
+		{
+			v = SparkGlm5NextLoadBf16Pair(sources.pointer[source],pair);
+			acc.x += v.x;
+			acc.y += v.y;
+		}
+		SparkGlm5NextStoreBf16Pair(destination_bf16,pair,acc.x,acc.y);
+	}
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,
+    void *destination,const void *const *sources,uint32_t source_count,
+    uint32_t element_count)
+{
+	SparkGlm5NextRankSources by_value;
+	uint32_t index;
+	if ( destination == 0 || sources == 0 || source_count == 0u ||
+	     source_count > 16u || element_count == 0u )
+		return(cudaErrorInvalidValue);
+	for ( index = 0u; index < source_count; index++ )
+		by_value.pointer[index] = sources[index];
+	{
+		dim3 grid;
+		uint32_t pairs = (element_count + 1u) / 2u;
+		uint32_t rows = (pairs + 255u) / 256u;
+		grid = dim3(rows < 1u ? 1u : rows,1u,1u);
+		SparkGlm5NextSumRanksF32Kernel<<<grid,256u,0u,stream>>>(
+		    destination,by_value,source_count,pairs);
+	}
+	return cudaPeekAtLastError();
+}
+
 static __global__ void SparkGlm5NextSeedF32Kernel(
     float *destination_f32,
     const void *source_a_bf16,

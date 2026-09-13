@@ -154,6 +154,15 @@ typedef SparkStatus (*SparkTpDeviceCollectiveCombineF32AddFunction)(
     uint32_t element_count,
     void *cuda_stream);
 
+typedef SparkStatus (*SparkTpDeviceCollectiveCombineFusedBf16Function)(
+    void *combine_context,
+    void *destination_device,
+    const void *const *source_devices,
+    uint32_t source_count,
+    uint32_t active_sequence_count,
+    uint32_t hidden_dimension,
+    void *cuda_stream);
+
 typedef SparkStatus (*SparkTpDeviceCollectiveRoundF32Function)(
     void *combine_context,
     void *destination_bf16_device,
@@ -256,6 +265,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed_function;
     SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add_function;
     SparkTpDeviceCollectiveRoundF32Function round_f32_function;
+    SparkTpDeviceCollectiveCombineFusedBf16Function combine_fused_bf16_function;
     void *combine_context;
     const SparkTpDeviceCollectiveDebugHooks *debug_hooks;
 } SparkTpDeviceCollectiveConfig;

@@ -279,6 +279,7 @@ cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64
 cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,const void *epoch_device,void *seen);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
+cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
 cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,float *destination_f32,const void *source_a_bf16,const void *source_b_bf16,uint32_t element_count);
 cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,float *destination_f32,const void *source_bf16,uint32_t element_count);
 cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,void *destination_bf16,const float *source_f32,uint32_t element_count);
