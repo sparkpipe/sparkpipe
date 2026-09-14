@@ -397,6 +397,8 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     {
         uint64_t high = *base_cell;
         uint64_t base;
+        uint64_t tag = request_id &
+            (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull);
         if ( (high >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) >
              SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
         {
@@ -409,7 +411,7 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         }
         base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
             SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
-        *base_cell = base;
+        *base_cell = base | tag;
         __sync_synchronize();
         (void)SparkWeightdClientMeshBroadcast(
             implementation->client,
@@ -429,37 +431,42 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         volatile uint64_t *cancel_cell = (volatile uint64_t *)
             (implementation->mesh_buffer +
             SparkTpDeviceCollectiveCancelCellOffset(band_index));
-        uint64_t marker = implementation->base_seen;
+        uint64_t tag = request_id &
+            (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull);
         uint64_t deadline = SparkTpDeviceCollectiveTimeNs() +
             (implementation->round_timeout_ns <
                 SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS ?
                 implementation->round_timeout_ns :
                 SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS);
         implementation->cancel_seen = *cancel_cell;
-        while ( *base_cell == marker )
+        while ( ((*base_cell &
+                    (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull)) != tag) ||
+                (*base_cell >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) ==
+                    0ull )
         {
             struct timespec pause = {0,1000};
             if ( *cancel_cell != implementation->cancel_seen )
             {
                 fprintf(stderr,
-                    "CKEY-CANCEL rank=%u cell=%llu marker=%llu\n",
+                    "CKEY-CANCEL rank=%u cell=%llu tag=%llu\n",
                     implementation->tp_rank,
                     (unsigned long long)*base_cell,
-                    (unsigned long long)marker);
+                    (unsigned long long)tag);
                 return SPARK_STATUS_BUSY;
             }
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 fprintf(stderr,
-                    "CKEY-WAIT-TIMEOUT rank=%u cell=%llu marker=%llu\n",
+                    "CKEY-WAIT-TIMEOUT rank=%u cell=%llu tag=%llu\n",
                     implementation->tp_rank,
                     (unsigned long long)*base_cell,
-                    (unsigned long long)marker);
+                    (unsigned long long)tag);
                 return SPARK_STATUS_BUSY;
             }
             nanosleep(&pause,0);
         }
-        implementation->base_seen = *base_cell;
+        implementation->base_seen = *base_cell &
+            ~(SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull);
         implementation->round_seq = implementation->base_seen - 1ull;
         implementation->round_wave_limit = implementation->base_seen +
             SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
