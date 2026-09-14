@@ -74,6 +74,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint32_t capture_armed;
     uint32_t round_rebased;
     uint64_t opus_start_ns;
+    uint64_t opus_publish_ns;
+    uint64_t opus_wait_done_ns;
     uint64_t cancel_seen;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
@@ -396,6 +398,8 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
 static uint64_t opus_op_count;
 static uint64_t opus_total_ns;
 static uint64_t opus_max_ns;
+static uint64_t opus_pub_total_ns;
+static uint64_t opus_wait_total_ns;
 
 SparkStatus SparkTpDeviceCollectiveRunRound(
     SparkTpDeviceCollectiveImplementation *implementation,
@@ -510,6 +514,13 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
             return SPARK_STATUS_IO_ERROR;
         goto combine;
     }
+    {
+        struct timespec ph = {0,0};
+        clock_gettime(CLOCK_MONOTONIC,&ph);
+        implementation->opus_publish_ns =
+            (uint64_t)ph.tv_sec * UINT64_C(1000000000) +
+            (uint64_t)ph.tv_nsec;
+    }
     deadline = SparkTpDeviceCollectiveTimeNs() +
         (implementation->round_timeout_ns <
             SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS
@@ -609,6 +620,13 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
             }
             nanosleep(&pause,0);
         }
+    }
+    {
+        struct timespec ph = {0,0};
+        clock_gettime(CLOCK_MONOTONIC,&ph);
+        implementation->opus_wait_done_ns =
+            (uint64_t)ph.tv_sec * UINT64_C(1000000000) +
+            (uint64_t)ph.tv_nsec;
     }
 combine:
     if ( staging != 0 && (entry[1] != staging->bytes ||
@@ -762,20 +780,34 @@ combine_done:
         delta = now_ns - implementation->opus_start_ns;
         opus_op_count++;
         opus_total_ns += delta;
+        if ( implementation->opus_publish_ns >=
+             implementation->opus_start_ns )
+            opus_pub_total_ns += implementation->opus_publish_ns -
+                implementation->opus_start_ns;
+        if ( implementation->opus_wait_done_ns >=
+             implementation->opus_publish_ns )
+            opus_wait_total_ns += implementation->opus_wait_done_ns -
+                implementation->opus_publish_ns;
         if ( delta > opus_max_ns )
             opus_max_ns = delta;
         if ( (opus_op_count & 63u) == 0u )
         {
             fprintf(stderr,
-                "OPUS rank=%u ops=%llu mean_us=%llu max_us=%llu bytes=%llu\n",
+                "OPUS rank=%u ops=%llu mean_us=%llu max_us=%llu pub_us=%llu wait_us=%llu bytes=%llu\n",
                 implementation->tp_rank,
                 (unsigned long long)opus_op_count,
                 (unsigned long long)(opus_total_ns / opus_op_count / 1000u),
                 (unsigned long long)(opus_max_ns / 1000u),
+                (unsigned long long)(opus_pub_total_ns / opus_op_count / 1000u),
+                (unsigned long long)(opus_wait_total_ns / opus_op_count / 1000u),
                 (unsigned long long)bytes);
+            implementation->opus_publish_ns = 0ull;
+            implementation->opus_wait_done_ns = 0ull;
             opus_total_ns = 0ull;
             opus_op_count = 0ull;
             opus_max_ns = 0ull;
+            opus_pub_total_ns = 0ull;
+            opus_wait_total_ns = 0ull;
         }
     }
     if ( implementation->capture_armed == 0u )

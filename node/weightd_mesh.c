@@ -11,6 +11,8 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/prctl.h>
+#include <stdatomic.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -247,6 +249,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
 }
 
 static pthread_mutex_t SparkWeightdMeshWireLock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t SparkWeightdMeshInfoSeq = 0;
 
 static void SparkWeightdMeshTryWireLocked(void)
 {
@@ -298,11 +301,17 @@ static void SparkWeightdMeshTryWireLocked(void)
                 peer_records[peer].recv_qpn[my_index_in_peer]);
             continue;
         }
+        atomic_store_explicit(&SparkWeightdMeshInfoSeq,
+            atomic_load_explicit(&SparkWeightdMeshInfoSeq,
+                memory_order_relaxed) + 1u,memory_order_release);
         weightd_mesh.qp_info[peer].remote_qpn =
             peer_records[peer].recv_qpn[my_index_in_peer];
         weightd_mesh.qp_info[peer].rkey = peer_records[peer].rkey;
         weightd_mesh.qp_info[peer].remote_addr =
             peer_records[peer].recv_addr;
+        atomic_store_explicit(&SparkWeightdMeshInfoSeq,
+            atomic_load_explicit(&SparkWeightdMeshInfoSeq,
+                memory_order_relaxed) + 1u,memory_order_release);
         weightd_mesh.wired_boot_ns[peer] = peer_records[peer].boot_ns;
         fprintf(stderr,"WD-WIRED rank=%u peer=%u addr=%llx rkey=%u boot=%llu\n",
             weightd_mesh.local_rank,peer,
@@ -601,13 +610,22 @@ void SparkWeightdMeshDoorbellLoop(void)
         SPARK_WEIGHTD_MESH_DOORBELL_OFFSET);
     {
         SparkWeightdMeshQpInfo qp_snapshot[SPARK_WEIGHTD_MESH_PEERS];
-    for (;;)
-    {
-        struct timespec pause = {0,2000};
-        SparkWeightdMeshDrainCq();
-        pthread_mutex_lock(&SparkWeightdMeshWireLock);
-        memcpy(qp_snapshot,weightd_mesh.qp_info,sizeof(qp_snapshot));
-        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+        for (;;)
+        {
+            SparkWeightdMeshDrainCq();
+            {
+            uint64_t seq_before;
+            do
+            {
+                seq_before = atomic_load_explicit(
+                    &SparkWeightdMeshInfoSeq,memory_order_acquire);
+                memcpy(qp_snapshot,weightd_mesh.qp_info,
+                    sizeof(qp_snapshot));
+            }
+            while ( atomic_load_explicit(&SparkWeightdMeshInfoSeq,
+                     memory_order_acquire) != seq_before ||
+                 (seq_before & 1ull) != 0ull );
+        }
         for (band = 0u; band < SPARK_WEIGHTD_MESH_BANDS; band++)
         {
             for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
@@ -808,22 +826,21 @@ void SparkWeightdMeshDoorbellLoop(void)
                 }
             }
         }
-        nanosleep(&pause,0);
-    }
     }
 }
+}
 
-uint32_t SparkWeightdMeshBufferLkey(void)
+__attribute__((used)) uint32_t SparkWeightdMeshBufferLkey(void)
 {
     return weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->lkey : 0u;
 }
 
-static uint32_t SparkWeightdMeshRankCount(void)
+__attribute__((used)) static uint32_t SparkWeightdMeshRankCount(void)
 {
     return SPARK_WEIGHTD_MESH_PEERS + 1u;
 }
 
-static int32_t SparkWeightdMeshPeerIndexFromRank(uint32_t peer_rank)
+int32_t SparkWeightdMeshPeerIndexFromRank(uint32_t peer_rank)
 {
     if (peer_rank >= SparkWeightdMeshRankCount() ||
         peer_rank == weightd_mesh.local_rank)
@@ -832,7 +849,7 @@ static int32_t SparkWeightdMeshPeerIndexFromRank(uint32_t peer_rank)
         ? peer_rank - 1u : peer_rank);
 }
 
-uint32_t SparkWeightdMeshBroadcast(
+__attribute__((used)) uint32_t SparkWeightdMeshBroadcast(
     uint32_t peer_rank_mask,
     uint64_t source_offset,
     uint32_t length,
@@ -902,7 +919,7 @@ uint32_t SparkWeightdMeshBroadcast(
     return posted;
 }
 
-SparkStatus SparkWeightdMeshPostWrite(
+__attribute__((used)) SparkStatus SparkWeightdMeshPostWrite(
     uint32_t peer_rank,
     uint64_t local_addr,
     uint32_t lkey,
