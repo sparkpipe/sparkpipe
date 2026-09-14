@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# af — fix fleet_node_agent.sh root_state() on every node: match ANY residentd
+# pid whose cwd is the root, not the oldest pgrep hit (co-resident rigs with
+# older pids made the agent read the lane as down and kill its own spawns in
+# a 2s loop). Stops the unit before patching (bash reads scripts
+# incrementally), verifies the patch, restarts, reports each node.
+set -uo pipefail
+NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+for n in $NODES; do
+  OUT=$(ssh -o ConnectTimeout=8 "$n" 'bash -s' <<'REMOTE'
+set -u
+F="$HOME/sparkdata/core/bin/fleet_node_agent.sh"
+[ -f "$F" ] || { echo "no-agent-script"; exit 0; }
+grep -q "af-any-pid" "$F" && { echo "already-patched"; exit 0; }
+systemctl --user stop fleet-agent 2>/dev/null || true
+python3 - "$F" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+old = '''root_state() {
+    local rr="$HOME/sparkdata/$1"
+    if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null && \\
+       [ "$(readlink /proc/$(pgrep -f 'bin/sparkpipe_model_residentd' | head -1)/cwd 2>/dev/null)" = "$rr" ]; then
+        if grep -q "model_residentd ready" "$rr/residentd.log" 2>/dev/null; then
+            echo "ready"
+        else
+            echo "starting: $(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)"
+        fi
+    else
+        echo "down"
+    fi
+}'''
+new = '''root_state() {
+    local rr="$HOME/sparkdata/$1" p
+    for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ]; then
+            if grep -q "model_residentd ready" "$rr/residentd.log" 2>/dev/null; then
+                echo "ready"
+            else
+                echo "starting: $(tail -1 "$rr/residentd.log" 2>/dev/null | cut -c1-90)"
+            fi
+            return 0
+        fi
+    done
+    echo "down"
+}
+
+fleet_agent_patch() { echo af-any-pid; }'''
+if old not in src:
+    print("patch-anchor-missing")
+    sys.exit(1)
+open(path, "w").write(src.replace(old, new, 1))
+print("patched")
+PY
+grep -q "af-any-pid" "$F" || { echo "patch-verify-failed"; exit 1; }
+systemctl --user start fleet-agent 2>/dev/null || true
+sleep 2
+systemctl --user is-active fleet-agent 2>/dev/null || echo "agent-not-active"
+REMOTE
+) || OUT="ssh-failed"
+  echo "== $n $OUT"
+done
+echo AF-DONE

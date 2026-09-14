@@ -280,10 +280,18 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     implementation->cancel_seen = *cancel_cell;
     if ( implementation->tp_rank == 0u )
     {
-        uint64_t high = implementation->round_seq;
+        uint64_t high = *base_cell;
         uint64_t base;
-        if ( *base_cell > high )
-            high = *base_cell;
+        if ( (high >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) >
+             SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
+        {
+            fprintf(stderr,
+                "CKEY-RESET rank=0 cell=%llu stride_bits=%u mask=%llu\n",
+                (unsigned long long)high,
+                (unsigned)SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS,
+                (unsigned long long)SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+            high = 0ull;
+        }
         base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
             SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
         *base_cell = base;
