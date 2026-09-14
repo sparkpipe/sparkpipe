@@ -1,5 +1,5 @@
 {
-  "file_count": 2221,
+  "file_count": 2226,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -63,8 +63,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7c2e4bfa09fc34f448939703fd0e50f48f67ea74ba65d7165bf325619c6f0faa",
-      "size_bytes": 108043
+      "sha256": "948fc86a82663445b313eac83fb54920839cccbadbbca29374cffc79596de64b",
+      "size_bytes": 109237
     },
     {
       "path": "NCCL_16WIDE_RECEIPTS.md",
@@ -460,6 +460,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/coordinator-log.md",
       "sha256": "810f9cbf1c0e9df1120bec01b18e8db3850cc4f019c9c5ff5a82096a344706c2",
       "size_bytes": 425656
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/d1-weightd-stability-2026-09-13.md",
+      "sha256": "ec9cb3e8e212f6d5e16a8ef9e1ef3a98eef61af942cc759bde6bb58d678a10ab",
+      "size_bytes": 14326
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/debts-2026-08-29.md",
@@ -1170,6 +1175,11 @@
       "path": "docs/WEIGHTD_DESIGN.md",
       "sha256": "5bc88aff81c2671472d805d7e51a6a9514d9b570ddc7e7c023dc394424fedbe5",
       "size_bytes": 7133
+    },
+    {
+      "path": "docs/WEIGHTD_EXECUTE_STABILITY.md",
+      "sha256": "407fd516b001bd2a0d6c57169cb467a58d3fbc308248e383243dce03ecf66b0e",
+      "size_bytes": 6741
     },
     {
       "path": "docs/WEIGHTD_MESH.md",
@@ -5288,8 +5298,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "13ae74bff37f5651b65969f42b91716cdda8dbcbd206a7b7b370c6e038702f02",
-      "size_bytes": 113960
+      "sha256": "c122daa75959576b3b67ebeb507aa7ad55b8accb008413d7491ba7a3496813b9",
+      "size_bytes": 113906
     },
     {
       "path": "node/weightd.c",
@@ -6838,8 +6848,8 @@
     },
     {
       "path": "runtime/spark_weightd_map.c",
-      "sha256": "b28af2eb0b9270f3a0ce75c66c2bbec480a0eba8a18cdda93fa7e9787ed98ce7",
-      "size_bytes": 14787
+      "sha256": "eb5e259ae6c06cfcbf3c3d7f78cdbc58be751009e2e1804d67c2370aa5f16bc4",
+      "size_bytes": 14854
     },
     {
       "path": "runtime/spark_weightd_spine.c",
@@ -6988,8 +6998,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_api.h",
-      "sha256": "550cc567f9f39cd3b29f35d25bdf377b22735d7ff080a276ec5b83d58654e286",
-      "size_bytes": 4143
+      "sha256": "775c1f85bde0241437b8bb04a1a430aef808cc09f0653aef10566fc6a6b5b93a",
+      "size_bytes": 4144
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
@@ -8397,6 +8407,11 @@
       "size_bytes": 16262
     },
     {
+      "path": "tests/test_model_resident_reconnect.c",
+      "sha256": "9000b5143244c50857bef7a8466439dee181414a38cf859f44da06952a72ff4d",
+      "size_bytes": 13194
+    },
+    {
       "path": "tests/test_model_runtime.c",
       "sha256": "92d53c7d9218e7cb5f5e5ee962ab70789b74d7d75ae58328e2f90e8f18b84a42",
       "size_bytes": 10488
@@ -8858,8 +8873,8 @@
     },
     {
       "path": "tests/test_weightd_working_set.c",
-      "sha256": "68389a572eb22249c90a6db9580b3d9d8550213c176ccd1b6a4a0499c0f1bc1e",
-      "size_bytes": 24321
+      "sha256": "b7e5d26a117eb9a7751c0a8c772aee49cf53b284ec600857119c105870a0bab9",
+      "size_bytes": 24330
     },
     {
       "path": "tests/test_work_transaction.c",
@@ -11062,6 +11077,16 @@
       "size_bytes": 3043
     },
     {
+      "path": "tools/weightd_execute_probe.c",
+      "sha256": "e28b919f0ce2580d2c9f8301af5c8377b97ab7c50dd797a491872726976d0d53",
+      "size_bytes": 6781
+    },
+    {
+      "path": "tools/weightd_execute_receipt.py",
+      "sha256": "7e9be442f61dd0e43e3736e783db1e2f2b422500e9812e4e9fa10bf5f1f195a7",
+      "size_bytes": 8733
+    },
+    {
       "path": "tools/weightd_expert_segments.c",
       "sha256": "7396aaf35cbef27a6a7c9f5e43c4f6ba73eb636ee1fc2368844c617face9219c",
       "size_bytes": 5028
@@ -11110,5 +11135,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35829781
+  "total_bytes": 35880773
 }

@@ -309,7 +309,7 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	attached.arena_bytes = (3u * CHUNK);
 	attached.chunk_bytes = CHUNK;
 	attached.chunk_count = 3u;
-	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,-1,&map) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
 	key.expert = 1u;
 	assert(SparkWeightdMapAcquire(map,&key,1u,&second,TIMEOUT) == SPARK_STATUS_OK);
@@ -339,7 +339,7 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
 	assert(first == 0u);
 	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
-	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,-1,&map) == SPARK_STATUS_OK);
 	spark_stub_cuda_fail_import_after(2u);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
 	assert(first == 0u);
@@ -350,7 +350,7 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	(void)acquire(client,generation,2u,SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
-	assert(SparkWeightdMapCreate(client,&attached,&map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,-1,&map) == SPARK_STATUS_OK);
 	spark_stub_cuda_set_import_delay(200000u);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,UINT64_C(100000000)) == SPARK_STATUS_BUSY);
 	spark_stub_cuda_set_import_delay(0u);

@@ -2301,7 +2301,6 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 }
 
 static SparkStatus SparkModelResidentdFailContinuationLocked(
-	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
 	SparkStatus status)
 {
@@ -2333,7 +2332,7 @@ static SparkStatus SparkModelResidentdCommitContinuation(
 	if ( status == SPARK_STATUS_OK )
 		route->state = route->ready_state;
 	else
-		status = SparkModelResidentdFailContinuationLocked(runtime,route,status);
+		status = SparkModelResidentdFailContinuationLocked(route,status);
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
 }
@@ -2360,7 +2359,7 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 	if ( status != SPARK_STATUS_OK )
 	{
 		pthread_mutex_lock(&runtime->mutex);
-		status = SparkModelResidentdFailContinuationLocked(runtime,route,status);
+		status = SparkModelResidentdFailContinuationLocked(route,status);
 		pthread_mutex_unlock(&runtime->mutex);
 		SPARK_RETURN(status);
 	}

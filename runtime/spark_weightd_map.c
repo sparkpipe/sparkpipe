@@ -81,9 +81,10 @@ static SparkWeightdMapSlot *map_slot(SparkWeightdMap *map,uint64_t identifier)
 	return(0);
 }
 
-static void map_free_initial(SparkWeightdMap *map)
+static SparkStatus map_free_initial(SparkWeightdMap *map)
 {
 	uint32_t i;
+	SparkStatus status = SPARK_STATUS_OK;
 	if ( map->epoch_handle != 0 )
 	{
 		(void)cuMemUnmap(map->base + map->span_bytes,
@@ -94,8 +95,9 @@ static void map_free_initial(SparkWeightdMap *map)
 		map->epoch_handle = 0;
 	}
 	if ( map->base != 0u )
-		(void)cuMemAddressFree(map->base,
-		    (size_t)(map->span_bytes + map->chunk_bytes));
+		status = cuMemAddressFree(map->base,
+		    (size_t)(map->span_bytes + map->chunk_bytes)) == CUDA_SUCCESS
+		    ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
 		if ( map->slots[i].event != 0 )
 			(void)cudaEventDestroy(map->slots[i].event);
@@ -103,6 +105,7 @@ static void map_free_initial(SparkWeightdMap *map)
 	free(map->owners);
 	free(map->mapped);
 	free(map);
+	return(status);
 }
 
 static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
@@ -186,7 +189,7 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		map_free_initial(map);
+		(void)map_free_initial(map);
 		SPARK_RETURN(status);
 	}
 	*out = map;
@@ -217,10 +220,9 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			map->slots[i].event = 0;
 		}
-	if ( map->base != 0u && cuMemAddressFree(map->base,(size_t)map->span_bytes) != CUDA_SUCCESS )
+	status = map_free_initial(map);
+	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	map->base = 0u;
-	map_free_initial(map);
 	return(SPARK_STATUS_OK);
 }
 
