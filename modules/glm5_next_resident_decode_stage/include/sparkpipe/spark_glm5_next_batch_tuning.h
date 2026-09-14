@@ -1,12 +1,13 @@
 #pragma once
+#ifndef SPARK_BATCH_BUCKET
+#define SPARK_BATCH_BUCKET 1024u
+#endif
 
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
 
-#ifndef SPARK_BATCH_BUCKET
-#define SPARK_BATCH_BUCKET 1024u
-#endif
+
 
 #if SPARK_BATCH_BUCKET != 1u && SPARK_BATCH_BUCKET != 2u && \
 	SPARK_BATCH_BUCKET != 4u && SPARK_BATCH_BUCKET != 8u && \

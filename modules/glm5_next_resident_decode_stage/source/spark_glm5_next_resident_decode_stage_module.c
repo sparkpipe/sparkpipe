@@ -1399,7 +1399,7 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 		for (lane=0u; lane<request->cache_lane_count; lane++)
 		{
 			slot = request->cache_lanes[lane].resident_sequence_slot;
-			atomic_store_explicit(&state->lane_bound[slot],0u,memory_order_release);
+			atomic_store_explicit(&state->lane_bound[slot],(unsigned char)0u,memory_order_release);
 			if ( state->mtp_lane_armed != 0 )
 				state->mtp_lane_armed[slot] = 0u;
 		}
