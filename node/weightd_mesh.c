@@ -69,6 +69,8 @@ typedef struct SparkWeightdMesh
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t doorbell_stuck[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    uint64_t cell_posted[SPARK_WEIGHTD_MESH_BANDS];
+    uint64_t cancel_posted[SPARK_WEIGHTD_MESH_BANDS];
     uint64_t ship_log_count;
     uint64_t ship_log_key;
     uint32_t ship_log_key_budget;
@@ -628,6 +630,59 @@ void SparkWeightdMeshDoorbellLoop(void)
         }
         for (band = 0u; band < SPARK_WEIGHTD_MESH_BANDS; band++)
         {
+            uint64_t cell_off = SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+                (SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE + 2u * band) *
+                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES;
+            volatile uint64_t *cellb = (volatile uint64_t *)
+                (weightd_mesh.recv_buffer + cell_off);
+            volatile uint64_t *cellc = (volatile uint64_t *)
+                (weightd_mesh.recv_buffer + cell_off +
+                SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+            if ( *cellb != weightd_mesh.cell_posted[band] ||
+                 *cellc != weightd_mesh.cancel_posted[band] )
+            {
+                uint32_t cell_failed = 0u;
+                uint32_t ci;
+                uint32_t peer;
+                for (ci = 0u; ci < 2u; ci++)
+                {
+                    uint64_t off = cell_off +
+                        (uint64_t)ci * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES;
+                    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+                    {
+                        struct ibv_sge csge;
+                        struct ibv_send_wr cwr;
+                        struct ibv_send_wr *cbad;
+                        memset(&csge,0,sizeof(csge));
+                        csge.addr = (uint64_t)(uintptr_t)
+                            weightd_mesh.recv_buffer + off;
+                        csge.length = 8u;
+                        csge.lkey = weightd_mesh.recv_mr->lkey;
+                        memset(&cwr,0,sizeof(cwr));
+                        cwr.wr_id = (uint64_t)peer;
+                        cwr.sg_list = &csge;
+                        cwr.num_sge = 1;
+                        cwr.opcode = IBV_WR_RDMA_WRITE;
+                        cwr.send_flags = IBV_SEND_SIGNALED;
+                        cwr.wr.rdma.remote_addr =
+                            qp_snapshot[peer].remote_addr + off;
+                        cwr.wr.rdma.rkey = qp_snapshot[peer].rkey;
+                        if ( ibv_post_send(weightd_mesh.send_qps[peer],
+                                &cwr,&cbad) != 0 )
+                        {
+                            SparkWeightdMeshTryWire();
+                            if ( ibv_post_send(weightd_mesh.send_qps[peer],
+                                    &cwr,&cbad) != 0 )
+                                cell_failed = 1u;
+                        }
+                    }
+                }
+                if ( cell_failed == 0u )
+                {
+                    weightd_mesh.cell_posted[band] = *cellb;
+                    weightd_mesh.cancel_posted[band] = *cellc;
+                }
+            }
             for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
             {
                 uint64_t index =
