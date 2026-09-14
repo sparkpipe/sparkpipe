@@ -1,6 +1,10 @@
 #pragma once
-#ifndef SPARK_BATCH_BUCKET
-#define SPARK_BATCH_BUCKET 1024u
+#if !defined(SPARK_BATCH_BUCKET) && !defined(SPARK_BATCH_BUCKET_DEFINED_BY_HOST)
+#error "required configuration value absent: SPARK_BATCH_BUCKET must be defined by the build — no silent defaults"
+#endif
+#if !defined(SPARK_BATCH_BUCKET)
+#define SPARK_BATCH_BUCKET 1024
+#define SPARK_BATCH_BUCKET_WAS_ABSENT 1
 #endif
 
 #include <stdint.h>
@@ -9,13 +13,8 @@
 
 
 
-#if SPARK_BATCH_BUCKET != 1u && SPARK_BATCH_BUCKET != 2u && \
-	SPARK_BATCH_BUCKET != 4u && SPARK_BATCH_BUCKET != 8u && \
-	SPARK_BATCH_BUCKET != 16u && SPARK_BATCH_BUCKET != 32u && \
-	SPARK_BATCH_BUCKET != 64u && SPARK_BATCH_BUCKET != 128u && \
-	SPARK_BATCH_BUCKET != 256u && SPARK_BATCH_BUCKET != 512u && \
-	SPARK_BATCH_BUCKET != 1024u
-#error SPARK_BATCH_BUCKET must name a built variant bucket: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+#if SPARK_BATCH_BUCKET < 1 || SPARK_BATCH_BUCKET > 1024 || (1024 % SPARK_BATCH_BUCKET) != 0
+#error SPARK_BATCH_BUCKET must name a built variant bucket (power of two, 1..1024)
 #endif
 
 #ifndef GLM5_NEXT_EXPERT_CODEC_NAME
