@@ -1,0 +1,25 @@
+[Unit]
+Description=SparkPipe weightsd (stable weights channel, deployment identity of sparkpipe_weightd; managed by tools/weightsd_deploy.sh)
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sparkpipe/weightsd.env
+ExecStart=/bin/sh -c 'exec ${WEIGHTSD_BIN} --socket ${WEIGHTSD_SOCKET} ${WEIGHTSD_EXTRA_ARGS}'
+RuntimeDirectory=sparkpipe-weightsd
+RuntimeDirectoryMode=0750
+StateDirectory=sparkpipe-weightsd
+StandardOutput=append:/tmp/weightsd.log
+StandardError=append:/tmp/weightsd.log
+StandardInput=null
+Restart=on-failure
+RestartSec=5s
+MemoryHigh=32G
+MemoryMax=48G
+MemorySwapMax=0
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

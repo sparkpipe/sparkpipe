@@ -1,0 +1,42 @@
+{
+  "proof": "weightsd-coexistence",
+  "node": "spark0",
+  "time": "2026-09-14T07:43:56+0900",
+  "weightd": {
+    "socket": "/tmp/spark_weightd.sock",
+    "style": "coredev debug instance (default-style /tmp socket, setsid)"
+  },
+  "weightsd": {
+    "socket": "/run/sparkpipe-weightsd/weightsd.sock",
+    "style": "stable channel systemd unit"
+  },
+  "sockets_distinct": true,
+  "both_sockets_present": [
+    true,
+    true
+  ],
+  "interleaved_fixture_lifecycles": [
+    {
+      "round": 1,
+      "weightd_pass": true,
+      "weightsd_pass": true
+    },
+    {
+      "round": 2,
+      "weightd_pass": true,
+      "weightsd_pass": true
+    },
+    {
+      "round": 3,
+      "weightd_pass": true,
+      "weightsd_pass": true
+    }
+  ],
+  "weightsd_unit_n_restarts": "0",
+  "weightsd_unit_main_pid": "2361114",
+  "reclaim_weightd": "RECLAIM status=0 reclaimed_bytes=4194304 arenas=1 resident=0",
+  "reclaim_weightsd": "RECLAIM status=0 reclaimed_bytes=1048576000 arenas=0 resident=0",
+  "weightsd_unit_active_after": "active",
+  "verdict": "PASS",
+  "notes": "weightd side served by a node-local coredev-style instance on the default-style /tmp socket; during the same window that instance also carried a real glm5_next_stage lazy-attach (experts=12096 arena=21706046976 pool=4294967296) and shut down cleanly on SIGTERM at teardown. Independent reclaim counts (weightd 4 MiB fixture arena vs weightsd 1 GiB pool) demonstrate separated per-daemon state."
+}

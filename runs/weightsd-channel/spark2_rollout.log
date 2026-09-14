@@ -1,0 +1,18 @@
+== spark2 rollout start 22:46:42 =
+node=spark2 user=spark2
+SUDO-OK
+/usr/local/cuda
+spark2: block 61000-61127 clear
+make: Entering directory '/home/spark2/weightsd1'
+mkdir -p build
+ar rcs build/libsparkpipe_core.a.$$.tmp build/obj/src/spark_status.o build/obj/src/spark_sha256.o build/obj/src/spark_ck128.o build/obj/src/spark_admission.o build/obj/src/spark_speculation_policy.o build/obj/src/spark_speculation_seam.o build/obj/ring/transport/draft_bridge.o build/obj/runtime/filesystem.o build/obj/runtime/json.o && mv build/libsparkpipe_core.a.$$.tmp build/libsparkpipe_core.a
+ar rcs build/libsparkpipe_runtime.a.$$.tmp build/obj/src/spark_driver_loader.o build/obj/src/spark_orchestrator.o build/obj/runtime/stagepack_format.o build/obj/runtime/runtime_completion.o build/obj/runtime/model_runtime.o build/obj/runtime/model_serving_adapter.o build/obj/runtime/model_resident_endpoint.o build/obj/runtime/model_resident_deployment.o build/obj/runtime/model_continuation_lease.o build/obj/runtime/model_resident_ipc.o build/obj/runtime/model_resident_client.o build/obj/runtime/model_pipeline_client.o build/obj/runtime/spark_weightd.o build/obj/runtime/spark_weightd_manifest.o build/obj/runtime/spark_weightd_lease.o build/obj/runtime/spark_weightd_attach.o build/obj/runtime/spark_weightd_map.o build/obj/runtime/spark_weightd_spine.o build/obj/runtime/spark_weightd_worker.o build/obj/runtime/spark_weightd_lazy_pack.o build/obj/runtime/model_batch_engine.o build/obj/runtime/pipeline_runtime.o && mv build/libsparkpipe_runtime.a.$$.tmp build/libsparkpipe_runtime.a
+cc -I. -Iinclude -Isrc -I/usr/local/cuda/include -Imodel-families/common/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -mcpu=neoverse-v2 node/weightd.c node/weightd_mesh.c build/libsparkpipe_runtime.a build/libsparkpipe_core.a -L/usr/local/cuda/lib64 -lcuda -L/usr/local/cuda/lib64 -lcudart -L/usr/local/cuda/lib64 -lcuda -libverbs -o build/sparkpipe_weightsd
+cc -I. -Iinclude -Isrc -I/usr/local/cuda/include -Imodel-families/common/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -D_GNU_SOURCE -mcpu=neoverse-v2 tools/weightdctl.c build/libsparkpipe_runtime.a build/libsparkpipe_core.a -L/usr/local/cuda/lib64 -lcuda -ldl -pthread -L/usr/local/cuda/lib64 -lcudart -L/usr/local/cuda/lib64 -lcuda -o build/weightdctl
+make: Leaving directory '/home/spark2/weightsd1'
+Created symlink /etc/systemd/system/multi-user.target.wants/sparkpipe_weightsd.service → /etc/systemd/system/sparkpipe_weightsd.service.
+weightsd-deploy: node=spark2 user=spark2 sha16=26e21cf4dff6b182 socket=/run/sparkpipe-weightsd/weightsd.sock health="RECLAIM status=0 reclaimed_bytes=0 arenas=0 resident=0"
+spark2: no real pack; fixture-only receipt
+RECLAIM status=0 reclaimed_bytes=0 arenas=0 resident=0
+active
+spark2: PASS 22:47:02

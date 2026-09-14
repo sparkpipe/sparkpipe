@@ -108,11 +108,14 @@ def main():
     parser.add_argument("--keep-daemon", action="store_true")
     parser.add_argument("--socket", type=pathlib.Path,
                         default=pathlib.Path("/tmp/weightd-execute-receipt.sock"))
+    parser.add_argument("--daemon", default="sparkpipe_weightd",
+                        help="daemon binary name under build/ "
+                             "(sparkpipe_weightsd for the stable channel)")
     args = parser.parse_args()
     args.socket = args.socket.resolve()
 
     build = args.repo / "build"
-    daemon = build / "sparkpipe_weightd"
+    daemon = build / args.daemon
     probe = build / "weightd_execute_probe"
     consumer = build / "weightd_lazy_consumer"
     for binary in (daemon, probe, consumer):
@@ -127,6 +130,7 @@ def main():
         "rig": "weightd-execute-receipt",
         "time": datetime.datetime.now().astimezone().isoformat(),
         "node": os.uname().nodename,
+        "daemon": daemon.name,
         "daemon_sha16": sha16(daemon),
         "pack": str(args.pack),
         "pack_sha256": args.pack_sha,

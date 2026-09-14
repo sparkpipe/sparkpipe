@@ -1,0 +1,11 @@
+{
+  "proof": "weightsd-service-execute-waves",
+  "node": "spark0",
+  "time": "2026-09-14T07:39:00+0900",
+  "endpoint": "/run/sparkpipe-weightsd/weightsd.sock",
+  "daemon": "sparkpipe_weightsd (systemd unit sparkpipe_weightsd.service, MainPID 2361114)",
+  "driver": "build/weightd_execute_probe under sudo -n systemd-run --scope -q -p MemoryMax=4096M -p MemoryHigh=2900M --uid=1000",
+  "command": "SPARK_WEIGHTD_SOCKET=/run/sparkpipe-weightsd/weightsd.sock SPARK_WEIGHTD_ATTACH_LAZY=1 build/weightd_execute_probe /home/spark0/sparkdata/qwenmax.nvfp4.tp16/packs/qwenmax.nvfp4.tp16.rank0.sp qwen38max service-proof 1024 5 3896939fdfda4eb0edffc0ee5a750adcd592d1496d96448946a6c14977ed3fe4",
+  "stdout": "EXECUTE-PROBE waves=5 keys=8 experts=2944 waves_ns=1703381918 pool_mib=1024",
+  "verdict": "PASS"
+}
