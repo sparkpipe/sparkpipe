@@ -220,6 +220,9 @@ struct SparkGlm5NextModuleState
 	uint64_t decode_route_leases[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 	uint32_t decode_route_lease_count;
 	uint32_t decode_union_count;
+	uint64_t degrade_graph_fallback;
+	uint64_t degrade_covered_abandon;
+	uint64_t degrade_graph_disabled;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
 	uint32_t hbound_probes;
@@ -3063,6 +3066,8 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 		{
 			SparkGlm5NextGraphDisarm(state);
 			slot->graph_disabled = 1u;
+			state->degrade_graph_disabled++;
+			fprintf(stderr,"DEGRADE graph-disabled slot=%u\n",chain->slot_index);
 			*status_out = SPARK_STATUS_BUSY;
 			return;
 		}
@@ -3086,6 +3091,8 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 				(void)cudaGraphExecDestroy(
 					(cudaGraphExec_t)exec_b);
 			slot->graph_disabled = 1u;
+			state->degrade_graph_disabled++;
+			fprintf(stderr,"DEGRADE graph-disabled slot=%u\n",chain->slot_index);
 			*status_out = SPARK_STATUS_BUSY;
 			return;
 		}
@@ -3161,8 +3168,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				free(chain);
 				return;
 			}
-			fprintf(stderr,"GRAPH-FALLBACK-TO-CHAIN status=%d\n",
-				(int32_t)graph_status);
+			state->degrade_graph_fallback++;
+			if ( (state->degrade_graph_fallback & 15u) == 1u )
+				fprintf(stderr,
+				    "DEGRADE graph-fallback n=%llu status=%d\n",
+				    (unsigned long long)
+				        state->degrade_graph_fallback,
+				    (int32_t)graph_status);
 		}
 		SparkGlm5NextBuildWave(chain);
 		if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
@@ -3241,6 +3253,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 						return;
 					}
 					chain->wave.expert_lease_all = 0u;
+					state->degrade_covered_abandon++;
+					if ( (state->degrade_covered_abandon & 15u) == 1u )
+						fprintf(stderr,
+						    "DEGRADE covered-abandon n=%llu layer=%u\n",
+						    (unsigned long long)
+						        state->degrade_covered_abandon,
+						    chain->next_layer);
 				}
 				else
 				{
