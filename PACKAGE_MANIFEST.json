@@ -4638,8 +4638,8 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_module.h",
-      "sha256": "e7ac6a976f417ddbef9c80d3777f15ac4c910472339764c054715f8423e875ae",
-      "size_bytes": 890
+      "sha256": "1776d75bfd8db7c50bba90063675cc58cb6e690bd2cd4c8b4b50c85084e418bb",
+      "size_bytes": 844
     },
     {
       "path": "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h",
@@ -4678,13 +4678,13 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c",
-      "sha256": "c6319a5ef1ebde180ab31c9e53753ebe842510287a0d240c8d5350f635e5fc33",
-      "size_bytes": 1698
+      "sha256": "df43bab26c20589e736a6cb6105edc5a7e4fcef10e781cb15487d5e3e7942752",
+      "size_bytes": 2189
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu",
-      "sha256": "5779015c659270170db6ae8a29fbc8f982be785323b881c7d357da8e9728a82b",
-      "size_bytes": 50830
+      "sha256": "95fbedf21ec5f30e6ba9cc926753b171f2cc67d04734a6869d6d3cadc43ccba0",
+      "size_bytes": 53359
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
@@ -10940,5 +10940,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35429935
+  "total_bytes": 35432909
 }
