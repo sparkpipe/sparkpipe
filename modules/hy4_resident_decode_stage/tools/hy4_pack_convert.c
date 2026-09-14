@@ -7,13 +7,13 @@
 
 #include "spark_hy4_stagepack_format.h"
 
-/* hy4 rank-pack converter: FP8 safetensors rank pack -> hy4 .sp
- * stagepack. Reads argv[1] (the placed rank pack), maps every tensor
- * name to its family kind/layer, and emits <argv[1]>.sp with the
- * 120-byte header, 56-byte directory and 256-aligned payloads. Weight
- * bytes are copied verbatim — the converter republishes, it never
- * requantizes. The MTP pseudo-layer and duplicated root names in the
- * source are skipped; the module contract fixes MTP at zero layers. */
+
+
+
+
+
+
+
 
 #define SPARK_HY4_CONVERT_MAX_TENSORS 4096u
 #define SPARK_HY4_CONVERT_JSON_MAX (8ull << 20)
@@ -214,10 +214,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	json[json_bytes] = '\0';
-	/* name-scan the header JSON: each "name":{...} becomes one
-	 * directory entry via the kind map; unknown names are skipped
-	 * only when they are MTP or duplicate-root names, otherwise the
-	 * conversion fails loudly. */
+	
+
+
+
 	for (index = 0u; index + 2u < (uint32_t)json_bytes; index++)
 	{
 		uint32_t tensor_kind;

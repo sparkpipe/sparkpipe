@@ -6,12 +6,12 @@
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
 
-/* hy4 TP16 stagepack wire format. One pack per rank; the fused routed
- * experts are dim0 range-split (16 local experts per rank), the lm_head
- * is vocab range-split (7552 rows per rank), attention output is dim1
- * column-gathered, everything else is replicated. Weights are F8_E4M3
- * payloads with U8 E8M0 group-32 scales (kind 6, the checkpoint's own
- * quantization), norms/router F32. */
+
+
+
+
+
+
 
 #define SPARK_HY4_STAGEPACK_MAGIC 0x50533448u
 #define SPARK_HY4_STAGEPACK_FORMAT_VERSION 1u
@@ -126,9 +126,9 @@ _Static_assert((SPARK_HY4_MODEL_VOCAB_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"h
 _Static_assert((SPARK_HY4_MODEL_ROUTED_EXPERT_COUNT % SPARK_HY4_MODEL_TP_RANKS) == 0u,"hy4 experts must tile the ranks");
 _Static_assert((SPARK_HY4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 expert intermediate must tile scale groups");
 _Static_assert((SPARK_HY4_MODEL_HIDDEN_DIMENSION % SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE) == 0u,"hy4 hidden must tile scale groups");
-/* The firmware header's literal weight-format codes must match the
- * shared stagepack format constants. Code 9 (F8_E4M3 payload + U8
- * E8M0 group-32 scales) is hy4-specific and lives only here. */
+
+
+
 #if defined(SPARK_STAGEPACK_FORMAT_WEIGHT_BF16)
 _Static_assert(SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"hy4 bf16 weight code must match the shared format");
 _Static_assert(SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"hy4 f32 weight code must match the shared format");
@@ -150,8 +150,8 @@ static const SparkStagePackGeometryTable SparkHy4StagePackGeometry =
 	.gdn_conv_kernel = 0u
 };
 
-/* Per-rank (tp_degree 16) shapes. Row/column are the stored 2-D
- * dims of the packed tensor as written by the sharder. */
+
+
 static inline int32_t SparkHy4StagePackShapeGlobal(uint32_t tensor_kind,
 	SparkHy4StagePackTensorShape *shape)
 {
@@ -317,8 +317,8 @@ static inline int32_t SparkHy4StagePackTensorShapeOf(uint32_t tensor_kind,
 	return -1;
 }
 
-/* Natural (checkpoint-side) format per class. The rank pack stores
- * exactly these bytes; there is no on-load requantization. */
+
+
 static inline uint32_t SparkHy4StagePackNaturalFormat(uint32_t tensor_kind)
 {
 	switch ( tensor_kind )
@@ -382,8 +382,8 @@ static inline uint64_t SparkHy4StagePackScaleBytes(uint32_t weight_format,
 	{
 		uint64_t groups = ((uint64_t)rows * (uint64_t)columns) /
 			SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE;
-		/* scale rows follow the payload row layout: per stored row,
-		 * columns/group entries */
+		
+
 		return ((uint64_t)rows * ((uint64_t)columns /
 			SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE)) != 0ull ?
 			((uint64_t)rows * ((uint64_t)columns /
@@ -411,10 +411,10 @@ static inline int32_t SparkHy4StagePackResolvedShape(uint32_t tensor_kind,
 static inline uint32_t SparkHy4StagePackExpectedTensorCount(
 	uint32_t first_layer_index, uint32_t moe_layer_count)
 {
-	/* 33 every-layer kinds per MoE layer; the globals ride only on
-	 * the slice that contains them, mirroring the common directory
-	 * builder: embedding on first_layer_index==0, and final_norm +
-	 * lm_head + the three output hc globals on the closing slice. */
+	
+
+
+
 	uint32_t tensors = moe_layer_count * 33u;
 	if ( first_layer_index == 0u )
 		tensors += 1u;

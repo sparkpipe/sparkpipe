@@ -23,8 +23,17 @@ __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t ro
 	}
 }
 
+typedef struct SparkK3RunnerTpContext SparkK3RunnerTpContext;
+
+#define K3_RUNNER_TP_CONTEXT_POOL_DEPTH (2u * K3_LAYERS)
+
+static_assert(K3_RUNNER_TP_CONTEXT_POOL_DEPTH >= 2u * K3_LAYERS,
+	"tp context pool must cover both per-layer collectives");
+
 typedef struct SparkK3RunnerTpContext
 {
+	SparkK3RunnerTpContext *pool_next;
+	SparkK3RunnerState *owner;
 	K3LayerBuffers *buffers;
 	uint16_t *fused;
 	cudaStream_t stream;
@@ -34,6 +43,10 @@ typedef struct SparkK3RunnerTpContext
 	uint32_t phase;
 	uint32_t gate_up_elements;
 } SparkK3RunnerTpContext;
+
+static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
+	SparkK3RunnerState *state);
+static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context);
 
 static void K3RunnerTpCompletion(void *context,
 	const SparkTpDeviceCollectiveCompletion *completion)
@@ -49,7 +62,7 @@ static void K3RunnerTpCompletion(void *context,
 		cudaMemcpyAsync(b->gate_up_bf16, fused,
 			(uint64_t)tp->gate_up_elements * 2u,
 			cudaMemcpyDeviceToDevice, tp->stream);
-		delete tp;
+		K3RunnerTpContextRelease(tp);
 		return;
 	}
 	if ( tp->phase == 0u )
@@ -65,7 +78,7 @@ static void K3RunnerTpCompletion(void *context,
 		if ( tp->segments == 2u )
 			K3PartialAdd(b, fused + elements, rows, tp->stream);
 	}
-	delete tp;
+	K3RunnerTpContextRelease(tp);
 }
 
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
@@ -137,8 +150,6 @@ static SparkStatus K3RunnerCombineTp4Bf16(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-typedef struct SparkK3RunnerState SparkK3RunnerState;
-
 typedef struct SparkK3RunnerState
 {
 	SparkK3ModuleState module;
@@ -158,6 +169,9 @@ typedef struct SparkK3RunnerState
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
+	SparkK3RunnerTpContext *tp_context_free_head;
+	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
+	uint32_t tp_context_overflow;
 	uint32_t rows;
 	uint32_t logical_sequence_count;
 	const uint16_t *embed_weight;
@@ -206,6 +220,26 @@ typedef struct SparkK3RunnerState
 	uint64_t kv_page_bytes;
 } SparkK3RunnerState;
 
+static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
+	SparkK3RunnerState *state)
+{
+	SparkK3RunnerTpContext *context = state->tp_context_free_head;
+	if ( context == 0 )
+	{
+		state->tp_context_overflow = 1u;
+		return 0;
+	}
+	state->tp_context_free_head = context->pool_next;
+	return context;
+}
+
+static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context)
+{
+	SparkK3RunnerState *state = context->owner;
+	context->pool_next = state->tp_context_free_head;
+	state->tp_context_free_head = context;
+}
+
 static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 	SparkK3StepInput *in, uint32_t rows, uint32_t sequences,
 	uint32_t packed_rows, cudaStream_t stream)
@@ -215,16 +249,32 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 		packed_rows, state->max_context, state->multiprocessors, stream);
 }
 
+#define K3_RUNNER_PP_STAGE_COUNT 4u
+#define K3_RUNNER_PP_STAGE_BASE_LAYERS (K3_LAYERS / K3_RUNNER_PP_STAGE_COUNT)
+#define K3_RUNNER_PP_STAGE_REMAINDER (K3_LAYERS % K3_RUNNER_PP_STAGE_COUNT)
+#define K3_RUNNER_PP_STAGE_LAYERS(stage_index) \
+	(K3_RUNNER_PP_STAGE_BASE_LAYERS + \
+	((stage_index) < K3_RUNNER_PP_STAGE_REMAINDER ? 1u : 0u))
+#define K3_RUNNER_PP_STAGE_FIRST(stage_index) \
+	((stage_index) * K3_RUNNER_PP_STAGE_BASE_LAYERS + \
+	((stage_index) < K3_RUNNER_PP_STAGE_REMAINDER ? \
+	(stage_index) : K3_RUNNER_PP_STAGE_REMAINDER))
+
+static_assert(K3_RUNNER_PP_STAGE_FIRST(K3_RUNNER_PP_STAGE_COUNT - 1u) +
+	K3_RUNNER_PP_STAGE_LAYERS(K3_RUNNER_PP_STAGE_COUNT - 1u) ==
+	K3_LAYERS,
+	"pp stage bounds must tile the k3 layer stack");
+
+static_assert(K3_LAYERS == SPARK_K3_MODULE_TOTAL_LAYERS,
+	"k3 kernel layer count must equal the module layer total");
 static uint32_t K3RunnerFirstLayer(uint32_t stage_index)
 {
-	static const uint32_t first[4] = { 0u, 24u, 47u, 70u };
-	return(first[stage_index % 4u]);
+	return(K3_RUNNER_PP_STAGE_FIRST(stage_index % K3_RUNNER_PP_STAGE_COUNT));
 }
 
 static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 {
-	static const uint32_t count[4] = { 24u, 23u, 23u, 23u };
-	return(count[stage_index % 4u]);
+	return(K3_RUNNER_PP_STAGE_LAYERS(stage_index % K3_RUNNER_PP_STAGE_COUNT));
 }
 
 static void K3RunnerEmbedCompletion(void *context,
@@ -306,7 +356,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 				256u, 0, stream>>>(
 				0, 0, 0, b->gate_up_bf16, state->fused_device,
 				rows, 2u, 1u, gate_up_elements);
-			SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
+			SparkK3RunnerTpContext *completion_context =
+				K3RunnerTpContextAcquire(state);
+			if ( completion_context == 0 )
+				return;
+			completion_context->owner = state;
 			completion_context->fused = state->fused_device;
 			completion_context->buffers = b;
 			completion_context->stream = stream;
@@ -353,7 +407,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 			state->fused_device,rows,phase,segments,0u);
-		SparkK3RunnerTpContext *completion_context = new SparkK3RunnerTpContext;
+		SparkK3RunnerTpContext *completion_context =
+			K3RunnerTpContextAcquire(state);
+		if ( completion_context == 0 )
+			return;
+		completion_context->owner = state;
 		completion_context->fused = state->fused_device;
 		completion_context->buffers = b;
 		completion_context->stream = stream;
@@ -612,6 +670,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 	memset(runner, 0, sizeof(*runner));
 	state = new SparkK3RunnerState;
 	memset(state, 0, sizeof(*state));
+	{
+		uint32_t pool_index;
+		for (pool_index = 0u;
+			pool_index < K3_RUNNER_TP_CONTEXT_POOL_DEPTH;
+			++pool_index)
+		{
+			state->tp_context_pool[pool_index].owner = state;
+			state->tp_context_pool[pool_index].pool_next =
+				state->tp_context_free_head;
+			state->tp_context_free_head =
+				&state->tp_context_pool[pool_index];
+		}
+	}
 	runner->abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	runner->descriptor_bytes = SPARK_K3_STAGE_RUNNER_BYTES;
 	runner->flags = configuration->flags;
@@ -1115,6 +1186,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 		cudaMemcpy(dispatch->hidden_output_bf16, b->hidden_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
 	}
+	if ( state->tp_context_overflow != 0u )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	runner->stats.submitted_count++;
 	runner->stats.completed_count++;
 	if ( dispatch->completion_function != 0 )

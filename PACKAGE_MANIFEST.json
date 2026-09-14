@@ -1,5 +1,5 @@
 {
-  "file_count": 2185,
+  "file_count": 2188,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -4488,8 +4488,8 @@
     },
     {
       "path": "modules/hy4_resident_decode_stage/include/sparkpipe/spark_hy4_resident_decode_stage_firmware.h",
-      "sha256": "a8a3b3025118f0dcff3de9d48509cca682e836e58607b3ead800ebeceb66fa93",
-      "size_bytes": 7554
+      "sha256": "133caac74ccd7569cd23251f4fb1d2875826ad899376581a461e66278dd1470a",
+      "size_bytes": 5967
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_fp8_scale_contract.h",
@@ -4498,18 +4498,18 @@
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_cuda.cu",
-      "sha256": "6c00bbe1e74c2f4b674e3ebddae67244009464292d154f8aef8150c8e9b086b3",
-      "size_bytes": 8533
+      "sha256": "b054500e93137cf90d3eabdf0eca88c31a3977fab869df9d177df8bbdffe3fa7",
+      "size_bytes": 9767
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c",
-      "sha256": "69a9da4d22ec310512a95189e4dfc5223af065f4760b7a7dfbc6683076806845",
-      "size_bytes": 5766
+      "sha256": "007b50c490e02aa5b9a9ad02ea40f58a1edaea3ae47eb8aa881761bd8eb2df2d",
+      "size_bytes": 5234
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_stagepack_format.h",
-      "sha256": "6a698ede9ff69db222ae4370325ab91113f16c86b3a6060601273b632befdaa9",
-      "size_bytes": 18985
+      "sha256": "e24cdbb64b1b24ad7407a783cdc25899d36c51ea3e9e7f3b44d8488971ef8a7e",
+      "size_bytes": 17801
     },
     {
       "path": "modules/hy4_resident_decode_stage/source/spark_hy4_stagepack_format_check.c",
@@ -4518,8 +4518,8 @@
     },
     {
       "path": "modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c",
-      "sha256": "852d23c7185cb54fb4ff380c9674e576dd2af0396dcbe9b0ac9e9cffabf97ba4",
-      "size_bytes": 8483
+      "sha256": "f7b209628f1e1dcae5a6eeb4a2b8cf6396c99ee146b525a24106283107650f13",
+      "size_bytes": 7789
     },
     {
       "path": "modules/k3_resident_decode_stage/configs/model_resident.json",
@@ -4638,8 +4638,8 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_module.h",
-      "sha256": "e7ac6a976f417ddbef9c80d3777f15ac4c910472339764c054715f8423e875ae",
-      "size_bytes": 890
+      "sha256": "1776d75bfd8db7c50bba90063675cc58cb6e690bd2cd4c8b4b50c85084e418bb",
+      "size_bytes": 844
     },
     {
       "path": "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h",
@@ -4678,13 +4678,13 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c",
-      "sha256": "c6319a5ef1ebde180ab31c9e53753ebe842510287a0d240c8d5350f635e5fc33",
-      "size_bytes": 1698
+      "sha256": "df43bab26c20589e736a6cb6105edc5a7e4fcef10e781cb15487d5e3e7942752",
+      "size_bytes": 2189
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu",
-      "sha256": "5779015c659270170db6ae8a29fbc8f982be785323b881c7d357da8e9728a82b",
-      "size_bytes": 50830
+      "sha256": "95fbedf21ec5f30e6ba9cc926753b171f2cc67d04734a6869d6d3cadc43ccba0",
+      "size_bytes": 53359
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
@@ -10307,6 +10307,11 @@
       "size_bytes": 788
     },
     {
+      "path": "tools/muse_decode_roofline.py",
+      "sha256": "d9bf7649d7ee5e1f24733de330c22fefd6cf496abc2c85b6e062ee5eeea9543f",
+      "size_bytes": 5350
+    },
+    {
       "path": "tools/muse_gen_deployment.py",
       "sha256": "48db6d2a5b4eae0b7a88c2cace82262ec6bde5ae2f233111ebf51b5d15ca0ee6",
       "size_bytes": 4318
@@ -10707,6 +10712,11 @@
       "size_bytes": 2196
     },
     {
+      "path": "tools/roofline_estimator.py",
+      "sha256": "7f16c239b5eacea8b4bb0fee7c6412c7f743434ceddcbb4aed0c7366a53d1734",
+      "size_bytes": 23013
+    },
+    {
       "path": "tools/rtx5090_spec_node.py",
       "sha256": "b31964c60dc4ebc38480347ee03e9daa6acbe095df1f05a4276d2ae6a97952a3",
       "size_bytes": 14123
@@ -10770,6 +10780,11 @@
       "path": "tools/spark_ssh_proxy.py",
       "sha256": "42a454e9706f068c8db7c5e3e06e16f34a43a90cc0d76f046a150d68837445dd",
       "size_bytes": 16131
+    },
+    {
+      "path": "tools/sparkcap_stream_probe.c",
+      "sha256": "3317c5830aaa8ed55d7356a54920c31132a9dd44dbef57b86cce07f3d7b69a42",
+      "size_bytes": 3352
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -10930,5 +10945,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35356653
+  "total_bytes": 35388579
 }
