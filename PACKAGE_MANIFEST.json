@@ -3653,8 +3653,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_pack_load_common.h",
-      "sha256": "264fdef63e34e0c6cc5813a45823f8177ee58f0a701a24af815561a4aeaf441e",
-      "size_bytes": 11401
+      "sha256": "403000b8aaf9ac2c4c72b7b3a7d485d49dc1193663d308eb41d9293d667672d3",
+      "size_bytes": 11527
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_pack_synthesize_common.h",
@@ -3958,8 +3958,8 @@
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h",
-      "sha256": "cfd22fb3c0495ce613440ccfe683eb8f90bb1f827ba9996c2a5bcfb439c4fbe3",
-      "size_bytes": 4380
+      "sha256": "92a0aa2fd14b07fdc164074aa3aec5cbf1c821d3cf505bbd7aa990688c300827",
+      "size_bytes": 4160
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_work_control.h",
@@ -5163,13 +5163,13 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu",
-      "sha256": "f5f34a7cc4ebd7e38bfc8a4d5f1c379b568e121536c9e0cf9360f4a8138827a0",
-      "size_bytes": 75497
+      "sha256": "90059841ffcc1fdb20ecd6998879dbe24f41cd7714f3633b8ad5042be1592e00",
+      "size_bytes": 75712
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "5e8180c486630edd7c0b9aff67ac62d6cac246201db49437c303f688e840a7d8",
-      "size_bytes": 118819
+      "sha256": "2af97caf3ae5f8279061616b6bcf8f4168dff8364838450a05308f4c0ce45e09",
+      "size_bytes": 117956
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -5178,13 +5178,13 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_stagepack_format.h",
-      "sha256": "addf50a2ca9e62bf7d65c9ce641e54ee22eb122fd47e74ca9a29a6022fdf7721",
-      "size_bytes": 16674
+      "sha256": "e83b65ad57aa44b2c134331a66323e512d09405d368a4a1825643cb43d98112b",
+      "size_bytes": 19871
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/tools/qwen38_max_pack_synthesize.c",
-      "sha256": "af2f4fc59b04025d44ca409338b4545127a186e6f5a682ee7e05463bae667a26",
-      "size_bytes": 4553
+      "sha256": "e0b45adda20cffed34c60950012c9f4b2a1e0846e2c3b3a2578c27388210dde7",
+      "size_bytes": 4562
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/publish_validator_wrapper.sh",
@@ -5193,8 +5193,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu",
-      "sha256": "7d738055fd1a637463895245b00968e36447892d0147339a738fda6da90d1a0d",
-      "size_bytes": 74577
+      "sha256": "2e3d82b310c345db664c26e6cbcc52f4bd8836d0d41344eaf96a35a5bb26de4a",
+      "size_bytes": 74360
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh",
@@ -11110,5 +11110,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35828410
+  "total_bytes": 35830657
 }

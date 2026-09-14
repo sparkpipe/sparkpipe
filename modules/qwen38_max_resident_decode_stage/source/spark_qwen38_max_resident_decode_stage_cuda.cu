@@ -1338,7 +1338,8 @@ extern "C" cudaError_t SparkQwen38MaxLaunchHeadArgmax(cudaStream_t stream, const
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,candidate_count);
 	return(cudaGetLastError());
 }
-#define SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u
+_Static_assert((SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
+#define SPARK_QWEN38_ROUTER_SORT_CAPACITY SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT
 
 static __device__ __forceinline__ float SparkQwen38WarpReduceMax(float value)
 {

@@ -1103,9 +1103,6 @@ static int SparkQwen38MaxValCheckModule(void)
 
 static int SparkQwen38MaxValCheckMoeMxfp4(SparkQwen38MaxValDevice *device)
 {
-	/* Full-width expert set: main's FusedExpertW13Act/ExpertDown wrappers
-	 * require the FULL routed-expert view (512 experts); a tp-shard view
-	 * fails the wrappers' required_rows gate with cudaErrorInvalidValue. */
 	const uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
 	const uint32_t rows = SPARK_QWEN38_MAX_VALIDATION_MOE_ROWS;
 	const uint32_t topk = SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN;

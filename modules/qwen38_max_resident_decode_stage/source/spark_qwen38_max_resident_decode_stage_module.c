@@ -366,11 +366,12 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 #define SPARK_PACK_LOAD_SEEN_ARG(value) (value)
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
 	((entry)->payload_bytes == SparkQwen38MaxStagePackPayloadBytes((entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkQwen38MaxStagePackScaleBytes((entry)->weight_format,(entry)->rows,(entry)->columns))
-#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkQwen38MaxStagePackExpectedGeometry((expected),(state)->first_layer_index,(state)->layer_count)
-#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen38MaxStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != SPARK_QWEN38_MAX_STAGEPACK_HEADER_BYTES)
+#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkQwen38MaxStagePackExpectedGeometryWire((expected),(state)->first_layer_index,(state)->layer_count)
+#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen38MaxStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != (header)->header_bytes)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) fprintf(stderr,"%s pack_geometry_mismatch\n",SPARK_QWEN38_MAX_MODULE_TAG)
 #define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 #define SPARK_PACK_LOAD_REGION_HOOK SparkQwen38MaxModuleRegionHook
+#define SPARK_PACK_LOAD_HEADER_NORMALIZE(header) SparkQwen38MaxStagePackHeaderNormalize(header)
 
 #include "sparkpipe/spark_pack_load_common.h"
 
@@ -390,9 +391,6 @@ static SparkStatus SparkQwen38MaxModuleValidateEntry(SparkQwen38MaxModuleState *
 	return(SparkQwen38MaxModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
 }
 
-/* Manifest pre-publication check (weightd lazy path): every MoE layer must
- * carry W1/W3/DOWN payload+scale ranges for all 512 experts, bounds-checked
- * inside the pack, with the expert kinds exactly covering the layer set. */
 #define SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_BITS(kind) \
 	((1u << ((kind) * 2u)) | (1u << ((kind) * 2u + 1u)))
 #define SPARK_QWEN38_MAX_MODULE_EXPERT_KIND_MASK \
@@ -470,10 +468,6 @@ static int SparkQwen38MaxModuleRegionHook(
 	return 1;
 }
 
-/* Open the lazy consumer-map for this pack. Strictly fail-closed: the
- * socket must be exported, the digest sidecar consumed by startup, and
- * the manifest must match the family geometry. Attach-not-requested keeps
- * the eager path (a different deployment mode, not a fallback). */
 static SparkStatus SparkQwen38MaxModuleLazyOpen(SparkQwen38MaxModuleState *state,
 	const char *pack_path)
 {
@@ -658,7 +652,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlotHostMirrors(SparkQwen38MaxMod
 
 static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
-	SparkQwen38MaxStagePackHeader geometry;
+	SparkQwen38MaxStagePackHeaderCanonical geometry;
 	const char *provider = 0,*service = 0,*socket_path = 0;
 	uint64_t pool_bytes = 0u,model_fp,layout_fp,layout_bits[3],block_record_bytes,staging_bytes;
 	uint32_t workers = 0u,block_record_elements,index;
@@ -1678,12 +1672,7 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 	uint64_t hidden_bytes = rows * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t expert_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t moe_up_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
-	/* The w2 output holds rows * top_k packed rows at the HIDDEN width,
-	 * not the expert width - the pair reduce reads it back at hidden. */
 	uint64_t moe_down_bytes = rows * SPARK_QWEN38_MAX_MODEL_EXPERTS_PER_TOKEN * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES;
-	/* Head-shaped slot buffers are rank-local: the GDN projections, state
-	 * vectors and conv channels narrow by the degree, exactly as the pools
-	 * and the kernels do. */
 	uint64_t local_conv_channels = SPARK_QWEN38_MAX_MODEL_GDN_CONV_CHANNELS / state->tp_degree;
 	uint64_t local_gdn_value_heads = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT / state->tp_degree;
 	uint64_t local_gdn_value_dimension = SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION / state->tp_degree;
@@ -1700,8 +1689,6 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->output_token_ids);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
-		/* Screened head: coarse logits at bf16 rows x vocab, screen
-		 * candidates at rows x SPARK_LM_HEAD_SCREEN_CAP, counts. */
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODEL_OUTPUT_VOCAB_COUNT * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,(void **)&slot->head_logits_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODULE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids);

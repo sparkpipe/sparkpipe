@@ -223,6 +223,10 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadPack)(SPARK_PACK_LOAD_TYPE(ModuleState
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	status = SparkStageModulePackRead(SPARK_PACK_LOAD_CONST(MODULE_TAG),file,0u,&header,sizeof(header));
+#ifdef SPARK_PACK_LOAD_HEADER_NORMALIZE
+	if ( status == SPARK_STATUS_OK )
+		SPARK_PACK_LOAD_HEADER_NORMALIZE(&header);
+#endif
 	if ( status == SPARK_STATUS_OK )
 	{
 		SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,&expected);
