@@ -1,5 +1,5 @@
 {
-  "file_count": 2213,
+  "file_count": 2215,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -340,6 +340,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/kimi_k3.md",
       "sha256": "21eee0fb2da724f05bcbed8659b276085d7dfe5206211831968530e59a7dee6e",
       "size_bytes": 4291
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/ledgers/wave-finisher-2026-09-14.md",
+      "sha256": "30e9c55049c0b82432c0b4cc672b57ca98181fb1da6615da41eb07b4173e1712",
+      "size_bytes": 8116
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/nurse.md",
@@ -790,6 +795,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/wave-b1-stagepack-rebuild-2026-09-12.md",
       "sha256": "dfb64f00506f1665c65b34f57fddd1220153a3b5e1b66b5508f4d03a622efa91",
       "size_bytes": 11539
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-finisher-2026-09-14.md",
+      "sha256": "f52da8c4f53896aeaa55106a1ffc1e0d74703aa56d64dd2339cb230f34357b88",
+      "size_bytes": 6713
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/tickets/nvfp4-flash-module-port.md",
@@ -11070,5 +11080,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35789639
+  "total_bytes": 35804468
 }
