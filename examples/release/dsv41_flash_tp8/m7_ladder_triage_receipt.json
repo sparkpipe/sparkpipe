@@ -1,0 +1,47 @@
+{
+ "lane": "dsv5-flash",
+ "session": "A-dsv5-r9",
+ "milestone": "M7 L8.P0 triage to GREEN + Engram-boundary ladder extension",
+ "base_commit": "f360fbf",
+ "node": "spark6 GB10 (cpu cells, sparkcap MemoryMax 4096M)",
+ "pack": "packs-r2/rank0.spstage (r2, sha256 9079cc4b...)",
+ "triage": {
+  "symptom": "dsv5m7g-ladder0: 26 pieces diverge oracle-vs-anchor, rooted at l8 p0 attn_out_rope_inv, cascading through ffn/router/moe/stream; l2 near-boundary router flips",
+  "method": "per-operator inversion from emitted pieces (attention output at p0 = kv_row x 1/(1+exp(sink-s))), then bit-level dumps of kv_normed from both implementations at the failing element",
+  "evidence": [
+   "anchor p0 dump: valid_count=1, s[0]=3.6532 vs oracle q.kv.scale=3.6554 (dot-order noise only), sink identical, yet o0[112] got 0.1523438 want 0.1669922",
+   "inverted scores: oracle ~3.58-3.66, anchor-implied ~2.10 -> not the score; the VALUE row differs",
+   "kv_row bit compare: oracle kv_normed[112]=0x3e29 vs anchor 0x3e28 (1 bf16 ulp); 0x3e28 = 0.1640625 = EXACT fp8 tie 1.3125x2^-3; RNE-even -> 0.15625 vs oracle 1-ulp-above -> 0.171875 (one code step, 9%)",
+   "whole 64-element window: exactly 2 elements differ by 1 ulp in the 32-block; only 112 straddles a tie",
+   "hypotheses killed: (a) o_a layout - failure precedes OaProject entirely; (c) rope-inverse semantics - identity at p0 (freq row 0), tables bit-equal; (b) confirmed as shared-code-boundary class, but normal-range tie, not subnormal"
+  ],
+  "root_cause": "independent f32 gemm accumulation order (numpy pairwise vs C sequential within the 32-wide k-block) differs by 1 bf16 ulp at rare elements; e4m3 quantization inputs sit EXACTLY on fp8 code midpoints at ~2.75% density (measured 1882/67584 at l2, 1848/67584 at l8 - layer-uniform exposure), so a 1-ulp delta flips one fp8 code step (<=12.5% per element) and the cascade amplifies it"
+ },
+ "fix": {
+  "layer": "instrument noise model (oracle tolerances + anchor comparison), zero production-code changes",
+  "changes": [
+   "kv_row + attn_out_rope_inv: dequant-boundary tolerance rel 3e-2 x tol_amp, drift-exempt (one fp8 step <= 12.5%)",
+   "wo_b_out: drift-exempt at 2e-2 x tol_amp (measured <= 0.19 of limit at every tagged position; keeps the l0 p0 o-path proof at full tightness)",
+   "ffn-side tagged pieces: drift amplifier 5x -> 25x at all tagged positions (measured cascade need up to 19x base; p0 ffn side is contaminated by p0's own attn flips, measured need 8.4x); attn-side q/q_lora/c_*/idx_* stay 1x at p0, 25x at p1+",
+   "router_indices: slot flips accepted when the two experts' own selection keys differ below ROUTER_TIE_FLOOR 0.03 (measured oracle key gaps at all flips 0.0003-0.0033 + cross-stream key noise ~0.012)",
+   "anchor bug: Expect struct was never zero-initialized - the missing counter in the GREEN verdict was stack garbage (differed across identical runs); zero-init fixed",
+   "session regression caught by the extended ladder: anchor compressor score[] uninitialized in the ratio rewrite (synth CI + l2/l8/l14 c_gate_score RED) - fixed before landing"
+  ]
+ },
+ "cells": {
+  "dsv5m7h-ladder0": "GREEN pieces=684 piece_failures=0 missing=0 unseen=0 (layers 0/2/8, r2 pack, checkpoint cross-check 5/5)",
+  "dsv5m7h-ladder7": "RED 26 pieces -> found the score[] init regression (superseded)",
+  "dsv5m7h-ladder7b": "RED 24 pieces -> measured the new-layer cascade/swap classes (superseded)",
+  "dsv5m7h-ladder7c": "GREEN pieces=935 piece_failures=0 missing=0 unseen=0 (layers 0/2/8/14/20/38/39)"
+ },
+ "extension": {
+  "scope": "kv_source layers only (the pack's compressor census 11 tensors = 3x m2 sets {2,8,14} + 1x m1 set {20}); Reuse-mode CSA2 layers read the SHARED compressed-KV cache and are not self-computable without the true chain (engram-broken at layer 1) - same operator seam as the layer 1/14 driver implementation",
+  "new_semantics": "layer 20 m=1 compressor branch (norm(wkv(x)) per token, no gate, no state, ratio-1 position mapping, comp slots up to 132); layers 38/39 SWA ratio-0 pure-theta per the reference freqs_cis branch",
+  "emission_rule": "end-to-end stream pieces are layer 0 only (chaos crossings on the synthetic fixture are layer-dependent: l2/l8 pos 46, l14 pos 40, l20 pos 4, l38 pos 7); router/routed/moe group tagged at p0 only (admitted tie swaps change routed composition beyond any honest per-element tolerance); layer 14 (engram-gated in the DRIVER) is per-piece instrumentable - its dense-block formulas are engram-free"
+ },
+ "queue_jobs": "dsv5m7h-ladder0, dsv5m7h-ladder7, dsv5m7h-ladder7b, dsv5m7h-ladder7c",
+ "code_sha256": {
+  "tools/dsv41_flash_layer0_oracle.py": "54f5fe2b9b84d194d978611920468a356890fa2c13733a0cf3a1083ef84be994",
+  "tests/test_dsv41_flash_layer0_anchor.c": "d2f862dd99b6ef3b99bcec53395fac94883e633c33a29b8385b1642242194b89"
+ }
+}
