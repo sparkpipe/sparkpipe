@@ -465,8 +465,6 @@ static inline uint64_t SparkQwen38_27bStagePackScaleBytes(uint32_t weight_format
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(((uint64_t)rows * (uint64_t)columns) / 32u);
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
-		/* the dense nvfp4 segment: the per-16 e4m3 plane + the F32
-		 * weight global at the tail. */
 		return(((uint64_t)rows * (uint64_t)columns) / 16u + 4u);
 	if ( weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);

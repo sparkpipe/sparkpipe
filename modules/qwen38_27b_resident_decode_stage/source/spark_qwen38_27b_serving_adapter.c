@@ -1796,7 +1796,7 @@ static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 		memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
 		gdn_snapshot.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
 		gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
-		gdn_snapshot.snapshot_index = min_accepted >= 7u ? 7u : min_accepted;
+		gdn_snapshot.snapshot_index = min_accepted >= (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u) ? (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS - 1u) : min_accepted;
 		{
 			const char *fold_env = getenv("SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD");
 			SparkQwen38_27bDsparkDraftView *replay_draft = 0;

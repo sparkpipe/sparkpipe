@@ -23,6 +23,7 @@
 #include "spark_qwen38_27b_tp.h"
 
 
+#define SPARK_QWEN38_27B_MODULE_PROFILE_LOG_PERIOD 64u
 #define SPARK_QWEN38_27B_MODULE_TAG "qwen38_27b_stage"
 #define SPARK_QWEN38_27B_MODULE_FUSED_QUERY_COMPONENT_COUNT 2u
 
@@ -286,7 +287,7 @@ static void SparkQwen38_27bProfilePrint(SparkQwen38_27bModuleState *state, uint6
 			(double)state->profile_stage_nanos / 1000000.0,
 			(double)state->profile_walk_nanos / 1000000.0,
 			(double)state->profile_tail_nanos / 1000000.0);
-	if ( (state->profile_frame_count & 63u) == 0u )
+	if ( (state->profile_frame_count & (SPARK_QWEN38_27B_MODULE_PROFILE_LOG_PERIOD - 1u)) == 0u )
 		fprintf(stderr, "%s graph_profile replayed=%u captured=%u plain=%u broken=%u evframes=%u evgdn_ms=%.0f evattn_ms=%.0f evffn_ms=%.0f\n",
 			SPARK_QWEN38_27B_MODULE_TAG, state->graph_frames_replayed,
 			state->graph_frames_captured, state->graph_frames_plain,
@@ -1091,9 +1092,6 @@ static SparkStatus SparkQwen38_27bModuleRunGdnLayer(SparkQwen38_27bModuleState *
 		else if ( prefill != 0 && slot->verify_frame != 0u && state->snapshot_state_f32 != 0 && state->dflash2_state_select != 0u && state->gdn_snapshot_slot_count >= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_VERIFY_CHECKPOINT_SLOT_BASE + 8u )
 			error = SparkQwen38_27bModuleRunGdnCoreReplaySnap(state,slot,weights,prefill->lane_index,rows,ordinal);
 		else
-			/* a single-token prefill IS a decode step: routing it through the
-			 * chunk pipeline changes the rounding and breaks decode-vs-prefill
-			 * token equality (the GdnChunk formulation differs from GdnStep) */
 		error = (prefill != 0 && rows > 1u) ? SparkQwen38_27bModuleRunGdnCorePrefill(state,slot,weights,prefill->lane_index,rows,ordinal) : SparkQwen38_27bModuleRunGdnCoreDecode(state,slot,weights,rows,ordinal);
 	}
 	if ( error != cudaSuccess && rows >= 32u )

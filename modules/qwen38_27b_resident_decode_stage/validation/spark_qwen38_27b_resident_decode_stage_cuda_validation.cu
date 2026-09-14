@@ -1106,8 +1106,6 @@ static int SparkQwen38_27bValCheckModule(void)
 		if (decode_token != prefill_token)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
-	/* MTP-free packs (the fleet standard) carry no draft block: the
-	 * speculation check only applies when the configuration has MTP */
 	{
 		const char *mtp_env = getenv("SPARK_QWEN38_27B_STAGE_MTP");
 		if (module.head_stage != 0u &&
