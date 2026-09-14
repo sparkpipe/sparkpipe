@@ -67,6 +67,8 @@ struct SparkModelResidentClient
 	uint32_t prepared_count;
 	uint64_t client_generation;
 	SparkModelServingRuntimeLimits runtime_limits;
+	SparkModelResidentEndpoint endpoint;
+	uint32_t connect_timeout_ms;
 	uint64_t next_message_id;
 	uint64_t last_submission_id;
 	uint64_t submitted_count;
@@ -386,6 +388,8 @@ SparkStatus SparkModelResidentClientConnect(
 		SPARK_RETURN(status);
 	}
 	client->connected = 1u;
+	client->endpoint = configuration->endpoint;
+	client->connect_timeout_ms = configuration->connect_timeout_ms;
 	client->rank_index = configuration->rank_index;
 	client->stage_index = configuration->stage_index;
 	client->next_message_id = 2u;
@@ -426,6 +430,42 @@ void SparkModelResidentClientFailStop(SparkModelResidentClient *client)
 		close(client->fd);
 		client->fd = -1;
 	}
+}
+
+static SparkStatus SparkModelResidentClientEnsureConnected(
+	SparkModelResidentClient *client)
+{
+	SparkModelResidentClientConfiguration configuration;
+	SparkStatus status;
+	if ( client == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected != 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkModelResidentClientOpenEndpoint(client,&client->endpoint,
+		client->connect_timeout_ms);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.endpoint = client->endpoint;
+	configuration.connect_timeout_ms = client->connect_timeout_ms;
+	configuration.rank_index = client->rank_index;
+	configuration.stage_index = client->stage_index;
+	configuration.adapter_descriptor = client->adapter_descriptor;
+	configuration.runtime_limits = client->runtime_limits;
+	status = SparkModelResidentClientHandshake(client,&configuration);
+	if ( status != SPARK_STATUS_OK )
+	{
+		if ( client->fd >= 0 )
+		{
+			close(client->fd);
+			client->fd = -1;
+		}
+		SPARK_RETURN(status);
+	}
+	client->connected = 1u;
+	client->next_message_id = 2u;
+	client->input_target_bytes = SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkModelResidentClientPending *SparkModelResidentClientFindPending(
@@ -510,7 +550,12 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	uint8_t *message;
 	uint32_t index,message_bytes;
 	SparkStatus status;
-	if ( client == 0 || client->connected == 0u || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+	if ( client == 0 || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentClientEnsureConnected(client);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( client->connected == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
@@ -911,8 +956,11 @@ SparkStatus SparkModelResidentClientProgress(
 	uint32_t maximum_message_count)
 {
 	SparkStatus status;
-	if ( client == 0 || client->connected == 0u || maximum_message_count == 0u )
+	if ( client == 0 || maximum_message_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentClientEnsureConnected(client);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkModelResidentClientFlush(client);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentClientRead(client,maximum_message_count);

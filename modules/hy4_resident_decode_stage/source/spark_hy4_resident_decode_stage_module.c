@@ -16,15 +16,15 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "spark_hy4_stagepack_format.h"
 
-/* hy4 TP16 resident decode stage — module lifecycle skeleton.
- *
- * Rung-1 scope (operator ladder): compile against the real ABI on the
- * shared runtime. Every entry point validates its arguments honestly
- * and reports SPARK_STATUS_NOT_IMPLEMENTED for the model work it does
- * not yet perform — the acceptance law requires behavioral tests to
- * FAIL for incomplete drivers, so these errors are the contract, not
- * placeholders that fake success. Rungs 3+ replace them with the real
- * implementation behind the same signatures. */
+
+
+
+
+
+
+
+
+
 
 #define SPARK_HY4_MODULE_TAG "hy4_stage"
 

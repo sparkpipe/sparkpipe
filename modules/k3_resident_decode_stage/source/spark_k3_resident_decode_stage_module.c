@@ -1,7 +1,18 @@
+#include "inference/llms/kimi_k3/config.h"
+#include "sparkpipe/spark_k3_model.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
+
+_Static_assert(SPARK_K3_MODULE_TOTAL_LAYERS == SPARK_K3_MODEL_LAYER_COUNT,
+	"k3 module layer total must equal the model header");
+
+_Static_assert(K3_HIDDEN == SPARK_K3_MODEL_HIDDEN_DIMENSION &&
+	K3_LAYERS == SPARK_K3_MODEL_LAYER_COUNT &&
+	K3_EXPERTS == SPARK_K3_MODEL_MOE_EXPERT_COUNT &&
+	K3_TOP_K == SPARK_K3_MODEL_MOE_TOP_K,
+	"k3 kernel config must equal the model header geometry");
 
 SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	const char *pack_path, uint32_t first_layer, uint32_t layer_count)
@@ -22,7 +33,7 @@ SparkStatus SparkK3ModuleInitialize(SparkK3ModuleState *state,
 	}
 	if ( state->pack.config.first_layer != first_layer ||
 		state->pack.config.layers != layer_count ||
-		state->pack.config.total_layers != 93u )
+		state->pack.config.total_layers != SPARK_K3_MODEL_LAYER_COUNT )
 	{
 		SparkK3ModuleDestroy(state);
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
