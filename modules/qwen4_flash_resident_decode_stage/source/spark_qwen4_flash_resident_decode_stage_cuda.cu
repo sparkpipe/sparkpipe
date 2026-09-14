@@ -2060,7 +2060,8 @@ extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(
         row_lane_indices,context_lengths,token_mask,score_keys_u32,row_count,table->lane_stride,mask_stride,score_stride);
     return(cudaGetLastError());
 }
-#define SPARK_QWEN38_ROUTER_SORT_CAPACITY 512u
+_Static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
+#define SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT
 
 static __device__ __forceinline__ float SparkQwen4FlashWarpReduceMax(float value)
 {
@@ -2080,7 +2081,7 @@ static __global__ void SparkQwen4FlashGateSelectKernel(
     uint32_t *indices_u32,
     float *weights_f32)
 {
-    __shared__ uint64_t ordered_keys[SPARK_QWEN38_ROUTER_SORT_CAPACITY];
+    __shared__ uint64_t ordered_keys[SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY];
     const float *row_scores;
     uint64_t selected_key;
     uint32_t row;
@@ -2092,7 +2093,7 @@ static __global__ void SparkQwen4FlashGateSelectKernel(
 
     static_assert(
         SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT <=
-            SPARK_QWEN38_ROUTER_SORT_CAPACITY,
+            SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY,
         "qwen38 expert count exceeds router sort capacity");
     static_assert(
         SPARK_LM_MOE_MAX_TOPK <= SPARK_LM_WARP_LANES,
@@ -2104,7 +2105,7 @@ static __global__ void SparkQwen4FlashGateSelectKernel(
         return;
     row_scores = scores_f32 + ((uint64_t)row * expert_count);
     rank = threadIdx.x;
-    for (expert = threadIdx.x; expert < SPARK_QWEN38_ROUTER_SORT_CAPACITY;
+    for (expert = threadIdx.x; expert < SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY;
         expert += blockDim.x)
     {
         float choice_score;
@@ -2118,9 +2119,9 @@ static __global__ void SparkQwen4FlashGateSelectKernel(
             : 0u;
     }
     __syncthreads();
-    SparkLmBitonicSortKeysAscending<SPARK_QWEN38_ROUTER_SORT_CAPACITY>(ordered_keys);
+    SparkLmBitonicSortKeysAscending<SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY>(ordered_keys);
     selected_key = rank < topk
-        ? ordered_keys[SPARK_QWEN38_ROUTER_SORT_CAPACITY - 1u - rank]
+        ? ordered_keys[SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY - 1u - rank]
         : 0u;
     selected_expert = selected_key != 0u
         ? 0xffffffffu - (uint32_t)selected_key
@@ -2466,9 +2467,6 @@ extern "C" cudaError_t SparkQwen4FlashLaunchGroupedExpertLinear(
 	}
 	else if ( view->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
 	{
-		/* e2m1 payloads pack 2 values/byte; the expert scale segment is
-		 * the per-16 e4m3 plane + the two F32 globals (input_scale,
-		 * weight_scale_2) that the kernel reads from the segment tail. */
 		if ( (view->input_dimension % 128u) != 0u )
 			return(cudaErrorInvalidValue);
 		payload_stride = rows_per_expert * ((uint64_t)view->input_dimension / 2u);

@@ -522,11 +522,6 @@ static inline uint64_t SparkQwen4FlashStagePackScaleBytes(uint32_t weight_format
 		return(((uint64_t)rows * (uint64_t)columns) / SPARK_QWEN4_FLASH_MODEL_MXFP4_GROUP_SIZE);
 	if ( weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
 	{
-		/* per-expert segment: rows x columns/16 e4m3 plane + the F32
-		 * input_scale + F32 weight_scale_2 globals. The expert count
-		 * derives from the fused geometry: gate/up carry columns ==
-		 * hidden and rows = experts x intermediate; down carries
-		 * columns == intermediate and rows = experts x hidden. */
 		uint64_t plane = (uint64_t)rows * ((uint64_t)columns / 16u);
 		uint64_t per_expert,experts;
 		if ( columns == SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION )
