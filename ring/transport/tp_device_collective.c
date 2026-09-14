@@ -314,9 +314,25 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
         {
             struct timespec pause = {0,1000};
             if ( *cancel_cell != implementation->cancel_seen )
+            {
+                fprintf(stderr,
+                    "REBASE-CANCEL rank=%u cell=%llu marker=%llu cancel=%llu had=%llu\n",
+                    implementation->tp_rank,
+                    (unsigned long long)*base_cell,
+                    (unsigned long long)marker,
+                    (unsigned long long)*cancel_cell,
+                    (unsigned long long)implementation->cancel_seen);
                 return SPARK_STATUS_BUSY;
+            }
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
+            {
+                fprintf(stderr,
+                    "REBASE-TIMEOUT rank=%u cell=%llu marker=%llu\n",
+                    implementation->tp_rank,
+                    (unsigned long long)*base_cell,
+                    (unsigned long long)marker);
                 return SPARK_STATUS_BUSY;
+            }
             nanosleep(&pause,0);
         }
         implementation->base_seen = *base_cell;
