@@ -1,5 +1,5 @@
 {
-  "file_count": 2184,
+  "file_count": 2185,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -10302,6 +10302,11 @@
       "size_bytes": 788
     },
     {
+      "path": "tools/muse_decode_roofline.py",
+      "sha256": "d9bf7649d7ee5e1f24733de330c22fefd6cf496abc2c85b6e062ee5eeea9543f",
+      "size_bytes": 5350
+    },
+    {
       "path": "tools/muse_gen_deployment.py",
       "sha256": "48db6d2a5b4eae0b7a88c2cace82262ec6bde5ae2f233111ebf51b5d15ca0ee6",
       "size_bytes": 4318
@@ -10925,5 +10930,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35398220
+  "total_bytes": 35403570
 }
