@@ -460,7 +460,20 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
         if ( implementation->round_seq + 1ull >=
                 implementation->round_wave_limit )
             return SPARK_STATUS_CAPACITY_EXCEEDED;
-        round_seq = ++implementation->round_seq;
+        if ( implementation->seq_cell != 0 )
+        {
+            uint64_t cell_value = 0ull;
+            if ( cudaMemcpy(&cell_value,implementation->seq_cell,
+                     sizeof(uint64_t),cudaMemcpyDeviceToHost) != 0 )
+                return SPARK_STATUS_IO_ERROR;
+            cell_value++;
+            round_seq = cell_value;
+            if ( cudaMemcpy(implementation->seq_cell,&cell_value,
+                     sizeof(uint64_t),cudaMemcpyHostToDevice) != 0 )
+                return SPARK_STATUS_IO_ERROR;
+        }
+        else
+            round_seq = ++implementation->round_seq;
     }
     ordinal = submission->ordinal;
     slot_bytes = implementation->slot_bytes;

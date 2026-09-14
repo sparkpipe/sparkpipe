@@ -18,7 +18,7 @@ __global__ void SparkGlm5NextMeshPublishKernel(
 		return;
 	sequence = 1ull + atomicAdd((unsigned long long *)seq_cell,1ull);
 	round_seq[0] = sequence;
-	entry[2] = slot_index;
+	entry[2] = sequence & 63ull;
 	entry[1] = bytes;
 	__threadfence_system();
 	entry[0] = sequence;
@@ -56,6 +56,7 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 	if ( threadIdx.x != 0u || blockIdx.x != 0u )
 		return;
 	sequence = round_seq[0];
+	ring = sequence;
 	stop_at = SparkGlm5NextGlobalTimerNs() + deadline_ns;
 	for ( peer = 0u; peer < degree - 1u; peer++ )
 	{
