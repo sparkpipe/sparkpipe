@@ -4,6 +4,7 @@
 # own exit status; the driver must contain the GRAPH marker or we refuse.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+HASH_ARG=$(git rev-parse --short HEAD)
 L=sparkf
 S=modules/glm5_next_resident_decode_stage/source
 scp -q $S/spark_glm5_next_resident_decode_stage_module.c $L:~/sparkpipe-build-958/$S/
@@ -18,7 +19,7 @@ for f in node/weightd.c node/weightd_mesh.c node/weightd_spawn.c node/weightd_sp
 for f in runtime/spark_weightd.c runtime/spark_weightd_map.c runtime/spark_weightd_lazy_pack.c runtime/spark_weightd_attach.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c runtime/spark_weightd_spine.c runtime/spark_weightd_worker.c; do scp -q $f $L:~/sparkpipe-build-958/$f || exit 1; done
 for h in spark_weightd.h spark_weightd_attach.h spark_weightd_lazy_pack.h spark_weightd_lease.h spark_weightd_manifest.h spark_weightd_map.h spark_weightd_spine.h spark_weightd_worker.h; do scp -q include/sparkpipe/$h $L:~/sparkpipe-build-958/include/sparkpipe/$h || exit 1; done
 scp -q include/sparkpipe/spark_tp_device_collective.h $L:~/sparkpipe-build-958/include/sparkpipe/
-ssh $L 'bash -s' <<'REMOTE'
+ssh $L 'bash -s' "$HASH_ARG" <<'REMOTE'
 set -euo pipefail
 cd ~/sparkpipe-build-958
 export PATH="/usr/local/cuda/bin:$PATH"
@@ -33,12 +34,23 @@ if ! build/sparkpipe_model_compile --model examples/model_descriptions/glm5_next
   echo COMPILE-FAIL; tail -3 /tmp/c.log; exit 1
 fi
 tools/publish_local.sh glm5_next_resident_decode_stage fp8 glm53flash.fp8.tp16 > /tmp/p.log 2>&1 || { echo PUBLISH-FAIL; tail -2 /tmp/p.log; exit 1; }
-if ! make -j16 build/sparkpipe_weightd > /tmp/w.log 2>&1; then
+if ! make -j16 build/sparkpipe_weightd build/sparkpipe_model_residentd build/sparkpipe_model_api > /tmp/w.log 2>&1; then
   echo DAEMON-BUILD-FAIL; grep -E 'error:' /tmp/w.log | head -5; exit 1
 fi
 cp build/sparkpipe_weightd ~/release/core/bin/sparkpipe_weightd
+R=~/release-glm53flash/glm53flash.fp8.tp16
+mkdir -p $R/bin $R/lib
+cp build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_weightd $R/bin/
+for b in sparkpipe_model_batch sparkpipe_registrar; do
+  [ -f build/$b ] && cp build/$b $R/bin/ || cp ~/sparkdata/glm53flash.fp8.tp16/bin/$b $R/bin/
+done
+cp -a ~/sparkdata/glm53flash.fp8.tp16/lib/. $R/lib/
+rm -rf $R/stages && cp -a ~/sparkdata/out/stages $R/stages
+cp -a ~/sparkdata/glm53flash.fp8.tp16/config $R/config
+cp ~/sparkdata/glm53flash.fp8.tp16/model_resident.json $R/
+printf '%s\n' "$1" > $R/VERSION
 MARKS=$(strings ~/sparkdata/out/stages/stage_000/model_driver.so | grep -c GRAPH-CAPTURE-OK || true)
 if [ "${MARKS:-0}" -lt 1 ]; then echo MARKER-MISSING-REFUSED; exit 1; fi
 systemctl --user start fleet-agent 2>/dev/null || true
-echo "BUILD-OK $(md5sum ~/sparkdata/out/stages/stage_000/model_driver.so | cut -c1-12)"
+echo "BUILD-OK $(md5sum ~/sparkdata/out/stages/stage_000/model_driver.so | cut -c1-12) ver=$1"
 REMOTE

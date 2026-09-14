@@ -5,7 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
-FLEET_REF=sparkf:release tools/fleet_serve.sh glm53flash.fp8.tp16 sync
+FLEET_REF=sparkf:release-glm53flash tools/fleet_serve.sh glm53flash.fp8.tp16 sync
+LOCAL_HEAD=$(git rev-parse --short HEAD)
+REMOTE_VER=$(ssh sparkf "cat ~/release-glm53flash/glm53flash.fp8.tp16/VERSION 2>/dev/null" || echo none)
+if [ "$REMOTE_VER" != "$LOCAL_HEAD" ]; then
+  echo "VERSION-GATE-FAIL remote=$REMOTE_VER local=$LOCAL_HEAD (run tools_local/m to rebuild the release tree)"
+  exit 1
+fi
 HUB=$(ssh sparkf 'md5sum ~/sparkdata/out/stages/stage_000/model_driver.so | cut -d" " -f1')
 BAD=""
 for n in $NODES; do
