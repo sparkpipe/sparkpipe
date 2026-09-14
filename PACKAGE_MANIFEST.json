@@ -1,5 +1,5 @@
 {
-  "file_count": 2228,
+  "file_count": 2231,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -835,6 +835,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/w3-weightd-2026-08-29.md",
       "sha256": "d130cf56c22597053532e10eecd91860b101910dcf0895519e730ba88ecc316d",
       "size_bytes": 15079
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-acc1-accuracy-2026-09-13.md",
+      "sha256": "4812368009045d202e3e62caf769c360459468d33c5f5a8d824fe36b412c8580",
+      "size_bytes": 21490
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/wave-b1-stagepack-rebuild-2026-09-12.md",
@@ -7518,8 +7523,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "c045b82388ff37ae72cc4a52428512af843f0410ab4e6716ca3cc2dc83494018",
-      "size_bytes": 104422
+      "sha256": "a2f365b0c3cc186866128d2a7898a5b16836557fe57201c001cd13764403ec97",
+      "size_bytes": 104933
     },
     {
       "path": "tests/test_common_glm_cuda_tree.c",
@@ -11087,6 +11092,16 @@
       "size_bytes": 3043
     },
     {
+      "path": "tools/wave_acc1_glm53full_rank_verify.py",
+      "sha256": "4fcc3fb8ab246ab495ad08d6be03efc494bf0f0aefc124255234132f3e5cfd97",
+      "size_bytes": 9531
+    },
+    {
+      "path": "tools/wave_acc1_parity_oracle.py",
+      "sha256": "0f22a33813520abdc8bda49718b48060393837e32ef6564e0122bcd0478f83cf",
+      "size_bytes": 8279
+    },
+    {
       "path": "tools/weightd_execute_probe.c",
       "sha256": "e28b919f0ce2580d2c9f8301af5c8377b97ab7c50dd797a491872726976d0d53",
       "size_bytes": 6781
@@ -11145,5 +11160,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35894024
+  "total_bytes": 35933835
 }

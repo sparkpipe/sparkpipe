@@ -1543,7 +1543,14 @@ CEILING = 281184
 # pin measured 283161 over the pre-#953 tree and was skipped in the rebase
 # in favor of main's better-attributed 281184). Measured exact: 283170 on
 # the rebased tree (1986 over the r23 pin).
-CEILING = 283170
+# ACC-1 accuracy wave (2026-09-13): the pack-verification parity oracle
+# driver (tools/wave_acc1_parity_oracle.py) and the glm53full rank oracle
+# (tools/wave_acc1_glm53full_rank_verify.py, re-runs the lane packer's plan
+# producers against the live warm checkpoint) add 422 tooling lines; no
+# production source moved. Clean origin/main d1c3822 already measured 284757
+# (+1587 over this pin) before this wave's files - pre-existing drift owned
+# by the landings that produced it, flagged in the wave report.
+CEILING = 285179
 
 
 ROOT = Path(__file__).resolve().parent.parent
