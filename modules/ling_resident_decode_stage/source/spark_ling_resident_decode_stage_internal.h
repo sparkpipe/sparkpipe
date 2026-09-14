@@ -161,8 +161,6 @@ int32_t SparkLingLaunchCudaLayerMlp(const SparkLingCudaWave *wave,uint32_t local
 int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 cudaError_t SparkLingLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkLingLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
-cudaError_t SparkLingLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
-cudaError_t SparkLingLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkLingConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus

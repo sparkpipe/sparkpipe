@@ -31,22 +31,32 @@ def main() -> int:
 
     header = (ROOT / "model-families" / "hy4" / "include" / "sparkpipe" /
               "spark_hy4_model.h").read_text(encoding="utf-8")
+    defines = (ROOT / "model-families" / "hy4" / "include" / "sparkpipe" /
+               "llm_defines.h").read_text(encoding="utf-8")
     expected_defines = {
-        "SPARK_HY4_MODEL_HIDDEN_DIMENSION": "6144u",
-        "SPARK_HY4_MODEL_LAYER_COUNT": "78u",
-        "SPARK_HY4_MODEL_VOCAB_PER_RANK": "7552u",
-        "SPARK_HY4_MODEL_EXPERTS_PER_RANK": "16u",
-        "SPARK_HY4_MODEL_ATTN_QUERY_HEADS_PER_RANK": "4u",
-        "SPARK_HY4_MODEL_INDEX_HEADS_PER_RANK": "2u",
-        "SPARK_HY4_MODEL_INDEX_TOP_K": "2048u",
-        "SPARK_HY4_MODEL_HC_STREAM_COUNT": "4u",
+        "SPARK_LLM_HIDDEN_DIMENSION": "6144u",
+        "SPARK_LLM_LAYER_COUNT": "78u",
+        "SPARK_LLM_OUTPUT_VOCAB_COUNT": "120832u",
+        "SPARK_LLM_MOE_EXPERT_COUNT": "256u",
+        "SPARK_LLM_MOE_TOP_K": "8u",
+        "SPARK_LLM_TP_DEGREE": "16u",
     }
     for name, value in expected_defines.items():
-        pattern = re.compile(rf"^#define {re.escape(name)} {re.escape(value)}$",
-                             re.M)
-        assert pattern.search(header), f"missing define {name} = {value}"
+        pattern = re.compile(
+            rf"^#define {re.escape(name)}\s+{re.escape(value)}$", re.M)
+        assert pattern.search(defines), f"missing define {name} = {value}"
+    expected_aliases = [
+        "SPARK_HY4_MODEL_HIDDEN_DIMENSION SPARK_LLM_HIDDEN_DIMENSION",
+        "SPARK_HY4_MODEL_VOCAB_COUNT SPARK_LLM_VOCAB_COUNT",
+        "SPARK_HY4_MODEL_ATTN_QUERY_HEAD_COUNT SPARK_LLM_MLA_HEAD_COUNT",
+        "SPARK_HY4_MODEL_ROUTED_EXPERT_COUNT SPARK_LLM_MOE_EXPERT_COUNT",
+        "SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE SPARK_LLM_FP8_SCALE_BLOCK",
+    ]
+    for alias in expected_aliases:
+        assert alias in header, f"missing shim alias {alias}"
     assert "#define SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(layer)" in header
     assert "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6" in header
+    assert '#include "sparkpipe/llm_defines.h"' in header
 
     authoritative = json.loads(
         (ROOT / "model_contracts" / "hy4_authoritative.json").read_text(

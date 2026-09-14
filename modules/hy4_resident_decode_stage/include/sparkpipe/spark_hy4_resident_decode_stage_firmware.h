@@ -215,15 +215,10 @@ typedef struct SparkHy4ResidentDecodeStageFrameContext
 	void *hidden_output_transport_session;
 } SparkHy4ResidentDecodeStageFrameContext;
 
-SparkStatus SparkHy4ResidentDecodeStageInitialize(
-	const void *configuration, const void *host_services,
-	void **module_state);
-SparkStatus SparkHy4ResidentDecodeStageExecute(void *module_state,
-	void *frame);
-SparkStatus SparkHy4ResidentDecodeStageAdmit(void *module_state,
-	const void *request, void *decision);
-SparkStatus SparkHy4ResidentDecodeStageSnapshot(void *module_state,
-	uint32_t program_id, void *snapshot);
+SparkStatus SparkHy4ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);
+SparkStatus SparkHy4ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame);
+SparkStatus SparkHy4ResidentDecodeStageAdmit(void *module_state, const SparkModelDriverAdmissionRequest *request, SparkModelDriverAdmissionDecision *decision);
+SparkStatus SparkHy4ResidentDecodeStageSnapshot(void *module_state, uint32_t program_id, SparkModelDriverRuntimeSnapshot *snapshot);
 void SparkHy4ResidentDecodeStageDestroy(void *module_state);
 
 #ifdef __cplusplus

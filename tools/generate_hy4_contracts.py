@@ -79,98 +79,84 @@ def render_header(contract: dict[str, Any]) -> str:
     model = contract["model"]
     attention = contract["attention"]
     hyper = contract["hyper_connections"]
-    moe = contract["moe"]
     prefix = "SPARK_HY4_MODEL"
-
-    defines = [
-        ("HIDDEN_DIMENSION", model["hidden_dimension"]),
-        ("LAYER_COUNT", model["layer_count"]),
-        ("MTP_LAYER_COUNT", model["mtp_layer_count"]),
-        ("VOCAB_COUNT", model["vocabulary_size"]),
-        ("VOCAB_PER_RANK", model["vocabulary_size"] // TP_RANKS),
-        ("MAX_POSITIONS", model["maximum_context_tokens"]),
-        ("ATTN_QUERY_HEAD_COUNT", model["attention_head_count"]),
-        ("ATTN_QUERY_HEADS_PER_RANK", model["attention_head_count"] // TP_RANKS),
-        ("ATTN_KV_HEAD_COUNT", model["kv_head_count"]),
-        ("QK_HEAD_DIMENSION", model["head_dimension"]),
-        ("QK_NOPE_HEAD_DIMENSION", model["qk_nope_head_dimension"]),
-        ("QK_ROPE_HEAD_DIMENSION", model["qk_rope_head_dimension"]),
-        ("V_HEAD_DIMENSION", model["v_head_dimension"]),
-        ("KV_LORA_RANK", model["kv_lora_rank"]),
-        ("QUERY_LORA_RANK", model["query_lora_rank"]),
-        ("LEARNABLE_SINK", 1 if attention["learnable_sink"] else 0),
-        ("INDEX_HEAD_COUNT", attention["index_head_count"]),
-        ("INDEX_HEADS_PER_RANK", attention["index_head_count"] // TP_RANKS),
-        ("INDEX_HEAD_DIMENSION", attention["index_head_dimension"]),
-        ("INDEX_TOP_K", attention["index_top_k"]),
-        ("INDEXER_FULL_PERIOD", attention["indexer_full_period"]),
-        ("ROUTED_EXPERT_COUNT", moe["routed_expert_count"]),
-        ("EXPERTS_PER_RANK", moe["routed_expert_count"] // TP_RANKS),
-        ("SHARED_EXPERT_COUNT", moe["shared_expert_count"]),
-        ("EXPERTS_PER_TOKEN", moe["experts_per_token"]),
-        ("EXPERT_INTERMEDIATE_DIMENSION",
-         moe["expert_intermediate_dimension"]),
-        ("DENSE_FFN_INTERMEDIATE_DIMENSION",
-         moe["dense_ffn_intermediate_dimension"]),
-        ("HC_STREAM_COUNT", hyper["stream_count"]),
-    ]
 
     lines = [
         "#pragma once",
         "",
-        "#include <stdint.h>",
+        '#include "sparkpipe/llm_defines.h"',
         "",
-        "/* Generated from the exact source revision by",
-        " * tools/generate_hy4_contracts.py. Execution codec binds land with",
-        " * the module milestone; this header freezes geometry and identity",
-        " * only. The source of truth is the AngelSlim UD-IQ1_M GGUF (operator",
-        " * ruling 2026-09-01); the FP8 safetensors are reference-only. */",
-        f"#define {prefix}_ID {json.dumps(contract['model_id'])}",
-        f"#define {prefix}_SOURCE_REVISION "
-        f"{json.dumps(contract['source_revision'])}",
+        f"#define {prefix}_ID SPARK_LLM_MODEL_SOURCE_URI",
+        f"#define {prefix}_SOURCE_REVISION SPARK_LLM_MODEL_REVISION",
         f"#define {prefix}_SOURCE_SHA256 "
         f"{json.dumps(contract['source_index_sha256'])}",
-        f"#define {prefix}_TP_RANKS {TP_RANKS}u",
+        f"#define {prefix}_TP_RANKS SPARK_LLM_TP_DEGREE",
         "",
-    ]
-    for suffix, value in defines:
-        lines.append(f"#define {prefix}_{suffix} {value}u")
-    lines.extend([
-        f"#define {prefix}_ROPE_THETA {c_float(attention['rope_theta'])}",
-        f"#define {prefix}_RMS_NORM_EPSILON {c_float(model['rms_norm_epsilon'])}",
+        f"#define {prefix}_HIDDEN_DIMENSION SPARK_LLM_HIDDEN_DIMENSION",
+        f"#define {prefix}_LAYER_COUNT SPARK_LLM_LAYER_COUNT",
+        f"#define {prefix}_MTP_LAYER_COUNT {model['mtp_layer_count']}u",
+        f"#define {prefix}_VOCAB_COUNT SPARK_LLM_VOCAB_COUNT",
+        f"#define {prefix}_VOCAB_PER_RANK \\",
+        "	(SPARK_LLM_OUTPUT_VOCAB_COUNT / SPARK_LLM_TP_DEGREE)",
+        f"#define {prefix}_MAX_POSITIONS SPARK_LLM_MAXIMUM_CONTEXT_TOKENS",
+        f"#define {prefix}_ATTN_QUERY_HEAD_COUNT SPARK_LLM_MLA_HEAD_COUNT",
+        f"#define {prefix}_ATTN_QUERY_HEADS_PER_RANK \\",
+        "	(SPARK_LLM_MLA_HEAD_COUNT / SPARK_LLM_TP_DEGREE)",
+        f"#define {prefix}_ATTN_KV_HEAD_COUNT {model['kv_head_count']}u",
+        f"#define {prefix}_QK_HEAD_DIMENSION SPARK_LLM_MLA_QK_HEAD_DIMENSION",
+        f"#define {prefix}_QK_NOPE_HEAD_DIMENSION "
+        f"SPARK_LLM_MLA_QK_NOPE_HEAD_DIMENSION",
+        f"#define {prefix}_QK_ROPE_HEAD_DIMENSION "
+        f"SPARK_LLM_MLA_QK_ROPE_HEAD_DIMENSION",
+        f"#define {prefix}_V_HEAD_DIMENSION SPARK_LLM_MLA_V_HEAD_DIMENSION",
+        f"#define {prefix}_KV_LORA_RANK SPARK_LLM_MLA_LATENT_DIMENSION",
+        f"#define {prefix}_QUERY_LORA_RANK SPARK_LLM_MLA_QUERY_A_DIMENSION",
+        f"#define {prefix}_LEARNABLE_SINK "
+        f"{1 if attention['learnable_sink'] else 0}u",
+        f"#define {prefix}_INDEX_HEAD_COUNT {attention['index_head_count']}u",
+        f"#define {prefix}_INDEX_HEADS_PER_RANK \\",
+        f"	({prefix}_INDEX_HEAD_COUNT / SPARK_LLM_TP_DEGREE)",
+        f"#define {prefix}_INDEX_HEAD_DIMENSION "
+        f"{attention['index_head_dimension']}u",
+        f"#define {prefix}_INDEX_TOP_K {attention['index_top_k']}u",
+        f"#define {prefix}_INDEXER_FULL_PERIOD "
+        f"{attention['indexer_full_period']}u",
+        f"#define {prefix}_ROUTED_EXPERT_COUNT SPARK_LLM_MOE_EXPERT_COUNT",
+        f"#define {prefix}_EXPERTS_PER_RANK \\",
+        "	(SPARK_LLM_MOE_EXPERT_COUNT / SPARK_LLM_TP_DEGREE)",
+        f"#define {prefix}_SHARED_EXPERT_COUNT SPARK_LLM_MOE_SHARED_EXPERT_COUNT",
+        f"#define {prefix}_EXPERTS_PER_TOKEN SPARK_LLM_MOE_TOP_K",
+        f"#define {prefix}_EXPERT_INTERMEDIATE_DIMENSION \\",
+        "	SPARK_LLM_MOE_INTERMEDIATE_DIMENSION",
+        f"#define {prefix}_DENSE_FFN_INTERMEDIATE_DIMENSION \\",
+        "	SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION",
+        f"#define {prefix}_HC_STREAM_COUNT {hyper['stream_count']}u",
+        f"#define {prefix}_ROPE_THETA SPARK_LLM_ROPE_THETA",
+        f"#define {prefix}_RMS_NORM_EPSILON SPARK_LLM_RMS_NORM_EPSILON",
         f"#define {prefix}_HC_MAGNITUDE {c_float(hyper['magnitude'])}",
         f"#define {prefix}_HC_EPSILON {c_float(hyper['epsilon'])}",
         f"#define {prefix}_ROUTED_SCALING_FACTOR "
-        f"{c_float(moe['routed_scaling_factor'])}",
-        f"#define {prefix}_SWIGLU_LIMIT {c_float(moe['swiglu_limit'])}",
-        f"#define {prefix}_ATTN_QUERY_DIMENSION "
-        f"({prefix}_ATTN_QUERY_HEAD_COUNT * {prefix}_QK_HEAD_DIMENSION)",
-        f"#define {prefix}_INDEX_DIMENSION "
-        f"({prefix}_INDEX_HEAD_COUNT * {prefix}_INDEX_HEAD_DIMENSION)",
-        f"#define {prefix}_IS_INDEXER_FULL_LAYER(layer) "
-        f"(((layer) % {prefix}_INDEXER_FULL_PERIOD) == 0u)",
-        "/* Layer 0 and 1 are indexer-full in addition to the period "
-        "pattern (the checkpoint's is_full sequence is 1,1,0,0,0,1,...). "
-        "*/",
+        f"SPARK_LLM_MOE_ROUTED_SCALING_FACTOR",
+        f"#define {prefix}_SWIGLU_LIMIT SPARK_LLM_SWIGLU_LIMIT",
+        f"#define {prefix}_ATTN_QUERY_DIMENSION SPARK_LLM_MLA_QUERY_DIMENSION",
+        f"#define {prefix}_INDEX_DIMENSION \\",
+        f"	({prefix}_INDEX_HEAD_COUNT * {prefix}_INDEX_HEAD_DIMENSION)",
+        f"#define {prefix}_IS_INDEXER_FULL_LAYER(layer) \\",
+        f"	(((layer) % {prefix}_INDEXER_FULL_PERIOD) == 0u)",
         f"#define {prefix}_IS_INDEXER_ACTIVE_LAYER(layer) \\",
         f"	(((layer) < 2u) || {prefix}_IS_INDEXER_FULL_LAYER(layer))",
         f"#define {prefix}_ATTN_KV_HEADS_PER_RANK \\",
         f"	({prefix}_ATTN_KV_HEAD_COUNT / {prefix}_TP_RANKS)",
         f"#define {prefix}_EXPERT_GROUPS_PER_LAYER \\",
         f"	({prefix}_ROUTED_EXPERT_COUNT / {prefix}_EXPERTS_PER_RANK)",
-        "/* hc_attn_fn/hc_ffn_fn mix the flattened stream vector down to "
-        "2*HC outputs (per-stream gate+scale pairs); hc_*_base has 2*HC "
-        "biases and hc_*_scale has 2 scalars. */",
         f"#define {prefix}_HC_FN_OUTPUT_ROWS (2u * {prefix}_HC_STREAM_COUNT)",
-        f"#define {prefix}_HC_FLAT_WIDTH "
-        f"({prefix}_HC_STREAM_COUNT * {prefix}_HIDDEN_DIMENSION)",
-        "/* FP8 execution arm: F8_E4M3 payloads with U8 E8M0 group-32 "
-        "scales. */",
-        f"#define {prefix}_EXPERT_SCALE_GROUP_SIZE 32u",
+        f"#define {prefix}_HC_FLAT_WIDTH \\",
+        f"	({prefix}_HC_STREAM_COUNT * {prefix}_HIDDEN_DIMENSION)",
+        f"#define {prefix}_EXPERT_SCALE_GROUP_SIZE SPARK_LLM_FP8_SCALE_BLOCK",
         f"#define {prefix}_ROUTE_GROUP_MAX \\",
         f"	({prefix}_EXPERTS_PER_TOKEN * {prefix}_HC_STREAM_COUNT)",
         "",
-    ])
+    ]
     return "\n".join(lines)
 
 

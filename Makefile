@@ -301,10 +301,12 @@ TEST_NAMES := \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
+    test_serving_tp_config \
     test_glm52_stagepack \
     test_tokenizer \
     test_model_description \
     test_stage_module_common \
+    test_hy4_lifecycle_smoke \
     test_dsv4_w1_loader \
     test_weightd \
     test_weightd_lease \
@@ -448,6 +450,8 @@ PYTHON_TESTS := \
 	tests/test_sources_exist.py \
 	tests/test_staging_manifest.py \
 	tests/test_template_adoption.py \
+	tests/test_driver_defines.py \
+	tests/test_hy4_llm_defines.py \
 	tests/test_status_truth.py \
 	tests/test_weightd_manifest.py \
 	tests/test_glm5_next_range_manifest.py \
@@ -1101,6 +1105,9 @@ build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_re
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
+build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
 build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
@@ -1149,6 +1156,22 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) -o $@
+
+HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub -Imodel-families/common/include -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
+HY4_SMOKE_SOURCES := tests/test_hy4_lifecycle_smoke.c \
+	modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \
+	runtime/stage_module_lifecycle.c \
+	runtime/stage_module_common.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
+	src/spark_status.c \
+	src/spark_sha256.c \
+	src/spark_ck128.c \
+	runtime/json.c \
+	runtime/filesystem.c \
+	tests/cuda_stub/cuda_runtime_stub.c
+
+build/test_hy4_lifecycle_smoke: $(HY4_SMOKE_SOURCES) | build
+	$(CC) $(HY4_SMOKE_INCLUDE_FLAGS) $(CFLAGS) $(HY4_SMOKE_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/spark_status.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub $(CFLAGS) $^ $(LDFLAGS) -o $@

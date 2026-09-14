@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_ling_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_head_screen.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "spark_ling_resident_decode_stage_internal.h"
 #include "spark_ling_stagepack_format.h"
 
@@ -41,12 +42,6 @@
 	  SPARK_LING_KV_BYTES_PER_SCALAR )
 #error "ling KV slot bytes and arena block geometry disagree"
 #endif
-
-typedef struct SparkLingPackRange
-{
-	uint64_t offset;
-	uint64_t bytes;
-} SparkLingPackRange;
 
 typedef struct SparkLingModuleState SparkLingModuleState;
 
@@ -94,6 +89,8 @@ struct SparkLingModuleState
 	uint32_t kda_ordinal_by_local_layer[SPARK_LING_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint32_t kv_layer_count;
 	uint32_t kda_layer_count;
+	uint64_t pack_directory_offset_bytes;
+	uint64_t pack_directory_end_bytes;
 	uint8_t *kda_state_pools;
 	uint64_t kda_state_layer_stride_bytes;
 	uint8_t *kda_window_pools;
@@ -149,6 +146,288 @@ struct SparkLingModuleState
 };
 
 
+static SparkStatus SparkLingPackFileSize(FILE *file,uint64_t *bytes)
+{
+	off_t end;
+	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	end = ftello(file);
+	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	*bytes = (uint64_t)end;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkLingPackValidateHeader(
+	const SparkLingModuleState *state,
+	const SparkLingStagePackHeader *header,
+	uint64_t file_bytes)
+{
+	uint64_t directory_bytes,directory_end;
+	if ( state == 0 || header == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( header->magic != SPARK_LING_STAGEPACK_MAGIC || header->format_version != SPARK_LING_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_LING_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_LING_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
+		return(SPARK_STATUS_ABI_MISMATCH);
+	if ( (header->flags & ~SPARK_LING_STAGEPACK_KNOWN_FLAGS) != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( SparkLingStagePackHeaderTpDegree(header) == 0u || SparkLingStagePackHeaderTpDegree(header) != state->tp_degree || SparkLingStagePackHeaderTpRank(header) != state->tp_rank )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( header->tensor_count == 0u || header->tensor_count > SPARK_LING_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != SPARK_LING_RESIDENT_DECODE_STAGE_STAGE_COUNT || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_LING_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_LING_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_LING_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_LING_MODEL_MOE_EXPERT_COUNT )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
+		return(SPARK_STATUS_TARGET_MISMATCH);
+	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
+	directory_end = header->directory_offset + directory_bytes;
+	if ( directory_end < header->directory_offset || directory_end > file_bytes )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkLingPackValidateHeaderFromFile(
+	const SparkLingModuleState *state,
+	FILE *file,
+	const SparkLingStagePackHeader *header)
+{
+	uint64_t file_bytes;
+	SparkStatus status;
+	status = SparkLingPackFileSize(file,&file_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkLingPackValidateHeader(state,header,file_bytes);
+	if ( status == SPARK_STATUS_OK )
+	{
+		((SparkLingModuleState *)state)->pack_directory_offset_bytes =
+			header->directory_offset;
+		((SparkLingModuleState *)state)->pack_directory_end_bytes =
+			header->directory_offset +
+			((uint64_t)header->tensor_count *
+			 header->directory_entry_bytes);
+	}
+	return(status);
+}
+
+typedef struct SparkLingPackRange
+{
+	uint64_t offset;
+	uint64_t bytes;
+} SparkLingPackRange;
+
+static uint32_t SparkLingPackRangesOverlap(const SparkLingPackRange *left,const SparkLingPackRange *right)
+{
+	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
+}
+
+static SparkStatus SparkLingPackValidateRanges(
+	const SparkLingStagePackEntry *entries,
+	uint32_t entry_count)
+{
+	SparkLingPackRange left[2],right[2];
+	uint32_t left_index,right_index,left_part,right_part;
+	for (left_index=0u; left_index<entry_count; left_index++)
+	{
+		left[0].offset = entries[left_index].payload_offset;
+		left[0].bytes = entries[left_index].payload_bytes;
+		left[1].offset = entries[left_index].scale_offset;
+		left[1].bytes = entries[left_index].scale_bytes;
+		for (right_index=left_index + 1u; right_index<entry_count; right_index++)
+		{
+			right[0].offset = entries[right_index].payload_offset;
+			right[0].bytes = entries[right_index].payload_bytes;
+			right[1].offset = entries[right_index].scale_offset;
+			right[1].bytes = entries[right_index].scale_bytes;
+			for (left_part=0u; left_part<2u; left_part++)
+				for (right_part=0u; right_part<2u; right_part++)
+					if ( SparkLingPackRangesOverlap(&left[left_part],&right[right_part]) != 0u )
+						return(SPARK_STATUS_SCHEMA_ERROR);
+		}
+		if ( SparkLingPackRangesOverlap(&left[0],&left[1]) != 0u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+#define SPARK_LING_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_LING_MODEL_LAYER_COUNT
+#define SPARK_LING_STAGEPACK_MTP_LAYER SPARK_LING_MODEL_MTP_LAYER_INDEX
+#define SPARK_LING_STAGEPACK_TENSOR_MTP_FC \
+	SPARK_LING_STAGEPACK_TENSOR_MTP_EH_PROJ
+#define SPARK_LING_STAGEPACK_TENSOR_MTP_FINAL_NORM \
+	SPARK_LING_STAGEPACK_TENSOR_MTP_SHARED_NORM
+
+#define SPARK_PACK_LOAD_FN(name) SparkLingModule##name
+#define SPARK_PACK_LOAD_TYPE(name) SparkLing##name
+#define SPARK_PACK_LOAD_CONST(name) SPARK_LING_##name
+#define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) \
+	(SPARK_LING_MODEL_LAYER_IS_KDA(layer))
+#define SPARK_PACK_LOAD_SEEN_TYPE uint64_t
+#define SPARK_PACK_LOAD_SEEN_ONE UINT64_C(1)
+#define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
+#define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
+#define SPARK_PACK_LOAD_BYTES_MATCH(entry) (1u)
+#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) \
+	do { (void)(state); (void)(expected); } while (0)
+#define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (0)
+#define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) \
+	do { } while (0)
+#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) \
+	do { (state)->pack_has_mtp = ((status) == SPARK_STATUS_OK && \
+		((header)->flags & SPARK_LING_STAGEPACK_FLAG_MTP) != 0u) ? 1u : 0u; } \
+		while (0)
+#define SPARK_PACK_LOAD_VALIDATE_HEADER(state,file,header) \
+	SparkLingPackValidateHeaderFromFile(state,file,header)
+#define SPARK_PACK_LOAD_VALIDATE_RANGES(entries,count) \
+	SparkLingPackValidateRanges(entries,count)
+#define SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY(entry) \
+	((entry)->layer_index == SPARK_LING_MODEL_MTP_LAYER_INDEX ? 1u : 0u)
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen
+#define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
+#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
+
+#include "sparkpipe/spark_pack_load_common.h"
+
+static SparkStatus SparkLingModuleValidateEntry(
+	SparkLingModuleState *state,
+	const SparkLingStagePackEntry *entry,
+	uint64_t file_bytes,
+	uint32_t *is_global)
+{
+	SparkLingStagePackTensorShape shape;
+	uint64_t payload_bytes,scale_bytes;
+	if ( SparkLingStagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,&shape) < 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( entry->payload_type != shape.payload_type || entry->weight_codec != shape.weight_codec || entry->scale_encoding != shape.scale_encoding || entry->group_count != shape.group_count || entry->rows != shape.rows || entry->columns != shape.columns )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	payload_bytes = SparkLingStagePackExpectedPayloadBytes(&shape);
+	scale_bytes = SparkLingStagePackExpectedScaleBytes(&shape);
+	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( entry->payload_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset > file_bytes || entry->payload_bytes > file_bytes - entry->payload_offset )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( entry->payload_offset < state->pack_directory_end_bytes && state->pack_directory_offset_bytes < entry->payload_offset + entry->payload_bytes )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( scale_bytes == 0u )
+	{
+		if ( entry->scale_offset != 0u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	else if ( entry->scale_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	else if ( entry->scale_offset < state->pack_directory_end_bytes && state->pack_directory_offset_bytes < entry->scale_offset + entry->scale_bytes )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	return(SparkLingModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
+}
+
+static SparkStatus SparkLingModuleBindLayer(
+	SparkLingModuleState *state,
+	const SparkLingStagePackEntry *entry,
+	void *payload,
+	void *scale)
+{
+	SparkLingLayerWeights *weights;
+	uint32_t tensor_kind;
+	weights = &state->layers[entry->layer_index - state->first_layer_index];
+	tensor_kind = entry->tensor_kind;
+	switch ( tensor_kind )
+	{
+	case SPARK_LING_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_Q: weights->q_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KV_A: weights->kv_a_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KV_A_NORM: weights->kv_a_norm_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED: weights->kv_b_key_transposed_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KV_B_VALUE: weights->kv_b_value_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_ATTN_GATE: weights->attn_gate_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_ATTN_OUTPUT: weights->attn_output_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_POST_ATTN_NORM: weights->post_attn_norm_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_DENSE_GATE_UP: weights->dense_gate_up_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; break;
+	case SPARK_LING_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
+	case SPARK_LING_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_QKV_BETA: weights->kda_qkv_beta_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_DECAY_PROJ: weights->kda_decay_proj_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_GATE_PROJ: weights->kda_gate_proj_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_Q_CONV: weights->kda_q_conv_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_K_CONV: weights->kda_k_conv_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_V_CONV: weights->kda_v_conv_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_DECAY_BIAS: weights->kda_decay_bias_f32 = (const float *)payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE: weights->kda_head_log_scale_f32 = (const float *)payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_OUT_NORM: weights->kda_out_norm_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_KDA_OUT: weights->kda_out_bf16 = payload; break;
+	case SPARK_LING_STAGEPACK_TENSOR_MTP_EH_PROJ:
+	case SPARK_LING_STAGEPACK_TENSOR_MTP_ENORM:
+	case SPARK_LING_STAGEPACK_TENSOR_MTP_HNORM:
+	case SPARK_LING_STAGEPACK_TENSOR_MTP_SHARED_NORM:
+		break;
+	default: return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkLingModuleBindGlobal(
+	SparkLingModuleState *state,
+	const SparkLingStagePackEntry *entry,
+	void *payload)
+{
+	switch ( entry->tensor_kind )
+	{
+	case SPARK_LING_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM: state->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_LING_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
+	default: return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+}
+
+static SparkStatus SparkLingModuleBindMtp(
+	SparkLingModuleState *state,
+	const SparkLingStagePackEntry *entry,
+	void *payload,
+	void *scale)
+{
+	(void)state;
+	(void)entry;
+	(void)payload;
+	(void)scale;
+	return(SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static uint64_t SparkLingModuleExpectedLayerBits(
+	const SparkLingModuleState *state,
+	uint32_t layer_index)
+{
+	SparkLingStagePackTensorShape shape;
+	uint64_t mask;
+	uint32_t kind;
+	mask = 0u;
+	for (kind=SPARK_LING_STAGEPACK_TENSOR_ATTN_NORM; kind<SPARK_LING_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+		if ( SparkLingStagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
+			mask |= UINT64_C(1) << kind;
+	return(mask);
+}
+
+static uint64_t SparkLingModuleExpectedGlobalBits(const SparkLingModuleState *state)
+{
+	uint64_t mask;
+	mask = 0u;
+	if ( state->owns_embedding != 0u )
+		mask |= UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_EMBEDDING;
+	if ( state->owns_final_head != 0u )
+		mask |= (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM) | (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_LM_HEAD);
+	return(mask);
+}
+
+static uint64_t SparkLingModuleExpectedMtpBits(const SparkLingModuleState *state)
+{
+	return(state->pack_has_mtp != 0u ?
+		SparkLingModuleExpectedLayerBits(state,SPARK_LING_MODEL_MTP_LAYER_INDEX) :
+		0u);
+}
+
 static SparkStatus SparkLingModuleConfigure(
 	SparkLingModuleState *state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -189,305 +468,6 @@ static SparkStatus SparkLingModuleConfigure(
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
 	*pack_path = context->stage_pack_path;
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingPackFileSize(FILE *file,uint64_t *bytes)
-{
-	off_t end;
-	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
-	end = ftello(file);
-	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		return(SPARK_STATUS_IO_ERROR);
-	*bytes = (uint64_t)end;
-	return(SPARK_STATUS_OK);
-}
-
-static uint32_t SparkLingPackRangesOverlap(const SparkLingPackRange *left,const SparkLingPackRange *right)
-{
-	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
-}
-
-static SparkStatus SparkLingPackValidateHeader(
-	const SparkLingModuleState *state,
-	const SparkLingStagePackHeader *header,
-	uint64_t file_bytes)
-{
-	uint64_t directory_bytes,directory_end;
-	if ( state == 0 || header == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( header->magic != SPARK_LING_STAGEPACK_MAGIC || header->format_version != SPARK_LING_STAGEPACK_FORMAT_VERSION || header->header_bytes != SPARK_LING_STAGEPACK_HEADER_BYTES || header->directory_entry_bytes != SPARK_LING_STAGEPACK_ENTRY_BYTES || header->codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( (header->flags & ~SPARK_LING_STAGEPACK_KNOWN_FLAGS) != 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
-	if ( SparkLingStagePackHeaderTpDegree(header) == 0u || SparkLingStagePackHeaderTpDegree(header) != state->tp_degree || SparkLingStagePackHeaderTpRank(header) != state->tp_rank )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( header->tensor_count == 0u || header->tensor_count > SPARK_LING_STAGEPACK_MAX_TENSOR_COUNT || header->stage_count != SPARK_LING_RESIDENT_DECODE_STAGE_STAGE_COUNT || header->stage_index != state->stage_index || header->first_layer_index != state->first_layer_index || header->layer_count != state->layer_count || header->total_layer_count != SPARK_LING_MODEL_LAYER_COUNT || header->hidden_dimension != SPARK_LING_MODEL_HIDDEN_DIMENSION || header->vocab_count != SPARK_LING_MODEL_OUTPUT_VOCAB_COUNT || header->routed_expert_count != SPARK_LING_MODEL_MOE_EXPERT_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( header->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 || header->expert_weight_codec != state->expert_weight_codec || header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	if ( header->file_bytes != file_bytes || header->directory_offset < header->header_bytes || header->directory_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || header->tensor_count > UINT64_MAX / header->directory_entry_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	directory_bytes = (uint64_t)header->tensor_count * header->directory_entry_bytes;
-	directory_end = header->directory_offset + directory_bytes;
-	if ( directory_end < header->directory_offset || directory_end > file_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingPackValidateEntryGeometry(
-	const SparkLingModuleState *state,
-	const SparkLingStagePackHeader *header,
-	const SparkLingStagePackEntry *entry,
-	SparkLingStagePackTensorShape *shape)
-{
-	uint64_t payload_bytes,scale_bytes,directory_end;
-	uint32_t local_layer;
-	if ( SparkLingStagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,shape) < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( entry->layer_index != SPARK_LING_STAGEPACK_GLOBAL_LAYER )
-	{
-		if ( entry->layer_index == SPARK_LING_MODEL_MTP_LAYER_INDEX )
-		{
-			if ( (state->mtp_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-				return(SPARK_STATUS_DUPLICATE);
-		}
-		else
-		{
-			if ( entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count )
-				return(SPARK_STATUS_SCHEMA_ERROR);
-			local_layer = entry->layer_index - state->first_layer_index;
-			if ( (state->layer_seen[local_layer] & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-				return(SPARK_STATUS_DUPLICATE);
-		}
-	}
-	else if ( (state->global_seen & (UINT64_C(1) << entry->tensor_kind)) != 0u )
-		return(SPARK_STATUS_DUPLICATE);
-	if ( entry->payload_type != shape->payload_type || entry->weight_codec != shape->weight_codec || entry->scale_encoding != shape->scale_encoding || entry->group_count != shape->group_count || entry->rows != shape->rows || entry->columns != shape->columns )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	payload_bytes = SparkLingStagePackExpectedPayloadBytes(shape);
-	scale_bytes = SparkLingStagePackExpectedScaleBytes(shape);
-	if ( payload_bytes == 0u || entry->payload_bytes != payload_bytes || entry->scale_bytes != scale_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	directory_end = header->directory_offset + ((uint64_t)header->tensor_count * header->directory_entry_bytes);
-	if ( entry->payload_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->payload_offset > header->file_bytes || entry->payload_bytes > header->file_bytes - entry->payload_offset )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( entry->payload_offset < directory_end && header->directory_offset < entry->payload_offset + entry->payload_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( scale_bytes == 0u )
-	{
-		if ( entry->scale_offset != 0u )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	else if ( entry->scale_offset % SPARK_LING_STAGEPACK_ALIGNMENT_BYTES != 0u || entry->scale_offset > header->file_bytes || entry->scale_bytes > header->file_bytes - entry->scale_offset )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	else if ( entry->scale_offset < directory_end && header->directory_offset < entry->scale_offset + entry->scale_bytes )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingPackValidateRanges(
-	const SparkLingStagePackEntry *entries,
-	uint32_t entry_count)
-{
-	SparkLingPackRange left[2],right[2];
-	uint32_t left_index,right_index,left_part,right_part;
-	for (left_index=0u; left_index<entry_count; left_index++)
-	{
-		left[0].offset = entries[left_index].payload_offset;
-		left[0].bytes = entries[left_index].payload_bytes;
-		left[1].offset = entries[left_index].scale_offset;
-		left[1].bytes = entries[left_index].scale_bytes;
-		for (right_index=left_index + 1u; right_index<entry_count; right_index++)
-		{
-			right[0].offset = entries[right_index].payload_offset;
-			right[0].bytes = entries[right_index].payload_bytes;
-			right[1].offset = entries[right_index].scale_offset;
-			right[1].bytes = entries[right_index].scale_bytes;
-			for (left_part=0u; left_part<2u; left_part++)
-				for (right_part=0u; right_part<2u; right_part++)
-					if ( SparkLingPackRangesOverlap(&left[left_part],&right[right_part]) != 0u )
-						return(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		if ( SparkLingPackRangesOverlap(&left[0],&left[1]) != 0u )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static void SparkLingPackMarkSeen(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry)
-{
-	if ( entry->layer_index == SPARK_LING_STAGEPACK_GLOBAL_LAYER )
-		state->global_seen |= UINT64_C(1) << entry->tensor_kind;
-	else if ( entry->layer_index == SPARK_LING_MODEL_MTP_LAYER_INDEX )
-		state->mtp_seen |= UINT64_C(1) << entry->tensor_kind;
-	else
-		state->layer_seen[entry->layer_index - state->first_layer_index] |= UINT64_C(1) << entry->tensor_kind;
-}
-
-static SparkStatus SparkLingPackAssignLayer(
-	SparkLingLayerWeights *weights,
-	uint32_t tensor_kind,
-	const void *payload,
-	const void *scale)
-{
-	switch ( tensor_kind )
-	{
-	case SPARK_LING_STAGEPACK_TENSOR_ATTN_NORM: weights->attn_norm_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_Q: weights->q_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KV_A: weights->kv_a_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KV_A_NORM: weights->kv_a_norm_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KV_B_KEY_TRANSPOSED: weights->kv_b_key_transposed_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KV_B_VALUE: weights->kv_b_value_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_ATTN_GATE: weights->attn_gate_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_ATTN_OUTPUT: weights->attn_output_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_POST_ATTN_NORM: weights->post_attn_norm_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_DENSE_GATE_UP: weights->dense_gate_up_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_DENSE_DOWN: weights->dense_down_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_ROUTER: weights->router_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_ROUTER_CORRECTION: weights->router_correction_f32 = (const float *)payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_EXPERT_UP_GATE: weights->expert_up_gate_payload = payload; weights->expert_up_gate_scale = scale; break;
-	case SPARK_LING_STAGEPACK_TENSOR_EXPERT_DOWN: weights->expert_down_payload = payload; weights->expert_down_scale = scale; break;
-	case SPARK_LING_STAGEPACK_TENSOR_SHARED_GATE_UP: weights->shared_gate_up_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_SHARED_DOWN: weights->shared_down_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_QKV_BETA: weights->kda_qkv_beta_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_DECAY_PROJ: weights->kda_decay_proj_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_GATE_PROJ: weights->kda_gate_proj_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_Q_CONV: weights->kda_q_conv_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_K_CONV: weights->kda_k_conv_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_V_CONV: weights->kda_v_conv_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_DECAY_BIAS: weights->kda_decay_bias_f32 = (const float *)payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE: weights->kda_head_log_scale_f32 = (const float *)payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_OUT_NORM: weights->kda_out_norm_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_KDA_OUT: weights->kda_out_bf16 = payload; break;
-	case SPARK_LING_STAGEPACK_TENSOR_MTP_EH_PROJ:
-	case SPARK_LING_STAGEPACK_TENSOR_MTP_ENORM:
-	case SPARK_LING_STAGEPACK_TENSOR_MTP_HNORM:
-	case SPARK_LING_STAGEPACK_TENSOR_MTP_SHARED_NORM:
-		break;
-	default: return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingPackAssign(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry,
-	const void *payload,
-	const void *scale)
-{
-	if ( entry->layer_index != SPARK_LING_STAGEPACK_GLOBAL_LAYER )
-		return(SparkLingPackAssignLayer(&state->layers[entry->layer_index - state->first_layer_index],entry->tensor_kind,payload,scale));
-	switch ( entry->tensor_kind )
-	{
-	case SPARK_LING_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM: state->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
-	default: return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-}
-
-static SparkStatus SparkLingPackLoadEntry(
-	SparkLingModuleState *state,
-	FILE *file,
-	const SparkLingStagePackEntry *entry)
-{
-	void *payload,*scale;
-	SparkStatus status;
-	payload = 0;
-	scale = 0;
-	status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->payload_offset,entry->payload_bytes,&payload);
-	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
-		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingPackAssign(state,entry,payload,scale);
-	return(status);
-}
-
-static uint64_t SparkLingExpectedLayerMask(
-	const SparkLingModuleState *state,
-	uint32_t layer_index)
-{
-	SparkLingStagePackTensorShape shape;
-	uint64_t mask;
-	uint32_t kind;
-	mask = 0u;
-	for (kind=SPARK_LING_STAGEPACK_TENSOR_ATTN_NORM; kind<SPARK_LING_STAGEPACK_TENSOR_KIND_COUNT; kind++)
-		if ( SparkLingStagePackExpectedShape(kind,layer_index,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
-			mask |= UINT64_C(1) << kind;
-	return(mask);
-}
-
-static uint64_t SparkLingExpectedGlobalMask(const SparkLingModuleState *state)
-{
-	uint64_t mask;
-	mask = 0u;
-	if ( state->owns_embedding != 0u )
-		mask |= UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		mask |= (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM) | (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_LM_HEAD);
-	return(mask);
-}
-
-static SparkStatus SparkLingPackValidateInventory(const SparkLingModuleState *state)
-{
-	uint64_t expected_mtp;
-	uint32_t local;
-	if ( state->global_seen != SparkLingExpectedGlobalMask(state) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	expected_mtp = state->pack_has_mtp != 0u ?
-		SparkLingExpectedLayerMask(state,SPARK_LING_MODEL_MTP_LAYER_INDEX) : 0u;
-	if ( state->mtp_seen != expected_mtp )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (local=0u; local<state->layer_count; local++)
-		if ( state->layer_seen[local] != SparkLingExpectedLayerMask(state,state->first_layer_index + local) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingPackLoad(
-	SparkLingModuleState *state,
-	const char *path)
-{
-	SparkLingStagePackHeader header;
-	SparkLingStagePackEntry entries[SPARK_LING_STAGEPACK_MAX_TENSOR_COUNT];
-	SparkLingStagePackTensorShape shape;
-	FILE *file;
-	uint64_t file_bytes;
-	uint32_t index;
-	SparkStatus status;
-	file = fopen(path,"rb");
-	if ( file == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
-	memset(&header,0,sizeof(header));
-	memset(entries,0,sizeof(entries));
-	status = SparkLingPackFileSize(file,&file_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModulePackRead(SPARK_LING_MODULE_TAG,file,0u,&header,sizeof(header));
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingPackValidateHeader(state,&header,file_bytes);
-	if ( status == SPARK_STATUS_OK )
-		state->pack_has_mtp = (header.flags & SPARK_LING_STAGEPACK_FLAG_MTP) != 0u ? 1u : 0u;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModulePackRead(SPARK_LING_MODULE_TAG,file,header.directory_offset,entries,(uint64_t)header.tensor_count * sizeof(entries[0]));
-	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
-	{
-		status = SparkLingPackValidateEntryGeometry(state,&header,&entries[index],&shape);
-		if ( status == SPARK_STATUS_OK )
-			SparkLingPackMarkSeen(state,&entries[index]);
-	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingPackValidateRanges(entries,header.tensor_count);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingPackValidateInventory(state);
-	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
-		if ( entries[index].layer_index != SPARK_LING_MODEL_MTP_LAYER_INDEX )
-			status = SparkLingPackLoadEntry(state,file,&entries[index]);
-	if ( fclose(file) != 0 && status == SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
-	return(status);
 }
 
 static SparkStatus SparkLingAllocateBytes(
@@ -1233,20 +1213,6 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 		state->execution_row_capacity,SPARK_LING_MODEL_HEAD_COUNT / state->tp_degree);
 }
 
-static SparkStatus SparkLingModuleCombineBf16(
-	void *combine_context,
-	void *destination_device,
-	const void *source_device,
-	uint32_t active_sequence_count,
-	uint32_t hidden_dimension,
-	void *cuda_stream)
-{
-	cudaError_t error;
-	(void)combine_context;
-	error = SparkLingLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
-	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"tp_all_reduce_sum"));
-}
-
 static SparkStatus SparkLingModuleCombineDirectBf16(
 	void *combine_context,
 	void *destination_device,
@@ -1266,7 +1232,7 @@ static SparkStatus SparkLingModuleCombineDirectBf16(
 	{
 		if (rank_devices[index] == 0 || index == tp_rank)
 			continue;
-		error = SparkLingLaunchAccumAdd((cudaStream_t)cuda_stream,
+		error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,
 			destination_device,rank_devices[index],
 			active_sequence_count,hidden_dimension);
 		if (error != cudaSuccess)
@@ -1274,19 +1240,6 @@ static SparkStatus SparkLingModuleCombineDirectBf16(
 				SPARK_LING_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
 	}
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingModuleCombineU64Max(
-	void *combine_context,
-	uint64_t *destination_device,
-	const uint64_t *source_device,
-	uint32_t element_count,
-	void *cuda_stream)
-{
-	cudaError_t error;
-	(void)combine_context;
-	error = SparkLingLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
-	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"tp_all_reduce_max_u64"));
 }
 
 static SparkStatus SparkLingModuleInitializeTpCollective(
@@ -1317,10 +1270,9 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
-		configuration.combine_bf16_function = SparkLingModuleCombineBf16;
-		configuration.combine_u64_max_function = SparkLingModuleCombineU64Max;
 		configuration.combine_tp4_bf16_function = SparkLingModuleCombineDirectBf16;
 		configuration.combine_context = state;
 	}
@@ -1908,7 +1860,7 @@ static SparkStatus SparkLingInitializeState(
 	if ( status == SPARK_STATUS_OK && SparkLingConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkLingPackLoad(state,pack_path);
+		status = SparkLingModuleLoadPack(state,pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkLingAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )

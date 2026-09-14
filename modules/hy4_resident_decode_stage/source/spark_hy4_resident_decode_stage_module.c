@@ -26,59 +26,110 @@
 
 
 
+
 #define SPARK_HY4_MODULE_TAG "hy4_stage"
 
 typedef struct SparkHy4ModuleState
 {
 	SparkStageModuleLedger ledger;
+	atomic_uint slot_states[SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	atomic_ullong submitted_count;
+	atomic_ullong completed_count;
+	atomic_ullong rejected_count;
+	atomic_ullong failed_count;
+	atomic_ullong tokens_emitted;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	uint32_t stage_layer_count;
-	uint32_t first_layer_index;
-	uint64_t arena_bytes;
 } SparkHy4ModuleState;
 
-static SparkStatus SparkHy4ModuleInitializeGate(void)
-{
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkHy4ModuleInitializeTpCollective(
-	SparkHy4ModuleState *state)
-{
-	(void)state;
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkHy4ModuleInitialize(
+static SparkStatus SparkHy4ModuleConfigure(void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
+	const SparkFirmwareModuleHostServices *host_services)
 {
 	SparkHy4ModuleState *state;
 	SparkStatus status;
-	if ( configuration == 0 || host_services == 0 || module_state == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	(void)sizeof(SparkHy4ResidentDecodeStageNodeContext);
-	status = SparkFirmwareModuleValidateInitialization(configuration,
-		host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return status;
+	uint32_t tp_degree;
+	(void)host_services;
+	state = (SparkHy4ModuleState *)module_state;
 	if ( configuration->stage_name == 0 ||
 	    configuration->model_id == 0 )
-		return SPARK_STATUS_SCHEMA_ERROR;
-	status = SparkHy4ModuleInitializeGate();
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	(void)sizeof(SparkHy4ResidentDecodeStageNodeContext);
+	state->max_active_sequence_count =
+		SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCES;
+	state->pipeline_slot_count =
+		SPARK_HY4_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_COUNT;
+	tp_degree = SPARK_HY4_MODEL_TP_RANKS;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(
+		SPARK_HY4_MODULE_TAG,"SPARK_HY4_TP_DEGREE",1u,
+		SPARK_HY4_MODEL_TP_RANKS,SPARK_HY4_MODEL_TP_RANKS,&tp_degree);
 	if ( status != SPARK_STATUS_OK )
-		return status;
-	state = (SparkHy4ModuleState *)calloc(1u,sizeof(*state));
-	if ( state == 0 )
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	memset(&state->ledger,0,sizeof(state->ledger));
-	state->ledger.module_tag = SPARK_HY4_MODULE_TAG;
-	*module_state = state;
-	return SPARK_STATUS_OK;
+		return(status);
+	state->tp_degree = tp_degree;
+	state->tp_rank = 0u;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(
+		SPARK_HY4_MODULE_TAG,"SPARK_HY4_TP_RANK",0u,tp_degree - 1u,0u,
+		&state->tp_rank);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(
+		SPARK_HY4_MODULE_TAG,"SPARK_HY4_STAGE_MAX_ACTIVE_SEQUENCES",
+		1u,SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCES,
+		SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCES,
+		&state->max_active_sequence_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(
+		SPARK_HY4_MODULE_TAG,"SPARK_HY4_STAGE_PIPELINE_SLOTS",1u,
+		SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
+		SPARK_HY4_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_COUNT,
+		&state->pipeline_slot_count);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	atomic_init(&state->submitted_count,0ull);
+	atomic_init(&state->completed_count,0ull);
+	atomic_init(&state->rejected_count,0ull);
+	atomic_init(&state->failed_count,0ull);
+	atomic_init(&state->tokens_emitted,0ull);
+	SparkStageModuleAtomicStateArrayInitialize(state->slot_states,
+		state->pipeline_slot_count);
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkHy4ModuleDescribe(void *module_state,
+	SparkStageModuleLifecycle *lifecycle)
+{
+	SparkHy4ModuleState *state;
+	state = (SparkHy4ModuleState *)module_state;
+	lifecycle->module_tag = SPARK_HY4_MODULE_TAG;
+	lifecycle->ledger = &state->ledger;
+	lifecycle->slot_states = state->slot_states;
+	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
+	lifecycle->submitted_count = &state->submitted_count;
+	lifecycle->completed_count = &state->completed_count;
+	lifecycle->rejected_count = &state->rejected_count;
+	lifecycle->failed_count = &state->failed_count;
+	lifecycle->tokens_emitted = &state->tokens_emitted;
+}
+
+static SparkStatus SparkHy4ModulePrepare(void *module_state,
+	const SparkFirmwareModuleConfiguration *configuration,
+	const SparkFirmwareModuleHostServices *host_services)
+{
+	SparkHy4ModuleState *state;
+	SparkStatus status;
+	state = (SparkHy4ModuleState *)module_state;
+	status = SparkHy4ModuleConfigure(module_state,configuration,
+		host_services);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	fprintf(stderr,
+		"%s ready tp=%u/%u slots=%u max_active=%u execute=UNSUPPORTED\n",
+		SPARK_HY4_MODULE_TAG,state->tp_rank,state->tp_degree,
+		state->pipeline_slot_count,state->max_active_sequence_count);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkHy4ModuleExecute(void *module_state,
@@ -86,103 +137,35 @@ static SparkStatus SparkHy4ModuleExecute(void *module_state,
 {
 	(void)module_state;
 	(void)frame;
-	return SPARK_STATUS_UNSUPPORTED;
+	return(SPARK_STATUS_UNSUPPORTED);
 }
 
 static SparkStatus SparkHy4ModuleAdmit(void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
 {
-	SparkHy4ModuleState *state = (SparkHy4ModuleState *)module_state;
-	if ( state == 0 || request == 0 || decision == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkHy4ModuleState *state;
+	(void)request;
+	state = (SparkHy4ModuleState *)module_state;
 	SparkStageModuleAdmissionDecisionInitialize(decision,
 		state->max_active_sequence_count);
 	SparkStageModuleAdmissionDecisionAccept(decision);
-	return SPARK_STATUS_OK;
+	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkHy4ModuleSnapshot(void *module_state,
-	uint32_t program_id, SparkModelDriverRuntimeSnapshot *snapshot)
+static const SparkStageModuleLifecycleOps SparkHy4ModuleLifecycle =
 {
-	SparkHy4ModuleState *state = (SparkHy4ModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->program_id = program_id;
-	snapshot->active_submission_count = 0u;
-	return SPARK_STATUS_OK;
-}
+	sizeof(SparkHy4ModuleState),
+	0,
+	SparkHy4ModuleDescribe,
+	SparkHy4ModulePrepare,
+	0,
+	0,
+	SparkHy4ModuleExecute,
+	SparkHy4ModuleAdmit,
+	0
+};
 
-static void SparkHy4ModuleDestroy(void *module_state)
-{
-	SparkHy4ModuleState *state = (SparkHy4ModuleState *)module_state;
-	if ( state == 0 )
-		return;
-	SparkStageModuleLedgerRelease(&state->ledger);
-	free(state);
-}
-
-static SparkStatus SparkHy4ModuleInitializeAdapter(
-	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
-{
-	SparkHy4ModuleState *state;
-	SparkStatus status;
-	status = SparkHy4ModuleInitialize(configuration,host_services,
-		module_state);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	state = (SparkHy4ModuleState *)*module_state;
-	status = SparkHy4ModuleInitializeTpCollective(state);
-	if ( status != SPARK_STATUS_OK )
-	{
-		SparkHy4ModuleDestroy(state);
-		*module_state = 0;
-		return status;
-	}
-	return SPARK_STATUS_OK;
-}
-
-__attribute__((visibility("default")))
-SparkStatus SparkHy4ResidentDecodeStageInitialize(
-	const void *configuration, const void *host_services,
-	void **module_state)
-{
-	return SparkHy4ModuleInitializeAdapter(
-		(const SparkFirmwareModuleConfiguration *)configuration,
-		(const SparkFirmwareModuleHostServices *)host_services,
-		module_state);
-}
-
-__attribute__((visibility("default")))
-SparkStatus SparkHy4ResidentDecodeStageExecute(void *module_state,
-	void *frame)
-{
-	return SparkHy4ModuleExecute(module_state,
-		(SparkModelDriverFrame *)frame);
-}
-
-__attribute__((visibility("default")))
-SparkStatus SparkHy4ResidentDecodeStageAdmit(void *module_state,
-	const void *request, void *decision)
-{
-	return SparkHy4ModuleAdmit(module_state,
-		(const SparkModelDriverAdmissionRequest *)request,
-		(SparkModelDriverAdmissionDecision *)decision);
-}
-
-__attribute__((visibility("default")))
-SparkStatus SparkHy4ResidentDecodeStageSnapshot(void *module_state,
-	uint32_t program_id, void *snapshot)
-{
-	return SparkHy4ModuleSnapshot(module_state,program_id,
-		(SparkModelDriverRuntimeSnapshot *)snapshot);
-}
-
-__attribute__((visibility("default")))
-void SparkHy4ResidentDecodeStageDestroy(void *module_state)
-{
-	SparkHy4ModuleDestroy(module_state);
-}
+SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
+	SparkHy4ResidentDecodeStage,
+	&SparkHy4ModuleLifecycle)

@@ -381,6 +381,15 @@ cudaError_t cudaEventQuery(cudaEvent_t event)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaEventElapsedTime(float *milliseconds, cudaEvent_t start,
+    cudaEvent_t stop)
+{
+    if (milliseconds == 0 || start == 0 || stop == 0)
+        return cudaErrorInvalidValue;
+    *milliseconds = 0.0f;
+    return cudaSuccess;
+}
+
 cudaError_t cudaEventSynchronize(cudaEvent_t event)
 {
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;

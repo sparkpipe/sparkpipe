@@ -77,7 +77,14 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	for (index=0u; index<count; index++)
 	{
 		element = SparkJsonGetArrayElement(document,token,index);
-		if ( SparkJsonStringEquals(document,element,"tree") )
+		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
+		else if ( SparkJsonStringEquals(document,element,
+				"counter_rotating_split_ring") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
+		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
+			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
+		else if ( SparkJsonStringEquals(document,element,"tree") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
@@ -87,9 +94,28 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 		if ( count != 3u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	else
+	else if ( policy->algorithms == SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY )
 	{
 		if ( count != 1u || mask != SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	else
+	{
+		if ( (count == 1u && mask ==
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING) ||
+			(count == 1u && mask ==
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) ||
+			(count == 2u && mask ==
+				(SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
+				 SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL)) ||
+			(count == 1u && mask ==
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE) ||
+			(count == 2u && mask ==
+				(SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
+				 SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING)) )
+		{
+		}
+		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	topology->algorithm_mask = mask;
@@ -195,6 +221,18 @@ static SparkStatus SparkTpCollectiveLoadThresholds(
 			topology->split_ring_min_payload_bytes == 0u ||
 			topology->direct_all_to_all_max_payload_bytes >=
 			topology->split_ring_min_payload_bytes )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	else if ( policy->thresholds ==
+		SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL )
+	{
+		if ( (topology->algorithm_mask &
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
+			topology->direct_all_to_all_max_payload_bytes != 0u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( (topology->algorithm_mask &
+				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u &&
+			topology->split_ring_min_payload_bytes != 0u )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	else
@@ -424,6 +462,17 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 		policy->peer_count == 0u ||
 		policy->peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE ||
 		config->backend_module_path_buffer == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( policy->algorithms != SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET &&
+		policy->algorithms != SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY &&
+		policy->algorithms !=
+			SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( policy->thresholds !=
+			SPARK_TP_COLLECTIVE_THRESHOLDS_ORDERED_NONZERO &&
+		policy->thresholds != SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED &&
+		policy->thresholds !=
+			SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&config->topology,0,sizeof(config->topology));
 	config->backend_kind = 0u;
