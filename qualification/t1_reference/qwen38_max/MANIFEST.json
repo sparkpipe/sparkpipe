@@ -1,0 +1,21 @@
+{
+  "checkpoint": {
+    "config_sha256": "b2c724e3d6825906179f12e370795725799bc1bc85cdf8d27c464784166d8f56",
+    "index_sha256": "2b8d7065b846c3de090f7a9b94913461c2a8ce8ec907dd9f0b947e2187d5cd54",
+    "path": "/mnt/model-warm/qwen3.8-max-nvfp4-radixark-bf16-spine"
+  },
+  "defines_config_mismatches": [],
+  "family": "qwen38_max",
+  "fixtures": {
+    "capital_of_france.t1r": {
+      "bytes": 673260,
+      "sha256": "74fc4bed5354b73443921d5be57c9baf463daaa06b624de33dcfafe2661438e0"
+    }
+  },
+  "generated_utc": "2026-09-14T05:04:50Z",
+  "generator": "t1_reference_decoder.py",
+  "llm_defines_sha256": "2478506aa9ef0d628993f2a293936de2450a41d246fdb52f2a154f61a9f92abd",
+  "numpy_version": "1.26.4",
+  "prompts_sha256": "e70a99dc62c3d6c0d5fc269e8b2e6495a59d70d1667c8d8c5418d3366009d237",
+  "python_version": "3.12.3"
+}
