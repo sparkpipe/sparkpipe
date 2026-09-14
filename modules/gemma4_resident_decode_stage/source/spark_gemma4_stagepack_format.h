@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_gemma4_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stagepack_format.h"
+#include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_status.h"
 
 
@@ -146,7 +147,7 @@ _Static_assert((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT % SPARK_GEMMA4_MODEL
 _Static_assert((SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT % SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT) == 0u,"gemma4 full query heads must group evenly onto kv heads");
 _Static_assert(SPARK_GEMMA4_MODEL_FULL_ATTENTION_K_EQ_V == 1u,"gemma4 full layers carry no v projection (attention_k_eq_v)");
 _Static_assert(SPARK_GEMMA4_MODEL_SLIDING_ROPE_DIMENSION == SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,"gemma4 sliding rope covers the whole head");
-_Static_assert(SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS == 256u,"gemma4 proportional rope table is 256 fp32 entries (64 nonzero frequencies then 192 zeros)");
+_Static_assert(SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION) == 256u,"gemma4 proportional rope table is 256 fp32 entries (64 nonzero frequencies then 192 zeros)");
 
 static inline uint32_t SparkGemma4StagePackKvHeadsPerRank(uint32_t global_kv_head_count, uint32_t tp_degree)
 {
@@ -227,7 +228,7 @@ static inline int32_t SparkGemma4StagePackShapeGlobal(uint32_t tensor_kind, Spar
 		return(0);
 	case SPARK_GEMMA4_STAGEPACK_TENSOR_FULL_ROPE_TABLE:
 		shape->rows = 1u;
-		shape->columns = SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS;
+		shape->columns = SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION);
 		shape->natural_format = SPARK_STAGEPACK_FORMAT_WEIGHT_F32;
 		return(0);
 	default:

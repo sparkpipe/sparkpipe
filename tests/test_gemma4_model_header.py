@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Bind both gemma4 geometry headers to their authoritative contracts.
+"""Bind both gemma4 variants to their authoritative contracts.
 
-One family, two contracts: the dense header
-(model-families/gemma4/include/sparkpipe/spark_gemma4_model.h, 31B) and the
-MoE header (spark_gemma4_moe_model.h, 26B-A4B) each bind to
-model_contracts/gemma4_{31b,26b_a4b}_authoritative.json, digest-frozen
-against the warm checkpoints. The dense header is read directly; the MoE
-header through its own macro names (SPARK_GEMMA4_MOE_*) — the alias header
-is compile-time only.
+One family, one parameter file: model-families/gemma4/include/sparkpipe/llm_defines.h
+carries the 31B values under SPARK_GEMMA4_MODEL_* and the 26B-A4B values under
+SPARK_GEMMA4_MOE_*; the SPARK_GEMMA4_MODEL_* alias fold under
+SPARK_GEMMA4_MOE_BUILD re-points the generic namespace at the MoE values at
+compile time. Each contract binds to its own prefix in this single file.
 Run: python3 tests/test_gemma4_model_header.py
 """
 
@@ -20,15 +18,17 @@ from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
+FAMILY_DEFINES = REPOSITORY / "model-families/gemma4/include/sparkpipe/llm_defines.h"
+
 CONTRACTS = [
     {
         "path": REPOSITORY / "model_contracts/gemma4_31b_authoritative.json",
-        "header": REPOSITORY / "model-families/gemma4/include/sparkpipe/spark_gemma4_model.h",
+        "header": FAMILY_DEFINES,
         "prefix": "SPARK_GEMMA4_MODEL_",
     },
     {
         "path": REPOSITORY / "model_contracts/gemma4_26b_a4b_authoritative.json",
-        "header": REPOSITORY / "model-families/gemma4/include/sparkpipe/spark_gemma4_moe_model.h",
+        "header": FAMILY_DEFINES,
         "prefix": "SPARK_GEMMA4_MOE_",
     },
 ]
@@ -72,7 +72,7 @@ COMPOSED_BINDINGS = {
     "FULL_KV_DIMENSION": lambda m: m["full_kv_head_count"] * m["full_head_dimension"],
     "FULL_LAYER_COUNT": lambda m: m["layer_count"] // m["full_layer_period"],
     "SLIDING_LAYER_COUNT": lambda m: m["layer_count"] - m["layer_count"] // m["full_layer_period"],
-    "FULL_ROPE_TABLE_ELEMENTS": lambda m: m["full_head_dimension"] // 2,
+    "FULL_ROPE_DIMENSION": lambda m: m["full_head_dimension"],
 }
 
 

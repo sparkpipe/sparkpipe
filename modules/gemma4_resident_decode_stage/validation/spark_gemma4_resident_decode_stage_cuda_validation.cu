@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_gemma4_model.h"
+#include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_gemma4_resident_decode_stage_firmware.h"
 #include "inference/kernels/kv.cuh"
 
@@ -34,8 +35,7 @@ extern "C" cudaError_t SparkGemma4LaunchLinear(cudaStream_t stream, const SparkG
 extern "C" cudaError_t SparkGemma4LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
 extern "C" cudaError_t SparkGemma4LaunchBranchAdd(cudaStream_t stream, void *sum_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
 extern "C" cudaError_t SparkGemma4LaunchGatedGelu(cudaStream_t stream, void *gate_up_bf16, uint32_t row_count, uint32_t intermediate);
-extern "C" cudaError_t SparkGemma4LaunchSlidingRope(cudaStream_t stream, void *q_bf16, const uint32_t *positions, uint32_t row_count, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta);
-extern "C" cudaError_t SparkGemma4LaunchFullRope(cudaStream_t stream, void *q_bf16, const uint32_t *positions, const float *inv_freq_table, uint32_t row_count, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension);
+extern "C" cudaError_t SparkGemma4LaunchRope(cudaStream_t stream, void *q_bf16, const uint32_t *positions, uint32_t row_count, uint32_t heads, const SparkRopeDomain *domain);
 extern "C" cudaError_t SparkGemma4LaunchSlidingWindowPositions(cudaStream_t stream, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *row_positions, uint32_t row_count, uint32_t *positions_out);
 extern "C" cudaError_t SparkGemma4LaunchKvStoreSliding(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count, uint32_t kv_heads);
 extern "C" cudaError_t SparkGemma4LaunchKvStoreFull(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count);
@@ -273,7 +273,7 @@ static int SparkGemma4ValCheckSelf(void)
 		return(SparkGemma4ValFail("self.embed_scale","bf16_sqrt"));
 	if (SPARK_GEMMA4_MODEL_QK_SCALE != 1.0f || SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON != 1e-06f)
 		return(SparkGemma4ValFail("self.constants","qk_scale_epsilon"));
-	if (SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS != 1024u || SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS != 256u)
+	if (SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS != 1024u || SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION) != 256u)
 		return(SparkGemma4ValFail("self.constants","window_table"));
 	printf("gemma4_validation check=self_constants arm=%s embed_scale=%.1f qk_scale=%.1f window=%u PASS\n",
 		SPARK_GEMMA4_MODEL_MODULE_ID,(double)SPARK_GEMMA4_MODEL_EMBED_SCALE,(double)SPARK_GEMMA4_MODEL_QK_SCALE,SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS);
@@ -698,14 +698,14 @@ static int SparkGemma4ValCheckRope(void)
 	const uint32_t heads = SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT;
 	const uint32_t dimension = SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
 	const uint32_t full_dimension = SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION;
-	const uint32_t table_elements = SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS;
+	const uint32_t table_elements = SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION);
 	const uint32_t rotated_pairs = 64u;
 	const uint32_t positions[3] = {0u,5u,33u};
 	uint16_t *sliding = (uint16_t *)malloc((uint64_t)rows * heads * dimension * 2u);
 	uint16_t *sliding_keep = (uint16_t *)malloc((uint64_t)rows * heads * dimension * 2u);
 	uint16_t *full = (uint16_t *)malloc((uint64_t)rows * heads * full_dimension * 2u);
 	uint16_t *full_keep = (uint16_t *)malloc((uint64_t)rows * heads * full_dimension * 2u);
-	float table[SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS];
+	float table[SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION)];
 	uint32_t positions_host[3];
 	uint32_t row,head,pair,element;
 	void *sliding_device = 0,*full_device = 0,*positions_device = 0,*table_device = 0;
@@ -731,9 +731,15 @@ static int SparkGemma4ValCheckRope(void)
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(positions_device,positions_host,sizeof(positions_host));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(table_device,table,sizeof(table));
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchSlidingRope(cudaStreamPerThread,sliding_device,(const uint32_t *)positions_device,rows,heads,dimension,dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA);
-	if (error == cudaSuccess)
-		error = SparkGemma4LaunchFullRope(cudaStreamPerThread,full_device,(const uint32_t *)positions_device,(const float *)table_device,rows,heads,full_dimension,full_dimension);
+	{
+		SparkRopeDomain rope_domain;
+		SparkRopeDomain full_rope_domain;
+		SparkRopeDomainInitTheta(&rope_domain,dimension,dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA,SPARK_GEMMA4_MODEL_QK_SCALE);
+		SparkRopeDomainInitTable(&full_rope_domain,full_dimension,full_dimension,(const float *)table_device,SPARK_GEMMA4_MODEL_FULL_ROPE_BASE,SPARK_GEMMA4_MODEL_QK_SCALE);
+		error = SparkGemma4LaunchRope(cudaStreamPerThread,sliding_device,(const uint32_t *)positions_device,rows,heads,&rope_domain);
+		if (error == cudaSuccess)
+			error = SparkGemma4LaunchRope(cudaStreamPerThread,full_device,(const uint32_t *)positions_device,rows,heads,&full_rope_domain);
+	}
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(sliding,sliding_device,(uint64_t)rows * heads * dimension * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(full,full_device,(uint64_t)rows * heads * full_dimension * 2u);
@@ -1204,7 +1210,7 @@ static int SparkGemma4ValCheckKvFull(void)
 	uint32_t row;
 	uint64_t changed = 0u,element;
 	void *kraw_device = 0,*v_device = 0,*k_device = 0,*query_device = 0,*output_device = 0,*positions_device = 0,*table_device = 0;
-	float table[SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS];
+	float table[SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION)];
 	uint32_t table_element;
 	SparkGemma4ValKv kv;
 	cudaError_t error;
@@ -1213,7 +1219,7 @@ static int SparkGemma4ValCheckKvFull(void)
 	float *expected_f;
 	if (kraw == 0 || v_norm == 0 || k_rope == 0 || query == 0 || expected == 0 || actual == 0)
 		return(SparkGemma4ValFail("kv_full","host_alloc"));
-	for (table_element = 0u; table_element < SPARK_GEMMA4_MODEL_FULL_ROPE_TABLE_ELEMENTS; table_element++)
+	for (table_element = 0u; table_element < SPARK_ROPE_TABLE_ELEMENTS(SPARK_GEMMA4_MODEL_FULL_ROPE_DIMENSION); table_element++)
 		table[table_element] = table_element < 64u
 			? 1.0f / powf(SPARK_GEMMA4_MODEL_FULL_ROPE_BASE,(float)(2u * table_element) / (float)dimension) : 0.0f;
 	SparkGemma4ValRandomState = 4507u;
@@ -1244,7 +1250,11 @@ static int SparkGemma4ValCheckKvFull(void)
 		error = SparkGemma4LaunchHeadRmsNorm(cudaStreamPerThread,kraw_device,kraw_device,k_device,SPARK_GEMMA4_VAL_ROWS,kv_heads,dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchFullRope(cudaStreamPerThread,k_device,(const uint32_t *)positions_device,(const float *)table_device,SPARK_GEMMA4_VAL_ROWS,kv_heads,dimension,dimension);
+	{
+		SparkRopeDomain full_rope_domain;
+		SparkRopeDomainInitTable(&full_rope_domain,dimension,dimension,(const float *)table_device,SPARK_GEMMA4_MODEL_FULL_ROPE_BASE,SPARK_GEMMA4_MODEL_QK_SCALE);
+		error = SparkGemma4LaunchRope(cudaStreamPerThread,k_device,(const uint32_t *)positions_device,SPARK_GEMMA4_VAL_ROWS,kv_heads,&full_rope_domain);
+	}
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(k_rope,k_device,row_count * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(v_norm,v_device,row_count * 2u);
@@ -1551,7 +1561,11 @@ static cudaError_t SparkGemma4ValChainDeviceStages(SparkGemma4ValChain *chain)
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchHeadRmsNorm(cudaStreamPerThread,chain->query_device,chain->query_norm_device,chain->query_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchSlidingRope(cudaStreamPerThread,chain->query_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA);
+	{
+		SparkRopeDomain rope_domain;
+		SparkRopeDomainInitTheta(&rope_domain,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA,SPARK_GEMMA4_MODEL_QK_SCALE);
+		error = SparkGemma4LaunchRope(cudaStreamPerThread,chain->query_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,&rope_domain);
+	}
 	if (error == cudaSuccess)
 		error = SparkGemma4ValChainView(&view,chain->kv_weight_device,chain->hidden,chain->kv_out);
 	if (error == cudaSuccess)
@@ -1561,7 +1575,11 @@ static cudaError_t SparkGemma4ValChainDeviceStages(SparkGemma4ValChain *chain)
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchHeadRmsNorm(cudaStreamPerThread,((uint16_t *)chain->kv_device) + chain->kv_half,0,((uint16_t *)chain->kv_device) + chain->kv_half,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads,chain->head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if (error == cudaSuccess)
-		error = SparkGemma4LaunchSlidingRope(cudaStreamPerThread,chain->kv_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA);
+	{
+		SparkRopeDomain rope_domain;
+		SparkRopeDomainInitTheta(&rope_domain,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA,SPARK_GEMMA4_MODEL_QK_SCALE);
+		error = SparkGemma4LaunchRope(cudaStreamPerThread,chain->kv_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->kv_heads,&rope_domain);
+	}
 	return(error);
 }
 

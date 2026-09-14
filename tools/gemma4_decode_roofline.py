@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 DENSE_HEADER = Path(__file__).resolve().parent.parent / (
-    "model-families/gemma4/include/sparkpipe/spark_gemma4_model.h")
+    "model-families/gemma4/include/sparkpipe/llm_defines.h")
 MOE_HEADER = Path(__file__).resolve().parent.parent / (
-    "model-families/gemma4/include/sparkpipe/spark_gemma4_moe_model.h")
+    "model-families/gemma4/include/sparkpipe/llm_defines.h")
 
 SPEC_BW_GB_S = 273.0
 MEASURED_BW_GB_S = 242.1
