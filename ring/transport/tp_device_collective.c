@@ -26,7 +26,7 @@ extern int cudaMemcpy(void *destination,const void *source,
 extern int cudaMalloc(void **address,size_t bytes);
 extern int SparkGlm5NextLaunchMeshPublish(void *stream,
     volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
-    uint64_t slot_index);
+    uint64_t slot_index,volatile void *slot_tail);
 extern int SparkGlm5NextLaunchMeshGuard(void *stream,
     volatile void *error_word,void *output);
 extern int SparkGlm5NextLaunchMeshWait(void *stream,
@@ -488,7 +488,7 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
              SPARK_WEIGHTD_MESH_SLOTS_PER_BAND));
         slot_index = (uint64_t)implementation->tp_rank *
             SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
-            (round_seq & (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+            (ordinal & 1ull);
         if ( cudaMemcpyAsync(implementation->mesh_buffer +
                 implementation->band_base + slot_index * slot_bytes,
                 submission->local_device,(size_t)bytes,
@@ -500,14 +500,17 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
                 SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
                     implementation->tp_rank),
                 implementation->seq_cell,implementation->round_seq_device,
-                bytes,slot_index) != 0 )
+                bytes,slot_index,
+                implementation->mesh_buffer +
+                implementation->band_base +
+                slot_index * slot_bytes + slot_bytes - 8u) != 0 )
             return SPARK_STATUS_IO_ERROR;
         if ( SparkGlm5NextLaunchMeshWait(submission->cuda_stream,
                 implementation->mesh_buffer + implementation->band_base,
                 implementation->slot_bytes,
                 implementation->round_seq_device,
                 SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
-                round_seq & (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u),
+                slot_index,
                 implementation->tp_rank,implementation->tp_degree,
                 implementation->error_word,
                 (unsigned long long)implementation->round_timeout_ns) != 0 )
