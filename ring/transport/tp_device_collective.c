@@ -967,7 +967,17 @@ SparkStatus SparkTpDeviceCollectiveRequestFailure(
     SparkTpDeviceCollective *collective,
     SparkStatus failure_status)
 {
-    (void)collective;(void)failure_status;
+    SparkTpDeviceCollectiveImplementation *implementation =
+        (collective != 0) ? collective->implementation : 0;
+    if ( implementation == 0 )
+        return SPARK_STATUS_OK;
+    fprintf(stderr,
+        "TP-FAILURE rank=%u status=%d rounds=%llu seq=%llu armed=%u\n",
+        implementation->tp_rank,
+        (int32_t)failure_status,
+        (unsigned long long)implementation->round_index,
+        (unsigned long long)implementation->round_seq,
+        implementation->capture_armed);
     return SPARK_STATUS_OK;
 }
 
@@ -976,7 +986,16 @@ SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
     uint64_t ordinal,
     SparkStatus failure_status)
 {
-    (void)collective;(void)ordinal;(void)failure_status;
+    SparkTpDeviceCollectiveImplementation *implementation =
+        (collective != 0) ? collective->implementation : 0;
+    if ( implementation == 0 )
+        return SPARK_STATUS_OK;
+    fprintf(stderr,
+        "TP-OP-FAILURE rank=%u ordinal=%llu status=%d armed=%u\n",
+        implementation->tp_rank,
+        (unsigned long long)ordinal,
+        (int32_t)failure_status,
+        implementation->capture_armed);
     return SPARK_STATUS_OK;
 }
 

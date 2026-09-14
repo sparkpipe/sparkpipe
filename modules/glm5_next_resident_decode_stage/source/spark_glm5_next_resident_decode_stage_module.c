@@ -1858,6 +1858,29 @@ static SparkStatus SparkGlm5NextModuleCombineU64Max(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_all_reduce_max_u64"));
 }
 
+
+static void SparkGlm5NextBootConfigReport(
+    const SparkGlm5NextModuleState *state)
+{
+	fprintf(stderr,
+	    "BOOTCFG tp_degree=%u tp_rank=%u backend=%u collectives=%u hc=%u "
+	    "graph_path=%u lazy_pack=%u lazy_experts=%u owns_embedding=%u "
+	    "owns_final_head=%u mtp=%u kv_pages=%lu stage=%u\n",
+	    state->tp_degree,
+	    (unsigned)0u,
+	    (unsigned)state->tp_device_collective.backend_kind,
+	    state->tp_device_collective_initialized,
+	    state->tp_device_collective_hc_initialized,
+	    state->graph_path_enabled,
+	    state->lazy_pack != 0,
+	    state->lazy_pack != 0,
+	    state->owns_embedding,
+	    state->owns_final_head,
+	    state->mtp_enabled,
+	    (unsigned long)0ul,
+	    state->stage_index);
+}
+
 static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	SparkGlm5NextModuleState *state,
 	const SparkGlm5NextResidentDecodeStageNodeContext *context)
@@ -1970,6 +1993,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
+	SparkGlm5NextBootConfigReport(state);
 	if ( state->lazy_pack != 0 &&
 	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(
