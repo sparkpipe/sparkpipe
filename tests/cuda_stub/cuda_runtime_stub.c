@@ -395,6 +395,7 @@ cudaError_t cudaHostRegister(
     return cudaSuccess;
 }
 
+
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,

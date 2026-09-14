@@ -1,0 +1,169 @@
+{
+ "lane": "dsv5-flash",
+ "tool": "tools/dsv41_flash_stagepack.py",
+ "run": "real-source pack convert M7-predecessor",
+ "node": "spark6",
+ "warm_path": "/mnt/model-warm/deepseek-v4.1-flash",
+ "revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+ "contract_sha256": "51e04021670876e9d71c01dfe426396c219a46c93d55ce9e54cd90a986864ca9",
+ "source_config_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+ "recipe_sha256": "6e493e4e4993defa6074379af9e3ea62295e857cd231d7f1df224a455876803a",
+ "verifier_sha256": "cebdf1253081fd0638e9f63812af228c2673d49c57914e2d8196d3909fe6f191",
+ "topology": {
+  "tp_degree": 8,
+  "note": "reference-faithful set (o_groups 8%%8==0); TP16 packs await the operator ruling"
+ },
+ "codec": {
+  "linear": "FP8_E4M3+UE8M0 32x32",
+  "experts": "MXFP4_E2M1 as-checkpoint (I8 packed), UE8M0 per 32"
+ },
+ "source": {
+  "shards": 48,
+  "index_sha256": "74b0686a3d2891980d5e303251b075a3bccae2c2ff650747db2620a649b98fa8",
+  "index_tensors": 96085,
+  "dd_probe_mbps_direct": 345
+ },
+ "accounting": {
+  "checkpoint_tensors": 96085,
+  "pack_consumed": 93406,
+  "engram_excluded": 12,
+  "dspark_sidecar": 2401,
+  "vision_aligner_out_of_scope": 266
+ },
+ "engram_excluded": {
+  "tensors": 12,
+  "bytes_total": 203073076240,
+  "host_resident_tables": [
+   {
+    "tensor": "layers.1.engram.embed.weight",
+    "dtype": "F8_E4M3",
+    "shape": [
+     384006168,
+     256
+    ],
+    "bytes": 98305579008,
+    "shard": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+   },
+   {
+    "tensor": "layers.1.engram.embed.scale",
+    "dtype": "F8_E8M0",
+    "shape": [
+     384006168,
+     8
+    ],
+    "bytes": 3072049344,
+    "shard": "/mnt/model-warm/deepseek-v4.1-flash/model-00047-of-00048.safetensors"
+   },
+   {
+    "tensor": "layers.14.engram.embed.weight",
+    "dtype": "F8_E4M3",
+    "shape": [
+     384016682,
+     256
+    ],
+    "bytes": 98308270592,
+    "shard": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+   },
+   {
+    "tensor": "layers.14.engram.embed.scale",
+    "dtype": "F8_E8M0",
+    "shape": [
+     384016682,
+     8
+    ],
+    "bytes": 3072133456,
+    "shard": "/mnt/model-warm/deepseek-v4.1-flash/model-00048-of-00048.safetensors"
+   }
+  ],
+  "small_module_tensors": 8
+ },
+ "per_rank": [
+  {
+   "file": "rank0.spstage",
+   "bytes": 39011930624,
+   "sha256": "f41a8684bf845d83b07bc59aa099319747a78b02651b809e8ff6c83179f4366b",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank1.spstage",
+   "bytes": 39011930624,
+   "sha256": "eb1f28626caf7009f359104db9e341470953e32e5dbfac207e9aacd793374ef7",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank2.spstage",
+   "bytes": 39011930624,
+   "sha256": "f80ee4f6f433012604b0bbed877c0274b2da894432b94743b85409a2a3675152",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank3.spstage",
+   "bytes": 39011930624,
+   "sha256": "b33462cc9a38e6959aa6e835b37cd310664de2f830af015e1f47dcd5b14f3332",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank4.spstage",
+   "bytes": 39011930624,
+   "sha256": "8629006fb33b88ecaa69fcd9dce3619fc113bde3f2312691b7097322f6dac42a",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank5.spstage",
+   "bytes": 39011930624,
+   "sha256": "4feed5d303765e58e2429e000fb59ab67bd21299cf8e2e736cd6427be226a189",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank6.spstage",
+   "bytes": 39011930624,
+   "sha256": "068d05e4c23c7c4f55b54ec875e6541aaf3ac8f32c140b0481ddf979fc584ede",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  },
+  {
+   "file": "rank7.spstage",
+   "bytes": 39011930624,
+   "sha256": "e0d524f81cf67986fb1e2c7cea3f1bb317faa60695eb24a069ba2d9a1c45d01d",
+   "manifest_records": 11520,
+   "spine_bytes": 2914592448,
+   "expert_bytes": 36097228800,
+   "entries": 1038
+  }
+ ],
+ "totals": {
+  "pack_bytes": 312095444992,
+  "copied_bytes": 312094569984,
+  "verified_bytes": 312094569984
+ },
+ "verification_chain": [
+  "selftest tests/test_dsv41_flash_stagepack.py PASS (tiny synthetic, corruption localized spine+expert)",
+  "layout cross-check vs C packer dsv41_flash_pack_synthesize tp8 mxfp4 l40: 1038/1038 directory records + file_bytes identical",
+  "shard headers == index weight_map (96085 tensors, byte spans checked)",
+  "tools/dsv41_flash_index_census.py PASS on warm index at /mnt/model-warm/deepseek-v4.1-flash (this run, on node)",
+  ".experts v2 manifests from dsv41_flash_experts_manifest: 8 ranks x 11520 records",
+  "tests/test_dsv41_flash_pack_contract (host validator): PASS rank0..rank7 incl boundary ranks 0,7",
+  "dsv41_flash_pack_verify byte-verify: 312094569984 bytes == checkpoint across shards 1-48, all 8 ranks; header literals + kind census per rank",
+  "sha256sum -c rank0-3 rank4-7: 8/8 OK"
+ ]
+}
