@@ -20,58 +20,71 @@
 #define SPARK_HY4_CUDA_ROUTE_MAX \
 	(SPARK_HY4_MODEL_EXPERTS_PER_TOKEN * SPARK_HY4_MODEL_HC_STREAM_COUNT)
 
-static __device__ __forceinline__ float SparkHy4Fp8ToFloat(uint8_t raw)
-{
-	float sign = (raw & 0x80u) != 0u ? -1.0f : 1.0f;
-	uint32_t exponent = ((uint32_t)raw >> 3) & 0x0fu;
-	uint32_t mantissa = (uint32_t)raw & 0x07u;
-	if ( exponent == 0u )
-		return sign * ldexpf((float)mantissa,-9);
-	if ( exponent == 0x0fu && mantissa == 0x07u )
-		return NAN;
-	return sign * ldexpf(1.0f + (float)mantissa * 0.125f,
-	    (int)exponent - 7);
-}
-
 static __device__ __forceinline__ float SparkHy4E8m0ToFloat(uint8_t raw)
 {
 	return exp2f((float)raw - 127.0f);
 }
 
-static __device__ __forceinline__ float SparkHy4DotFp8Grouped(
-	const uint8_t *payload, const uint8_t *scales, const float *query,
-	int columns)
+static __device__ __forceinline__ float SparkHy4Fp8ByteToFloat(uint32_t raw)
 {
-	float total = 0.0f;
-	for (int group = 0; group * SPARK_HY4_CUDA_SCALE_GROUP < columns;
-	    ++group)
-	{
-		float group_partial = 0.0f;
-		int base = group * SPARK_HY4_CUDA_SCALE_GROUP;
-		int end = base + SPARK_HY4_CUDA_SCALE_GROUP;
-		if (end > columns)
-			end = columns;
-		for (int index = base; index < end; ++index)
-			group_partial = fmaf(
-			    SparkHy4Fp8ToFloat(payload[index]), query[index],
-			    group_partial);
-		total += group_partial *
-		    SparkHy4E8m0ToFloat(scales[group]);
-	}
-	return total;
+	uint32_t sign = (raw & 0x80u) << 24;
+	uint32_t exponent = (raw >> 3) & 0x0fu;
+	uint32_t mantissa = raw & 0x07u;
+	if ( exponent == 0x0fu && mantissa == 0x07u )
+		return NAN;
+	if ( exponent == 0u )
+		return __uint_as_float(sign |
+		    __float_as_uint((float)mantissa * 1.953125e-3f));
+	return __uint_as_float(sign | ((exponent + 120u) << 23) |
+	    (mantissa << 20));
 }
 
 __global__ void SparkHy4GemvFp8GroupedKernel(const uint8_t *weights,
 	const uint8_t *scales, const float *x, float *y, int rows,
 	int columns, int scale_stride)
 {
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = (int)((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+	int lane = (int)(threadIdx.x & 31u);
 	if ( row >= rows )
 		return;
-	y[row] = SparkHy4DotFp8Grouped(
-	    weights + (size_t)row * (size_t)columns,
-	    scales + (size_t)row * (size_t)scale_stride,
-	    x, columns);
+	const uint8_t *row_weights = weights + (size_t)row * (size_t)columns;
+	const uint8_t *row_scales = scales + (size_t)row * (size_t)scale_stride;
+	float accumulator = 0.0f;
+	int vectorized = columns & ~127;
+	for (int base = lane * 16; base < vectorized; base += 512)
+	{
+		uint4 codes = *(const uint4 *)(row_weights + base);
+		float scale = SparkHy4E8m0ToFloat(row_scales[base >> 5]);
+		accumulator += scale * (
+		    SparkHy4Fp8ByteToFloat(codes.x & 0xffu) * x[base] +
+		    SparkHy4Fp8ByteToFloat((codes.x >> 8) & 0xffu) * x[base + 1] +
+		    SparkHy4Fp8ByteToFloat((codes.x >> 16) & 0xffu) * x[base + 2] +
+		    SparkHy4Fp8ByteToFloat((codes.x >> 24) & 0xffu) * x[base + 3] +
+		    SparkHy4Fp8ByteToFloat(codes.y & 0xffu) * x[base + 4] +
+		    SparkHy4Fp8ByteToFloat((codes.y >> 8) & 0xffu) * x[base + 5] +
+		    SparkHy4Fp8ByteToFloat((codes.y >> 16) & 0xffu) * x[base + 6] +
+		    SparkHy4Fp8ByteToFloat((codes.y >> 24) & 0xffu) * x[base + 7] +
+		    SparkHy4Fp8ByteToFloat(codes.z & 0xffu) * x[base + 8] +
+		    SparkHy4Fp8ByteToFloat((codes.z >> 8) & 0xffu) * x[base + 9] +
+		    SparkHy4Fp8ByteToFloat((codes.z >> 16) & 0xffu) * x[base + 10] +
+		    SparkHy4Fp8ByteToFloat((codes.z >> 24) & 0xffu) * x[base + 11] +
+		    SparkHy4Fp8ByteToFloat(codes.w & 0xffu) * x[base + 12] +
+		    SparkHy4Fp8ByteToFloat((codes.w >> 8) & 0xffu) * x[base + 13] +
+		    SparkHy4Fp8ByteToFloat((codes.w >> 16) & 0xffu) * x[base + 14] +
+		    SparkHy4Fp8ByteToFloat((codes.w >> 24) & 0xffu) * x[base + 15]);
+	}
+	float remainder_total = 0.0f;
+	for (int index = vectorized + lane; index < columns; index += 32)
+	{
+		int group = index >> 5;
+		remainder_total += SparkHy4E8m0ToFloat(row_scales[group]) *
+		    SparkHy4Fp8ByteToFloat(row_weights[index]) * x[index];
+	}
+	accumulator += remainder_total;
+	for (unsigned offset = 16u; offset != 0u; offset >>= 1)
+		accumulator += __shfl_down_sync(0xffffffffu, accumulator, offset);
+	if ( lane == 0 )
+		y[row] = accumulator;
 }
 
 __global__ void SparkHy4GemvKernel(const float *weights, const float *x,
@@ -122,7 +135,7 @@ __global__ void SparkHy4RopeKernel(float *v, int rot, float position)
 	int pair = threadIdx.x;
 	if (pair * 2 + 1 >= rot)
 		return;
-	float angle = position * powf(10000000.0f,
+	float angle = position * powf(SPARK_HY4_MODEL_ROPE_THETA,
 	    -(float)(2 * pair) / (float)rot);
 	float cos_value = cosf(angle);
 	float sin_value = sinf(angle);
