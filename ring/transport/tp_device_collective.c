@@ -379,7 +379,18 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     epoch = *base_cell >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS;
     if ( epoch == 0ull ||
          epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
+    {
+        fprintf(stderr,
+            "CKEY-BAD rank=%u cell=%llu off=%llu band=%u stride_bits=%u mask=%llu rebased=%u\n",
+            implementation->tp_rank,
+            (unsigned long long)*base_cell,
+            (unsigned long long)SparkTpDeviceCollectiveBaseCellOffset(band_index),
+            band_index,
+            (unsigned)SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS,
+            (unsigned long long)SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK,
+            implementation->round_rebased);
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+    }
     if ( epoch != implementation->chain_epoch )
     {
         fprintf(stderr,
@@ -513,7 +524,10 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
                 slot_index,
                 implementation->tp_rank,implementation->tp_degree,
                 implementation->error_word,
-                (unsigned long long)implementation->round_timeout_ns) != 0 )
+                (unsigned long long)(implementation->round_timeout_ns <
+                    SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS ?
+                    implementation->round_timeout_ns :
+                    SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS)) != 0 )
             return SPARK_STATUS_IO_ERROR;
         goto combine;
     }

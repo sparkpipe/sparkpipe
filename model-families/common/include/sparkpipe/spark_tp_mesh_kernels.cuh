@@ -70,6 +70,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 			slot_bytes - 8u);
 		while ( *end_word < sequence )
 		{
+			if ( *error_word != 0ull )
+				return;
 			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
 			{
 				atomicExch((unsigned long long *)error_word,sequence);

@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <cuda_runtime.h>
 #include "sparkpipe/spark_tp_chain_ordinal.h"
@@ -223,6 +225,7 @@ struct SparkGlm5NextModuleState
 	uint64_t degrade_graph_fallback;
 	uint64_t degrade_covered_abandon;
 	uint64_t degrade_graph_disabled;
+	uint64_t degrade_graph_stuck;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
 	uint32_t hbound_probes;
@@ -2946,6 +2949,8 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 	return(SPARK_STATUS_OK);
 }
 
+#define SPARK_GLM5_NEXT_GRAPH_REPLAY_WATCH_NS (15ull * 1000000000ull)
+
 static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
     SparkStatus *status_out)
 {
@@ -2954,14 +2959,75 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 	void *exec;
 	state = chain->state;
 	status = SparkGlm5NextGraphRouteSweep(chain);
+	if ( status == SPARK_STATUS_BUSY && chain->slot->graph_ready != 0u )
+		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 	{
 		exec = (chain->slot->graph_alt == 0u) ?
 			chain->slot->graph_exec_a : chain->slot->graph_exec_b;
 		if ( cudaGraphLaunch(exec,chain->slot->stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
-		else if ( cudaStreamSynchronize(chain->slot->stream) != cudaSuccess )
-			status = SPARK_STATUS_IO_ERROR;
+		else
+		{
+			cudaError_t poll;
+			uint64_t watch_stop;
+			struct timespec watch_now;
+			clock_gettime(CLOCK_MONOTONIC,&watch_now);
+			watch_stop = (uint64_t)watch_now.tv_sec *
+				UINT64_C(1000000000) + (uint64_t)watch_now.tv_nsec +
+				SPARK_GLM5_NEXT_GRAPH_REPLAY_WATCH_NS;
+			while ( (poll = cudaStreamQuery(chain->slot->stream)) ==
+				cudaErrorNotReady )
+			{
+				clock_gettime(CLOCK_MONOTONIC,&watch_now);
+				if ( (uint64_t)watch_now.tv_sec *
+					UINT64_C(1000000000) +
+					(uint64_t)watch_now.tv_nsec >= watch_stop )
+					break;
+				usleep(500u);
+			}
+			if ( poll == cudaErrorNotReady )
+			{
+				uint64_t stuck_error;
+				stuck_error = SparkTpDeviceCollectiveGraphError(
+					&state->tp_device_collective);
+				state->graph_path_enabled = 0u;
+				state->degrade_graph_stuck++;
+				fprintf(stderr,
+					"DEGRADE graph-stuck slot=%u alt=%u err=%llu\n",
+					chain->slot_index,chain->slot->graph_alt,
+					(unsigned long long)stuck_error);
+				status = SPARK_STATUS_INTERNAL_ERROR;
+			}
+			else if ( poll != cudaSuccess )
+				status = SPARK_STATUS_IO_ERROR;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		uint64_t graph_error;
+		graph_error = SparkTpDeviceCollectiveGraphError(
+			&state->tp_device_collective);
+		SparkTpDeviceCollectiveClearGraphError(
+			&state->tp_device_collective);
+		if ( graph_error == 0ull &&
+		     state->tp_device_collective_hc_initialized != 0u )
+		{
+			graph_error = SparkTpDeviceCollectiveGraphError(
+				&state->tp_device_collective_hc);
+			SparkTpDeviceCollectiveClearGraphError(
+				&state->tp_device_collective_hc);
+		}
+		if ( graph_error != 0ull )
+		{
+			state->graph_path_enabled = 0u;
+			state->degrade_graph_stuck++;
+			fprintf(stderr,
+				"DEGRADE graph-wait-timeout slot=%u seq=%llu\n",
+				chain->slot_index,
+				(unsigned long long)graph_error);
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		}
 	}
 	if ( status == SPARK_STATUS_OK && state->decode_miss_host != 0 &&
 	     state->decode_miss_host[0] != 0u )

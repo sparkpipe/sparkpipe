@@ -2305,6 +2305,7 @@ static SparkStatus SparkModelResidentdFailContinuationLocked(
 	SparkModelResidentdRoute *route,
 	SparkStatus status)
 {
+	(void)runtime;
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_FENCED;
 	SPARK_RETURN(status);
 }

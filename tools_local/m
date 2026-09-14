@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# m — build the glm53flash module from the lane worktree, gated.
+# Sources are scp'd to sparkf; make/model_compile/publish each keep their
+# own exit status; the driver must contain the GRAPH marker or we refuse.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+L=sparkf
+S=modules/glm5_next_resident_decode_stage/source
+scp -q $S/spark_glm5_next_resident_decode_stage_module.c $L:~/sparkpipe-build-958/$S/
+scp -q $S/spark_glm5_next_resident_decode_stage_cuda.cu $L:~/sparkpipe-build-958/$S/
+scp -q $S/spark_glm5_next_resident_decode_stage_internal.h $L:~/sparkpipe-build-958/$S/
+scp -q $S/cuda/layer.cuh $L:~/sparkpipe-build-958/$S/cuda/
+scp -q model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h $L:~/sparkpipe-build-958/model-families/glm5_next/include/sparkpipe/
+scp -q modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h $L:~/sparkpipe-build-958/modules/glm5_next_resident_decode_stage/include/sparkpipe/
+scp -q ring/transport/tp_device_collective.c $L:~/sparkpipe-build-958/ring/transport/
+for c in model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh model-families/common/include/sparkpipe/spark_tp_mesh_register.h; do scp -q $c $L:~/sparkpipe-build-958/model-families/common/include/sparkpipe/ || exit 1; done
+for f in node/weightd.c node/weightd_mesh.c node/weightd_spawn.c node/weightd_spawn.h; do scp -q $f $L:~/sparkpipe-build-958/$f || exit 1; done
+for f in runtime/spark_weightd.c runtime/spark_weightd_map.c runtime/spark_weightd_lazy_pack.c runtime/spark_weightd_attach.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c runtime/spark_weightd_spine.c runtime/spark_weightd_worker.c; do scp -q $f $L:~/sparkpipe-build-958/$f || exit 1; done
+for h in spark_weightd.h spark_weightd_attach.h spark_weightd_lazy_pack.h spark_weightd_lease.h spark_weightd_manifest.h spark_weightd_map.h spark_weightd_spine.h spark_weightd_worker.h; do scp -q include/sparkpipe/$h $L:~/sparkpipe-build-958/include/sparkpipe/$h || exit 1; done
+scp -q include/sparkpipe/spark_tp_device_collective.h $L:~/sparkpipe-build-958/include/sparkpipe/
+ssh $L 'bash -s' <<'REMOTE'
+set -euo pipefail
+cd ~/sparkpipe-build-958
+export PATH="/usr/local/cuda/bin:$PATH"
+SHA=$(sha256sum model_contracts/glm53_flash_authoritative.json | cut -d" " -f1)
+systemctl --user stop fleet-agent 2>/dev/null || true
+for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed 's|.*/proc/\([0-9]*\)/exe.*|\1|'); do kill -TERM "$l" 2>/dev/null || true; done
+for t in $(seq 1 15); do ls -l /proc/[0-9]*/exe 2>/dev/null | grep -q sparkpipe_model_residentd || break; sleep 1; done
+if ! make -j16 -C modules/glm5_next_resident_decode_stage publish EXPERT_CODEC=fp8 MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033 CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /tmp/m.log 2>&1; then
+  echo BUILD-FAIL; grep -E 'error:' /tmp/m.log | head -5; exit 1
+fi
+if ! build/sparkpipe_model_compile --model examples/model_descriptions/glm5_next_resident_decode_stage_fp8_firmware.json --library build/module_library --output ~/sparkdata/out --cc /usr/bin/cc --include include --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm --cc-arg -ldl --cc-arg -pthread > /tmp/c.log 2>&1; then
+  echo COMPILE-FAIL; tail -3 /tmp/c.log; exit 1
+fi
+tools/publish_local.sh glm5_next_resident_decode_stage fp8 glm53flash.fp8.tp16 > /tmp/p.log 2>&1 || { echo PUBLISH-FAIL; tail -2 /tmp/p.log; exit 1; }
+if ! make -j16 build/sparkpipe_weightd > /tmp/w.log 2>&1; then
+  echo DAEMON-BUILD-FAIL; grep -E 'error:' /tmp/w.log | head -5; exit 1
+fi
+cp build/sparkpipe_weightd ~/release/core/bin/sparkpipe_weightd
+MARKS=$(strings ~/sparkdata/out/stages/stage_000/model_driver.so | grep -c GRAPH-CAPTURE-OK || true)
+if [ "${MARKS:-0}" -lt 1 ]; then echo MARKER-MISSING-REFUSED; exit 1; fi
+systemctl --user start fleet-agent 2>/dev/null || true
+echo "BUILD-OK $(md5sum ~/sparkdata/out/stages/stage_000/model_driver.so | cut -c1-12)"
+REMOTE
