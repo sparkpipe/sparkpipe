@@ -1,5 +1,5 @@
 {
-  "file_count": 2180,
+  "file_count": 2182,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -10682,6 +10682,11 @@
       "size_bytes": 2196
     },
     {
+      "path": "tools/roofline_estimator.py",
+      "sha256": "7f16c239b5eacea8b4bb0fee7c6412c7f743434ceddcbb4aed0c7366a53d1734",
+      "size_bytes": 23013
+    },
+    {
       "path": "tools/rtx5090_spec_node.py",
       "sha256": "b31964c60dc4ebc38480347ee03e9daa6acbe095df1f05a4276d2ae6a97952a3",
       "size_bytes": 14123
@@ -10745,6 +10750,11 @@
       "path": "tools/spark_ssh_proxy.py",
       "sha256": "42a454e9706f068c8db7c5e3e06e16f34a43a90cc0d76f046a150d68837445dd",
       "size_bytes": 16131
+    },
+    {
+      "path": "tools/sparkcap_stream_probe.c",
+      "sha256": "3317c5830aaa8ed55d7356a54920c31132a9dd44dbef57b86cce07f3d7b69a42",
+      "size_bytes": 3352
     },
     {
       "path": "tools/sparkpipe_api_stress.py",
@@ -10905,5 +10915,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35363440
+  "total_bytes": 35389805
 }
