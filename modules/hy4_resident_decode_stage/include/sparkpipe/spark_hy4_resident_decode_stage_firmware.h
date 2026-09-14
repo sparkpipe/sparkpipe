@@ -9,17 +9,17 @@
 extern "C" {
 #endif
 
-/* hy4 TP16 resident decode stage: firmware API. One submission executes
- * one decode step (or one prefill frame) as a stream-ordered sequence:
- * per-layer hyper-connection pre -> attention (MLA with learnable
- * sinks, interleaved rope at the token position) -> hc distribute ->
- * hyper-connection pre -> routed experts (top-8 of 256, sigmoid gating
- * with e_score correction bias, shared expert, swiglu clamp 10) ->
- * hc distribute. The lightning indexer feeds sparse token selection on
- * its active layers (0, 1 and every 4th). The final stage collapses
- * the hc streams (hc_head fn/scale/base + weighted reduce), applies
- * output norm and the rank-local lm_head, and argmaxes across ranks
- * through the device collective. */
+
+
+
+
+
+
+
+
+
+
+
 
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCES 64u
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS 64u
@@ -33,15 +33,15 @@ extern "C" {
 	SPARK_HY4_MODEL_EXPERTS_PER_RANK
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_COUNT 2u
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
-/* Weight format codes (mirrored in spark_hy4_stagepack_format.h with
- * _Static_assert equality against the shared stagepack format). */
+
+
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 1u
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 0u
 #define SPARK_HY4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B32 9u
 
-/* Per-layer attention weights (rank-local). All pointers are device
- * addresses published by the pack loader; fp8 planes carry their E8M0
- * group-32 scales adjacent (payload plane, scale plane). */
+
+
+
 typedef struct SparkHy4AttnLayerWeights
 {
 	const void *attn_norm_f32;
@@ -72,9 +72,9 @@ typedef struct SparkHy4AttnLayerWeights
 	const void *index_norm_f32;
 } SparkHy4AttnLayerWeights;
 
-/* Per-layer hyper-connection coefficients. fn is [2*HC, HC*hidden]
- * f32; scale is 2 f32; base is 2*HC f32. The attention branch and the
- * mlp branch each carry one triple. */
+
+
+
 typedef struct SparkHy4HyperWeights
 {
 	const void *fn_f32;
@@ -82,10 +82,10 @@ typedef struct SparkHy4HyperWeights
 	const void *base_f32;
 } SparkHy4HyperWeights;
 
-/* Per-layer mlp weights: dense layer 0 uses the shared-expert planes
- * alone (gate/up/down, fp8+scales); MoE layers add the router, its
- * bias, the routed planes ([16 local experts, ...]) and the shared
- * expert. */
+
+
+
+
 typedef struct SparkHy4MoeWeights
 {
 	const void *mlp_norm_f32;
@@ -116,8 +116,8 @@ typedef struct SparkHy4HeadWeights
 	const void *embedding_bf16;
 } SparkHy4HeadWeights;
 
-/* Per-pipeline-slot device scratch. Sizes derive from the geometry
- * macros; the module allocates and owns these for its lifetime. */
+
+
 typedef struct SparkHy4PipelineSlot
 {
 	void *cuda_stream;
