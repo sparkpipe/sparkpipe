@@ -464,12 +464,12 @@ SparkStatus SparkTpDeviceCollectiveRunRound(
         {
             uint64_t cell_value = 0ull;
             if ( cudaMemcpy(&cell_value,implementation->seq_cell,
-                     sizeof(uint64_t),cudaMemcpyDeviceToHost) != 0 )
+                     sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 )
                 return SPARK_STATUS_IO_ERROR;
             cell_value++;
             round_seq = cell_value;
             if ( cudaMemcpy(implementation->seq_cell,&cell_value,
-                     sizeof(uint64_t),cudaMemcpyHostToDevice) != 0 )
+                     sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 )
                 return SPARK_STATUS_IO_ERROR;
         }
         else
