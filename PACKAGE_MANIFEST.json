@@ -1,5 +1,5 @@
 {
-  "file_count": 2173,
+  "file_count": 2174,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -780,6 +780,11 @@
       "path": "docs/AGENT_LANE_BRIEFS/reports/w3-weightd-2026-08-29.md",
       "sha256": "d130cf56c22597053532e10eecd91860b101910dcf0895519e730ba88ecc316d",
       "size_bytes": 15079
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/wave-acc2-accuracy-2026-09-13.md",
+      "sha256": "9444195ceb44bf47f9151772e83d47af53915e4ffbf53e8f19c3571f4a076828",
+      "size_bytes": 20573
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/wave-b1-stagepack-rebuild-2026-09-12.md",
@@ -8688,8 +8693,8 @@
     },
     {
       "path": "tools/acc_parity_oracle.py",
-      "sha256": "fc005c748079c435cbe529eb94d2d8edc3b373bb95acee044a2f52da2e2603eb",
-      "size_bytes": 19324
+      "sha256": "4e2abb665822eec2297c00973e1993ae45cf590a3a51023c87a4ec1c5fb0c1ee",
+      "size_bytes": 21829
     },
     {
       "path": "tools/adapter_interface_probe.c",
@@ -10870,5 +10875,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 35301027
+  "total_bytes": 35324105
 }
