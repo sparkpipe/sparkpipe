@@ -19,7 +19,7 @@ env \
 	SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS=8 \
 	SPARK_QWEN4_FLASH_TP_DEGREE=8 \
 	"SPARK_QWEN4_FLASH_TP_RANK=$rank" \
-	"SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH=/tmp/t1q3f/libhidden_transport_spark_host_rdma_verbs.so" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH=$HOME/q3ft1_rt/libhidden_transport_spark_host_rdma_verbs.so" \
 	"SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$TP_IDENTIFIER" \
 	"SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=$PORT_BASE" \
 	"SPARK_QWEN4_FLASH_STAGE_TP_HOSTS=$TP_HOSTS" \
@@ -30,8 +30,8 @@ env \
 	"SPARK_WEIGHTD_PACK_SHA256=$sha" \
 	"SPARK_WEIGHTD_EXPERT_POOL_BYTES=$EXPERT_POOL_BYTES" \
 	"SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$SPINE_BUDGET_BYTES" \
-	"SPARK_QWEN4_FLASH_T1_DUMP=/tmp/t1q3f/dump" \
+	"SPARK_QWEN4_FLASH_T1_DUMP=$HOME/q3ft1_rt/dump" \
 	"T1_Q3F_TIMING=$TIMING" \
-	/tmp/t1q3f/t1_q3f_harness "$PROMPT_IDS" "$NEW_TOKENS" > /tmp/t1q3f/harness.log 2>&1 || rc=$?
-grep -q "t1_q3f_harness done" /tmp/t1q3f/harness.log || rc=1
+	$HOME/q3ft1_rt/t1_q3f_harness "$PROMPT_IDS" "$NEW_TOKENS" > $HOME/q3ft1_rt/harness.log 2>&1 || rc=$?
+grep -q "t1_q3f_harness done" $HOME/q3ft1_rt/harness.log || rc=1
 exit "$rc"

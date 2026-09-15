@@ -7,8 +7,8 @@ set -eu
 
 REPO=/Users/mac/q3ft1
 BUILD_NODE=spark7
-SCRATCH=/tmp/t1q3f
-STAGE_DIR=/tmp/t1q3f_stage
+SCRATCH=$HOME/q3ft1_rt
+STAGE_DIR=$HOME/q3ft1_rt_stage
 PROMPTS="$REPO/qualification/t1_reference/qwen4_flash/prompts_qwen4flash.json"
 PORT_BASE=19456
 TP_IDENTIFIER=194561

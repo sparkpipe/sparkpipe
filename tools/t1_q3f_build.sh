@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-: "${T1_STAGE:=/tmp/t1q3f_stage}"
-: "${T1_RUNTIME:=/tmp/t1q3f}"
+: "${T1_STAGE:=$HOME/q3ft1_rt_stage}"
+: "${T1_RUNTIME:=$HOME/q3ft1_rt}"
 cd "$T1_STAGE/tree"
 REPOSITORY_ROOT="$T1_STAGE/tree" MTP_LAYER_COUNT=0 make -C modules/qwen4_flash_resident_decode_stage archive > "$T1_STAGE/make_q4f.log" 2>&1
 REPOSITORY_ROOT="$T1_STAGE/tree" EXPERT_CODEC=nvfp4 \
