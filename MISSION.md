@@ -19,18 +19,25 @@ for 26b); (4) ONE measured B1 tok/s vs the 26b ceiling, then STOP.
 
 Measured anchors: 31b fixtures at lane/wave-refs2 (PR #1017 OPEN)
 MEASURED present, MANIFEST pin: checkpoint gemma-4-31b-it, config
-e967dd38, fixture SHAs cb80dfaa / 831d0252; reference engine validated
-bitwise 0-ulp vs committed anchor kit + publisher HF top-1 exact at
-decode positions 0-1 (REF-PORTS-2 receipt) — 3 engine bugs caught before
-fixture cut (KV u16 readback, missing post_attention_layernorm, k_eq_v
-full-layers-only) MEASURED; 26b packs ACC-2 checkpoint-faithful MEASURED
-(134/134 + 66/134 walks, bitwise f32 rope tables, layer_scalar real);
-gemma4-26b roofline ceiling 230.4 tok/s DERIVED (R-wave ledger); gemma4-31b
-ceiling 15.5 tok/s DERIVED (superseded for this lane); common modules PR
-#998 MERGED (9c7ee3f) MEASURED; weightsd LIVE 16 nodes config-only
-MEASURED per dispatch; SMOKE-MD audit: gemma4-26b NOT found on any
-sparkdata root — path-convention mismatch suspected MEASURED; B1 tok/s:
-NOT YET MEASURED — anything else is ASSUMED and says so.
+e967dd38, fixture SHAs cb80dfaa / 831d0252; OFFLINE GATES PASS MEASURED
+09-15 (verify-manifest exit 0; corrupt-fixture negative control convicts
+with FIRST DIVERGENCE); reference engine extended for the 26b MoE math
+traced from module kernels + stagepack folds MEASURED (code), anchor-tier
+validation PENDING warm reads; 26b packs ACC-2 checkpoint-faithful
+MEASURED — the 2 verified stage2 packs PLACED 09-15 (spark8 sha
+6105b20d..., sparkb sha b1eaa922..., destination==source), 14 packs
+lease-gated; module COMPILES after 3 main-compile fixes MEASURED (commit
+series 2a6e1b1..f0f51ee): shared combine kernels/timer + register-header
+C-guard + validator rewire; GPU validator dataflow tier 28/28 PASS
+MEASURED (runs/t1gemma4/validator_dataflow_28checks.log, spark2) incl.
+router top-8 lowest-index ties + rope tables + keqv; chain tier SIGSEGV
+INSIDE libcuda cuMemcpyDtoH during trivial copies MEASURED 4x (sparka,
+spark2x2) — r3's documented quiet-GPU class, NOT fixed in-lane (one
+diagnostic sync attempt: store clean, crash moved later = driver-class);
+gemma4-26b roofline ceiling 230.4 tok/s DERIVED (R-wave ledger); B1 tok/s
+and T1 serving compare: BLOCKED — publish gate cannot complete under the
+3-tenant co-residency envelope (every node carries 3 GPU tenants
+MEASURED 09-15); warm batch queued behind HY4-T1's CEPH_LEASE MEASURED.
 
 Behavioral rules (binding):
 1. T1 accurate-inference receipt is the default work; nothing precedes it

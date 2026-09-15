@@ -30,13 +30,13 @@ D4. (secondary, standing) Common-code contribution: consume PR #998's shared
 | Result | G1 | G2 | G3 | G4 | G5 | D1-D4 | Verdict |
 |---|---|---|---|---|---|---|---|
 | Retarget 31b→26b absorbed (operator correction); mission files updated |  | + | + |  | + | D3+ | brief corrected before work |
-| 31b fixtures + reference decoder staged from wave-refs2 onto lane/gemma4-t1 |  | + | + |  | + | D3+ | instruments in place |
-| (pending) 26b packs located/placed per TP4 replica law | + | + | + | + | + | D1 | pending |
-| (pending) 26b fixtures regenerated via reference engine |  | + | + |  | + | D3 | pending |
-| (pending) serving bring-up TP4 | + | + | + | + | + | D1 | pending |
-| (pending) T1 compare both prompts | + | + | + |  | + | D1,D3 | pending |
-| (pending) PR lane/gemma4-t1 + receipts |  |  | + |  | + | D4+ | pending |
-| (pending) ONE measured B1 tok/s | + |  | + |  |  | D2 | pending |
+| 31b fixtures + reference decoder staged; offline gates PASS + negative control convicts (exit codes receipted) |  | + | + |  | + | D3+ | instrument sound |
+| Reference engine extended for 26b MoE from module-kernel trace; 26b header+prompts pinned |  | + | + |  | + | D3+ | fixture-grade path prepared |
+| 2 ACC-2-verified stage2 packs located + placed per replica law (spark8/sparkb, dest sha == source sha) | + | + | + | + | + | D1+ | reuse-first honored |
+| 3 main-compile gaps fixed (shared combine kernels, mesh-kernels timer, register-header C-guard, validator rewire to shared launchers) |  | + | + | + | + | D4+ | family publishable again; donor-symbol class flagged fleet-wide |
+| GPU validator dataflow tier 28/28 PASS (receipt) incl. MoE router + rope tables | + | + | + |  | + | D1+,D3+ | kernel tier green on the new archive |
+| Chain-tier SIGSEGV inside libcuda 4x under 3-tenant co-residency (gdb signature receipted) — pre-existing r3 quiet-GPU class, one in-lane diagnostic attempt (store clean) | − |  | + | − |  | D1− | publish gate BLOCKED; node reboot/lane drain = operator class |
+| Serving bring-up, T1 compare, B1 tok/s: NOT RUN (blocked above); warm batch queued behind HY4-T1 lease | − |  | + |  |  | D1−,D2−,D3− | honest blocked state, resume path scripted (tools/gemma4_t1_lease_batch.sh + node trees) |
 
 ## Update rule
 
