@@ -1,5 +1,5 @@
 {
-  "file_count": 2583,
+  "file_count": 2584,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -1105,6 +1105,11 @@
       "path": "docs/FLEET_RELEASE.md",
       "sha256": "c19e8ba214d72486ebe5b9959eafcf5940902c1a52b7af2d3bf3fad31699a258",
       "size_bytes": 7856
+    },
+    {
+      "path": "docs/FLEET_RUNBOOK.md",
+      "sha256": "c3885faabc8a60e1b87ea2050f1a6c8a480b789fb35b076678db206bf52d3d36",
+      "size_bytes": 10401
     },
     {
       "path": "docs/FLEET_STARTUP_PROTOCOL.md",
@@ -12920,5 +12925,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 52515964
+  "total_bytes": 52526365
 }
