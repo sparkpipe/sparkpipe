@@ -24,12 +24,12 @@ extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
 extern int cudaMemcpy(void *destination,const void *source,
     size_t bytes,int kind);
 extern int cudaMalloc(void **address,size_t bytes);
-extern int SparkGlm5NextLaunchMeshPublish(void *stream,
+extern int SparkTpDeviceCollectiveMeshPublish(void *stream,
     volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
     uint64_t slot_index);
-extern int SparkGlm5NextLaunchMeshGuard(void *stream,
+extern int SparkTpDeviceCollectiveMeshGuard(void *stream,
     volatile void *error_word,void *output);
-extern int SparkGlm5NextLaunchMeshWait(void *stream,
+extern int SparkTpDeviceCollectiveMeshWait(void *stream,
     volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
     uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
     void *error_word,unsigned long long deadline_ns);
@@ -466,14 +466,14 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                 SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,
                 submission->cuda_stream) != 0 )
             return SPARK_STATUS_IO_ERROR;
-        if ( SparkGlm5NextLaunchMeshPublish(submission->cuda_stream,
+        if ( SparkTpDeviceCollectiveMeshPublish(submission->cuda_stream,
                 implementation->mesh_buffer +
                 SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band_index,
                     implementation->tp_rank),
                 implementation->seq_cell,implementation->round_seq_device,
                 bytes,slot_index) != 0 )
             return SPARK_STATUS_IO_ERROR;
-        if ( SparkGlm5NextLaunchMeshWait(submission->cuda_stream,
+        if ( SparkTpDeviceCollectiveMeshWait(submission->cuda_stream,
                 implementation->mesh_buffer + implementation->band_base,
                 implementation->slot_bytes,
                 implementation->round_seq_device,
@@ -725,7 +725,7 @@ combine_done:
     if ( operation_kind ==
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 &&
          implementation->error_word != 0 &&
-         SparkGlm5NextLaunchMeshGuard(submission->cuda_stream,
+         SparkTpDeviceCollectiveMeshGuard(submission->cuda_stream,
              implementation->error_word,submission->full_device) != 0 )
         return(SPARK_STATUS_IO_ERROR);
     if ( implementation->capture_armed == 0u )

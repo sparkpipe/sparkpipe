@@ -7,6 +7,31 @@
 #include "modules/ling_resident_decode_stage/source/cuda/unity.cu"
 #include "spark_ling_resident_decode_stage_internal.h"
 
+#include "inference/kernels/mesh.cuh"
+
+extern "C" cudaError_t SparkTpDeviceCollectiveMeshPublish(cudaStream_t stream,
+	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
+	uint64_t slot_index)
+{
+	return(LmMeshLaunchPublish(stream,entry,seq_cell,round_seq,bytes,
+		slot_index));
+}
+
+extern "C" cudaError_t SparkTpDeviceCollectiveMeshGuard(cudaStream_t stream,
+	volatile void *error_word,void *output)
+{
+	return(LmMeshLaunchGuard(stream,error_word,output));
+}
+
+extern "C" cudaError_t SparkTpDeviceCollectiveMeshWait(cudaStream_t stream,
+	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+	uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
+	void *error_word,unsigned long long deadline_ns)
+{
+	return(LmMeshLaunchWait(stream,band_base,slot_bytes,round_seq,
+		slots_per_rank,ring,rank,degree,error_word,deadline_ns));
+}
+
 #define SPARK_LING_CUDA_THREADS 256u
 
 __global__ static void SparkLingBoundaryLoadKernel(

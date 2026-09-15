@@ -163,7 +163,7 @@ static SparkStatus SparkLingModuleConfigure(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	if ( context->stage_count != SPARK_LING_RESIDENT_DECODE_STAGE_STAGE_COUNT || context->stage_index >= context->stage_count || context->first_layer_index != SparkLingResidentDecodeStageFirstLayer(context->stage_index) || context->layer_count != SPARK_LING_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != LING_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_LING_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_LING_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
+	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	if ( context->tp_degree != 1u && (SPARK_LING_MODEL_HEAD_COUNT % context->tp_degree != 0u || SPARK_LING_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_LING_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_LING_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1233,6 +1233,141 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 		state->execution_row_capacity,SPARK_LING_MODEL_HEAD_COUNT / state->tp_degree);
 }
 
+static int SparkLingT1Enabled(void)
+{
+	static int t1_enabled = -1;
+	if ( t1_enabled < 0 )
+		t1_enabled = getenv("SPARK_LING_T1") != 0 ? 1 : 0;
+	return(t1_enabled);
+}
+
+static float SparkLingT1Bf16Float(uint16_t word)
+{
+	uint32_t bits = (uint32_t)word << 16;
+	float value;
+	memcpy(&value,&bits,sizeof(value));
+	return(value);
+}
+
+static uint16_t SparkLingT1Bf16Round(float value)
+{
+	uint32_t bits;
+	memcpy(&bits,&value,sizeof(bits));
+	return((uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16));
+}
+
+static void SparkLingT1Wave(const SparkLingCudaWave *wave)
+{
+	uint32_t i;
+	if ( SparkLingT1Enabled() == 0 || wave == 0 || wave->tp_rank != 0u ||
+	    wave->row_count == 0u || wave->host_resident_slots == 0 ||
+	    wave->host_token_ids == 0 || wave->host_positions == 0 )
+		return;
+	fprintf(stderr,"LNG-T1 wave seq%u rows=%u",wave->host_resident_slots[0],wave->row_count);
+	for ( i = 0u; i < wave->row_count; i++ )
+		fprintf(stderr," pos%u=%u",wave->host_positions[i],wave->host_token_ids[i]);
+	fputc('\n',stderr);
+}
+
+static void SparkLingT1Stream(SparkLingTpChain *chain,uint32_t layer)
+{
+	static uint16_t *rows_host = 0;
+	static uint32_t rows_host_capacity = 0;
+	uint32_t row;
+	uint32_t i;
+	uint64_t row_bytes;
+	if ( SparkLingT1Enabled() == 0 || chain->wave.tp_rank != 0u )
+		return;
+	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+		return;
+	row_bytes = (uint64_t)chain->wave_rows * SPARK_LING_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	if ( rows_host_capacity < chain->wave_rows )
+	{
+		free(rows_host);
+		rows_host = (uint16_t *)malloc(row_bytes * 2u);
+		rows_host_capacity = rows_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( rows_host == 0 ||
+	    cudaMemcpy(rows_host,chain->slot->hidden_bf16,row_bytes,cudaMemcpyDeviceToHost) != cudaSuccess ||
+	    cudaMemcpy(rows_host + (uint64_t)chain->wave_rows * SPARK_LING_MODEL_HIDDEN_DIMENSION,chain->slot->attention_out_bf16,row_bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for ( row = 0u; row < chain->wave_rows; row++ )
+	{
+		uint16_t *hidden = rows_host + (uint64_t)row * SPARK_LING_MODEL_HIDDEN_DIMENSION;
+		uint16_t *delta = rows_host + ((uint64_t)chain->wave_rows + row) * SPARK_LING_MODEL_HIDDEN_DIMENSION;
+		fprintf(stderr,"LNG-T1 stream L%u pos%u",layer,chain->wave.host_positions[row]);
+		for ( i = 0u; i < SPARK_LING_MODEL_HIDDEN_DIMENSION; i++ )
+			fprintf(stderr," %04x",SparkLingT1Bf16Round(SparkLingT1Bf16Float(hidden[i]) +
+			    SparkLingT1Bf16Float(delta[i])));
+		fputc('\n',stderr);
+	}
+}
+
+static void SparkLingT1Route(SparkLingTpChain *chain,uint32_t layer)
+{
+	static uint32_t *ids_host = 0;
+	static float *weights_host = 0;
+	static uint32_t route_capacity = 0;
+	uint32_t row;
+	uint32_t k;
+	uint64_t bytes;
+	if ( SparkLingT1Enabled() == 0 || chain->wave.tp_rank != 0u ||
+	    layer < SPARK_LING_MODEL_FIRST_ROUTED_LAYER )
+		return;
+	bytes = (uint64_t)chain->wave_rows * SPARK_LING_MODEL_MOE_TOP_K * sizeof(uint32_t);
+	if ( route_capacity < chain->wave_rows )
+	{
+		free(ids_host);
+		free(weights_host);
+		ids_host = (uint32_t *)malloc(bytes);
+		weights_host = (float *)malloc(bytes);
+		route_capacity = ids_host != 0 && weights_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( ids_host == 0 || weights_host == 0 ||
+	    cudaMemcpy(ids_host,chain->slot->route_expert,bytes,cudaMemcpyDeviceToHost) != cudaSuccess ||
+	    cudaMemcpy(weights_host,chain->slot->route_weight,(uint64_t)chain->wave_rows * SPARK_LING_MODEL_MOE_TOP_K * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for ( row = 0u; row < chain->wave_rows; row++ )
+	{
+		fprintf(stderr,"LNG-T1 route L%u pos%u ids",layer,chain->wave.host_positions[row]);
+		for ( k = 0u; k < SPARK_LING_MODEL_MOE_TOP_K; k++ )
+			fprintf(stderr," %u",ids_host[row * SPARK_LING_MODEL_MOE_TOP_K + k]);
+		fprintf(stderr," weights");
+		for ( k = 0u; k < SPARK_LING_MODEL_MOE_TOP_K; k++ )
+			fprintf(stderr," %08x",
+			    ((const uint32_t *)weights_host)[row * SPARK_LING_MODEL_MOE_TOP_K + k]);
+		fputc('\n',stderr);
+	}
+}
+
+static void SparkLingT1Head(SparkLingTpChain *chain)
+{
+	static uint32_t *tokens_host = 0;
+	static float *scores_host = 0;
+	static uint32_t head_capacity = 0;
+	uint32_t i;
+	if ( SparkLingT1Enabled() == 0 || chain->wave.tp_rank != 0u )
+		return;
+	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+		return;
+	if ( head_capacity < chain->wave_rows )
+	{
+		free(tokens_host);
+		free(scores_host);
+		tokens_host = (uint32_t *)malloc((uint64_t)chain->wave_rows * sizeof(uint32_t));
+		scores_host = (float *)malloc((uint64_t)chain->wave_rows * sizeof(float));
+		head_capacity = tokens_host != 0 && scores_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( tokens_host == 0 || scores_host == 0 ||
+	    cudaMemcpy(tokens_host,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+	    cudaMemcpy(scores_host,chain->slot->output_score,(uint64_t)chain->wave_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for ( i = 0u; i < chain->wave_rows; i++ )
+		fprintf(stderr,"LNG-T1 head pos%u token %u score_bits %08x\n",
+		    chain->wave.host_positions[i],tokens_host[i],
+		    ((const uint32_t *)scores_host)[i]);
+}
+
 static SparkStatus SparkLingModuleCombineBf16(
 	void *combine_context,
 	void *destination_device,
@@ -1435,6 +1570,7 @@ static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint
 static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
 {
 	SparkLingBuildWave(chain);
+	SparkLingT1Wave(&chain->wave);
 	if ( SparkLingLaunchCudaWaveBegin(&chain->wave) != 0 )
 	{
 		SparkLingTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1475,6 +1611,7 @@ static void SparkLingTpChainStageReduceHead(SparkLingTpChain *chain)
 		SparkLingTpChainFail(chain,launch_status);
 		return;
 	}
+	SparkLingT1Head(chain);
 	if ( chain->next_wave_row < chain->batch->row_count )
 	{
 		next_wave = SparkLingRoundMajorWaveRows(chain->batch,chain->next_wave_row);
@@ -1539,6 +1676,8 @@ static void SparkLingTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkLingTpChainRunLayerStage(chain,SPARK_LING_CHAIN_STAGE_REDUCE_MLP);
 		return;
 	case SPARK_LING_CHAIN_STAGE_REDUCE_MLP:
+		SparkLingT1Route(chain,chain->wave.first_layer_index + chain->next_layer);
+		SparkLingT1Stream(chain,chain->wave.first_layer_index + chain->next_layer);
 		chain->next_layer++;
 		SparkLingTpChainTransition(chain,chain->next_layer < chain->wave.layer_count
 			? SPARK_LING_CHAIN_STAGE_ATTENTION : SPARK_LING_CHAIN_STAGE_HEAD);
