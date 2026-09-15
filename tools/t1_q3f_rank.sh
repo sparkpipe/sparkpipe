@@ -9,7 +9,7 @@ rc=0
 sudo -n systemd-run --scope -q \
 	-p MemoryMax=4096M \
 	-p MemoryHigh=2800M \
-	-p LimitMEMLOCK=infinity \
+	-p LimitMEMLOCK=17179869184 \
 	--uid="$USER" --gid="$(id -gn)" \
 	env \
 	SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION=1 \
