@@ -29,4 +29,5 @@ nvcc -std=c++17 -O3 -arch=sm_121a \
 		exit 1
 	}
 cp build/libhidden_transport_spark_host_rdma_verbs.so "$T1_RUNTIME/"
-ls -la "$T1_RUNTIME/t1_q3f_harness" "$T1_RUNTIME/libhidden_transport_spark_host_rdma_verbs.so"
+cp "$T1_RUNTIME/t1_q3f_harness" "$T1_RUNTIME/libhidden_transport_spark_host_rdma_verbs.so" "$T1_STAGE/"
+ls -la "$T1_STAGE/t1_q3f_harness" "$T1_STAGE/libhidden_transport_spark_host_rdma_verbs.so"
