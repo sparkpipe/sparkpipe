@@ -4,7 +4,7 @@ rank=$1
 pack="$HOME/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank$(printf '%02d' $rank).spstage"
 [ -f "$pack" ] || pack="$HOME/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank$rank.spstage"
 sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['output_sha256'])")
-. "$1"
+. "$2"
 rc=0
 sudo -n /usr/local/sbin/sparkcap env \
 	SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION=1 \
