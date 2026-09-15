@@ -6,12 +6,8 @@ pack="$HOME/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank$(printf '%
 sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['output_sha256'])")
 . "$2"
 rc=0
-sudo -n systemd-run --scope -q \
-	-p MemoryMax=4096M \
-	-p MemoryHigh=2800M \
-	-p LimitMEMLOCK=17179869184 \
-	--uid="$USER" --gid="$(id -gn)" \
-	env \
+ulimit -l unlimited 2>/dev/null || true
+env \
 	SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION=1 \
 	"SPARK_QWEN4_FLASH_STAGE_PACK_PATH=$pack" \
 	SPARK_QWEN4_FLASH_STAGE_COUNT=1 \
