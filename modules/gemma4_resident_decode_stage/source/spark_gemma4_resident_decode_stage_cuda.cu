@@ -372,3 +372,186 @@ extern "C" cudaError_t SparkGemma4ConfigureCudaKernels(void)
 		cudaFuncAttributeMaxDynamicSharedMemorySize,
 		(int)(widest * sizeof(float))));
 }
+
+static __device__ __forceinline__ float2 SparkGemma4CombineLoadBf16Pair(const void *base,uint64_t element)
+{
+	uint32_t packed = ((const uint32_t *)base)[element];
+	float2 pair;
+	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
+	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
+	return(pair);
+}
+
+static __device__ __forceinline__ void SparkGemma4CombineStoreBf16Pair(void *base,uint64_t element,float x,float y)
+{
+	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
+		(__float_as_uint(x) >> 16u);
+	((uint32_t *)base)[element] = packed;
+}
+
+struct SparkGemma4CombineRankSources
+{
+	const void *pointer[16u];
+};
+
+static __global__ void SparkGemma4CombineSumRanksF32Kernel(
+    void *destination_bf16,
+    SparkGemma4CombineRankSources sources,
+    uint32_t source_count,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 acc,v;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		uint32_t source;
+		acc.x = 0.0f;
+		acc.y = 0.0f;
+		for ( source = 0u; source < source_count; source++ )
+		{
+			v = SparkGemma4CombineLoadBf16Pair(sources.pointer[source],pair);
+			acc.x += v.x;
+			acc.y += v.y;
+		}
+		SparkGemma4CombineStoreBf16Pair(destination_bf16,pair,acc.x,acc.y);
+	}
+}
+
+static __global__ void SparkGemma4CombineAccumAddKernel(
+	void *destination_bf16,
+	const void *source_bf16,
+	uint32_t row_count,
+	uint32_t width)
+{
+	uint32_t row = blockIdx.x,element;
+	uint64_t offset = ((uint64_t)row * width) >> 1u;
+	float2 destination_pair,source_pair;
+	if ( row >= row_count )
+		return;
+	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
+	{
+		destination_pair = SparkGemma4CombineLoadBf16Pair(destination_bf16,offset + element);
+		source_pair = SparkGemma4CombineLoadBf16Pair(source_bf16,offset + element);
+		SparkGemma4CombineStoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
+	}
+}
+
+static __global__ void SparkGemma4CombineSeedF32Kernel(
+    float *destination_f32,
+    const void *source_a_bf16,
+    const void *source_b_bf16,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 a,b;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		a = SparkGemma4CombineLoadBf16Pair(source_a_bf16,pair);
+		b = SparkGemma4CombineLoadBf16Pair(source_b_bf16,pair);
+		destination_f32[2u * pair] = a.x + b.x;
+		destination_f32[2u * pair + 1u] = a.y + b.y;
+	}
+}
+
+static __global__ void SparkGemma4CombineAddF32Kernel(
+    float *destination_f32,
+    const void *source_bf16,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 b;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		b = SparkGemma4CombineLoadBf16Pair(source_bf16,pair);
+		destination_f32[2u * pair] += b.x;
+		destination_f32[2u * pair + 1u] += b.y;
+	}
+}
+
+static __global__ void SparkGemma4CombineRoundF32Kernel(
+    void *destination_bf16,
+    const float *source_f32,
+    uint32_t pair_count)
+{
+	uint32_t pair;
+	float2 v;
+	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
+	{
+		v.x = source_f32[2u * pair];
+		v.y = source_f32[2u * pair + 1u];
+		SparkGemma4CombineStoreBf16Pair(destination_bf16,pair,v.x,v.y);
+	}
+}
+
+static __global__ void SparkGemma4CombineAccumU64MaxKernel(
+	uint64_t *destination,
+	const uint64_t *source,
+	uint32_t element_count)
+{
+	uint32_t element;
+	element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( element < element_count && source[element] > destination[element] )
+		destination[element] = source[element];
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,
+    void *destination,const void *const *sources,uint32_t source_count,
+    uint32_t element_count)
+{
+	SparkGemma4CombineRankSources by_value;
+	uint32_t index;
+	if ( destination == 0 || sources == 0 || source_count == 0u ||
+	     source_count > 16u || element_count == 0u )
+		return(cudaErrorInvalidValue);
+	for ( index = 0u; index < source_count; index++ )
+		by_value.pointer[index] = sources[index];
+	{
+		dim3 grid;
+		uint32_t pairs = (element_count + 1u) / 2u;
+		uint32_t rows = (pairs + 255u) / 256u;
+		grid = dim3(rows < 1u ? 1u : rows,1u,1u);
+		SparkGemma4CombineSumRanksF32Kernel<<<grid,256u,0u,stream>>>(
+		    destination,by_value,source_count,pairs);
+	}
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,
+    float *destination,const void *a,const void *b,uint32_t element_count)
+{
+	SparkGemma4CombineSeedF32Kernel<<<1,256u,0u,stream>>>(
+	    destination,a,b,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,
+    float *destination,const void *b,uint32_t element_count)
+{
+	SparkGemma4CombineAddF32Kernel<<<1,256u,0u,stream>>>(
+	    destination,b,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,
+    void *destination,const float *source,uint32_t element_count)
+{
+	SparkGemma4CombineRoundF32Kernel<<<1,256u,0u,stream>>>(
+	    destination,source,(element_count + 1u) / 2u);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
+{
+	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
+		return(cudaErrorInvalidValue);
+	SparkGemma4CombineAccumAddKernel<<<row_count,256u,0u,stream>>>(destination_bf16,source_bf16,row_count,width);
+	return(cudaPeekAtLastError());
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+{
+	if ( destination == 0 || source == 0 || element_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkGemma4CombineAccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,stream>>>(destination,source,element_count);
+	return(cudaPeekAtLastError());
+}
