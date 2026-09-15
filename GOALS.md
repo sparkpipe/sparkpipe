@@ -27,9 +27,14 @@ D4. (secondary, standing) Common-code contribution: consume the T1 instrument
 
 | Result | G1 | G2 | G3 | G4 | G5 | D1-D4 | Verdict |
 |---|---|---|---|---|---|---|---|
-| (pending: fixture port committed) | | | | | | | |
-| (pending: serving bring-up verdict) | | | | | | | |
-| (pending: T1 verdict + receipt PR) | | | | | | | |
+| Reference engine + llm_defines pin committed (3396cde) | | + | | | + | D1+,D4+ | first fixture-grade glm53full reference; donor-duty review fed the instrument |
+| Asset identity: packs recipe-digest-match glm-5.3-fp8 | | + | + | | + | D1+ | t1-g53 lesson applied pre-emptively, fixtures pinned to the true snapshot |
+| Mesh-hook cross-lane finding (driver links broken for every family but glm5_next) | | | | + | + | D4+ | coredev item flagged; verbatim provider unblocks glm52 |
+| Firmware json revision repinned (6fbbcb33) | | + | + | | + | D1+ | asset-identity defect class fixed at a third site |
+| Window 1: bring-up FAIL clean (pack revision gate) | | + | | | | D1 | defect enumerated, zero GPU residue |
+| Window 2-3: rank0 READY full-init; ranks≥1 mesh-register wall | + | + | + | + | + | D1,D2-pending | first-ever glm53full serving rank; blocker routed with evidence |
+| (pending: fixtures committed) | | | | | | | |
+| (pending: T1 verdict) | | | | | | | |
 | (pending: measured B1 tok/s + WS) | | | | | | | |
 
 Update rule: every significant event appends a vector row and touches
