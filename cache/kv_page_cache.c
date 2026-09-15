@@ -1200,8 +1200,21 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 		owner = &transactions->lanes[request->cache_lanes[index].resident_sequence_slot];
 		if ( owner->phase != phase )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
-		if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+        if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
+        {
+            fprintf(stderr,
+                "KV-MATCH-FAIL slot=%u phase=%u owner_phase=%u req_id=%llu owner_req=%llu seq=%llu owner_seq=%llu pos=%llu owner_pos=%llu\n",
+                request->cache_lanes[index].resident_sequence_slot,
+                phase,
+                (unsigned)owner->phase,
+                (unsigned long long)request->request_id,
+                (unsigned long long)owner->request.request_id,
+                (unsigned long long)request->cache_lanes[index].sequence_id,
+                (unsigned long long)owner->lane.sequence_id,
+                (unsigned long long)request->cache_lanes[index].sequence_position,
+                (unsigned long long)owner->lane.sequence_position);
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+        }
 	}
 	return(SPARK_STATUS_OK);
 }
