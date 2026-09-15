@@ -8,6 +8,14 @@
 
 #define SPARK_GLM52_CUDA_THREADS 256u
 
+extern "C" int32_t SparkGlm52T1Enabled(void)
+{
+	static int32_t t1_enabled = -1;
+	if ( t1_enabled < 0 )
+		t1_enabled = getenv("SPARK_GLM52_T1") != 0 ? 1 : 0;
+	return(t1_enabled);
+}
+
 __global__ static void SparkGlm52BoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *hidden,
@@ -465,7 +473,8 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		uint32_t rank_offset;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
+		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
+			SparkGlm52T1Enabled() == 0 )
 			status = Glm52HeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
 		else
 			status = Glm52HeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
