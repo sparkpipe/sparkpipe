@@ -4,7 +4,7 @@ set -eu
 : "${T1_RUNTIME:=/tmp/t1q3f}"
 cd "$T1_STAGE/tree"
 REPOSITORY_ROOT="$T1_STAGE/tree" MTP_LAYER_COUNT=0 make -C modules/qwen4_flash_resident_decode_stage archive > "$T1_STAGE/make_q4f.log" 2>&1
-make build/libsparkpipe_core.a build/libhidden_transport_spark_host_rdma_verbs.so > "$T1_STAGE/make_rest.log" 2>&1
+make build/libsparkpipe_core.a build/libsparkpipe_runtime.a build/libhidden_transport_spark_host_rdma_verbs.so > "$T1_STAGE/make_rest.log" 2>&1
 ARCHIVE=$(find build -name "libqwen4_flash_resident_decode_stage.a" | head -1)
 [ -n "$ARCHIVE" ] || { echo "module archive missing" >&2; exit 1; }
 nvcc -std=c++17 -O3 -arch=sm_121a \
@@ -15,6 +15,7 @@ nvcc -std=c++17 -O3 -arch=sm_121a \
 	-DSPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT=0u \
 	tools/t1_q3f_harness.c \
 	"$ARCHIVE" \
+	build/libsparkpipe_runtime.a \
 	build/libsparkpipe_core.a \
 	-L/usr/local/cuda/lib64 -lcudart -lcuda -o "$T1_RUNTIME/t1_q3f_harness" 2> "$T1_STAGE/make_harness.log" || {
 		tail -20 "$T1_STAGE/make_harness.log" >&2
