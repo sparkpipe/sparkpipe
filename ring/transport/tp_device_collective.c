@@ -64,6 +64,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t round_wave_limit;
     uint64_t chain_key;
     uint64_t chain_epoch;
+    uint64_t chain_request_id;
     uint64_t round_index;
     uint64_t cancel_epoch;
     SparkTpDeviceCollectiveStagingSet
@@ -399,18 +400,25 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         uint64_t base;
         uint64_t tag = request_id &
             (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull);
-        if ( (high >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) >
-             SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
+        if ( request_id == implementation->chain_request_id &&
+             implementation->base_seen != 0ull )
+            base = implementation->base_seen;
+        else
         {
-            fprintf(stderr,
-                "CKEY-RESET rank=0 cell=%llu stride_bits=%u mask=%llu\n",
-                (unsigned long long)high,
-                (unsigned)SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS,
-                (unsigned long long)SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
-            high = 0ull;
+            if ( (high >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) >
+                 SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
+            {
+                fprintf(stderr,
+                    "CKEY-RESET rank=0 cell=%llu stride_bits=%u mask=%llu\n",
+                    (unsigned long long)high,
+                    (unsigned)SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS,
+                    (unsigned long long)SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+                high = 0ull;
+            }
+            base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
+                SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
+            implementation->chain_request_id = request_id;
         }
-        base = ((high / SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE) + 1ull) *
-            SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
         *base_cell = base | tag;
         __sync_synchronize();
         (void)SparkWeightdClientMeshBroadcast(
