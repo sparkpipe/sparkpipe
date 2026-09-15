@@ -9,7 +9,7 @@
 static __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs(void)
 {
 	unsigned long long ns;
-	asm volatile("mov.u64 %%nsec, %%globaltimer;" : "=l"(ns));
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(ns));
 	return ns;
 }
 
