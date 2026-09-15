@@ -1,0 +1,31 @@
+{
+  "checkpoint": {
+    "config_sha256": "6c1bd3c25e8b2db7ed954bd08291fa706ab2596a16b2cbab397ca75d44979c3b",
+    "index_sha256": "c8cb50abb3731de0a361aa477a4b04988981bfff0935bff357658d55bfa454c1",
+    "path": "/home/spark1/refs2_ckpt/ling-3.0-flash"
+  },
+  "defines_config_mismatches": [],
+  "family": "ling",
+  "fixtures": {
+    "capital_of_france.t1r": {
+      "bytes": 320018,
+      "sha256": "394b74a575c810c08132adece3079393f93436454ca0a396a6b6c1b87b2fb6ff"
+    },
+    "count_up.t1r": {
+      "bytes": 425851,
+      "sha256": "5fdb371f767a25dfaeb86ca272ffbe8c85673cf1545e56e7816551a3d8eccbff"
+    }
+  },
+  "generated_utc": "2026-09-14T20:30:48Z",
+  "generator": "t1_reference_decoder.py",
+  "host": "spark1",
+  "llm_defines_sha256": "637d284cc5d40ff5df0227b3caf0acf38656415fa31774f0176bc63d3b0d3f81",
+  "numpy_version": "1.26.4",
+  "prompts_sha256": "8bb6ae0d0224df31882618a79f72259a3cf4f27b30c4d70465cd62c3a0a4a754",
+  "python_version": "3.12.3",
+  "threading_env": {
+    "MKL_NUM_THREADS": null,
+    "OMP_NUM_THREADS": "20",
+    "OPENBLAS_NUM_THREADS": null
+  }
+}
