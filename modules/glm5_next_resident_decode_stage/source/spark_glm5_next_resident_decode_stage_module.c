@@ -591,7 +591,24 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,UINT64_C(8589934592),&spine_budget);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+	{
+		uint32_t attach_attempt;
+		for ( attach_attempt = 1u; attach_attempt <= 30u; attach_attempt++ )
+		{
+			status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+			if ( status == SPARK_STATUS_OK )
+				break;
+			fprintf(stderr,
+				"LAZY-ATTACH-RETRY n=%u status=%d\n",
+				attach_attempt,(int32_t)status);
+			{
+				struct timespec attach_pause =
+					{ (attach_attempt % 10u) == 0u ? 1u : 0u,
+					  (attach_attempt % 10u) == 0u ? 0u : 250000000u };
+				nanosleep(&attach_pause,0);
+			}
+		}
+	}
 	if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 &&
 	     state->lazy_pack->map != 0 )
 	{
