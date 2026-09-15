@@ -478,10 +478,10 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
             if ( *cancel_cell != implementation->cancel_seen )
             {
                 fprintf(stderr,
-                    "CKEY-CANCEL rank=%u cell=%llu tag=%llu\n",
+                    "CKEY-CANCEL rank=%u cell=%llu entry=%llu\n",
                     implementation->tp_rank,
                     (unsigned long long)*base_cell,
-                    (unsigned long long)tag);
+                    (unsigned long long)cell_entry);
                 return SPARK_STATUS_BUSY;
             }
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
