@@ -7,7 +7,7 @@ ROOT_NAME="${3:?runtime root name under ~/sparkdata and the hub release dir}"
 REVISION="${4:?model source revision}"
 CONTRACT="${5:?contract json path}"
 BRANCH="${6:-${G5_BRANCH:-origin/lane/glm53-p0}}"
-TREE="$HOME/sparkpipe-build"
+TREE="${SPARKPIPE_BUILD_TREE:-$HOME/sparkpipe-build}"
 FIRMWARE="${FIRMWARE_JSON:-examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json}"
 
 cd "$TREE"
