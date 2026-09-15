@@ -113,6 +113,18 @@ typedef struct SparkQwen4FlashModuleSlot
 	uint32_t *host_frame_error;
 } SparkQwen4FlashModuleSlot;
 
+typedef struct SparkQwen4FlashModuleT1Dump
+{
+	uint32_t enable;
+	char directory[256];
+	uint64_t position;
+	uint16_t *stage_hidden;
+	uint32_t *stage_route_ids;
+	float *stage_route_weights;
+	float *stage_score;
+	float *score_device;
+} SparkQwen4FlashModuleT1Dump;
+
 typedef struct SparkQwen4FlashModuleState
 {
 	SparkStageModuleLedger ledger;
@@ -226,6 +238,7 @@ typedef struct SparkQwen4FlashModuleState
 	uint32_t kv_evict_cursor;
 	void *kv_block_staging;
 	void *kv_gdn_staging;
+	SparkQwen4FlashModuleT1Dump t1;
 } SparkQwen4FlashModuleState;
 
 static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *state)
@@ -1010,6 +1023,7 @@ static void SparkQwen4FlashModuleKvMarkWritten(SparkQwen4FlashModuleState *state
 }
 
 extern cudaError_t SparkQwen4FlashLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
+extern cudaError_t SparkQwen4FlashLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension, uint32_t vocab_base, uint32_t vocab_rows);
 extern cudaError_t SparkQwen4FlashLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen4FlashLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen4FlashLaunchHeadScreenedArgmaxScore(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *scratch_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count);
@@ -1297,6 +1311,27 @@ static SparkStatus SparkQwen4FlashModulePrepare(
 	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int)status);
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_QWEN4_FLASH_T1_DUMP") != 0 )
+	{
+		const char *t1_directory;
+		status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_T1_DUMP",&t1_directory);
+		if ( status == SPARK_STATUS_OK && snprintf(state->t1.directory,sizeof(state->t1.directory),"%s",t1_directory) >= (int)sizeof(state->t1.directory) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( status == SPARK_STATUS_OK )
+		{
+			state->t1.enable = 1u;
+			state->t1.stage_hidden = (uint16_t *)malloc(SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
+			state->t1.stage_route_ids = (uint32_t *)malloc(SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t));
+			state->t1.stage_route_weights = (float *)malloc(SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(float));
+			state->t1.stage_score = (float *)malloc(sizeof(float));
+			if ( state->t1.stage_hidden == 0 || state->t1.stage_route_ids == 0 ||
+				state->t1.stage_route_weights == 0 || state->t1.stage_score == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			if ( cudaMalloc((void **)&state->t1.score_device,sizeof(float)) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			fprintf(stderr,"%s t1_dump_enabled dir=%s rank=%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->t1.directory,state->tp_rank);
+		}
+	}
 	SPARK_RETURN(status);
 }
 
@@ -1393,6 +1428,12 @@ static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
 	SparkStageKvClientClose(&state->kv_client);
 	free(state->ple_prev_context_u32);
+	free(state->t1.stage_hidden);
+	free(state->t1.stage_route_ids);
+	free(state->t1.stage_route_weights);
+	free(state->t1.stage_score);
+	if ( state->t1.score_device != 0 )
+		cudaFree(state->t1.score_device);
 	{
 		uint32_t slot_index;
 		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
@@ -1614,6 +1655,98 @@ static cudaError_t SparkQwen4FlashModuleRunGdnCoreDecode(SparkQwen4FlashModuleSt
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchGdnStep(stream,slot->conv_out_bf16,slot->log_decay_f32,slot->beta_f32,&pool,slot->core_bf16,slot->row_lane_indices,rows,ordinal,state->tp_degree);
 	return(error);
+}
+
+static SparkStatus SparkQwen4FlashModuleT1WriteFile(const SparkQwen4FlashModuleT1Dump *t1,const char *name,const void *data,size_t bytes)
+{
+	char path[512];
+	FILE *file;
+	size_t written;
+	if ( snprintf(path,sizeof(path),"%s/%s",t1->directory,name) >= (int)sizeof(path) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	file = fopen(path,"wb");
+	if ( file == 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	written = fwrite(data,1,bytes,file);
+	if ( written != bytes )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	if ( fclose(file) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen4FlashModuleT1DumpLayer(SparkQwen4FlashModuleState *state,SparkQwen4FlashModuleSlot *slot,uint32_t layer)
+{
+	char name[64];
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaError_t error;
+	SparkStatus status;
+	if ( state->t1.enable == 0u || state->tp_rank != 0u )
+		return(SPARK_STATUS_OK);
+	error = cudaMemcpyAsync(state->t1.stage_hidden,slot->hidden_bf16,SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES,cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(state->t1.stage_route_ids,slot->moe_indices_u32,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(state->t1.stage_route_weights,slot->moe_weights_f32,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(float),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"t1_dump_layer_copy"));
+	snprintf(name,sizeof(name),"pos%04llu_layer%04u_streams.u16",(unsigned long long)state->t1.position,layer);
+	status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,state->t1.stage_hidden,SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES);
+	if ( status == SPARK_STATUS_OK )
+	{
+		snprintf(name,sizeof(name),"pos%04llu_layer%04u_route_ids.u32",(unsigned long long)state->t1.position,layer);
+		status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,state->t1.stage_route_ids,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t));
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		snprintf(name,sizeof(name),"pos%04llu_layer%04u_route_weights.f32",(unsigned long long)state->t1.position,layer);
+		status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,state->t1.stage_route_weights,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN * sizeof(float));
+	}
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkQwen4FlashModuleT1DumpHead(SparkQwen4FlashModuleState *state,SparkQwen4FlashModuleSlot *slot)
+{
+	char name[64];
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t token = 0u;
+	cudaError_t error;
+	SparkStatus status;
+	if ( state->t1.enable == 0u )
+		return(SPARK_STATUS_OK);
+	error = SparkQwen4FlashLaunchHeadTopScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,slot->output_token_ids,state->t1.score_device,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,state->tp_vocab_base,state->tp_vocab_rows);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(state->t1.stage_score,state->t1.score_device,sizeof(float),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(&token,slot->output_token_ids,sizeof(token),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,error,"t1_dump_head_copy"));
+	if ( state->tp_rank == 0u )
+	{
+		snprintf(name,sizeof(name),"pos%04llu_head_top1_token.u32",(unsigned long long)state->t1.position);
+		status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,&token,sizeof(token));
+	}
+	if ( status == SPARK_STATUS_OK && state->t1.stage_score[0] > -3.0e38f )
+	{
+		if ( state->tp_rank == 0u )
+		{
+			snprintf(name,sizeof(name),"pos%04llu_head_top1_score.f32",(unsigned long long)state->t1.position);
+			status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,state->t1.stage_score,sizeof(float));
+		}
+		else
+		{
+			snprintf(name,sizeof(name),"pos%04llu_head_top1_score.rank%u.f32",(unsigned long long)state->t1.position,state->tp_rank);
+			status = SparkQwen4FlashModuleT1WriteFile(&state->t1,name,state->t1.stage_score,sizeof(float));
+		}
+	}
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkQwen4FlashModuleRunGdnLayer(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t layer, uint32_t rows)
@@ -1894,6 +2027,8 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);
 	if ( status == SPARK_STATUS_OK )
 		state->debug_dump_hidden(state,slot,layer,rows);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen4FlashModuleT1DumpLayer(state,slot,layer);
 	SPARK_RETURN(status);
 }
 
@@ -2328,7 +2463,11 @@ static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *st
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( state->owns_final_head != 0u )
+	{
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,rows),"head_emit");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkQwen4FlashModuleT1DumpHead(state,slot);
+	}
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u
 		&& (context->flags & SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u )
 	{
@@ -2400,6 +2539,7 @@ static SparkStatus SparkQwen4FlashModuleRunPrefill(SparkQwen4FlashModuleState *s
 	for (token_index = 0u; status == SPARK_STATUS_OK && token_index < prefill->token_count; token_index++)
 	{
 		uint64_t position = prefill->base_position + token_index;
+		state->t1.position = position;
 		slot->host_row_lane_indices[0] = prefill->lane_index;
 		slot->host_row_positions[0] = position;
 		slot->host_row_cold[0] = prefill->base_position + token_index == 0u ? 1u : 0u;
@@ -2432,10 +2572,14 @@ static SparkStatus SparkQwen4FlashModuleRunPrefill(SparkQwen4FlashModuleState *s
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( state->owns_final_head != 0u )
-		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,1u),"head_emit");
-	else if ( wants_output != 0u )
-		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,1u);
+		if ( state->owns_final_head != 0u )
+		{
+			status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,1u),"head_emit");
+			if ( status == SPARK_STATUS_OK )
+				status = SparkQwen4FlashModuleT1DumpHead(state,slot);
+		}
+		else if ( wants_output != 0u )
+			status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"frame_error_copyback");
 	error = cudaStreamSynchronize(stream);
@@ -2513,6 +2657,7 @@ static SparkStatus SparkQwen4FlashModuleExecuteFrame(
 		slot->host_slot_mapping[row] = (frame->sequence_position + row) % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 		slot->host_context_lengths[row] = (uint32_t)((frame->sequence_position + row) % SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) + 1u;
 	}
+	state->t1.position = frame->sequence_position;
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
 	status = SparkQwen4FlashModuleRunDecode(state,slot,frame,context,rows);
 	if ( status == SPARK_STATUS_OK )

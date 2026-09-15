@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+rank=$1
+pack="$HOME/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank$(printf '%02d' $rank).spstage"
+[ -f "$pack" ] || pack="$HOME/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank$rank.spstage"
+sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['output_sha256'])")
+. "$1"
+rc=0
+sudo -n /usr/local/sbin/sparkcap env \
+	SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION=1 \
+	"SPARK_QWEN4_FLASH_STAGE_PACK_PATH=$pack" \
+	SPARK_QWEN4_FLASH_STAGE_COUNT=1 \
+	SPARK_QWEN4_FLASH_STAGE_INDEX=0 \
+	SPARK_QWEN4_FLASH_STAGE_FIRST_LAYER=0 \
+	SPARK_QWEN4_FLASH_STAGE_LAYER_COUNT=48 \
+	SPARK_QWEN4_FLASH_STAGE_MAX_ACTIVE_SEQUENCES=1 \
+	SPARK_QWEN4_FLASH_STAGE_PIPELINE_SLOTS=1 \
+	SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS=8 \
+	SPARK_QWEN4_FLASH_TP_DEGREE=8 \
+	"SPARK_QWEN4_FLASH_TP_RANK=$rank" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH=/tmp/t1q3f/libhidden_transport_spark_host_rdma_verbs.so" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$TP_IDENTIFIER" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=$PORT_BASE" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_HOSTS=$TP_HOSTS" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_SESSION_PORTS=$SESSION_PORTS" \
+	"SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST=$LOCAL_HOST" \
+	SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000 \
+	"SPARK_WEIGHTD_SOCKET=$WEIGHTD_SOCKET" \
+	"SPARK_WEIGHTD_PACK_SHA256=$sha" \
+	"SPARK_WEIGHTD_EXPERT_POOL_BYTES=$EXPERT_POOL_BYTES" \
+	"SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$SPINE_BUDGET_BYTES" \
+	"SPARK_QWEN4_FLASH_T1_DUMP=/tmp/t1q3f/dump" \
+	"T1_Q3F_TIMING=$TIMING" \
+	/tmp/t1q3f/t1_q3f_harness "$PROMPT_IDS" "$NEW_TOKENS" > /tmp/t1q3f/harness.log 2>&1 || rc=$?
+grep -q "t1_q3f_harness done" /tmp/t1q3f/harness.log || rc=1
+exit "$rc"
