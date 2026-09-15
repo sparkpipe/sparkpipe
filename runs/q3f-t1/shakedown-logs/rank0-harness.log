@@ -1,0 +1,9 @@
+qwen4_flash_stage tp_collective_open degree=8 rank=0 port_base=19456
+qwen4_flash_stage t1_dump_enabled dir=/tmp/t1q3f/dump rank=0
+qwen4_flash_stage initialize ok slice=0+48 gdn=36 attn=12 owns_embedding=1 owns_head=1
+ERRSITE /tmp/t1q3f_stage/tree/ring/transport/tp_device_collective.c:833 status=19
+ERRSITE /tmp/t1q3f_stage/tree/modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:1355 status=19
+ERRSITE /tmp/t1q3f_stage/tree/modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:2475 status=19
+ERRSITE /tmp/t1q3f_stage/tree/modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:2681 status=19
+ERRSITE /tmp/t1q3f_stage/tree/modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:2891 status=19
+t1_q3f_harness execute step=0 status=19
