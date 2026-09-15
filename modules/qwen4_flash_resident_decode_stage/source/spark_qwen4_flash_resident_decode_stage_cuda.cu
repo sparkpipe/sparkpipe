@@ -2085,7 +2085,7 @@ extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(
         row_lane_indices,context_lengths,token_mask,score_keys_u32,row_count,table->lane_stride,mask_stride,score_stride);
     return(cudaGetLastError());
 }
-_Static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
+static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
 #define SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT
 
 static __device__ __forceinline__ float SparkQwen4FlashWarpReduceMax(float value)
