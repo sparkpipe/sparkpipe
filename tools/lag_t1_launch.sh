@@ -13,7 +13,7 @@ stop_mine() {
 		for pid in \$(pgrep -x sparkpipe_model_residentd || true; pgrep -x sparkpipe_model_api || true); do
 			cwd=\$(readlink /proc/\$pid/cwd 2>/dev/null || true)
 			case \"\$cwd\" in
-			*/\$HOME/$ARM|*\$HOME/$ARM) kill -TERM \$pid 2>/dev/null || true ;;
+			*/\$HOME/sparkdata/$ARM|*\$HOME/sparkdata/$ARM) kill -TERM \$pid 2>/dev/null || true ;;
 			esac
 		done
 		sleep 2
@@ -25,7 +25,7 @@ for rank in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 	stop_mine "$host"
 	ssh -o BatchMode=yes "$host" "
 		set -eu
-		root=\$HOME/$ARM
+		root=\$HOME/sparkdata/$ARM
 		mkdir -p \$root/runs
 		cd \$root/config && ln -sf stage_$(printf '%02d' "$rank").json stage.json
 		cd \$root
@@ -42,7 +42,7 @@ sleep 1
 stop_mine spark0
 ssh -o BatchMode=yes spark0 "
 	set -eu
-	root=\$HOME/$ARM
+	root=\$HOME/sparkdata/$ARM
 	mkdir -p \$root/runs
 	cd \$root
 	SPARK_WEIGHTD_SOCKET=/run/sparkpipe-weightsd/weightsd.sock \
