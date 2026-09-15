@@ -1,0 +1,6 @@
+{
+ "prompts": [
+  {"capture_layers": [0, 3, 45, 47], "name": "capital_of_france", "new_tokens": 4, "text": "The capital of France is"},
+  {"capture_layers": [0, 3, 45, 47], "name": "count_up", "new_tokens": 4, "text": "Counting upward: one, two,"}
+ ]
+}
