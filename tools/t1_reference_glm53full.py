@@ -112,11 +112,11 @@ class Glm53FullEngine:
         self.eot = int(config["eos_token_id"][0] if isinstance(
             config["eos_token_id"], list) else config["eos_token_id"])
         entry = self.st.entry(f"{PREFIX}{FIRST_ROUTED}.mlp.experts.0.up_proj.weight")
-        if entry["dtype"] != "F8_E4M3" or tuple(entry["shape"]) != \
+        if entry["dtype"] not in ("F8_E4M3", "BF16") or tuple(entry["shape"]) != \
                 (INTERMEDIATE, HIDDEN):
             raise Glm53FullConfigError(
-                f"expert payload {entry['dtype']} {entry['shape']} is not the "
-                f"blockwise-FP8 release shape ({INTERMEDIATE}, {HIDDEN})")
+                f"expert payload {entry['dtype']} {entry['shape']} is not a "
+                f"known release shape ({INTERMEDIATE}, {HIDDEN})")
 
     def tensor(self, name):
         raw = self.st.raw(name)
@@ -142,8 +142,10 @@ class Glm53FullEngine:
 
     def expert_weight(self, name):
         raw = self.st.raw(name)
+        if raw.dtype == np.uint16:
+            return bf16_to_f32(raw.reshape(raw.shape))
         if raw.dtype != np.uint8:
-            raise ValueError(f"expert {name} is not blockwise F8_E4M3")
+            raise ValueError(f"expert {name} is neither F8_E4M3 nor BF16")
         scale = self.st.raw(name + "_scale_inv").astype(np.float32)
         rows, cols = raw.shape
         codes = _E4M3_LUT[raw.reshape(rows, cols)].astype(np.float32)
