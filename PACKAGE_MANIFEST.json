@@ -1,5 +1,5 @@
 {
-  "file_count": 2527,
+  "file_count": 2533,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -885,6 +885,21 @@
       "path": "docs/DATAFILE_NAMING.md",
       "sha256": "f4689c66ccbcfaaf7aa3aecb98f58909578f600dde884b1339b362d83bd79ede",
       "size_bytes": 1994
+    },
+    {
+      "path": "docs/DEPLOY_MULTI_DEV_PROPOSAL.md",
+      "sha256": "2fba82ff5e375f36c8fb6193c293154baea3dde10c66b253b09884c7aeb89a7e",
+      "size_bytes": 10082
+    },
+    {
+      "path": "docs/DEPLOY_PROTOCOL_MAP.md",
+      "sha256": "1930f0159a12734c3abd47b938d126c0a93e663a69e9ca978fe1042ea8347691",
+      "size_bytes": 16809
+    },
+    {
+      "path": "docs/DEPLOY_ROLLOUT.md",
+      "sha256": "7a152388dd26e1ceccaf885ce64c5805bf252bec10ff8b4ddfcbad310b16c09e",
+      "size_bytes": 13227
     },
     {
       "path": "docs/DEVCYCLE.md",
@@ -7637,6 +7652,11 @@
       "size_bytes": 21567
     },
     {
+      "path": "tests/test_deploy_restart_scope.sh",
+      "sha256": "244cd98648edd8baa6cb2656e4835e5f5512a4d2c0351005f0a86384c49d55f0",
+      "size_bytes": 10826
+    },
+    {
       "path": "tests/test_deployment_config_drift.py",
       "sha256": "f10707ec63783bb425832bedf3cf880c206f811398eb1264b1a31f3c2589aa59",
       "size_bytes": 6471
@@ -9563,13 +9583,13 @@
     },
     {
       "path": "tools/fleet-agent.service",
-      "sha256": "5429ac65cbdd827aeb2887e4f8d4ed35bc27815a4b7f8a94f02f71baa09fada7",
-      "size_bytes": 220
+      "sha256": "9d8a998dc81ef907805ebb924f095f16f1ba59fe376d9f6d909eeecc1f8283ee",
+      "size_bytes": 217
     },
     {
       "path": "tools/fleet_node_agent.sh",
-      "sha256": "d53a7d6d81796aef169dfe2e425b5a2b5bc8fbef5e7904cb11a4ec88706f44ca",
-      "size_bytes": 14173
+      "sha256": "d1ae5cfb5230d137d0c066b53f6ef67e55ba2039276ef80c2ca6eda24ef6552e",
+      "size_bytes": 16222
     },
     {
       "path": "tools/fleet_preflight.sh",
@@ -9580,6 +9600,11 @@
       "path": "tools/fleet_ready_poll.sh",
       "sha256": "17d6c4a4394fc329767681b2fd03c2410d666119f194e5a5b8716461032af238",
       "size_bytes": 789
+    },
+    {
+      "path": "tools/fleet_release_hygiene.sh",
+      "sha256": "fc41292f2b8dcf1521b6ec040e573bfd211878b45d63348112b5ee867342245a",
+      "size_bytes": 3826
     },
     {
       "path": "tools/fleet_release_serve.py",
@@ -10538,8 +10563,8 @@
     },
     {
       "path": "tools/module_build_release.sh",
-      "sha256": "e45c8b44e9684c32ddacd72d5bb6de5063e0c2ad7112b08e66f5e267029fe01c",
-      "size_bytes": 2640
+      "sha256": "4ac7dfa7d3bf55f34f15a9be4d265b4314c20b6ec8b8a428b1212a8df20f2e6a",
+      "size_bytes": 2692
     },
     {
       "path": "tools/mtp_strip_audit.py",
@@ -10688,13 +10713,13 @@
     },
     {
       "path": "tools/publish_core.sh",
-      "sha256": "f3d5527630189ab4160a2bab8738cd4a8a7c183054930fb220683520e39d16ef",
-      "size_bytes": 533
+      "sha256": "650f8e6ceedc862b4ee25a80fb430eb9a1df26e5f796ff84fe79a02b287eb2ab",
+      "size_bytes": 879
     },
     {
       "path": "tools/publish_local.sh",
-      "sha256": "191c99349866291a59b5d8aff33c605b2f43fad5c63b0c461838a4f82f17dcac",
-      "size_bytes": 1490
+      "sha256": "4f9c3d0de228bb3ccda89fd6cb2b97361192d431979c95a972db9b1e8e23d375",
+      "size_bytes": 1789
     },
     {
       "path": "tools/qwen36_dflash2_bisect.py",
@@ -11265,6 +11290,11 @@
       "path": "tools/weightdctl.c",
       "sha256": "57d1d717ca3462ab712e97791a341e5f112dfb7c1e77da163beb62c53f378f0a",
       "size_bytes": 4938
+    },
+    {
+      "path": "tools/weightsd_announce.sh",
+      "sha256": "abc38193efd2c62abaa94fe2949810a9a402c9bf0c6e45bcf699c0973d99e5f8",
+      "size_bytes": 669
     },
     {
       "path": "tools/weightsd_deploy.sh",
@@ -12640,5 +12670,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 52171371
+  "total_bytes": 52229553
 }

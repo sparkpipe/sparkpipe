@@ -11,6 +11,9 @@ TREE="$HOME/sparkpipe-build"
 FIRMWARE="examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json"
 
 cd "$TREE"
+mkdir -p "$HOME/release"
+exec 9>"$HOME/release/.publish.lock"
+flock 9
 git fetch -q origin main "${G5_SOURCE_BRANCH:-lane/glm53-p0}" || git fetch -q origin main
 if ! git cat-file -e "$BRANCH^{commit}" 2>/dev/null; then
     BRANCH="${G5_SOURCE_BRANCH:-origin/lane/glm53-p0}"
@@ -24,7 +27,7 @@ export PATH="/usr/local/cuda/bin:$PATH"
 SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 
 echo "== host build"
-make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_weightd build/libhidden_transport_spark_host_rdma_verbs.so
+make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
 make -j16 -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
 ADAPTER_SO="build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
 [ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
@@ -58,4 +61,4 @@ build/sparkpipe_model_compile \
 
 "$(dirname "$0")/publish_local.sh" "$FAMILY" "$CODEC" "$ROOT_NAME"
 systemctl --user start fleet-agent 2>/dev/null || true
-exec "$(dirname "$0")/publish_core.sh"
+exec "$(dirname "$0")/publish_core.sh" agent

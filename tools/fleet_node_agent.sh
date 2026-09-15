@@ -50,22 +50,45 @@ root_state() {
     fi
 }
 
+root_pid() {
+    local rr="$HOME/sparkdata/$1" l
+    for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
+        [ "$(readlink /proc/$l/cwd 2>/dev/null)" = "$rr" ] && { echo "$l"; return; }
+    done
+    echo 0
+}
+
+root_rss_mb() {
+    local v
+    v=$(awk '/^VmRSS/ {print int($2/1024)}' "/proc/$1/status" 2>/dev/null)
+    echo "${v:-0}"
+}
+
+root_log_age_s() {
+    echo $(( $(date +%s) - $(stat -c %Y "$HOME/sparkdata/$1/residentd.log" 2>/dev/null || echo 0) ))
+}
+
 report() {
+    local now load mem r rr st pid states="" first=1
+    now=$(date +%s)
+    load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+    mem=$(awk '/MemAvailable/ {printf "%d", int($2/1048576)}' /proc/meminfo 2>/dev/null)
     {
-        printf '{"host":"%s","time":"%s"' "$HOST" "$(date -Is)"
+        printf '{"host":"%s","time":"%s","epoch":%d,"load":"%s","mem_avail_gb":%s' \
+            "$HOST" "$(date -Is)" "$now" "$load" "${mem:-0}"
         printf ',"weightd":"%s","agent":"%s"' \
             "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)" \
             "$(sha16 "$0" 2>/dev/null)"
-        local r first=1 states=""
         IFS=, read -ra RA <<< "$ROOTS"
         for r in "${RA[@]}"; do
-            local rr="$HOME/sparkdata/$r"
+            rr="$HOME/sparkdata/$r"
             [ -d "$rr" ] || continue
-            local st; st=$(root_state "$r")
+            st=$(root_state "$r")
             states="$states$r=$st;"
-            printf '%s"%s":{"state":"%s","residentd":"%s","driver":"%s"}' \
-                "$([ $first = 1 ] && echo ,roots:{ || echo ,)" "$r" \
-                "${st//\"/\\\"}" \
+            pid=$(root_pid "$r")
+            printf '%s"%s":{"state":"%s","pid":%s,"rss_mb":%s,"log_age_s":%s,"residentd":"%s","driver":"%s"}' \
+                "$([ $first = 1 ] && echo ',"roots":{' || echo ',')" "$r" \
+                "${st//\"/\\\"}" "$pid" "$(root_rss_mb "$pid")" "$(root_log_age_s "$r")" \
                 "$(sha16 "$rr/bin/sparkpipe_model_residentd")" \
                 "$(sha16 "$rr/stages/stage_000/model_driver.so")"
             first=0
@@ -79,16 +102,12 @@ report() {
 }
 
 report_if_changed() {
-    local r states="" pids=""
+    local r states="" pids="" pid
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do
         [ -d "$HOME/sparkdata/$r" ] || continue
         states="$states$r=$(root_state "$r");"
-        p="$HOME/sparkdata/$r"
-        local pid
-        pid=$(for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
-            [ "$(readlink /proc/$l/cwd 2>/dev/null)" = "$p" ] && echo "$l"
-        done | head -1)
+        pid=$(root_pid "$r")
         pids="$pids$r=${pid:-0};"
     done
     { [ "$states" != "$LAST_REPORT" ] || [ "$pids" != "$LAST_PIDS" ]; } && {
@@ -97,24 +116,40 @@ report_if_changed() {
     }
 }
 
-unload_root() {
-    local rr="$HOME/sparkdata/$1" p t gone
-    for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -9 "$p"
+drain_match() {
+    local pattern="$1" rr="$2" grace="$3" p t gone=0
+    for p in $(pgrep -f "$pattern"); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -TERM "$p" 2>/dev/null
     done
-    for t in $(seq 1 5); do
+    for t in $(seq 1 "$grace"); do
         gone=1
-        for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+        for p in $(pgrep -f "$pattern"); do
             [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && gone=0
         done
-        [ "$gone" = 1 ] && break
+        [ "$gone" = 1 ] && return 0
         sleep 1
     done
-    [ "$gone" = 1 ] || { echo "$(date +%T) $1: prior residentd not exited; NOT starting new" >&2; return 1; }
-    local pack_gb=$(du -sBG "$rr/packs" 2>/dev/null | cut -dG -f1)
+    return 1
+}
+
+kill_match() {
+    local pattern="$1" rr="$2" p
+    for p in $(pgrep -f "$pattern"); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && kill -9 "$p" 2>/dev/null
+    done
+}
+
+unload_root() {
+    local name="$1" rr="$HOME/sparkdata/$1" pack_gb t avail
+    drain_match "bin/sparkpipe_model_(residentd|api)" "$rr" 15 || {
+        echo "$(date +%T) $name: drain deadline hit; kill -9 fallback" >&2
+        kill_match "bin/sparkpipe_model_(residentd|api)" "$rr"
+        sleep 1
+    }
+    pack_gb=$(du -sBG "$rr/packs" 2>/dev/null | cut -dG -f1)
     pack_gb=${pack_gb:-0}
     for t in $(seq 1 30); do
-        local avail=$(awk "/MemAvailable/ {print int(\$2/1048576)}" /proc/meminfo)
+        avail=$(awk "/MemAvailable/ {print int(\$2/1048576)}" /proc/meminfo)
         [ "$avail" -ge $((pack_gb + 8)) ] && return 0
         sleep 2
     done
@@ -141,9 +176,19 @@ start_root() {
     report
 }
 
+api_root() {
+    local r
+    [ -n "${G5_API_ROOT:-}" ] && { echo "$G5_API_ROOT"; return; }
+    IFS=, read -ra RA <<< "$ROOTS"
+    for r in "${RA[@]}"; do
+        [ -x "$HOME/sparkdata/$r/bin/sparkpipe_model_api" ] && { echo "$r"; return; }
+    done
+    echo "${RA[0]}"
+}
+
 ensure_api() {
     [ "$RANK" = 0 ] || return 0
-    local rr="$HOME/sparkdata/glm53flash.fp8.tp16"
+    local rr="$HOME/sparkdata/$(api_root)"
     [ -x "$rr/bin/sparkpipe_model_api" ] || return 0
     local ready_count now
     ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
@@ -155,8 +200,8 @@ ensure_api() {
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
         rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
         if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then
-            echo "$(date +%T) api: predates residentd; restarting"
-            kill -9 "$p" 2>/dev/null
+            echo "$(date +%T) api: predates residentd; draining"
+            drain_match "bin/sparkpipe_model_api" "$rr" 10 || kill_match "bin/sparkpipe_model_api" "$rr"
             return 0
         fi
         return 0
@@ -237,7 +282,7 @@ sync_rendezvous() {
 }
 
 apply_manifest() {
-    local name="$1" root="$2" manifest_cur manifest_applied
+    local name="$1" root="$2" scope="$3" manifest_cur manifest_applied
     manifest_cur="/tmp/fleet_manifest_$name.txt"
     manifest_applied="$root/.applied_manifest"
     if ! curl -sf --max-time 8 "$RELEASE_HTTP/$name/MANIFEST" -o "$manifest_cur"; then
@@ -245,19 +290,18 @@ apply_manifest() {
         return 1
     fi
     cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null && return 1
-    echo "$(date +%T) $name: manifest changed; syncing"
-    local fetch_errors=0 line
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        local want="${line%% *}"
-        local rel="${line#*  }"
-        local tmp="$root/.fetch.tmp"
+    echo "$(date +%T) $name: manifest changed; syncing diff"
+    : > "$scope"
+    local fetch_errors=0 line rel want tmp got old_f="$manifest_applied"
+    [ -f "$old_f" ] || old_f=/dev/null
+    while IFS=' ' read -r rel want; do
+        [ -n "$rel" ] || continue
+        tmp="$root/.fetch.tmp"
         if ! curl -sf --max-time 300 "$RELEASE_HTTP/$name/$rel" -o "$tmp"; then
             echo "$(date +%T) $name: fetch failed: $rel" >&2
             fetch_errors=$((fetch_errors+1))
             continue
         fi
-        local got
         got=$(sha256sum "$tmp" | cut -d' ' -f1)
         if [ "$got" != "$want" ]; then
             echo "$(date +%T) $name: checksum failed: $rel" >&2
@@ -269,19 +313,51 @@ apply_manifest() {
         case "$rel" in
             bin/*) chmod 755 "$root/$rel" ;;
         esac
-    done < "$manifest_cur"
+        echo "$rel" >> "$scope"
+    done < <(awk 'NR==FNR { old[$2]=$1; next } $2 != "" && old[$2] != $1 { print $2, $1 }' \
+        "$old_f" "$manifest_cur")
     [ "$fetch_errors" != 0 ] && { echo "$(date +%T) $name: $fetch_errors fetch errors; retrying next cycle" >&2; return 1; }
     cp "$manifest_cur" "$manifest_applied"
     return 0
 }
 
+restart_scope() {
+    local scope="$1" rel kind="none"
+    while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        case "$rel" in
+            bin/sparkpipe_model_residentd|lib/*|stages/*|config/model_resident.json)
+                echo "root"
+                return ;;
+            bin/sparkpipe_model_api)
+                kind="api" ;;
+            config/stage_*.json)
+                [ "$kind" = "none" ] && kind="stage" ;;
+        esac
+    done < "$scope"
+    echo "$kind"
+}
+
+drain_api() {
+    local name="$1" rr="$HOME/sparkdata/$1"
+    drain_match "bin/sparkpipe_model_api" "$rr" 10 || kill_match "bin/sparkpipe_model_api" "$rr"
+}
+
 sync_root() {
-    local name="$1"
-    local root="$HOME/sparkdata/$name"
+    local name="$1" kind="none"
+    local root="$HOME/sparkdata/$name" scope="$HOME/sparkdata/$name/.changed_scope"
     mkdir -p "$root"
-    apply_manifest "$name" "$root" || return 0
-    unload_root "$name" || return 0
-    start_root "$name"
+    if apply_manifest "$name" "$root" "$scope"; then
+        kind=$(restart_scope "$scope")
+    fi
+    rm -f "$scope"
+    case "$kind" in
+        root)
+            unload_root "$name" || return 0
+            start_root "$name" ;;
+        api) drain_api "$name" ;;
+        stage) ln -sf "stage_$(printf %02d "$RANK").json" "$root/config/stage.json" ;;
+    esac
 }
 
 sync_core() {
@@ -291,29 +367,16 @@ sync_core() {
 }
 
 install_core() {
-    local core="$HOME/sparkdata/core" wd="$HOME/sparkdata/weightd" p
+    local core="$HOME/sparkdata/core" wd="$HOME/sparkdata/weightd" announced
     [ -x "$core/bin/sparkpipe_weightd" ] || return 0
-    local cand installed
-    cand=$(sha16 "$core/bin/sparkpipe_weightd")
-    installed=$(sha16 "$wd/sparkpipe_weightd")
-    [ "$cand" != "$installed" ] || return 0
-    echo "$(date +%T) core: weightd $installed -> $cand; deliberate restart"
-    for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
-        kill -9 "$p" 2>/dev/null
-    done
-    for p in $(pgrep -f bin/sparkpipe_model_residentd); do
-        kill -9 "$p" 2>/dev/null
-    done
-    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
-    sleep 1
+    announced=$(curl -sf --max-time 5 "$RELEASE_HTTP/core/WEIGHTSD_BIN" 2>/dev/null | tr -d "[:space:]") || return 0
+    [ -n "$announced" ] || return 0
+    [ "$(sha16 "$core/bin/sparkpipe_weightd")" = "$announced" ] || return 0
+    [ "$(sha16 "$wd/sparkpipe_weightd")" != "$announced" ] || return 0
+    echo "$(date +%T) core: installing announced weightd $announced; weightsd owns the restart"
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
-    setsid nohup "$wd/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
-        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
-        --mesh-sgid-index "$MESH_SGID_INDEX" \
-        > "$HOME/weightd.log" 2>&1 < /dev/null &
-    sleep 1
 }
 
 self_update() {
