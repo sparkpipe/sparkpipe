@@ -42,7 +42,18 @@ Measured anchors:
   llm_defines pin, module T1 dump hook (streams/routes/head-score kernel),
   harness + 8-rank TP8 wave scripts; module archive + harness build green
   on spark7 (MEASURED).
-- T1 gate: PENDING (fixtures waiting on the ceph window; decode after).
+- T1 gate: **BLOCKED (MEASURED 09-15, GPU windows 17:49Z + 18:1xZ + 18:4xZ)**
+  — zero tokens decoded. Chain status: weightsd lazy attach + manifest
+  check + 20 GB spine PASS on all 8 ranks; mesh formed on ranks 0-7 after
+  the LimitMEMLOCK drop-in (the unit defaulted to 8 MB, ibv_reg_mr(4 GB)
+  → ENOMEM — single-shot init, no retry; fixed for the wave with a
+  20-memlock.conf drop-in + restarts; PR adds an init retry loop for the
+  channel); first Execute then dies with SIGBUS inside the shared
+  mesh-lane arena mapping at the first routed MoE (client/server
+  spine-wire defect class, uncharted — no family has decoded through the
+  mesh lanes yet). On top of the pack scale-plane defect (accuracy-fatal
+  by construction this wave).
+- B1 tok/s: NOT MEASURED (zero tokens decoded; no hillclimb attempted).
 - Operator directive: accurate inference first, no hillclimb, slow-but-
   reliable collectives acceptable, no fabrication.
 
