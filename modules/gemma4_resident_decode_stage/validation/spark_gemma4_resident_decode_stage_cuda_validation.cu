@@ -1764,6 +1764,12 @@ static int SparkGemma4ValCheckChainSliding(void)
 		SparkGemma4ValCuda(error,"chain_sliding");
 		return(1);
 	}
+	error = SparkGemma4ValSync();
+	if (error != cudaSuccess)
+	{
+		SparkGemma4ValCuda(error,"chain_sliding_store_sync");
+		return(1);
+	}
 	error = SparkGemma4ValChainAlloc(&chain);
 	if (error != cudaSuccess)
 	{
