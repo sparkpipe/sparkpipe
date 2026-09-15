@@ -2,15 +2,15 @@
  "schema_version": 1,
  "model": {
   "id": "laguna.laguna-s-2-1.resident-decode-stage-firmware",
-  "revision": "PRE-FREEZE"
+  "revision": "0f573140834b11cfac0c2af97a101a7a69a13e22"
  },
  "metadata": {
   "architecture": "laguna_resident_decode_stage",
   "purpose": "Poolside Laguna-S-2.1 text decode firmware: GQA/SWA hybrid MoE, per-layer head counts, two rope regimes (full-attention yarn, sliding theta 1e4), softplus per-head output gate, sigmoid top-10 router with correction bias and 2.5 routed scaling",
-  "generated_from": "model_contracts/laguna_authoritative.json",
+  "generated_from": "model_contracts/laguna_authoritative.json (FROZEN 0f573140834b11cfac0c2af97a101a7a69a13e22)",
   "provenance": {
-   "checkpoint_config": "poolside/Laguna-S-2.1 config.json + modeling_laguna.py (pinned at freeze)",
-   "status": "source-integrated, CUDA and target-hardware qualification not measured"
+   "checkpoint_config": "poolside/Laguna-S-2.1 config.json + modeling_laguna.py (pinned at freeze; HF tree marker 0f573140)",
+   "status": "contract-frozen; CUDA and target-hardware serving qualification pending (LAG-T1 bring-up)"
   },
   "module_geometry": {
    "hidden_dimension": 3072,

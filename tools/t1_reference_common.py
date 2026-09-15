@@ -88,6 +88,10 @@ class Safetensors:
             self.map = {}
         self.headers = {}
         self.fds = {}
+        self.cache = {}
+        self.cache_bytes = 0
+        self.cache_limit = int(os.environ.get("T1_REF_CACHE_BYTES",
+                                              80 * (1 << 30)))
 
     def _open(self, fname):
         if fname not in self.fds:
@@ -115,11 +119,15 @@ class Safetensors:
         return e
 
     def raw(self, name):
+        if name in self.cache:
+            return self.cache[name]
         fname, e, base = self._entry(name)
         fh = self.fds[fname]
         fh.seek(base + e["data_offsets"][0])
         data = fh.read(e["data_offsets"][1] - e["data_offsets"][0])
-        return np.frombuffer(data, dtype=self._np(e["dtype"])).reshape(e["shape"])
+        array = np.frombuffer(data, dtype=self._np(e["dtype"])).reshape(e["shape"])
+        self.cache[name] = array
+        return array
 
     def raw_rows(self, name, first, count):
         fname, e, base = self._entry(name)
