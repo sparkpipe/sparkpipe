@@ -464,7 +464,7 @@ static SparkStatus SparkQwen4FlashModuleManifestCheck(const SparkWeightdManifest
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		uint32_t expert;
-		for (expert = 0u; expert < SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT; expert++)
+		for (expert = 0u; expert < SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree; expert++)
 		{
 			const SparkWeightdRangeGroup *group = SparkWeightdManifestFind(manifest,layer,expert);
 			uint32_t index,kind_bits = 0u;
@@ -1986,14 +1986,20 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 	if ( state->lazy_pack != 0 )
 	{
 		uint32_t host_offsets[SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT + 1u];
+		uint32_t local_offsets[SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree + 1u];
 		SparkWeightdExpertKey keys[SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT];
 		uint32_t key_count = 0u;
+		uint32_t local_experts = SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree;
+		uint32_t local_base = route_group_base;
+		uint32_t local_index;
 		SparkWeightdMap *map = state->lazy_pack->map;
 		void *address = 0;
 		if ( cudaMemcpy(host_offsets,slot->moe_group_offset_u32,(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
 			error = cudaErrorInvalidValue;
+		for (local_index = 0u; local_index <= local_experts; local_index++)
+			local_offsets[local_index] = host_offsets[local_base + local_index] - host_offsets[local_base];
 		if ( error == cudaSuccess )
-			error = SparkWeightdRouteKeys(layer,host_offsets,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,keys,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+			error = SparkWeightdRouteKeys(layer,local_offsets,local_experts,local_offsets[local_experts],keys,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
 		if ( error == cudaSuccess )
 		{
 			error = SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
