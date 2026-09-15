@@ -249,7 +249,7 @@ class Glm53FullEngine:
         scores = sigmoid(logits.astype(np.float32))
         choice = scores + self.vector(prefix + "gate.e_score_correction_bias")
         order = np.argsort(-choice, kind="stable")
-        selected = np.sort(order[:TOP_K])
+        selected = order[:TOP_K]
         picked = scores[selected]
         weights = picked / (picked.sum() + 1e-20) * np.float32(ROUTED_SCALE)
         routed = np.zeros(HIDDEN, dtype=np.float32)
