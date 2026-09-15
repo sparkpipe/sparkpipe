@@ -147,7 +147,8 @@ def resident_deployment() -> dict:
             "control_port_base": TRANSPORT_BASE,
         },
         "weightd": {
-            "socket_path": "/tmp/spark_weightd.sock",
+            "socket_path": os.environ.get(
+                "LING_WEIGHTD_SOCKET", "/run/sparkpipe-weightsd/weightsd.sock"),
         },
         "runtime_limits": {
             "max_inflight_submissions": 4,

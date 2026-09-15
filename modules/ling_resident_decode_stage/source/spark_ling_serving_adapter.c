@@ -1,4 +1,5 @@
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -827,6 +828,9 @@ static SparkStatus SparkLingServingLoadDriver(
 	request.wake_function = SparkLingServingDriverWake;
 	request.wake_context = state;
 	status = state->driver.interface->create(&request,&state->driver_instance);
+	if ( status != SPARK_STATUS_OK )
+		(void)fprintf(stderr,"LNG-T1ADAPTER-DIAG create=%d stage=%u layers=%u slots=%u cap=%u pos=%u rows=%u thr=%u tp=%u/%u codec=%u rev=%s pack=%s\n",
+		    (int)status,state->node_context.stage_count,state->node_context.layer_count,state->node_context.pipeline_slot_count,state->node_context.resident_sequence_capacity,state->node_context.max_sequence_positions,state->node_context.execution_row_capacity,state->node_context.decode_split_context_threshold,state->node_context.tp_degree,state->node_context.tp_rank,state->node_context.expert_weight_codec,state->node_context.model_revision == 0 ? "(null)" : state->node_context.model_revision,state->node_context.stage_pack_path == 0 ? "(null)" : state->node_context.stage_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
 	return(state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
