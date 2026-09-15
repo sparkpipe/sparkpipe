@@ -2,7 +2,7 @@
  "schema_version": 1,
  "model": {
   "id": "inclusion.ling-3.0-flash.resident-decode-stage-firmware",
-  "revision": "bf16-h2560-l42-kda35-mla7-e512-k8-gr8x4-rope64il-gate-v1pack-v1"
+  "revision": "e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3"
  },
  "metadata": {
   "architecture": "ling_resident_decode_stage",
