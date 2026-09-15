@@ -26,7 +26,7 @@ validation_hash_format_check=0
 validation_nvcc_splice=late
 
 validation_include_dirs() {
-    printf '%s\n' "model-families/laguna/include" "."
+    printf '%s\n' "model-families/laguna/include" "include" "."
 }
 
 validation_nvcc_extra_args() {
