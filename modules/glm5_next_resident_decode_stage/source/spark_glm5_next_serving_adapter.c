@@ -27,8 +27,12 @@
 
 #define SPARK_GLM5_NEXT_SERVING_ADAPTER_ID \
 	"spark.glm5_next.serving-adapter.tp8.expert_" GLM5_NEXT_EXPERT_CODEC_NAME ".v1"
+#ifndef SPARK_GLM5_NEXT_SERVING_STAGE_COUNT
 #define SPARK_GLM5_NEXT_SERVING_STAGE_COUNT 16u
+#endif
+#ifndef SPARK_GLM5_NEXT_SERVING_TP_DEGREE
 #define SPARK_GLM5_NEXT_SERVING_TP_DEGREE 16u
+#endif
 #define SPARK_GLM5_NEXT_SERVING_STAGE_LAYERS \
 	{45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u,45u}
 #define SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG \
@@ -988,6 +992,9 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	request.wake_function = SparkGlm5NextServingDriverWake;
 	request.wake_context = state;
 	status = state->driver.interface->create(&request,&state->driver_instance);
+	if ( status != SPARK_STATUS_OK )
+		(void)fprintf(stderr,"G5N-T1ADAPTER-DIAG create=%d stage=%u first=%u layers=%u slots=%u cap=%u pos=%u rows=%u thr=%u tp=%u/%u codec=%u flags=%u rev=%s pack=%s\n",
+		    (int)status,state->node_context.stage_count,state->node_context.first_layer_index,state->node_context.layer_count,state->node_context.pipeline_slot_count,state->node_context.resident_sequence_capacity,state->node_context.max_sequence_positions,state->node_context.execution_row_capacity,state->node_context.decode_split_context_threshold,state->node_context.tp_degree,state->node_context.tp_rank,state->node_context.expert_weight_codec,state->node_context.flags,state->node_context.model_revision == 0 ? "(null)" : state->node_context.model_revision,state->node_context.stage_pack_path == 0 ? "(null)" : state->node_context.stage_pack_path);
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadDriver rc=%d\n",(int)status);
 	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
 }

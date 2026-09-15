@@ -1,0 +1,35 @@
+### evictor laneless
+EVICTOR_RC=0
+
+### evictor lane1_vs_lane0
+EVICTOR_RC=0
+
+### holder phase1 output follows in holder.log
+### holder phase1
+ERRSITE runtime/spark_weightd.c:2837 status=4
+SMOKE-FAIL mode=dev rc=1
+
+### evictor lane0_vs_lane1
+EVICTOR_RC=0
+
+### victim phase2
+ERRSITE runtime/spark_weightd.c:2837 status=4
+SMOKE-FAIL mode=dev rc=1
+
+### pressure phase3
+ERRSITE runtime/spark_weightd.c:2837 status=4
+SMOKE-FAIL mode=dev rc=1
+
+### evictor laneless
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":0,"status":"invalid_argument","released_leases":0}
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":1,"status":"invalid_argument","released_leases":0}
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":9,"status":"invalid_argument","released_leases":0}
+EVICTOR_RC=0
+
+### evictor laneless
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":0,"status":"invalid_argument","released_leases":0}
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":1,"status":"invalid_argument","released_leases":0}
+ERRSITE runtime/spark_weightd.c:3185 status=1
+SMOKE EVICT {"op":"evict","evictor_lane":none,"target_lane":9,"status":"invalid_argument","released_leases":0}
+EVICTOR_RC=0
+

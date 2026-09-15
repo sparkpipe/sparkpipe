@@ -1,0 +1,25 @@
+Running as unit: run-rb4483c02f3404cf4bb0619e45a06363c.scope; invocation ID: 26a406f5979146c3ace1ece8ed57cfe9
+/home/spark5/t1g53/tools/t1_reference_common.py:14: RuntimeWarning: invalid value encountered in cast
+  return (u16.astype(np.uint32) << 16).view(np.float32)
+{"prompt": "capital_of_france", "position": 0, "done": true}
+{"prompt": "capital_of_france", "position": 1, "done": true}
+{"prompt": "capital_of_france", "position": 2, "done": true}
+{"prompt": "capital_of_france", "position": 3, "done": true}
+{"prompt": "capital_of_france", "position": 4, "done": true}
+{"prompt": "capital_of_france", "position": 5, "done": true}
+{"prompt": "capital_of_france", "position": 6, "done": true}
+{"prompt": "capital_of_france", "position": 7, "done": true}
+{"prompt": "capital_of_france", "position": 8, "done": true}
+{"prompt": "count_up", "position": 0, "done": true}
+{"prompt": "count_up", "position": 1, "done": true}
+{"prompt": "count_up", "position": 2, "done": true}
+{"prompt": "count_up", "position": 3, "done": true}
+{"prompt": "count_up", "position": 4, "done": true}
+{"prompt": "count_up", "position": 5, "done": true}
+{"prompt": "count_up", "position": 6, "done": true}
+{"prompt": "count_up", "position": 7, "done": true}
+{"prompt": "count_up", "position": 8, "done": true}
+{"prompt": "count_up", "position": 9, "done": true}
+{"prompt": "count_up", "position": 10, "done": true}
+{"prompt": "count_up", "position": 11, "done": true}
+{"family": "glm5_next", "fixtures": 2, "output": "/tmp/t1g53_bf16_ref/glm5_next", "manifest": "/tmp/t1g53_bf16_ref/glm5_next/MANIFEST.json"}

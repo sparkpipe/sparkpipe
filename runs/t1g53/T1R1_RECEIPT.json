@@ -1,0 +1,138 @@
+{
+  "adjudication": {
+    "directive": "mgr2/operator: prove the reference bug offline via the bf16 checkpoint variant; hand cross-check one tensor",
+    "material_defect_found": {
+      "consequence": "fixture checkpoint != served checkpoint: the committed fp8 fixtures can never pass against the packs as-placed, at any tolerance; the packs' declared revision 84c6a6aa (the fp8 release) misrepresents their content",
+      "evidence": "router gate weight (layers.3.mlp.gate.weight [288,4096], native BF16 in BOTH checkpoints) u16-value-multiset overlap vs pack: pack~bf16off = 0.984, pack~fp8release = 0.925, fp8release~bf16off = 0.925 \u2014 the two checkpoints are different model snapshots (their routers differ), and the pack matches the bf16-official snapshot word-for-word at 98.4%",
+      "finding": "ASSET IDENTITY: the placed glm53flash.fp8.tp16 packs contain bf16-OFFICIAL-class weights, not the fp8-release checkpoint the committed fixtures were generated from",
+      "grade": "MEASURED (multiset fingerprint on raw checkpoint bytes vs pack bytes)"
+    },
+    "method": "tools/t1_reference_decoder.py --family glm5_next --checkpoint /mnt/model-warm/glm-5.3-flash-bf16-official (text_config flattened to top level; 120 safetensors symlinked) on spark5 under systemd-run MemoryMax=8G; ~55 min wall; deterministic container; log runs/t1g53/bf16_reference_run.log",
+    "operator_ruling_needed": "choose the canonical glm53flash serving snapshot: (a) keep packs as-deployed and regenerate fixtures from the bf16-official snapshot (candidate fixtures from this run in runs/t1g53/bf16off_candidate/), or (b) rebuild packs from the fp8-release and keep the committed fixtures; streams/routes banded compare then adjudicates the engine within one snapshot; exact ids beyond token 1 should not be an exactness gate for raw prompts (evidence above)",
+    "reference_fp8_dequant_hand_check": "PASS: independent bit-level e4m3 decode of experts.0.gate_proj row 0 block 0 matches t1_reference_common.fp8_block_to_bf16 within bf16 rounding; scale layout [N/128,K/128] confirmed against checkpoint (F32 [16,32] for [2048,4096]); weight stats sane (std 0.02, bounded +-0.156)",
+    "reference_verdict": "CLEAN \u2014 no reference bug. Dequant hand-verified; bf16 run fluent-first-token and deterministic.",
+    "results": {
+      "engine_on_placed_fp8packs_capital": {
+        "text": " Paris. In French",
+        "tokens": [
+          12089,
+          13,
+          758,
+          8584
+        ]
+      },
+      "reference_on_bf16off_capital": {
+        "first_token": "12089 == ENGINE first token (MEASURED)",
+        "text": " Paris [gMASK] course of",
+        "tokens": [
+          12089,
+          154822,
+          3308,
+          315
+        ]
+      },
+      "reference_on_bf16off_count_up": {
+        "note": "raw continuation degrades past token 1 on BOTH checkpoints and reference runs \u2014 token-exactness beyond token 1 is not a stable gate for this model+prompt class (consistent with the wave-t1-offline cross-node tie-flip finding)",
+        "text": " skip ency shoe - between",
+        "tokens": [
+          10701,
+          2251,
+          28872,
+          25878
+        ]
+      },
+      "reference_on_fp8_release_capital": {
+        "text": "mojibake (committed fixture, deterministic)",
+        "tokens": [
+          3837,
+          271,
+          271,
+          12
+        ]
+      }
+    }
+  },
+  "blockers": [
+    "fleet-wide NVRM NO_MEMORY event 01:22:5x (open incident)",
+    "production root crash-loop churn starves weightd mesh",
+    "engine wedge 1-request-per-boot (coredev)"
+  ],
+  "date_utc": "2026-09-15",
+  "driver": "glm53flash (glm5_next)",
+  "instrument": {
+    "comparison_tool_defaults": "ids/routing exact; streams/scores/weights banded rel<=0.02 or abs<=1e-3; operator tolerance ruling PENDING (not exercised: serving-gated compare blocked, see blocker)",
+    "fixture_dir": "qualification/t1_reference/glm5_next",
+    "fixture_sha256": {
+      "capital_of_france.t1r": {
+        "sha256": "d66be7123bd1cb626c7d56d6856cb35b2e0123193826df4dc4a434f27d1cffae"
+      },
+      "count_up.t1r": {
+        "sha256": "c8dcceff72d7c3c3afef53b54c7500e6306f5d1398765d5849fadade7bb4425b"
+      }
+    },
+    "fixtures_committed": "lane/wave-t1-offline @ cc5d5f8, merged into lane/t1-g53",
+    "negative_control": "PASS (corrupt-fixture byte flip at pos0000_layer0003_streams offset 9 -> compare exits 1, FIRST DIVERGENCE named)",
+    "prompts": {
+      "capital_of_france": {
+        "new_tokens": 4,
+        "prompt_token_ids": [
+          785,
+          6722,
+          315,
+          9621,
+          374
+        ]
+      },
+      "count_up": {
+        "new_tokens": 4,
+        "prompt_token_ids": [
+          2507,
+          287,
+          39556,
+          25,
+          825,
+          11,
+          1378,
+          11
+        ]
+      }
+    },
+    "verify_manifest": "PASS (exit 0, all fixture sha256 match MANIFEST.json)"
+  },
+  "lane_instrumented_stack": {
+    "branch": "lane/t1-g53 @ 50c1974 (+ diag commits)",
+    "deployment": "16 ranks spark0..sparkf, lane root glm53flash.fp8.tp16.t1g53, placed fp8.tp16 packs, ports 19860/63840/60910/61700/62750, collective_identifier 9911223344556677",
+    "model_driver_sha256": "5c71c82c2ce1a0d456c9d0d84b4daa71c390798172af81cf27ed85b0c51cf320",
+    "module": "glm5_next fp8, GPU component validator PASS (0 failures), artifact_sha256 9790647c645d14a94ebf4090ee2d494096330f085d0376c4e01593273e2defa5",
+    "scope": "env-gated G5N-T1 dump (streams/routes/head log lines, rank 0, graphs disabled under SPARK_GLM5_NEXT_T1) + tools/t1_g53_log_assembly.py (log -> T1R1)",
+    "status": "16/16 residentd ready, api connected (session_accepted); decode FAILS at first TP collective: tp_device_collective.c:379 status=17 (chainfail stage 0 layer 0); fleet NVRM NO_MEMORY incident 2026-09-15T01:22:5x + production root crash-loop churn degrade the weightd mesh (external blocker, escalated to mgr2)"
+  },
+  "mesh_lease": "HELD-FIRST + ACTIVE in sparkpipe-coord/MESH_LEASE (T1-QMAX released its window)",
+  "operator_directive": "ACCURATE INFRASTRUCTURE FIRST / accurate inference first, then hillclimb; no cheating, lying or fraud; actual real results",
+  "serving_arm_production_fp8_tp16": {
+    "decode_capital_of_france": {
+      "engine_text": " Paris. In French (fluent, semantically correct)",
+      "engine_tokens": [
+        12089,
+        13,
+        758,
+        8584
+      ],
+      "evidence": "api.log request id 100003-class run 2026-09-15T00:1xZ + this decode receipt; raw logs runs/t1g53/",
+      "fixture_text": "mojibake (replacement char, newlines, dash)",
+      "fixture_tokens": [
+        3837,
+        271,
+        271,
+        12
+      ],
+      "grade": "MEASURED",
+      "verdict": "TOKEN-ID GATE FAIL: first generated token diverges (12089 vs 3837)"
+    },
+    "decode_count_up": "BLOCKED: production engine wedges after ~1 request per residentd boot (MEASURED 2x: main thread 100% spin, zero log errors; api then engine_connect_failed status=4 loop); routed to coredev via mgr2",
+    "stack": "hub core deployed 2026-09-15 00:09 node time by fleet agent; adapter=spark.glm5_next.serving-adapter.tp8.expert_fp8.v1; model=zai-org/GLM-5.3-Flash revision=84c6a6aa9497188e15a635ba793b0f95a79b1033; weightsd socket=/tmp/spark_weightd.sock (deployment JSON weightd.socket_path)",
+    "wedge_defect": "filed in lane report; production-stack blocker, not lane-specific"
+  },
+  "tolerance_ruling": "operator ruling pending; tool defaults recorded; NOT loosened; no rerun-until-pass performed on any gate",
+  "wave": "T1-G53"
+}

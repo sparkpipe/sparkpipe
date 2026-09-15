@@ -41,7 +41,11 @@ class _HashingSink:
         return len(data)
 
 
-def entry_bytes_for(weight_format: int, rows: int, cols: int) -> tuple[int, int]:
+def entry_bytes_for(weight_format: int, kind: int, rows: int, cols: int) -> tuple[int, int]:
+    if weight_format == _tables.WEIGHT_NVFP4_PACKED:
+        expert_rows = _tables.HIDDEN if kind == _tables.KIND_MOE_DOWN else _tables.EXPERT_INTERMEDIATE
+        resident = rows // expert_rows
+        return rows * (cols // 2), rows * (cols // 16) + resident * 8
     if weight_format == _tables.WEIGHT_FP8_F32B128:
         return rows * (cols // 2), rows * (cols // 16)
     element = BF16_BYTES if weight_format == _tables.WEIGHT_BF16 else F32_BYTES
@@ -154,13 +158,15 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
             if (rows, cols) != (shard_rows, shard_cols):
                 fail(f"{tag}: shape {rows}x{cols}, expected rank shard "
                      f"{shard_rows}x{shard_cols}")
-            if fmt != ref.weight_format:
+            want_fmt = _tables.ref_weight_format(ref)
+            if fmt != want_fmt:
                 fail(f"{tag}: weight_format={fmt}, packer format ladder says "
-                     f"{ref.weight_format}")
-            want_group = 128 if fmt == _tables.WEIGHT_FP8_F32B128 else 0
+                     f"{want_fmt}")
+            want_group = 128 if fmt == _tables.WEIGHT_FP8_F32B128 else (
+                16 if fmt == _tables.WEIGHT_NVFP4_PACKED else 0)
             if scale_group != want_group:
                 fail(f"{tag}: scale_group_size={scale_group}, expected {want_group}")
-            want_payload, want_scale = entry_bytes_for(fmt, rows, cols)
+            want_payload, want_scale = entry_bytes_for(fmt, kind, rows, cols)
             if p_bytes != want_payload:
                 fail(f"{tag}: payload_bytes={p_bytes}, format math says {want_payload}")
             if s_bytes != want_scale:
