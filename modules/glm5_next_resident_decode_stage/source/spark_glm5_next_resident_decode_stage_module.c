@@ -203,6 +203,7 @@ struct SparkGlm5NextModuleState
 	uint32_t tp_device_collective_initialized;
 	uint32_t tp_chain_active;
 	uint32_t tp_lane;
+	SparkWeightdClient *lane_client;
 	SparkTpDeviceCollectiveCreditBinding tp_credit_bindings[SPARK_TP_DEVICE_COLLECTIVE_MAX_BINDING_COUNT];
 	uint32_t tp_credit_binding_count;
 	void *tp_credit_send_bf16;
@@ -1869,18 +1870,22 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
+	if ( state->lane_client == 0 )
 	{
-		SparkWeightdClient *lane_client;
 		const char *socket = getenv("SPARK_WEIGHTD_SOCKET");
 		if ( socket == 0 || socket[0] == '\0' )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		if ( SparkWeightdClientConnect(socket,&lane_client,0) != SPARK_STATUS_OK )
+		if ( SparkWeightdClientConnect(socket,&state->lane_client,0) != SPARK_STATUS_OK )
+		{
+			state->lane_client = 0;
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		status = SparkWeightdClientLaneAcquire(lane_client,&state->tp_lane,
+		}
+		status = SparkWeightdClientLaneAcquire(state->lane_client,&state->tp_lane,
 			(uint64_t)context->tp_connect_timeout_milli * 1000000ull);
-		(void)SparkWeightdClientClose(lane_client);
 		if ( status != SPARK_STATUS_OK )
 		{
+			(void)SparkWeightdClientClose(state->lane_client);
+			state->lane_client = 0;
 			fprintf(stderr,"GLM mesh lane acquire failed: no free lane (status=%d)\n",(int32_t)status);
 			SPARK_RETURN(status);
 		}
@@ -4040,6 +4045,11 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	state->tp_hc_host_credit_receive_bf16 = 0;
 	if ( state->tp_device_collective_initialized != 0u )
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+	if ( state->lane_client != 0 )
+	{
+		(void)SparkWeightdClientClose(state->lane_client);
+		state->lane_client = 0;
+	}
 	SparkGlm5NextReleaseCaches(state);
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
@@ -4117,6 +4127,11 @@ static SparkStatus SparkGlm5NextInitializeState(
 		{
 			fprintf(stderr,"GLM lazy initialization cleanup failed; retaining CUDA resources until process exit\n");
 			SPARK_RETURN(status);
+		}
+		if ( state->lane_client != 0 )
+		{
+			(void)SparkWeightdClientClose(state->lane_client);
+			state->lane_client = 0;
 		}
 		SparkGlm5NextReleaseCaches(state);
 		SparkGlm5NextReleaseSlotHost(state);

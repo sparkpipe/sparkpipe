@@ -1,0 +1,32 @@
+{
+  "checkpoint": {
+    "config_sha256": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+    "index_sha256": "3c3f40366a53c3fd7974b4eab7881a365a98c2a4329150befebab99fe7c18b05",
+    "path": "/mnt/model-warm/glm-5.3-flash"
+  },
+  "defines_config_mismatches": [
+    {
+      "config_key": "v_head_dim",
+      "config_value": 256.0,
+      "define": "SPARK_LLM_MLA_V_HEAD_DIMENSION",
+      "value": 512
+    }
+  ],
+  "family": "glm5_next",
+  "fixtures": {
+    "capital_of_france.t1r": {
+      "bytes": 1116887,
+      "sha256": "d66be7123bd1cb626c7d56d6856cb35b2e0123193826df4dc4a434f27d1cffae"
+    },
+    "count_up.t1r": {
+      "bytes": 1487465,
+      "sha256": "c8dcceff72d7c3c3afef53b54c7500e6306f5d1398765d5849fadade7bb4425b"
+    }
+  },
+  "generated_utc": "2026-09-14T01:19:36Z",
+  "generator": "t1_reference_decoder.py",
+  "llm_defines_sha256": "1a7f4b06f303eda6dabc0a0c66245334261f26be2095c1d5c08301db96710895",
+  "numpy_version": "1.26.4",
+  "prompts_sha256": "3d362f5ae3ac4d1d4e1cfed48f443981294d4931dc40f91a0ed092c2fea75e4a",
+  "python_version": "3.12.3"
+}

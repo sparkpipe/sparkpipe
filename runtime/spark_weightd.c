@@ -340,6 +340,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcLaneAcquire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT:
             return sizeof(SparkWeightdIpcLaneAcquireResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EVICT:
+            return SPARK_WEIGHTD_IPC_EVICT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT:
+            return SPARK_WEIGHTD_IPC_EVICT_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT:
             return sizeof(SparkWeightdIpcEpochExportResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
@@ -393,6 +397,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_EVICT:
+            return SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RELEASE:
@@ -469,11 +475,30 @@ SparkStatus SparkWeightdIpcValidateHeader(const SparkWeightdIpcHeader *header,
 
 static SparkStatus SparkWeightdStatusFromWire(uint32_t wire_status)
 {
-    if (wire_status > (uint32_t)SPARK_STATUS_UNSUPPORTED)
+    if (wire_status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     return (SparkStatus)wire_status;
+}
+
+static uint32_t SparkWeightdConnectionLane(
+    const SparkWeightdConnection *connection)
+{
+    uint32_t lane;
+    if (connection->lane_mask == 0u ||
+        (connection->lane_mask & (connection->lane_mask - 1u)) != 0u)
+    {
+        return SPARK_WEIGHTD_LANE_NONE;
+    }
+    for (lane = 0u; lane < SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
+    {
+        if ((connection->lane_mask & (uint16_t)(1u << lane)) != 0u)
+        {
+            return lane;
+        }
+    }
+    return SPARK_WEIGHTD_LANE_NONE;
 }
 
 /* ------------------------------ server: VMM arenas ------------------------------ */
@@ -1686,7 +1711,10 @@ static SparkStatus SparkWeightdAcquireWorkingSet(SparkWeightdServer *server,Spar
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( arena->failure_status != SPARK_STATUS_OK )
 		return(arena->failure_status);
-	status = SparkWeightdLeaseAcquire(arena->leases,connection->owner,keys,count,identifier);
+	{
+		uint32_t lease_lane = SparkWeightdConnectionLane(connection);
+		status = SparkWeightdLeaseAcquire(arena->leases,connection->owner,lease_lane,keys,count,identifier);
+	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	lease = SparkWeightdLeaseFind(arena->leases,connection->owner,*identifier);
@@ -2038,7 +2066,7 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
         uint32_t lane;
         memset(result,0,sizeof(*result));
         SparkWeightdBuildHeader(response,result_kind,request_id);
-        result->status = (uint32_t)SPARK_STATUS_BUSY;
+        result->status = (uint32_t)SPARK_STATUS_NO_LANE;
         for (lane = 0u; lane < SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
             if (server->lane_owner[lane] == 0u)
             {
@@ -2050,6 +2078,60 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server,
                 break;
             }
         return(sizeof(*result));
+    }
+
+    if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_EVICT)
+    {
+        SparkWeightdIpcEvictResult *result =
+            (SparkWeightdIpcEvictResult *)response;
+        const SparkWeightdIpcEvict *request =
+            (const SparkWeightdIpcEvict *)request_header;
+        uint32_t requester_lane;
+        uint32_t released;
+        uint32_t arena_slot;
+        memset(result,0,sizeof(*result));
+        SparkWeightdBuildHeader(response,result_kind,request_id);
+        requester_lane = SparkWeightdConnectionLane(connection);
+        if (request->target_lane >= SPARK_WEIGHTD_MESH_MAX_LANES ||
+            requester_lane == SPARK_WEIGHTD_LANE_NONE)
+        {
+            result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+            return sizeof(*result);
+        }
+        if (requester_lane >= request->target_lane)
+        {
+            result->status = (uint32_t)SPARK_STATUS_EVICT_DENIED;
+            fprintf(stderr,
+                "weightd evict_denied requester_lane=%u target_lane=%u\n",
+                requester_lane,request->target_lane);
+            return sizeof(*result);
+        }
+        released = 0u;
+        for (arena_slot = 0u; arena_slot < server->arena_count; arena_slot++)
+        {
+            SparkWeightdLeaseTable *leases =
+                server->arenas[arena_slot].leases;
+            uint32_t lane_released = 0u;
+            if (leases == 0)
+            {
+                continue;
+            }
+            if (SparkWeightdLeaseReleaseForLane(leases,request->target_lane,
+                    &lane_released) == SPARK_STATUS_OK)
+            {
+                released += lane_released;
+            }
+        }
+        if (released == 0u && server->lane_owner[request->target_lane] == 0u)
+        {
+            result->status = (uint32_t)SPARK_STATUS_NOT_FOUND;
+            return sizeof(*result);
+        }
+        fprintf(stderr,"weightd evict requester_lane=%u target_lane=%u released=%u\n",
+            requester_lane,request->target_lane,released);
+        result->status = (uint32_t)SPARK_STATUS_OK;
+        result->released_leases = released;
+        return sizeof(*result);
     }
 
     if (request_header->kind == SPARK_WEIGHTD_IPC_KIND_EPOCH_EXPORT)
@@ -3086,6 +3168,38 @@ SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
     if ( wire_result.lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     *lane_out = wire_result.lane;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientEvict(SparkWeightdClient *client,
+    uint32_t target_lane,
+    uint32_t *released_leases_out,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcEvict wire;
+    SparkWeightdIpcEvictResult wire_result;
+    SparkStatus status;
+
+    if ( client == 0 || released_leases_out == 0 ||
+        target_lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_EVICT;
+    wire.header.body_bytes =
+        sizeof(wire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    wire.target_lane = target_lane;
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
+    if ( status != SPARK_STATUS_OK )
+        SPARK_RETURN(status);
+    *released_leases_out = wire_result.released_leases;
+    if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
+        return SparkWeightdStatusFromWire(wire_result.status);
     return SPARK_STATUS_OK;
 }
 

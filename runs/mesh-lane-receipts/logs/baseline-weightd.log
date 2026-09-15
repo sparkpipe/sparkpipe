@@ -1,0 +1,4 @@
+spark_weightd ready unix=/home/spark0/mesh1-baseline/runs/mesh-lane-ladder-baseline-20260915-014542/ladder.sock ceiling=8589934592
+weightd-mesh: identity not stated; mesh disabled
+weightd lazy-attach model=mesh-lane-evict experts=4 arena=8388608 pool=6291456
+spark_weightd stopped arenas=1 bytes=4194304

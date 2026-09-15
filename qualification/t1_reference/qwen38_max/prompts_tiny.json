@@ -1,0 +1,22 @@
+{
+  "prompts": [
+    {
+      "capture_layers": [
+        0,
+        3,
+        45,
+        91
+      ],
+      "name": "capital_of_france",
+      "new_tokens": 2,
+      "prompt_token_ids": [
+        760,
+        6511,
+        314,
+        9338,
+        369
+      ],
+      "text": "The capital of France is"
+    }
+  ]
+}

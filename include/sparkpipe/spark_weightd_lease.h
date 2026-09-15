@@ -3,6 +3,7 @@
 
 #define SPARK_WEIGHTD_LEASE_COUNT_MAX 64u
 #define SPARK_WEIGHTD_LEASE_GROUPS_MAX 512u
+#define SPARK_WEIGHTD_LANE_NONE UINT32_MAX
 
 typedef struct SparkWeightdExpertKey
 {
@@ -14,6 +15,7 @@ typedef struct SparkWeightdLease
 {
 	uint64_t identifier;
 	uint64_t owner;
+	uint32_t lane;
 	uint32_t count;
 	uint32_t groups[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
 } SparkWeightdLease;
@@ -34,7 +36,8 @@ extern "C" {
 // by the daemon thread. Owner identifiers must not be reused for new connections.
 SparkStatus SparkWeightdLeaseTableCreate(const SparkWeightdManifest *manifest,SparkWeightdLeaseTable **out);
 SparkStatus SparkWeightdLeaseTableDestroy(SparkWeightdLeaseTable *table);
-SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier);
+SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,uint32_t lane,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier);
+SparkStatus SparkWeightdLeaseReleaseForLane(SparkWeightdLeaseTable *table,uint32_t lane,uint32_t *released_count);
 const SparkWeightdLease *SparkWeightdLeaseFind(const SparkWeightdLeaseTable *table,uint64_t owner,uint64_t identifier);
 // Release only after consumer GPU completion and unmapping are established.
 // Connection loss alone is not permission to release an in-flight lease.

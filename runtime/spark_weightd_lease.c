@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_weightd_lease.h"
+#include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
 
@@ -93,7 +94,7 @@ static SparkStatus prepare_groups(SparkWeightdLeaseTable *table,SparkWeightdLeas
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier)
+SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,uint32_t lane,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier)
 {
 	SparkWeightdLease *lease = 0;
 	SparkStatus status;
@@ -102,6 +103,8 @@ SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owne
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*identifier = 0u;
 	if ( table == 0 || owner == 0u || keys == 0 || count == 0u || count > SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( lane != SPARK_WEIGHTD_LANE_NONE && lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( table->next_identifier == UINT64_MAX )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -120,6 +123,7 @@ SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owne
 		table->pins[lease->groups[i]]++;
 	lease->count = unique;
 	lease->owner = owner;
+	lease->lane = lane;
 	lease->identifier = table->next_identifier++;
 	*identifier = lease->identifier;
 	return(SPARK_STATUS_OK);
@@ -152,7 +156,33 @@ SparkStatus SparkWeightdLeaseRelease(SparkWeightdLeaseTable *table,uint64_t owne
 		table->pins[lease->groups[i]]--;
 	lease->count = 0u;
 	lease->owner = 0u;
+	lease->lane = SPARK_WEIGHTD_LANE_NONE;
 	lease->identifier = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLeaseReleaseForLane(SparkWeightdLeaseTable *table,uint32_t lane,uint32_t *released_count)
+{
+	SparkStatus status;
+	uint64_t identifier;
+	uint32_t i,released;
+	if ( released_count == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*released_count = 0u;
+	if ( table == 0 || lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	released = 0u;
+	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
+	{
+		if ( table->leases[i].count == 0u || table->leases[i].lane != lane )
+			continue;
+		identifier = table->leases[i].identifier;
+		status = SparkWeightdLeaseRelease(table,table->leases[i].owner,identifier);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		released++;
+	}
+	*released_count = released;
 	return(SPARK_STATUS_OK);
 }
 

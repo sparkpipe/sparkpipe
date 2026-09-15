@@ -28,7 +28,9 @@ typedef enum SparkStatus
     SPARK_STATUS_DUPLICATE,
     SPARK_STATUS_INTERNAL_ERROR,
     SPARK_STATUS_PENDING,
-    SPARK_STATUS_UNSUPPORTED
+    SPARK_STATUS_UNSUPPORTED,
+    SPARK_STATUS_NO_LANE,
+    SPARK_STATUS_EVICT_DENIED
 } SparkStatus;
 
 const char *SparkStatusToString(SparkStatus status);

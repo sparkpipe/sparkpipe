@@ -84,6 +84,14 @@ const char *SparkStatusToString(SparkStatus status)
         {
             return "unsupported";
         }
+        case SPARK_STATUS_NO_LANE:
+        {
+            return "no_lane";
+        }
+        case SPARK_STATUS_EVICT_DENIED:
+        {
+            return "evict_denied";
+        }
         default:
         {
             return "unknown_status";

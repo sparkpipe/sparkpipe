@@ -1125,6 +1125,20 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 
 build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 
+GLM5_NEXT_CUDA_SOURCE := \
+	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu
+
+build/mesh_lane_ladder: tools/mesh_lane_ladder.cu $(GLM5_NEXT_CUDA_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) \
+		-Imodel-families/glm5_next/include \
+		-Imodules/glm5_next_resident_decode_stage/include \
+		-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
+		-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" \
+		-Xcompiler=-pthread $< $(GLM5_NEXT_CUDA_SOURCE) \
+		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
+		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
+		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 

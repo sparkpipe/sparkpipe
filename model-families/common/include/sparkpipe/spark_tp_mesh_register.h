@@ -1,13 +1,14 @@
 #pragma once
+#include <cuda_runtime.h>
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_status.h"
 
-extern int SparkGlm5NextLaunchSumRanksF32(void *stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
-extern int SparkGlm5NextLaunchSeedF32(void *stream,float *destination,const void *a,const void *b,uint32_t element_count);
-extern int SparkGlm5NextLaunchAddF32(void *stream,float *destination,const void *b,uint32_t element_count);
-extern int SparkGlm5NextLaunchRoundF32(void *stream,void *destination,const float *source,uint32_t element_count);
-extern int SparkGlm5NextLaunchAccumAdd(void *stream,void *destination,const void *source,uint32_t row_count,uint32_t width);
-extern int SparkGlm5NextLaunchAccumU64Max(void *stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,float *destination,const void *a,const void *b,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,void *destination,const float *source,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination,const void *source,uint32_t row_count,uint32_t width);
+extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 
 static SparkStatus SparkTpMeshCombineFusedBf16(
 	void *combine_context,
@@ -20,7 +21,7 @@ static SparkStatus SparkTpMeshCombineFusedBf16(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchSumRanksF32((void *)cuda_stream,
+	error = SparkGlm5NextLaunchSumRanksF32((cudaStream_t)cuda_stream,
 	    destination_device,source_devices,source_count,
 	    (uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
 	return(error == cudaSuccess ?
@@ -37,7 +38,7 @@ static SparkStatus SparkTpMeshCombineF32Seed(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchSeedF32((void *)cuda_stream,
+	error = SparkGlm5NextLaunchSeedF32((cudaStream_t)cuda_stream,
 	    (float *)destination_f32_device,source_a_bf16_device,
 	    source_b_bf16_device,element_count);
 	return(error == cudaSuccess ?
@@ -53,7 +54,7 @@ static SparkStatus SparkTpMeshCombineF32Add(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAddF32((void *)cuda_stream,
+	error = SparkGlm5NextLaunchAddF32((cudaStream_t)cuda_stream,
 	    (float *)destination_f32_device,source_bf16_device,
 	    element_count);
 	return(error == cudaSuccess ?
@@ -69,7 +70,7 @@ static SparkStatus SparkTpMeshRoundF32(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchRoundF32((void *)cuda_stream,
+	error = SparkGlm5NextLaunchRoundF32((cudaStream_t)cuda_stream,
 	    destination_bf16_device,(const float *)source_f32_device,
 	    element_count);
 	return(error == cudaSuccess ?
@@ -86,7 +87,7 @@ static SparkStatus SparkTpMeshCombineBf16(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAccumAdd((void *)cuda_stream,
+	error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,
 	    destination_device,source_device,active_sequence_count,
 	    hidden_dimension);
 	return(error == cudaSuccess ?
@@ -102,7 +103,7 @@ static SparkStatus SparkTpMeshCombineU64Max(
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAccumU64Max((void *)cuda_stream,
+	error = SparkGlm5NextLaunchAccumU64Max((cudaStream_t)cuda_stream,
 	    destination_device,source_device,element_count);
 	return(error == cudaSuccess ?
 	    SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
