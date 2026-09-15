@@ -638,8 +638,9 @@ void SparkWeightdMeshDoorbellLoop(void)
             volatile uint64_t *cellc = (volatile uint64_t *)
                 (weightd_mesh.recv_buffer + cell_off +
                 SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
-            if ( *cellb != weightd_mesh.cell_posted[band] ||
-                 *cellc != weightd_mesh.cancel_posted[band] )
+            if ( weightd_mesh.local_rank == 0u &&
+                 ( *cellb != weightd_mesh.cell_posted[band] ||
+                 *cellc != weightd_mesh.cancel_posted[band] ) )
             {
                 uint32_t cell_failed = 0u;
                 uint32_t ci;
