@@ -1651,10 +1651,10 @@ static void SparkGlm52T1Wave(const SparkGlm52CudaWave *wave)
 	fputc('\n',stderr);
 }
 
-static int32_t SparkGlm52T1CopyOut(void *destination,const void *source,uint64_t bytes,cudaStream_t stream)
+static int32_t SparkGlm52T1CopyOut(void *destination,const void *source,uint64_t bytes)
 {
 	return(cudaMemcpy(destination,source,bytes,cudaMemcpyDeviceToHost) ==
-	    cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	    cudaSuccess ? 0 : 1);
 }
 
 static void SparkGlm52T1Streams(SparkGlm52TpChain *chain,uint32_t layer)
@@ -1686,10 +1686,8 @@ static void SparkGlm52T1Streams(SparkGlm52TpChain *chain,uint32_t layer)
 	}
 	row_bytes = (uint64_t)chain->wave_rows *
 	    SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
-	if ( SparkGlm52T1CopyOut(residual_host,chain->slot->residual_bf16,row_bytes,
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK ||
-	    SparkGlm52T1CopyOut(hidden_host,chain->slot->hidden_bf16,row_bytes,
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK )
+	if ( SparkGlm52T1CopyOut(residual_host,chain->slot->residual_bf16,row_bytes) != 0 ||
+	    SparkGlm52T1CopyOut(hidden_host,chain->slot->hidden_bf16,row_bytes) != 0 )
 		return;
 	for ( row = 0u; row < chain->wave_rows; row++ )
 	{
@@ -1734,12 +1732,10 @@ static void SparkGlm52T1Route(SparkGlm52TpChain *chain,uint32_t layer)
 		rows_reserved = chain->wave_rows;
 	}
 	bytes = (uint64_t)chain->wave_rows * SPARK_GLM52_MODEL_MOE_TOP_K * sizeof(uint32_t);
-	if ( SparkGlm52T1CopyOut(ids_host,chain->slot->route_expert,bytes,
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK )
+	if ( SparkGlm52T1CopyOut(ids_host,chain->slot->route_expert,bytes) != 0 )
 		return;
 	if ( SparkGlm52T1CopyOut(weights_host,chain->slot->route_weight,
-	        (uint64_t)chain->wave_rows * SPARK_GLM52_MODEL_MOE_TOP_K * sizeof(float),
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK )
+	        (uint64_t)chain->wave_rows * SPARK_GLM52_MODEL_MOE_TOP_K * sizeof(float)) != 0 )
 		return;
 	for ( row = 0u; row < chain->wave_rows; row++ )
 	{
@@ -1783,11 +1779,9 @@ static void SparkGlm52T1Head(SparkGlm52TpChain *chain)
 		rows_reserved = chain->wave_rows;
 	}
 	if ( SparkGlm52T1CopyOut(tokens_host,chain->slot->output_token,
-	        (uint64_t)chain->wave_rows * sizeof(uint32_t),
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK ||
+	        (uint64_t)chain->wave_rows * sizeof(uint32_t)) != 0 ||
 	    SparkGlm52T1CopyOut(scores_host,chain->slot->output_score,
-	        (uint64_t)chain->wave_rows * sizeof(float),
-	        (cudaStream_t)chain->slot->stream) != LM_LAUNCH_OK )
+	        (uint64_t)chain->wave_rows * sizeof(float)) != 0 )
 		return;
 	for ( i = 0u; i < chain->wave_rows; i++ )
 		fprintf(stderr,"G52-T1 head pos%u token %u score_bits %08x\n",
