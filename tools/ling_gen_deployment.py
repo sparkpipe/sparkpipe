@@ -93,7 +93,8 @@ def stage_config(rank: int) -> dict:
         "expert_weight_codec": "bf16",
         "stage_pack_path": PACK_TEMPLATE % rank,
         "max_sequence_positions": 32768,
-        "execution_row_capacity": 1024,
+        "execution_row_capacity": int(os.environ.get(
+            "LING_ROW_CAPACITY", "128")),
         "decode_split_context_threshold": 2048,
         "tp_degree": TP,
         "tp_rank": rank,
