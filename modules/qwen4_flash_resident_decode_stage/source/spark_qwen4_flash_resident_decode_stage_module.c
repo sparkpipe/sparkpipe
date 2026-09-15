@@ -1716,7 +1716,7 @@ static SparkStatus SparkQwen4FlashModuleT1DumpHead(SparkQwen4FlashModuleState *s
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t token = 0u;
 	cudaError_t error;
-	SparkStatus status;
+	SparkStatus status = SPARK_STATUS_OK;
 	if ( state->t1.enable == 0u )
 		return(SPARK_STATUS_OK);
 	error = SparkQwen4FlashLaunchHeadTopScore(stream,slot->normalized_bf16,state->lm_head_weight_bf16,slot->output_token_ids,state->t1.score_device,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,state->tp_vocab_base,state->tp_vocab_rows);
