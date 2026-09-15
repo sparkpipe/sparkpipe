@@ -1338,7 +1338,38 @@ extern "C" cudaError_t SparkQwen38MaxLaunchHeadArgmax(cudaStream_t stream, const
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,candidate_count);
 	return(cudaGetLastError());
 }
-_Static_assert((SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
+
+
+static __global__ void SparkQwen38HeadTopScoreKernel(const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension)
+{
+	__shared__ float reduce[SPARK_LM_CTA_WARPS];
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint64_t row_offset;
+	uint32_t element;
+	float partial;
+	partial = 0.0f;
+	row_offset = (uint64_t)token_ids[0] * (uint64_t)dimension;
+	for ( element = threadIdx.x; element < dimension; element += blockDim.x )
+		partial += SparkLmBf16ToFloat(normalized_bf16,element) * SparkLmBf16ToFloat(head_weight_bf16,row_offset + (uint64_t)element);
+	partial = SparkLmWarpReduceSum(partial);
+	if ( lane == 0u )
+		reduce[warp] = partial;
+	__syncthreads();
+	if ( warp != 0u )
+		return;
+	partial = lane < SPARK_LM_CTA_WARPS ? reduce[lane] : 0.0f;
+	partial = SparkLmWarpReduceSum(partial);
+	if ( lane == 0u )
+		score_f32[0] = partial;
+}
+
+
+extern "C" cudaError_t SparkQwen38MaxLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension)
+{
+	SparkQwen38HeadTopScoreKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(normalized_bf16,head_weight_bf16,token_ids,score_f32,dimension);
+	return(cudaGetLastError());
+}
+static_assert((SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
 #define SPARK_QWEN38_ROUTER_SORT_CAPACITY SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT
 
 static __device__ __forceinline__ float SparkQwen38WarpReduceMax(float value)
@@ -1590,28 +1621,47 @@ extern "C" cudaError_t SparkQwen38MaxLaunchGroupedExpertLinear(
 	uint64_t rows_per_expert;
 	uint64_t payload_stride,scale_stride;
 	uint32_t experts_per_rank = SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT / tp_degree;
+	uint32_t lm_format;
 	const uint8_t *payload;
 	const uint8_t *scale;
 	const uint32_t *offsets;
 	const uint32_t *prefix;
 	if ( view == 0 || input_bf16 == 0 ||
 		group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 ||
-		view->weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 ||
-		view->output_dimension % SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT != 0u ||
 		view->weight_payload == 0 || view->weight_scale_e8m0 == 0 ||
 		(source_row_map == 0 && source_row_count == 0u) ||
 		tp_degree == 0u || tp_rank >= tp_degree ||
 		(SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u )
 		return(cudaErrorInvalidValue);
-	rows_per_expert = (uint64_t)view->output_dimension / SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT;
-	payload_stride = rows_per_expert * view->input_dimension;
-	scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
+	if ( view->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+		lm_format = SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128;
+	else if ( view->weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+		lm_format = SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1;
+	else
+		return(cudaErrorInvalidValue);
+	if ( view->output_dimension % experts_per_rank != 0u )
+		return(cudaErrorInvalidValue);
+	rows_per_expert = (uint64_t)view->output_dimension / experts_per_rank;
+	if ( lm_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
+	{
+		if ( (view->input_dimension % 16u) != 0u )
+			return(cudaErrorInvalidValue);
+		payload_stride = rows_per_expert * (view->input_dimension / 2u);
+		scale_stride = rows_per_expert * (view->input_dimension / 16u) + 8u;
+	}
+	else
+	{
+		if ( (rows_per_expert % 128u) != 0u || (view->input_dimension % 128u) != 0u )
+			return(cudaErrorInvalidValue);
+		payload_stride = rows_per_expert * view->input_dimension;
+		scale_stride = (rows_per_expert / 128u) * ((uint64_t)view->input_dimension / 128u) * 4u;
+	}
 	payload = (const uint8_t *)view->weight_payload + ((uint64_t)tp_rank * experts_per_rank * payload_stride);
 	scale = (const uint8_t *)view->weight_scale_e8m0 + ((uint64_t)tp_rank * experts_per_rank * scale_stride);
 	offsets = group_row_offset + ((uint64_t)tp_rank * experts_per_rank);
 	prefix = group_tile_prefix + ((uint64_t)tp_rank * experts_per_rank);
 	return(SparkLmHostLaunchGroupedScalarLinear<32u>(stream,
-		SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128,
+		lm_format,
 		payload,scale,
 		payload_stride,scale_stride,
 		input_bf16,source_row_map,source_row_count,offsets,prefix,

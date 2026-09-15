@@ -269,6 +269,7 @@ typedef SparkStagePackTensorShape SparkQwen38MaxStagePackTensorShape;
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == SPARK_STAGEPACK_FORMAT_WEIGHT_BF16,"qwen38 bf16 weight code must match the shared format");
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 == SPARK_STAGEPACK_FORMAT_WEIGHT_F32,"qwen38 f32 weight code must match the shared format");
 _Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 == SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128,"qwen38 fp8 weight code must match the shared format");
+_Static_assert(SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED == SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED,"qwen38 nvfp4 weight code must match the shared format");
 
 static const SparkStagePackGeometryTable SparkQwen38MaxStagePackGeometry =
 {
@@ -381,6 +382,8 @@ static inline uint64_t SparkQwen38MaxStagePackPayloadBytes(uint32_t weight_forma
 	uint64_t elements = (uint64_t)rows * (uint64_t)columns;
 	if ( weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 )
 		return(elements / 2u);
+	if ( weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+		return(elements / 2u);
 	if ( weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(elements);
 	if ( weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_F32 || weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_U32 )
@@ -395,4 +398,16 @@ static inline uint64_t SparkQwen38MaxStagePackScaleBytes(uint32_t weight_format,
 	if ( weight_format == SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		return(((uint64_t)rows / 128u) * ((uint64_t)columns / 128u) * 4u);
 	return(0u);
+}
+
+static inline uint64_t SparkQwen38MaxStagePackScaleBytesFor(uint32_t tensor_kind, uint32_t weight_format, uint32_t rows, uint32_t columns)
+{
+	uint64_t expert_rows,resident;
+	if ( weight_format != SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED )
+		return(SparkQwen38MaxStagePackScaleBytes(weight_format,rows,columns));
+	expert_rows = tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN ? SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION : SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION;
+	if ( expert_rows == 0u || (rows % expert_rows) != 0u || (columns % 16u) != 0u )
+		return(0u);
+	resident = rows / expert_rows;
+	return(((uint64_t)rows * (uint64_t)columns) / 16u + resident * 8u);
 }

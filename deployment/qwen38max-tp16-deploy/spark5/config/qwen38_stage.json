@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "model_revision": "d2dc35658bcf77e66643428cb52e774cc3b5bd29",
+  "stage_pack_path": "packs/qwen38max.tp16-rank5.qwen38sp",
+  "max_sequence_positions": 4096,
+  "tp_degree": 16
+}

@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+rank=$1
+pack="$HOME/sparkdata/qwenmax.nvfp4.tp16/packs/qwenmax.nvfp4.tp16.rank$rank.sp"
+sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['output_sha256'])")
+. "/tmp/t1qmax_stage/tools/rank$rank.env"
+rc=0
+sudo -n /usr/local/sbin/sparkcap env \
+	SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1 \
+	"SPARK_QWEN38_MAX_STAGE_PACK_PATH=$pack" \
+	SPARK_QWEN38_MAX_STAGE_COUNT=1 \
+	SPARK_QWEN38_MAX_STAGE_INDEX=0 \
+	SPARK_QWEN38_MAX_STAGE_FIRST_LAYER=0 \
+	SPARK_QWEN38_MAX_STAGE_LAYER_COUNT=92 \
+	SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES=1 \
+	SPARK_QWEN38_MAX_STAGE_PIPELINE_SLOTS=1 \
+	SPARK_QWEN38_MAX_STAGE_KV_BLOCKS=8 \
+	SPARK_QWEN38_MAX_STAGE_TP_DEGREE=16 \
+	"SPARK_QWEN38_MAX_STAGE_TP_RANK=$rank" \
+	"SPARK_QWEN38_MAX_STAGE_TP_BACKEND_PATH=/tmp/t1qmax/libhidden_transport_spark_host_rdma_verbs.so" \
+	"SPARK_QWEN38_MAX_STAGE_TP_IDENTIFIER=$TP_IDENTIFIER" \
+	"SPARK_QWEN38_MAX_STAGE_TP_PORT_BASE=$PORT_BASE" \
+	"SPARK_QWEN38_MAX_STAGE_TP_HOSTS=$TP_HOSTS" \
+	"SPARK_QWEN38_MAX_STAGE_TP_SESSION_PORTS=$SESSION_PORTS" \
+	"SPARK_QWEN38_MAX_STAGE_TP_LOCAL_HOST=$LOCAL_HOST" \
+	SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS=180000 \
+	"SPARK_WEIGHTD_SOCKET=$WEIGHTD_SOCKET" \
+	"SPARK_WEIGHTD_PACK_SHA256=$sha" \
+	"SPARK_WEIGHTD_EXPERT_POOL_BYTES=$EXPERT_POOL_BYTES" \
+	"SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$SPINE_BUDGET_BYTES" \
+	"SPARK_QWEN38_MAX_T1_DUMP=/tmp/t1qmax/dump" \
+	"T1_QMAX_TIMING=$TIMING" \
+	/tmp/t1qmax/t1_qmax_harness "$PROMPT_IDS" "$NEW_TOKENS" > /tmp/t1qmax/harness.log 2>&1 || rc=$?
+grep -q "t1_qmax_harness done" /tmp/t1qmax/harness.log || rc=1
+exit "$rc"
