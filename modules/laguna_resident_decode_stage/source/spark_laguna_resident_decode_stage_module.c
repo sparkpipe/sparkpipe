@@ -1185,6 +1185,127 @@ typedef struct SparkLagunaTpChain
 	SparkStatus retained_status;
 } SparkLagunaTpChain;
 
+static int SparkLagunaT1Enabled(void)
+{
+	static int t1_enabled;
+	static uint32_t t1_probed;
+	if ( t1_probed == 0u )
+	{
+		t1_enabled = getenv("SPARK_LAGUNA_T1") != 0 ? 1 : 0;
+		t1_probed = 1u;
+	}
+	return(t1_enabled);
+}
+static void SparkLagunaT1Wave(const SparkLagunaCudaWave *wave)
+{
+	uint32_t i;
+	if ( SparkLagunaT1Enabled() == 0 || wave == 0 || wave->tp_rank != 0u ||
+	    wave->host_resident_slots == 0 || wave->host_token_ids == 0 ||
+	    wave->host_positions == 0 )
+		return;
+	fprintf(stderr,"LAG-T1 wave seq%u rows=%u",wave->host_resident_slots[0],wave->row_count);
+	for ( i = 0u; i < wave->row_count; i++ )
+		fprintf(stderr," pos%u=%u",wave->host_positions[i],wave->host_token_ids[i]);
+	fputc('\n',stderr);
+}
+static void SparkLagunaT1Streams(const SparkLagunaTpChain *chain,uint32_t layer,uint32_t from_head)
+{
+	static uint16_t *rows_host;
+	static uint32_t rows_host_capacity;
+	uint32_t final_local = chain->wave.layer_count - 1u;
+	uint32_t is_final_layer = (layer == chain->wave.first_layer_index + final_local);
+	uint32_t row;
+	uint32_t i;
+	uint64_t bytes;
+	if ( SparkLagunaT1Enabled() == 0 || chain->wave.tp_rank != 0u )
+		return;
+	if ( is_final_layer != 0u &&
+	    (from_head != 0u) == (chain->state->owns_final_head == 0u) )
+		return;
+	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+		return;
+	bytes = (uint64_t)chain->wave_rows * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	if ( rows_host_capacity < chain->wave_rows )
+	{
+		free(rows_host);
+		rows_host = (uint16_t *)malloc(bytes);
+		rows_host_capacity = rows_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( rows_host == 0 ||
+	    cudaMemcpy(rows_host,chain->slot->residual_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for ( row = 0u; row < chain->wave_rows; row++ )
+	{
+		uint16_t *values = rows_host + (uint64_t)row * SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION;
+		fprintf(stderr,"LAG-T1 stream L%u pos%u",layer,chain->wave.host_positions[row]);
+		for ( i = 0u; i < SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION; i++ )
+			fprintf(stderr," %04x",values[i]);
+		fputc('\n',stderr);
+	}
+}
+static void SparkLagunaT1Route(const SparkLagunaTpChain *chain,uint32_t layer)
+{
+	static uint32_t *ids_host;
+	static float *weights_host;
+	static uint32_t route_capacity;
+	uint32_t row;
+	uint32_t k;
+	if ( SparkLagunaT1Enabled() == 0 || chain->wave.tp_rank != 0u ||
+	    layer < SPARK_LAGUNA_MODEL_FIRST_ROUTED_LAYER )
+		return;
+	if ( route_capacity < chain->wave_rows )
+	{
+		free(ids_host);
+		free(weights_host);
+		ids_host = (uint32_t *)malloc((uint64_t)chain->wave_rows * SPARK_LAGUNA_MODEL_MOE_TOP_K * sizeof(uint32_t));
+		weights_host = (float *)malloc((uint64_t)chain->wave_rows * SPARK_LAGUNA_MODEL_MOE_TOP_K * sizeof(float));
+		route_capacity = ids_host != 0 && weights_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( ids_host == 0 || weights_host == 0 ||
+	    cudaMemcpy(ids_host,chain->slot->route_expert,(uint64_t)chain->wave_rows * SPARK_LAGUNA_MODEL_MOE_TOP_K * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+	    cudaMemcpy(weights_host,chain->slot->route_weight,(uint64_t)chain->wave_rows * SPARK_LAGUNA_MODEL_MOE_TOP_K * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for ( row = 0u; row < chain->wave_rows; row++ )
+	{
+		fprintf(stderr,"LAG-T1 route L%u pos%u ids",layer,chain->wave.host_positions[row]);
+		for ( k = 0u; k < SPARK_LAGUNA_MODEL_MOE_TOP_K; k++ )
+			fprintf(stderr," %u",ids_host[row * SPARK_LAGUNA_MODEL_MOE_TOP_K + k]);
+		fprintf(stderr," weights");
+		for ( k = 0u; k < SPARK_LAGUNA_MODEL_MOE_TOP_K; k++ )
+			fprintf(stderr," %08x",((const uint32_t *)weights_host)[row * SPARK_LAGUNA_MODEL_MOE_TOP_K + k]);
+		fputc('\n',stderr);
+	}
+}
+static void SparkLagunaT1Head(const SparkLagunaTpChain *chain)
+{
+	static uint32_t *tokens_host;
+	static float *scores_host;
+	static uint32_t head_capacity;
+	uint32_t i;
+	if ( SparkLagunaT1Enabled() == 0 || chain->wave.tp_rank != 0u ||
+	    chain->state->owns_final_head == 0u )
+		return;
+	if ( cudaStreamSynchronize((cudaStream_t)chain->slot->stream) != cudaSuccess )
+		return;
+	if ( head_capacity < chain->wave_rows )
+	{
+		free(tokens_host);
+		free(scores_host);
+		tokens_host = (uint32_t *)malloc((uint64_t)chain->wave_rows * sizeof(uint32_t));
+		scores_host = (float *)malloc((uint64_t)chain->wave_rows * sizeof(float));
+		head_capacity = tokens_host != 0 && scores_host != 0 ? chain->wave_rows : 0u;
+	}
+	if ( tokens_host == 0 || scores_host == 0 ||
+	    cudaMemcpy(tokens_host,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+	    cudaMemcpy(scores_host,chain->slot->output_score,(uint64_t)chain->wave_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	SparkLagunaT1Streams(chain,chain->wave.first_layer_index + chain->layer_count - 1u,1u);
+	for ( i = 0u; i < chain->wave_rows; i++ )
+		fprintf(stderr,"LAG-T1 head pos%u token %u score_bits %08x\n",
+		    chain->wave.host_positions[i],tokens_host[i],
+		    ((const uint32_t *)scores_host)[i]);
+}
+
 static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkLagunaCompleteAsync(void *context);
 static SparkStatus SparkLagunaEnqueueAsyncCompletion(
@@ -1602,6 +1723,7 @@ static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status)
 	{
 	case SPARK_LAGUNA_CHAIN_STAGE_BEGIN:
 		SparkLagunaBuildWave(chain);
+		SparkLagunaT1Wave(&chain->wave);
 		if ( SparkLagunaLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
 			SparkLagunaTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -1659,6 +1781,8 @@ static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkLagunaTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
+		SparkLagunaT1Streams(chain,chain->wave.first_layer_index + chain->next_layer,0u);
+		SparkLagunaT1Route(chain,chain->wave.first_layer_index + chain->next_layer);
 		chain->next_layer++;
 		if ( chain->next_layer < chain->wave.layer_count )
 		{
@@ -1692,6 +1816,7 @@ static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkLagunaTpChainFail(chain,launch_status);
 			return;
 		}
+		SparkLagunaT1Head(chain);
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
 			uint32_t next_wave;
