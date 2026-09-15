@@ -219,16 +219,24 @@ def sample_trace(pack: Path, entries: list[dict], source: SafetensorsSource,
     candidates = [entry for entry in entries
                   if entry["weight_format"] in (WEIGHT_BF16, WEIGHT_F32, WEIGHT_I64, WEIGHT_NVFP4_PACKED)
                   or entry["weight_format"] in (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128)]
-    # Guarantee wire-8 coverage: a uniform stride can skip the expert
-    # entries entirely, and they are exactly the samples that matter.
+    # Guarantee wire-8 AND fp8 coverage: a uniform stride can skip the
+    # expert entries entirely, and they are exactly the samples that
+    # matter (the fp8.tp8 fleet defect hid from an 8-sample pass that
+    # landed on zero fp8 entries).
     wire8 = [entry for entry in candidates if entry["weight_format"] == WEIGHT_NVFP4_PACKED]
-    others = [entry for entry in candidates if entry["weight_format"] != WEIGHT_NVFP4_PACKED]
-    general_count = max(1, sample_count - min(3, len(wire8)))
+    wire4 = [entry for entry in candidates if entry["weight_format"] in
+             (WEIGHT_FP8_F32B128, WEIGHT_FP8_E8M0B128)]
+    forced_count = min(3, len(wire8)) + min(3, len(wire4))
+    others = [entry for entry in candidates if entry not in wire8 and entry not in wire4]
+    general_count = max(1, sample_count - forced_count)
     stride = max(1, len(others) // general_count)
     sampled = others[::stride][:general_count]
     if wire8:
         wstride = max(1, len(wire8) // min(3, len(wire8)))
         sampled += wire8[::wstride][:3]
+    if wire4:
+        fstride = max(1, len(wire4) // min(3, len(wire4)))
+        sampled += wire4[::fstride][:3]
     with pack.open("rb") as file:
         for entry in sampled:
             kind, layer = entry["tensor_kind"], entry["layer_index"]
