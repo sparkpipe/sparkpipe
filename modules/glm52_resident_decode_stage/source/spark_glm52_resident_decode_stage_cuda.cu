@@ -8,6 +8,129 @@
 
 #define SPARK_GLM52_CUDA_THREADS 256u
 
+extern "C" int32_t SparkGlm52T1Enabled(void)
+{
+	static int32_t t1_enabled = -1;
+	if ( t1_enabled < 0 )
+		t1_enabled = getenv("SPARK_GLM52_T1") != 0 ? 1 : 0;
+	return(t1_enabled);
+}
+
+__device__ __forceinline__ unsigned long long SparkGlm52GlobalTimerNs()
+{
+	unsigned long long t;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+	return t;
+}
+
+__global__ void SparkGlm52MeshGuardKernel(
+	volatile unsigned long long *error_word,
+	unsigned long long *output)
+{
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	if ( *error_word != 0ull )
+	{
+		output[0] = 0xFFFFFFFFFFFFFFFFull;
+		*error_word = 0ull;
+		printf("MESH-GUARD-POISON\n");
+	}
+}
+
+__global__ void SparkGlm52MeshPublishKernel(
+	volatile uint64_t *entry,
+	unsigned long long *seq_cell,
+	unsigned long long *round_seq,
+	uint64_t bytes,
+	uint64_t slot_index)
+{
+	unsigned long long sequence;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	sequence = 1ull + atomicAdd((unsigned long long *)seq_cell,1ull);
+	round_seq[0] = sequence;
+	entry[2] = slot_index;
+	entry[1] = bytes;
+	__threadfence_system();
+	entry[0] = sequence;
+}
+
+__global__ void SparkGlm52MeshWaitKernel(
+	volatile uint64_t *band_base,
+	uint64_t slot_bytes,
+	const unsigned long long *round_seq,
+	uint64_t slots_per_rank,
+	uint64_t ring,
+	uint32_t rank,
+	uint32_t degree,
+	unsigned long long *error_word,
+	unsigned long long deadline_ns)
+{
+	uint32_t peer;
+	volatile uint64_t *end_word;
+	uint64_t sequence;
+	unsigned long long stop_at;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	sequence = round_seq[0];
+	stop_at = SparkGlm52GlobalTimerNs() + deadline_ns;
+	for ( peer = 0u; peer < degree - 1u; peer++ )
+	{
+		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
+		end_word = (volatile uint64_t *)
+			((uint8_t *)band_base +
+			((uint64_t)peer_rank * slots_per_rank +
+				(ring & (slots_per_rank - 1ull))) * slot_bytes +
+			slot_bytes - 8u);
+		while ( *end_word < sequence )
+		{
+			if ( SparkGlm52GlobalTimerNs() >= stop_at )
+			{
+				atomicExch((unsigned long long *)error_word,sequence);
+				return;
+			}
+			__nanosleep(200u);
+		}
+	}
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
+	volatile void *error_word,void *output)
+{
+	SparkGlm52MeshGuardKernel<<<1,32,0u,stream>>>(
+		(volatile unsigned long long *)error_word,
+		(unsigned long long *)output);
+	return cudaPeekAtLastError();
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
+	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
+	uint64_t slot_index)
+{
+	if ( entry == 0 || seq_cell == 0 || round_seq == 0 )
+		return(cudaErrorInvalidValue);
+	SparkGlm52MeshPublishKernel<<<1,32,0u,stream>>>(
+		(volatile uint64_t *)entry,(unsigned long long *)seq_cell,
+		(unsigned long long *)round_seq,bytes,slot_index);
+	return(cudaPeekAtLastError());
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
+	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+	uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
+	void *error_word,unsigned long long deadline_ns)
+{
+	if ( band_base == 0 || round_seq == 0 || degree == 0u ||
+	     error_word == 0 )
+		return(cudaErrorInvalidValue);
+	SparkGlm52MeshWaitKernel<<<1,32,0u,stream>>>(
+		(volatile uint64_t *)band_base,slot_bytes,
+		(const unsigned long long *)round_seq,slots_per_rank,ring,rank,
+		degree,(unsigned long long *)error_word,deadline_ns);
+	return(cudaPeekAtLastError());
+}
+
+
 __global__ static void SparkGlm52BoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *hidden,
@@ -465,7 +588,8 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		uint32_t rank_offset;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
+		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
+			SparkGlm52T1Enabled() == 0 )
 			status = Glm52HeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
 		else
 			status = Glm52HeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);

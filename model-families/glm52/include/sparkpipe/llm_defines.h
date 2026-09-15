@@ -1,0 +1,44 @@
+#pragma once
+
+#define SPARK_LLM_FAMILY_TAG                    glm52
+#define SPARK_LLM_HIDDEN_DIMENSION              6144u
+#define SPARK_LLM_LAYER_COUNT                   78u
+#define SPARK_LLM_OUTPUT_VOCAB_COUNT            154880u
+#define SPARK_LLM_MAXIMUM_CONTEXT_TOKENS        1048576u
+#define SPARK_LLM_RMS_NORM_EPSILON              1e-05f
+#define SPARK_LLM_END_OF_TEXT_TOKEN_ID          154820u
+#define SPARK_LLM_KV_POOL_TOKENS                4194304u
+#define SPARK_LLM_MAX_PREFILL_TOKENS_PER_DISPATCH 256u
+
+#define SPARK_LLM_MLA_HEAD_COUNT                64u
+#define SPARK_LLM_MLA_QUERY_A_DIMENSION         2048u
+#define SPARK_LLM_MLA_LATENT_DIMENSION          512u
+#define SPARK_LLM_MLA_QK_NOPE_HEAD_DIMENSION    192u
+#define SPARK_LLM_MLA_QK_ROPE_HEAD_DIMENSION    64u
+#define SPARK_LLM_MLA_V_HEAD_DIMENSION          256u
+#define SPARK_LLM_MLA_QK_SCALE                  0.0625f
+
+#define SPARK_LLM_ROPE_THETA                    8000000.0f
+
+#define SPARK_LLM_MOE_EXPERT_COUNT              256u
+#define SPARK_LLM_MOE_TOP_K                     8u
+#define SPARK_LLM_MOE_SHARED_EXPERT_COUNT       1u
+#define SPARK_LLM_MOE_INTERMEDIATE_DIMENSION    2048u
+#define SPARK_LLM_MOE_ROUTED_SCALING_FACTOR     2.5f
+#define SPARK_LLM_MOE_NORM_TOPK_PROB            1u
+#define SPARK_LLM_FIRST_ROUTED_LAYER            3u
+#define SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION  12288u
+
+#define SPARK_LLM_DSA_SELECTED_TOKEN_COUNT      2048u
+#define SPARK_LLM_DSA_INDEX_HEAD_COUNT          32u
+#define SPARK_LLM_DSA_INDEX_HEAD_DIMENSION      128u
+#define SPARK_LLM_DSA_INDEX_SHARE_GROUP_LAYER_COUNT 4u
+#define SPARK_LLM_DSA_INDEX_SKIP_TOPK_OFFSET    3u
+#define SPARK_LLM_DSA_INDEX_SOFTMAX_SCALE       0.0883883476f
+
+#define SPARK_LLM_TP_DEGREE                     16u
+#define SPARK_LLM_STAGE_INDEX                   0u
+
+#define SPARK_LLM_ADAPTER_DESCRIPTOR            "spark.glm52.serving-adapter.tp16.expert_fp8.v1"
+#define SPARK_LLM_MODEL_SOURCE_URI              "zai-org/GLM-5.3"
+#define SPARK_LLM_MODEL_REVISION                "935644c05e76fc198714f4cca449fd8b970ff6d7"
