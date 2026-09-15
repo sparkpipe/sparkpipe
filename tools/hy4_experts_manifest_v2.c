@@ -49,13 +49,31 @@ static const char *json_find(const Hy4Json *json, const char *name)
 	return 0;
 }
 
+static const char *json_key_after(const char *at, const char *key)
+{
+	size_t key_bytes = strlen(key);
+	for (; at[0] != '\0'; at++)
+	{
+		if (at[0] != '"')
+			continue;
+		if (strncmp(at + 1u, key, key_bytes) != 0)
+			continue;
+		if (at[key_bytes + 1u] != '"')
+			continue;
+		return at + key_bytes + 2u;
+	}
+	return 0;
+}
+
 static int json_pair_after(const char *at, const char *key,
 	unsigned long long *first, unsigned long long *second)
 {
-	size_t key_bytes = strlen(key);
 	int seen = 0;
 	unsigned long long value = 0ull;
 	int in_value = 0;
+	at = json_key_after(at, key);
+	if (at == 0)
+		return 0;
 	for (; at[0] != '\0' && seen < 2;)
 	{
 		if (at[0] == '"')
@@ -67,11 +85,6 @@ static int json_pair_after(const char *at, const char *key,
 				at++;
 			if (at[0] != '\0')
 				at++;
-			continue;
-		}
-		if (at[0] == *key && strncmp(at, key, key_bytes) == 0)
-		{
-			at += key_bytes;
 			continue;
 		}
 		if (at[0] >= '0' && at[0] <= '9')
@@ -144,8 +157,8 @@ static int32_t range_write(Hy4Writer *writer, uint32_t layer,
 }
 
 static int32_t class_ranges(Hy4Writer *writer, const Hy4Json *json,
-	uint32_t layer, uint32_t kind, const char *payload_name,
-	const char *scale_name)
+	unsigned long long data_base, uint32_t layer, uint32_t kind,
+	const char *payload_name, const char *scale_name)
 {
 	const char *at;
 	unsigned long long numbers[2];
@@ -185,12 +198,13 @@ static int32_t class_ranges(Hy4Writer *writer, const Hy4Json *json,
 	{
 		int32_t status = range_write(writer, layer,
 			(uint32_t)expert, kind * 2u,
-			payload_start + expert * payload_slab, payload_slab);
+			data_base + payload_start + expert * payload_slab,
+			payload_slab);
 		if (status != 0)
 			return status;
 		status = range_write(writer, layer, (uint32_t)expert,
-		    kind * 2u + 1u, scale_start + expert * scale_slab,
-		    scale_slab);
+		    kind * 2u + 1u, data_base + scale_start +
+		    expert * scale_slab, scale_slab);
 		if (status != 0)
 			return status;
 	}
@@ -198,7 +212,7 @@ static int32_t class_ranges(Hy4Writer *writer, const Hy4Json *json,
 }
 
 static int32_t layer_ranges(Hy4Writer *writer, const Hy4Json *json,
-	uint32_t layer)
+	unsigned long long data_base, uint32_t layer)
 {
 	char gate[HY4_NAME_MAX];
 	char down[HY4_NAME_MAX];
@@ -213,14 +227,16 @@ static int32_t layer_ranges(Hy4Writer *writer, const Hy4Json *json,
 		"model.layers.%u.mlp.experts.down_proj", layer);
 	snprintf(down_scale, sizeof(down_scale),
 		"model.layers.%u.mlp.experts.down_proj_scale", layer);
-	status = class_ranges(writer, json, layer, 0u, gate, gate_scale);
+	status = class_ranges(writer, json, data_base, layer, 0u, gate,
+		gate_scale);
 	if (status != 0)
 	{
 		fprintf(stderr, "gate_up layer %u: status %d\n", layer,
 			status);
 		return status;
 	}
-	status = class_ranges(writer, json, layer, 1u, down, down_scale);
+	status = class_ranges(writer, json, data_base, layer, 1u, down,
+		down_scale);
 	if (status != 0)
 		fprintf(stderr, "down layer %u: status %d\n", layer, status);
 	return status;
@@ -311,6 +327,7 @@ int main(int argc, char **argv)
 	total = layers_found * 4u * (uint32_t)HY4_EXPERTS_PER_RANK;
 	memcpy(wire + 8u, &total, 4u);
 	fwrite(wire, 1u, sizeof(wire), out);
+	unsigned long long data_base = 8ull + json_bytes;
 	writer.pack = pack;
 	writer.out = out;
 	writer.buffer = malloc(SPARK_WEIGHTD_EXPERT_BYTES_MAX);
@@ -319,7 +336,8 @@ int main(int argc, char **argv)
 		return 1;
 	for (layer = 0u; layer < layers_found; layer++)
 	{
-		if (layer_ranges(&writer, &view, layer_ids[layer]) != 0)
+		if (layer_ranges(&writer, &view, data_base,
+		    layer_ids[layer]) != 0)
 			return 1;
 	}
 	free(writer.buffer);
