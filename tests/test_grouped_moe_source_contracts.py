@@ -30,9 +30,9 @@ def main() -> None:
             "K3_ROUTED_SCALE",
         ),
         "glm52": (
-            "modules/glm52_resident_decode_stage/source/cuda/layer.cuh",
+            "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh",
             "LM_TOPK_SCORE_SIGMOID",
-            "GLM52_ROUTED_SCALE",
+            "GLM_ROUTED_SCALE",
         ),
         "mimo25": (
             "inference/llms/mimo_2_5/layer.cuh",
@@ -92,7 +92,7 @@ def main() -> None:
     require(model, "replay/chunk expert-sweep multiplier: 1.0", "removed replay multiplier")
     reject(model, "BP_LAYERS * (BP_EXPERTS", "old queue-depth divisor")
 
-    glm = read("modules/glm52_resident_decode_stage/source/cuda/layer.cuh")
+    glm = read("common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh")
     require(glm, "source_row_map = buffers->route_source_token",
             "GLM routed source-row map")
     require(glm, "LmGemmWeightOnlyIndirectLaunch<",

@@ -63,7 +63,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+          "path": "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
         }
       ],
       "fallback": "forbidden",

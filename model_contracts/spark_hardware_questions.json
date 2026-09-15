@@ -67,7 +67,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/gqa.cuh",
-        "modules/glm52_resident_decode_stage/source/cuda/layer.cuh"
+        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
       ],
       "decision": {
         "policy_path": "hardware.gb10.sparse_memory",

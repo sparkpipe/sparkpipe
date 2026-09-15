@@ -3,10 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
+#include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"
 
-#define SPARK_GLM52_CUDA_THREADS 256u
+#define SPARK_GLM_CUDA_THREADS 256u
 
 __global__ static void SparkGlm52BoundaryLoadKernel(
 	const uint16_t *boundary,
@@ -18,11 +19,11 @@ __global__ static void SparkGlm52BoundaryLoadKernel(
 	uint64_t element,row,source;
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
-	if ( row >= row_count || element >= GLM52_HIDDEN )
+	if ( row >= row_count || element >= GLM_HIDDEN )
 		return;
-	source = (first_row + row) * (2u * (uint64_t)GLM52_HIDDEN);
-	hidden[(row * (uint64_t)GLM52_HIDDEN) + element] = boundary[source + element];
-	residual[(row * (uint64_t)GLM52_HIDDEN) + element] = boundary[source + GLM52_HIDDEN + element];
+	source = (first_row + row) * (2u * (uint64_t)GLM_HIDDEN);
+	hidden[(row * (uint64_t)GLM_HIDDEN) + element] = boundary[source + element];
+	residual[(row * (uint64_t)GLM_HIDDEN) + element] = boundary[source + GLM_HIDDEN + element];
 }
 
 __global__ static void SparkGlm52BoundaryStoreKernel(
@@ -35,11 +36,11 @@ __global__ static void SparkGlm52BoundaryStoreKernel(
 	uint64_t element,row,destination;
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
-	if ( row >= row_count || element >= GLM52_HIDDEN )
+	if ( row >= row_count || element >= GLM_HIDDEN )
 		return;
-	destination = (first_row + row) * (2u * (uint64_t)GLM52_HIDDEN);
-	boundary[destination + element] = hidden[(row * (uint64_t)GLM52_HIDDEN) + element];
-	boundary[destination + GLM52_HIDDEN + element] = residual[(row * (uint64_t)GLM52_HIDDEN) + element];
+	destination = (first_row + row) * (2u * (uint64_t)GLM_HIDDEN);
+	boundary[destination + element] = hidden[(row * (uint64_t)GLM_HIDDEN) + element];
+	boundary[destination + GLM_HIDDEN + element] = residual[(row * (uint64_t)GLM_HIDDEN) + element];
 }
 
 __global__ static void SparkGlm52EmbeddingKernel(
@@ -55,13 +56,13 @@ __global__ static void SparkGlm52EmbeddingKernel(
 	uint32_t token,vocab_per_rank,rank_offset;
 	element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	row = blockIdx.y;
-	if ( row >= row_count || element >= GLM52_HIDDEN )
+	if ( row >= row_count || element >= GLM_HIDDEN )
 		return;
-	vocab_per_rank = GLM52_VOCAB / tp_degree;
+	vocab_per_rank = GLM_VOCAB / tp_degree;
 	rank_offset = tp_rank * vocab_per_rank;
 	token = token_ids[row];
-	source = (uint64_t)(token - rank_offset) * GLM52_HIDDEN + element;
-	destination = row * (uint64_t)GLM52_HIDDEN + element;
+	source = (uint64_t)(token - rank_offset) * GLM_HIDDEN + element;
+	destination = row * (uint64_t)GLM_HIDDEN + element;
 	hidden[destination] = (token >= rank_offset && token < rank_offset + vocab_per_rank) ? embedding[source] : 0u;
 	residual[destination] = 0u;
 }
@@ -139,36 +140,6 @@ static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64
 	((uint32_t *)base)[element] = packed;
 }
 
-static __global__ void SparkGlm52AccumAddKernel(
-	void *destination_bf16,
-	const void *source_bf16,
-	uint32_t row_count,
-	uint32_t width)
-{
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		destination_pair = SparkGlm52LoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkGlm52LoadBf16Pair(source_bf16,offset + element);
-		SparkGlm52StoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
-	}
-}
-
-static __global__ void SparkGlm52AccumU64MaxKernel(
-	uint64_t *destination,
-	const uint64_t *source,
-	uint32_t element_count)
-{
-	uint32_t element;
-	element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < element_count && source[element] > destination[element] )
-		destination[element] = source[element];
-}
-
 extern "C" cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset)
 {
 	if ( scores == 0 || token_ids == 0 || maxloc == 0 || row_count == 0u )
@@ -182,22 +153,6 @@ extern "C" cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,cons
 	if ( maxloc == 0 || token_ids == 0 || row_count == 0u )
 		return(cudaErrorInvalidValue);
 	SparkGlm52HeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,stream>>>(maxloc,token_ids,row_count);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkGlm52LaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
-{
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkGlm52AccumAddKernel<<<row_count,256u,0u,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkGlm52LaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
-{
-	if ( destination == 0 || source == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	SparkGlm52AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,stream>>>(destination,source,element_count);
 	return(cudaPeekAtLastError());
 }
 
@@ -215,7 +170,7 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 	{
-		SparkGlm52WaveMetadataKernel<<<(wave->row_count + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,SPARK_GLM52_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		SparkGlm52WaveMetadataKernel<<<(wave->row_count + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm52CudaStatus(error));
@@ -232,18 +187,18 @@ static int32_t SparkGlm52StageWaveBoundary(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_embedding != 0u )
 	{
-		SparkGlm52EmbeddingKernel<<<dim3((GLM52_HIDDEN + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,wave->row_count),SPARK_GLM52_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,slot->residual_bf16,wave->row_count,wave->tp_degree,wave->tp_rank);
+		SparkGlm52EmbeddingKernel<<<dim3((GLM_HIDDEN + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,wave->row_count),SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,slot->residual_bf16,wave->row_count,wave->tp_degree,wave->tp_rank);
 		error = cudaPeekAtLastError();
 	}
 	else
 	{
-		SparkGlm52BoundaryLoadKernel<<<dim3((GLM52_HIDDEN + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,wave->row_count),SPARK_GLM52_CUDA_THREADS,0,stream>>>((const uint16_t *)wave->hidden_input_bf16,slot->hidden_bf16,slot->residual_bf16,wave->boundary_row_offset,wave->row_count);
+		SparkGlm52BoundaryLoadKernel<<<dim3((GLM_HIDDEN + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,wave->row_count),SPARK_GLM_CUDA_THREADS,0,stream>>>((const uint16_t *)wave->hidden_input_bf16,slot->hidden_bf16,slot->residual_bf16,wave->boundary_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
-	if ( error != cudaSuccess || wave->sideband_input == 0u || wave->maximum_context <= GLM52_DSA_SELECTED )
+	if ( error != cudaSuccess || wave->sideband_input == 0u || wave->maximum_context <= GLM_DSA_SELECTED )
 		return(SparkGlm52CudaStatus(error));
-	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM52_DSA_SELECTED;
-	error = cudaMemcpyAsync(slot->selected_positions,(const uint32_t *)wave->sideband_input_u32 + sideband_offset,(uint64_t)wave->row_count * GLM52_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
+	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM_DSA_SELECTED;
+	error = cudaMemcpyAsync(slot->selected_positions,(const uint32_t *)wave->sideband_input_u32 + sideband_offset,(uint64_t)wave->row_count * GLM_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 	return(SparkGlm52CudaStatus(error));
 }
 
@@ -263,7 +218,7 @@ static void SparkGlm52BuildKvView(
 static void SparkGlm52BindLayer(
 	const SparkGlm52CudaWave *wave,
 	uint32_t local_layer,
-	Glm52LayerBuffers *buffers)
+	GlmLayerBuffers *buffers)
 {
 	const SparkGlm52LayerWeights *weight;
 	SparkGlm52ExecutionSlot *slot;
@@ -273,16 +228,16 @@ static void SparkGlm52BindLayer(
 	memset(buffers,0,sizeof(*buffers));
 	buffers->tp_degree = wave->tp_degree;
 	buffers->tp_rank = wave->tp_rank;
-	buffers->attn_heads = SPARK_GLM52_MODEL_HEAD_COUNT / wave->tp_degree;
-	buffers->q_b_rows = buffers->attn_heads * (SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_MODEL_ROPE_DIMENSION);
-	buffers->attn_output_columns = buffers->attn_heads * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
-	buffers->dense_gate_up_rows = 2u * SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->dense_intermediate = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->expert_w1_rows = 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->expert_intermediate = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->shared_gate_up_rows = 2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->shared_intermediate = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
-	buffers->head_vocabulary = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
+	buffers->attn_heads = SPARK_GLM_MODEL_HEAD_COUNT / wave->tp_degree;
+	buffers->q_b_rows = buffers->attn_heads * (SPARK_GLM_MODEL_QK_NOPE_HEAD_DIMENSION + SPARK_GLM_MODEL_ROPE_DIMENSION);
+	buffers->attn_output_columns = buffers->attn_heads * SPARK_GLM_MODEL_VALUE_HEAD_DIMENSION;
+	buffers->dense_gate_up_rows = 2u * SPARK_GLM_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->dense_intermediate = SPARK_GLM_MODEL_DENSE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->expert_w1_rows = 2u * SPARK_GLM_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->expert_intermediate = SPARK_GLM_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->shared_gate_up_rows = 2u * SPARK_GLM_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->shared_intermediate = SPARK_GLM_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
+	buffers->head_vocabulary = SPARK_GLM_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
 	buffers->dense_row_offset = slot->dense_row_offset;
 	buffers->dense_tile_prefix = slot->dense_tile_prefix;
 	buffers->attn_norm_weight = weight->attn_norm_bf16;
@@ -293,8 +248,8 @@ static void SparkGlm52BindLayer(
 	buffers->kv_a_norm_weight = weight->kv_a_norm_bf16;
 	{
 		uint64_t head_offset = (uint64_t)wave->tp_rank * buffers->attn_heads;
-		uint64_t key_head_stride = (uint64_t)GLM52_LATENT * GLM52_QK_NOPE_DIM;
-		uint64_t value_head_stride = (uint64_t)GLM52_VALUE_DIM * GLM52_LATENT;
+		uint64_t key_head_stride = (uint64_t)GLM_LATENT * GLM_QK_NOPE_DIM;
+		uint64_t value_head_stride = (uint64_t)GLM_VALUE_DIM * GLM_LATENT;
 		buffers->kv_b_key_transposed_weight = (const uint16_t *)weight->kv_b_key_transposed_bf16 + head_offset * key_head_stride;
 		buffers->kv_b_value_weight = (const uint16_t *)weight->kv_b_value_bf16 + head_offset * value_head_stride;
 	}
@@ -303,13 +258,13 @@ static void SparkGlm52BindLayer(
 	buffers->index_head_weight = weight->index_head_bf16;
 	buffers->index_norm_weight = weight->index_norm_weight_bf16;
 	buffers->index_norm_bias = weight->index_norm_bias_bf16;
-	buffers->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
+	buffers->qk_scale = SPARK_GLM_MODEL_QK_SCALE;
 	buffers->output_weight = weight->attn_output_bf16;
 	buffers->mlp_norm_weight = weight->post_attn_norm_bf16;
 	buffers->router_weight = weight->router_bf16;
 	buffers->router_correction_bias = weight->router_correction_f32;
 	buffers->dense_gate_weight = weight->dense_gate_up_bf16;
-	buffers->dense_up_weight = weight->dense_gate_up_bf16 == 0 ? 0 : (const uint16_t *)weight->dense_gate_up_bf16 + ((uint64_t)GLM52_DENSE_INTERMEDIATE * GLM52_HIDDEN);
+	buffers->dense_up_weight = weight->dense_gate_up_bf16 == 0 ? 0 : (const uint16_t *)weight->dense_gate_up_bf16 + ((uint64_t)GLM_DENSE_INTERMEDIATE * GLM_HIDDEN);
 	buffers->dense_down_weight = weight->dense_down_bf16;
 	buffers->dense_gate_up_fused = weight->dense_gate_up_bf16 != 0 ? 1u : 0u;
 	if ( wave->expert_lease_base != 0 &&
@@ -350,7 +305,7 @@ static void SparkGlm52BindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->selected_positions = slot->selected_positions;
-	buffers->selected_position_count = GLM52_DSA_SELECTED;
+	buffers->selected_position_count = GLM_DSA_SELECTED;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
 	buffers->route_source_token = slot->route_source_token;
@@ -377,33 +332,33 @@ static void SparkGlm52BindLayer(
 
 static int32_t SparkGlm52RunLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
-	Glm52LayerBuffers buffers;
+	GlmLayerBuffers buffers;
 	uint32_t layer;
 	int32_t status;
 	layer = wave->first_layer_index + local_layer;
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
-	status = Glm52LayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
+	status = GlmLayerAttention(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 	return(status);
 }
 
 static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
-	Glm52LayerBuffers buffers;
+	GlmLayerBuffers buffers;
 	uint32_t layer,packed_rows;
 	int32_t status;
 	cudaError_t error;
 	layer = wave->first_layer_index + local_layer;
-	packed_rows = wave->row_count * GLM52_TOP_K;
+	packed_rows = wave->row_count * GLM_TOP_K;
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
-	if ( layer < GLM52_FIRST_ROUTED_LAYER )
-		return(Glm52LayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
-	status = Glm52LayerMoeRoute<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
+	if ( layer < GLM_FIRST_ROUTED_LAYER )
+		return(GlmLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	status = GlmLayerMoeRoute<GLM_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	wave->slot->route_recorded = 0u;
 	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
 	{
-		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM52_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
+		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
 		if ( error == cudaSuccess )
 			error = cudaEventRecord((cudaEvent_t)wave->slot->route_ready_event,(cudaStream_t)wave->slot->stream);
 		if ( error != cudaSuccess )
@@ -415,14 +370,14 @@ static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_
 
 static int32_t SparkGlm52RunLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
-	Glm52LayerBuffers buffers;
+	GlmLayerBuffers buffers;
 	uint32_t layer,packed_rows;
 	layer = wave->first_layer_index + local_layer;
-	packed_rows = wave->row_count * GLM52_TOP_K;
-	if ( layer < GLM52_FIRST_ROUTED_LAYER )
+	packed_rows = wave->row_count * GLM_TOP_K;
+	if ( layer < GLM_FIRST_ROUTED_LAYER )
 		return(LM_LAUNCH_OK);
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
-	return(Glm52LayerMoeExperts<GLM52_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	return(GlmLayerMoeExperts<GLM_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
 }
 
 static int32_t SparkGlm52RunLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer)
@@ -461,30 +416,30 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_final_head != 0u )
 	{
-		Glm52LayerBuffers buffers;
+		GlmLayerBuffers buffers;
 		uint32_t rank_offset;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
 		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
-			status = Glm52HeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
+			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
 		else
-			status = Glm52HeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
+			status = GlmHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		error = SparkGlm52LaunchHeadMaxlocPack(stream,slot->output_score,slot->output_token,slot->head_maxloc_u64,wave->row_count,rank_offset);
 	}
 	else
 	{
-		SparkGlm52BoundaryStoreKernel<<<dim3((GLM52_HIDDEN + SPARK_GLM52_CUDA_THREADS - 1u) / SPARK_GLM52_CUDA_THREADS,wave->row_count),SPARK_GLM52_CUDA_THREADS,0,stream>>>(slot->hidden_bf16,slot->residual_bf16,(uint16_t *)wave->hidden_output_bf16,wave->boundary_row_offset,wave->row_count);
+		SparkGlm52BoundaryStoreKernel<<<dim3((GLM_HIDDEN + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,wave->row_count),SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->hidden_bf16,slot->residual_bf16,(uint16_t *)wave->hidden_output_bf16,wave->boundary_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	if ( error != cudaSuccess || wave->sideband_output == 0u )
 		return(SparkGlm52CudaStatus(error));
-	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM52_DSA_SELECTED;
-	if ( wave->maximum_context > GLM52_DSA_SELECTED )
-		error = cudaMemcpyAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,slot->selected_positions,(uint64_t)wave->row_count * GLM52_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
+	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM_DSA_SELECTED;
+	if ( wave->maximum_context > GLM_DSA_SELECTED )
+		error = cudaMemcpyAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,slot->selected_positions,(uint64_t)wave->row_count * GLM_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 	else
-		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * GLM52_DSA_SELECTED * sizeof(uint32_t),stream);
+		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * GLM_DSA_SELECTED * sizeof(uint32_t),stream);
 	return(SparkGlm52CudaStatus(error));
 }
 

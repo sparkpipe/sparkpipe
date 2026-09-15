@@ -346,6 +346,7 @@ PYTHON_TESTS := \
 	tests/test_ling_model_header.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
+	tests/test_common_glm_modules.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \

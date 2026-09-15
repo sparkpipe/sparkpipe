@@ -9,7 +9,7 @@ extern "C" {
 
 struct LmGemmArguments;
 
-int32_t Glm52GemmBf16(
+int32_t GlmGemmBf16(
     struct LmGemmArguments *arguments,
     const void *activation_bf16,
     const void *weight_bf16,
@@ -22,9 +22,9 @@ int32_t Glm52GemmBf16(
     bool grouped,
     void *stream);
 
-uint32_t Glm52ExpertWeightCodec(void);
+uint32_t GlmExpertWeightCodec(void);
 
-int32_t Glm52GemmExpertWeightBf16Activation(
+int32_t GlmGemmExpertWeightBf16Activation(
     struct LmGemmArguments *arguments,
     const void *activation_bf16,
     const void *weight_payload,

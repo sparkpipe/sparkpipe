@@ -29,10 +29,10 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' \
-        "-DGLM52_EXPERT_WEIGHT_CODEC=${glm52_codec_ids[${codec_index}]}" \
-        "-DGLM52_EXPERT_CODEC_NAME=\"${SPARK_GLM52_EXPERT_CODEC}\"" \
-        "-DGLM52_MODEL_REVISION=\"${model_revision}\"" \
-        "-DGLM52_CONTRACT_SHA256=\"${contract_sha256}\""
+        "-DGLM_EXPERT_WEIGHT_CODEC=${glm52_codec_ids[${codec_index}]}" \
+        "-DGLM_EXPERT_CODEC_NAME=\"${SPARK_GLM52_EXPERT_CODEC}\"" \
+        "-DGLM_MODEL_REVISION=\"${model_revision}\"" \
+        "-DGLM_CONTRACT_SHA256=\"${contract_sha256}\""
 }
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

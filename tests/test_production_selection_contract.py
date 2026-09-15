@@ -22,10 +22,13 @@ def require(condition, message):
 def main():
     failures = 0
     resident = (ROOT / "node/model_residentd.c").read_text()
-    makefile = (ROOT / "modules/glm52_resident_decode_stage/Makefile").read_text()
+    makefile = (
+        (ROOT / "modules/glm52_resident_decode_stage/Makefile").read_text()
+        + (ROOT / "common/glm_resident_stage_wrapper.mk").read_text()
+    )
     unity = (
         ROOT
-        / "modules/glm52_resident_decode_stage/source/cuda/unity.cu"
+        / "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
     ).read_text()
     adapter = (
         ROOT
@@ -46,25 +49,24 @@ def main():
     failures += require("ifndef EXPERT_CODEC" in makefile and
                         "$(error EXPERT_CODEC is required" in makefile,
                         "the GLM build does not require an expert codec")
-    declared = re.search(r"GLM52_EXPERT_CODECS := ([^\n]+)", makefile)
+    declared = re.search(r"GLM_EXPERT_CODECS := ([^\n]+)", makefile)
     failures += require(declared is not None and
                         tuple(declared.group(1).split()) == CODECS,
                         "the GLM build codec matrix is incomplete or reordered")
     for codec_index, codec in enumerate(CODECS, start=1):
         failures += require(
-            f"ifeq ($(EXPERT_CODEC),{codec})" in makefile and
-            f"GLM52_EXPERT_CODEC_ID := {codec_index}" in makefile,
+            f"GLM_CODEC_ID_{codec.upper()} := {codec_index}" in makefile,
             f"the {codec} build does not bind its public codec id")
     failures += require(
-        "#ifndef GLM52_EXPERT_WEIGHT_CODEC" in unity and
-        "LmWeightCodec<GLM52_EXPERT_WEIGHT_CODEC>::Format" in unity,
+        "#ifndef GLM_EXPERT_WEIGHT_CODEC" in unity and
+        "LmWeightCodec<GLM_EXPERT_WEIGHT_CODEC>::Format" in unity,
         "the CUDA module does not specialize on the package codec")
     failures += require(
-        'SparkJsonStringEquals(&document,token,GLM52_EXPERT_CODEC_NAME)' in
+        'SparkJsonStringEquals(&document,token,GLM_EXPERT_CODEC_NAME)' in
         adapter,
         "the adapter does not reject a configuration codec mismatch")
     failures += require(
-        "context->expert_weight_codec != GLM52_EXPERT_WEIGHT_CODEC" in module,
+        "context->expert_weight_codec != GLM_EXPERT_WEIGHT_CODEC" in module,
         "the driver does not reject a package codec mismatch")
     failures += require(
         'parser.add_argument("--expert-codec",choices=tuple(CODECS),required=True)'

@@ -186,10 +186,10 @@ for codec_index in "${!glm_codecs[@]}"; do
 		modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu \
 		"glm52_resident_decode_stage_${codec}" \
 		-include "${glm_model_header}" \
-		-DGLM52_EXPERT_WEIGHT_CODEC="${codec_id}" \
-		-DGLM52_EXPERT_CODEC_NAME=\""${codec}"\" \
-		-DGLM52_MODEL_REVISION=\""${model_revision}"\" \
-		-DGLM52_CONTRACT_SHA256=\""${contract_sha256}"\"
+		-DGLM_EXPERT_WEIGHT_CODEC="${codec_id}" \
+		-DGLM_EXPERT_CODEC_NAME=\""${codec}"\" \
+		-DGLM_MODEL_REVISION=\""${model_revision}"\" \
+		-DGLM_CONTRACT_SHA256=\""${contract_sha256}"\"
 done
 
 for direct_mode in 0 1; do
