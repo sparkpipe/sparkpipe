@@ -7,8 +7,8 @@ ROOT_NAME="${3:?runtime root name under ~/sparkdata and the hub release dir}"
 REVISION="${4:?model source revision}"
 CONTRACT="${5:?contract json path}"
 BRANCH="${6:-${G5_BRANCH:-origin/lane/glm53-p0}}"
-TREE="$HOME/sparkpipe-build"
-FIRMWARE="examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json"
+TREE="${SPARKPIPE_BUILD_TREE:-$HOME/sparkpipe-build}"
+FIRMWARE="${FIRMWARE_JSON:-examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json}"
 
 cd "$TREE"
 mkdir -p "$HOME/release"
@@ -29,7 +29,7 @@ SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
 echo "== host build"
 make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
 make -j16 -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
-ADAPTER_SO="build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
+ADAPTER_SO="build/modules/$FAMILY/$CODEC/lib${FAMILY}_serving_adapter_$CODEC.so"
 [ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
 
 echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"

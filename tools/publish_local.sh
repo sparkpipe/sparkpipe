@@ -4,10 +4,10 @@ set -euo pipefail
 FAMILY="${1:?module family}"
 CODEC="${2:?codec}"
 ROOT_NAME="${3:?release root name}"
-TREE="$HOME/sparkpipe-build"
+TREE="${SPARKPIPE_BUILD_TREE:-$HOME/sparkpipe-build}"
 RELEASE="$HOME/release/$ROOT_NAME"
 STAGING="$RELEASE/.staging"
-ADAPTER_SO="$TREE/build/modules/$FAMILY/$CODEC/libglm5_next_serving_adapter_$CODEC.so"
+ADAPTER_SO="$TREE/build/modules/$FAMILY/$CODEC/lib${FAMILY}_serving_adapter_$CODEC.so"
 
 DEPLOY_JSON="$RELEASE/model_resident.json"
 if [ -f "$DEPLOY_JSON" ]; then

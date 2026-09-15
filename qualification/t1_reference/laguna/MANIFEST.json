@@ -1,0 +1,31 @@
+{
+  "checkpoint": {
+    "config_sha256": "8309d2ab0da8ac0981b8803b1a4637d843c10fdf7851ddd202ca918fb682392c",
+    "index_sha256": "91f9cb0e426b0720b3f801ccaf0413879300f07a072b83de957b4177bcab8b6d",
+    "path": "/home/spark1/refs2_ckpt/laguna-s-2.1"
+  },
+  "defines_config_mismatches": [],
+  "family": "laguna",
+  "fixtures": {
+    "capital_of_france.t1r": {
+      "bytes": 382607,
+      "sha256": "df8251cdd09730edf0b84354b3d4c99aa8ae3550636e6257f908e05506dd7b62"
+    },
+    "count_up.t1r": {
+      "bytes": 467255,
+      "sha256": "875c94e1be031e924447457c24e3fc5541ee8af44f9c4832f9f337f32cb3fd50"
+    }
+  },
+  "generated_utc": "2026-09-14T21:35:20Z",
+  "generator": "t1_reference_decoder.py",
+  "host": "spark1",
+  "llm_defines_sha256": "04381e2a53b06cf60e2ccf9bd0520b1a6335b8a94b8bec55c44f34e0c5f8be18",
+  "numpy_version": "1.26.4",
+  "prompts_sha256": "0532b1582255d56fdc98a81bf303b5e24962430d3ee72a8a28b0186ca151576c",
+  "python_version": "3.12.3",
+  "threading_env": {
+    "MKL_NUM_THREADS": null,
+    "OMP_NUM_THREADS": "20",
+    "OPENBLAS_NUM_THREADS": null
+  }
+}

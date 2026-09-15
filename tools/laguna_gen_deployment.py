@@ -40,9 +40,9 @@ if len(HOSTS) != RANKS:
 TP = len(HOSTS)
 RUNTIME_ROOT = os.environ.get("LAGUNA_RUNTIME_ROOT",
                               "/home/{host}/sparkdata/laguna-s-2.1.bf16.tp8pp2")
-CONTROL_BASE = int(os.environ.get("LAGUNA_CONTROL_BASE", "19560"))
-COLLECTIVE_BASE = int(os.environ.get("LAGUNA_COLLECTIVE_BASE", "63640"))
-TRANSPORT_BASE = int(os.environ.get("LAGUNA_TRANSPORT_BASE", "60710"))
+CONTROL_BASE = int(os.environ.get("LAGUNA_CONTROL_BASE", "17232"))
+COLLECTIVE_BASE = int(os.environ.get("LAGUNA_COLLECTIVE_BASE", "17216"))
+TRANSPORT_BASE = int(os.environ.get("LAGUNA_TRANSPORT_BASE", "17248"))
 COLLECTIVE_ID = 9911223344556679
 PACK_TEMPLATE = os.environ.get(
     "LAGUNA_PACK_TEMPLATE",
@@ -104,15 +104,13 @@ def stage_config(rank: int) -> dict:
         "expert_weight_codec": "bf16",
         "stage_pack_path": PACK_TEMPLATE % (rank // TP_DEGREE, rank),
         "max_sequence_positions": 32768,
-        # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
-        # the engine chunks prompts to runtime_limits.max_input_rows, and
-        # the shipped 16 made a 32K prompt 2048 sequential submissions -
-        # one full weight re-stream + collective latency per 16 tokens,
-        # the measured 10 tok/s prefill. Rows are NOT sequence slots:
+        # The weightd mesh law caps one submission at
+        # SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS=128 rows; a config above it
+        # fails deployment_validation. Rows are NOT sequence slots:
         # execution_row_capacity is validated against the module's row
         # firmware limit, not resident_sequence_capacity (the GDN-state
         # memory budget stays sized by max_active_sequences=16).
-        "execution_row_capacity": 1024,
+        "execution_row_capacity": 128,
         # R3 engagement: above 2048 positions the decode attention takes
         # the split-K (flash-decode) form - 4 heads/rank at TP16 means a
         # B1 grid of 4 CTAs on 48 SMs without it. Below the threshold the
@@ -178,12 +176,12 @@ def resident_deployment() -> dict:
         # seam then attaches the warm arena - code-only redeploys skip
         # the 21.7GB re-read.
         "weightd": {
-            "socket_path": "/tmp/spark_weightd.sock",
+            "socket_path": "/run/sparkpipe-weightsd/weightsd.sock",
         },
         "runtime_limits": {
             "max_inflight_submissions": 4,
             "max_active_sequences": 16,
-            "max_input_rows": 1024,
+            "max_input_rows": 128,
             "resident_sequence_capacity": 16,
             "kv_logical_page_capacity": page_capacity,
             "kv_physical_page_capacity": page_capacity,

@@ -8,6 +8,7 @@
 #include "spark_laguna_resident_decode_stage_internal.h"
 #include "inference/kernels/tp_reduce.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_status.h"
 
 #define SPARK_LAGUNA_CUDA_THREADS 256u
