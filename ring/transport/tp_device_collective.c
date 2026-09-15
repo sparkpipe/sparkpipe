@@ -441,16 +441,37 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
             SparkTpDeviceCollectiveCancelCellOffset(band_index));
         uint64_t tag = request_id &
             (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull);
+        uint64_t tail_epoch = 0ull;
+        uint64_t tail_slot;
         uint64_t deadline = SparkTpDeviceCollectiveTimeNs() +
             (implementation->round_timeout_ns <
                 SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS ?
                 implementation->round_timeout_ns :
                 SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS);
+        for ( tail_slot = 0u;
+              tail_slot < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+              tail_slot++ )
+        {
+            volatile uint64_t *tail_word = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                implementation->band_base +
+                ((uint64_t)implementation->tp_rank *
+                    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + tail_slot) *
+                implementation->slot_bytes + implementation->slot_bytes - 8u);
+            if ( (*tail_word >> (SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS +
+                     SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS)) >
+                    tail_epoch )
+                tail_epoch = *tail_word >>
+                    (SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS +
+                        SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS);
+        }
         implementation->cancel_seen = *cancel_cell;
         while ( ((*base_cell &
                     (SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE - 1ull)) != tag) ||
-                (*base_cell >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) ==
-                    0ull )
+                ((*base_cell >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) ==
+                    0ull) ||
+                ((*base_cell >> SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS) <=
+                    tail_epoch) )
         {
             struct timespec pause = {0,1000};
             if ( *cancel_cell != implementation->cancel_seen )
@@ -465,10 +486,11 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 fprintf(stderr,
-                    "CKEY-WAIT-TIMEOUT rank=%u cell=%llu tag=%llu\n",
+                    "CKEY-WAIT-TIMEOUT rank=%u cell=%llu tag=%llu tail_epoch=%llu\n",
                     implementation->tp_rank,
                     (unsigned long long)*base_cell,
-                    (unsigned long long)tag);
+                    (unsigned long long)tag,
+                    (unsigned long long)tail_epoch);
                 return SPARK_STATUS_BUSY;
             }
             nanosleep(&pause,0);
