@@ -464,7 +464,7 @@ static SparkStatus SparkQwen4FlashModuleManifestCheck(const SparkWeightdManifest
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		uint32_t expert;
-		for (expert = 0u; expert < SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree; expert++)
+		for (expert = state->tp_rank * (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree); expert < (state->tp_rank + 1u) * (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT / state->tp_degree); expert++)
 		{
 			const SparkWeightdRangeGroup *group = SparkWeightdManifestFind(manifest,layer,expert);
 			uint32_t index,kind_bits = 0u;
@@ -2000,6 +2000,9 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 			local_offsets[local_index] = host_offsets[local_base + local_index] - host_offsets[local_base];
 		if ( error == cudaSuccess )
 			error = SparkWeightdRouteKeys(layer,local_offsets,local_experts,local_offsets[local_experts],keys,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+		if ( error == cudaSuccess )
+			for (local_index = 0u; local_index < key_count; local_index++)
+				keys[local_index].expert += local_base;
 		if ( error == cudaSuccess )
 		{
 			error = SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
