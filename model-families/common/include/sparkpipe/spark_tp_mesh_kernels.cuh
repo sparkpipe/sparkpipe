@@ -6,6 +6,13 @@
 #include <cuda_runtime.h>
 #define SPARK_TP_MESH_THREADS 256u
 
+static __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs(void)
+{
+	unsigned long long ns;
+	asm volatile("mov.u64 %%nsec, %%globaltimer;" : "=l"(ns));
+	return ns;
+}
+
 __global__ void SparkGlm5NextMeshPublishKernel(
 	volatile uint64_t *entry,
 	unsigned long long *seq_cell,
@@ -92,13 +99,6 @@ static __device__ __forceinline__ void SparkGlm5NextStoreBf16Pair(void *base,uin
 	uint32_t packed = ((uint32_t)(__float_as_int(y) & 0xffff0000u)) |
 	    (uint32_t)((__float_as_int(x) >> 16) & 0x0000ffffu);
 	((uint32_t *)base)[element] = packed;
-}
-
-static __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs(void)
-{
-	unsigned long long ns;
-	asm volatile("mov.u64 %%nsec, %%globaltimer;" : "=l"(ns));
-	return ns;
 }
 
 
