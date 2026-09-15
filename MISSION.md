@@ -35,9 +35,12 @@ INSIDE libcuda cuMemcpyDtoH during trivial copies MEASURED 4x (sparka,
 spark2x2) — r3's documented quiet-GPU class, NOT fixed in-lane (one
 diagnostic sync attempt: store clean, crash moved later = driver-class);
 gemma4-26b roofline ceiling 230.4 tok/s DERIVED (R-wave ledger); B1 tok/s
-and T1 serving compare: BLOCKED — publish gate cannot complete under the
-3-tenant co-residency envelope (every node carries 3 GPU tenants
-MEASURED 09-15); warm batch queued behind HY4-T1's CEPH_LEASE MEASURED.
+and T1 serving compare: BLOCKED — the publish-gate SIGSEGV is
+DRIVER-LEVEL, proven under the dedicated-GPU windows (co-residency
+refuted window 1; sanitizer 0 device errors + the real one-element
+context[1] validator bug found and FIXED in-lane window 2; crash
+persisted post-fix at the same cuMemcpyDtoH site — coredev class per the
+operator framing); warm batch queued behind HY4-T1's CEPH_LEASE MEASURED.
 
 Behavioral rules (binding):
 1. T1 accurate-inference receipt is the default work; nothing precedes it
