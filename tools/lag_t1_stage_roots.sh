@@ -7,12 +7,12 @@ BUILD_TREE=$HOME/lagt1-build
 OUT_TREE=$HOME/sparkdata/out
 STAGE=/tmp/lagt1_stage
 
-ssh "$BUILD_NODE" "rm -rf $STAGE && mkdir -p $STAGE/$ARM/bin $STAGE/$ARM/lib $STAGE/$ARM/stages/stage_000 && \
-	cp $BUILD_TREE/build/sparkpipe_model_residentd $BUILD_TREE/build/sparkpipe_model_api $STAGE/$ARM/bin/ && \
-	cp $BUILD_TREE/build/modules/laguna_resident_decode_stage/bf16/liblaguna_serving_adapter_bf16.so $STAGE/$ARM/lib/model_serving_adapter.so && \
-	cp $BUILD_TREE/build/libhidden_transport_spark_host_rdma_verbs.so $STAGE/$ARM/lib/hidden_transport.so && \
-	cp $OUT_TREE/stages/stage_000/model_driver.so $STAGE/$ARM/stages/stage_000/ && \
-	chmod 755 $STAGE/$ARM/bin/*"
+ssh "$BUILD_NODE" 'rm -rf /tmp/lagt1_stage && mkdir -p /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/bin /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/lib /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/stages/stage_000 && \
+	cp ~/lagt1-build/build/sparkpipe_model_residentd ~/lagt1-build/build/sparkpipe_model_api /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/bin/ && \
+	cp ~/lagt1-build/build/modules/laguna_resident_decode_stage/bf16/liblaguna_serving_adapter_bf16.so /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/lib/model_serving_adapter.so && \
+	cp ~/lagt1-build/build/libhidden_transport_spark_host_rdma_verbs.so /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/lib/hidden_transport.so && \
+	cp ~/sparkdata/out/stages/stage_000/model_driver.so /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/stages/stage_000/ && \
+	chmod 755 /tmp/lagt1_stage/laguna-s-2.1.bf16.tp8pp2/bin/*'
 
 rm -rf /tmp/lagt1_config && mkdir -p /tmp/lagt1_config
 cp -R deployment/$ARM/config /tmp/lagt1_config/config

@@ -27,6 +27,7 @@ for rank in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 		set -eu
 		root=\$HOME/$ARM
 		mkdir -p \$root/runs
+		cd \$root/config && ln -sf stage_$(printf '%02d' "$rank").json stage.json
 		cd \$root
 		SPARK_WEIGHTD_SOCKET=/run/sparkpipe-weightsd/weightsd.sock \
 		SPARK_LAGUNA_T1=1 \
