@@ -368,7 +368,7 @@ static inline int32_t SparkLingStagePackExpectedShape(uint32_t tensor_kind,uint3
             return(-5);
         if ( expert_codec == SPARK_WEIGHT_CODEC_BF16 )
         {
-            shape->payload_type = SPARK_LING_STAGEPACK_PAYLOAD_BF16;
+            shape->payload_type = SPARK_LING_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
             shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
             shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
         }
