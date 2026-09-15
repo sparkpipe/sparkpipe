@@ -33,7 +33,7 @@ CONTROL_BASE = int(os.environ.get("LING_CONTROL_BASE", "19590"))
 COLLECTIVE_BASE = int(os.environ.get("LING_COLLECTIVE_BASE", "63560"))
 TRANSPORT_BASE = int(os.environ.get("LING_TRANSPORT_BASE", "60730"))
 SESSION_BASE = os.environ.get("LING_SESSION_BASE", "12288")
-SESSION_HC_BASE = os.environ.get("LING_SESSION_HC_BASE")
+SESSION_HC_BASE = os.environ.get("LING_SESSION_HC_BASE", "13056")
 COLLECTIVE_ID = 9911223344556680
 BACKEND = os.environ.get("LING_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
@@ -73,7 +73,7 @@ def tp_collective() -> dict:
         "rail_peer_hosts": [list(HOSTS), list(HOSTS)],
         "step_rail_indices": [0] + [1] * (TP - 1),
         "session_ports": session_port_table(int(SESSION_BASE)),
-        "session_ports_hc": [[0] * TP for _ in range(TP)],
+        "session_ports_hc": session_port_table(int(SESSION_HC_BASE)),
     }
     if SESSION_HC_BASE is not None:
         hc = int(SESSION_HC_BASE)
