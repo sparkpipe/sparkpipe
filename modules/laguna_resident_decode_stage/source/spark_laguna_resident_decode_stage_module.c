@@ -1299,7 +1299,7 @@ static void SparkLagunaT1Head(const SparkLagunaTpChain *chain)
 	    cudaMemcpy(tokens_host,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
 	    cudaMemcpy(scores_host,chain->slot->output_score,(uint64_t)chain->wave_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
 		return;
-	SparkLagunaT1Streams(chain,chain->wave.first_layer_index + chain->layer_count - 1u,1u);
+	SparkLagunaT1Streams(chain,chain->wave.first_layer_index + chain->wave.layer_count - 1u,1u);
 	for ( i = 0u; i < chain->wave_rows; i++ )
 		fprintf(stderr,"LAG-T1 head pos%u token %u score_bits %08x\n",
 		    chain->wave.host_positions[i],tokens_host[i],
