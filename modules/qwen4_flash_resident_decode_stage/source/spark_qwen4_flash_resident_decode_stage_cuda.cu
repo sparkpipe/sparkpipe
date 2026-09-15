@@ -1362,6 +1362,31 @@ extern "C" cudaError_t SparkQwen4FlashLaunchHeadArgmax(cudaStream_t stream, cons
 }
 
 
+static __global__ void SparkQwen4FlashHeadTopScoreKernel(const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension, uint32_t vocab_base, uint32_t vocab_rows)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t token = token_ids[0],index;
+	float accumulator = 0.0f;
+	if ( token < vocab_base || token >= vocab_base + vocab_rows )
+	{
+		if ( threadIdx.x == 0u )
+			score_f32[0] = -INFINITY;
+		return;
+	}
+	const void *row = (const uint8_t *)head_weight_bf16 + ((uint64_t)(token - vocab_base) * dimension * 2u);
+	for (index = threadIdx.x; index < dimension; index += blockDim.x)
+		accumulator = fmaf(SparkLmBf16ToFloat(normalized_bf16,index),SparkLmBf16ToFloat(row,index),accumulator);
+	accumulator = SparkLmBlockReduceSum(accumulator,reduce_scratch);
+	if ( threadIdx.x == 0u )
+		score_f32[0] = accumulator;
+}
+
+extern "C" cudaError_t SparkQwen4FlashLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension, uint32_t vocab_base, uint32_t vocab_rows)
+{
+	SparkQwen4FlashHeadTopScoreKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(normalized_bf16,head_weight_bf16,token_ids,score_f32,dimension,vocab_base,vocab_rows);
+	return(cudaGetLastError());
+}
+
 static __device__ __forceinline__ uint32_t SparkQwen4FlashHeadOrderKey(float score)
 {
 	uint32_t bits = __float_as_uint(score);
@@ -2060,7 +2085,7 @@ extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(
         row_lane_indices,context_lengths,token_mask,score_keys_u32,row_count,table->lane_stride,mask_stride,score_stride);
     return(cudaGetLastError());
 }
-_Static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
+static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
 #define SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT
 
 static __device__ __forceinline__ float SparkQwen4FlashWarpReduceMax(float value)
