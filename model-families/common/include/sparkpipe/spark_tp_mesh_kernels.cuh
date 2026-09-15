@@ -6,6 +6,13 @@
 #include <cuda_runtime.h>
 #define SPARK_TP_MESH_THREADS 256u
 
+static __device__ __forceinline__ unsigned long long SparkTpMeshGlobalTimerNs()
+{
+	unsigned long long t;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+	return t;
+}
+
 __global__ void SparkGlm5NextMeshPublishKernel(
 	volatile uint64_t *entry,
 	unsigned long long *seq_cell,
@@ -56,7 +63,7 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 	if ( threadIdx.x != 0u || blockIdx.x != 0u )
 		return;
 	sequence = round_seq[0];
-	stop_at = SparkGlm5NextGlobalTimerNs() + deadline_ns;
+	stop_at = SparkTpMeshGlobalTimerNs() + deadline_ns;
 	for ( peer = 0u; peer < degree - 1u; peer++ )
 	{
 		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
@@ -67,7 +74,7 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 			slot_bytes - 8u);
 		while ( *end_word < sequence )
 		{
-			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
+			if ( SparkTpMeshGlobalTimerNs() >= stop_at )
 			{
 				atomicExch((unsigned long long *)error_word,sequence);
 				return;
