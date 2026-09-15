@@ -95,10 +95,12 @@ def rope_apply(values, offset, position):
         s = np.float32(np.sin(np.float32(angle)))
         low_at = offset + index * 2
         high_at = low_at + 1
-        low = bf16_to_f32(values[low_at])
-        high = bf16_to_f32(values[high_at])
-        values[low_at] = f32_to_bf16_u16(low * c - high * s)[0]
-        values[high_at] = f32_to_bf16_u16(low * s + high * c)[0]
+        low = bf16_to_f32(values[low_at:low_at + 1])[0]
+        high = bf16_to_f32(values[high_at:high_at + 1])[0]
+        values[low_at] = f32_to_bf16_u16(
+            np.array([low * c - high * s]))[0]
+        values[high_at] = f32_to_bf16_u16(
+            np.array([low * s + high * c]))[0]
 
 
 class Glm53FullEngine:
