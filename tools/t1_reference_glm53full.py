@@ -196,7 +196,7 @@ class Glm53FullEngine:
         for head in range(HEADS):
             block = kv_b[head * per_head:head * per_head + QK_NOPE, :]
             query_latent[head] = f32_to_bf16_u16(
-                bf16_to_f32(q_heads[head][:QK_NOPE]) @ bf16_to_f32(block))
+                bf16_to_f32(q_heads[head][:QK_NOPE]) @ block)
         cache.append(kv_slot.copy())
         slots = bf16_to_f32(np.stack(cache))
         attention_latent = np.empty((HEADS, LATENT), dtype=np.uint16)
@@ -212,8 +212,7 @@ class Glm53FullEngine:
         for head in range(HEADS):
             block = kv_b[head * per_head + QK_NOPE:(head + 1) * per_head, :]
             attention_value[head * V_DIM:(head + 1) * V_DIM] = \
-                f32_to_bf16_u16(bf16_to_f32(block) @
-                                bf16_to_f32(attention_latent[head]))
+                f32_to_bf16_u16(block @ bf16_to_f32(attention_latent[head]))
         return self.linear(attention_value, prefix + "o_proj")
 
     def silu_mul(self, fused):
@@ -227,7 +226,7 @@ class Glm53FullEngine:
     def dense_mlp(self, layer, normed):
         prefix = f"{PREFIX}{layer}.mlp."
         fused = self.linear_fused_gate_up(
-            bf16_to_f32(normed), prefix + "up_proj.weight",
+            normed, prefix + "up_proj.weight",
             prefix + "gate_proj.weight")
         return self.down_linear(self.silu_mul(fused), prefix + "down_proj.weight")
 
@@ -244,7 +243,7 @@ class Glm53FullEngine:
 
     def routed_mlp(self, layer, normed, sink):
         prefix = f"{PREFIX}{layer}.mlp."
-        normed_f32 = bf16_to_f32(normed)
+        normed_f32 = normed
         logits = self.tensor(prefix + "gate.weight") @ normed_f32
         scores = sigmoid(logits.astype(np.float32))
         choice = scores + self.vector(prefix + "gate.e_score_correction_bias")
