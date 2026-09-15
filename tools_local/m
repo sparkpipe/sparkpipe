@@ -18,6 +18,7 @@ for c in model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh model
 for f in node/weightd.c node/weightd_mesh.c node/weightd_spawn.c node/weightd_spawn.h; do scp -q $f $L:~/sparkpipe-build-958/$f || exit 1; done
 for f in runtime/spark_weightd.c runtime/spark_weightd_map.c runtime/spark_weightd_lazy_pack.c runtime/spark_weightd_attach.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c runtime/spark_weightd_spine.c runtime/spark_weightd_worker.c; do scp -q $f $L:~/sparkpipe-build-958/$f || exit 1; done
 for h in spark_weightd.h spark_weightd_attach.h spark_weightd_lazy_pack.h spark_weightd_lease.h spark_weightd_manifest.h spark_weightd_map.h spark_weightd_spine.h spark_weightd_worker.h; do scp -q include/sparkpipe/$h $L:~/sparkpipe-build-958/include/sparkpipe/$h || exit 1; done
+rsync -a --delete --exclude .git --exclude build --exclude __pycache__ --exclude tools_local ./ $L:~/sparkpipe-build-958/ || exit 1
 scp -q include/sparkpipe/spark_tp_device_collective.h $L:~/sparkpipe-build-958/include/sparkpipe/
 ssh $L 'bash -s' "$HASH_ARG" <<'REMOTE'
 set -euo pipefail
