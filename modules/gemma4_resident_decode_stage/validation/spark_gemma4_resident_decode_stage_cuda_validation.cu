@@ -930,7 +930,7 @@ static cudaError_t SparkGemma4ValKvSetup(SparkGemma4ValKv *kv, uint32_t kv_heads
 	if (error == cudaSuccess) error = cudaMalloc(&kv->value_device,(uint64_t)tokens * kv_heads * head_dimension * 2u);
 	if (error == cudaSuccess) error = cudaMalloc(&kv->sequence_rows_device,(uint64_t)tokens * sizeof(uint32_t));
 	if (error == cudaSuccess) error = cudaMalloc(&kv->sequence_device,sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc(&kv->context_device,sizeof(uint32_t));
+	if (error == cudaSuccess) error = cudaMalloc(&kv->context_device,2u * sizeof(uint32_t));
 	if (error == cudaSuccess) error = cudaMalloc(&kv->positions_device,(uint64_t)tokens * sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(kv->page_table,page_host,(uint64_t)page_count * sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(kv->key_device,kv->key_host,(uint64_t)tokens * kv_heads * head_dimension * 2u);
@@ -1439,7 +1439,7 @@ typedef struct SparkGemma4ValChain
 	uint16_t *expected_dec;
 	uint32_t positions[SPARK_GEMMA4_VAL_CHAIN_ROWS];
 	uint32_t row_position[1];
-	uint32_t context[1];
+	uint32_t context[SPARK_GEMMA4_VAL_CHAIN_ROWS];
 	void *h_device;
 	void *normed_device;
 	void *query_device;
@@ -1484,6 +1484,8 @@ static void SparkGemma4ValChainWeightsFill(SparkGemma4ValChain *chain)
 	chain->positions[1] = SPARK_GEMMA4_VAL_CHAIN_BASE + 1u;
 	chain->row_position[0] = SPARK_GEMMA4_VAL_CHAIN_BASE + 1u;
 	chain->context[0] = SPARK_GEMMA4_VAL_CHAIN_BASE + SPARK_GEMMA4_VAL_CHAIN_ROWS;
+	for (uint32_t context_fill = 1u; context_fill < SPARK_GEMMA4_VAL_CHAIN_ROWS; context_fill++)
+		chain->context[context_fill] = chain->context[0];
 }
 
 static cudaError_t SparkGemma4ValChainAlloc(SparkGemma4ValChain *chain)
@@ -1785,7 +1787,7 @@ static int SparkGemma4ValCheckChainSliding(void)
 	chain.kv_context_device = kv.context_device;
 	error = cudaMalloc(&chain.window_device,SPARK_GEMMA4_VAL_WINDOW * sizeof(uint32_t) * SPARK_GEMMA4_VAL_CHAIN_ROWS);
 	if (error == cudaSuccess) error = cudaMalloc(&chain.kv_row_position_device,sizeof(uint32_t));
-	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(kv.context_device,chain.context,sizeof(uint32_t));
+	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(kv.context_device,chain.context,sizeof(chain.context));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.kv_row_position_device,&row_position,sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.kv_sequence_device,&sequence,sizeof(uint32_t));
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.h_device,chain.h0,(uint64_t)SPARK_GEMMA4_VAL_CHAIN_ROWS * hidden * 2u);
