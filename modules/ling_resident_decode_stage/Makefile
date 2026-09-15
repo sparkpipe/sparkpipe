@@ -1,6 +1,7 @@
 ifndef EXPERT_CODEC
 $(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
+include ../../runtime/weightd_sources.mk
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
 endif
@@ -50,8 +51,7 @@ MODULE_HOST_SOURCE := source/spark_ling_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
 	../../src/spark_speculation_policy.c \
-	../../runtime/spark_weightd.c \
-	../../runtime/spark_weightd_attach.c \
+	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
 	../../src/spark_ck128.c \
