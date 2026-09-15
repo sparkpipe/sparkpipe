@@ -13,6 +13,9 @@
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_lease.h"
+#include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
@@ -22,6 +25,13 @@
 #include "spark_qwen4_flash_stagepack_format.h"
 
 #define SPARK_QWEN4_FLASH_MODULE_TAG "qwen4_flash_stage"
+
+#define SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_BITS(kind) \
+	((1u << ((kind) * 2u)) | (1u << ((kind) * 2u + 1u)))
+#define SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_MASK \
+	(SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_BITS(SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1) | \
+	 SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_BITS(SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3) | \
+	 SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_BITS(SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN))
 
 #define SPARK_QWEN4_FLASH_MODULE_TP_DEGREE_REPLICATED 1u
 #define SPARK_QWEN4_FLASH_MODULE_TP_RANK_REPLICATED 0u
@@ -218,6 +228,9 @@ typedef struct SparkQwen4FlashModuleState
 	SparkStageKvClient kv_client;
 	SparkQwen4FlashWorkControlKvState kv_work;
 	SparkQwen4FlashWorkControlKvPlanConfig kv_plan;
+	SparkWeightdLazyPack *lazy_pack;
+	uint32_t lazy_lease_active;
+	uint64_t lazy_lease_identifier;
 	uint32_t kv_tier_active;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
@@ -405,6 +418,7 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 		(header)->mtp_layer_count,(expected)->mtp_layer_count, \
 		(unsigned long long)(header)->directory_offset)
 #define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
+#define SPARK_PACK_LOAD_REGION_HOOK SparkQwen4FlashModuleRegionHook
 
 #include "sparkpipe/spark_pack_load_common.h"
 
@@ -438,14 +452,138 @@ static SparkStatus SparkQwen4FlashModuleValidateEntry(SparkQwen4FlashModuleState
 	return(SparkQwen4FlashModuleValidateEntryPlacement(state,entry,file_bytes,is_global));
 }
 
-static SparkStatus SparkQwen4FlashModuleBindMoe(SparkQwen4FlashMoeWeights *moe, const SparkQwen4FlashStagePackEntry *entry, void *payload, void *scale)
+static SparkStatus SparkQwen4FlashModuleManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
 {
+	const SparkQwen4FlashModuleState *state = (const SparkQwen4FlashModuleState *)opaque;
+	uint32_t layer;
+	if ( state == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( manifest->range_count > SPARK_WEIGHTD_RANGE_COUNT_MAX )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
+	{
+		uint32_t expert;
+		for (expert = 0u; expert < SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT; expert++)
+		{
+			const SparkWeightdRangeGroup *group = SparkWeightdManifestFind(manifest,layer,expert);
+			uint32_t index,kind_bits = 0u;
+			if ( group == 0 || group->layer != layer || group->expert != expert ||
+				group->range_count == 0u || group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
+				return(SPARK_STATUS_VALIDATION_FAILED);
+			for (index = 0u; index < group->range_count; index++)
+			{
+				uint32_t kind = manifest->ranges[group->first_range + index].kind;
+				if ( kind >= 32u )
+					return(SPARK_STATUS_VALIDATION_FAILED);
+				kind_bits |= (1u << kind);
+			}
+			if ( kind_bits != SPARK_QWEN4_FLASH_MODULE_EXPERT_KIND_MASK )
+				return(SPARK_STATUS_VALIDATION_FAILED);
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static int SparkQwen4FlashModuleRegionHook(
+	SparkQwen4FlashModuleState *state,
+	const SparkQwen4FlashStagePackEntry *entry,
+	FILE *file,
+	void **payload,
+	void **scale)
+{
+	SparkWeightdLazyPack *pack = state->lazy_pack;
+	const void *slice;
+	SparkStatus status;
+
+	(void)file;
+	if ( pack == 0 || pack->ready == 0u )
+		return 0;
+	if ( entry->tensor_kind == SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1 ||
+		entry->tensor_kind == SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3 ||
+		entry->tensor_kind == SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN )
+	{
+		*payload = 0;
+		*scale = 0;
+		return 1;
+	}
+	status = SparkWeightdLazyPackSlice(pack,entry->payload_offset,entry->payload_bytes,&slice);
+	if ( status != SPARK_STATUS_OK )
+		return 0;
+	*payload = (void *)slice;
+	if ( entry->scale_bytes == 0u )
+	{
+		*scale = 0;
+		return 1;
+	}
+	status = SparkWeightdLazyPackSlice(pack,entry->scale_offset,entry->scale_bytes,&slice);
+	if ( status != SPARK_STATUS_OK )
+		return 0;
+	*scale = (void *)slice;
+	return 1;
+}
+
+static SparkStatus SparkQwen4FlashModuleLazyOpen(SparkQwen4FlashModuleState *state,
+	const char *pack_path)
+{
+	struct stat pack_info;
+	SparkWeightdLazyAttachRequest request;
+	const char *digest;
+	uint64_t spine_budget;
+	SparkStatus status;
+
+	status = SparkWeightdAttachRequested();
+	if ( status == SPARK_STATUS_BUSY )
+		return(SPARK_STATUS_OK);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+	if ( digest == 0 || strlen(digest) != 64u ||
+		strlen(pack_path) >= sizeof(request.pack_path) )
+	{
+		fprintf(stderr,"%s lazy_config_invalid: missing/short SPARK_WEIGHTD_PACK_SHA256 sidecar digest\n",SPARK_QWEN4_FLASH_MODULE_TAG);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	memset(&request,0,sizeof(request));
+	memcpy(request.identity.pack_sha256,digest,65u);
+	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_QWEN4_FLASH_MODULE_TAG);
+	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",QWEN4_FLASH_MODEL_REVISION);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	if ( stat(pack_path,&pack_info) != 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	request.identity.arena_bytes = (uint64_t)pack_info.st_size;
+	request.identity.topology = state->tp_degree;
+	memcpy(request.pack_path,pack_path,strlen(pack_path) + 1u);
+	status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkQwen4FlashModuleManifestCheck,state,&state->lazy_pack);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s lazy_open_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int32_t)status);
+	return(status);
+}
+
+static SparkStatus SparkQwen4FlashModuleBindMoe(SparkQwen4FlashMoeWeights *moe, const SparkQwen4FlashStagePackEntry *entry, void *payload, void *scale){
 	switch ( entry->tensor_kind )
 	{
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_GATE: SparkQwen4FlashModuleFillLinearView(&moe->gate,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1: SparkQwen4FlashModuleFillLinearView(&moe->experts_w1,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3: SparkQwen4FlashModuleFillLinearView(&moe->experts_w3,entry,payload,scale); return(SPARK_STATUS_OK);
-	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->experts_w2,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W1:
+		SparkQwen4FlashModuleFillLinearView(&moe->experts_w1,entry,payload,scale);
+		moe->experts_w1_payload_offset = entry->payload_offset;
+		moe->experts_w1_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_W3:
+		SparkQwen4FlashModuleFillLinearView(&moe->experts_w3,entry,payload,scale);
+		moe->experts_w3_payload_offset = entry->payload_offset;
+		moe->experts_w3_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
+	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_DOWN:
+		SparkQwen4FlashModuleFillLinearView(&moe->experts_w2,entry,payload,scale);
+		moe->experts_w2_payload_offset = entry->payload_offset;
+		moe->experts_w2_scale_offset = entry->scale_offset;
+		return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_GATE: SparkQwen4FlashModuleFillLinearView(&moe->shared_gate,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_UP: SparkQwen4FlashModuleFillLinearView(&moe->shared_up,entry,payload,scale); return(SPARK_STATUS_OK);
 	case SPARK_QWEN4_FLASH_STAGEPACK_TENSOR_MOE_SHARED_DOWN: SparkQwen4FlashModuleFillLinearView(&moe->shared_down,entry,payload,scale); return(SPARK_STATUS_OK);
@@ -1169,6 +1307,17 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int)status);
 		SPARK_RETURN(status);
 	}
+	if ( state->lazy_pack != 0 &&
+	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(
+		    &state->tp_device_collective,
+		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+		    0u,0u,0u,0u);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s tp_prepare_receive_failed status=%d\n",SPARK_QWEN4_FLASH_MODULE_TAG,(int)status);
+		SPARK_RETURN(status);
+	}
 	state->tp_collective_initialized = 1u;
 	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
 	return(SPARK_STATUS_OK);
@@ -1278,7 +1427,9 @@ static SparkStatus SparkQwen4FlashModulePrepare(
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkQwen4FlashModuleBuildOrdinals(state);
-		status = SparkQwen4FlashModuleLoadPack(state,pack_path);
+		status = SparkQwen4FlashModuleLazyOpen(state,pack_path);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkQwen4FlashModuleLoadPack(state,pack_path);
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleOpenKvTier(state,host_services);
@@ -1434,6 +1585,13 @@ static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 	free(state->t1.stage_score);
 	if ( state->t1.score_device != 0 )
 		cudaFree(state->t1.score_device);
+	if ( state->lazy_pack != 0 )
+	{
+		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
+			fprintf(stderr,"%s lazy pack teardown incomplete; retaining resources\n",SPARK_QWEN4_FLASH_MODULE_TAG);
+		else
+			state->lazy_pack = 0;
+	}
 	{
 		uint32_t slot_index;
 		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
@@ -1817,12 +1975,52 @@ static uint32_t SparkQwen4FlashModuleRouteGroupBase(SparkQwen4FlashModuleState *
 	return(0u);
 }
 
-static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashMoeWeights *weights, uint32_t rows)
+static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashMoeWeights *weights, uint32_t layer, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t route_group_base = SparkQwen4FlashModuleRouteGroupBase(state,weights);
-	cudaError_t error;
+	SparkQwen4FlashLinearView w1 = weights->experts_w1,w3 = weights->experts_w3,w2 = weights->experts_w2;
+	cudaError_t error = cudaSuccess;
 	SparkStatus status;
+	if ( state->lazy_pack != 0 )
+	{
+		uint32_t host_offsets[SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT + 1u];
+		SparkWeightdExpertKey keys[SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT];
+		uint32_t key_count = 0u;
+		SparkWeightdMap *map = state->lazy_pack->map;
+		void *address = 0;
+		if ( cudaMemcpy(host_offsets,slot->moe_group_offset_u32,(SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess )
+			error = cudaErrorInvalidValue;
+		if ( error == cudaSuccess )
+			error = SparkWeightdRouteKeys(layer,host_offsets,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,keys,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,&key_count) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+		if ( error == cudaSuccess )
+		{
+			error = SparkWeightdMapAcquire(map,keys,key_count,&state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+			state->lazy_lease_active = state->lazy_lease_identifier != 0u ? 1u : 0u;
+		}
+		if ( error == cudaSuccess )
+			error = SparkWeightdMapBeginUse(map,state->lazy_lease_identifier,&address) == SPARK_STATUS_OK ? cudaSuccess : cudaErrorInvalidValue;
+		if ( error == cudaSuccess )
+		{
+			w1.weight_payload = (uint8_t *)address + weights->experts_w1_payload_offset;
+			w3.weight_payload = (uint8_t *)address + weights->experts_w3_payload_offset;
+			w2.weight_payload = (uint8_t *)address + weights->experts_w2_payload_offset;
+			if ( w1.weight_scale_bytes != 0u )
+				w1.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w1_scale_offset;
+			if ( w3.weight_scale_bytes != 0u )
+				w3.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w3_scale_offset;
+			if ( w2.weight_scale_bytes != 0u )
+				w2.weight_scale_e8m0 = (const uint8_t *)address + weights->experts_w2_scale_offset;
+		}
+		if ( error != cudaSuccess && state->lazy_lease_active != 0u )
+		{
+			if ( SparkWeightdMapRelease(map,state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS) == SPARK_STATUS_OK )
+				state->lazy_lease_identifier = 0u;
+			else
+				fprintf(stderr,"%s lazy lease retained for teardown lease=%llu\n",SPARK_QWEN4_FLASH_MODULE_TAG,(unsigned long long)state->lazy_lease_identifier);
+			state->lazy_lease_active = 0u;
+		}
+	}
 	error = SparkQwen4FlashLaunchGateScores(stream,&weights->gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchGateSelect(stream,slot->moe_scores_f32,0,rows,weights->gate.output_dimension,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,1.0f,slot->moe_indices_u32,slot->moe_weights_f32);
@@ -1833,23 +2031,23 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 		uint32_t nvfp4_experts = weights->experts_w1.weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED;
 		if ( rows >= SPARK_QWEN4_FLASH_MODULE_MOE_TILE_ROWS && nvfp4_experts == 0u )
 		{
-			error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows,state->tp_degree,state->tp_rank,route_group_base);
+			error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_gate_packed_bf16,rows,state->tp_degree,state->tp_rank,route_group_base);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows,state->tp_degree,state->tp_rank,route_group_base);
+				error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_slot_up_bf16,rows,state->tp_degree,state->tp_rank,route_group_base);
 			if ( error == cudaSuccess )
 				error = SparkQwen4FlashLaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,state->tp_degree,state->tp_rank,route_group_base);
+				error = SparkQwen4FlashLaunchGroupedExpertTileLinear(stream,&w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,state->tp_degree,state->tp_rank,route_group_base);
 		}
 		else
 		{
-			error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
+			error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&w1,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_gate_packed_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
+				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&w3,slot->normalized_bf16,slot->moe_grouped_rows_u32,slot->moe_group_offset_u32,slot->moe_tile_prefix_w1_u32,slot->moe_slot_up_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 			if ( error == cudaSuccess )
 				error = SparkQwen4FlashLaunchSwiGlu(stream,slot->moe_gate_packed_bf16,slot->moe_slot_up_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
 			if ( error == cudaSuccess )
-				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&weights->experts_w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
+				error = SparkQwen4FlashLaunchGroupedExpertLinear(stream,&w2,slot->moe_slot_up_bf16,0,slot->moe_group_offset_u32,slot->moe_tile_prefix_w2_u32,slot->moe_slot_out_bf16,rows,state->multiprocessor_count,state->tp_degree,state->tp_rank,route_group_base,slot->frame_error);
 		}
 	}
 	if ( error == cudaSuccess )
@@ -1866,6 +2064,22 @@ static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state
 		error = SparkQwen4FlashLaunchSharedGate(stream,slot->shared_down_bf16,weights->shared_gate_weight_bf16,slot->normalized_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = SparkQwen4FlashLaunchResidualAdd(stream,slot->delta_bf16,slot->shared_down_bf16,rows,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION);
+	if ( error == cudaSuccess && state->lazy_pack != 0 && state->lazy_lease_active != 0u )
+	{
+		if ( SparkWeightdMapRecordCompletion(state->lazy_pack->map,state->lazy_lease_identifier,stream) != SPARK_STATUS_OK )
+			error = cudaErrorInvalidValue;
+		else
+		{
+			cudaError_t sync;
+			SparkStatus release;
+			if ( (sync = cudaStreamSynchronize(stream)) != cudaSuccess )
+				error = sync;
+			release = SparkWeightdMapRelease(state->lazy_pack->map,state->lazy_lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+			if ( release == SPARK_STATUS_OK )
+				state->lazy_lease_identifier = 0u;
+			state->lazy_lease_active = 0u;
+		}
+	}
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
 		status = SparkQwen4FlashModuleTpAllReduceHidden(state,slot,slot->delta_bf16,rows);
@@ -2022,7 +2236,7 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->mlp_hc_by_layer[layer],state->mlp_norm_by_layer[layer],rows);
 	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
-		status = SparkQwen4FlashModuleRunMoe(state,slot,&state->moe_by_layer[layer],rows);
+		status = SparkQwen4FlashModuleRunMoe(state,slot,&state->moe_by_layer[layer],layer,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);
 	if ( status == SPARK_STATUS_OK )

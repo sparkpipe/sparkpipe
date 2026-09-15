@@ -88,6 +88,12 @@ typedef struct SparkQwen4FlashMoeWeights
 	SparkQwen4FlashLinearView shared_up;
 	SparkQwen4FlashLinearView shared_down;
 	const void *shared_gate_weight_bf16;
+	uint64_t experts_w1_payload_offset;
+	uint64_t experts_w1_scale_offset;
+	uint64_t experts_w3_payload_offset;
+	uint64_t experts_w3_scale_offset;
+	uint64_t experts_w2_payload_offset;
+	uint64_t experts_w2_scale_offset;
 } SparkQwen4FlashMoeWeights;
 
 typedef struct SparkQwen4FlashHcWeights
