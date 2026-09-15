@@ -136,7 +136,7 @@ def rank_view(entry: dict, rank: int):
     esize = entry["esize"]
     if dim == 0:
         out = [chunk] + dims[1:]
-        inner = entry["row_bytes"]
+        inner = entry["row_bytes"] if len(dims) > 1 else esize
         return (out, ("range", lo * inner, hi * inner))
     inner = dims[-1] * esize
     group = dims[1:-1]
