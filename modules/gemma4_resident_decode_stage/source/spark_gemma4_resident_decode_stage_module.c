@@ -952,6 +952,122 @@ static SparkStatus SparkGemma4ModuleAllocateSlotHostMirrors(SparkGemma4ModuleSta
 	return(SPARK_STATUS_OK);
 }
 
+static int SparkGemma4T1Enabled(void)
+{
+	static int t1_enabled = -1;
+	if ( t1_enabled < 0 )
+		t1_enabled = getenv("SPARK_GEMMA4_T1") != 0 ? 1 : 0;
+	return(t1_enabled);
+}
+
+static int SparkGemma4T1Rank(SparkGemma4ModuleState *state)
+{
+	return(SparkGemma4T1Enabled() != 0 && state->tp_rank == 0u ? 1 : 0);
+}
+
+static void SparkGemma4T1Frame(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t rows, uint32_t prefill)
+{
+	uint32_t row;
+	if ( SparkGemma4T1Rank(state) == 0 )
+		return;
+	fprintf(stderr,"G4-T1 frame stage%u rows%u prefill%u seq%u pos",state->stage_index,rows,prefill,slot->host_row_sequences_u32[0]);
+	for (row = 0u; row < rows; row++)
+		fprintf(stderr," %u",slot->host_row_positions_u32[row]);
+	fputc('\n',stderr);
+}
+
+static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+{
+	static uint16_t *rows_host = 0;
+	static uint32_t rows_host_capacity = 0;
+	uint32_t row;
+	uint32_t i;
+	uint64_t bytes;
+	if ( SparkGemma4T1Rank(state) == 0 )
+		return;
+	if ( cudaStreamSynchronize((cudaStream_t)slot->cuda_stream) != cudaSuccess )
+		return;
+	bytes = (uint64_t)rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	if ( rows_host_capacity < rows )
+	{
+		free(rows_host);
+		rows_host = (uint16_t *)malloc(bytes);
+		rows_host_capacity = rows_host != 0 ? rows : 0u;
+	}
+	if ( rows_host == 0 ||
+		cudaMemcpy(rows_host,slot->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for (row = 0u; row < rows; row++)
+	{
+		uint16_t *values = rows_host + (uint64_t)row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
+		fprintf(stderr,"G4-T1 stream L%u pos%u",layer,slot->host_row_positions_u32[row]);
+		for (i = 0u; i < SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION; i++)
+			fprintf(stderr," %04x",values[i]);
+		fputc('\n',stderr);
+	}
+}
+
+static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+{
+	static uint32_t *ids_host = 0;
+	static float *weights_host = 0;
+	static uint32_t route_capacity = 0;
+	uint32_t row;
+	uint32_t k;
+	uint64_t bytes;
+	if ( SparkGemma4T1Rank(state) == 0 )
+		return;
+	bytes = (uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t);
+	if ( route_capacity < rows )
+	{
+		free(ids_host);
+		free(weights_host);
+		ids_host = (uint32_t *)malloc(bytes);
+		weights_host = (float *)malloc((uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(float));
+		route_capacity = ids_host != 0 && weights_host != 0 ? rows : 0u;
+	}
+	if ( ids_host == 0 || weights_host == 0 ||
+		cudaMemcpy(ids_host,slot->moe_indices_u32,bytes,cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(weights_host,slot->moe_weights_f32,(uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for (row = 0u; row < rows; row++)
+	{
+		fprintf(stderr,"G4-T1 route L%u pos%u ids",layer,slot->host_row_positions_u32[row]);
+		for (k = 0u; k < SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN; k++)
+			fprintf(stderr," %u",ids_host[row * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN + k]);
+		fprintf(stderr," weights");
+		for (k = 0u; k < SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN; k++)
+			fprintf(stderr," %08x",((const uint32_t *)weights_host)[row * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN + k]);
+		fputc('\n',stderr);
+	}
+}
+
+static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t first_row, uint32_t copy_rows)
+{
+	static uint32_t *tokens_host = 0;
+	static float *scores_host = 0;
+	static uint32_t head_capacity = 0;
+	uint32_t i;
+	if ( SparkGemma4T1Rank(state) == 0 || state->owns_final_head == 0u )
+		return;
+	if ( head_capacity < copy_rows )
+	{
+		free(tokens_host);
+		free(scores_host);
+		tokens_host = (uint32_t *)malloc((uint64_t)copy_rows * sizeof(uint32_t));
+		scores_host = (float *)malloc((uint64_t)copy_rows * sizeof(float));
+		head_capacity = tokens_host != 0 && scores_host != 0 ? copy_rows : 0u;
+	}
+	if ( tokens_host == 0 || scores_host == 0 ||
+		cudaMemcpy(tokens_host,slot->argmax_token_ids + first_row,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(scores_host,slot->argmax_score_f32 + first_row,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		return;
+	for (i = 0u; i < copy_rows; i++)
+		fprintf(stderr,"G4-T1 head pos%u token %u score_bits %08x\n",
+			slot->host_row_positions_u32[first_row + i],tokens_host[i],
+			((const uint32_t *)scores_host)[i]);
+}
+
 static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkGemma4ResidentDecodeStageFrameContext *context, uint32_t layer, uint32_t rows, uint32_t is_full)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -1281,122 +1397,6 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 		SparkGemma4T1Head(state,slot,0u,rows);
 	}
 	return(SPARK_STATUS_OK);
-}
-
-static int SparkGemma4T1Enabled(void)
-{
-	static int t1_enabled = -1;
-	if ( t1_enabled < 0 )
-		t1_enabled = getenv("SPARK_GEMMA4_T1") != 0 ? 1 : 0;
-	return(t1_enabled);
-}
-
-static int SparkGemma4T1Rank(SparkGemma4ModuleState *state)
-{
-	return(SparkGemma4T1Enabled() != 0 && state->tp_rank == 0u ? 1 : 0);
-}
-
-static void SparkGemma4T1Frame(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t rows, uint32_t prefill)
-{
-	uint32_t row;
-	if ( SparkGemma4T1Rank(state) == 0 )
-		return;
-	fprintf(stderr,"G4-T1 frame stage%u rows%u prefill%u seq%u pos",state->stage_index,rows,prefill,slot->host_row_sequences_u32[0]);
-	for (row = 0u; row < rows; row++)
-		fprintf(stderr," %u",slot->host_row_positions_u32[row]);
-	fputc('\n',stderr);
-}
-
-static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
-{
-	static uint16_t *rows_host = 0;
-	static uint32_t rows_host_capacity = 0;
-	uint32_t row;
-	uint32_t i;
-	uint64_t bytes;
-	if ( SparkGemma4T1Rank(state) == 0 )
-		return;
-	if ( cudaStreamSynchronize((cudaStream_t)slot->cuda_stream) != cudaSuccess )
-		return;
-	bytes = (uint64_t)rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
-	if ( rows_host_capacity < rows )
-	{
-		free(rows_host);
-		rows_host = (uint16_t *)malloc(bytes);
-		rows_host_capacity = rows_host != 0 ? rows : 0u;
-	}
-	if ( rows_host == 0 ||
-		cudaMemcpy(rows_host,slot->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
-		return;
-	for (row = 0u; row < rows; row++)
-	{
-		uint16_t *values = rows_host + (uint64_t)row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
-		fprintf(stderr,"G4-T1 stream L%u pos%u",layer,slot->host_row_positions_u32[row]);
-		for (i = 0u; i < SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION; i++)
-			fprintf(stderr," %04x",values[i]);
-		fputc('\n',stderr);
-	}
-}
-
-static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
-{
-	static uint32_t *ids_host = 0;
-	static float *weights_host = 0;
-	static uint32_t route_capacity = 0;
-	uint32_t row;
-	uint32_t k;
-	uint64_t bytes;
-	if ( SparkGemma4T1Rank(state) == 0 )
-		return;
-	bytes = (uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t);
-	if ( route_capacity < rows )
-	{
-		free(ids_host);
-		free(weights_host);
-		ids_host = (uint32_t *)malloc(bytes);
-		weights_host = (float *)malloc((uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(float));
-		route_capacity = ids_host != 0 && weights_host != 0 ? rows : 0u;
-	}
-	if ( ids_host == 0 || weights_host == 0 ||
-		cudaMemcpy(ids_host,slot->moe_indices_u32,bytes,cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(weights_host,slot->moe_weights_f32,(uint64_t)rows * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
-		return;
-	for (row = 0u; row < rows; row++)
-	{
-		fprintf(stderr,"G4-T1 route L%u pos%u ids",layer,slot->host_row_positions_u32[row]);
-		for (k = 0u; k < SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN; k++)
-			fprintf(stderr," %u",ids_host[row * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN + k]);
-		fprintf(stderr," weights");
-		for (k = 0u; k < SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN; k++)
-			fprintf(stderr," %08x",((const uint32_t *)weights_host)[row * SPARK_GEMMA4_MODEL_EXPERTS_PER_TOKEN + k]);
-		fputc('\n',stderr);
-	}
-}
-
-static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t first_row, uint32_t copy_rows)
-{
-	static uint32_t *tokens_host = 0;
-	static float *scores_host = 0;
-	static uint32_t head_capacity = 0;
-	uint32_t i;
-	if ( SparkGemma4T1Rank(state) == 0 || state->owns_final_head == 0u )
-		return;
-	if ( head_capacity < copy_rows )
-	{
-		free(tokens_host);
-		free(scores_host);
-		tokens_host = (uint32_t *)malloc((uint64_t)copy_rows * sizeof(uint32_t));
-		scores_host = (float *)malloc((uint64_t)copy_rows * sizeof(float));
-		head_capacity = tokens_host != 0 && scores_host != 0 ? copy_rows : 0u;
-	}
-	if ( tokens_host == 0 || scores_host == 0 ||
-		cudaMemcpy(tokens_host,slot->argmax_token_ids + first_row,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(scores_host,slot->argmax_score_f32 + first_row,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
-		return;
-	for (i = 0u; i < copy_rows; i++)
-		fprintf(stderr,"G4-T1 head pos%u token %u score_bits %08x\n",
-			slot->host_row_positions_u32[first_row + i],tokens_host[i],
-			((const uint32_t *)scores_host)[i]);
 }
 
 static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkModelDriverFrame *frame, SparkGemma4ResidentDecodeStageFrameContext *context)
