@@ -288,8 +288,11 @@ class Hy4Engine:
             self.sinks.astype(np.float32) - ceiling)
         probs = weights / denominator[:, None]
         context = np.einsum("ht,tn->hn", probs, latents, optimize=True)
-        head_out = np.einsum("hvn,hn->hv", kv_b[:, self.nope:, :],
-                             context, optimize=True)
+        head_out = np.einsum("ht,thv->hv", probs,
+                             np.einsum("tn,hvn->thv", latents,
+                                       kv_b[:, self.nope:, :],
+                                       optimize=True),
+                             optimize=True)
         gate = sigmoid(self._plane_bf16(p + "linear_gate.weight") @ cur)
         return self._matmul_fp8(p + "o_proj", head_out.reshape(-1) * gate)
 
