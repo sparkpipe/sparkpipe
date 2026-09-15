@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# af2 — second fleet_node_agent patch: ensure_api's "predates residentd" check
+# samples the OLDEST residentd pid (pgrep|head -1); with co-resident rigs it
+# samples the wrong process and never restarts a stale API after engine
+# bounces (the API has no reconnect; a bounced engine permanently breaks it).
+# Patch rpid selection to the pid whose cwd is the lane root.
+set -uo pipefail
+NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+for n in $NODES; do
+  OUT=$(ssh -o ConnectTimeout=8 "$n" 'bash -s' <<'REMOTE'
+set -u
+F="$HOME/sparkdata/core/bin/fleet_node_agent.sh"
+[ -f "$F" ] || { echo "no-agent-script"; exit 0; }
+grep -q "af2-lane-rpid" "$F" && { echo "already-patched"; exit 0; }
+systemctl --user stop fleet-agent 2>/dev/null || true
+python3 - "$F" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+old = '''        rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
+        if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then'''
+new = '''        rpid=""
+        for rp in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$rp/cwd 2>/dev/null)" = "$rr" ] && rpid=$rp
+        done
+        if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then'''
+if old not in src:
+    print("patch-anchor-missing")
+    sys.exit(1)
+src = src.replace(old, new, 1)
+src = src.replace("fleet_agent_patch() { echo af-any-pid; }",
+                  "fleet_agent_patch() { echo af-any-pid af2-lane-rpid; }", 1)
+open(path, "w").write(src)
+print("patched")
+PY
+grep -q "af2-lane-rpid" "$F" || { echo "patch-verify-failed"; exit 1; }
+systemctl --user start fleet-agent 2>/dev/null || true
+sleep 2
+systemctl --user is-active fleet-agent 2>/dev/null || echo "agent-not-active"
+REMOTE
+) || OUT="ssh-failed"
+  echo "== $n $OUT"
+done
+echo AF2-DONE

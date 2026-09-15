@@ -34,7 +34,9 @@ validation_nvcc_extra_args() {
         "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=${glm5_next_codec_ids[${codec_index}]}" \
         "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"${SPARK_GLM5_NEXT_EXPERT_CODEC}\"" \
         "-DGLM5_NEXT_MODEL_REVISION=\"${model_revision}\"" \
-        "-DGLM5_NEXT_CONTRACT_SHA256=\"${contract_sha256}\""
+        "-DGLM5_NEXT_CONTRACT_SHA256=\"${contract_sha256}\"" \
+        "-USPARK_BATCH_BUCKET" \
+        "-DSPARK_BATCH_BUCKET=1024u"
 }
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

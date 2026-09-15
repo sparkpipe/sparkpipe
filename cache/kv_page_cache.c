@@ -1200,8 +1200,21 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 		owner = &transactions->lanes[request->cache_lanes[index].resident_sequence_slot];
 		if ( owner->phase != phase )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
-		if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+        if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
+        {
+            fprintf(stderr,
+                "KV-MATCH-FAIL slot=%u phase=%u owner_phase=%u req_id=%llu owner_req=%llu seq=%llu owner_seq=%llu pos=%llu owner_pos=%llu\n",
+                request->cache_lanes[index].resident_sequence_slot,
+                phase,
+                (unsigned)owner->phase,
+                (unsigned long long)request->request_id,
+                (unsigned long long)owner->request.request_id,
+                (unsigned long long)request->cache_lanes[index].sequence_id,
+                (unsigned long long)owner->lane.sequence_id,
+                (unsigned long long)request->cache_lanes[index].sequence_position,
+                (unsigned long long)owner->lane.sequence_position);
+            SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+        }
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1213,6 +1226,25 @@ static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *trans
 	uint32_t index,owned = 0u;
 	uint64_t offset;
 	SparkStatus status,rollback;
+	for (index=0u; index<request->cache_lane_count; index++)
+	{
+		owner = &transactions->lanes[request->cache_lanes[index].resident_sequence_slot];
+		if ( owner->phase == SPARK_KV_LANE_TRANSACTION_PREPARED &&
+		     request->cache_lanes[index].sequence_id == owner->lane.sequence_id &&
+		     request->request_id != owner->request.request_id )
+		{
+			SparkStatus takeover;
+			fprintf(stderr,
+			    "KV-TAKEOVER slot=%u new_req=%llu old_req=%llu seq=%llu\n",
+			    request->cache_lanes[index].resident_sequence_slot,
+			    (unsigned long long)request->request_id,
+			    (unsigned long long)owner->request.request_id,
+			    (unsigned long long)request->cache_lanes[index].sequence_id);
+			takeover = SparkKvLaneTransactionAbort(transactions,owner);
+			if ( takeover != SPARK_STATUS_OK )
+				SPARK_RETURN(takeover);
+		}
+	}
 	for (index=0u; index<request->cache_lane_count; index++)
 		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ? 1u : 0u;
 	if ( owned != 0u )

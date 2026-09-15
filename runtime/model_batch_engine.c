@@ -1981,13 +1981,12 @@ static void SparkModelBatchExpireStalledRequests(
 	for (index=0u; index<engine->request_capacity; index++)
 	{
 		state = engine->requests[index].state;
-		if ( state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT &&
-		     state != SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT )
+		if ( state == SPARK_MODEL_BATCH_REQUEST_FREE )
 			continue;
 		if ( engine->requests[index].inflight_since_ns == 0ull )
 			engine->requests[index].inflight_since_ns = now;
 		else if ( now - engine->requests[index].inflight_since_ns >
-		          UINT64_C(240) * UINT64_C(1000000000) )
+		          UINT64_C(120) * UINT64_C(1000000000) )
 		{
 			fprintf(stderr,
 			    "batch request expired id=%llu state=%u\n",

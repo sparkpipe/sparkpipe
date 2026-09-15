@@ -11,7 +11,8 @@ __global__ void SparkGlm5NextMeshPublishKernel(
 	unsigned long long *seq_cell,
 	unsigned long long *round_seq,
 	uint64_t bytes,
-	uint64_t slot_index)
+	uint64_t slot_index,
+	volatile uint64_t *slot_tail)
 {
 	unsigned long long sequence;
 	if ( threadIdx.x != 0u || blockIdx.x != 0u )
@@ -20,6 +21,8 @@ __global__ void SparkGlm5NextMeshPublishKernel(
 	round_seq[0] = sequence;
 	entry[2] = slot_index;
 	entry[1] = bytes;
+	__threadfence_system();
+	*slot_tail = sequence;
 	__threadfence_system();
 	entry[0] = sequence;
 }
@@ -67,6 +70,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 			slot_bytes - 8u);
 		while ( *end_word < sequence )
 		{
+			if ( *error_word != 0ull )
+				return;
 			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
 			{
 				atomicExch((unsigned long long *)error_word,sequence);
@@ -280,13 +285,14 @@ extern "C" cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
 
 extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
 	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
-	uint64_t slot_index)
+	uint64_t slot_index,volatile void *slot_tail)
 {
 	if ( entry == 0 || seq_cell == 0 || round_seq == 0 )
 		return(cudaErrorInvalidValue);
 	SparkGlm5NextMeshPublishKernel<<<1,32,0u,stream>>>(
 		(volatile uint64_t *)entry,(unsigned long long *)seq_cell,
-		(unsigned long long *)round_seq,bytes,slot_index);
+		(unsigned long long *)round_seq,bytes,slot_index,
+		(volatile uint64_t *)slot_tail);
 	return(cudaPeekAtLastError());
 }
 

@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <cuda_runtime.h>
 #include "sparkpipe/spark_tp_chain_ordinal.h"
@@ -221,6 +223,10 @@ struct SparkGlm5NextModuleState
 	uint64_t decode_route_leases[SPARK_WEIGHTD_LEASE_COUNT_MAX];
 	uint32_t decode_route_lease_count;
 	uint32_t decode_union_count;
+	uint64_t degrade_graph_fallback;
+	uint64_t degrade_covered_abandon;
+	uint64_t degrade_graph_disabled;
+	uint64_t degrade_graph_stuck;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
 	uint32_t hbound_probes;
@@ -586,7 +592,24 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,UINT64_C(8589934592),&spine_budget);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+	{
+		uint32_t attach_attempt;
+		for ( attach_attempt = 1u; attach_attempt <= 30u; attach_attempt++ )
+		{
+			status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+			if ( status == SPARK_STATUS_OK )
+				break;
+			fprintf(stderr,
+				"LAZY-ATTACH-RETRY n=%u status=%d\n",
+				attach_attempt,(int32_t)status);
+			{
+				struct timespec attach_pause =
+					{ (attach_attempt % 10u) == 0u ? 1u : 0u,
+					  (attach_attempt % 10u) == 0u ? 0u : 250000000u };
+				nanosleep(&attach_pause,0);
+			}
+		}
+	}
 	if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 &&
 	     state->lazy_pack->map != 0 )
 	{
@@ -1400,7 +1423,7 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 		for (lane=0u; lane<request->cache_lane_count; lane++)
 		{
 			slot = request->cache_lanes[lane].resident_sequence_slot;
-			atomic_store_explicit(&state->lane_bound[slot],0u,memory_order_release);
+			atomic_store_explicit(&state->lane_bound[slot],(unsigned char)0u,memory_order_release);
 			if ( state->mtp_lane_armed != 0 )
 				state->mtp_lane_armed[slot] = 0u;
 		}
@@ -1859,6 +1882,29 @@ static SparkStatus SparkGlm5NextModuleCombineU64Max(
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_all_reduce_max_u64"));
 }
 
+
+static void SparkGlm5NextBootConfigReport(
+    const SparkGlm5NextModuleState *state)
+{
+	fprintf(stderr,
+	    "BOOTCFG tp_degree=%u tp_rank=%u backend=%u collectives=%u hc=%u "
+	    "graph_path=%u lazy_pack=%u lazy_experts=%u owns_embedding=%u "
+	    "owns_final_head=%u mtp=%u kv_pages=%lu stage=%u\n",
+	    state->tp_degree,
+	    (unsigned)0u,
+	    (unsigned)state->tp_device_collective.backend_kind,
+	    state->tp_device_collective_initialized,
+	    state->tp_device_collective_hc_initialized,
+	    state->graph_path_enabled,
+	    state->lazy_pack != 0,
+	    state->lazy_pack != 0,
+	    state->owns_embedding,
+	    state->owns_final_head,
+	    state->mtp_enabled,
+	    (unsigned long)0ul,
+	    state->stage_index);
+}
+
 static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	SparkGlm5NextModuleState *state,
 	const SparkGlm5NextResidentDecodeStageNodeContext *context)
@@ -1975,6 +2021,7 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
+	SparkGlm5NextBootConfigReport(state);
 	if ( state->lazy_pack != 0 &&
 	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(
@@ -2924,6 +2971,8 @@ static SparkStatus SparkGlm5NextGraphRouteSweep(
 	return(SPARK_STATUS_OK);
 }
 
+#define SPARK_GLM5_NEXT_GRAPH_REPLAY_WATCH_NS (15ull * 1000000000ull)
+
 static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
     SparkStatus *status_out)
 {
@@ -2932,14 +2981,75 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 	void *exec;
 	state = chain->state;
 	status = SparkGlm5NextGraphRouteSweep(chain);
+	if ( status == SPARK_STATUS_BUSY && chain->slot->graph_ready != 0u )
+		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 	{
 		exec = (chain->slot->graph_alt == 0u) ?
 			chain->slot->graph_exec_a : chain->slot->graph_exec_b;
 		if ( cudaGraphLaunch(exec,chain->slot->stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
-		else if ( cudaStreamSynchronize(chain->slot->stream) != cudaSuccess )
-			status = SPARK_STATUS_IO_ERROR;
+		else
+		{
+			cudaError_t poll;
+			uint64_t watch_stop;
+			struct timespec watch_now;
+			clock_gettime(CLOCK_MONOTONIC,&watch_now);
+			watch_stop = (uint64_t)watch_now.tv_sec *
+				UINT64_C(1000000000) + (uint64_t)watch_now.tv_nsec +
+				SPARK_GLM5_NEXT_GRAPH_REPLAY_WATCH_NS;
+			while ( (poll = cudaStreamQuery(chain->slot->stream)) ==
+				cudaErrorNotReady )
+			{
+				clock_gettime(CLOCK_MONOTONIC,&watch_now);
+				if ( (uint64_t)watch_now.tv_sec *
+					UINT64_C(1000000000) +
+					(uint64_t)watch_now.tv_nsec >= watch_stop )
+					break;
+				usleep(500u);
+			}
+			if ( poll == cudaErrorNotReady )
+			{
+				uint64_t stuck_error;
+				stuck_error = SparkTpDeviceCollectiveGraphError(
+					&state->tp_device_collective);
+				state->graph_path_enabled = 0u;
+				state->degrade_graph_stuck++;
+				fprintf(stderr,
+					"DEGRADE graph-stuck slot=%u alt=%u err=%llu\n",
+					chain->slot_index,chain->slot->graph_alt,
+					(unsigned long long)stuck_error);
+				status = SPARK_STATUS_INTERNAL_ERROR;
+			}
+			else if ( poll != cudaSuccess )
+				status = SPARK_STATUS_IO_ERROR;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		uint64_t graph_error;
+		graph_error = SparkTpDeviceCollectiveGraphError(
+			&state->tp_device_collective);
+		SparkTpDeviceCollectiveClearGraphError(
+			&state->tp_device_collective);
+		if ( graph_error == 0ull &&
+		     state->tp_device_collective_hc_initialized != 0u )
+		{
+			graph_error = SparkTpDeviceCollectiveGraphError(
+				&state->tp_device_collective_hc);
+			SparkTpDeviceCollectiveClearGraphError(
+				&state->tp_device_collective_hc);
+		}
+		if ( graph_error != 0ull )
+		{
+			state->graph_path_enabled = 0u;
+			state->degrade_graph_stuck++;
+			fprintf(stderr,
+				"DEGRADE graph-wait-timeout slot=%u seq=%llu\n",
+				chain->slot_index,
+				(unsigned long long)graph_error);
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		}
 	}
 	if ( status == SPARK_STATUS_OK && state->decode_miss_host != 0 &&
 	     state->decode_miss_host[0] != 0u )
@@ -3044,6 +3154,8 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 		{
 			SparkGlm5NextGraphDisarm(state);
 			slot->graph_disabled = 1u;
+			state->degrade_graph_disabled++;
+			fprintf(stderr,"DEGRADE graph-disabled slot=%u\n",chain->slot_index);
 			*status_out = SPARK_STATUS_BUSY;
 			return;
 		}
@@ -3067,6 +3179,8 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 				(void)cudaGraphExecDestroy(
 					(cudaGraphExec_t)exec_b);
 			slot->graph_disabled = 1u;
+			state->degrade_graph_disabled++;
+			fprintf(stderr,"DEGRADE graph-disabled slot=%u\n",chain->slot_index);
 			*status_out = SPARK_STATUS_BUSY;
 			return;
 		}
@@ -3142,24 +3256,27 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				free(chain);
 				return;
 			}
-			fprintf(stderr,"GRAPH-FALLBACK-TO-CHAIN status=%d\n",
-				(int32_t)graph_status);
+			state->degrade_graph_fallback++;
+			if ( (state->degrade_graph_fallback & 15u) == 1u )
+				fprintf(stderr,
+				    "DEGRADE graph-fallback n=%llu status=%d\n",
+				    (unsigned long long)
+				        state->degrade_graph_fallback,
+				    (int32_t)graph_status);
 		}
-		if ( chain->sweep_submitted == 0u )
+		SparkGlm5NextBuildWave(chain);
+		if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
+		     chain->slot->route_recorded != 0u &&
+		     chain->sweep_submitted == 0u )
 		{
-			SparkGlm5NextBuildWave(chain);
-			if ( state->lazy_pack != 0 && state->tp_degree > 1u &&
-			     chain->slot->route_recorded != 0u )
-			{
-				SparkStatus submit_status;
-				chain->sweep_submitted = 1u;
-				submit_status = SparkWeightdWorkerSubmit(
-					state->lazy_pack->worker,
-					SparkGlm5NextSweepWork,chain);
-				if ( submit_status != SPARK_STATUS_OK )
-					SparkGlm5NextTpChainFail(chain,submit_status);
-				return;
-			}
+			SparkStatus submit_status;
+			chain->sweep_submitted = 1u;
+			submit_status = SparkWeightdWorkerSubmit(
+				state->lazy_pack->worker,
+				SparkGlm5NextSweepWork,chain);
+			if ( submit_status != SPARK_STATUS_OK )
+				SparkGlm5NextTpChainFail(chain,submit_status);
+			return;
 		}
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
@@ -3224,6 +3341,13 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 						return;
 					}
 					chain->wave.expert_lease_all = 0u;
+					state->degrade_covered_abandon++;
+					if ( (state->degrade_covered_abandon & 15u) == 1u )
+						fprintf(stderr,
+						    "DEGRADE covered-abandon n=%llu layer=%u\n",
+						    (unsigned long long)
+						        state->degrade_covered_abandon,
+						    chain->next_layer);
 				}
 				else
 				{
