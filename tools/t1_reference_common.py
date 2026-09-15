@@ -137,6 +137,24 @@ class Safetensors:
             raise ValueError(f"truncated row range for {name}")
         return np.frombuffer(data, dtype=dtype).reshape(count, shape[1])
 
+    def raw_slab(self, name, first, count):
+        fname, e, base = self._entry(name)
+        shape = e["shape"]
+        if len(shape) < 2 or first < 0 or count <= 0 \
+                or first + count > shape[0]:
+            raise ValueError(f"slab range {first}+{count} outside {name} "
+                             f"{shape}")
+        dtype = np.dtype(self._np(e["dtype"]))
+        slab = int(np.prod(shape[1:], dtype=np.int64)) * dtype.itemsize
+        if e["data_offsets"][1] - e["data_offsets"][0] != shape[0] * slab:
+            raise ValueError(f"extent disagrees with shape for {name}")
+        fh = self.fds[fname]
+        fh.seek(base + e["data_offsets"][0] + first * slab)
+        data = fh.read(count * slab)
+        if len(data) != count * slab:
+            raise ValueError(f"truncated slab range for {name}")
+        return np.frombuffer(data, dtype=dtype).reshape([count] + shape[1:])
+
 
 DEFINE_RE = re.compile(r"^#define\s+SPARK_LLM_([A-Z0-9_]+)\s+(.+?)[ \t]*$", re.M)
 
