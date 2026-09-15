@@ -2572,14 +2572,14 @@ static SparkStatus SparkQwen4FlashModuleRunPrefill(SparkQwen4FlashModuleState *s
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-		if ( state->owns_final_head != 0u )
-		{
-			status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,1u),"head_emit");
-			if ( status == SPARK_STATUS_OK )
-				status = SparkQwen4FlashModuleT1DumpHead(state,slot);
-		}
-		else if ( wants_output != 0u )
-			status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,1u);
+	if ( state->owns_final_head != 0u )
+	{
+		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashModuleEmitHead(state,slot,frame,1u),"head_emit");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkQwen4FlashModuleT1DumpHead(state,slot);
+	}
+	else if ( wants_output != 0u )
+		status = SparkQwen4FlashModuleEmitHiddenOutput(slot,context,1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"frame_error_copyback");
 	error = cudaStreamSynchronize(stream);

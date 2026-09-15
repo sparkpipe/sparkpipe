@@ -3,7 +3,7 @@ set -eu
 : "${T1_STAGE:=/tmp/t1q3f_stage}"
 : "${T1_RUNTIME:=/tmp/t1q3f}"
 cd "$T1_STAGE/tree"
-REPOSITORY_ROOT="$T1_STAGE/tree" make -C modules/qwen4_flash_resident_decode_stage archive > "$T1_STAGE/make_q4f.log" 2>&1
+REPOSITORY_ROOT="$T1_STAGE/tree" MTP_LAYER_COUNT=0 make -C modules/qwen4_flash_resident_decode_stage archive > "$T1_STAGE/make_q4f.log" 2>&1
 make build/libsparkpipe_core.a build/libhidden_transport_spark_host_rdma_verbs.so > "$T1_STAGE/make_rest.log" 2>&1
 ARCHIVE=$(find build -name "libqwen4_flash_resident_decode_stage.a" | head -1)
 [ -n "$ARCHIVE" ] || { echo "module archive missing" >&2; exit 1; }
