@@ -7,8 +7,9 @@ set -eu
 
 REPO=/Users/mac/q3ft1
 BUILD_NODE=spark7
-SCRATCH=$HOME/q3ft1_rt
-STAGE_DIR=$HOME/q3ft1_rt_stage
+LOCAL_SCRATCH="$REPO/.rt"
+REMOTE_RT='$HOME/q3ft1_rt'
+REMOTE_STAGE='$HOME/q3ft1_rt_stage'
 PROMPTS="$REPO/qualification/t1_reference/qwen4_flash/prompts_qwen4flash.json"
 PORT_BASE=19456
 TP_IDENTIFIER=194561
@@ -54,7 +55,7 @@ print(','.join(str(0 if a == b else base + a * tp + b) for a in range(tp) for b 
 		echo "SPINE_BUDGET_BYTES=$SPINE_BUDGET_BYTES"
 		echo "WEIGHTD_SOCKET=$WEIGHTD_SOCKET"
 		echo "SESSION_PORTS=\"$ports\""
-	} > "$SCRATCH/rank$1.env"
+	} > "$LOCAL_SCRATCH/rank$1.env"
 }
 
 wave_prompt() {
@@ -65,10 +66,10 @@ wave_prompt() {
 	for rank in 0 1 2 3 4 5 6 7; do
 		host=$(rank_host "$rank")
 		say "launch rank $rank on $host ($prompt_name)"
-		ssh -o BatchMode=yes "$host" "rm -rf $SCRATCH/dump && mkdir -p $SCRATCH/dump"
+		ssh -o BatchMode=yes "$host" "rm -rf $REMOTE_RT/dump && mkdir -p $REMOTE_RT/dump"
 		write_rank_env "$rank" "$prompt_ids" "$new_tokens"
-		scp -q "$SCRATCH/rank$rank.env" "$host:$SCRATCH/rank$rank.env"
-		ssh -o BatchMode=yes "$host" "sh $SCRATCH/t1_q3f_rank.sh $rank $SCRATCH/rank$rank.env" > "$EXPORT_ROOT/$prompt_name-rank$rank.log" 2>&1 &
+		scp -q "$LOCAL_SCRATCH/rank$rank.env" "$host:q3ft1_rt/rank$rank.env"
+		ssh -o BatchMode=yes "$host" "sh $REMOTE_RT/t1_q3f_rank.sh $rank $REMOTE_RT/rank$rank.env" > "$EXPORT_ROOT/$prompt_name-rank$rank.log" 2>&1 &
 		pids="$pids $!"
 	done
 	fail=0
@@ -78,10 +79,9 @@ wave_prompt() {
 	[ "$fail" = 0 ] || { say "WAVE INCOMPLETE for $prompt_name - inspect $EXPORT_ROOT/$prompt_name-rank*.log"; return 1; }
 	say "8/8 ranks done ($prompt_name)"
 	mkdir -p "$EXPORT_ROOT/$prompt_name-dump"
-	scp -q -r "spark0:$SCRATCH/dump/." "$EXPORT_ROOT/$prompt_name-dump/"
-	for rank in 1 2 3 4 5 6 7; do
+		for rank in 0 1 2 3 4 5 6 7; do
 		host=$(rank_host "$rank")
-		scp -q -r "$host:$SCRATCH/dump/." "$EXPORT_ROOT/$prompt_name-dump/" 2>/dev/null || true
+		scp -q -r "$host:q3ft1_rt/dump/." "$EXPORT_ROOT/$prompt_name-dump/" 2>/dev/null || true
 	done
 	say "$prompt_name dump files: $(ls "$EXPORT_ROOT/$prompt_name-dump" | wc -l | tr -d ' ')"
 }
@@ -101,20 +101,20 @@ release_lease() {
 }
 
 stage_build() {
-	rm -rf "$SCRATCH"
-	mkdir -p "$SCRATCH"
-	ssh "$BUILD_NODE" "rm -rf $STAGE_DIR && mkdir -p $STAGE_DIR $SCRATCH"
-	git -C "$REPO" bundle create "$SCRATCH/q3ft1.bundle" lane/q3f-t1
-	scp -q "$SCRATCH/q3ft1.bundle" "$BUILD_NODE:$STAGE_DIR/"
-	ssh "$BUILD_NODE" "rm -rf $STAGE_DIR/tree && git clone -q -b lane/q3f-t1 $STAGE_DIR/q3ft1.bundle $STAGE_DIR/tree"
+	rm -rf "$LOCAL_SCRATCH"
+	mkdir -p "$LOCAL_SCRATCH"
+	ssh "$BUILD_NODE" "rm -rf $REMOTE_STAGE $REMOTE_RT && mkdir -p $REMOTE_STAGE $REMOTE_RT"
+	git -C "$REPO" bundle create "$LOCAL_SCRATCH/q3ft1.bundle" lane/q3f-t1
+	scp -q "$LOCAL_SCRATCH/q3ft1.bundle" "$BUILD_NODE:q3ft1_rt_stage/"
+	ssh "$BUILD_NODE" "rm -rf $REMOTE_STAGE/tree && git clone -q -b lane/q3f-t1 $REMOTE_STAGE/q3ft1.bundle $REMOTE_STAGE/tree"
 	say "building on $BUILD_NODE"
-	scp -q "$REPO/tools/t1_q3f_build.sh" "$BUILD_NODE:$STAGE_DIR/"
-	ssh "$BUILD_NODE" "sh $STAGE_DIR/t1_q3f_build.sh"
+	scp -q "$REPO/tools/t1_q3f_build.sh" "$BUILD_NODE:q3ft1_rt_stage/"
+	ssh "$BUILD_NODE" "sh $REMOTE_STAGE/t1_q3f_build.sh"
 	say "build green on $BUILD_NODE"
 	for rank in 0 1 2 3 4 5 6 7; do
 		host=$(rank_host "$rank")
-		ssh "$host" "rm -rf $SCRATCH && mkdir -p $SCRATCH"
-		scp -q "$BUILD_NODE:$STAGE_DIR/t1_q3f_harness" "$BUILD_NODE:$STAGE_DIR/libhidden_transport_spark_host_rdma_verbs.so" "$REPO/tools/t1_q3f_rank.sh" "$host:$SCRATCH/"
+		ssh "$host" "rm -rf $REMOTE_RT && mkdir -p $REMOTE_RT"
+		scp -q "$BUILD_NODE:q3ft1_rt_stage/t1_q3f_harness" "$BUILD_NODE:q3ft1_rt_stage/libhidden_transport_spark_host_rdma_verbs.so" "$REPO/tools/t1_q3f_rank.sh" "$host:q3ft1_rt/"
 	done
 	say "staged artifacts on 8 hosts"
 }
