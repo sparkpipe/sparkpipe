@@ -48,7 +48,7 @@
   },
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "b4734de4facf877f85769a911abafc5283eab3d9"
+    "revision": "935644c05e76fc198714f4cca449fd8b970ff6d7"
   },
   "schema_version": 1,
   "stages": [
