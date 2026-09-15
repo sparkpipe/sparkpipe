@@ -127,3 +127,42 @@ an lsof open-handle pre-check (refuse-on-mismatch; zero mismatches hit):
 Per-file deletion receipts (node file bytes sha256) preserved in the wave
 log; every digest matched the Wave-P census before rm.
 
+
+## Addendum — stages 1-2 build completion (in-flight at ledger update)
+
+Stage1 (sparkd; 537 tensors/23 layers; ENOSPC during the first shard pass and
+a concurrent-writer poisoning forced one clean rerun from the stage pack; the
+rerun's rank sizes carry the +786,432 B manifest-reserve delta of the current
+format exactly):
+
+| rank | sha256 (build, sparkd) |
+|---|---|
+| stage1.rank00 | 58345167ebc7f6e1b2c109250bb609c0418a47b3dc22cf8cad116d7871ee57a1 |
+| stage1.rank01 | e971a6ff80be96a133dda97eb217d7cdfdb3e5335fc58c9a3238b12e50a352fc |
+| stage1.rank02 | cb488bc487cbc589f1da0f7d6da15cbfdc8f088f1790f7a0ea544a42be359fcb |
+| stage1.rank03 | 27ce6ce0ba544e06e6dbd40f7eec6817f555c710b78fd37e7492f86d6a8eecfe |
+
+k3_verify_pack --quick PASS x4 (537 tensors, 23 layers, manifest_len 1048560,
+payload_base 1048576, tp 4/0-3); .experts v2 x4 (41,216 ranges). Oracle
+--digest x4: IN FLIGHT on sparkd (warm-client crawl windows; verdicts
+pending — no stage1 pack is placed until 4/4 PASS).
+
+Stage2 (sparkd; 534 tensors/23 layers; pack 388,835,000,704 B payload):
+
+| rank | sha256 (build, sparkd) |
+|---|---|
+| stage2.rank00 | 24c370554e59be011f70d69eeadab0c9c3567524167185fee873618b22044f20 |
+| stage2.rank01 | 3e6c54fec9e6720071612589bc62f4ab87d2295e4824bc3098260d070a7dee12 |
+| stage2.rank02 | 8cb22a458150f717484640b59d33c3107e5339bf9f66ee926b520a96175bc040 |
+| stage2.rank03 | 627b75747c220a5e32c0ec5712c80128b5d7076598008d6ed23226a4d13538a8 |
+
+.experts v2 x4 done (41,216 ranges). verify --quick + oracle + placement:
+PENDING (scripted; see /tmp/fin_k3_RUNBOOK.md on spark9/sparkd).
+
+Stage3 (layers 70+23): rebuild loop NOT yet launched (warm-stream serialization
+behind the stage1 oracle chain); launch command in the runbook.
+
+Deleted this addendum window: stage0 debris on sparkd (393,525,084,800 B
+stage0.pack + 4x ~97.6 GB quartile rank copies + sidecars — migration junk,
+stage0 already placed on s0-s3), stage1.pack and stage2.pack deleted
+post-shard on sparkd (their rank packs + shas + experts are the artifacts).
