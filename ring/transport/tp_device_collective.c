@@ -420,6 +420,11 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
             implementation->chain_request_id = request_id;
         }
         *base_cell = base | tag;
+        fprintf(stderr,
+            "CKEY-WRITE rank=0 base=%llu tag=%llu cell=%llu\n",
+            (unsigned long long)base,
+            (unsigned long long)tag,
+            (unsigned long long)*base_cell);
         __sync_synchronize();
         (void)SparkWeightdClientMeshBroadcast(
             implementation->client,
@@ -520,10 +525,11 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     if ( epoch != implementation->chain_epoch )
     {
         fprintf(stderr,
-            "CKEY-ADOPT rank=%u epoch=%llu had=%llu\n",
+            "CKEY-ADOPT rank=%u epoch=%llu had=%llu cell=%llu\n",
             implementation->tp_rank,
             (unsigned long long)epoch,
-            (unsigned long long)implementation->chain_epoch);
+            (unsigned long long)implementation->chain_epoch,
+            (unsigned long long)*base_cell);
         implementation->chain_epoch = epoch;
         implementation->round_index = 0ull;
     }
