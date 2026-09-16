@@ -153,11 +153,13 @@ class Glm53FullEngine:
         return codes * tiled[:rows, :cols]
 
     def linear(self, x, name):
-        return f32_to_bf16_u16(self.tensor(name + ".weight") @ x)
+        xf = bf16_to_f32(x) if x.dtype == np.uint16 else x
+        return f32_to_bf16_u16(self.tensor(name + ".weight") @ xf)
 
     def linear_fused_gate_up(self, x, up_name, gate_name):
-        up = self.tensor(up_name) @ x
-        gate = self.tensor(gate_name) @ x
+        xf = bf16_to_f32(x) if x.dtype == np.uint16 else x
+        up = self.tensor(up_name) @ xf
+        gate = self.tensor(gate_name) @ xf
         return np.concatenate(
             [f32_to_bf16_u16(up), f32_to_bf16_u16(gate)])
 
@@ -223,7 +225,8 @@ class Glm53FullEngine:
         return f32_to_bf16_u16((gate / (1.0 + np.exp(-gate))) * up)
 
     def down_linear(self, x, name):
-        return f32_to_bf16_u16(self.tensor(name) @ x)
+        xf = bf16_to_f32(x) if x.dtype == np.uint16 else x
+        return f32_to_bf16_u16(self.tensor(name) @ xf)
 
     def dense_mlp(self, layer, normed):
         prefix = f"{PREFIX}{layer}.mlp."
