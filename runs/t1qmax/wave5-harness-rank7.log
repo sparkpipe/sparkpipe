@@ -1,0 +1,8 @@
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd.c:3511 status=4
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd.c:3148 status=4
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd_lazy_pack.c:78 status=4
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd_lazy_pack.c:165 status=4
+qwen38_stage lazy_open_failed status=4
+qwen38_stage initialize_failed status=4
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1318 status=4
+t1_qmax_harness initialize status=4

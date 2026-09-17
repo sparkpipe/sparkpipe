@@ -207,3 +207,145 @@ rdma_verbs backend), a shared-fleet component: two independent lanes,
 two model families, both stop at their first TP collective. It needs
 its own evidence-driven repair pass (transport-level, not a backend
 swap - required behavior cannot be waived by compatibility paths).
+
+---
+
+# T1-QMAX run receipt — 2026-09-17 wave 5 (mapping-fix merge + delivery verdict)
+
+Lane lane/t1-qmax-wave4 @ 2940b94 = merge of origin/main 4bffe5d (PR #1033,
+the client mesh send-buffer base fix) into the wave-4 lane tip 22cdd15 (8
+engine fixes + lease-parity fix 3edb3e1 intact:
+modules/qwen38_max_resident_decode_stage/source/
+spark_qwen38_max_resident_decode_stage_module.c:1589 keys[k].expert += first).
+Fresh worktree /Users/mac/t1qmaxw5; runner tools/t1_qmax_run.sh retargeted
+to it. Shared fleet weightsd (/tmp/spark_weightd.sock, mesh triple live
+fleet-wide) untouched; mesh lease + GPU window claimed per law; fixture
+untouched: capital_of_france.t1r sha256 74fc4bed5354b734... matches the
+committed manifest; PROMPT_IDS=760,6511,314,9338,369 NEW_TOKENS=2 (the
+reference decodes exactly 2 tokens, generated ids [107300,107300]).
+
+## Pre-flight (offline, no window)
+
+- Build green on spark7 from the merged tree (2940b94); harness links the
+  corrected client: SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (the deleted
+  64 KiB-round constant) absent from the linked binary;
+  SparkWeightdClientAttachLazy present; mmap is exact-size at fd offset 0
+  (runtime/spark_weightd.c:3165-3183, delta=0 by construction).
+- tests/test_weightd_mesh_doorbell from THIS tree: fixed-mode delivered
+  64/64 verify=pass; legacy-align negative control 0/64 as designed.
+- Wave binaries (build 1): t1_qmax_harness sha256 5fd2aae8929d1fb4...,
+  libhidden_transport_spark_host_rdma_verbs.so 91f07bf9d1b328dc...,
+  sparkpipe_weightd add014fb58b0eb34..., qwen38max_parity_probe
+  7a2b7d34645c88cd... (spark7 /tmp/t1qmax_stage, since purged by the
+  fleet /tmp sweeper; the rebuild is not byte-identical, 9938aa9e..., so
+  build-1 SHAs are recorded here as the wave binaries' identity).
+
+## VERDICT: T1 FAIL — the decode cannot complete; the blocker has MOVED
+## from the tp transport to the SHARED weightd daemons themselves
+
+Two 16-rank waves were run per the per-boot wedge law (one decode per
+boot):
+
+- Wave 1, 16:29:40-16:33:54Z (co-tenants: production glm53flash
+  fleet_node_agent fleet-wide since 15:08Z; LING-T1 decode gate window).
+- Wave 2, 16:44:22-16:49:15Z (fleet quiet-verified pre-claim: 31-48G
+  free on the capacity-flagged nodes, zero lane harness processes).
+
+### 1. Publication delivery: RESTORED (the PR #1033 fix works) — but not lossless
+
+Every rank that reached the first TP hidden allreduce staged its own
+publication coherently at its offset-0 slot (pub seq=1024/2048, correct
+doorbell entries, zero MESH-ENTRY-READBACK complaints), and PEER
+publications became visible — wave 4 delivered ZERO on all 16 ranks:
+
+    wave 1 spinners (remaining of 15 peers): rank0 13, rank2 9, rank3 13,
+    rank4 13, rank6 10, rank12 11, rank13 11  (2-6 peers seen per rank)
+    wave 2 spinners: rank0 15, rank2 14, rank3 11, rank4 9, rank6 13,
+    rank12 9, rank13 12  (rank4 and rank12 saw ALL 6 live peers)
+
+Seven ranks reached the collective in each wave (0,2,3,4,6,12,13); the
+other nine exited before publishing, so the expected live-peer count is
+6. Delivery is now real (rank4/rank12 complete) but inconsistent across
+pairs — consistent with the daemon mesh state below, not with the client
+math (the doorbell harness proves the client publish/scan order 64/64).
+
+### 2. The standing blocker: daemon-side acquire INTERNAL_ERROR(17)
+
+All 8 routed-expert-acquiring ranks (1,5,8,9,10*,11,14,15; *rank10's log
+was lost to the /tmp sweeper mid-harvest) fail the lease acquire at
+spark_weightd_map.c:393 with status=17 (INTERNAL_ERROR) in BOTH waves —
+deterministic on a quiet fleet. The DAEMON side confirms it is the
+daemon failing, not the client: /home/<node>/weightd.log on spark1,
+spark8, spark9, sparkb, sparkf all print
+
+    ERBSITE runtime/spark_weightd.c:1842 status=17
+    ERBSITE runtime/spark_weightd.c:1884 status=17
+    WD-LEASE-TRACE kind=acquire owner=32 keys=N status=17 occupied=0 id=0
+
+(N=1,3,1,1,1 matching the wave-4 step-0 routing: rank1 e51, rank8
+e256/269/287, ...). occupied=0 rules out lease-table exhaustion; the 17
+arises inside the daemon's acquire-load path (AcquireWorkingSet ->
+AcquireBudget/ArenaChunkEnsure/LoadLease in the main-era code the
+deployed daemons carry — they print the new WD-POOL-PREMAP-SKIP and
+"spine preloaded" lines). The failure sites' exact source lines cannot
+be pinned further from outside: the daemon's stdout/stderr line numbers
+do not align 1:1 with main@4bffe5d, and the daemon holds a hardcoded
+singleton lock (/tmp/spark_weightd.singleton), so a private-daemon
+reproduction beside the shared instance is impossible without touching
+the shared service (not mine).
+
+### 3. Shared-daemon fleet state tonight (independent of my waves)
+
+- The daemons were restarted this evening (~16:05Z, new main-era build;
+  two WD-WIRED boot epochs visible in the logs). They serve a production
+  glm53flash residentd fleet (co-tenant, standing since 15:08Z, explicitly
+  not mine to touch).
+- spark5, spark7, sparke daemons came up MESH-DEGRADED:
+  "weightd-mesh: switch port not active (state=1) / init=driver_load_error
+  (serving degraded)" — 3 of the 16 mesh endpoints dead before my first
+  wave. sparka's log shows a foreign glm5_next_stage lazy-attach mid-day.
+- weightd_execute_probe (rebuilt from this tree, run on spark5 against
+  the shared daemon): attempt 1 attach failed IO_ERROR(4)
+  (spark_weightd.c:3511/3148), attempt 2 attach failed CAPACITY_EXCEEDED(2)
+  (spark_weightd_lazy_pack.c:165) — the same daemon attach-capacity class
+  HY4-T1 measured minutes before my wave 1 (spine cudaMalloc ~9 GB).
+  The probe never reached the acquire stage; further attempts were
+  blocked by the fleet /tmp sweeper deleting the staged binary
+  mid-session (it also purged spark7's whole stage tree and rank7/rank10
+  harness logs between wave and harvest).
+
+### 4. T1 compare: NOT REACHED
+
+Zero tokens decoded (every rank fails at execute step 0), so
+t1_qmax_pack.py / t1_reference_compare.py could not run. No tolerance
+was loosened; nothing was rerun-until-pass (two waves = two boots, both
+honestly recorded). Measured B1 tok/s correctly NOT attempted - it is
+gated on T1 PASS. The 22.0 tok/s analytic ceiling again stands with no
+measured companion.
+
+## Next test (exact, for the follow-on window)
+
+The acquire-17 is server-side and reproducible without my engine: any
+client that attaches and acquires from the shared daemons should fail
+the same way. The discriminating experiments are (a) the deployed
+daemons' exact build revision vs main (their line numbers differ from
+4bffe5d by a small shift), (b) whether a daemon restart on a quiet node
+clears the acquire-17 (state vs code), and (c) the mesh-degraded triad
+(spark5/7/e): the "switch port not active (state=1)" at daemon init
+needs a fabric look (rocep1s0f1 link state at daemon start) — the same
+NIC class was PORT_ACTIVE with 15/15 peers wired in earlier windows.
+All three belong to whoever owns the shared weightd deployment; my lane
+needs none of its own code changed for T1 to proceed: the client-side
+path (load, attach, route-keys, parity, publish) is proven green.
+
+## Evidence files (this worktree)
+
+- runs/t1qmax/wave5-harness-rank{0..15}.log: wave 1 per-host harness
+  stderr (14/16 present; rank7/rank10 lost to the /tmp sweeper)
+- runs/t1qmax/wave5b-harness-rank{0..15}.log: wave 2 (rank7/rank10 lost)
+- runs/t1qmax/wave3-night/: wave-4 evidence (unchanged)
+- daemon-side lines quoted above are on the nodes at
+  /home/<node>/weightd.log (spark1:324527-324529, spark8:324480-324482,
+  spark9:391950-391952, sparkb:343370-343372, sparkf:370120-370122;
+  spark5:2-4 mesh-degraded; spark7 tail mesh-degraded; sparke:979-class
+  restart ERRSITE)

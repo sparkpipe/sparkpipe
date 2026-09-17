@@ -4,7 +4,7 @@
 # Laws: poll never blind-sleep, sparkcap on every pack/compute step, fail loud.
 set -eu
 
-REPO=/Users/mac/t1qmaxw
+REPO=/Users/mac/t1qmaxw5
 BUILD_NODE=spark7
 SCRATCH=/tmp/t1qmax
 STAGE_DIR=/tmp/t1qmax_stage
@@ -16,7 +16,7 @@ TP_IDENTIFIER=2141723
 HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 EXPERT_POOL_BYTES=8589934592
 SPINE_BUDGET_BYTES=17179869184
-EXPORT_ROOT=/Users/mac/t1qmaxw/runs/t1qmax
+EXPORT_ROOT=/Users/mac/t1qmaxw5/runs/t1qmax
 REVISION=d2dc35658bcf77e66643428cb52e774cc3b5bd29
 
 say() {
