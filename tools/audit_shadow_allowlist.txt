@@ -1,0 +1,13 @@
+# audit_shadow allowlist — declared exceptions to the silent-override gate
+#
+# Format: one entry per line, fields separated by "|":
+#   <class>|<repo-relative-path>|<symbol-or-include>
+#
+# class is 1 (duplicate-signature copy), 2 (header shadowing),
+# 3 (drifted private copy), 6 (cross-family twin).
+#
+# Every entry must reference an approved review (PR link) recorded in the
+# lane report docs/AGENT_LANE_BRIEFS/reports/audit-shadow-2026-09-16.md.
+# Entries without a review reference are removed by the next audit lane.
+#
+# Current entries: none. The gate fails on every unallowlisted finding.

@@ -1,5 +1,5 @@
 {
-  "file_count": 2961,
+  "file_count": 2965,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -545,6 +545,16 @@
       "path": "docs/AGENT_LANE_BRIEFS/qwen_flash.md",
       "sha256": "dae19363b13c44f038ac1bc49e4e0dd1f96d3ac79c5151d1c8dc0c293771558d",
       "size_bytes": 3577
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/audit-shadow-2026-09-16.json",
+      "sha256": "0341c8b6f5986f0a988a5116cf582fbd7a87b5ab6a31cd5465859c9bacd010d7",
+      "size_bytes": 653776
+    },
+    {
+      "path": "docs/AGENT_LANE_BRIEFS/reports/audit-shadow-2026-09-16.md",
+      "sha256": "33517d81c843776b42121e05dafccfa113d6e5c3b3fab7fcbc035a31bacd6c76",
+      "size_bytes": 19618
     },
     {
       "path": "docs/AGENT_LANE_BRIEFS/reports/bridge-rtt-sparkf-5090-2026-09-03.md",
@@ -9247,6 +9257,16 @@
       "size_bytes": 10218
     },
     {
+      "path": "tools/audit_shadow.py",
+      "sha256": "6083b827abf1b7f27a12fdc3f8cad89c08c8b11456edda99dcdd9621063c8f06",
+      "size_bytes": 32643
+    },
+    {
+      "path": "tools/audit_shadow_allowlist.txt",
+      "sha256": "386302022d0877103de1ed14b52220428a043109e4450b62db3c4ee15622baec",
+      "size_bytes": 599
+    },
+    {
       "path": "tools/breakdown.sh",
       "sha256": "26677616ed7c1e1868022b26a7d6b1897b3873c947d3c0e6d0efb8124f8a5f60",
       "size_bytes": 1395
@@ -14810,5 +14830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 55915018
+  "total_bytes": 56621654
 }
