@@ -1,16 +1,14 @@
 #include <cuda_runtime.h>
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "inference/kernels/tp_reduce.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
-
 #define SPARK_GLM5_NEXT_CUDA_THREADS 256u
-
 __global__ static void SparkGlm5NextBoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *streams,
@@ -26,7 +24,6 @@ __global__ static void SparkGlm5NextBoundaryLoadKernel(
 	source = ((first_row + row) * width);
 	streams[(row * width) + element] = boundary[source + element];
 }
-
 __global__ static void SparkGlm5NextBoundaryStoreKernel(
 	const uint16_t *streams,
 	uint16_t *boundary,
@@ -42,7 +39,6 @@ __global__ static void SparkGlm5NextBoundaryStoreKernel(
 	destination = ((first_row + row) * width);
 	boundary[destination + element] = streams[(row * width) + element];
 }
-
 __global__ static void SparkGlm5NextEmbeddingKernel(
 	const uint32_t *token_ids,
 	const uint16_t *embedding,
@@ -66,7 +62,6 @@ __global__ static void SparkGlm5NextEmbeddingKernel(
 	for ( stream = 0u; stream < GLM5_NEXT_HC; ++stream )
 		streams[((row * (uint64_t)GLM5_NEXT_HC + stream) * GLM5_NEXT_HIDDEN) + element] = value;
 }
-
 __global__ static void SparkGlm5NextWaveMetadataKernel(
 	const uint32_t *resident_slots,
 	const uint32_t *positions,
@@ -89,12 +84,10 @@ __global__ static void SparkGlm5NextWaveMetadataKernel(
 		dense_row_offset[1] = row_count;
 	}
 }
-
 static int32_t SparkGlm5NextCudaStatus(cudaError_t status)
 {
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
-
 static __device__ __forceinline__ uint32_t SparkGlm5NextOrderedHeadScore(float score)
 {
 	uint32_t bits;
@@ -103,7 +96,6 @@ static __device__ __forceinline__ uint32_t SparkGlm5NextOrderedHeadScore(float s
 	bits = __float_as_uint(score);
 	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ? UINT32_MAX : UINT32_C(0x80000000)));
 }
-
 static __global__ void SparkGlm5NextHeadMaxlocPackKernel(
 	const float *scores,
 	const uint32_t *token_ids,
@@ -117,7 +109,6 @@ static __global__ void SparkGlm5NextHeadMaxlocPackKernel(
 		maxloc[row] = ((uint64_t)SparkGlm5NextOrderedHeadScore(scores[row]) << 32u) |
 			(UINT32_MAX - (token_ids[row] + rank_offset));
 }
-
 static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
 	const uint64_t *maxloc,
 	uint32_t *token_ids,
@@ -128,174 +119,6 @@ static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
 	if ( row < row_count )
 		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
 }
-
-static __device__ __forceinline__ float2 SparkGlm5NextLoadBf16Pair(const void *base,uint64_t element)
-{
-	uint32_t packed = ((const uint32_t *)base)[element];
-	float2 pair;
-	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
-	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
-	return(pair);
-}
-
-static __device__ __forceinline__ void SparkGlm5NextStoreBf16Pair(void *base,uint64_t element,float x,float y)
-{
-	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
-		(__float_as_uint(x) >> 16u);
-	((uint32_t *)base)[element] = packed;
-}
-
-static __global__ void SparkGlm5NextAccumAddKernel(
-	void *destination_bf16,
-	const void *source_bf16,
-	uint32_t row_count,
-	uint32_t width)
-{
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		destination_pair = SparkGlm5NextLoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkGlm5NextLoadBf16Pair(source_bf16,offset + element);
-		SparkGlm5NextStoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
-	}
-}
-
-struct SparkGlm5NextRankSources
-{
-	const void *pointer[16u];
-};
-
-static __global__ void SparkGlm5NextSumRanksF32Kernel(
-    void *destination_bf16,
-    SparkGlm5NextRankSources sources,
-    uint32_t source_count,
-    uint32_t pair_count)
-{
-	uint32_t pair;
-	float2 acc,v;
-	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
-	{
-		uint32_t source;
-		acc.x = 0.0f;
-		acc.y = 0.0f;
-		for ( source = 0u; source < source_count; source++ )
-		{
-			v = SparkGlm5NextLoadBf16Pair(sources.pointer[source],pair);
-			acc.x += v.x;
-			acc.y += v.y;
-		}
-		SparkGlm5NextStoreBf16Pair(destination_bf16,pair,acc.x,acc.y);
-	}
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,
-    void *destination,const void *const *sources,uint32_t source_count,
-    uint32_t element_count)
-{
-	SparkGlm5NextRankSources by_value;
-	uint32_t index;
-	if ( destination == 0 || sources == 0 || source_count == 0u ||
-	     source_count > 16u || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	for ( index = 0u; index < source_count; index++ )
-		by_value.pointer[index] = sources[index];
-	{
-		dim3 grid;
-		uint32_t pairs = (element_count + 1u) / 2u;
-		uint32_t rows = (pairs + 255u) / 256u;
-		grid = dim3(rows < 1u ? 1u : rows,1u,1u);
-		SparkGlm5NextSumRanksF32Kernel<<<grid,256u,0u,stream>>>(
-		    destination,by_value,source_count,pairs);
-	}
-	return cudaPeekAtLastError();
-}
-
-static __global__ void SparkGlm5NextSeedF32Kernel(
-    float *destination_f32,
-    const void *source_a_bf16,
-    const void *source_b_bf16,
-    uint32_t pair_count)
-{
-	uint32_t pair;
-	float2 a,b;
-	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
-	{
-		a = SparkGlm5NextLoadBf16Pair(source_a_bf16,pair);
-		b = SparkGlm5NextLoadBf16Pair(source_b_bf16,pair);
-		destination_f32[2u * pair] = a.x + b.x;
-		destination_f32[2u * pair + 1u] = a.y + b.y;
-	}
-}
-
-static __global__ void SparkGlm5NextAddF32Kernel(
-    float *destination_f32,
-    const void *source_bf16,
-    uint32_t pair_count)
-{
-	uint32_t pair;
-	float2 b;
-	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
-	{
-		b = SparkGlm5NextLoadBf16Pair(source_bf16,pair);
-		destination_f32[2u * pair] += b.x;
-		destination_f32[2u * pair + 1u] += b.y;
-	}
-}
-
-static __global__ void SparkGlm5NextRoundF32Kernel(
-    void *destination_bf16,
-    const float *source_f32,
-    uint32_t pair_count)
-{
-	uint32_t pair;
-	float2 v;
-	for (pair=threadIdx.x; pair<pair_count; pair+=blockDim.x)
-	{
-		v.x = source_f32[2u * pair];
-		v.y = source_f32[2u * pair + 1u];
-		SparkGlm5NextStoreBf16Pair(destination_bf16,pair,v.x,v.y);
-	}
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,
-    float *destination,const void *a,const void *b,uint32_t element_count)
-{
-	SparkGlm5NextSeedF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
-	    destination,a,b,(element_count + 1u) / 2u);
-	return cudaPeekAtLastError();
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,
-    float *destination,const void *b,uint32_t element_count)
-{
-	SparkGlm5NextAddF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
-	    destination,b,(element_count + 1u) / 2u);
-	return cudaPeekAtLastError();
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,
-    void *destination,const float *source,uint32_t element_count)
-{
-	SparkGlm5NextRoundF32Kernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0u,stream>>>(
-	    destination,source,(element_count + 1u) / 2u);
-	return cudaPeekAtLastError();
-}
-
-static __global__ void SparkGlm5NextAccumU64MaxKernel(
-	uint64_t *destination,
-	const uint64_t *source,
-	uint32_t element_count)
-{
-	uint32_t element;
-	element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < element_count && source[element] > destination[element] )
-		destination[element] = source[element];
-}
-
 extern "C" cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset)
 {
 	if ( scores == 0 || token_ids == 0 || maxloc == 0 || row_count == 0u )
@@ -303,7 +126,6 @@ extern "C" cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,con
 	SparkGlm5NextHeadMaxlocPackKernel<<<(row_count + 255u) / 256u,256u,0u,stream>>>(scores,token_ids,maxloc,row_count,rank_offset);
 	return(cudaPeekAtLastError());
 }
-
 extern "C" cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count)
 {
 	if ( maxloc == 0 || token_ids == 0 || row_count == 0u )
@@ -311,7 +133,6 @@ extern "C" cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,c
 	SparkGlm5NextHeadMaxlocUnpackKernel<<<(row_count + 255u) / 256u,256u,0u,stream>>>(maxloc,token_ids,row_count);
 	return(cudaPeekAtLastError());
 }
-
 static uint32_t SparkGlm5NextProbeReduction(cudaStream_t stream,const uint16_t *const *ranks,uint32_t local_rank,uint32_t rows,uint32_t width)
 {
 	static uint32_t count = 0u;
@@ -328,16 +149,6 @@ static uint32_t SparkGlm5NextProbeReduction(cudaStream_t stream,const uint16_t *
 		}
 	return(count);
 }
-
-
-extern "C" cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width)
-{
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkGlm5NextAccumAddKernel<<<row_count,256u,0u,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaPeekAtLastError());
-}
-
 __global__ static void SparkGlm5NextEpochSampleKernel(
     const unsigned long long *epoch,
     volatile unsigned long long *seen)
@@ -346,7 +157,6 @@ __global__ static void SparkGlm5NextEpochSampleKernel(
 		return;
 	seen[0] = epoch[0];
 }
-
 extern "C" cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,
     const void *epoch_device,void *seen)
 {
@@ -357,129 +167,6 @@ extern "C" cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,
 		(volatile unsigned long long *)seen);
 	return(cudaPeekAtLastError());
 }
-
-__device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs()
-{
-    unsigned long long t;
-    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-    return t;
-}
-
-__global__ void SparkGlm5NextMeshPublishKernel(
-	volatile uint64_t *entry,
-	unsigned long long *seq_cell,
-	unsigned long long *round_seq,
-	uint64_t bytes,
-	uint64_t slot_index)
-{
-	unsigned long long sequence;
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	sequence = 1ull + atomicAdd((unsigned long long *)seq_cell,1ull);
-	round_seq[0] = sequence;
-	entry[2] = slot_index;
-	entry[1] = bytes;
-	__threadfence_system();
-	entry[0] = sequence;
-}
-
-__global__ void SparkGlm5NextMeshGuardKernel(
-    volatile unsigned long long *error_word,
-    unsigned long long *output)
-{
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	if ( *error_word != 0ull )
-	{
-		output[0] = 0xFFFFFFFFFFFFFFFFull;
-		*error_word = 0ull;
-		printf("MESH-GUARD-POISON\\n");
-	}
-}
-
-__global__ void SparkGlm5NextMeshWaitKernel(
-	volatile uint64_t *band_base,
-	uint64_t slot_bytes,
-	const unsigned long long *round_seq,
-	uint64_t slots_per_rank,
-	uint64_t ring,
-	uint32_t rank,
-	uint32_t degree,
-	unsigned long long *error_word,
-	unsigned long long deadline_ns)
-{
-	uint32_t peer;
-	volatile uint64_t *end_word;
-	uint64_t sequence;
-	unsigned long long stop_at;
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	sequence = round_seq[0];
-	stop_at = SparkGlm5NextGlobalTimerNs() + deadline_ns;
-	for ( peer = 0u; peer < degree - 1u; peer++ )
-	{
-		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
-		end_word = (volatile uint64_t *)
-			((uint8_t *)band_base +
-			((uint64_t)peer_rank * slots_per_rank +
-				(ring & (slots_per_rank - 1ull))) * slot_bytes +
-			slot_bytes - 8u);
-		while ( *end_word < sequence )
-		{
-			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
-			{
-				atomicExch((unsigned long long *)error_word,sequence);
-				return;
-			}
-			__nanosleep(200u);
-		}
-	}
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
-	volatile void *error_word,void *output)
-{
-	SparkGlm5NextMeshGuardKernel<<<1,32,0u,stream>>>(
-		(volatile unsigned long long *)error_word,
-		(unsigned long long *)output);
-	return cudaPeekAtLastError();
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
-	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
-	uint64_t slot_index)
-{
-	if ( entry == 0 || seq_cell == 0 || round_seq == 0 )
-		return(cudaErrorInvalidValue);
-	SparkGlm5NextMeshPublishKernel<<<1,32,0u,stream>>>(
-		(volatile uint64_t *)entry,(unsigned long long *)seq_cell,
-		(unsigned long long *)round_seq,bytes,slot_index);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
-	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
-	uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
-	void *error_word,unsigned long long deadline_ns)
-{
-	if ( band_base == 0 || round_seq == 0 || degree == 0u ||
-	     error_word == 0 )
-		return(cudaErrorInvalidValue);
-	SparkGlm5NextMeshWaitKernel<<<1,32,0u,stream>>>(
-		(volatile uint64_t *)band_base,slot_bytes,
-		(const unsigned long long *)round_seq,slots_per_rank,ring,rank,
-		degree,(unsigned long long *)error_word,deadline_ns);
-	return(cudaPeekAtLastError());
-}
-
-extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
-{
-	if ( destination == 0 || source == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	SparkGlm5NextAccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,stream>>>(destination,source,element_count);
-	return(cudaPeekAtLastError());
-}
-
 __global__ static void SparkGlm5NextKdaResetKernel(
 	uint8_t *state_pools, uint64_t state_layer_stride, uint64_t state_slot_bytes,
 	uint8_t *q_windows, uint8_t *k_windows, uint8_t *v_windows,
@@ -505,7 +192,6 @@ __global__ static void SparkGlm5NextKdaResetKernel(
 	for ( i = threadIdx.x; i < v_window_slot_bytes; i += blockDim.x )
 		base[i] = 0u;
 }
-
 static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -544,7 +230,6 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	}
 	return(SparkGlm5NextCudaStatus(error));
 }
-
 static int32_t SparkGlm5NextStageWaveBoundary(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -570,7 +255,6 @@ static int32_t SparkGlm5NextStageWaveBoundary(const SparkGlm5NextCudaWave *wave)
 	error = cudaMemcpyAsync(slot->selected_positions,(const uint32_t *)wave->sideband_input_u32 + sideband_offset,(uint64_t)wave->row_count * GLM5_NEXT_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 	return(SparkGlm5NextCudaStatus(error));
 }
-
 static void SparkGlm5NextBuildKvView(
 	LmKvView *view,
 	uint8_t *pool,
@@ -583,7 +267,6 @@ static void SparkGlm5NextBuildKvView(
 	view->pool_page_count = wave->resident_sequence_capacity * wave->pages_per_sequence;
 	view->access_error = (LmKvAccessError *)wave->slot->kv_access_error;
 }
-
 static uint32_t index_ordinal_of(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t layer)
 {
 	(void)wave;
@@ -593,7 +276,6 @@ static uint32_t index_ordinal_of(const SparkGlm5NextCudaWave *wave,uint32_t loca
 		return(UINT32_MAX);
 	return((layer - 3u) / SPARK_GLM5_NEXT_MODEL_ATTENTION_PERIOD);
 }
-
 static void SparkGlm5NextBindLayer(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t local_layer,
@@ -774,9 +456,7 @@ static void SparkGlm5NextBindLayer(
 			SparkGlm5NextBuildKvView(&buffers->index_cache,wave->index_cache + ((uint64_t)dsa_ordinal * wave->index_layer_stride_bytes),wave);
 	}
 }
-
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave);
-
 static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -803,7 +483,6 @@ static int32_t SparkGlm5NextRunLayerAttention(const SparkGlm5NextCudaWave *wave,
 		return(status);
 	return(LM_LAUNCH_OK);
 }
-
 static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -827,7 +506,6 @@ static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,u
 		return(status);
 	return(LM_LAUNCH_OK);
 }
-
 static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -836,7 +514,6 @@ static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
 	return(Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
 }
-
 static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status = SparkGlm5NextRunLayerMlpRoute(wave,local_layer);
@@ -844,8 +521,6 @@ static int32_t SparkGlm5NextRunLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 		return(status);
 	return(SparkGlm5NextRunLayerMlpExperts(wave,local_layer));
 }
-
-
 static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -858,21 +533,18 @@ static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uin
 	status = Glm5NextHcPost(&buffers,buffers.attention_out_bf16,wave->row_count,stream);
 	return(status);
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
-
 static int32_t SparkGlm5NextRunLayers(const SparkGlm5NextCudaWave *wave)
 {
 	uint32_t local;
@@ -888,7 +560,6 @@ static int32_t SparkGlm5NextRunLayers(const SparkGlm5NextCudaWave *wave)
 	}
 	return(LM_LAUNCH_OK);
 }
-
 static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -931,14 +602,12 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * GLM5_NEXT_DSA_SELECTED * sizeof(uint32_t),stream);
 	return(SparkGlm5NextCudaStatus(error));
 }
-
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
 {
 	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave)
 {
 	int32_t status;
@@ -949,7 +618,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave 
 		status = SparkGlm5NextStageWaveBoundary(wave);
 	return(status);
 }
-
 __global__ void SparkGlm5NextOpWaitKernel(
 	volatile unsigned long long *flag,
 	unsigned long long value)
@@ -957,7 +625,6 @@ __global__ void SparkGlm5NextOpWaitKernel(
 	while (*flag < value)
 		__nanosleep(100u);
 }
-
 extern "C" SparkStatus SparkGlm5NextLaunchOpWait(
 	cudaStream_t stream,
 	void *flag_device,
@@ -971,7 +638,6 @@ extern "C" SparkStatus SparkGlm5NextLaunchOpWait(
 	return cudaPeekAtLastError() == cudaSuccess ?
 		SPARK_STATUS_OK : SPARK_STATUS_DRIVER_LOAD_ERROR;
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
@@ -980,7 +646,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCuda
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerAttention(wave,local_layer));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
@@ -989,7 +654,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerMlp(wave,local_layer));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
@@ -1021,14 +685,12 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaW
 	wave->slot->route_recorded = 1u;
 	return(LM_LAUNCH_OK);
 }
-
 extern "C" cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave)
 {
 	if ( wave == 0 || wave->slot == 0 || wave->slot->route_ready_event == 0 || wave->slot->route_recorded == 0u )
 		return(cudaErrorInvalidValue);
 	return(cudaEventQuery((cudaEvent_t)wave->slot->route_ready_event));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	int32_t status;
@@ -1037,7 +699,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCud
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerMlpExperts(wave,local_layer));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave)
 {
 	int32_t status;
@@ -1046,7 +707,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *
 		return(status);
 	return(SparkGlm5NextRunHead(wave));
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave)
 {
 	int32_t status;
@@ -1057,7 +717,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave
 		status = SparkGlm5NextRunHead(wave);
 	return(status);
 }
-
 extern "C" int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count)
 {
 	cudaDeviceProp properties;
@@ -1073,21 +732,18 @@ extern "C" int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_cou
 	*multiprocessor_count = (uint32_t)properties.multiProcessorCount;
 	return(LM_LAUNCH_OK);
 }
-
 static int32_t SparkGlm5NextMtpReduceRows(const SparkGlm5NextMtpDraftOps *ops,uint16_t *rows_bf16)
 {
 	if ( ops == 0 || ops->reduce_rows_bf16 == 0 )
 		return(LM_LAUNCH_OK);
 	return(ops->reduce_rows_bf16(ops->context,rows_bf16,1u,GLM5_NEXT_HIDDEN) == SPARK_STATUS_OK ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
-
 static int32_t SparkGlm5NextMtpReduceHead(const SparkGlm5NextMtpDraftOps *ops,uint64_t *maxloc)
 {
 	if ( ops == 0 || ops->reduce_max_u64 == 0 )
 		return(LM_LAUNCH_OK);
 	return(ops->reduce_max_u64(ops->context,maxloc,1u) == SPARK_STATUS_OK ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
-
 static int32_t SparkGlm5NextBindMtpLayer(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t step,
@@ -1131,7 +787,6 @@ static int32_t SparkGlm5NextBindMtpLayer(
 	buffers->index_cache.pool = (uint8_t *)slot->mtp_index_pool;
 	return(LM_LAUNCH_OK);
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	const SparkGlm5NextCudaWave *wave,
 	const SparkGlm5NextMtpDraftOps *ops,
@@ -1234,7 +889,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	}
 	return(LM_LAUNCH_OK);
 }
-
 extern "C" int32_t SparkGlm5NextLaunchCudaMtpCommit(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t committed_steps)

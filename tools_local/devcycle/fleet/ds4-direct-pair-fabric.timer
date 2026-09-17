@@ -1,0 +1,10 @@
+[Unit]
+Description=Start DS4 direct-pair fabric outside the boot-critical path
+
+[Timer]
+OnBootSec=30
+Unit=ds4-direct-pair-fabric.service
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,93 @@
+{
+  "lane": "dsv5-t1",
+  "session": "DSV5-T1",
+  "date_utc": "2026-09-15",
+  "what": "dsv41flash.mxfp4.tp8 structural gate on the r2 packs: placement reconciliation, module load through the stable weightsd channel, fail-closed decode attempt",
+  "reconciliation": {
+    "smoke_md_claim": "dsv5 (tp8) NOT placed on any sparkdata root (PR 1015 docs/MULTI_DEV_SMOKE.md, fleet-replicated listing)",
+    "verdict": "FALSE NEGATIVE - placement-convention mismatch, no re-placement required",
+    "placed_root": "~/sparkdata/dsv41flash.mxfp4.tp8/packs/rank{r}.spstage",
+    "reason": "the audit listed for the lane shorthand dsv5; the placed root carries the model-family name dsv41flash.mxfp4.tp8",
+    "receipt_chain": "examples/release/dsv41_flash_tp8/placement_r2_receipt.json @ 83b1a09 (PR 914, merged 2026-09-14)",
+    "tonight_fleet_listing": "16/16 nodes carry packs (39158874624 B) + .experts (552976 B); replica law rank r -> spark r and spark r+8 confirmed node-by-node",
+    "sha256_reverified": [
+      {
+        "node": "spark0",
+        "file": "packs/rank0.spstage",
+        "sha256": "9079cc4babf23f5ae86bfaad3f3e3b663d494ad45dbab21f20aa1a8c92e715f2",
+        "matches_receipt": true
+      },
+      {
+        "node": "spark0",
+        "file": "packs/rank0.spstage.experts",
+        "sha256": "83abd3c01da8f11ad476731a7c009fef75605bff96e096bdd28110cab7257ff4",
+        "matches_receipt": true
+      },
+      {
+        "node": "spark6",
+        "file": "packs-r2/rank6.spstage",
+        "sha256": "58a93a871e1fe119133e91ed5738558ec65d11ec574373ee0c9521f36d171f0e",
+        "matches_receipt": true
+      },
+      {
+        "node": "spark6",
+        "file": "packs-r2/rank6.spstage.experts",
+        "sha256": "288446baedfd61fb496bf5fbf8d4b7277ad11990ef8a72ea186fd067020979c2",
+        "matches_receipt": true
+      }
+    ],
+    "spark6_sidecar_repair": {
+      "finding": "spark6's own placement cell (packs-r2/rank6.spstage.experts, local_placement=true) was root:root mode 0600 - unreadable by the spark6 user that weightd runs as; the other 15 nodes are owner-owned 0664",
+      "action": "chown spark6:spark6 + chmod 664",
+      "sha256_before": "288446baedfd61fb496bf5fbf8d4b7277ad11990ef8a72ea186fd067020979c2",
+      "sha256_after": "288446baedfd61fb496bf5fbf8d4b7277ad11990ef8a72ea186fd067020979c2",
+      "content_changed": false
+    },
+    "laguna_cross_lane": "laguna has NO placed root on any of the 16 nodes (checked spark0-9, sparka-f incl. spark6) - the SMOKE-MD audit is CORRECT for laguna; flagged for the laguna lane: dsv5's false negative came from the dsv5-vs-dsv41flash name convention, laguna's is a real placement gap"
+  },
+  "wire_drift_finding": {
+    "what": "runtime client built from a pre-weightsd-channel base (dsv5 lane base 50bd0d3) declares uint32_t mesh_send_buffer_bytes in SparkWeightdIpcAttachLazyResult; the deployed stable-channel daemon (main >= da8a782, PR 1007) declares uint64_t - the manifest digest field shifts 4 bytes on the wire",
+    "evidence": "LAZY-MANIFEST-MISMATCH local=bcf81b7d26a1411e6f916c30160cea04d0ac7658f12e43b8ea60eca6cfcbaa61 weightd=01000000bcf81b7d26a1411e6f916c30160cea04d0ac7658f12e43b8ea60eca6 (weightd window = mesh_send_buffer_bytes high dword + digest[0..27])",
+    "status_after_merge": "fixed by merging origin/main caa44f5 into the lane (uint64_t both sides); init then green",
+    "novel_bug_flag": "any lane working from a pre-PR-1007 base hits this on the stable channel; the mesh daemon (sparkdata/weightd/sparkpipe_weightd) was not tested against the old client"
+  },
+  "gate": {
+    "node": "spark6 GB10 sm_121a",
+    "pack": "/home/spark6/sparkdata/dsv41flash.mxfp4.tp8/packs-r2/rank6.spstage",
+    "pack_sha256": "58a93a871e1fe119133e91ed5738558ec65d11ec574373ee0c9521f36d171f0e",
+    "tp_rank": 6,
+    "header_identity": {
+      "magic": "0x31413444",
+      "tensor_count": 1038,
+      "layers": "0..39 (40)",
+      "hidden": 5120,
+      "vocab": 129280,
+      "routed_experts": 384,
+      "codecs": "linear 5 (FP8_E4M3), expert 7 (MXFP4)",
+      "tp_degree": 8,
+      "model_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+      "contract_sha256": "bb8adaf752c079374b8b1572ae3327ce69f1a23740e8685434900317df764921",
+      "source_config_sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+      "pack_recipe_sha256": "d58a0258b67ba0208794e3a6ea3fdf802e32703532f480b3c0b26ce2368a6f66"
+    },
+    "build": "gcc -std=c11 -Wall -Wextra -Werror -O3 host sources + nvcc sm_121a context unit; module + engram access + weightd client + probe",
+    "channel": "SPARK_WEIGHTD_SOCKET=/run/sparkpipe-weightsd/weightsd.sock (stable weightsd channel, sparkpipe_weightsd.service)",
+    "scope": "sudo -n systemd-run --scope -q -p MemoryMax=4096M -p MemoryHigh=2900M",
+    "init_status": 0,
+    "init_wall_ms": 21503.746,
+    "entries": 1038,
+    "spine_bytes": 3061536448,
+    "expert_bytes": 36097228800,
+    "decode_attempted": true,
+    "exec_status": 19,
+    "exec_semantics": "SPARK_STATUS_UNSUPPORTED - fail-closed stub names the missing operation (module decode kernels do not exist yet; I01-conformant clean failure, module never served)",
+    "destroy_status": 0,
+    "gate_exit": 0,
+    "co_residency": "mesh weightd (T1-G53) and all other lanes untouched; client-only attach on the stable channel; 4 GiB scope"
+  },
+  "row_capacity_generator_check": {
+    "coordinator_directive": "check dsv5 generated configs for execution_row_capacity 1024 vs mesh-law 128",
+    "finding": "no dsv41 deployment generator tool exists yet (tools/ has stagepack/shard/census/oracle/verify/spine_instrument only, no gen_deployment); the probe used its own minimal context (execution_row_capacity=1, max_sequence_positions=1024); the module Makefile default is EXECUTION_ROW_CAPACITY=64; nothing at 1024 anywhere in the dsv41 tree",
+    "obligation": "when the dsv41 deployment generator is written it must pin execution_row_capacity to the mesh-law 128, not the laguna-generator 1024 bug"
+  }
+}

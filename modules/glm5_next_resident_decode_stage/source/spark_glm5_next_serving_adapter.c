@@ -1124,7 +1124,13 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
 	if ( submission != 0 && submission->control_generation < atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
+	{
+		fprintf(stderr,"ADMIT9-RESETGEN submission=%llu control_generation=%llu reset_generation=%llu\n",
+			(unsigned long long)submission->submission_id,
+			(unsigned long long)submission->control_generation,
+			(unsigned long long)atomic_load_explicit(&state->reset_generation,memory_order_acquire));
 		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
 	status = SparkModelServingAdapterValidateRuntimeSubmission(&SparkGlm5NextServingDescriptor,&state->runtime_limits,submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingValidateBoundaries(state,submission);

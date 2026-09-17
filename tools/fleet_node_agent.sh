@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
+ulimit -c unlimited
 ROOTS="${1:?comma-separated runtime root names}"
 HUB="${2:-sparkf}"
+[ "$HUB" = "sparkf" ] && HUB="spec@100.123.97.61"
 HOST=$(hostname)
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 MESH_INTERFACE="rocep1s0f1"
@@ -97,7 +99,7 @@ report() {
         printf '}\n'
     } > "$VIEW/$HOST.json"
     LAST_REPORT="$states"
-    scp -q -o BatchMode=yes -o ConnectTimeout=4 "$VIEW/$HOST.json" \
+    scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$VIEW/$HOST.json" \
         "$HUB:current/" 2>/dev/null || true
 }
 
@@ -157,6 +159,26 @@ unload_root() {
     return 1
 }
 
+declare -A BACKOFF NEXT_OK
+LAST_ANY_RESTART=0
+
+restart_ok() {
+    local cls="$1" now b n
+    now=$(date +%s)
+    b=${BACKOFF[$cls]:-1}
+    n=${NEXT_OK[$cls]:-0}
+    [ "$now" -lt "$n" ] && return 1
+    [ $(( now - LAST_ANY_RESTART )) -lt 5 ] && return 1
+    NEXT_OK[$cls]=$(( now + b ))
+    BACKOFF[$cls]=$(( b < 60 ? b * 2 : 60 ))
+    LAST_ANY_RESTART=$now
+    return 0
+}
+
+restart_healthy() {
+    BACKOFF[$1]=1
+}
+
 start_root() {
     local name="$1" rr="$HOME/sparkdata/$1" p
     for p in $(pgrep -f "bin/sparkpipe_model_(residentd|api)"); do
@@ -169,7 +191,8 @@ start_root() {
     fi
     cd "$rr" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
-    mv residentd.log residentd.log.prev 2>/dev/null
+    [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
+    SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
         --deployment model_resident.json --rank-index "$RANK" \
         > residentd.log 2>&1 < /dev/null &
@@ -188,6 +211,7 @@ api_root() {
 
 ensure_api() {
     [ "$RANK" = 0 ] || return 0
+    [ -n "$G5_API_DISABLED" ] && return 0
     local rr="$HOME/sparkdata/$(api_root)"
     [ -x "$rr/bin/sparkpipe_model_api" ] || return 0
     local ready_count now
@@ -211,6 +235,9 @@ ensure_api() {
     LAST_API_START=$now
     echo "$(date +%T) api: starting"
     cd "$rr" || return 1
+    [ -s api.log ] && mv api.log "api-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
+    ${G5_MAX_PREFILL_ROWS:+SPARK_MODEL_API_MAX_PREFILL_ROWS="$G5_MAX_PREFILL_ROWS"} \
+    ${G5_INFLIGHT_BUDGET_NS:+SPARK_BATCH_INFLIGHT_BUDGET_NS="$G5_INFLIGHT_BUDGET_NS"} \
     LD_LIBRARY_PATH="$rr/lib" setsid nohup ./bin/sparkpipe_model_api \
         --deployment model_resident.json --runtime-root "$rr" --port "${G5_API_PORT:-8433}" \
         > api.log 2>&1 < /dev/null &
@@ -224,11 +251,11 @@ restart_root() {
 }
 
 FLEET_SIZE=16
-HUBSSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
-if ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
-    ssh-keyscan -H "$HUB" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+HUBSSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-agent-%r@%h:%p -o ControlPersist=600"
+if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$HUB" true 2>/dev/null; then
+    ssh-keyscan -H "${HUB#*@}" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
 fi
-RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://10.10.100.25:8802}"
+RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://100.123.97.61:8802}"
 
 sync_rendezvous() {
     local name="$1" host rd
@@ -239,7 +266,7 @@ sync_rendezvous() {
             [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
             touch "$rd/.upload_lock"
             $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
-            scp -q -o BatchMode=yes -o ConnectTimeout=4 "$rd"/*.rec \
+            scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$rd"/*.rec \
                 "$HUB:release/qpn/$host/$name/" 2>/dev/null
             $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
             touch "$rd/.shipped"
@@ -256,7 +283,7 @@ sync_rendezvous() {
             if [ ! -f "$mesh_dir/.shipped_sha" ] || \
                [ "$(cat "$mesh_dir/.shipped_sha" 2>/dev/null)" != "$sum" ]; then
                 $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
-                scp -q -o BatchMode=yes -o ConnectTimeout=4 "$own_rec" \
+                scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$own_rec" \
                     "$HUB:release/qpn/$host/mesh/" 2>/dev/null && \
                     echo "$sum" > "$mesh_dir/.shipped_sha"
             fi
@@ -377,6 +404,7 @@ install_core() {
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
+
 }
 
 self_update() {
@@ -391,15 +419,42 @@ self_update() {
 }
 
 ensure_weightd() {
-    pgrep -f "sparkpipe_weightd" >/dev/null && return 0
+    if pgrep -f "sparkpipe_weightd" >/dev/null; then
+        local youngest=0 p start_s up_s
+        for p in $(pgrep -f "sparkpipe_weightd"); do
+            start_s=$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null)
+            [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ] && youngest=$start_s
+        done
+        up_s=$(awk '{printf "%d", $1}' /proc/uptime)
+        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt 30 ]; then
+            return 0
+        fi
+        if [ -S /tmp/spark_weightd.sock ] && python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(\"/tmp/spark_weightd.sock\"); s.close()" 2>/dev/null; then
+            return 0
+        fi
+        echo "$(date +%T) weightd: stale or unresponsive instance(s); clearing"
+        for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
+            kill -9 "$p" 2>/dev/null
+        done
+        sleep 2
+        rm -f /tmp/spark_weightd.sock
+    fi
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
+    restart_ok weightd || return 0
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
-    echo "$(date +%T) weightd: starting"
+    echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
+    [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
         --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
+}
+
+prune_logs() {
+    ls -t "$1"/residentd-2*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
+    ls -t "$1"/api-2*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
+    ls -t "$HOME"/weightd-2*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
 }
 
 echo "$$" > "$PID_FILE"
@@ -422,14 +477,26 @@ ensure_root() {
             break
         done
     }
-    [ "$st" = "down" ] || return 0
+    [ "$st" = "down" ] || {
+        local age_p
+        for age_p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            local rr_age="$HOME/sparkdata/$name"
+            [ "$(readlink /proc/$age_p/cwd 2>/dev/null)" = "$rr_age" ] || continue
+            local start_s up_s
+            start_s=$(awk '{print $22}' "/proc/$age_p/stat" 2>/dev/null)
+            up_s=$(awk '{printf "%d", $1}' /proc/uptime)
+            [ -n "$start_s" ] && [ $(( up_s - start_s / 100 )) -gt 120 ] && restart_healthy "engine-$name"
+        done
+        return 0
+    }
     local up
     up=$(awk '{printf "%d", $1}' /proc/uptime)
     [ "$up" -ge 900 ] || {
         [ -n "$AGENT_BLOCKED" ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; AGENT_BLOCKED=1; }
         return 0
     }
-    echo "$(date +%T) $name: down; starting"
+    restart_ok "engine-$name" || return 0
+    echo "$(date +%T) $name: down; starting (backoff ${BACKOFF[engine-$name]:-1}s)"
     restart_root "$name"
 }
 
@@ -442,6 +509,7 @@ while true; do
     for r in "${RA[@]}"; do sync_root "$r"; done
     for r in "${RA[@]}"; do sync_rendezvous "$r"; done
     for r in "${RA[@]}"; do ensure_root "$r"; done
+    for r in "${RA[@]}"; do prune_logs "$HOME/sparkdata/$r"; done
     ensure_api
     report_if_changed
     sleep 1

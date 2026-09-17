@@ -144,6 +144,11 @@ SparkStatus SparkModelBatchEngineGetView(
 	SparkModelBatchEngineView *view);
 const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(
 	const SparkModelBatchEngine *engine);
+void SparkModelBatchEngineSeedSubmissionId(
+	SparkModelBatchEngine *engine,
+	uint64_t next_submission_id);
+uint64_t SparkModelBatchEnginePeekSubmissionId(
+	const SparkModelBatchEngine *engine);
 
 #ifdef __cplusplus
 }

@@ -229,3 +229,22 @@ SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_
 		}
 	return(SPARK_STATUS_OK);
 }
+
+SparkStatus SparkWeightdLeaseReleaseOwner(SparkWeightdLeaseTable *table,uint64_t owner)
+{
+	SparkStatus status,result;
+	uint32_t i;
+	if ( table == 0 || owner == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	result = SPARK_STATUS_OK;
+	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
+	{
+		if ( table->leases[i].count != 0u && table->leases[i].owner == owner )
+		{
+			status = SparkWeightdLeaseRelease(table,owner,table->leases[i].identifier);
+			if ( status != SPARK_STATUS_OK )
+				result = status;
+		}
+	}
+	return(result);
+}

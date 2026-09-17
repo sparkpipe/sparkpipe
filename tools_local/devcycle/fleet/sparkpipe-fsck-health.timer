@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Spark filesystem health checks after boot
+
+[Timer]
+OnBootSec=5min
+Unit=sparkpipe-fsck-health.service
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

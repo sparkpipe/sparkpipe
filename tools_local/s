@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# s — status: the one-second truth. Listeners, health, build identity,
+# daemon ages on spark0, agent states, mesh doorbell, error counters.
+set -euo pipefail
+HUB=$(ssh sparkf 'md5sum ~/sparkdata/out/stages/stage_000/model_driver.so 2>/dev/null | cut -d" " -f1' || echo none)
+echo "hub-driver=${HUB:0:12}"
+HDR=include/sparkpipe/spark_weightd.h
+macroval() { awk -v m="$1" '$0 ~ "#define "m { $1=""; $2=""; gsub(/u|\\\/|\/\*.*/,""); print; exit }' "$HDR" | bc; }
+BATCH=$(macroval SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS)
+ROWB=$(macroval SPARK_WEIGHTD_MESH_ROW_BYTES_MAX)
+SLOT=$((BATCH * ROWB))
+BANDS=$((2 * $(macroval SPARK_WEIGHTD_MESH_MAX_LANES)))
+GEO="SLOT=$SLOT SPR=$(macroval SPARK_WEIGHTD_MESH_SLOTS_PER_RANK) BANDS=$BANDS"
+ssh spark0 "env $GEO bash -s" <<'REMOTE' 2>/dev/null
+echo "health=$(curl -s -m 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:8433/health || true)"
+md5sum ~/sparkdata/glm53flash.fp8.tp16/stages/stage_000/model_driver.so 2>/dev/null | cut -c1-22 | sed 's/^/node-driver=/'
+echo "marker=$(strings ~/sparkdata/glm53flash.fp8.tp16/stages/stage_000/model_driver.so 2>/dev/null | grep -c GRAPH-CAPTURE-OK || true)"
+python3 -c "
+import socket
+fails = []
+for i in range(16):
+    s = socket.socket(); s.settimeout(1)
+    try: s.connect(('10.10.100.%d' % (10+i), 19560+i))
+    except Exception as e: fails.append((i, str(e)[:10]))
+    s.close()
+print('listeners:', 'ALL-16' if not fails else fails)
+"
+for name in sparkpipe_weightd; do
+  p=$(ls -l /proc/[0-9]*/exe 2>/dev/null | grep $name | sed 's|.*/proc/\([0-9]*\)/exe.*|\1|' | head -1)
+  [ -n "$p" ] && echo "$name pid=$p $(ps -o etime= -p $p)"
+done
+echo "engine=$(pgrep -f 'model_residentd --deployment' | head -1 | xargs -r ps -o etime= -p)"
+echo "api=$(pgrep -f 'bin/sparkpipe_model_api' | head -1 | xargs -r ps -o etime= -p)"
+echo "agent=$(systemctl --user is-active fleet-agent 2>/dev/null)"
+export SLOT SPR BANDS
+timeout 10 python3 - <<PYEOF
+import os, struct, subprocess
+SLOT = int(os.environ["SLOT"]); SPR = int(os.environ["SPR"]); BANDS = int(os.environ["BANDS"])
+BAND = 16*SPR*SLOT
+wpid = subprocess.check_output(["pgrep","-x","sparkpipe_weigh"]).decode().split()[0]
+meshfd = [fd for fd in os.listdir("/proc/%s/fd" % wpid) if "spark-mesh" in os.readlink("/proc/%s/fd/%s" % (wpid, fd))][0]
+f = os.open("/proc/%s/fd/%s" % (wpid, meshfd), os.O_RDONLY)
+os.lseek(f, BANDS*BAND, 0)
+seq, byt, slot = struct.unpack("<QQQ", os.read(f, 24))
+ends = []
+for r in (1, 5, 14):
+    for p in range(SPR):
+        os.lseek(f, r*SPR*SLOT + p*SLOT + SLOT-8, 0)
+        ends.append(struct.unpack("<Q", os.read(f, 8))[0])
+print("mesh: seq=%d ends(r1,r5,r14)=%s" % (seq, ends))
+os.close(f)
+PYEOF
+L=~/sparkdata/glm53flash.fp8.tp16/residentd.log
+echo "errs: graph=$(grep -c GRAPH- $L 2>/dev/null) spins=$(grep -c MESH-SPIN-TIMEOUT $L 2>/dev/null) fails=$(grep -c chainfail $L 2>/dev/null)"
+REMOTE
+for n in spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf; do
+  a=$(ssh -o ConnectTimeout=5 "$n" 'systemctl --user is-active fleet-agent 2>/dev/null || echo dead' 2>/dev/null || echo unreachable)
+  echo "$n agent=$a"
+done

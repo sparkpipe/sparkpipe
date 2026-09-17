@@ -94,6 +94,14 @@ void SparkModelPipelineClientDestroy(SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientSubmit(
 	SparkModelPipelineClient *pipeline,
 	const SparkModelServingSubmission *submission);
+uint64_t SparkModelPipelineClientControlGeneration(
+	const SparkModelPipelineClient *pipeline);
+uint64_t SparkModelPipelineClientSessionFingerprint(
+	const SparkModelPipelineClient *pipeline);
+void SparkModelPipelineClientClearTransactions(
+    SparkModelPipelineClient *pipeline);
+SparkStatus SparkModelPipelineClientRecover(
+	SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientProgress(
 	SparkModelPipelineClient *pipeline,
 	uint32_t maximum_message_count_per_rank);

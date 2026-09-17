@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "node_root_template": "/home/{host}",
+  "roots": {
+    "sparkdata": "sparkdata",
+    "srcdata": "srcdata",
+    "extnvme": "extnvme",
+    "kvcache": "kvcache"
+  }
+}

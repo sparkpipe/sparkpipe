@@ -201,6 +201,11 @@ validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_
 
 publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
+	@if strings $(MODULE_ARCHIVE) 2>/dev/null | grep -q SPARK-TP-MESH-KERNELS-V3; then \
+		echo "mesh-kernels marker OK"; \
+	else \
+		echo "MESH-KERNELS-MARKER-MISSING: the module did not compile the common kernels header (private/stale copy suspected)"; exit 1; \
+	fi
 	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \

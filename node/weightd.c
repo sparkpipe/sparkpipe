@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
@@ -241,6 +245,24 @@ int main(int argument_count, char **arguments)
 
     signal(SIGINT, SparkWeightdSignal);
     signal(SIGTERM, SparkWeightdSignal);
+
+    {
+        int singleton_fd = open("/tmp/spark_weightd.singleton", O_CREAT | O_RDWR, 0600);
+        struct flock singleton_lock;
+        if ( singleton_fd < 0 )
+        {
+            fprintf(stderr, "weightd: cannot open singleton lock errno=%d\n", errno);
+            return 1;
+        }
+        memset(&singleton_lock, 0, sizeof(singleton_lock));
+        singleton_lock.l_type = F_WRLCK;
+        singleton_lock.l_whence = SEEK_SET;
+        if ( fcntl(singleton_fd, F_SETLK, &singleton_lock) != 0 )
+        {
+            fprintf(stderr, "weightd: another instance holds the singleton lock; exiting\n");
+            return 1;
+        }
+    }
 
     status = SparkWeightdServerCreate(&config, &server);
     if (status != SPARK_STATUS_OK)

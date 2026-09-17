@@ -1,0 +1,22 @@
+# sparkpipe-fsck-health.service - post-boot filesystem health check (oneshot).
+# Runs sparkpipe_fsck_health.sh once per boot, after sshd + network are up.
+# This is the fleet's fsck mechanism now that GRUB skips boot-time fsck.
+#
+# Install:
+#   sudo cp tools/devcycle/sparkpipe_fsck_health.sh /usr/local/bin/sparkpipe_fsck_health.sh
+#   sudo chmod 0755 /usr/local/bin/sparkpipe_fsck_health.sh
+#   sudo cp tools/devcycle/sparkpipe-fsck-health.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sparkpipe-fsck-health.service
+[Unit]
+Description=SparkPipe post-boot filesystem health check
+After=sshd.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sparkpipe_fsck_health.sh
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

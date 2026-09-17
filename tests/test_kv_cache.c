@@ -1633,14 +1633,12 @@ static void SparkTestKvResetTransactions(void)
 	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
 	frame = SparkTestKvTransactionFrame(&fixture.request);
 	assert(SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) == SPARK_STATUS_OK);
-	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_BUSY);
+	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_OK);
 	for (index=0u; index<2u; index++)
 	{
-		assert(fixture.owners[index].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING);
-		assert(fixture.pages.kv.blocks[fixture.logical[index * 4u]].residency_reference_count == 1u);
+		assert(fixture.owners[index].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+		assert(fixture.pages.kv.blocks[fixture.logical[index * 4u]].residency_reference_count == 0u);
 	}
-	assert(SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u,1u},2u,SPARK_STATUS_OK,0u) == SPARK_STATUS_OK);
-	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_OK);
 	assert(fixture.pages.cache.live_sequence_count == 0u && fixture.pages.kv.arena.resident_block_count == 0u);
 	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
 	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);

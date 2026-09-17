@@ -68,6 +68,8 @@ typedef struct ApiState
 	volatile int running;
 	uint64_t next_id;
 	uint64_t served;
+	const char *runtime_root;
+	uint64_t seq_saved_ms;
 } ApiState;
 
 static ApiState S;
@@ -326,6 +328,21 @@ static void *api_worker(void *arg)
 		if (S.queue_head != 0)
 		{
 			(void)SparkModelBatchEngineProgress(S.engine, 4u);
+			{
+				uint64_t now_ms = api_now_ms();
+				if ( now_ms - S.seq_saved_ms >= 60000u )
+				{
+					char seq_path[1024];
+					(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
+					FILE *seq_out = fopen(seq_path,"w");
+					if ( seq_out != 0 )
+					{
+						(void)fprintf(seq_out,"%llu\n",(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
+						(void)fclose(seq_out);
+						S.seq_saved_ms = now_ms;
+					}
+				}
+			}
 			{
 				uint32_t n = 0;
 				if (SparkModelBatchEngineGetPollDescriptors(
@@ -1038,6 +1055,8 @@ int main(int argc, char **argv)
 		}
 	}
 	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
+	S.runtime_root = root;
+	S.seq_saved_ms = 0u;
 	SparkModelResidentDeploymentReset(&dep);
 	if (SparkModelResidentDeploymentLoad(dep_path, &dep) != SPARK_STATUS_OK)
 	{
@@ -1052,6 +1071,15 @@ int main(int argc, char **argv)
 	cfg.request_capacity = 64;
 	cfg.max_context_tokens = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
+	{
+		const char *rows_env = getenv("SPARK_MODEL_API_MAX_PREFILL_ROWS");
+		if ( rows_env != 0 && rows_env[0] != '\0' )
+		{
+			uint32_t clamp = (uint32_t)strtoul(rows_env,0,10);
+			if ( clamp != 0u && clamp < cfg.max_prefill_rows_per_submission )
+				cfg.max_prefill_rows_per_submission = clamp;
+		}
+	}
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.event_function = api_event;
@@ -1143,6 +1171,35 @@ int main(int argc, char **argv)
 		}
 		api_logf("engine_connected attempts=%u elapsed_ms=%llu", connect_attempt,
 			(unsigned long long)(api_now_ms() - connect_started_ms));
+	}
+	{
+		char seq_path[1024];
+		char seq_text[64];
+		uint64_t seeded = 1u;
+		(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",root);
+		{
+			FILE *seq_in = fopen(seq_path,"r");
+			if ( seq_in != 0 )
+			{
+				if ( fgets(seq_text,sizeof(seq_text),seq_in) != 0 )
+				{
+					uint64_t saved = strtoull(seq_text,0,10);
+					if ( saved != 0u )
+						seeded = saved + 1000000u;
+				}
+				(void)fclose(seq_in);
+			}
+		}
+		SparkModelBatchEngineSeedSubmissionId(S.engine,seeded);
+		{
+			FILE *seq_out = fopen(seq_path,"w");
+			if ( seq_out != 0 )
+			{
+				(void)fprintf(seq_out,"%llu\n",(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
+				(void)fclose(seq_out);
+			}
+		}
+		api_logf("submission_id_seeded next=%llu",(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
 	}
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGTERM, api_term_signal);

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# w — restart weightd on every node with the freshly built binary.
+# Pulls build/sparkpipe_weightd from sparkf once, scps it to each node's
+# runtime path (atomic mv), TERMs the old process, relaunches with argv
+# preserved NUL-safe from /proc, waits for mesh-ready, checks the socket.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+NODES="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
+TMP=$(mktemp -d)
+scp -q sparkf:~/sparkpipe-build-958/build/sparkpipe_weightd "$TMP/sparkpipe_weightd" || { echo PULL-FAILED; exit 1; }
+WANT=$(md5 -q "$TMP/sparkpipe_weightd")
+FAIL=0
+for n in $NODES; do
+  scp -q "$TMP/sparkpipe_weightd" "$n:/tmp/sparkpipe_weightd.new" || { echo "== $n PUSH-FAILED"; FAIL=1; continue; }
+  OUT=$(ssh -o ConnectTimeout=8 "$n" 'bash -s' <<'REMOTE'
+set -u
+P=$(pgrep -f "sparkdata/weightd/sparkpipe_weightd" | head -1)
+if [ -z "$P" ]; then echo "weightd-not-running"; exit 0; fi
+BIN=/home/$(id -un)/sparkdata/weightd/sparkpipe_weightd
+ARGS=()
+while IFS= read -r -d '' a; do ARGS+=("$a"); done < /proc/$P/cmdline
+DEST=${ARGS[0]}
+if [ ${#ARGS[@]} -lt 5 ]; then echo "argv-suspect n=${#ARGS[@]}"; fi
+mv /tmp/sparkpipe_weightd.new "$DEST" || { echo "binary-place-failed"; exit 1; }
+kill -TERM "$P" 2>/dev/null
+for i in $(seq 1 10); do kill -0 "$P" 2>/dev/null || break; sleep 1; done
+kill -KILL "$P" 2>/dev/null
+sleep 1
+cd "$(dirname "$DEST")"
+nohup "${ARGS[@]}" >> ~/weightd.log 2>&1 < /dev/null &
+sleep 2
+P2=$(pgrep -f "sparkdata/weightd/sparkpipe_weightd" | head -1)
+[ -z "$P2" ] && { echo "weightd-restart-failed"; exit 1; }
+for i in $(seq 1 15); do tail -1 ~/weightd.log | grep -q "weightd-mesh: ready" && break; sleep 1; done
+tail -1 ~/weightd.log
+md5sum "$DEST" | cut -c1-12
+REMOTE
+) || FAIL=1
+  echo "== $n $OUT"
+done
+rm -rf "$TMP"
+[ "$FAIL" = 0 ] && echo W-DONE || { echo W-FAILED; exit 1; }

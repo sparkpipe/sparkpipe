@@ -105,7 +105,8 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 {
 	SparkSha256Context hash;
 	SparkCk128Context quick;
-	uint8_t buffer[65536],digest[32];
+	static _Thread_local uint8_t buffer[1048576];
+	uint8_t digest[32];
 	char hex[SPARK_SHA256_HEX_BYTES];
 	char receipt_path[192];
 	SpineReceipt receipt;
@@ -129,9 +130,30 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 			have_receipt = 1;
 		close(receipt_fd);
 	}
+	if ( have_receipt != 0 )
+	{
+		uint32_t copy_index = 0u;
+		for (index = 0u; index < manifest->spine_count; index++)
+		{
+			const SparkWeightdSpan *span = &manifest->spine[index];
+			uint64_t span_offset = span->offset;
+			while ( span_offset < span->offset + span->bytes )
+			{
+				uint64_t remain = span->offset + span->bytes - span_offset;
+				bytes = (uint32_t)(remain < sizeof(buffer) ? remain : sizeof(buffer));
+				status = spine_read(fd,buffer,span_offset,bytes);
+				if ( status != SPARK_STATUS_OK )
+					SPARK_RETURN(status);
+				status = spine_copy(manifest,&copy_index,buffer,span_offset,bytes,destination);
+				if ( status != SPARK_STATUS_OK )
+					SPARK_RETURN(status);
+				span_offset += bytes;
+			}
+		}
+		return(SPARK_STATUS_OK);
+	}
 	SparkCk128Initialize(&quick);
-	if ( have_receipt == 0 )
-		SparkSha256Initialize(&hash);
+	SparkSha256Initialize(&hash);
 	while ( offset < pack_bytes )
 	{
 		bytes = (uint32_t)((pack_bytes - offset) < sizeof(buffer) ? (pack_bytes - offset) : sizeof(buffer));
@@ -139,16 +161,13 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 		SparkCk128Update(&quick,buffer,bytes);
-		if ( have_receipt == 0 )
-			SparkSha256Update(&hash,buffer,bytes);
+		SparkSha256Update(&hash,buffer,bytes);
 		status = spine_copy(manifest,&index,buffer,offset,bytes,destination);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 		offset += bytes;
 	}
 	SparkCk128Finalize(&quick,digest);
-	if ( have_receipt != 0 )
-		return(memcmp(digest,receipt.ck,16u) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_HASH_MISMATCH);
 	{
 		uint8_t ck[16];
 		memcpy(ck,digest,16u);

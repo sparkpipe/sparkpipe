@@ -750,6 +750,112 @@ static SparkStatus SparkModelPipelineClientPreflight(
 	return(SPARK_STATUS_OK);
 }
 
+uint64_t SparkModelPipelineClientControlGeneration(
+	const SparkModelPipelineClient *pipeline)
+{
+	SparkModelResidentClientView view;
+	uint64_t generation;
+	uint32_t rank;
+	if ( pipeline == 0 )
+		return(1u);
+	generation = 1u;
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+	{
+		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&view) != SPARK_STATUS_OK )
+			continue;
+		if ( view.client_generation > generation )
+			generation = view.client_generation;
+	}
+	return(generation);
+}
+
+uint64_t SparkModelPipelineClientSessionFingerprint(
+	const SparkModelPipelineClient *pipeline)
+{
+	SparkModelResidentClientView view;
+	uint64_t fingerprint;
+	uint32_t rank;
+	if ( pipeline == 0 )
+		return(0u);
+	fingerprint = 0u;
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+	{
+		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&view) != SPARK_STATUS_OK || view.connected == 0u )
+			continue;
+		fingerprint += view.client_generation * (uint64_t)(rank + 1u);
+	}
+	return(fingerprint);
+}
+
+void SparkModelPipelineClientClearTransactions(
+    SparkModelPipelineClient *pipeline)
+{
+    uint32_t index;
+    uint32_t cleared = 0u;
+    if ( pipeline == 0 )
+        return;
+    for (index=0u; index<pipeline->transaction_capacity; index++)
+        if ( pipeline->transactions[index].active != 0u )
+        {
+            pipeline->transactions[index].active = 0u;
+            pipeline->transactions[index].decision_expected_mask = 0u;
+            pipeline->transactions[index].decision_result_mask = 0u;
+            pipeline->transactions[index].prepared_mask = 0u;
+            pipeline->transactions[index].result_mask = 0u;
+            pipeline->transactions[index].completion_mask = 0u;
+            cleared++;
+        }
+    if ( cleared != 0u )
+        fprintf(stderr,
+            "pipeline transactions cleared: %u stale transaction(s) discarded\n",
+            cleared);
+}
+
+SparkStatus SparkModelPipelineClientRecover(
+	SparkModelPipelineClient *pipeline)
+{
+	SparkModelResidentClientView view;
+	uint32_t rank,degraded;
+	if ( pipeline == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	degraded = pipeline->failed_status != SPARK_STATUS_OK ? 1u : 0u;
+	if ( degraded == 0u )
+		for (rank=0u; rank<pipeline->rank_count; rank++)
+		{
+			if ( SparkModelResidentClientGetView(pipeline->clients[rank],&view) != SPARK_STATUS_OK || view.connected == 0u )
+			{
+				degraded = 1u;
+				break;
+			}
+		}
+	if ( degraded == 0u )
+		return(SPARK_STATUS_OK);
+	pipeline->failed_status = SPARK_STATUS_OK;
+	pipeline->failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		(void)SparkModelResidentClientProgress(pipeline->clients[rank],1u);
+	{
+		uint32_t index;
+		uint32_t cleared = 0u;
+		for (index=0u; index<pipeline->transaction_capacity; index++)
+			if (pipeline->transactions[index].active != 0u)
+			{
+				pipeline->transactions[index].active = 0u;
+				pipeline->transactions[index].decision_expected_mask = 0u;
+				pipeline->transactions[index].decision_result_mask = 0u;
+				pipeline->transactions[index].prepared_mask = 0u;
+				pipeline->transactions[index].result_mask = 0u;
+				pipeline->transactions[index].completion_mask = 0u;
+				cleared++;
+			}
+		if (cleared != 0u)
+			fprintf(stderr,
+			    "pipeline recovered: cleared %u stale transaction(s) — their in-flight completions will be ignored\n",
+			    cleared);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelPipelineClientSubmit(
 	SparkModelPipelineClient *pipeline,
 	const SparkModelServingSubmission *submission)

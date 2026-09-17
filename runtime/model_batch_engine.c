@@ -34,6 +34,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t output_token_budget;
 	uint32_t cancel_pending;
 	uint32_t resident_bound;
+	uint32_t busy_restore_count;
 	uint32_t resident_sequence_slot;
 	uint32_t terminal_event_kind;
 	uint32_t terminal_status;
@@ -122,6 +123,9 @@ struct SparkModelBatchEngine
 	uint32_t live_request_count;
 	uint32_t inflight_submission_count;
 	uint32_t failed_status;
+	uint32_t consecutive_pipeline_failures;
+	uint64_t circuit_open_until_ns;
+	uint64_t observed_control_generation;
 	uint32_t next_work_kind;
 	uint32_t work_kind_bypass_counts[4];
 	uint32_t cache_block_token_count;
@@ -678,10 +682,19 @@ static void SparkModelBatchHandleRejected(
 	{
 		SparkModelBatchRequestState *request;
 		request = &engine->requests[request_slots[lane]];
-		if ( status == SPARK_STATUS_BUSY )
+		if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_IO_ERROR) && request->busy_restore_count < 10000u )
+		{
+			request->busy_restore_count++;
 			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+		}
 		else
+		{
+			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_IO_ERROR )
+				fprintf(stderr,"batch_retry_cap request=%llu restores=%u; failing\n",
+					(unsigned long long)request->request_id,
+					(unsigned)request->busy_restore_count);
 			SparkModelBatchFailRequest(engine,request,status);
+		}
 	}
 }
 
@@ -824,7 +837,11 @@ static void SparkModelBatchSubmitResult(
 	submission = engine != 0 ? SparkModelBatchFindSubmission(engine,submission_id) : 0;
 	if ( submission == 0 || submission->result_received != 0u )
 	{
-		if ( engine != 0 )
+		if ( engine != 0 && submission == 0 )
+			fprintf(stderr,
+			    "batch result for unknown submission %llu (session reset?) — ignoring\n",
+			    (unsigned long long)submission_id);
+		else if ( engine != 0 )
 			SparkModelBatchSetFailed(engine,SPARK_STATUS_SCHEMA_ERROR);
 		return;
 	}
@@ -867,7 +884,15 @@ static void SparkModelBatchCompletion(
 	SparkStatus status;
 	engine = (SparkModelBatchEngine *)completion_context;
 	submission = engine != 0 && completion != 0 ? SparkModelBatchFindSubmission(engine,completion->submission_id) : 0;
-	if ( submission == 0 || submission->result_received == 0u )
+	if ( submission == 0 )
+	{
+		if ( engine != 0 )
+			fprintf(stderr,
+			    "batch completion for unknown submission %llu (session reset?) — ignoring\n",
+			    completion != 0 ? (unsigned long long)completion->submission_id : 0ull);
+		return;
+	}
+	if ( submission->result_received == 0u )
 	{
 		if ( engine != 0 )
 			SparkModelBatchSetFailed(engine,SPARK_STATUS_SCHEMA_ERROR);
@@ -1666,7 +1691,7 @@ static void SparkModelBatchInitializeSubmission(
 	submission->submission_id = engine->next_submission_id;
 	submission->request_id = engine->next_submission_id;
 	submission->sequence_id = engine->next_submission_id;
-	submission->control_generation = 1u;
+	submission->control_generation = SparkModelPipelineClientControlGeneration(engine->pipeline);
 	submission->transaction_id = engine->next_submission_id;
 	submission->dispatch_generation = engine->next_submission_id;
 	submission->request_generation = 1u;
@@ -1883,9 +1908,18 @@ static void SparkModelBatchRecordSubmission(
 		request_slots[lane] = engine->scratch_request_slots[lane];
 		prefill_counts[lane] = state->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? engine->scratch_prefill_counts[lane] : 0u;
 		engine->requests[request_slots[lane]].state = inflight_state;
+		engine->requests[request_slots[lane]].busy_restore_count = 0u;
 	}
 	engine->inflight_submission_count++;
 	engine->inflight_kv_page_count = engine->selected_kv_page_count;
+}
+
+static uint64_t SparkModelBatchNowNs(void)
+{
+	struct timespec timestamp = {0,0};
+	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0 )
+		return(0ull);
+	return((uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + (uint64_t)timestamp.tv_nsec);
 }
 
 static SparkStatus SparkModelBatchDispatchKind(
@@ -1897,7 +1931,11 @@ static SparkStatus SparkModelBatchDispatchKind(
 	SparkModelServingSubmission submission;
 	SparkStatus status;
 	uint32_t lane_count;
+	uint64_t now_ns;
 	*dispatched_out = 0u;
+	now_ns = SparkModelBatchNowNs();
+	if ( engine->circuit_open_until_ns != 0u && now_ns < engine->circuit_open_until_ns )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	state = SparkModelBatchReserveSubmission(engine,work_kind);
 	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -1917,8 +1955,19 @@ static SparkStatus SparkModelBatchDispatchKind(
 	if ( status != SPARK_STATUS_OK )
 	{
 		state->active = 0u;
+		engine->consecutive_pipeline_failures++;
+		if ( engine->consecutive_pipeline_failures >= 8u )
+		{
+			fprintf(stderr,"batch circuit open: %u consecutive pipeline failures; dispatch suspended 15s\n",
+				(unsigned)engine->consecutive_pipeline_failures);
+			engine->circuit_open_until_ns = SparkModelBatchNowNs() + UINT64_C(15000000000);
+			engine->consecutive_pipeline_failures = 0u;
+		}
 		SPARK_RETURN(status);
 	}
+	if ( engine->circuit_open_until_ns != 0u )
+		engine->circuit_open_until_ns = 0u;
+	engine->consecutive_pipeline_failures = 0u;
 	SparkModelBatchRecordSubmission(engine,state,lane_count);
 	*dispatched_out = 1u;
 	return(SPARK_STATUS_OK);
@@ -1967,6 +2016,19 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	return(SparkModelBatchSchedulerChooseWorkKind(available_by_kind,minimum_by_kind,engine->admission_open,engine->inflight_submission_count,engine->submission_capacity,&engine->next_work_kind,engine->work_kind_bypass_counts));
 }
 
+static uint64_t SparkModelBatchInflightBudgetNs(void)
+{
+	const char *env = getenv("SPARK_BATCH_INFLIGHT_BUDGET_NS");
+	uint64_t value;
+	if ( env != 0 && env[0] != '\0' )
+	{
+		value = strtoull(env,0,10);
+		if ( value >= UINT64_C(1000000000) )
+			return(value);
+	}
+	return(UINT64_C(900) * UINT64_C(1000000000));
+}
+
 static void SparkModelBatchExpireStalledRequests(
 	SparkModelBatchEngine *engine)
 {
@@ -1987,7 +2049,7 @@ static void SparkModelBatchExpireStalledRequests(
 		if ( engine->requests[index].inflight_since_ns == 0ull )
 			engine->requests[index].inflight_since_ns = now;
 		else if ( now - engine->requests[index].inflight_since_ns >
-		          UINT64_C(240) * UINT64_C(1000000000) )
+		          SparkModelBatchInflightBudgetNs() )
 		{
 			fprintf(stderr,
 			    "batch request expired id=%llu state=%u\n",
@@ -2012,24 +2074,63 @@ static void SparkModelBatchFailIdleRequests(
 	}
 }
 
+static void SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine *engine)
+{
+	uint32_t index;
+	for (index=0u; index<engine->request_capacity; index++)
+	{
+		SparkModelBatchRequestState *request = &engine->requests[index];
+		if ( request->state == SPARK_MODEL_BATCH_REQUEST_FREE )
+			continue;
+		SparkModelBatchReleaseResidentSlot(engine,request);
+		request->resident_bound = 0u;
+		request->computed_prompt_token_count = 0u;
+		request->generated_token_count = 0u;
+		request->cache_prefix_token_count = 0u;
+		request->cache_published_token_count = 0u;
+		request->busy_restore_count = 0u;
+		request->inflight_since_ns = 0ull;
+		request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
+	}
+	(void)SparkPrefixCacheReset(&engine->prefix_cache);
+}
+
 SparkStatus SparkModelBatchEngineProgress(
 	SparkModelBatchEngine *engine,
 	uint32_t maximum_new_submission_count)
 {
 	SparkStatus status;
 	uint32_t dispatched,kind,misses,step;
+	uint64_t session_fingerprint;
 	if ( engine == 0 || maximum_new_submission_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)SparkModelPipelineClientRecover(engine->pipeline);
+	session_fingerprint = SparkModelPipelineClientSessionFingerprint(engine->pipeline);
+	if ( engine->observed_control_generation == 0u )
+		engine->observed_control_generation = session_fingerprint;
+	if ( session_fingerprint != engine->observed_control_generation )
+	{
+		fprintf(stderr,"batch engine session changed %llu -> %llu; prefix cache, resident bindings, and pipeline transactions invalidated\n",
+			(unsigned long long)engine->observed_control_generation,
+			(unsigned long long)session_fingerprint);
+		engine->observed_control_generation = session_fingerprint;
+		SparkModelBatchInvalidateEngineSession(engine);
+		SparkModelPipelineClientClearTransactions(engine->pipeline);
+	}
 	status = SparkModelPipelineClientProgress(engine->pipeline,engine->maximum_messages_per_rank);
 	if ( status != SPARK_STATUS_OK )
 	{
-		SparkModelBatchSetFailed(engine,status);
-		SparkModelBatchFailIdleRequests(engine,status);
+		if ( status != SPARK_STATUS_IO_ERROR )
+		{
+			SparkModelBatchSetFailed(engine,status);
+			SparkModelBatchFailIdleRequests(engine,status);
+		}
 		SPARK_RETURN(status);
 	}
 	if ( engine->failed_status != SPARK_STATUS_OK )
 	{
-		SparkModelBatchFailIdleRequests(engine,(SparkStatus)engine->failed_status);
+		if ( engine->failed_status != SPARK_STATUS_IO_ERROR )
+			SparkModelBatchFailIdleRequests(engine,(SparkStatus)engine->failed_status);
 		return((SparkStatus)engine->failed_status);
 	}
 	SparkModelBatchExpireStalledRequests(engine);
@@ -2051,6 +2152,8 @@ SparkStatus SparkModelBatchEngineProgress(
 		}
 		if ( status != SPARK_STATUS_OK )
 		{
+			if ( status == SPARK_STATUS_IO_ERROR )
+				break;
 			SparkModelBatchSetFailed(engine,status);
 			SparkModelBatchFailIdleRequests(engine,status);
 			SPARK_RETURN(status);
@@ -2077,6 +2180,8 @@ SparkStatus SparkModelBatchEngineReopenAdmission(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->admission_open = 1u;
 	engine->failed_status = SPARK_STATUS_OK;
+	if ( engine->pipeline != 0 )
+		(void)SparkModelPipelineClientRecover(engine->pipeline);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2129,6 +2234,22 @@ static void SparkModelBatchCountStates(
 		if ( engine->requests[index].state == SPARK_MODEL_BATCH_REQUEST_READY_DECODE )
 			view->ready_decode_count++;
 	}
+}
+
+void SparkModelBatchEngineSeedSubmissionId(
+	SparkModelBatchEngine *engine,
+	uint64_t next_submission_id)
+{
+	if ( engine == 0 || next_submission_id == 0u )
+		return;
+	if ( next_submission_id > engine->next_submission_id )
+		engine->next_submission_id = next_submission_id;
+}
+
+uint64_t SparkModelBatchEnginePeekSubmissionId(
+	const SparkModelBatchEngine *engine)
+{
+	return(engine == 0 ? 0u : engine->next_submission_id);
 }
 
 SparkStatus SparkModelBatchEngineGetView(

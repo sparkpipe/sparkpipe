@@ -1,0 +1,10 @@
+[Unit]
+Description=Start DS4 switched fabric outside the boot-critical path
+
+[Timer]
+OnBootSec=20
+Unit=ds4-switched-fabric.service
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

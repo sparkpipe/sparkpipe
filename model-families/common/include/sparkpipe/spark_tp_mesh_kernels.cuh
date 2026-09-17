@@ -4,7 +4,22 @@
 
 #if defined(__CUDACC__)
 #include <cuda_runtime.h>
+#include <stdio.h>
+#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V3-PARITY-TAIL-ABORT-DIAG"
+#if defined(__CUDACC__)
+__constant__ char SparkTpMeshKernelsBuildMarker[] =
+    SPARK_TP_MESH_KERNELS_MARKER;
+#endif
+
 #define SPARK_TP_MESH_THREADS 256u
+
+static __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs(void)
+{
+	unsigned long long ns;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(ns));
+	return ns;
+}
+
 
 __global__ void SparkGlm5NextMeshPublishKernel(
 	volatile uint64_t *entry,
@@ -46,8 +61,9 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 	uint64_t ring,
 	uint32_t rank,
 	uint32_t degree,
-	unsigned long long *error_word,
-	unsigned long long deadline_ns)
+    unsigned long long *error_word,
+    unsigned long long deadline_ns,
+    unsigned long long *diag_word)
 {
 	uint32_t peer;
 	volatile uint64_t *end_word;
@@ -67,8 +83,19 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 			slot_bytes - 8u);
 		while ( *end_word < sequence )
 		{
+			if ( *error_word != 0ull )
+				return;
 			if ( SparkGlm5NextGlobalTimerNs() >= stop_at )
 			{
+				unsigned long long off = (unsigned long long)
+					((uint8_t *)end_word - (uint8_t *)band_base);
+				unsigned long long got = *end_word;
+				atomicExch((unsigned long long *)diag_word,
+					((unsigned long long)peer_rank << 56ull) |
+					((ring & 0xffull) << 48ull) |
+					((off / slot_bytes) << 32ull) |
+					((sequence & 0xffffull) << 16ull) |
+					(got & 0xffffull));
 				atomicExch((unsigned long long *)error_word,sequence);
 				return;
 			}
@@ -92,13 +119,6 @@ static __device__ __forceinline__ void SparkGlm5NextStoreBf16Pair(void *base,uin
 	uint32_t packed = ((uint32_t)(__float_as_int(y) & 0xffff0000u)) |
 	    (uint32_t)((__float_as_int(x) >> 16) & 0x0000ffffu);
 	((uint32_t *)base)[element] = packed;
-}
-
-static __device__ __forceinline__ unsigned long long SparkGlm5NextGlobalTimerNs(void)
-{
-	unsigned long long ns;
-	asm volatile("mov.u64 %%nsec, %%globaltimer;" : "=l"(ns));
-	return ns;
 }
 
 
@@ -278,12 +298,33 @@ extern "C" cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
 	return cudaPeekAtLastError();
 }
 
+__global__ void SparkGlm5NextMeshCopyDownKernel(
+    volatile uint64_t *destination,
+    const uint64_t *source,
+    uint32_t quad_count)
+{
+	uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( i < quad_count )
+		destination[i] = source[i];
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchMeshCopyDown(
+	cudaStream_t stream,void *destination,const void *source,
+	uint64_t bytes)
+{
+	uint32_t quads = (uint32_t)((bytes + 7u) / 8u);
+	if ( destination == 0 || source == 0 || quads == 0u )
+		return(cudaErrorInvalidValue);
+	SparkGlm5NextMeshCopyDownKernel<<<(quads + 255u) / 256u,256u,0u,stream>>>(
+		(volatile uint64_t *)destination,
+		(const uint64_t *)source,quads);
+	return(cudaPeekAtLastError());
+}
+
 extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
 	volatile void *entry,void *seq_cell,void *round_seq,uint64_t bytes,
 	uint64_t slot_index)
 {
-	if ( entry == 0 || seq_cell == 0 || round_seq == 0 )
-		return(cudaErrorInvalidValue);
 	SparkGlm5NextMeshPublishKernel<<<1,32,0u,stream>>>(
 		(volatile uint64_t *)entry,(unsigned long long *)seq_cell,
 		(unsigned long long *)round_seq,bytes,slot_index);
@@ -293,15 +334,13 @@ extern "C" cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
 extern "C" cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
 	volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
 	uint64_t slots_per_rank,uint64_t ring,uint32_t rank,uint32_t degree,
-	void *error_word,unsigned long long deadline_ns)
+	void *error_word,unsigned long long deadline_ns,void *diag_word)
 {
-	if ( band_base == 0 || round_seq == 0 || degree == 0u ||
-	     error_word == 0 )
-		return(cudaErrorInvalidValue);
 	SparkGlm5NextMeshWaitKernel<<<1,32,0u,stream>>>(
 		(volatile uint64_t *)band_base,slot_bytes,
 		(const unsigned long long *)round_seq,slots_per_rank,ring,rank,
-		degree,(unsigned long long *)error_word,deadline_ns);
+		degree,(unsigned long long *)error_word,deadline_ns,
+		(unsigned long long *)diag_word);
 	return(cudaPeekAtLastError());
 }
 
