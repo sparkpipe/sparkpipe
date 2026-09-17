@@ -1,0 +1,5 @@
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:347 status=17
+qwen38_stage initialize_failed status=17
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1318 status=17
+ERRSITE /tmp/t1qmax_stage/tree/runtime/stage_module_common.c:1663 status=1
+t1_qmax_harness initialize status=17

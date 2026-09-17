@@ -1343,8 +1343,8 @@
     },
     {
       "path": "docs/T1_QMAX_RUN_RECEIPT.md",
-      "sha256": "b1a00d97e2549da90f8064bc36e569d8a91d94ddbf8baa35e2734c61f420d86a",
-      "size_bytes": 18728
+      "sha256": "b5ee1868c133832d09ec35f6f44b8c4e0873165ab442f0664557d0a5eb9a4499",
+      "size_bytes": 23376
     },
     {
       "path": "docs/T1_REFERENCE_COMPARE.md",
@@ -14830,5 +14830,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 56621654
+  "total_bytes": 56626302
 }

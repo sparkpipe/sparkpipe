@@ -349,3 +349,86 @@ path (load, attach, route-keys, parity, publish) is proven green.
   spark9:391950-391952, sparkb:343370-343372, sparkf:370120-370122;
   spark5:2-4 mesh-degraded; spark7 tail mesh-degraded; sparke:979-class
   restart ERRSITE)
+
+## wave 6 (2026-09-17T19:52Z): fresh-daemon retry — acquire-17 mechanism FOUND
+
+mgr2 recycled all 16 weightds gracefully (uniform fresh pids 04:43:38-04:44:28
+node-local, uniform footprint). Question: does the wave-5 routed-expert acquire
+INTERNAL_ERROR(17) reproduce on daemons with zero accumulated generations?
+
+Wave result (one boot, one decode per the wedge law; WEIGHTD_SOCKET=
+/tmp/spark_weightd.sock; merged tree 37b2b37 = lane 26e21f5 + main incl. PR
+#1026 + audit-shadow; rebuilt on spark7, harness staged to 16 hosts):
+
+- 8/16 ranks never reached execute: module-initialize failures under
+  GPU memory pressure from the production co-tenant (ranks 0,4,8,12: the
+  T1-dump 4-byte cudaMalloc at
+  spark_qwen38_max_resident_decode_stage_module.c:346 fails = device
+  effectively full — spark8 alone hosts THREE production residentds
+  (11.2+21.3+13.3 GiB) + weightd 7.4 GiB; ranks 1,9,11 init status=2,
+  rank10 status=4)
+- ranks 2,7: REBASE-TIMEOUT-QUIET then status=15 (peers dead)
+- rank5 (spark5): acquire map.c:393 status=4 (IO) — its daemon DIED
+  mid-wave (spark5 weightd pid 885018 -> 936570)
+- rank15 (sparkf): route_keys layer=0 rank=15 base=480 total=1 count=1
+  ids=496 -> acquire status=17 with a REAL daemon response:
+  WD-LEASE-TRACE kind=acquire owner=30 keys=1 status=17 occupied=0 id=0
+
+### The discriminator answered, and it is a third option
+
+Acquires do NOT succeed on fresh daemons — but the defect is NOT module
+key usage and NOT per-daemon map accumulation:
+
+1. Keys resolve. prepare_groups (runtime/spark_weightd_lease.c:82)
+   prints "weightd_parity lease_miss" and returns NOT_FOUND(3) on a key
+   miss. sparkf's daemon log has ZERO lease_miss lines and the status is
+   17, not 3: the global key (layer 0, expert 496) EXISTS in the
+   daemon's manifest. The wave-4 parity fix stands.
+2. The 17 is eviction starvation in the daemon's budget loop.
+   SparkWeightdAcquireWorkingSet -> SparkWeightdAcquireLoad ->
+   SparkWeightdAcquireBudget: when the acquisition exceeds
+   (device_bytes_max - other) — where other = server-wide resident
+   bytes of the OTHER arenas on the SAME daemon, i.e. the production
+   glm53flash residentds' lazy leases — the loop evicts the LRU unpinned
+   group within THIS arena only. A fresh arena has nothing present, so
+   victim == group_count and runtime/spark_weightd.c:1706 returns
+   SPARK_STATUS_INTERNAL_ERROR — a plain return: no ERSSITE, no trace,
+   lease rolled back -> occupied=0. This is the only plain-17 in the
+   entire acquire path (LeaseAcquire yields INVALID_ARGUMENT/BUSY/
+   CAPACITY_EXCEEDED/NOT_FOUND; LoadRange yields IO_ERROR/HASH_MISMATCH).
+3. Accumulation refuted with timing: sparkf's daemon was 8 minutes old
+   at the acquire and had already been re-driven to 221 maps / 51.3 GB
+   VmSize by the production residentds (two residentd pids + 
+   fleet_node_agent active all afternoon). The budget pressure re-forms
+   within minutes of any recycle. Wave-5's "accumulated 214-221 maps"
+   was a symptom (production leases resident), not the cause.
+4. The execute-probe control confirms the budget mechanism: in wave-5
+   the probe's 8-key lease acquired GREEN (813 ms) right after the
+   daemon redeploy when the device budget had room; today my probe run
+   on sparkf got the rank5-class IO(4) — attached, then the daemon
+   restarted under it (528166 -> 576994 at ~20:07Z mid-probe).
+5. Daemon churn is ongoing: 10/16 weightd pids changed between my
+   19:47Z pre-wave scan and 20:07Z (spark1,2,3,5,6,9,a,b,d,e,f). Any
+   shared-daemon wave is non-deterministic while the fleet-agent /
+   mesh-ring reformation continues (LING-T1's 18:20Z finding, mgr2
+   domain).
+
+### Fix direction (daemon owner, not this lane)
+
+The budget failure needs (a) a diagnostic: the 17 at
+spark_weightd.c:1706 must name the exhausted budget (device_bytes_max,
+other bytes, needed bytes) instead of failing silently, and (b) policy:
+either device_bytes_max raised on shared daemons, or cross-arena
+accounting that does not let a fresh arena starve on a budget consumed
+by co-tenant leases it cannot evict. My lane's client path (load,
+attach, route-keys, parity, publish) remains proven green.
+
+## verdict wave 6: T1 FAIL — environment (honest)
+
+Zero completed tokens; decode not delivered; compare correctly not
+reached; no loosening; measured B1 correctly not attempted. Evidence:
+runs/t1qmax/wave6/harness-rank{0..15}.log,
+runs/t1qmax/wave6/daemon-sparkf-lease-trace.log,
+runs/t1qmax/wave6/daemon-spark5-lease-trace.log. All /tmp residuals
+purged on 16 nodes + build node + workstation; placed packs, sidecars
+and receipts untouched; mesh lease released.

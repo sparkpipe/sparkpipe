@@ -1,0 +1,10 @@
+qwen38_stage tp_collective_open degree=16 rank=15 port_base=21504
+qwen38_stage initialize ok slice=0+92 gdn=69 attn=23 owns_embedding=1 owns_head=1
+qwen38_stage route_keys layer=0 rank=15 base=480 total=1 count=1 ids=496 
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd_map.c:393 status=17
+qwen38_stage cuda_error site=moe error=invalid argument
+ERRSITE /tmp/t1qmax_stage/tree/runtime/stage_module_common.c:164 status=17
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1809 status=17
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:2135 status=17
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:2197 status=17
+t1_qmax_harness execute step=0 status=17

@@ -1,0 +1,12 @@
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd.c:2824 status=4
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd.c:3532 status=4
+ERRSITE /tmp/t1qmax_stage/tree/runtime/spark_weightd.c:3688 status=4
+qwen38_stage tp_collective_open degree=16 rank=2 port_base=21504
+qwen38_stage initialize ok slice=0+92 gdn=69 attn=23 owns_embedding=1 owns_head=1
+REBASE-TIMEOUT-QUIET rank=2 cell=0 marker=0
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1221 status=15
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1679 status=15
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:1809 status=15
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:2135 status=15
+ERRSITE /tmp/t1qmax_stage/tree/modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:2197 status=15
+t1_qmax_harness execute step=0 status=15
