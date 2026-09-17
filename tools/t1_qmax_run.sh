@@ -4,7 +4,7 @@
 # Laws: poll never blind-sleep, sparkcap on every pack/compute step, fail loud.
 set -eu
 
-REPO=/Users/mac/t1qmaxw5
+REPO=/Users/mac/t1qmaxw6
 BUILD_NODE=spark7
 SCRATCH=/tmp/t1qmax
 STAGE_DIR=/tmp/t1qmax_stage
@@ -64,9 +64,9 @@ stage_build() {
 	rm -rf "$SCRATCH"
 	mkdir -p "$SCRATCH"
 	ssh "$BUILD_NODE" "rm -rf $STAGE_DIR && mkdir -p $STAGE_DIR $SCRATCH"
-	git -C "$REPO" bundle create "$SCRATCH/t1qmax.bundle" lane/t1-qmax-wave4
+	git -C "$REPO" bundle create "$SCRATCH/t1qmax.bundle" lane/t1-qmax-wave6
 	scp -q "$SCRATCH/t1qmax.bundle" "$BUILD_NODE:$STAGE_DIR/"
-	ssh "$BUILD_NODE" "rm -rf $STAGE_DIR/tree && git clone -q -b lane/t1-qmax-wave4 $STAGE_DIR/t1qmax.bundle $STAGE_DIR/tree"
+	ssh "$BUILD_NODE" "rm -rf $STAGE_DIR/tree && git clone -q -b lane/t1-qmax-wave6 $STAGE_DIR/t1qmax.bundle $STAGE_DIR/tree"
 	say "building on $BUILD_NODE"
 	scp -q "$REPO/tools/t1_qmax_build.sh" "$BUILD_NODE:$STAGE_DIR/"
 	ssh "$BUILD_NODE" "sh $STAGE_DIR/t1_qmax_build.sh"
