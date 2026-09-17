@@ -427,7 +427,11 @@ attach, route-keys, parity, publish) remains proven green.
 
 Zero completed tokens; decode not delivered; compare correctly not
 reached; no loosening; measured B1 correctly not attempted. Evidence:
-runs/t1qmax/wave6/harness-rank{0..15}.log,
+runs/t1qmax/wave6/harness-rank{0,1,2,4,5,7,8,9,10,11,12,15}.log —
+harness-rank{3,6,13,14}.log LOST (lane process error: harvested after
+the fleet purge; last observed at the 19:58Z poll: rank3
+spark_qwen38_max_resident_decode_stage_module.c:1318 status=4 attach
+IO; ranks 6/13/14 no output captured, still in attach at that poll),
 runs/t1qmax/wave6/daemon-sparkf-lease-trace.log,
 runs/t1qmax/wave6/daemon-spark5-lease-trace.log. All /tmp residuals
 purged on 16 nodes + build node + workstation; placed packs, sidecars
