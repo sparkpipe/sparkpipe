@@ -192,7 +192,8 @@ start_root() {
     cd "$rr" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
-    env SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
+    env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
+        SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
     ${G5_GRAPH_PATH:+SPARK_GLM5_NEXT_GRAPH_PATH=$G5_GRAPH_PATH} \
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
         --deployment model_resident.json --rank-index "$RANK" \
@@ -419,6 +420,50 @@ self_update() {
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
+node_doctor() {
+    local state netdev
+    state=$(ibv_devinfo "$MESH_INTERFACE" 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
+    case "$state" in
+        PORT_ACTIVE|PORT_INIT*) ;;
+        *)
+            netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $NF; exit}')
+            [ -n "$netdev" ] || return 0
+            echo "$(date +%T) doctor: $MESH_INTERFACE state=${state:-missing}; flapping $netdev" >&2
+            sudo -n ip link set "$netdev" down 2>/dev/null
+            sleep 2
+            sudo -n ip link set "$netdev" up 2>/dev/null
+            ;;
+    esac
+}
+
+janitor() {
+    local q youngest a holder_exe
+    for name in ${ROOTS//,/ }; do
+        local rr="$HOME/sparkdata/$name" youngest=0
+        for q in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$q/cwd 2>/dev/null)" = "$rr" ] || continue
+            a=$(ps -o etimes= -p "$q" 2>/dev/null | tr -d ' ')
+            [ -n "$a" ] && [ "$a" -gt "$youngest" ] && youngest=$a
+        done
+        for q in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+            [ "$(readlink /proc/$q/cwd 2>/dev/null)" = "$rr" ] || continue
+            a=$(ps -o etimes= -p "$q" 2>/dev/null | tr -d ' ')
+            [ -n "$a" ] && [ "$a" -lt "$youngest" ] && [ "$a" -gt 1800 ] && {
+                echo "$(date +%T) janitor: killing stale residentd pid=$q age=${a}s (current is younger)" >&2
+                kill -9 "$q" 2>/dev/null
+            }
+        done
+    done
+    for q in $(pgrep -f "sparkpipe_weightd"); do
+        a=$(ps -o etimes= -p "$q" 2>/dev/null | tr -d ' ')
+        [ -n "$a" ] && [ "$a" -gt 1800 ] || continue
+        holder_exe=$(sudo -n fuser /tmp/spark_weightd.singleton 2>/dev/null | tr -s ' ' | awk '{print $2}')
+        [ "$q" = "$holder_exe" ] && continue
+        echo "$(date +%T) janitor: killing stale weightd pid=$q age=${a}s (not the singleton holder)" >&2
+        kill -9 "$q" 2>/dev/null
+    done
+}
+
 ensure_weightd() {
     if pgrep -f "sparkpipe_weightd" >/dev/null; then
         local youngest=0 p start_s up_s
@@ -505,6 +550,8 @@ while true; do
     sync_core
     install_core
     self_update
+    node_doctor
+    janitor
     ensure_weightd
     IFS=, read -ra RA <<< "$ROOTS"
     for r in "${RA[@]}"; do sync_root "$r"; done
