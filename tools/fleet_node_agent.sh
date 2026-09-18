@@ -467,6 +467,17 @@ janitor() {
 
 ensure_weightd() {
     if pgrep -f "sparkpipe_weightd" >/dev/null; then
+        local wdd="$HOME/sparkdata/weightd" q exe_sha disk_sha
+        for q in $(pgrep -f "sparkdata/weightd/sparkpipe_weightd"); do
+            exe_sha=$(sha16 "$(readlink /proc/$q/exe 2>/dev/null)")
+            disk_sha=$(sha16 "$wdd/sparkpipe_weightd")
+            if [ -n "$exe_sha" ] && [ "$exe_sha" != "$disk_sha" ]; then
+                echo "$(date +%T) weightd: running $exe_sha != installed $disk_sha; recycling"
+                kill -TERM "$q" 2>/dev/null
+                sleep 3
+                kill -9 "$q" 2>/dev/null
+            fi
+        done
         local youngest=0 p start_s up_s
         for p in $(pgrep -f "sparkpipe_weightd"); do
             start_s=$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null)
