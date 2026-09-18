@@ -196,6 +196,7 @@ start_root() {
     env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
         ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
         SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
+        ${G5_PIN_EXPERTS:+SPARK_GLM5_NEXT_PIN_EXPERTS=$G5_PIN_EXPERTS} \
     ${G5_GRAPH_PATH:+SPARK_GLM5_NEXT_GRAPH_PATH=$G5_GRAPH_PATH} \
     LD_LIBRARY_PATH="$rr/lib" nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_residentd \
         --deployment model_resident.json --rank-index "$RANK" \
