@@ -580,6 +580,9 @@ warmup_hook() {
     gen=$(root_pid glm53flash.fp8.tp16 2>/dev/null)
     [ -n "$gen" ] || return 0
     now=$(date +%s)
+    if [ -s /tmp/fleet-warmup.pid ] && kill -0 "$(cat /tmp/fleet-warmup.pid 2>/dev/null)" 2>/dev/null; then
+        return 0
+    fi
     if [ "$gen" = "$LAST_WARM_GEN" ]; then
         grep -q '"tokens"' /tmp/fleet-warmup.out 2>/dev/null && return 0
         [ $(( now - LAST_WARM_TS )) -lt 240 ] && return 0
@@ -593,6 +596,7 @@ warmup_hook() {
         -d '{"prompt_token_ids":[1,2,3,4,5,6,7,8],"max_tokens":4,"temperature":0}' \
         > /tmp/fleet-warmup.out 2>&1
     ) &
+    echo $! > /tmp/fleet-warmup.pid
     echo "$(date +%T) warmup: fired for engine pid $gen (one cold pass, 900s budget)"
 }
 
