@@ -197,7 +197,7 @@ start_root() {
         ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
         SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
     ${G5_GRAPH_PATH:+SPARK_GLM5_NEXT_GRAPH_PATH=$G5_GRAPH_PATH} \
-    LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
+    LD_LIBRARY_PATH="$rr/lib" nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_residentd \
         --deployment model_resident.json --rank-index "$RANK" \
         > residentd.log 2>&1 < /dev/null &
     report
@@ -242,7 +242,7 @@ ensure_api() {
     [ -s api.log ] && mv api.log "api-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     ${G5_MAX_PREFILL_ROWS:+SPARK_MODEL_API_MAX_PREFILL_ROWS="$G5_MAX_PREFILL_ROWS"} \
     ${G5_INFLIGHT_BUDGET_NS:+SPARK_BATCH_INFLIGHT_BUDGET_NS="$G5_INFLIGHT_BUDGET_NS"} \
-    LD_LIBRARY_PATH="$rr/lib" setsid nohup ./bin/sparkpipe_model_api \
+    LD_LIBRARY_PATH="$rr/lib" setsid nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_api \
         --deployment model_resident.json --runtime-root "$rr" --port "${G5_API_PORT:-8433}" \
         > api.log 2>&1 < /dev/null &
 }
