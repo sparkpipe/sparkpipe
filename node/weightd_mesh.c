@@ -836,6 +836,33 @@ void SparkWeightdMeshDoorbellLoop(void)
                                 posted_failed = 1u;
                         }
                     }
+                    {
+                        struct ibv_sge tail_sge;
+                        memset(&tail_sge,0,sizeof(tail_sge));
+                        tail_sge.addr = (uint64_t)(uintptr_t)
+                            weightd_mesh.recv_buffer + slot_base +
+                            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
+                        tail_sge.length = 8u;
+                        tail_sge.lkey = weightd_mesh.recv_mr->lkey;
+                        for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+                        {
+                            struct ibv_send_wr tail_wr;
+                            struct ibv_send_wr *tail_bad;
+                            memset(&tail_wr,0,sizeof(tail_wr));
+                            tail_wr.wr_id = (uint64_t)peer;
+                            tail_wr.sg_list = &tail_sge;
+                            tail_wr.num_sge = 1;
+                            tail_wr.opcode = IBV_WR_RDMA_WRITE;
+                            tail_wr.send_flags = IBV_SEND_SIGNALED;
+                            tail_wr.wr.rdma.remote_addr =
+                                qp_snapshot[peer].remote_addr + slot_base +
+                                SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
+                            tail_wr.wr.rdma.rkey = qp_snapshot[peer].rkey;
+                            if ( ibv_post_send(weightd_mesh.send_qps[peer],
+                                    &tail_wr,&tail_bad) != 0 )
+                                posted_failed = 1u;
+                        }
+                    }
                     if ( posted_failed == 0u )
                     {
                         weightd_mesh.doorbell_posted[index] = seq;
