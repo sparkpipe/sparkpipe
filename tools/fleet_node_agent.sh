@@ -191,6 +191,7 @@ start_root() {
     fi
     cd "$rr" || return 1
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
+    sha16 "$rr/stages/stage_000/model_driver.so" > "$rr/.driver_sha_at_boot" 2>/dev/null
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
         ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
@@ -523,13 +524,17 @@ ensure_root() {
     local name="$1"
     local st; st=$(root_state "$name")
     [ "$st" = "down" ] || {
-        local rr="$HOME/sparkdata/$name" p exe_sha disk_sha
+        local rr="$HOME/sparkdata/$name" p exe_sha disk_sha drv_sha
+        drv_sha=$(sha16 "$rr/stages/stage_000/model_driver.so")
         for p in $(pgrep -f "bin/sparkpipe_model_residentd"); do
             [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
             exe_sha=$(sha16 "$(readlink /proc/$p/exe)")
             disk_sha=$(sha16 "$rr/bin/sparkpipe_model_residentd")
             if [ "$exe_sha" != "$disk_sha" ]; then
                 echo "$(date +%T) $name: running residentd $exe_sha != disk $disk_sha; recycling"
+                st="down"
+            elif [ -f "$rr/.driver_sha_at_boot" ] && [ "$drv_sha" != "$(cat "$rr/.driver_sha_at_boot")" ]; then
+                echo "$(date +%T) $name: driver changed since engine boot; recycling"
                 st="down"
             fi
             break
