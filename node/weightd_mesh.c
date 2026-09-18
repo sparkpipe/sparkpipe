@@ -82,6 +82,14 @@ typedef struct SparkWeightdMesh
 } SparkWeightdMesh;
 
 static SparkWeightdMesh weightd_mesh;
+static uint64_t weightd_mesh_boot_phase_ns;
+static void SparkWeightdMeshPhase(const char *name)
+{
+    uint64_t now = SparkWeightdMeshRealtimeNs();
+    fprintf(stderr,"weightd-mesh phase %s at +%llu ms\n",name,
+        (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
+}
+
 
 static uint64_t SparkWeightdMeshRealtimeNs(void)
 {
@@ -342,13 +350,6 @@ static void SparkWeightdMeshTryWire(void)
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
 }
 
-static uint64_t weightd_mesh_boot_phase_ns;
-static void SparkWeightdMeshPhase(const char *name)
-{
-    uint64_t now = SparkWeightdMeshRealtimeNs();
-    fprintf(stderr,"weightd-mesh phase %s at +%llu ms\n",name,
-        (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
-}
 SparkStatus SparkWeightdMeshInit(void)
 {
     struct ibv_device **devices;
