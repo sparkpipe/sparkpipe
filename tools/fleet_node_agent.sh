@@ -425,7 +425,7 @@ node_doctor() {
     local state netdev
     state=$(ibv_devinfo "$MESH_INTERFACE" 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
     case "$state" in
-        PORT_ACTIVE|PORT_INIT*) ;;
+        PORT_ACTIVE) ;;
         *)
             netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $NF; exit}')
             [ -n "$netdev" ] || return 0
