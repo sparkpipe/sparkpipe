@@ -684,11 +684,15 @@ static void SparkModelBatchHandleRejected(
 		(unsigned long long)submission->submission_id,
 		submission->lane_count != 0u ?
 		    (unsigned long long)engine->requests[request_slots[0]].request_id : 0ull);
-	for (lane=0u; lane<submission->lane_count; lane++)
 	{
+		SparkModelPipelineClientView session_view;
+		uint32_t fleet_connected = SparkModelPipelineClientGetView(engine->pipeline,&session_view) == SPARK_STATUS_OK &&
+		    session_view.connected_rank_count == session_view.rank_count ? 1u : 0u;
+		for (lane=0u; lane<submission->lane_count; lane++)
+		{
 		SparkModelBatchRequestState *request;
 		request = &engine->requests[request_slots[lane]];
-		if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_IO_ERROR) && request->busy_restore_count < 10000u )
+		if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_IO_ERROR) && (request->busy_restore_count < 10000u || fleet_connected == 0u) )
 		{
 			uint64_t now = SparkModelBatchNowNs();
 			request->busy_restore_count++;
@@ -709,6 +713,7 @@ static void SparkModelBatchHandleRejected(
 					(unsigned)request->busy_restore_count);
 			SparkModelBatchFailRequest(engine,request,status);
 		}
+	}
 	}
 }
 
