@@ -2332,8 +2332,9 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 	chain->active = 0u;
 	state = chain->state;
 	chain->slot->route_recorded = 0u;
-	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d\n",
-		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
+	fprintf(stderr,"G5N-DBG chainfail: stage %u next_layer %u rows %u status %d cuda=%s\n",
+		(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status,
+		cudaGetErrorString(cudaGetLastError()));
 	if ( state->tp_device_collective_initialized != 0u )
 	{
 		SparkTpDeviceCollectiveBroadcastCancel(&state->tp_device_collective);
