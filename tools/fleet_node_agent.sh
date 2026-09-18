@@ -570,6 +570,26 @@ ensure_root() {
     restart_root "$name"
 }
 
+LAST_WARM_GEN=""
+warmup_hook() {
+    [ "${RANK:-1}" = "0" ] || return 0
+    [ "${G5_WARMUP:-1}" = "1" ] || return 0
+    local gen
+    [ "$(root_state glm53flash.fp8.tp16 2>/dev/null)" = "ready" ] || return 0
+    gen=$(root_pid glm53flash.fp8.tp16 2>/dev/null)
+    [ -n "$gen" ] || return 0
+    [ "$gen" != "$LAST_WARM_GEN" ] || return 0
+    LAST_WARM_GEN=$gen
+    (
+      sleep 45
+      curl -sf --max-time 900 -X POST "http://${G5_API_HOST:-100.123.97.61}:${G5_API_PORT:-8433}/v1/completions" \
+        -H 'Content-Type: application/json' \
+        -d '{"prompt_token_ids":[1,2,3,4,5,6,7,8],"max_tokens":4,"temperature":0}' \
+        > /tmp/fleet-warmup.out 2>&1
+    ) &
+    echo "$(date +%T) warmup: fired for engine pid $gen (one cold pass, 900s budget)"
+}
+
 while true; do
     sync_core
     install_core
@@ -583,6 +603,7 @@ while true; do
     for r in "${RA[@]}"; do ensure_root "$r"; done
     for r in "${RA[@]}"; do prune_logs "$HOME/sparkdata/$r"; done
     ensure_api
+    warmup_hook
     report_if_changed
     sleep 1
 done
