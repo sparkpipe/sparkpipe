@@ -486,12 +486,18 @@ ensure_weightd() {
             [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ] && youngest=$start_s
         done
         up_s=$(awk '{printf "%d", $1}' /proc/uptime)
-        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt 30 ]; then
+        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt 120 ]; then
             return 0
         fi
-        if [ -S /tmp/spark_weightd.sock ] && python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(\"/tmp/spark_weightd.sock\"); s.close()" 2>/dev/null; then
-            return 0
-        fi
+        local probe_ok=0 probe_i
+        for probe_i in 1 2 3; do
+            if [ -S /tmp/spark_weightd.sock ] && python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(\"/tmp/spark_weightd.sock\"); s.close()" 2>/dev/null; then
+                probe_ok=1
+                break
+            fi
+            sleep 2
+        done
+        [ "$probe_ok" = 1 ] && return 0
         echo "$(date +%T) weightd: stale or unresponsive instance(s); clearing"
         for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
             kill -9 "$p" 2>/dev/null
