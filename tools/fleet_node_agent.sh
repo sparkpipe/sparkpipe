@@ -193,6 +193,7 @@ start_root() {
     ln -sf "stage_$(printf %02d "$RANK").json" config/stage.json
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
+        ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
         SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
     ${G5_GRAPH_PATH:+SPARK_GLM5_NEXT_GRAPH_PATH=$G5_GRAPH_PATH} \
     LD_LIBRARY_PATH="$rr/lib" nohup ./bin/sparkpipe_model_residentd \
