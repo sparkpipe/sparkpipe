@@ -3212,6 +3212,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		SparkGlm5NextT1Wave(&chain->wave);
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
+			fprintf(stderr,"G5N-DBG wavebegin-fail cuda=%s\n",
+				cudaGetErrorString(cudaGetLastError()));
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
