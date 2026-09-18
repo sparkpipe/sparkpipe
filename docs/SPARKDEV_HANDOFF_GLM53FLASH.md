@@ -82,6 +82,14 @@ Detokenize with `/home/spec/sparkpipe-build/qualification/ds4_eval/tokenizer/glm
 - **Engines exit on INTERNAL_ERROR by design** (failed latch) — a route-level error kills the rank; agent restarts. If you see `progress stage=... internal_error`, the fix belongs in the route path, not the loop.
 - **api single-session queue**: zombie requests block new sessions behind `queued_behind`; restart g53-api to clear.
 
+## 6.5 Live-fire addendum (2026-09-18, overnight session)
+
+**Merged this session:** #1032 (TAP inert defaults — my #1027 merge-resolution bug), #1031 (handoff doc). **Main moved again**: #1028 (the other dev's graph-path six-layer stack) and #1034 (weightd lease fix) landed; #1028's mesh rework **regressed eager serving on main** (chains die at the first round: `chainfail stage=0 status=4 cuda=an illegal memory access was encountered`; the wait kernel never sees peers publish — same relay-layer wound as the graph replay hang). The fleet currently runs the proven 763ae038 (#1027 merge) build — publishable by SHA: `git fetch origin 763ae038c94880ab9ac3c3fa153daa1f7e54de7b && git reset --hard 763ae038`.
+
+**New infrastructure failures found and fixed today (fleet-resilience branch, PR #1036):** agent node-doctor flaps dead RoCE ports (sparke/spark7 died silently for an hour); the janitor reaps wedged/zombie engines+weightds (GPU-coredump-wedged engines held 150GB of mappings and livelocked the memory gate); CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 in serving (the 17GB in-process GPU dump is what wedged engines past TERM); api restores no longer count against the retry cap while any rank is disconnected. **rtx5090 disk**: inode exhaustion from `~/.cloudfiles/locks` (flychess training leaks ~820 lock files/sec — 14M inodes); freed 9.35M by clearing stale locks; the leak is live and will refill — the flychess owners must fix the leak or the hub dies again. **memlock**: 16GB cap on some nodes killed the mesh MR (errno 12); `/etc/security/limits.d/99-sparkpipe-memlock.conf` installed fleet-wide + `LimitMEMLOCK=infinity` in the agent unit; user-manager restart required to take effect.
+
+**Open regression being chased at cutoff:** on the proven 763ae038 build, COLD fleets (all weightds freshly restarted) reject first prefills BUSY from the KV lane predicate and chains die at stage 0 with IO_ERROR/illegal-memory-access. Warm fleets serve (the fixture passed on long-lived engines). The cold-start path is the active bug; suspects: lane reset on fresh engines, or the mesh buffer mapping on fresh weightd generations. Diag builds on lane/stage0-diag name the CUDA error at chainfail.
+
 ## 7. What remains (priority order)
 
 ### 7.1 The allreduce: 1.3ms/round → 50-100µs target
