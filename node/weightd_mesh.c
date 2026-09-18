@@ -82,13 +82,6 @@ typedef struct SparkWeightdMesh
 } SparkWeightdMesh;
 
 static SparkWeightdMesh weightd_mesh;
-static uint64_t weightd_mesh_boot_phase_ns;
-static void SparkWeightdMeshPhase(const char *name)
-{
-    uint64_t now = SparkWeightdMeshRealtimeNs();
-    fprintf(stderr,"weightd-mesh phase %s at +%llu ms\n",name,
-        (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
-}
 
 
 static uint64_t SparkWeightdMeshRealtimeNs(void)
@@ -97,6 +90,14 @@ static uint64_t SparkWeightdMeshRealtimeNs(void)
     if (clock_gettime(CLOCK_REALTIME,&now) != 0)
         return 0ull;
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static uint64_t weightd_mesh_boot_phase_ns;
+static void SparkWeightdMeshPhase(const char *name)
+{
+    uint64_t now = SparkWeightdMeshRealtimeNs();
+    fprintf(stderr,"weightd-mesh phase %s at +%llu ms\n",name,
+        (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
 }
 
 static uint32_t SparkWeightdMeshRankFromHost(void)
