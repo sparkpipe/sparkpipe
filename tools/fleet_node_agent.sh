@@ -571,15 +571,21 @@ ensure_root() {
 }
 
 LAST_WARM_GEN=""
+LAST_WARM_TS=0
 warmup_hook() {
     [ "${RANK:-1}" = "0" ] || return 0
     [ "${G5_WARMUP:-1}" = "1" ] || return 0
-    local gen
+    local gen now
     [ "$(root_state glm53flash.fp8.tp16 2>/dev/null)" = "ready" ] || return 0
     gen=$(root_pid glm53flash.fp8.tp16 2>/dev/null)
     [ -n "$gen" ] || return 0
-    [ "$gen" != "$LAST_WARM_GEN" ] || return 0
+    now=$(date +%s)
+    if [ "$gen" = "$LAST_WARM_GEN" ]; then
+        grep -q '"tokens"' /tmp/fleet-warmup.out 2>/dev/null && return 0
+        [ $(( now - LAST_WARM_TS )) -lt 240 ] && return 0
+    fi
     LAST_WARM_GEN=$gen
+    LAST_WARM_TS=$now
     (
       sleep 45
       curl -sf --max-time 900 -X POST "http://${G5_API_HOST:-100.123.97.61}:${G5_API_PORT:-8433}/v1/completions" \
