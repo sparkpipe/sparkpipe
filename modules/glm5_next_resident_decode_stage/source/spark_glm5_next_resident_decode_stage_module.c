@@ -3219,7 +3219,11 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		chain->next_layer = 0u;
 		launch_status = SparkGlm5NextModuleReduceHidden(chain,chain->slot->hidden_bf16);
 		if ( launch_status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"G5N-DBG stage0-reduce-fail status=%d cuda=%s\n",
+				(int)launch_status,cudaGetErrorString(cudaGetLastError()));
 			SparkGlm5NextTpChainFail(chain,launch_status);
+		}
 		return;
 	case SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION:
 		if ( SparkGlm5NextLaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
