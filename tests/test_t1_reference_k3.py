@@ -554,6 +554,7 @@ def main():
         write_prompts(prompts)
         out_a = os.path.join(workspace, "run_a")
         out_b = os.path.join(workspace, "run_b")
+        engine_probe = None
         run_a = run_generator(checkpoint, header, prompts, out_a)
         expect(run_a.returncode == 0,
                f"generator failed: {run_a.stderr}")
@@ -573,6 +574,16 @@ def main():
                "generated token must be a real non-eot vocabulary entry")
         expect(open(fixture_a, "rb").read() == open(fixture_b, "rb").read(),
                "generator is not byte-deterministic")
+        from t1_reference_k3 import K3Engine as _E
+        import json as _json
+        _cfg = _json.load(open(os.path.join(checkpoint, "config.json")))
+        _defines = __import__("t1_reference_common").parse_llm_defines(header)
+        _eng = _E(checkpoint, _defines, _cfg["text_config"])
+        _pre = "language_model.model.layers.1."
+        _g = _eng._scratch((_pre, "gate"), _eng.inter, _eng.routed_hidden)
+        _u = _eng._scratch((_pre, "up"), _eng.inter, _eng.routed_hidden)
+        expect(_g is not _u, "gate and up dequant planes must not alias")
+        print("[c] scratch-plane independence verified (gate/up distinct)")
         manifest = json.load(open(os.path.join(out_a, "k3", "MANIFEST.json")))
         import hashlib
         expect(manifest["fixtures"]["synth_k3.t1r"]["sha256"]

@@ -1,4 +1,7 @@
+import mmap
 import os
+import sys
+import time
 
 import numpy as np
 
@@ -131,33 +134,56 @@ def attnres_mix(bank, partial, score_weight, sources, eps):
     return bf16_round_f32(total)
 
 
-def dequant_mxfp4_f32(payload_u8, scale_u8, out_dim, in_dim):
-    """MXFP4 weight dequantisation to f32.
+class Mxfp4Scratch:
+    """Reusable dequantisation buffers for one (out_dim, in_dim) shape.
 
-    Bit-identical to mxfp4_to_bf16 then bf16_to_f32: E2M1 carries one
-    mantissa bit and the E8M0 group scale is a power of two, so the product
-    is exactly representable (E8M0 0xff is NaN and rejected; the packer's
-    overflow advisory above code 253 applies to bf16 storage, not f32 math).
+    The reference dequantises the same shapes on every layer and step, so
+    the nibble and weight planes are allocated once and written in place;
+    this keeps the allocation churn of 1472 expert decodes per position off
+    the host allocator.
     """
-    require(payload_u8.dtype == np.uint8 and scale_u8.dtype == np.uint8,
-            "mxfp4 payload and scales must be U8")
-    require(payload_u8.shape == (out_dim, in_dim // 2),
-            f"mxfp4 payload shape {payload_u8.shape} disagrees with "
-            f"({out_dim}, {in_dim // 2})")
-    require(scale_u8.shape == (out_dim, in_dim // 32),
-            f"mxfp4 scale shape {scale_u8.shape} disagrees with "
-            f"({out_dim}, {in_dim // 32})")
-    if scale_u8.size and int(scale_u8.max()) == 0xFF:
-        raise ValueError("E8M0 code 0xff (NaN) in mxfp4 scale plane")
-    groups = in_dim // 32
-    nib = np.empty((out_dim, in_dim), dtype=np.int32)
-    packed = payload_u8.astype(np.int32)
-    nib[:, 0::2] = packed & 0xF
-    nib[:, 1::2] = packed >> 4
-    weights = _E2M1[nib].reshape(out_dim, groups, 32)
-    scale = np.ldexp(np.float32(1),
-                     scale_u8.astype(np.int32).reshape(out_dim, groups) - 127)
-    return (weights * scale[:, :, None]).reshape(out_dim, in_dim)
+
+    def __init__(self, out_dim, in_dim):
+        self.shape = (out_dim, in_dim)
+        self.groups = in_dim // 32
+        self.weights = np.empty((out_dim, self.groups, 32), dtype=np.float32)
+        self.nib = np.empty((out_dim, self.groups, 32), dtype=np.int32)
+        self.scale = np.empty((out_dim, self.groups), dtype=np.float32)
+        self.payload_buf = None
+        self.scale_buf = None
+
+    def bind(self, payload_u8, scale_u8, out_dim, in_dim):
+        require(payload_u8.dtype == np.uint8 and scale_u8.dtype == np.uint8,
+                "mxfp4 payload and scales must be U8")
+        require(payload_u8.shape == (out_dim, in_dim // 2),
+                f"mxfp4 payload shape {payload_u8.shape} disagrees with "
+                f"({out_dim}, {in_dim // 2})")
+        require(scale_u8.shape == (out_dim, in_dim // 32),
+                f"mxfp4 scale shape {scale_u8.shape} disagrees with "
+                f"({out_dim}, {in_dim // 32})")
+        self.payload_buf = payload_u8
+        self.scale_buf = scale_u8
+        return self
+
+    def dequant(self, out_dim, in_dim):
+        require((out_dim, in_dim) == self.shape,
+                f"shape {(out_dim, in_dim)} disagrees with scratch "
+                f"{self.shape}")
+        payload_u8 = self.payload_buf
+        scale_u8 = self.scale_buf
+        if scale_u8.size and int(scale_u8.max()) == 0xFF:
+            raise ValueError("E8M0 code 0xff (NaN) in mxfp4 scale plane")
+        nib = self.nib
+        weights = self.weights
+        np.bitwise_and(payload_u8, np.uint8(0xF), out=nib[:, :, 0::2]
+                       .reshape(out_dim, in_dim // 2))
+        np.right_shift(payload_u8, np.uint8(4), out=nib[:, :, 1::2]
+                       .reshape(out_dim, in_dim // 2))
+        weights[:] = _E2M1[nib]
+        np.ldexp(np.float32(1), scale_u8.astype(np.int32) - 127,
+                 out=self.scale)
+        np.multiply(weights, self.scale[:, :, None], out=weights)
+        return weights.reshape(out_dim, in_dim)
 
 
 class K3Engine:
@@ -245,10 +271,10 @@ class K3Engine:
         require(sum(self.is_kda) == define_uint(defines, "KDA_LAYER_COUNT"),
                 "KDA layer count disagrees with SPARK_LLM_KDA_LAYER_COUNT")
         self._small = {}
-        self._expert_cache = {}
-        self._expert_bytes = 0
-        self._expert_budget = int(os.environ.get(
-            "T1_K3_EXPERT_CACHE_GB", "10")) << 30
+        self._u32_tile = np.empty(4096 * 7168, dtype=np.uint32)
+        self._u8_tile = np.empty(4096 * 7168 * 2, dtype=np.uint8)
+        self._scratch_pool = {}
+        self._pread_bufs = {}
         self._probe_shapes()
 
     def _shape_of(self, name):
@@ -330,9 +356,66 @@ class K3Engine:
         self._expect("language_model.lm_head.weight",
                      (self.vocab, self.hidden), "BF16")
 
+    def _pread_into(self, name, buf, first_row=0, row_count=None):
+        """Read a tensor (or row range) into a preallocated buffer via pread.
+
+        No per-read allocation: this host sits under permanent direct
+        compaction and every fresh multi-megabyte allocation stalls the
+        worker for tens of seconds, while a filled buffer streams at line
+        rate. buf must be a writable memoryview of the exact extent."""
+        entry = self.st.entry(name)
+        fname = self.st.map.get(name, "model.safetensors")
+        if fname not in self.st.fds:
+            self.st._open(fname)
+        fh = self.st.fds[fname]
+        base = self.st.headers[fname][1]
+        dtype_bytes = {"BF16": 2, "F16": 2, "F32": 4, "U8": 1,
+                       "F8_E4M3": 1, "I64": 8}[entry["dtype"]]
+        shape = entry["shape"]
+        if row_count is None:
+            if len(shape) == 1:
+                row_count = 1
+            else:
+                row_count = shape[0]
+        row_bytes = shape[-1] * dtype_bytes
+        start, end = entry["data_offsets"]
+        expected = row_bytes * row_count
+        if len(buf) != expected:
+            raise ValueError(f"buffer size {len(buf)} disagrees with "
+                             f"{name} extent {expected}")
+        offset = base + start + first_row * row_bytes
+        os.preadv(fh.fileno(), [buf], offset)
+        keep_expert_pages = ".block_sparse_moe.experts." in name
+        if not keep_expert_pages and hasattr(os, "posix_fadvise") \
+                and hasattr(os, "POSIX_FADV_DONTNEED"):
+            try:
+                os.posix_fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            except OSError:
+                pass
+
+    def _view(self, name):
+        """Persistent ndarray over a pread-filled buffer for this tensor.
+
+        The buffer is allocated once per tensor (small norms, kv planes,
+        the lm head) and refilled in place on every call; large weight
+        matrices skip this path entirely via _gemv_tiled."""
+        key = ("v", name)
+        if key in self._pread_bufs:
+            return self._pread_bufs[key]
+        entry = self.st.entry(name)
+        extent = entry["data_offsets"][1] - entry["data_offsets"][0]
+        buf = bytearray(extent)
+        self._pread_into(name, memoryview(buf))
+        dtype = {"BF16": np.uint16, "F32": np.float32, "F16": np.float16,
+                 "U8": np.uint8, "F8_E4M3": np.uint8,
+                 "I64": np.int64}[entry["dtype"]]
+        arr = np.frombuffer(buf, dtype=dtype).reshape(entry["shape"])
+        self._pread_bufs[key] = arr
+        return arr
+
     def tensor(self, name):
-        """f32 view of a checkpoint tensor. Small tensors ride the safetensors
-        cache; anything at or above WEIGHT_CACHE_BYTES is read row-wise
+        """f32 view of a checkpoint tensor. Small tensors ride the f32 cache;
+        anything at or above WEIGHT_CACHE_BYTES is consumed as an mmap view
         without caching, because the K3 hot set is far larger than host
         memory and an unbounded cache is an OOM."""
         key = ("t", name)
@@ -340,14 +423,42 @@ class K3Engine:
             return self._small[key]
         entry = self.st.entry(name)
         extent = entry["data_offsets"][1] - entry["data_offsets"][0]
-        if extent >= WEIGHT_CACHE_BYTES:
-            raw = self.st.raw_rows(name, 0, entry["shape"][0])
-        else:
-            raw = self.st.raw(name)
+        raw = self._view(name)
+        if entry["dtype"] == "BF16" and extent >= WEIGHT_CACHE_BYTES:
+            return bf16_to_f32(raw)
         value = self._to_f32(name, raw)
         if extent < WEIGHT_CACHE_BYTES:
             self._small[key] = value
         return value
+
+    def linear(self, x, name):
+        wname = name + ".weight"
+        rows, cols = self._shape_of(wname)
+        if rows * cols * 2 < WEIGHT_CACHE_BYTES:
+            return bf16_round_f32(self.tensor(wname) @ x)
+        return bf16_round_f32(self._gemv_tiled(wname, x))
+
+    def _gemv_tiled(self, wname, x):
+        """Row-tiled GEMV: each tile is pread into a preallocated byte
+        plane, widened in place, and contracted - no weight-sized anonymous
+        allocation at any point."""
+        rows, cols = self._shape_of(wname)
+        y = np.empty(rows, dtype=np.float32)
+        tile = 4096 * 7168 // cols * cols
+        u32 = self._u32_tile[:tile]
+        done = 0
+        while done < rows:
+            count = min(tile // cols, rows - done)
+            buf = self._u8_tile[:count * cols * 2]
+            self._pread_into(wname, memoryview(buf), done, count)
+            flat = u32[:count * cols]
+            np.copyto(flat, np.frombuffer(
+                memoryview(buf)[:count * cols * 2], dtype=np.uint16))
+            np.left_shift(flat, np.uint32(16), out=flat)
+            np.dot(flat.view(np.float32).reshape(count, cols), x,
+                   out=y[done:done + count])
+            done += count
+        return y
 
     @staticmethod
     def _to_f32(name, raw):
@@ -356,9 +467,6 @@ class K3Engine:
         if raw.dtype == np.uint8:
             raise ValueError(f"{name}: raw U8 on a non-mxfp4 path")
         return raw.astype(np.float32)
-
-    def linear(self, x, name):
-        return bf16_round_f32(self.tensor(name + ".weight") @ x)
 
     def conv_weight(self, name):
         raw = self.st.raw(name)
@@ -449,8 +557,7 @@ class K3Engine:
         slots = np.stack(cache)
         qh = q.reshape(self.heads, self.nope + self.rope)
         kvb = bf16_to_f32(
-            self.st.raw_rows(prefix + "self_attn.kv_b_proj.weight", 0,
-                             self.heads * (self.nope + self.v_head))
+            self._view(prefix + "self_attn.kv_b_proj.weight")
         ).reshape(self.heads, self.nope + self.v_head, self.kv_lora)
         normed = slots[:, :self.kv_lora]
         rope = slots[:, self.kv_lora:]
@@ -467,46 +574,64 @@ class K3Engine:
         gated = bf16_round_f32(values.reshape(-1) * sigmoid(gate))
         return self.linear(gated, prefix + "self_attn.o_proj")
 
-    def expert_mlp(self, w_up, w_down, x):
-        gate_up = bf16_round_f32(w_up @ x)
-        intermediate = situ(gate_up[:gate_up.shape[0] // 2],
-                            gate_up[gate_up.shape[0] // 2:])
-        return bf16_round_f32(w_down @ intermediate)
+    def _scratch(self, key, out_dim, in_dim):
+        if key not in self._scratch_pool:
+            self._scratch_pool[key] = Mxfp4Scratch(out_dim, in_dim)
+        return self._scratch_pool[key]
 
-    def _expert_pair(self, prefix, expert):
-        key = (prefix, expert)
-        hit = self._expert_cache.get(key)
-        if hit is not None:
-            return hit
-        base = prefix + f"block_sparse_moe.experts.{expert}."
-        w_gate = dequant_mxfp4_f32(
-            self.st.raw_rows(base + "w1.weight_packed", 0, self.inter),
-            self.st.raw_rows(base + "w1.weight_scale", 0, self.inter),
-            self.inter, self.routed_hidden)
-        w_up = dequant_mxfp4_f32(
-            self.st.raw_rows(base + "w3.weight_packed", 0, self.inter),
-            self.st.raw_rows(base + "w3.weight_scale", 0, self.inter),
-            self.inter, self.routed_hidden)
-        w1 = np.concatenate([w_gate, w_up])
-        del w_gate, w_up
-        w2 = dequant_mxfp4_f32(
-            self.st.raw_rows(base + "w2.weight_packed", 0, self.routed_hidden),
-            self.st.raw_rows(base + "w2.weight_scale", 0, self.routed_hidden),
-            self.routed_hidden, self.inter)
-        while self._expert_bytes + w1.nbytes + w2.nbytes > self._expert_budget \
-                and self._expert_cache:
-            victim = next(iter(self._expert_cache))
-            self._expert_bytes -= self._expert_cache[victim][0].nbytes \
-                + self._expert_cache[victim][1].nbytes
-            del self._expert_cache[victim]
-        self._expert_cache[key] = (w1, w2)
-        self._expert_bytes += w1.nbytes + w2.nbytes
-        return w1, w2
+    def _expert_scratch(self, prefix):
+        if prefix in self._scratch_pool:
+            return self._scratch_pool[prefix]
+        plan = {}
+        for tail, buf_key in (("w1.weight_packed", "p1"),
+                              ("w1.weight_scale", "s1"),
+                              ("w3.weight_packed", "p3"),
+                              ("w3.weight_scale", "s3"),
+                              ("w2.weight_packed", "p2"),
+                              ("w2.weight_scale", "s2")):
+            entry = self.st.entry(
+                prefix + f"block_sparse_moe.experts.0.{tail}")
+            extent = entry["data_offsets"][1] - entry["data_offsets"][0]
+            plan[buf_key] = np.empty(extent, dtype=np.uint8)
+        self._scratch_pool[prefix] = plan
+        return plan
 
     def routed_expert(self, prefix, expert, x):
-        w1, w2 = self._expert_pair(prefix, expert)
-        gate_up = bf16_round_f32(w1 @ x)
-        intermediate = situ(gate_up[:self.inter], gate_up[self.inter:])
+        base = prefix + f"block_sparse_moe.experts.{expert}."
+        plan = self._expert_scratch(prefix)
+        gate = self._scratch((prefix, "gate"), self.inter, self.routed_hidden)
+        up = self._scratch((prefix, "up"), self.inter, self.routed_hidden)
+        self._pread_into(base + "w1.weight_packed",
+                         memoryview(plan["p1"]))
+        self._pread_into(base + "w1.weight_scale",
+                         memoryview(plan["s1"]))
+        w_gate = gate.bind(
+            plan["p1"].reshape(self.inter, self.routed_hidden // 2),
+            plan["s1"].reshape(self.inter, self.routed_hidden // 32),
+            self.inter, self.routed_hidden).dequant(
+            self.inter, self.routed_hidden)
+        self._pread_into(base + "w3.weight_packed",
+                         memoryview(plan["p3"]))
+        self._pread_into(base + "w3.weight_scale",
+                         memoryview(plan["s3"]))
+        w_up = up.bind(
+            plan["p3"].reshape(self.inter, self.routed_hidden // 2),
+            plan["s3"].reshape(self.inter, self.routed_hidden // 32),
+            self.inter, self.routed_hidden).dequant(
+            self.inter, self.routed_hidden)
+        gate_rows = bf16_round_f32(w_gate @ x)
+        up_rows = bf16_round_f32(w_up @ x)
+        intermediate = situ(gate_rows, up_rows)
+        self._pread_into(base + "w2.weight_packed",
+                         memoryview(plan["p2"]))
+        self._pread_into(base + "w2.weight_scale",
+                         memoryview(plan["s2"]))
+        down = self._scratch((prefix, "down"), self.routed_hidden, self.inter)
+        w2 = down.bind(
+            plan["p2"].reshape(self.routed_hidden, self.inter // 2),
+            plan["s2"].reshape(self.routed_hidden, self.inter // 32),
+            self.routed_hidden, self.inter).dequant(
+            self.routed_hidden, self.inter)
         return bf16_round_f32(w2 @ intermediate)
 
     def dense_mlp(self, prefix, x):
@@ -525,10 +650,8 @@ class K3Engine:
         selected = np.sort(order[:self.topk])
         picked = scores[selected]
         weights = picked / (picked.sum() + 1e-20) * np.float32(self.scaling)
-        lat_in = bf16_round_f32(
-            self.tensor(prefix
-                        + "block_sparse_moe.routed_expert_down_proj.weight")
-            @ x)
+        lat_in = self.linear(
+            x, prefix + "block_sparse_moe.routed_expert_down_proj")
         routed = np.zeros(self.routed_hidden, dtype=np.float32)
         for i in range(self.topk):
             output = self.routed_expert(prefix, int(selected[i]), lat_in)
@@ -537,19 +660,14 @@ class K3Engine:
             bf16_round_f32(routed),
             self.tensor(prefix + "block_sparse_moe.routed_expert_norm.weight"),
             self.eps))
-        routed_out = bf16_round_f32(
-            self.tensor(prefix + "block_sparse_moe.routed_expert_up_proj.weight")
-            @ latent)
-        shared_up = np.concatenate([
-            self.tensor(prefix +
-                        "block_sparse_moe.shared_experts.gate_proj.weight"),
-            self.tensor(prefix +
-                        "block_sparse_moe.shared_experts.up_proj.weight")])
-        shared = self.expert_mlp(
-            shared_up,
-            self.tensor(prefix +
-                        "block_sparse_moe.shared_experts.down_proj.weight"),
-            x)
+        routed_out = self.linear(
+            latent, prefix + "block_sparse_moe.routed_expert_up_proj")
+        gate = self.linear(
+            x, prefix + "block_sparse_moe.shared_experts.gate_proj")
+        up = self.linear(
+            x, prefix + "block_sparse_moe.shared_experts.up_proj")
+        shared = self.linear(
+            situ(gate, up), prefix + "block_sparse_moe.shared_experts.down_proj")
         sink.append(selected.astype(np.int32))
         sink.append(weights.astype(np.float32))
         return routed_out, shared
@@ -621,13 +739,18 @@ class K3Engine:
             if capture_streams is not None:
                 capture_streams(i, streams)
 
+        timing = os.environ.get("K3_LAYER_TIMING") == "1"
         hidden = embedding
         partial = embedding
         bank = [None] * (self.layers // self.block + 1)
         for i in range(self.layers):
+            layer_start = time.time()
             sink = []
             hidden, partial = self.forward_layer(
                 i, hidden, partial, bank, states, caches, sink, emit)
+            if timing:
+                print(f"layer {i} {time.time() - layer_start:.2f}s",
+                      file=sys.stderr, flush=True)
             if sink:
                 capture[(position, i)] = sink
             if not np.isfinite(partial).all() or not np.isfinite(hidden).all():
@@ -648,17 +771,24 @@ class K3Engine:
         norm = bf16_round_f32(rmsnorm(
             streams, self.tensor("language_model.model.norm.weight"),
             self.eps))
-        lm = self.st.raw("language_model.lm_head.weight")
-        if lm.dtype != np.uint16:
-            raise ValueError("reference lm_head must be BF16")
         best = -np.inf
         best_token = -1
-        for start in range(0, lm.shape[0], chunk):
-            scores = bf16_to_f32(lm[start:start + chunk]) @ norm
+        done = 0
+        rows = self._shape_of("language_model.lm_head.weight")[0]
+        lm_rows = self._shape_of("language_model.lm_head.weight")[0]
+        while done < lm_rows:
+            count = min(chunk, lm_rows - done)
+            buf = self._u8_tile[:count * self.hidden * 2]
+            self._pread_into("language_model.lm_head.weight",
+                             memoryview(buf), done, count)
+            raw = np.frombuffer(memoryview(buf)[:count * self.hidden * 2],
+                                dtype=np.uint16).reshape(count, self.hidden)
+            scores = bf16_to_f32(raw) @ norm
             i = int(np.argmax(scores))
             if float(scores[i]) > best:
                 best = float(scores[i])
-                best_token = start + i
+                best_token = done + i
+            done += count
         return best_token, best
 
 

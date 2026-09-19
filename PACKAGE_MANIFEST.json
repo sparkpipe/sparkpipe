@@ -1,5 +1,5 @@
 {
-  "file_count": 3079,
+  "file_count": 3084,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -9418,8 +9418,8 @@
     },
     {
       "path": "tests/test_t1_reference_k3.py",
-      "sha256": "a04d6041b5c13e5bce29757040472442fa0d43481c50068a052435b0a5224f84",
-      "size_bytes": 31421
+      "sha256": "0207503932d94249ee8b26a8920ca89d4d5204f2fe6441188ba6a3a12cf64578",
+      "size_bytes": 32088
     },
     {
       "path": "tests/test_template_adoption.py",
@@ -12078,8 +12078,8 @@
     },
     {
       "path": "tools/t1_reference_k3.py",
-      "sha256": "9b07c05104d6dc9d3adc6ec5bc3f077706691a553033552837452dd0d0d88a1a",
-      "size_bytes": 31234
+      "sha256": "1d9c2eb7fa801bd57d923fc338173ee4f51f1731b4b60f7b142dd42161a02bec",
+      "size_bytes": 37206
     },
     {
       "path": "tools/t1_reference_laguna.py",
@@ -13192,6 +13192,11 @@
       "size_bytes": 662
     },
     {
+      "path": "tools_local/k3_denorm_probe.py",
+      "sha256": "d9700da8d01e4e288479ebe0054bc33338a5653e5f529039443302c75018f72e",
+      "size_bytes": 1261
+    },
+    {
       "path": "tools_local/k3_deploy_ranks.sh",
       "sha256": "4feb2ec634811a74a7c015c1bc755c004e3e9fec3dc75c5e1b42678710445308",
       "size_bytes": 1292
@@ -13210,6 +13215,11 @@
       "path": "tools_local/k3_deployed_audit.py",
       "sha256": "d29a97217f90da0f78cc2ec270f269d7e604827ec88bd7a6f457268e9837740a",
       "size_bytes": 1261
+    },
+    {
+      "path": "tools_local/k3_dequant_probe.py",
+      "sha256": "c0534627c581a0a6a0d21a39fa02f0ecf03f3e80bbf3a62d642186725da09952",
+      "size_bytes": 1179
     },
     {
       "path": "tools_local/k3_dispatch_compile_gate.sh",
@@ -13242,6 +13252,11 @@
       "size_bytes": 4904
     },
     {
+      "path": "tools_local/k3_layer_probe.py",
+      "sha256": "569f49b1352b4588d549b29379731b256307cbea77e538a72283f3cc0ed1bbdb",
+      "size_bytes": 2374
+    },
+    {
       "path": "tools_local/k3_pack.py",
       "sha256": "e71bf1ec31afd7fba1846a8bc0cf8e2f353929cc43a34c17760decb832b89140",
       "size_bytes": 42270
@@ -13255,6 +13270,11 @@
       "path": "tools_local/k3_rededeploy_stage.sh",
       "sha256": "5c7c7c898ab8939172fff4aea9b3cc4389a803d5d140115fc90328b0503f3a05",
       "size_bytes": 1031
+    },
+    {
+      "path": "tools_local/k3_run_watchdog.sh",
+      "sha256": "f81a321f434819cc7f114795e7da2fdc910a00a830d2b0f365bc3e3c638985a7",
+      "size_bytes": 1147
     },
     {
       "path": "tools_local/k3_runner_compile_gate.sh",
@@ -13280,6 +13300,11 @@
       "path": "tools_local/k3_smoke_rank0.sh",
       "sha256": "67c903c82ff18a97f85fe68990cc81c5f3269207bed05094509a9da1230e1304",
       "size_bytes": 4426
+    },
+    {
+      "path": "tools_local/k3_stage_mirror.py",
+      "sha256": "952fa23bdf7ac464ca0735563673a1199430ad118acb8160865a82ae582bcdfd",
+      "size_bytes": 2578
     },
     {
       "path": "tools_local/k3_stage_runtime.sh",
@@ -15400,5 +15425,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 62842955
+  "total_bytes": 62858133
 }
