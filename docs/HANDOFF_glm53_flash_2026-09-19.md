@@ -253,11 +253,13 @@ spark0 generation), doorbells shipping (WD-SEEN/WD-SHIP flow on rank 0),
 and 16/16 engines up. The partial evidence: MESH-SPIN-TIMEOUT on rank 0
 shows a STABLE subset of peers missing (1,6,10,13,14,15 at one point) —
 a per-link delivery gap, not a protocol-wide wedge. The wedge starves
-the resident sequence slots: each wedged chain never releases its route's
-slot, and after ~128 wedged requests every engine is BUSY-locked until
-restart (the residentd chain-timeout path must release the route's
-sequence slots — verify SparkModelResidentdCompleteContinuationLease
-fires on chain timeout).
+the resident sequence slots via BACKPRESSURE (not a leak — verified): each
+wedged chain holds its slot for the full 30s timeout, so the slot pool
+drains at 30s per wedge while the API submits faster. The chainfail path
+already completes the route and releases the slot
+(SparkGlm5NextCompleteAsync -> FinishRoute -> ReleaseResidentSlotsLocked)
+AND already broadcasts the collective cancel. No slot leak; the wedge
+rate is the whole problem.
 
 NEXT SESSION, in order: (1) why the 6 nodes' RDMA delivery from rank 0
 fails — compare their wired boot for rank 0 vs the current record, and
