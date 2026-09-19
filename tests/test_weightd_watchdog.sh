@@ -126,5 +126,24 @@ want=$(sha256sum < "$HOME/sparkdata/core/bin/sparkpipe_weightd" | cut -c1-16)
 got=$(sha256sum < "$HOME/sparkdata/weightd/sparkpipe_weightd" | cut -c1-16)
 if [ "$got" = "$want" ]; then ok "install_core installs on a 64-char announced sha"; else bad "install_core no-op on 64-char announced sha ($got != $want)"; fi
 
+# --- case 6: a mid-bake weightd (no socket yet, CPU advancing) is never killed ---
+# case 5 installed a text stub over the fake binary; restore it.
+cp "$(command -v python3)" "$HOME/sparkdata/weightd/sparkpipe_weightd"
+# The vortex was the watchdog killing weightd mid-bake: the socket probe
+# always fails during the bake because the server loop does not accept
+# while baking. CPU advancement is the liveness signal.
+"$HOME/sparkdata/weightd/sparkpipe_weightd" -c "
+import time
+t = time.time() + 45
+x = 0
+while time.time() < t:
+    x += 1
+" &
+FAKE_PID=$!
+sleep 1
+SPARK_AGENT_WEIGHTD_GRACE_S=0 ensure_weightd
+if kill -0 "$FAKE_PID" 2>/dev/null; then ok "mid-bake weightd survives (CPU advancing, no socket)"; else bad "mid-bake weightd was killed"; fi
+kill -9 "$FAKE_PID" 2>/dev/null; unset FAKE_PID
+
 echo "test_weightd_watchdog: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

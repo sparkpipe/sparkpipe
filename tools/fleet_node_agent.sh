@@ -480,10 +480,13 @@ ensure_weightd() {
                 kill -9 "$q" 2>/dev/null
             fi
         done
-        local youngest=0 p start_s up_s
+        local youngest=0 youngest_pid=0 p start_s up_s
         for p in $(pgrep -f "sparkpipe_weightd"); do
             start_s=$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null)
-            [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ] && youngest=$start_s
+            if [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ]; then
+                youngest=$start_s
+                youngest_pid=$p
+            fi
         done
         up_s=$(awk '{printf "%d", $1}' /proc/uptime)
         if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt "${SPARK_AGENT_WEIGHTD_GRACE_S:-120}" ]; then
@@ -498,6 +501,20 @@ ensure_weightd() {
             sleep 2
         done
         [ "$probe_ok" = 1 ] && return 0
+        # The socket probe cannot distinguish "wedged" from "mid-bake": the
+        # server loop does not accept while it bakes (synchronous Step), so
+        # a minutes-long bake always fails the probe. A baking weightd burns
+        # CPU; a wedged one does not. utime+stime advancing over the window
+        # means alive — never kill a working daemon.
+        local busy=0 c1 c2
+        c1=$(awk '{print $14+$15}' "/proc/$youngest_pid/stat" 2>/dev/null)
+        sleep 5
+        c2=$(awk '{print $14+$15}' "/proc/$youngest_pid/stat" 2>/dev/null)
+        [ -n "$c1" ] && [ -n "$c2" ] && [ "$c2" -gt "$c1" ] && busy=1
+        if [ "$busy" = 1 ]; then
+            echo "$(date +%T) weightd: unresponsive to probes but CPU advancing (mid-bake); leaving it"
+            return 0
+        fi
         echo "$(date +%T) weightd: stale or unresponsive instance(s); clearing"
         for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
             kill -9 "$p" 2>/dev/null
