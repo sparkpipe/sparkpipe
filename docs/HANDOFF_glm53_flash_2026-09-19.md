@@ -128,3 +128,50 @@ That's the next build.
 4. Fixture case 0 (176 tokens, answer "B") serving on the warm fleet.
 5. Graph re-arm (the 695µs/round eager overhead is what the graph removes),
    then measure against the 50–100µs allreduce target.
+
+## Addendum 6 (2026-09-19 late): mock-suite era + the two fleet-agent root causes
+
+The mock program the operator demanded is on main (PR #1045): link-time
+mock resident client (bounded in-flight queue, EnsureConnected reconnect
+semantics, Kill/Revive, silent in-flight drop on death), batch-engine
+chaos suite (24 checks: rank death mid-decode, kill/revive, EOS,
+concurrent requests), weightd churn suite (130-cycle slot churn,
+SIGKILL-mid-bake vortex, eviction under pressure), and a behavioral
+ibverbs stub + mesh wiring suite (142 checks incl. the two-daemons
+separation case). Watchdog shell suite (7 checks) on lane/fleet-resilience.
+
+Bugs the suites found on arrival: the lane was missing #1034 (the mock
+reproduced INTERNAL_ERROR 17); test_weightd_working_set was dead on every
+branch (compile + two latent map teardown bugs: Destroy never unmapped the
+span, imported chunk handles never released — fixed, suite green, landed
+via #1050); SparkWeightdMeshInit was declared with args but defined (void)
+— the mesh CLI flags were silently ignored (fixed).
+
+Fleet-agent root causes found + fixed + deployed this session:
+1. install_core compared sha16(file) against a full 64-char announced
+   sha — NEVER matched, so weightd never updated once a full-length sha
+   was announced. The fleet ran a stale weightd for days. Fix: announced
+   cut to 16 chars. Test: watchdog case 5.
+2. The watchdog's socket probe cannot distinguish "wedged" from
+   "mid-bake" (the server never accepts during a synchronous load).
+   Bakes > ~135s were killed mid-bake forever (spark0's vortex). Fix:
+   after probes fail, read the youngest weightd's utime+stime twice 5s
+   apart; advancing CPU = alive. Test: watchdog case 6.
+
+spark0's final anatomy: a root-owned foreign weightsd1 (the devs' stable
+daemon) squatted mesh rank 0 + /tmp/weightd-mesh (root-owned .ready our
+agent couldn't unlink), plus a 39GB T1 decoder squeezed memory. Sysadmin
+cleared both. The structural fix: weightd-mesh --mesh-dir /
+SPARK_WEIGHTD_MESH_DIR (PR #1052) + the agent runs the fleet's weightd
+with /tmp/weightd-mesh-fleet (lane/fleet-resilience). DEPLOY ORDER: the
+weightd with --mesh-dir must be in the release BEFORE the new agent
+self-updates, or the flag is unknown and weightd won't start.
+
+Remaining known design gap (observed live, not yet fixed): the weightd
+server loop is synchronous per request — a 512-key boot acquire with
+cold disk->GPU copies occupies the server for minutes; the listen
+backlog (128) fills with waiting engines and fresh connects get EAGAIN.
+The queue-of-the-dead: a client that dies mid-request still has its work
+completed before its EOF is seen. Consider: skip-if-dead peek before
+dispatching a queued request, and/or chunk the big acquires into
+per-Step slices.
