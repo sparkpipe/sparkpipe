@@ -486,7 +486,7 @@ ensure_weightd() {
             [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ] && youngest=$start_s
         done
         up_s=$(awk '{printf "%d", $1}' /proc/uptime)
-        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt 120 ]; then
+        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt "${SPARK_AGENT_WEIGHTD_GRACE_S:-120}" ]; then
             return 0
         fi
         local probe_ok=0 probe_i

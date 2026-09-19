@@ -337,6 +337,8 @@ TEST_NAMES := \
     test_qwen38_math_kernels
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
+SHELL_TESTS := \
+	tests/test_weightd_watchdog.sh
 PYTHON_TESTS := \
 	tests/test_weightd_supervised.py \
 	tests/test_spark_queue.py \
@@ -1285,6 +1287,10 @@ test: $(TEST_BINARIES)
 	for python_test in $(PYTHON_TESTS); do \
 		echo "RUN $$python_test"; \
 		python3 $$python_test; \
+	done; \
+	for shell_test in $(SHELL_TESTS); do \
+		echo "RUN $$shell_test"; \
+		bash $$shell_test; \
 	done
 
 # =====================================================

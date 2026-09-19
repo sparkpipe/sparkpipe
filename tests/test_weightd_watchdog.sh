@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Watchdog unit tests for tools/fleet_node_agent.sh ensure_weightd.
+#
+# The fleet vortex was the watchdog killing weightd mid-bake: a young
+# process still attaching its packs looked "unresponsive" (no socket yet),
+# got kill -9'd, and the crash loop repeated. The fix under test:
+#   1. a process younger than the grace period is never touched
+#   2. a stale process is PROBED (3x) before any kill
+#   3. a live listener on the socket keeps the process alive
+#   4. restarts are backoff-limited (no restart storm)
+#
+# Linux-only (the agent reads /proc/$pid/stat and /proc/uptime). Runs
+# against REAL processes: the fake weightd is a copy of the sleep binary
+# so /proc/<pid>/exe matches the on-disk sha and the update-recycle path
+# stays out of the way.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+AGENT=tools/fleet_node_agent.sh
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "SKIP: watchdog test requires Linux /proc"
+    exit 0
+fi
+
+# Safety: the agent's clear path kills anything matching sparkpipe_weightd
+# system-wide. Never run on a machine with a live fleet weightd. (The
+# bracket in the pattern keeps this very check from matching itself.)
+if pgrep -f "[s]parkpipe_weightd" >/dev/null 2>&1; then
+    echo "SKIP: a sparkpipe_weightd process is already running; refusing to interfere"
+    exit 0
+fi
+
+SB=$(mktemp -d /tmp/watchdog_test.XXXXXX)
+trap 'rm -rf "$SB"; [ -n "${FAKE_PID:-}" ] && kill -9 "$FAKE_PID" 2>/dev/null; [ -n "${LISTENER_PID:-}" ] && kill -9 "$LISTENER_PID" 2>/dev/null; exit 0' EXIT
+PASS=0
+FAIL=0
+ok()  { PASS=$((PASS + 1)); echo "PASS: $1"; }
+bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
+
+export HOME="$SB/home"
+mkdir -p "$HOME/sparkdata/weightd" "$HOME/.ssh" "$SB/bin" /tmp/weightd-mesh
+# The fake weightd is a copy of the python3 binary: /proc/<pid>/exe matches
+# the on-disk sha (no update-recycle), argv[0] is the weightd path (pgrep -f
+# matches), and a multicall-binary copy (busybox/coreutils sleep) would
+# dispatch on argv[0] and die instantly.
+cp "$(command -v python3)" "$HOME/sparkdata/weightd/sparkpipe_weightd"
+chmod +x "$HOME/sparkdata/weightd/sparkpipe_weightd"
+fake_weightd() { "$HOME/sparkdata/weightd/sparkpipe_weightd" -c "import time; time.sleep(300)" & }
+
+# Start attempts are recorded, never executed: the setsid stub hands its
+# args to the PATH-resolved nohup stub, which records and exits.
+printf '#!/bin/sh\necho "nohup $*" >> "%s/starts"\n' "$SB" > "$SB/bin/nohup"
+printf '#!/bin/sh\n"$@"\n' > "$SB/bin/setsid"
+chmod +x "$SB/bin/nohup" "$SB/bin/setsid"
+export PATH="$SB/bin:$PATH"
+: > "$SB/starts"
+
+# Extract the agent's function definitions (everything before main).
+awk '/^echo "\$\$" > "\$PID_FILE"/ {exit} {print}' "$AGENT" > "$SB/extract.sh"
+hostname() { echo spark3; }
+RANK=0
+MESH_INTERFACE=stub0
+MESH_SGID_INDEX=0
+source "$SB/extract.sh" testroot
+
+SOCK=/tmp/spark_weightd.sock
+rm -f "$SOCK"
+
+# --- case 1: a young process inside the grace window is never touched ---
+fake_weightd
+FAKE_PID=$!
+sleep 1
+ensure_weightd
+if kill -0 "$FAKE_PID" 2>/dev/null; then ok "young weightd inside grace survives"; else bad "young weightd was killed inside grace"; fi
+
+# --- case 2: grace expired + no listener -> probed, killed, restarted ---
+# The fake is seconds old; shrink the grace to 0 so it counts as stale.
+SPARK_AGENT_WEIGHTD_GRACE_S=0 ensure_weightd
+sleep 1
+if kill -0 "$FAKE_PID" 2>/dev/null; then bad "stale unresponsive weightd was NOT killed"; else ok "stale unresponsive weightd killed after probes"; fi
+if [ -s "$SB/starts" ]; then ok "replacement weightd start attempted"; else bad "no restart after clearing a stale weightd"; fi
+unset FAKE_PID
+
+# --- case 3: a live listener on the socket keeps an old process alive ---
+fake_weightd
+FAKE_PID=$!
+python3 - <<'PY' &
+import socket
+s = socket.socket(socket.AF_UNIX)
+s.bind("/tmp/spark_weightd.sock")
+s.listen(4)
+import time
+time.sleep(60)
+PY
+LISTENER_PID=$!
+sleep 1
+SPARK_AGENT_WEIGHTD_GRACE_S=0 ensure_weightd
+if kill -0 "$FAKE_PID" 2>/dev/null; then ok "responsive weightd survives past grace"; else bad "responsive weightd was killed"; fi
+kill -9 "$FAKE_PID" 2>/dev/null; unset FAKE_PID
+kill -9 "$LISTENER_PID" 2>/dev/null; unset LISTENER_PID
+rm -f "$SOCK"
+
+# --- case 4: restart backoff suppresses a storm ---
+: > "$SB/starts"
+unset BACKOFF NEXT_OK
+declare -A BACKOFF NEXT_OK
+LAST_ANY_RESTART=0
+ensure_weightd
+ensure_weightd
+starts=$(wc -l < "$SB/starts")
+if [ "$starts" = "1" ]; then ok "second immediate restart suppressed by backoff"; else bad "restart storm: $starts starts for two calls"; fi
+
+echo "test_weightd_watchdog: $PASS passed, $FAIL failed"
+[ "$FAIL" = 0 ]
