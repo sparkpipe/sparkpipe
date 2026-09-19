@@ -1,5 +1,5 @@
 {
-  "file_count": 3078,
+  "file_count": 3079,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -12042,6 +12042,11 @@
       "size_bytes": 6107
     },
     {
+      "path": "tools/t1_reference_chunk_decoder.py",
+      "sha256": "1ec6ea1754b70083248c39e2a63ca49c88e920f5e8ae71b053480167ab360a63",
+      "size_bytes": 10614
+    },
+    {
       "path": "tools/t1_reference_common.py",
       "sha256": "39b496120f42a979f50f712a6b1e34279b1d722537381f3934422707cc429b78",
       "size_bytes": 10619
@@ -12053,8 +12058,8 @@
     },
     {
       "path": "tools/t1_reference_decoder.py",
-      "sha256": "0c3df5fa186214103586ece32a6ce834833fbea82a5043e81ecce50e8467f6d2",
-      "size_bytes": 5692
+      "sha256": "81f29338aa4fc8c74763f038ee7b27d72e06a8a63206b33dfc0092ed9214bd4e",
+      "size_bytes": 5619
     },
     {
       "path": "tools/t1_reference_gemma4.py",
@@ -12073,8 +12078,8 @@
     },
     {
       "path": "tools/t1_reference_hy4.py",
-      "sha256": "747ddaf7134d6113a3828f268d827f6b02a21936d731b0657635c858730d899e",
-      "size_bytes": 22174
+      "sha256": "628f1b9305cff2e19f5401e106a230c38e351029e052affb024c1cf581f9be4f",
+      "size_bytes": 22167
     },
     {
       "path": "tools/t1_reference_laguna.py",
@@ -15395,5 +15400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 62791164
+  "total_bytes": 62801698
 }
