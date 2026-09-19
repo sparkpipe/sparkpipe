@@ -197,3 +197,23 @@ no resets. The 39GB T1 decoder + foreign weightsd on spark0 are gone
 
 API is single-session: repeated probes queue behind the in-flight one —
 during bringup, fire ONE request and wait it out.
+
+## Addendum 8 (2026-09-20): the weightd->engine coupling law
+
+The engine's weightd attachment (the unix socket AND the mesh memfd) is
+scoped to the weightd PROCESS. A weightd restart orphans every attached
+engine: the socket dies and the memfd belongs to the dead process, so the
+engine's chains fail with instant IO_ERROR (spark_weightd.c:2963/3342)
+while the engine looks alive. The agent recycles engines on BINARY sha
+change but NOT on weightd process change — the install_core weightd
+rollout orphaned the whole fleet's engines and every chain failed until
+the engines were swept.
+
+LAW: when weightd restarts, its engines must restart. The agent should
+treat a weightd process change (pid/start-time) as an engine-recycle
+trigger — same class as the driver-sha recycle it already does.
+
+Chain progress signature for the record: cold chain ~508s (stage 3 =
+expert loads), warm chain 380ms/91 rounds/~1ms allreduce per round,
+first-round wedge = CKEY-CELL-TIMEOUT (peers waiting on rank 0's cell),
+instant death = IO_ERROR (stale weightd attachment).
