@@ -50,6 +50,7 @@ def defines_text(layers, experts, topk, shared, hidden=16, vocab=32,
 #define SPARK_LLM_MOE_TOP_K                     {topk}u
 #define SPARK_LLM_MOE_SHARED_EXPERT_COUNT       {shared}u
 #define SPARK_LLM_MOE_INTERMEDIATE_DIMENSION    {inter}u
+#define SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION  {inter}u
 #define SPARK_LLM_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION {routed_hidden}u
 #define SPARK_LLM_MOE_ROUTED_SCALING_FACTOR     1.0f
 #define SPARK_LLM_MOE_NORM_TOPK_PROB            1u
@@ -71,6 +72,7 @@ def config_document(layers, experts, topk, shared, hidden=16, vocab=32,
         "moe_intermediate_size": inter, "routed_expert_hidden_size":
             routed_hidden,
         "routed_scaling_factor": 1.0, "num_attention_heads": 2,
+        "intermediate_size": inter,
         "q_lora_rank": q_lora, "kv_lora_rank": kv_lora,
         "qk_nope_head_dim": nope, "qk_rope_head_dim": rope,
         "v_head_dim": v_head, "hidden_act": "situ",

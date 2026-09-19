@@ -25,7 +25,7 @@ DEFINES_VS_CONFIG = [
     ("MOE_EXPERT_COUNT", "num_experts", "uint"),
     ("MOE_TOP_K", "num_experts_per_token", "uint"),
     ("MOE_INTERMEDIATE_DIMENSION", "moe_intermediate_size", "uint"),
-    ("MOE_ROUTED_EXPERT_HIDDEN_DIMENSION", "routed_expert_hidden_size", "uint"),
+    ("DENSE_INTERMEDIATE_DIMENSION", "intermediate_size", "uint"),
     ("MOE_ROUTED_SCALING_FACTOR", "routed_scaling_factor", "float"),
     ("MOE_SHARED_EXPERT_COUNT", "num_shared_experts", "uint"),
     ("FIRST_ROUTED_LAYER", "first_k_dense_replace", "uint"),
@@ -198,7 +198,8 @@ class K3Engine:
                 "grouped")
         self.qk_scale = np.float32((self.nope + self.rope) ** -0.5)
         if (self.nope, self.rope) == (128, 64):
-            require(abs(MLA_QK_SCALE - float(self.qk_scale)) < 1e-9,
+            require(abs(MLA_QK_SCALE - (self.nope + self.rope) ** -0.5)
+                    < 1e-9,
                     "the pinned MLA qk scale disagrees with "
                     "1/sqrt(nope+rope) at the production geometry")
         lac = config["linear_attn_config"]
@@ -217,6 +218,10 @@ class K3Engine:
         self.shared = int(config["num_shared_experts"])
         self.inter = int(config["moe_intermediate_size"])
         self.routed_hidden = int(config["routed_expert_hidden_size"])
+        if self.hidden == 7168:
+            require(self.routed_hidden == 3584,
+                    "routed_expert_hidden_size disagrees with the pinned "
+                    "3584 at the production geometry")
         self.scaling = float(config["routed_scaling_factor"])
         self.first_routed = int(config["first_k_dense_replace"])
         self.eot = int(config["eos_token_id"][0] if isinstance(

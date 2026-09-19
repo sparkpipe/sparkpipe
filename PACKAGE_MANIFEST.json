@@ -9418,8 +9418,8 @@
     },
     {
       "path": "tests/test_t1_reference_k3.py",
-      "sha256": "aba7b225de599cb46246f755d78ff0e508813addeb02dde886017597147fd131",
-      "size_bytes": 31328
+      "sha256": "a04d6041b5c13e5bce29757040472442fa0d43481c50068a052435b0a5224f84",
+      "size_bytes": 31421
     },
     {
       "path": "tests/test_template_adoption.py",
@@ -12078,8 +12078,8 @@
     },
     {
       "path": "tools/t1_reference_k3.py",
-      "sha256": "82a13d7f1bdb352477352f2c7318991e3da100c09be00937955aa65a7dc426d7",
-      "size_bytes": 31007
+      "sha256": "9b07c05104d6dc9d3adc6ec5bc3f077706691a553033552837452dd0d0d88a1a",
+      "size_bytes": 31234
     },
     {
       "path": "tools/t1_reference_laguna.py",
@@ -15400,5 +15400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 62842635
+  "total_bytes": 62842955
 }
