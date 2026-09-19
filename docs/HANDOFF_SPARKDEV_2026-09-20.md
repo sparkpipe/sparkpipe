@@ -133,3 +133,17 @@ per the operator ("next version").
 - 5090 from the Mac: ssh spec@100.123.97.61. Nodes: ssh spark0..sparkf.
   spark0 has passwordless sudo for infra repair (ptrace_scope blocks gdb
   without it; sudo gdb -p works).
+
+## Final state note (last update before handoff)
+
+The publish-ack backpressure fix IS deployed fleet-wide (the driver carries
+MESH-SHIP-TIMEOUT/MESH-SHIP-CANCEL) and the wedge PERSISTS — so the fleet's
+rounds=0 is NOT the doorbell overrun. The remaining bug is the per-peer
+delivery gap: rank 0's MESH-SPIN-TIMEOUT names a stable-then-shifting subset
+of peers whose slot tails never arrive. The backpressure fix was still worth
+landing (it removes a proven silent-drop). The next session starts at the
+per-peer tail delivery: with a chain stuck, dump the missing peers' slot
+tails from their weightd memfds and compare against rank 0's published tag;
+that splits "tail never shipped" from "tag mismatch". Both the mesh mock
+(rewire/CQERR) and the allreduce fuzz harness are the in-process repro
+harnesses to build that case against.
