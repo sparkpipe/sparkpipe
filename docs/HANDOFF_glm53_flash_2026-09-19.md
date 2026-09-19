@@ -175,3 +175,25 @@ The queue-of-the-dead: a client that dies mid-request still has its work
 completed before its EOF is seen. Consider: skip-if-dead peek before
 dispatching a queued request, and/or chunk the big acquires into
 per-Step slices.
+
+## Addendum 7 (2026-09-20): merged-tree serving validation + the reset cascade
+
+The merged tree (main + lane) serves: chains complete cold in ~508s
+(CHAIN-TIME status=0, stage 3 = 508.5s of cold expert loads, 91 rounds,
+allreduce 59.7s). The 30s "rounds=0" deaths were the API/client giving up
+before the cold chain finished, not a transport break.
+
+Deploy discipline that bit: publishing the merged ENGINES without the
+merged WEIGHTD left the fleet protocol-mismatched (new tail contract vs
+old ship path). Always publish weightd + engines from the same tree.
+
+The reset cascade (cold-era amplifier): any engine-side failure -> API
+pipeline IO_ERROR -> resident client reconnect -> engine session reset
+("client reset generation=N" counted 536) -> in-flight work dropped ->
+next request fails -> repeat. Warmup (one cold 900s-budget pass from
+rank 0's agent) converges the fleet; once warm there are no failures and
+no resets. The 39GB T1 decoder + foreign weightsd on spark0 are gone
+(sysadmin); spark0's zzpin/zznowarm drop-ins removed (fleet-normal).
+
+API is single-session: repeated probes queue behind the in-flight one —
+during bringup, fire ONE request and wait it out.
