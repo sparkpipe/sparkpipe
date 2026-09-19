@@ -12,6 +12,24 @@ MESH_INTERFACE="rocep1s0f1"
 # daemons clobber each other's mesh-<rank>.rec and .ready (spark0 ran
 # exactly that collision for days).
 MESH_DIR="${SPARK_WEIGHTD_MESH_DIR:-/tmp/weightd-mesh-fleet}"
+MESH_DIR_LEGACY="/tmp/weightd-mesh"
+MESH_DIR_CACHE_SHA=""
+MESH_DIR_EFFECTIVE="$MESH_DIR_LEGACY"
+mesh_dir() {
+    # The fleet dir applies only to a weightd that knows --mesh-dir; an
+    # older binary uses the legacy default. Cache per binary sha.
+    local bin="$HOME/sparkdata/weightd/sparkpipe_weightd" sha
+    sha=$(sha16 "$bin")
+    if [ "$sha" != "$MESH_DIR_CACHE_SHA" ]; then
+        MESH_DIR_CACHE_SHA="$sha"
+        if [ -x "$bin" ] && "$bin" --help 2>&1 | grep -q "mesh-dir"; then
+            MESH_DIR_EFFECTIVE="$MESH_DIR"
+        else
+            MESH_DIR_EFFECTIVE="$MESH_DIR_LEGACY"
+        fi
+    fi
+    echo "$MESH_DIR_EFFECTIVE"
+}
 MESH_SGID_INDEX=3
 RANK=""
 _idx=0
@@ -190,7 +208,7 @@ start_root() {
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
     done
     if [ "$(grep -c '"rank_index"' "$rr/model_resident.json" 2>/dev/null)" -gt 1 ] && \
-       [ ! -f "$MESH_DIR/.ready" ]; then
+       [ ! -f "$(mesh_dir)/.ready" ]; then
         echo "$(date +%T) $name: waiting for weightd mesh"
         return 0
     fi
@@ -282,7 +300,7 @@ sync_rendezvous() {
             touch "$rd/.shipped"
         fi
     fi
-    local mesh_dir="$MESH_DIR"
+    local mesh_dir="$(mesh_dir)"
     if [ -d "$mesh_dir" ]; then
         local own_rank
         printf -v own_rank '%x' "$RANK"
@@ -530,12 +548,18 @@ ensure_weightd() {
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
     restart_ok weightd || return 0
-    rm -f "$MESH_DIR"/mesh-*.rec "$MESH_DIR/.ready" 2>/dev/null
+    local mdc; mdc=$(mesh_dir); rm -f "$mdc"/mesh-*.rec "$mdc/.ready" 2>/dev/null
     echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
+    # pass --mesh-dir only to a weightd that knows it (deploy-order safe:
+    # the agent self-updates before the weightd binary can carry the flag)
+    local mesh_dir_arg=""
+    if [ "$(mesh_dir)" = "$MESH_DIR" ]; then
+        mesh_dir_arg="--mesh-dir $MESH_DIR"
+    fi
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
-        --mesh-sgid-index "$MESH_SGID_INDEX" --mesh-dir "$MESH_DIR" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" $mesh_dir_arg \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
@@ -568,6 +592,28 @@ ensure_root() {
             fi
             break
         done
+    }
+    [ "$st" = "down" ] || {
+        # weightd-generation coupling: the engine's attachment (socket +
+        # mesh memfd) is scoped to the weightd process. A weightd restart
+        # orphans every engine — chains then fail forever while the engine
+        # looks alive. An engine older than its weightd is orphaned by
+        # definition; recycle it into a fresh attach.
+        local wp wstart eng_start p2
+        wp=$(pgrep -f "sparkdata/weightd/sparkpipe_weightd" | head -1)
+        wstart=""
+        [ -n "$wp" ] && wstart=$(awk '{print $22}' "/proc/$wp/stat" 2>/dev/null)
+        if [ -n "$wstart" ]; then
+            for p2 in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+                [ "$(readlink /proc/$p2/cwd 2>/dev/null)" = "$HOME/sparkdata/$name" ] || continue
+                eng_start=$(awk '{print $22}' "/proc/$p2/stat" 2>/dev/null)
+                if [ -n "$eng_start" ] && [ "$eng_start" -lt "$wstart" ]; then
+                    echo "$(date +%T) $name: engine predates weightd restart; recycling into a fresh attach"
+                    st="down"
+                fi
+                break
+            done
+        fi
     }
     [ "$st" = "down" ] || {
         local age_p

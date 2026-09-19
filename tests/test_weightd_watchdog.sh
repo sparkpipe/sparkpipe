@@ -56,7 +56,13 @@ export PATH="$SB/bin:$PATH"
 : > "$SB/starts"
 
 # Extract the agent's function definitions (everything before main).
-awk '/^echo "\$\$" > "\$PID_FILE"/ {exit} {print}' "$AGENT" > "$SB/extract.sh"
+# keep every function definition, skip the top-level statements
+# (the agent interleaves: ensure_root is defined after the banner block)
+awk '/^echo "\$\$" > "\$PID_FILE"/ {skip=1; next}
+     skip==1 && /^ensure_root\(\)/ {skip=0}
+     skip==1 {next}
+     /^while true; do/ {exit}
+     {print}' "$AGENT" > "$SB/extract.sh"
 hostname() { echo spark3; }
 RANK=0
 MESH_INTERFACE=stub0
@@ -144,6 +150,35 @@ sleep 1
 SPARK_AGENT_WEIGHTD_GRACE_S=0 ensure_weightd
 if kill -0 "$FAKE_PID" 2>/dev/null; then ok "mid-bake weightd survives (CPU advancing, no socket)"; else bad "mid-bake weightd was killed"; fi
 kill -9 "$FAKE_PID" 2>/dev/null; unset FAKE_PID
+
+# --- case 7: a weightd restart recycles the engine attached to it ---
+# The engine's attachment (socket + mesh memfd) is scoped to the weightd
+# process; a weightd restart orphans every engine. The agent must detect
+# an engine older than its weightd and recycle it.
+mkdir -p "$HOME/sparkdata/testroot/bin" "$HOME/sparkdata/testroot/stages/stage_000"
+cp "$(command -v python3)" "$HOME/sparkdata/testroot/bin/sparkpipe_model_residentd"
+chmod +x "$HOME/sparkdata/testroot/bin/sparkpipe_model_residentd"
+echo "model_residentd ready rank=0" > "$HOME/sparkdata/testroot/residentd.log"
+cp "$(command -v python3)" "$HOME/sparkdata/weightd/sparkpipe_weightd"
+# fake engine, cwd = the runtime root (root_state keys on cwd)
+( cd "$HOME/sparkdata/testroot" && "$HOME/sparkdata/testroot/bin/sparkpipe_model_residentd" -c "import time; time.sleep(300)" ) &
+ENG=$!
+# fake weightd
+"$HOME/sparkdata/weightd/sparkpipe_weightd" -c "import time; time.sleep(300)" &
+FAKE_PID=$!
+sleep 1
+ensure_root testroot || true
+if kill -0 "$ENG" 2>/dev/null; then ok "engine stable while weightd is stable"; else bad "engine killed while weightd stable"; fi
+# restart the weightd: kill it, start a new one (younger)
+kill -9 "$FAKE_PID" 2>/dev/null
+"$HOME/sparkdata/weightd/sparkpipe_weightd" -c "import time; time.sleep(300)" &
+FAKE_PID=$!
+sleep 1
+ensure_root testroot || true
+sleep 1
+if kill -0 "$ENG" 2>/dev/null; then bad "engine NOT recycled after a weightd restart"; else ok "weightd restart recycles the orphaned engine"; fi
+kill -9 "$FAKE_PID" 2>/dev/null; unset FAKE_PID
+unset ENG
 
 echo "test_weightd_watchdog: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
