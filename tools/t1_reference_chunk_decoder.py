@@ -1,13 +1,17 @@
 import argparse
+import hashlib
 import importlib
 import json
 import os
+import platform
 import sys
+import time
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from t1_reference_common import f32_to_bf16_u16, parse_llm_defines, write_fixture
+from t1_reference_common import (f32_to_bf16_u16, parse_llm_defines,
+                                 sha256_file, write_fixture, write_manifest)
 
 
 def load_engine(family, checkpoint, header):
@@ -169,6 +173,7 @@ def main():
     out_dir = os.path.join(arguments.output, arguments.family)
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(arguments.state_dir, exist_ok=True)
+    fixtures = {}
     for spec in prompts["prompts"]:
         name = spec["name"]
         prompt_ids = [int(t) for t in spec["prompt_token_ids"]]
@@ -194,8 +199,45 @@ def main():
         arrays["generated_token_ids"] = np.array(generated, dtype=np.int32)
         fixture_path = os.path.join(out_dir, f"{name}.t1r")
         write_fixture(fixture_path, arrays)
+        fixtures[f"{name}.t1r"] = {
+            "sha256": sha256_file(fixture_path),
+            "bytes": os.path.getsize(fixture_path)}
         print(json.dumps({"prompt": name, "fixture": fixture_path,
                           "generated": generated}), flush=True)
+    complete = all(f"{spec['name']}.t1r" in fixtures
+                   for spec in prompts["prompts"])
+    if complete:
+        index_path = os.path.join(arguments.checkpoint,
+                                  "model.safetensors.index.json")
+        document = {
+            "family": arguments.family,
+            "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                           time.gmtime()),
+            "host": os.uname().nodename,
+            "threading_env": {k: os.environ.get(k) for k in
+                              ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                               "MKL_NUM_THREADS")},
+            "generator": "t1_reference_chunk_decoder.py",
+            "numpy_version": np.__version__,
+            "python_version": platform.python_version(),
+            "checkpoint": {
+                "path": os.path.abspath(arguments.checkpoint),
+                "config_sha256": sha256_file(
+                    os.path.join(arguments.checkpoint, "config.json")),
+                "index_sha256": sha256_file(index_path)
+                if os.path.exists(index_path) else None,
+            },
+            "llm_defines_sha256": hashlib.sha256(
+                open(arguments.header, "rb").read()).hexdigest(),
+            "prompts_sha256": hashlib.sha256(
+                open(arguments.prompts, "rb").read()).hexdigest(),
+            "defines_config_mismatches": engine.mismatches,
+            "fixtures": fixtures,
+        }
+        write_manifest(os.path.join(out_dir, "MANIFEST.json"), document)
+        print(json.dumps({"manifest": os.path.join(out_dir,
+                                                   "MANIFEST.json")}),
+              flush=True)
     return 0
 
 
