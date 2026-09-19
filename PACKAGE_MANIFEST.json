@@ -1,5 +1,5 @@
 {
-  "file_count": 3077,
+  "file_count": 3079,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -9417,6 +9417,11 @@
       "size_bytes": 19599
     },
     {
+      "path": "tests/test_t1_reference_k3.py",
+      "sha256": "a04d6041b5c13e5bce29757040472442fa0d43481c50068a052435b0a5224f84",
+      "size_bytes": 31421
+    },
+    {
       "path": "tests/test_template_adoption.py",
       "sha256": "d36f2ec6ffc1cdfc4ae8822f71c98c84ce9d61a6901a79376e907c395a94ae54",
       "size_bytes": 4957
@@ -12070,6 +12075,11 @@
       "path": "tools/t1_reference_hy4.py",
       "sha256": "3ec22d516daee484e67b8683376f08ee49b784756ccc57ed29c793a963eeefdc",
       "size_bytes": 18873
+    },
+    {
+      "path": "tools/t1_reference_k3.py",
+      "sha256": "9b07c05104d6dc9d3adc6ec5bc3f077706691a553033552837452dd0d0d88a1a",
+      "size_bytes": 31234
     },
     {
       "path": "tools/t1_reference_laguna.py",
@@ -15390,5 +15400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 62780300
+  "total_bytes": 62842955
 }
