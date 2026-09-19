@@ -7,6 +7,11 @@ HUB="${2:-sparkf}"
 HOST=$(hostname)
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 MESH_INTERFACE="rocep1s0f1"
+# The fleet's weightd and the driver developers' standalone weightsd share
+# the hosts; the record exchange dir must be per-deployment or the two
+# daemons clobber each other's mesh-<rank>.rec and .ready (spark0 ran
+# exactly that collision for days).
+MESH_DIR="${SPARK_WEIGHTD_MESH_DIR:-/tmp/weightd-mesh-fleet}"
 MESH_SGID_INDEX=3
 RANK=""
 _idx=0
@@ -185,7 +190,7 @@ start_root() {
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
     done
     if [ "$(grep -c '"rank_index"' "$rr/model_resident.json" 2>/dev/null)" -gt 1 ] && \
-       [ ! -f /tmp/weightd-mesh/.ready ]; then
+       [ ! -f "$MESH_DIR/.ready" ]; then
         echo "$(date +%T) $name: waiting for weightd mesh"
         return 0
     fi
@@ -277,7 +282,7 @@ sync_rendezvous() {
             touch "$rd/.shipped"
         fi
     fi
-    local mesh_dir="/tmp/weightd-mesh"
+    local mesh_dir="$MESH_DIR"
     if [ -d "$mesh_dir" ]; then
         local own_rank
         printf -v own_rank '%x' "$RANK"
@@ -525,12 +530,12 @@ ensure_weightd() {
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
     restart_ok weightd || return 0
-    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
+    rm -f "$MESH_DIR"/mesh-*.rec "$MESH_DIR/.ready" 2>/dev/null
     echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
-        --mesh-sgid-index "$MESH_SGID_INDEX" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" --mesh-dir "$MESH_DIR" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
