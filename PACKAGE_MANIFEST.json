@@ -1,5 +1,5 @@
 {
-  "file_count": 3077,
+  "file_count": 3078,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -9413,8 +9413,8 @@
     },
     {
       "path": "tests/test_t1_reference_hy4.py",
-      "sha256": "26b17fed66e09877856f88ff723b6acd11d2c5adbb46be3cf7eda79c16bd216a",
-      "size_bytes": 19599
+      "sha256": "eb085e416da5648935ab8ab42af10d23f4c8ba788edea825419044d05873d5de",
+      "size_bytes": 22450
     },
     {
       "path": "tests/test_template_adoption.py",
@@ -10902,6 +10902,11 @@
       "size_bytes": 400
     },
     {
+      "path": "tools/hy4_sink_probe.py",
+      "sha256": "9f5d8a829cee077ce75f58999e0d58f2e0fcd571cd832491dbf7cfeaacb5a236",
+      "size_bytes": 4405
+    },
+    {
       "path": "tools/hy4_stub_harness.c",
       "sha256": "957faeb5a3924a734d359304f1dba4fdef8c10b4e188275feb79273109d1ed81",
       "size_bytes": 1825
@@ -12038,8 +12043,8 @@
     },
     {
       "path": "tools/t1_reference_common.py",
-      "sha256": "ecd9f4bf73a7e438fc930711ed0e0cdbb22f5ca631327150ef75940929c283d1",
-      "size_bytes": 10312
+      "sha256": "39b496120f42a979f50f712a6b1e34279b1d722537381f3934422707cc429b78",
+      "size_bytes": 10619
     },
     {
       "path": "tools/t1_reference_compare.py",
@@ -12068,8 +12073,8 @@
     },
     {
       "path": "tools/t1_reference_hy4.py",
-      "sha256": "3ec22d516daee484e67b8683376f08ee49b784756ccc57ed29c793a963eeefdc",
-      "size_bytes": 18873
+      "sha256": "747ddaf7134d6113a3828f268d827f6b02a21936d731b0657635c858730d899e",
+      "size_bytes": 22174
     },
     {
       "path": "tools/t1_reference_laguna.py",
@@ -15390,5 +15395,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 62780300
+  "total_bytes": 62791164
 }
