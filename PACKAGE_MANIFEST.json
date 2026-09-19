@@ -14448,8 +14448,8 @@
     },
     {
       "path": "qualification/pack_sweep/2026-09-19/emission-wave.md",
-      "sha256": "7caeac8ee1ff5d031025be3abbf5da2a0ecf7f2a106ebb49fae3817274e6395d",
-      "size_bytes": 11354
+      "sha256": "3a13c81f7c6602c1647940aa8e9a6646629154c44a34c6f66176f094ff4927ad",
+      "size_bytes": 13970
     },
     {
       "path": "qualification/pack_sweep/2026-09-19/matrix.md",
@@ -23020,5 +23020,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 70111459
+  "total_bytes": 70114075
 }

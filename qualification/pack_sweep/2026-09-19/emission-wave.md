@@ -205,7 +205,46 @@ are not wired into the plan. NOT PLACED (123 GiB + 93 GiB warm sources).
 
 ## Placement map (measured after placement)
 
-Filled from the per-node verify sweep — see the matrix below.
+Fleet sweep after placement: every listed pack's sha256 matches its placed
+`.sha256` sidecar and is chattr-locked (`locked=1`). `—` = not this node's
+rank. IN-FLIGHT = spark7 only: its node-local builds ran at ~100-400 kB/s
+against a cluster-wide warm-read degradation (measured `dd` from warm on
+sparkc at 00:50 KST: 371 kB/s), so the last four artifacts (gemma rank7
+verify, lingfin rank7, its MTP sidecar copy, pp4 rank07) were re-queued as
+a detached relay on sparkc (build → verify → ship → place → lock → purge,
+`sparkc:~/relay/wave1/ship_spark7.sh`) and land in the follow-up commit of
+this PR. Every other cell is complete and verified.
+
+| arm | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | a | b | c | d | e | f |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| gemma4_31b.bf16.tp16 (rank=node) | S | S | S | S | S | S | S | IN-FLIGHT | S | S | S | S | S | S | S | S |
+| lingfin.bf16.tp16 (rank=node) | S | S | S | S | S | S | S | IN-FLIGHT | S | S | S | S | S | S | S | S |
+| lingfin MTP sidecar (warm file copy) | S | S | S | S | S | S | S | IN-FLIGHT | S | S | S | S | S | S | S | S |
+| qwen27b.fp8.tp4 (rank r, +replica r+8) | S(r0) | S(r1) | S(r2) | S(r3) | — | — | — | — | S(r0r) | S(r1r) | S(r2r) | S(r3r) | — | — | S(r2,+12 extra) | — |
+| qwen27b.fp8.tp4pp4 (world rank = node) | S | S | S | S | S | S | S | IN-FLIGHT | S | S | S | S | S | S | S | S |
+
+Determinism cross-check: the tp4 rank2 pack sha `a1491177517eb085…` is
+byte-identical on spark2 and sparka and the relay-independent copy on
+sparke — same rank, same bytes, three nodes.
+
+qwen tp4 cells were verified with a full-pack sha + header re-check
+(`mtp=0, tpdeg=4, tprank=r` byte-asserted + sha256 == sidecar) on sparks
+0, 1, 2, 3, 9, a, b, e: PASS. qwen tp4pp4 header/sha re-checks on sparks
+0, 1, 2, 4, 5, 9, a, b, c, d, f: PASS (non-head stages header
+`mtp=0` via the strip NORMALIZE path; head stages rank12/rank13/rank14
+compact-stripped `mtp=0`, tp fields intact).
+
+Family-tool placed-node verifies (2-3 nodes per arm):
+- gemma4 `--verify-existing` on PLACED packs: spark0 rank0, spark1 rank1,
+  sparkf rankf — `tensors=723 proof=True` each (the relayed rank7 pack is
+  `proof=True` verified on sparkc before shipping).
+- ling `ling_verify_pack --pack-dir …/lingfin.bf16.tp16/packs` on spark0
+  (rank0), spark4 (rank4), spark8 (rank8) — PASS with receipt census
+  closure each.
+- qwen: the packer's `--verify` intentionally rejects MTP-free packs
+  (`geometry field mtp_layer_count: 0, expected 1` — the pre-strip verify
+  PASSes and the strip is proven by the tool's own fail-closed tail check
+  + the placed header/sha re-checks above).
 
 ## Disk impact
 
