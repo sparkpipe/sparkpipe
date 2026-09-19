@@ -580,8 +580,12 @@ warmup_hook() {
     gen=$(root_pid glm53flash.fp8.tp16 2>/dev/null)
     [ -n "$gen" ] || return 0
     now=$(date +%s)
-    if [ -s /tmp/fleet-warmup.pid ] && kill -0 "$(cat /tmp/fleet-warmup.pid 2>/dev/null)" 2>/dev/null; then
-        return 0
+    if [ -s /tmp/fleet-warmup.pid ]; then
+        local wpid; wpid=$(cat /tmp/fleet-warmup.pid 2>/dev/null)
+        if [ -n "$wpid" ] && grep -q "v1/completions" /proc/$wpid/cmdline 2>/dev/null; then
+            return 0
+        fi
+        rm -f /tmp/fleet-warmup.pid
     fi
     if [ "$gen" = "$LAST_WARM_GEN" ]; then
         grep -q '"tokens"' /tmp/fleet-warmup.out 2>/dev/null && return 0
