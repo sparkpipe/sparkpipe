@@ -263,3 +263,28 @@ NEXT SESSION, in order: (1) why the 6 nodes' RDMA delivery from rank 0
 fails — compare their wired boot for rank 0 vs the current record, and
 check their CQERR counters; (2) the route slot release on chain timeout;
 (3) the chaos fuzz run (tests/chaos_fleet.sh) once the fleet serves.
+
+## Addendum 10 (2026-09-20): the wall is the allreduce round itself
+
+After every fix in addenda 6-9, the residual is clean to state: a chain
+runs, advances through the model's layers (CHAIN lines progress through
+stages/layers), but the TP16 allreduce never completes a single round
+(rounds=0 at the 30s timeout). The layer compute is fine; the collective
+combine never lands. Converged epochs (all ranks adopt the same),
+converged mesh records (the republish fix healed the stale generation),
+doorbells shipping (WD-SEEN/WD-SHIP on rank 0), 16/16 engines up.
+
+The open question for the next session, in the sharpest form I can leave
+it: rank 0's MESH-SPIN-TIMEOUT named a STABLE subset of peers missing
+(1,6,10,13,14,15) — so per-peer delivery of the payload/tail (not the
+doorbell) is broken for a fixed set. The publish ships; the payload or
+the tail doesn't land on those peers. Split it: dump the receiving
+peers' slot tails from the memfd during a stuck round and compare
+against rank 0's published tag — if the tail is absent, the ship's tail
+write is broken per-link; if present-but-mismatched, the tag contract
+diverges per rank. The mesh doorbell mock and the collective mock are
+the harnesses to build that repro in-process.
+
+Fleet state at close: 16/16 engines, all on the merged+fixed build
+(alignment restored, cancel-on-reset, republish-on-overwrite), all
+weightds current, agents with generation coupling + order-safe mesh-dir.
