@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import t1_reference_hy4 as engine_module  # noqa: E402
+from t1_reference_common import bf16_round_f32  # noqa: E402
 from t1_reference_common import f32_to_bf16_u16  # noqa: E402
 from t1_reference_common import parse_llm_defines  # noqa: E402
 
@@ -42,6 +43,12 @@ def fp8_encode(values):
         a = abs(float(v))
         if a == 0.0:
             continue
+        if a < 2.0 ** -6:
+            m = int(round(a * 512.0))
+            if m > 7:
+                m = 7
+            out[i] = sign | m
+            continue
         e = 0
         while a >= 2.0 and e < 15:
             a /= 2.0
@@ -49,16 +56,10 @@ def fp8_encode(values):
         while a < 1.0 and e > -6:
             a *= 2.0
             e -= 1
-        if e < -6:
-            out[i] = sign
-            continue
         m = int(round((a - 1.0) * 8.0))
         if m > 7:
             m = 7
-        if e > 0:
-            out[i] = sign | ((e + 7) << 3) | m
-        else:
-            out[i] = sign | (m >> 1)
+        out[i] = sign | ((e + 7) << 3) | m
     return out
 
 
@@ -83,12 +84,11 @@ def write_safetensors(path, arrays):
 def quantized(rows, cols, seed):
     rng = np.random.default_rng(seed)
     values = rng.standard_normal((rows, cols)).astype(np.float32)
-    scales = np.abs(values.reshape(rows, cols // 32, 32)).max(
-        axis=2, keepdims=True)
-    scales = np.maximum(scales, 1e-6)
-    scales = np.ceil(np.log2(scales)).astype(np.uint8)
-    normalised = values.reshape(rows, cols // 32, 32) / np.exp2(
-        scales.astype(np.float32) - 127.0)
+    groups = values.reshape(rows, cols // 32, 32)
+    absmax = np.maximum(np.abs(groups).max(axis=2, keepdims=True), 1e-6)
+    exponent = np.ceil(np.log2(absmax)).astype(np.int32)
+    scales = (exponent + 127).astype(np.uint8)
+    normalised = groups / np.exp2(exponent.astype(np.float32))
     payload = fp8_encode(normalised.reshape(rows, cols)).reshape(rows, cols)
     return payload, scales.reshape(rows, cols // 32), values
 
@@ -162,7 +162,7 @@ def synthetic_checkpoint(root):
              .astype(np.float16)).view(np.uint8).view(np.uint16)
             .reshape(HEADS * V_DIM, HIDDEN))
         put(p + "self_attn.learnable_sink_param", "F32",
-            rng.standard_normal(HEADS).astype(np.float32))
+            ((1.0 + il) * rng.standard_normal(HEADS)).astype(np.float32))
         payload, scale, _ = quantized(HIDDEN, HEADS * V_DIM, 500 + il)
         put(p + "self_attn.o_proj.weight", "F8_E4M3", payload)
         put(p + "self_attn.o_proj.weight_scale", "U8", scale)
@@ -375,7 +375,7 @@ def test_sink_softmax():
            "sink participates as its own logit")
 
 
-def test_rope_halves():
+def test_rope_interleaved():
     freqs = np.power(np.float32(10000.0),
                      -np.arange(0, 8, 2, dtype=np.float32) / 8)
     value = np.array([[1.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 2.0]],
@@ -391,12 +391,69 @@ def test_rope_halves():
     eng._rope_(value, 3)
     angle = 3.0 * float(freqs[0])
     expect(abs(value[0, 0] - (np.cos(angle) * 1.0 - np.sin(angle) * 0.0))
-           < 1e-6, "half pairing rotates (v[d], v[d+half]) with freq d")
-    expect(abs(value[0, 4] - (np.sin(angle) * 1.0 + np.cos(angle) * 0.0))
-           < 1e-6, "second half carries the sine term")
-    angle2 = 3.0 * float(freqs[2])
+           < 1e-6, "consecutive pair (v0, v1) rotates with the first frequency")
+    expect(abs(value[0, 1] - (np.sin(angle) * 1.0 + np.cos(angle) * 0.0))
+           < 1e-6, "odd element carries the sine term")
+    angle2 = 3.0 * float(freqs[1])
     expect(abs(value[0, 2] - (np.cos(angle2) * 2.0 - np.sin(angle2) * 0.0))
-           < 1e-6, "third pair carries the third frequency")
+           < 1e-6, "consecutive pair (v2, v3) carries the second frequency")
+    angle3 = 3.0 * float(freqs[2])
+    expect(abs(value[0, 4] - (np.cos(angle3) * 0.0 - np.sin(angle3) * 1.0))
+           < 1e-6, "pair (v4, v5) uses freqs[2] on the tail half")
+
+
+def test_weight_cache_lru(tmp):
+    config = synthetic_checkpoint(tmp)
+    from t1_reference_common import Safetensors
+    st = Safetensors(tmp)
+    st.cache_limit = 1
+    embed = st.raw("model.embed_tokens.weight")
+    expect(embed.shape == (VOCAB, HIDDEN), "embed shape")
+    head = st.raw("lm_head.weight")
+    expect(len(st.cache) == 1, "cache bounded at the byte limit")
+    expect(st.cache_bytes <= head.nbytes, "cache accounting tracks planes")
+    again = st.raw("model.embed_tokens.weight")
+    expect(again.shape == (VOCAB, HIDDEN),
+           "evicted plane re-reads on demand")
+    expect(st.raw("lm_head.weight").shape == (VOCAB, HIDDEN),
+           "hot plane stays addressable across re-reads")
+
+
+def test_dequant_parallel_matches_serial(tmp):
+    config = synthetic_checkpoint(tmp)
+    header_path = os.path.join(tmp, "llm_defines.h")
+    with open(header_path, "w") as fh:
+        fh.write(DEFINES)
+    defines = parse_llm_defines(header_path)
+    engine_module.PARALLEL_MIN_ELEMENTS = 10 ** 9
+    serial = engine_module.Hy4Engine(tmp, defines, config).decode_step(
+        7, 0, {}, {}, {})
+    engine_module.PARALLEL_MIN_ELEMENTS = 1
+    parallel = engine_module.Hy4Engine(tmp, defines, config).decode_step(
+        7, 0, {}, {}, {})
+    engine_module.shutdown_worker_pool()
+    engine_module.PARALLEL_MIN_ELEMENTS = 1000000
+    expect(np.array_equal(serial, parallel),
+           "parallel dequant path is bit-identical to serial")
+    expect(np.isfinite(parallel).all(), "parallel path stays finite")
+
+
+def test_per_layer_sinks(tmp):
+    config = synthetic_checkpoint(tmp)
+    header_path = os.path.join(tmp, "llm_defines.h")
+    with open(header_path, "w") as fh:
+        fh.write(DEFINES)
+    defines = parse_llm_defines(header_path)
+    eng = engine_module.Hy4Engine(tmp, defines, config)
+    expect(eng.sinks.shape == (LAYERS, HEADS), "one sink row per layer")
+    expect(not np.array_equal(eng.sinks[0], eng.sinks[1]),
+           "synthetic sinks differ between layers")
+    reference = eng.decode_step(3, 0, {}, {}, {})
+    eng.sinks = np.tile(eng.sinks[0], (LAYERS, 1))
+    degraded = eng.decode_step(3, 0, {}, {}, {})
+    expect(not np.allclose(reference, degraded),
+           "layer-1 attention must consume the layer-1 sink row")
+    expect(np.isfinite(degraded).all(), "degraded run stays finite")
 
 
 def test_engine_end_to_end(tmp):
@@ -412,6 +469,8 @@ def test_engine_end_to_end(tmp):
     streams = eng.decode_step(3, 0, states, caches, capture)
     expect(streams.shape == (HC, HIDDEN), "stream block shape")
     expect(np.isfinite(streams).all(), "streams finite")
+    expect(np.array_equal(bf16_round_f32(streams), streams),
+           "hc stream state is bf16-resident like the vendor reference")
     expect((0, 1) in capture, "routed layer captured")
     ids, weights = capture[(0, 1)]
     expect(ids.shape == (TOP_K,), "route ids shape")
@@ -448,7 +507,9 @@ def main():
     test_cross_check()
     test_routing_selection_ties()
     test_sink_softmax()
-    test_rope_halves()
+    test_rope_interleaved()
+    with tempfile.TemporaryDirectory() as tmp:
+        test_per_layer_sinks(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         test_engine_end_to_end(tmp)
     print("test_t1_reference_hy4: ALL PASS")

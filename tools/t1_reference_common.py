@@ -4,6 +4,7 @@ import os
 import re
 import struct
 import zlib
+from collections import OrderedDict
 
 import numpy as np
 
@@ -88,7 +89,7 @@ class Safetensors:
             self.map = {}
         self.headers = {}
         self.fds = {}
-        self.cache = {}
+        self.cache = OrderedDict()
         self.cache_bytes = 0
         self.cache_limit = int(os.environ.get("T1_REF_CACHE_BYTES",
                                               80 * (1 << 30)))
@@ -120,6 +121,7 @@ class Safetensors:
 
     def raw(self, name):
         if name in self.cache:
+            self.cache.move_to_end(name)
             return self.cache[name]
         fname, e, base = self._entry(name)
         fh = self.fds[fname]
@@ -127,6 +129,10 @@ class Safetensors:
         data = fh.read(e["data_offsets"][1] - e["data_offsets"][0])
         array = np.frombuffer(data, dtype=self._np(e["dtype"])).reshape(e["shape"])
         self.cache[name] = array
+        self.cache_bytes += array.nbytes
+        while self.cache_bytes > self.cache_limit and len(self.cache) > 1:
+            _, evicted = self.cache.popitem(last=False)
+            self.cache_bytes -= evicted.nbytes
         return array
 
     def raw_rows(self, name, first, count):

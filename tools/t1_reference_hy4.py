@@ -1,12 +1,58 @@
+import atexit
+import concurrent.futures
+import multiprocessing
+import os
+
 import numpy as np
 
-from t1_reference_common import (Safetensors, bf16_to_f32, define_float,
-                                 define_uint, rmsnorm, sigmoid)
+from t1_reference_common import (Safetensors, bf16_round_f32, bf16_to_f32,
+                                 define_float, define_uint, rmsnorm, sigmoid)
 
 PREFIX = "model.layers."
 FP8_GROUP = 32
 WSUM_FLOOR = 6.103515625e-5
 MAX_INDEXER_CONTEXT = 2048
+WORKER_COUNT = max(1, int(os.environ.get("HY4_DEQUANT_WORKERS", "8")))
+PARALLEL_MIN_ELEMENTS = max(
+    1, int(os.environ.get("HY4_DEQUANT_MIN_ELEMENTS", "1000000")))
+DEQUANT_CHUNK_ELEMENTS = 8 << 20
+
+_POOL = None
+_POOL_SHUTDOWN = False
+
+
+def _plane_dot(plane, vector):
+    return (plane * vector[None, :]).sum(axis=1)
+
+
+def _dequant_dot_task(payload, scale, vector):
+    return _plane_dot(dequant_fp8(payload, scale), vector)
+
+
+def _dequant_task(payload, scale):
+    return dequant_fp8(payload, scale)
+
+
+def shutdown_worker_pool():
+    global _POOL, _POOL_SHUTDOWN
+    if _POOL is not None:
+        _POOL.shutdown(wait=True)
+        _POOL = None
+    _POOL_SHUTDOWN = True
+
+
+atexit.register(shutdown_worker_pool)
+
+
+def worker_pool():
+    global _POOL, _POOL_SHUTDOWN
+    if _POOL_SHUTDOWN:
+        raise RuntimeError("worker pool was shut down")
+    if WORKER_COUNT > 1 and _POOL is None:
+        context = multiprocessing.get_context("fork")
+        _POOL = concurrent.futures.ProcessPoolExecutor(
+            max_workers=WORKER_COUNT, mp_context=context)
+    return _POOL
 
 _E4M3 = np.zeros(256, dtype=np.float32)
 for _i in range(256):
@@ -145,14 +191,16 @@ class Hy4Engine:
         self.dense_inter = define_uint(defines, "DENSE_INTERMEDIATE_DIMENSION")
         self.swiglu_limit = define_float(defines, "SWIGLU_LIMIT")
         self.eot = define_uint(defines, "END_OF_TEXT_TOKEN_ID")
-        self.cache = {}
         self.kq_scale = 1.0 / np.sqrt(np.float32(self.qk_dim))
         self.rope_theta = define_float(defines, "MLA_ROPE_THETA")
         self.rope_freqs = np.power(
             np.float32(self.rope_theta),
             -np.arange(0, self.rot, 2, dtype=np.float32) / self.rot)
-        self.sinks = self._plane_f32("model.layers.0.self_attn."
-                                     "learnable_sink_param", (self.heads,))
+        self.sinks = np.stack([
+            self._plane_f32(f"{PREFIX}{il}.self_attn.learnable_sink_param",
+                            (self.heads,))
+            for il in range(self.layers)])
+        self.attention_trace = None
         self._geometry_checks()
 
     def _plane_f32(self, name, shape):
@@ -199,9 +247,7 @@ class Hy4Engine:
                 f"{self.hc} x hc*hidden {self.hc * self.hidden}")
 
     def _weight(self, name):
-        if name not in self.cache:
-            self.cache[name] = self.st.raw(name)
-        return self.cache[name]
+        return self.st.raw(name)
 
     def _plane_bf16(self, name):
         raw = self._weight(name)
@@ -209,35 +255,62 @@ class Hy4Engine:
             raise ValueError(f"{name} must be BF16, got {raw.dtype}")
         return bf16_to_f32(raw)
 
+    def _dequant_gemm(self, payload, scale, vector):
+        if payload.shape[0] == 0 or payload.shape[1] % FP8_GROUP:
+            raise ValueError("fp8 plane rows empty or columns misgrouped")
+        pool = worker_pool()
+        if WORKER_COUNT <= 1 or payload.size < PARALLEL_MIN_ELEMENTS \
+                or pool is None:
+            return _plane_dot(dequant_fp8(payload, scale), vector)
+        cols = payload.shape[1]
+        chunk = max(1, DEQUANT_CHUNK_ELEMENTS // cols)
+        futures = []
+        for start in range(0, payload.shape[0], chunk):
+            stop = min(start + chunk, payload.shape[0])
+            futures.append(pool.submit(_dequant_dot_task,
+                                       payload[start:stop],
+                                       scale[start:stop], vector))
+        return np.concatenate([future.result() for future in futures])
+
+    def _dequant_plane(self, payload, scale):
+        if payload.size < PARALLEL_MIN_ELEMENTS or WORKER_COUNT <= 1:
+            return dequant_fp8(payload, scale)
+        pool = worker_pool()
+        if pool is None:
+            return dequant_fp8(payload, scale)
+        cols = payload.shape[-1]
+        rows = payload.reshape(-1, cols)
+        groups = scale.reshape(-1, cols // FP8_GROUP)
+        chunk = max(1, DEQUANT_CHUNK_ELEMENTS // cols)
+        futures = []
+        for start in range(0, rows.shape[0], chunk):
+            stop = min(start + chunk, rows.shape[0])
+            futures.append(pool.submit(_dequant_task, rows[start:stop],
+                                       groups[start:stop]))
+        return np.concatenate([future.result()
+                               for future in futures]).reshape(payload.shape)
+
     def _matmul_fp8(self, name, vector):
         payload = self._weight(name + ".weight")
         if payload.dtype != np.uint8:
             raise ValueError(f"{name} payload must be F8_E4M3 bytes")
         scale = self._weight(name + ".weight_scale")
-        rows = payload.shape[0]
-        out = np.empty(rows, dtype=np.float32)
-        block = 8192
-        for start in range(0, rows, block):
-            stop = min(start + block, rows)
-            plane = dequant_fp8(payload[start:stop], scale[start:stop])
-            out[start:stop] = plane @ vector
-        return out
+        return self._dequant_gemm(payload, scale, vector)
 
     def _expert(self, il, kind, expert, vector):
         payload = self.st.raw_slab(f"{PREFIX}{il}.mlp.experts.{kind}", expert, 1)
         scale = self.st.raw_slab(f"{PREFIX}{il}.mlp.experts.{kind}_scale",
                                  expert, 1)
-        return dequant_fp8(payload[0], scale[0]) @ vector
+        return self._dequant_gemm(payload[0], scale[0], vector)
 
     def _rope_(self, value, position):
-        half = value.shape[-1] // 2
         angles = np.float32(position) * self.rope_freqs
         cos = np.cos(angles)
         sin = np.sin(angles)
-        a = value[..., :half].copy()
-        b = value[..., half:].copy()
-        value[..., :half] = a * cos - b * sin
-        value[..., half:] = a * sin + b * cos
+        a = value[..., 0::2].copy()
+        b = value[..., 1::2].copy()
+        value[..., 0::2] = a * cos - b * sin
+        value[..., 1::2] = a * sin + b * cos
 
     def _hc_pre(self, streams, fn, scale, base):
         flat = streams.reshape(-1).astype(np.float32)
@@ -251,8 +324,11 @@ class Hy4Engine:
             + self.hc_eps
         return pre, post
 
+    def _hc_reduce(self, streams, pre):
+        return bf16_round_f32((streams * pre[:, None]).sum(axis=0))
+
     def _hc_post(self, streams, branch, post):
-        return streams + branch[None, :] * post[:, None]
+        return bf16_round_f32(streams + branch[None, :] * post[:, None])
 
     def _attention(self, il, position, cur, caches):
         p = f"{PREFIX}{il}.self_attn."
@@ -273,8 +349,8 @@ class Hy4Engine:
         caches[il][1].append(k_pe)
         latents = np.stack(caches[il][0])
         pes = np.stack(caches[il][1])
-        kv_b = dequant_fp8(self._weight(p + "kv_b_proj.weight"),
-                           self._weight(p + "kv_b_proj.weight_scale"))
+        kv_b = self._dequant_plane(self._weight(p + "kv_b_proj.weight"),
+                                   self._weight(p + "kv_b_proj.weight_scale"))
         kv_b = kv_b.reshape(self.heads, self.nope + self.v_dim, self.kv_lora)
         q_abs = np.einsum("hnl,hn->hl", kv_b[:, :self.nope, :],
                           q[:, :self.nope], optimize=True)
@@ -282,12 +358,20 @@ class Hy4Engine:
                   np.einsum("hk,tk->ht", q_pe, pes, optimize=True)) \
             * self.kq_scale
         ceiling = np.maximum(scores.max(axis=1),
-                             self.sinks.astype(np.float32))
+                             self.sinks[il].astype(np.float32))
         weights = np.exp(scores - ceiling[:, None])
         denominator = weights.sum(axis=1) + np.exp(
-            self.sinks.astype(np.float32) - ceiling)
+            self.sinks[il].astype(np.float32) - ceiling)
         probs = weights / denominator[:, None]
-        context = np.einsum("ht,tn->hn", probs, latents, optimize=True)
+        if self.attention_trace is not None:
+            self.attention_trace.append({
+                "layer": il, "position": position,
+                "entropy": -np.sum(
+                    probs * np.log(np.maximum(probs, 1e-37)), axis=1),
+                "sink_mass": np.exp(self.sinks[il].astype(np.float32)
+                                    - ceiling) / denominator,
+                "score_max": scores.max(axis=1),
+            })
         head_out = np.einsum("ht,thv->hv", probs,
                              np.einsum("tn,hvn->thv", latents,
                                        kv_b[:, self.nope:, :],
@@ -340,7 +424,8 @@ class Hy4Engine:
                                    weights.astype(np.float32))
         return ffn
 
-    def decode_step(self, token_id, position, states, caches, capture):
+    def decode_step(self, token_id, position, states, caches, capture,
+                    capture_streams=None):
         if token_id < 0 or token_id >= self.vocab:
             raise ValueError(f"token {token_id} outside vocabulary "
                              f"{self.vocab}")
@@ -363,7 +448,7 @@ class Hy4Engine:
                 self._plane_f32(base + "hc_attn_layer.hc_pre.hc_scale", (2,)),
                 self._plane_f32(base + "hc_attn_layer.hc_pre.hc_base",
                                 (2 * self.hc,)))
-            cur = (streams * pre[:, None]).sum(axis=0)
+            cur = self._hc_reduce(streams, pre)
             cur = rmsnorm(cur,
                           self._plane_bf16(base + "input_layernorm.weight"),
                           self.eps)
@@ -376,13 +461,17 @@ class Hy4Engine:
                 self._plane_f32(base + "hc_mlp_layer.hc_pre.hc_scale", (2,)),
                 self._plane_f32(base + "hc_mlp_layer.hc_pre.hc_base",
                                 (2 * self.hc,)))
-            cur = (streams * pre[:, None]).sum(axis=0)
+            cur = self._hc_reduce(streams, pre)
             cur = rmsnorm(
                 cur, self._plane_bf16(base + "post_attention_layernorm.weight"),
                 self.eps)
             ffn = self._dense_ffn(il, cur) if il == 0 else self._moe(
                 il, position, cur, capture)
             streams = self._hc_post(streams, ffn, post)
+            if capture_streams is not None:
+                capture_streams(il, streams)
+            if not np.isfinite(streams).all():
+                raise ValueError(f"nonfinite reference state at layer {il}")
         states["streams"] = streams
         return streams
 
@@ -397,7 +486,7 @@ class Hy4Engine:
         mixes = head_fn @ flat_norm
         pre = sigmoid(mixes * float(head_scale.reshape(-1)[0]) +
                       head_base) + self.hc_eps
-        collapsed = (streams * pre[:, None]).sum(axis=0)
+        collapsed = self._hc_reduce(streams, pre)
         normed = rmsnorm(collapsed, self._plane_bf16("model.norm.weight"),
                          self.eps)
         lm = self._weight("lm_head.weight")
