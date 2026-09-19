@@ -166,7 +166,7 @@ def dequant_fp8(payload, scale):
 
 class Hy4Engine:
     def __init__(self, checkpoint, defines, config):
-        self.config_mismatches = cross_check(defines, config)
+        self.mismatches = cross_check(defines, config)
         self.st = Safetensors(checkpoint)
         self.hidden = define_uint(defines, "HIDDEN_DIMENSION")
         self.layers = define_uint(defines, "LAYER_COUNT")
