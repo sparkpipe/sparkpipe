@@ -217,3 +217,49 @@ Chain progress signature for the record: cold chain ~508s (stage 3 =
 expert loads), warm chain 380ms/91 rounds/~1ms allreduce per round,
 first-round wedge = CKEY-CELL-TIMEOUT (peers waiting on rank 0's cell),
 instant death = IO_ERROR (stale weightd attachment).
+
+## Addendum 9 (2026-09-20): the resilience layer + the remaining collective wedge
+
+The operator's T2 demand (any component killed anywhere, the system
+reassembles itself, in-flight requests fail LOUD and the rest proceed)
+drove the session's architecture work:
+
+- Agent: weightd-generation coupling (an engine older than its weightd is
+  orphaned by definition — the attach socket + mesh memfd are scoped to
+  the weightd process — so the agent recycles it). The whole
+  "weightd rollout orphans every engine" class is gone. Deployed.
+- Agent: --mesh-dir is probed from the weightd binary's --help before
+  being passed, so agent and weightd deploy in ANY order. (Plus the
+  mesh-dir separation so the devs' weightsd and the fleet's weightd
+  coexist: PR #1052.)
+- Module: session reset now broadcasts the collective cancel
+  (SparkTpDeviceCollectiveBroadcastCancel) so the 15 peers fail fast
+  instead of wedging 30s per chain (PR #1056, merged).
+- Pipeline: a rank's BUSY is backpressure, not a fault — no more
+  fail-stop-all-ranks on backpressure (PR #1058). The batch engine's
+  circuit breaker stops counting BUSY toward its 8-strike suspension.
+- Mock net now covers all of it: the chaos batch suite (29 checks incl.
+  the backpressure scenario), the two-rank collective cancel case (11),
+  the mesh republish case (147), the watchdog suite (9, incl. the
+  generation coupling). Two real mock-side fidelity bugs the chaos suite
+  caught: abort must settle the in-flight slot (commit must NOT), and a
+  delivered completion must retire the slot.
+
+THE REMAINING BLOCKER (precise): the TP16 chain's first collective round
+never completes on the current fleet state — CHAIN-TIME rounds=0 at the
+30s timeout — even with: converged chain epochs (all ranks adopt the
+same), the mesh records converged (the republish fix healed the stale
+spark0 generation), doorbells shipping (WD-SEEN/WD-SHIP flow on rank 0),
+and 16/16 engines up. The partial evidence: MESH-SPIN-TIMEOUT on rank 0
+shows a STABLE subset of peers missing (1,6,10,13,14,15 at one point) —
+a per-link delivery gap, not a protocol-wide wedge. The wedge starves
+the resident sequence slots: each wedged chain never releases its route's
+slot, and after ~128 wedged requests every engine is BUSY-locked until
+restart (the residentd chain-timeout path must release the route's
+sequence slots — verify SparkModelResidentdCompleteContinuationLease
+fires on chain timeout).
+
+NEXT SESSION, in order: (1) why the 6 nodes' RDMA delivery from rank 0
+fails — compare their wired boot for rank 0 vs the current record, and
+check their CQERR counters; (2) the route slot release on chain timeout;
+(3) the chaos fuzz run (tests/chaos_fleet.sh) once the fleet serves.
