@@ -51,13 +51,16 @@ FAMILIES = {
         "mtp_layer_range": None, "sentinel_mtp": True,   # layer == 0xFFFFFFFE
     },
     # qwen36sp (qwen38_27b packer): 120-byte header (26I2Q), 56-byte
-    # entries (<6I4Q) — same layout as qwen4_flash. MTP tensors ride the
+    # entries (<6I4Q). NOT the qwen4_flash layout: the 27b header has no
+    # expert fields and carries mtp_layer_count at u32[23] with
+    # tp_degree at u32[24] and tp_rank at u32[25] (the flash v1 header
+    # ends ...vocab, mxfp4_group, mtp at 25). MTP tensors ride the
     # 0xFFFFFFFE layer marker with kinds 23..26 (MTP_FC + three norms);
     # the 0xffffffff GLOBAL entries (kinds 0..2) are the embedding/head
     # and are NOT MTP.
     "qwen36sp": {
         "magic": 0x50533651, "header_bytes": 120,
-        "u32_count": 26, "count_index": 4, "mtp_index": 25,
+        "u32_count": 26, "count_index": 4, "mtp_index": 23,
         "u64_count_index": 0,
         "entry_bytes": 56,
         "payload_off_at": 24, "scale_off_at": 40,
@@ -122,9 +125,12 @@ def chattr(path: Path, flag: str) -> bool:
     # by a shell, and "--" ends option parsing so a --pack path that
     # starts with "-" can never be read as a chattr flag.
     for prefix in ([], ["sudo"]):
-        result = subprocess.run(prefix + ["chattr", flag, "--", str(path)],
-                                shell=False,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            result = subprocess.run(prefix + ["chattr", flag, "--", str(path)],
+                                    shell=False,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
         if result.returncode == 0:
             return True
     return False
@@ -162,8 +168,11 @@ def update_receipt(receipt: Path, digest: str, kept_end, dropped, reclaim, prior
 
 
 def is_immutable(pack: Path) -> bool:
-    result = subprocess.run(["lsattr", str(pack)], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True)
+    try:
+        result = subprocess.run(["lsattr", str(pack)], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
     return "i" in (result.stdout.split()[0] if result.stdout else "")
 
 
