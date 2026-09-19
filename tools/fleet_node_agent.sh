@@ -401,7 +401,7 @@ sync_core() {
 install_core() {
     local core="$HOME/sparkdata/core" wd="$HOME/sparkdata/weightd" announced
     [ -x "$core/bin/sparkpipe_weightd" ] || return 0
-    announced=$(curl -sf --max-time 5 "$RELEASE_HTTP/core/WEIGHTSD_BIN" 2>/dev/null | tr -d "[:space:]") || return 0
+    announced=$(curl -sf --max-time 5 "$RELEASE_HTTP/core/WEIGHTSD_BIN" 2>/dev/null | tr -d "[:space:]" | cut -c1-16) || return 0
     [ -n "$announced" ] || return 0
     [ "$(sha16 "$core/bin/sparkpipe_weightd")" = "$announced" ] || return 0
     [ "$(sha16 "$wd/sparkpipe_weightd")" != "$announced" ] || return 0

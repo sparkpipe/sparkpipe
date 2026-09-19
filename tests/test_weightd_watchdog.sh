@@ -110,5 +110,21 @@ ensure_weightd
 starts=$(wc -l < "$SB/starts")
 if [ "$starts" = "1" ]; then ok "second immediate restart suppressed by backoff"; else bad "restart storm: $starts starts for two calls"; fi
 
+# --- case 5: install_core accepts a full-length announced sha ---
+# The hub's WEIGHTSD_BIN may carry the full 64-char sha256 while sha16 of
+# the on-disk binary is 16 chars; the agent must compare like lengths or
+# the install gate is a permanent no-op (the fleet ran stale weightds).
+mkdir -p "$HOME/sparkdata/core/bin" "$SB/release/core"
+printf 'fake-new-weightd-binary' > "$HOME/sparkdata/core/bin/sparkpipe_weightd"
+chmod +x "$HOME/sparkdata/core/bin/sparkpipe_weightd"
+printf 'stale-old-weightd' > "$HOME/sparkdata/weightd/sparkpipe_weightd"
+full_sha=$(sha256sum < "$HOME/sparkdata/core/bin/sparkpipe_weightd" | cut -c1-64)
+printf '%s\n' "$full_sha" > "$SB/release/core/WEIGHTSD_BIN"
+RELEASE_HTTP="file://$SB/release"
+install_core
+want=$(sha256sum < "$HOME/sparkdata/core/bin/sparkpipe_weightd" | cut -c1-16)
+got=$(sha256sum < "$HOME/sparkdata/weightd/sparkpipe_weightd" | cut -c1-16)
+if [ "$got" = "$want" ]; then ok "install_core installs on a 64-char announced sha"; else bad "install_core no-op on 64-char announced sha ($got != $want)"; fi
+
 echo "test_weightd_watchdog: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
