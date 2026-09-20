@@ -19,7 +19,7 @@
 #define SPARK_WEIGHTD_MESH_CQ_ENTRIES 16384u
 #define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303031)
 #ifndef SPARK_WEIGHTD_MESH_DIR
-#define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
+#define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh-fleet"
 #endif
 
 /* Two weightd-line daemons can share one host (the fleet's weightd and the
