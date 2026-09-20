@@ -501,7 +501,8 @@ static void SparkModelPipelineClientRankResult(
 			context != 0 ? context->stage_index : 999u,
 			(unsigned long long)submission_id,(unsigned)status);
 		SparkModelPipelineClientRecordFailure(transaction,status);
-		if ( transaction->continued != 0u )
+		if ( transaction->continued != 0u &&
+		     status != SPARK_STATUS_IO_ERROR )
 			SparkModelPipelineClientSetFailure(context->pipeline,status,
 				context->stage_index);
 	}
