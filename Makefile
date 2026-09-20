@@ -353,7 +353,8 @@ TEST_NAMES := \
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
-	tests/fuzz_system_loopback.sh
+	tests/fuzz_system_loopback.sh \
+	tests/test_weightd_watchdog.sh
 PYTHON_TESTS := \
 	tests/test_weightd_supervised.py \
 	tests/test_spark_queue.py \

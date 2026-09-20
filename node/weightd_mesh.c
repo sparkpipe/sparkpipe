@@ -114,6 +114,13 @@ static void SparkWeightdMeshPhase(const char *name)
         (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
 }
 
+static uint32_t SparkWeightdMeshRankFromHost(void)
+{
+    uint64_t now = SparkWeightdMeshRealtimeNs();
+    fprintf(stderr,"weightd-mesh phase %s at +%llu ms\n",name,
+        (unsigned long long)((now - weightd_mesh_boot_phase_ns) / 1000000ull));
+}
+
 
 static SparkStatus SparkWeightdMeshWriteRecord(
     const SparkWeightdMeshRecord *record)

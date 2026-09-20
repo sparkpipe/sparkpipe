@@ -7,6 +7,29 @@ HUB="${2:-sparkf}"
 HOST=$(hostname)
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
 MESH_INTERFACE="rocep1s0f1"
+# The fleet's weightd and the driver developers' standalone weightsd share
+# the hosts; the record exchange dir must be per-deployment or the two
+# daemons clobber each other's mesh-<rank>.rec and .ready (spark0 ran
+# exactly that collision for days).
+MESH_DIR="${SPARK_WEIGHTD_MESH_DIR:-/tmp/weightd-mesh-fleet}"
+MESH_DIR_LEGACY="/tmp/weightd-mesh"
+MESH_DIR_CACHE_SHA=""
+MESH_DIR_EFFECTIVE="$MESH_DIR_LEGACY"
+mesh_dir() {
+    # The fleet dir applies only to a weightd that knows --mesh-dir; an
+    # older binary uses the legacy default. Cache per binary sha.
+    local bin="$HOME/sparkdata/weightd/sparkpipe_weightd" sha
+    sha=$(sha16 "$bin")
+    if [ "$sha" != "$MESH_DIR_CACHE_SHA" ]; then
+        MESH_DIR_CACHE_SHA="$sha"
+        if [ -x "$bin" ] && "$bin" --help 2>&1 | grep -q "mesh-dir"; then
+            MESH_DIR_EFFECTIVE="$MESH_DIR"
+        else
+            MESH_DIR_EFFECTIVE="$MESH_DIR_LEGACY"
+        fi
+    fi
+    echo "$MESH_DIR_EFFECTIVE"
+}
 MESH_SGID_INDEX=3
 RANK=""
 _idx=0
@@ -185,7 +208,7 @@ start_root() {
         [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] && return 0
     done
     if [ "$(grep -c '"rank_index"' "$rr/model_resident.json" 2>/dev/null)" -gt 1 ] && \
-       [ ! -f /tmp/weightd-mesh/.ready ]; then
+       [ ! -f "$(mesh_dir)/.ready" ]; then
         echo "$(date +%T) $name: waiting for weightd mesh"
         return 0
     fi
@@ -277,7 +300,7 @@ sync_rendezvous() {
             touch "$rd/.shipped"
         fi
     fi
-    local mesh_dir="/tmp/weightd-mesh"
+    local mesh_dir="$(mesh_dir)"
     if [ -d "$mesh_dir" ]; then
         local own_rank
         printf -v own_rank '%x' "$RANK"
@@ -401,7 +424,7 @@ sync_core() {
 install_core() {
     local core="$HOME/sparkdata/core" wd="$HOME/sparkdata/weightd" announced
     [ -x "$core/bin/sparkpipe_weightd" ] || return 0
-    announced=$(curl -sf --max-time 5 "$RELEASE_HTTP/core/WEIGHTSD_BIN" 2>/dev/null | tr -d "[:space:]") || return 0
+    announced=$(curl -sf --max-time 5 "$RELEASE_HTTP/core/WEIGHTSD_BIN" 2>/dev/null | tr -d "[:space:]" | cut -c1-16) || return 0
     [ -n "$announced" ] || return 0
     [ "$(sha16 "$core/bin/sparkpipe_weightd")" = "$announced" ] || return 0
     [ "$(sha16 "$wd/sparkpipe_weightd")" != "$announced" ] || return 0
@@ -484,13 +507,16 @@ ensure_weightd() {
                 kill -9 "$q" 2>/dev/null
             fi
         done
-        local youngest=0 p start_s up_s
+        local youngest=0 youngest_pid=0 p start_s up_s
         for p in $(pgrep -f "sparkpipe_weightd"); do
             start_s=$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null)
-            [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ] && youngest=$start_s
+            if [ -n "$start_s" ] && [ "$start_s" -gt "$youngest" ]; then
+                youngest=$start_s
+                youngest_pid=$p
+            fi
         done
         up_s=$(awk '{printf "%d", $1}' /proc/uptime)
-        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt 120 ]; then
+        if [ "$youngest" -gt 0 ] && [ $(( up_s - youngest / 100 )) -lt "${SPARK_AGENT_WEIGHTD_GRACE_S:-120}" ]; then
             return 0
         fi
         local probe_ok=0 probe_i
@@ -502,7 +528,16 @@ ensure_weightd() {
             sleep 2
         done
         [ "$probe_ok" = 1 ] && return 0
-        echo "$(date +%T) weightd: stale or unresponsive instance(s); clearing (production channel only)"
+        local busy=0 c1 c2
+        c1=$(awk '{print $14+$15}' "/proc/$youngest_pid/stat" 2>/dev/null)
+        sleep 5
+        c2=$(awk '{print $14+$15}' "/proc/$youngest_pid/stat" 2>/dev/null)
+        [ -n "$c1" ] && [ -n "$c2" ] && [ "$c2" -gt "$c1" ] && busy=1
+        if [ "$busy" = 1 ]; then
+            echo "$(date +%T) weightd: unresponsive to probes but CPU advancing (mid-bake); leaving it"
+            return 0
+        fi
+        echo "$(date +%T) weightd: stale or unresponsive instance(s); clearing"
         for p in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_weightd | sed "s|.*/proc/\([0-9]*\)/exe.*|\1|"); do
             case "$(readlink /proc/$p/exe 2>/dev/null)" in
                 "$HOME/sparkdata/weightd/"*) kill -9 "$p" 2>/dev/null ;;
@@ -514,12 +549,18 @@ ensure_weightd() {
     local home="$HOME/sparkdata/weightd"
     [ -x "$home/sparkpipe_weightd" ] || return 0
     restart_ok weightd || return 0
-    rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
+    local mdc; mdc=$(mesh_dir); rm -f "$mdc"/mesh-*.rec "$mdc/.ready" 2>/dev/null
     echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
+    # pass --mesh-dir only to a weightd that knows it (deploy-order safe:
+    # the agent self-updates before the weightd binary can carry the flag)
+    local mesh_dir_arg=""
+    if [ "$(mesh_dir)" = "$MESH_DIR" ]; then
+        mesh_dir_arg="--mesh-dir $MESH_DIR"
+    fi
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
-        --mesh-sgid-index "$MESH_SGID_INDEX" \
+        --mesh-sgid-index "$MESH_SGID_INDEX" $mesh_dir_arg \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }
 
@@ -552,6 +593,28 @@ ensure_root() {
             fi
             break
         done
+    }
+    [ "$st" = "down" ] || {
+        # weightd-generation coupling: the engine's attachment (socket +
+        # mesh memfd) is scoped to the weightd process. A weightd restart
+        # orphans every engine — chains then fail forever while the engine
+        # looks alive. An engine older than its weightd is orphaned by
+        # definition; recycle it into a fresh attach.
+        local wp wstart eng_start p2
+        wp=$(pgrep -f "sparkdata/weightd/sparkpipe_weightd" | head -1)
+        wstart=""
+        [ -n "$wp" ] && wstart=$(awk '{print $22}' "/proc/$wp/stat" 2>/dev/null)
+        if [ -n "$wstart" ]; then
+            for p2 in $(pgrep -f "bin/sparkpipe_model_residentd"); do
+                [ "$(readlink /proc/$p2/cwd 2>/dev/null)" = "$HOME/sparkdata/$name" ] || continue
+                eng_start=$(awk '{print $22}' "/proc/$p2/stat" 2>/dev/null)
+                if [ -n "$eng_start" ] && [ "$eng_start" -lt "$wstart" ]; then
+                    echo "$(date +%T) $name: engine predates weightd restart; recycling into a fresh attach"
+                    st="down"
+                fi
+                break
+            done
+        fi
     }
     [ "$st" = "down" ] || {
         local age_p
