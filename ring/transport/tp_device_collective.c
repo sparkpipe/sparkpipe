@@ -769,18 +769,51 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
         implementation->published_host_cell = 0;
     if ( implementation->published_host_cell == 0 )
         return SPARK_STATUS_IO_ERROR;
-    if ( cudaMemcpyAsync((void *)implementation->published_host_cell,
-            implementation->round_seq_device,sizeof(uint64_t),
-            SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 ||
-         cudaStreamSynchronize(submission->cuda_stream) != 0 )
     {
-        fprintf(stderr,"MESH-READBACK-FAIL rank=%u bytes=%llu slot=%llu cuda=%s\n",
-            implementation->tp_rank,(unsigned long long)bytes,
-            (unsigned long long)slot_index,
-            cudaGetErrorString(cudaGetLastError()));
-        return SPARK_STATUS_IO_ERROR;
+        volatile uint64_t *cell =
+            (volatile uint64_t *)implementation->published_host_cell;
+        uint64_t previous = *cell;
+        if ( cudaMemcpyAsync((void *)cell,
+                implementation->round_seq_device,sizeof(uint64_t),
+                SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,
+                submission->cuda_stream) != 0 )
+        {
+            fprintf(stderr,"MESH-READBACK-FAIL rank=%u bytes=%llu slot=%llu cuda=%s\n",
+                implementation->tp_rank,(unsigned long long)bytes,
+                (unsigned long long)slot_index,
+                cudaGetErrorString(cudaGetLastError()));
+            return SPARK_STATUS_IO_ERROR;
+        }
+        while ( *cell == previous )
+        {
+            volatile uint64_t *cancel_cell = (volatile uint64_t *)
+                (implementation->mesh_buffer +
+                SparkTpDeviceCollectiveCancelCellOffset(band_index));
+            if ( *cancel_cell != implementation->cancel_seen )
+            {
+                implementation->cancel_seen = *cancel_cell;
+                return SPARK_STATUS_BUSY;
+            }
+            if ( SparkWeightdClientAlive(implementation->client) == 0u )
+            {
+                fprintf(stderr,
+                    "WEIGHTD-DEAD rank=%u awaiting publish cell\n",
+                    implementation->tp_rank);
+                return SPARK_STATUS_IO_ERROR;
+            }
+            if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
+            {
+                fprintf(stderr,
+                    "MESH-CELL-TIMEOUT rank=%u prev=%llu bytes=%llu slot=%llu\n",
+                    implementation->tp_rank,
+                    (unsigned long long)previous,
+                    (unsigned long long)bytes,
+                    (unsigned long long)slot_index);
+                return SPARK_STATUS_BUSY;
+            }
+        }
+        published = *cell;
     }
-    published = *implementation->published_host_cell;
     implementation->publish_ack_prev = published;
     {
         uint32_t peers_remaining = implementation->tp_degree - 1u;
