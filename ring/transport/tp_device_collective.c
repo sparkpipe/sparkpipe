@@ -763,6 +763,12 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
             cudaGetErrorString(cudaGetLastError()));
         return SPARK_STATUS_IO_ERROR;
     }
+    if ( implementation->published_host_cell == 0 &&
+         cudaHostAlloc((void **)&implementation->published_host_cell,
+             sizeof(uint64_t),0u) != 0 )
+        implementation->published_host_cell = 0;
+    if ( implementation->published_host_cell == 0 )
+        return SPARK_STATUS_IO_ERROR;
     if ( cudaMemcpyAsync((void *)implementation->published_host_cell,
             implementation->round_seq_device,sizeof(uint64_t),
             SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 ||
