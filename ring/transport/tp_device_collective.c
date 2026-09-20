@@ -730,6 +730,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     implementation->tp_rank);
                 return SPARK_STATUS_IO_ERROR;
             }
+            __asm__ volatile ("yield");
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 fprintf(stderr,
@@ -801,6 +802,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     implementation->tp_rank);
                 return SPARK_STATUS_IO_ERROR;
             }
+            __asm__ volatile ("yield");
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 fprintf(stderr,
@@ -841,6 +843,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(
                     implementation->tp_rank);
                 return SPARK_STATUS_IO_ERROR;
             }
+            __asm__ volatile ("yield");
             if ( SparkTpDeviceCollectiveTimeNs() >= deadline )
             {
                 char missing[128];
