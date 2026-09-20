@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <arpa/inet.h>
+
+#define SPARK_WEIGHTD_LATCH_PORT_DEFAULT 61900u
 #include <unistd.h>
 #include <sys/stat.h>
 
