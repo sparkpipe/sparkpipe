@@ -3215,6 +3215,10 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
                 SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
             }
         }
+        if (wire_result.mesh_ready != 0u && fds_received == 0u)
+        {
+            SPARK_FAIL(SPARK_STATUS_BUSY);
+        }
         if (fds_received != 0u)
         {
             /* the GPU-side mesh kernels address the region in 64KB host
