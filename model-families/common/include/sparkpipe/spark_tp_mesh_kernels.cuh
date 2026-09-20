@@ -5,7 +5,7 @@
 #if defined(__CUDACC__)
 #include <cuda_runtime.h>
 #include <stdio.h>
-#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V5-CANCELPOLL-ORDPARITY"
+#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V6-EXACTKEY"
 #if defined(__CUDACC__)
 __constant__ char SparkTpMeshKernelsBuildMarker[] =
     SPARK_TP_MESH_KERNELS_MARKER;
@@ -97,7 +97,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 				((uint64_t)peer_rank * slots_per_rank +
 					(ring & (slots_per_rank - 1ull))) * slot_bytes +
 				slot_bytes - 8u);
-			while ( *end_word < sequence )
+			while ( *end_word < sequence ||
+			    ( *end_word >> 32ull ) != ( sequence >> 32ull ) )
 			{
 				if ( *error_word != 0ull )
 					return;
