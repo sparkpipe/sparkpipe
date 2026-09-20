@@ -97,7 +97,6 @@ static int SparkWeightdLatchProbe(uint16_t port)
 
 static pid_t SparkWeightdLatchHolder(uint16_t port)
 {
-    uint32_t want = (uint32_t)port << 16;
     char line[512];
     FILE *table = fopen("/proc/net/tcp", "r");
     if ( table == 0 )
