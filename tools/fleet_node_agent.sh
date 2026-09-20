@@ -487,7 +487,7 @@ janitor() {
             "$HOME/sparkdata/weightd/"*) ;;
             *) continue ;;
         esac
-        holder_exe=$(sudo -n fuser /tmp/spark_weightd.singleton 2>/dev/null | tr -s ' ' | cut -d: -f2 | tr -d ' ')
+        holder_exe=$(sudo -n fuser /tmp/spark_weightd.sock.singleton 2>/dev/null | tr -s ' ' | cut -d: -f2 | tr -d ' ')
         [ "$q" = "$holder_exe" ] && continue
         echo "$(date +%T) janitor: killing stale weightd pid=$q age=${a}s (not the singleton holder)" >&2
         kill -9 "$q" 2>/dev/null
