@@ -7,6 +7,8 @@
 #include <pthread.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -71,9 +73,145 @@ static void SparkWeightdUsage(const char *program)
         (unsigned)SPARK_WEIGHTD_MESH_RANKS - 1u);
 }
 
+
+static int SparkWeightdLatchProbe(uint16_t port)
+{
+    struct sockaddr_in address;
+    int probe_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if ( probe_fd < 0 )
+        return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if ( connect(probe_fd, (struct sockaddr *)&address, sizeof(address)) == 0 )
+    {
+        close(probe_fd);
+        return 1;
+    }
+    close(probe_fd);
+    return 0;
+}
+
+static pid_t SparkWeightdLatchHolder(uint16_t port)
+{
+    uint32_t want = (uint32_t)port << 16;
+    char line[512];
+    FILE *table = fopen("/proc/net/tcp", "r");
+    if ( table == 0 )
+        return -1;
+    while ( fgets(line, sizeof(line), table) != 0 )
+    {
+        unsigned int local, state_hex, inode = 0;
+        if ( sscanf(line, "%*s %x %*s %x %*s %*s %*s %*s %*s %u",
+                &local, &state_hex, &inode) == 3 &&
+            (local & 0xffffu) == port && (local >> 16) == 0x0100007fu &&
+            inode != 0 )
+        {
+            char pattern[64];
+            DIR *processes;
+            struct dirent *entry;
+            (void)fclose(table);
+            table = 0;
+            (void)snprintf(pattern, sizeof(pattern), "socket:[%u]", inode);
+            processes = opendir("/proc");
+            if ( processes == 0 )
+                return -1;
+            while ( (entry = readdir(processes)) != 0 )
+            {
+                char fd_path[64];
+                DIR *fds;
+                struct dirent *fd_entry;
+                if ( entry->d_name[0] < '0' || entry->d_name[0] > '9' )
+                    continue;
+                (void)snprintf(fd_path, sizeof(fd_path), "/proc/%s/fd",
+                    entry->d_name);
+                fds = opendir(fd_path);
+                if ( fds == 0 )
+                    continue;
+                while ( (fd_entry = readdir(fds)) != 0 )
+                {
+                    char link_path[128];
+                    char target[96];
+                    ssize_t length;
+                    (void)snprintf(link_path, sizeof(link_path), "%s/%s",
+                        fd_path, fd_entry->d_name);
+                    length = readlink(link_path, target, sizeof(target) - 1);
+                    if ( length > 0 )
+                    {
+                        target[length] = '\0';
+                        if ( strcmp(target, pattern) == 0 )
+                        {
+                            pid_t found = (pid_t)atoi(entry->d_name);
+                            (void)closedir(fds);
+                            (void)closedir(processes);
+                            return found;
+                        }
+                    }
+                }
+                (void)closedir(fds);
+            }
+            (void)closedir(processes);
+            return -1;
+        }
+    }
+    if ( table != 0 )
+        (void)fclose(table);
+    return -1;
+}
+
+static int SparkWeightdLatchAcquire(uint16_t port)
+{
+    struct sockaddr_in address;
+    int latch_fd, attempt, on = 1;
+    latch_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if ( latch_fd < 0 )
+        return -1;
+    (void)setsockopt(latch_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    for ( attempt = 0; attempt < 12; attempt++ )
+    {
+        if ( bind(latch_fd, (struct sockaddr *)&address, sizeof(address)) == 0 )
+        {
+            if ( listen(latch_fd, 1) == 0 )
+                return latch_fd;
+            close(latch_fd);
+            return -1;
+        }
+        if ( SparkWeightdLatchProbe(port) == 1 )
+        {
+            fprintf(stderr,
+                "weightd: an instance already serves latch port %u; nothing to do\n",
+                (unsigned)port);
+            close(latch_fd);
+            return 0;
+        }
+        if ( attempt == 0 )
+        {
+            pid_t holder = SparkWeightdLatchHolder(port);
+            if ( holder > 0 )
+            {
+                fprintf(stderr,
+                    "weightd: pid %d holds latch port %u without serving; taking over\n",
+                    (int)holder, (unsigned)port);
+                (void)kill(holder, SIGKILL);
+            }
+        }
+        sleep(1);
+    }
+    fprintf(stderr, "weightd: latch port %u stayed occupied; exiting\n",
+        (unsigned)port);
+    close(latch_fd);
+    return -1;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
+    uint16_t latch_port = SPARK_WEIGHTD_LATCH_PORT_DEFAULT;
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
     uint64_t kv_reserve_bytes = 0ull;
     uint32_t mesh_fields = 0u;
@@ -91,6 +229,21 @@ int main(int argument_count, char **arguments)
             index + 1 < argument_count)
         {
             socket_path = arguments[++index];
+        }
+        else if (strcmp(arguments[index], "--latch-port") == 0 &&
+            index + 1 < argument_count)
+        {
+            char *parse_end = 0;
+            latch_port = (uint16_t)strtoul(arguments[index + 1], &parse_end, 10);
+            if ( parse_end == arguments[index + 1] || *parse_end != '\0' ||
+                latch_port == 0u )
+            {
+                fprintf(stderr, "weightd: bad --latch-port '%s'\n",
+                    arguments[index + 1]);
+                SparkWeightdUsage(arguments[0]);
+                return 2;
+            }
+            index++;
         }
         else if (strcmp(arguments[index], "--device-bytes-max") == 0 &&
             index + 1 < argument_count)
@@ -264,28 +417,22 @@ int main(int argument_count, char **arguments)
     signal(SIGTERM, SparkWeightdSignal);
 
     {
-        char singleton_path[512];
-        int sn = snprintf(singleton_path, sizeof(singleton_path), "%s.singleton", socket_path);
-        if ( sn <= 0 || (size_t)sn >= sizeof(singleton_path) )
+        const char *latch_env = getenv("SPARK_WEIGHTD_LATCH_PORT");
+        int latch_fd;
+        if ( latch_env != 0 && latch_env[0] != '\0' )
         {
-            fprintf(stderr, "weightd: singleton path overflow\n");
-            return 1;
+            char *parse_end = 0;
+            unsigned long parsed = strtoul(latch_env, &parse_end, 10);
+            if ( parse_end != latch_env && *parse_end == '\0' && parsed > 0ul &&
+                parsed <= 65535ul )
+                latch_port = (uint16_t)parsed;
         }
-        int singleton_fd = open(singleton_path, O_CREAT | O_RDWR, 0600);
-        struct flock singleton_lock;
-        if ( singleton_fd < 0 )
-        {
-            fprintf(stderr, "weightd: cannot open singleton lock errno=%d\n", errno);
+        latch_fd = SparkWeightdLatchAcquire(latch_port);
+        if ( latch_fd == 0 )
+            return 0;
+        if ( latch_fd < 0 )
             return 1;
-        }
-        memset(&singleton_lock, 0, sizeof(singleton_lock));
-        singleton_lock.l_type = F_WRLCK;
-        singleton_lock.l_whence = SEEK_SET;
-        if ( fcntl(singleton_fd, F_SETLK, &singleton_lock) != 0 )
-        {
-            fprintf(stderr, "weightd: another instance holds the singleton lock; exiting\n");
-            return 1;
-        }
+        (void)unlink(socket_path);
     }
 
     status = SparkWeightdServerCreate(&config, &server);
