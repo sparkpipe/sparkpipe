@@ -147,3 +147,31 @@ tails from their weightd memfds and compare against rank 0's published tag;
 that splits "tail never shipped" from "tag mismatch". Both the mesh mock
 (rewire/CQERR) and the allreduce fuzz harness are the in-process repro
 harnesses to build that case against.
+
+## Spot-test result (the approved bypass experiment): the mesh DELIVERS fine
+
+Direct memfd reads during a stuck round (tools: /tmp/meshdump.py +
+/tmp/shipdump.py + /tmp/slotdump.py + /tmp/celldump.py on the sparks):
+- rank 0's publish lands byte-identical in a peer's memfd (slot tail + payload
+  head match exactly) — the weightd ship path WORKS.
+- rank 0's base cell broadcast lands on the peer identically — the cell path
+  WORKS.
+- So "per-peer tail delivery" is NOT the wedge. The real shape: the chain
+  needs all 16 ranks to accept the SAME submission in the same window. Engines
+  still booting (post-restart) reject with BUSY at the resident slot claim;
+  rank 0 gets in, runs the chain, and waits forever for the missing ranks'
+  tails. MESH-SPIN-TIMEOUT's missing set IS the set of engines that were
+  BUSY-locked when the chain started.
+
+THE ACTUAL BUG: the batch engine dispatches a chain without confirming all 16
+ranks accepted the submission — a partial cohort wedges the collective. The
+fix direction: dispatch a chain only when every rank's pipeline reports the
+submission accepted (the pipeline already aggregates per-rank results — the
+chain must not start on a partial admit), OR the late ranks must join the
+chain (the collective's slot assignment is per-request so a late joiner
+misses the window). The former is a one-gate change in the batch dispatch;
+the latter is a protocol change.
+
+This composes with the slot starvation: a wedged partial-cohort chain holds
+its resident slot for 30s, and enough of them BUSY-lock an engine. Fix the
+partial-cohort dispatch and the slot pressure disappears with it.
