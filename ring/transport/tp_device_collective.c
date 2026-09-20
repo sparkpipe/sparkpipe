@@ -381,6 +381,7 @@ SparkStatus SparkTpDeviceCollectiveChainRetire(
     if ( collective == 0 || collective->implementation == 0 )
         return(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
+    implementation->consumed_cell = 0ull;
     if ( implementation->mesh_buffer == 0 || implementation->tp_rank != 0u )
         return(SPARK_STATUS_OK);
     band_index = (uint32_t)(implementation->band_base /
