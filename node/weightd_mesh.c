@@ -71,6 +71,7 @@ typedef struct SparkWeightdMesh
     uint64_t boot_ns;
     uint64_t record_check_ns;
     uint64_t artifact_check_ns;
+    uint64_t ship_diag_count;
     uint16_t lid;
     uint8_t gid[16];
     uint64_t wired_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
@@ -892,6 +893,13 @@ void SparkWeightdMeshDoorbellLoop(void)
                             qp_snapshot[peer].rkey;
                         last_addr = qp_snapshot[peer].remote_addr;
                         last_rkey = qp_snapshot[peer].rkey;
+                        if ( (weightd_mesh.ship_diag_count++ & 15ull) == 0ull )
+                            fprintf(stderr,
+                                "WD-SHIP-PEER idx=%llu peer=%u addr=%llx rkey=%u\n",
+                                (unsigned long long)index,
+                                (unsigned)peer,
+                                (unsigned long long)qp_snapshot[peer].remote_addr,
+                                qp_snapshot[peer].rkey);
                         if ( ibv_post_send(weightd_mesh.send_qps[peer],
                                 &work_request,&bad) != 0 )
                         {
