@@ -41,7 +41,7 @@ ALIGN = 256
 WINDOW = 16 << 20
 MAGIC = 0x31413444
 
-DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1}
+DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1, "U8": 1}
 
 K_EMBEDDING = 0
 K_FINAL_NORM = 1
@@ -98,7 +98,11 @@ def fail(message: str):
 
 
 def normalize(shape: list) -> list:
-    return shape if len(shape) == 2 else [1, shape[0]]
+    if len(shape) == 2:
+        return shape
+    if len(shape) == 1:
+        return [1, shape[0]]
+    return [1, 1]
 
 
 def in_layer(kind: int, layer: int) -> bool:
@@ -178,10 +182,15 @@ def entry_shape(kind: int, tp: int):
     return (EXPERT_WIDTH, HIDDEN)
 
 
-def expected_entry(kind: int, layer: int, tp: int) -> dict:
+def expected_entry(kind: int, layer: int, tp: int, expert_codec: str = "mxfp4") -> dict:
     rows, cols = entry_shape(kind, tp)
     if kind in EXPERT_KINDS:
         groups = ROUTED_EXPERTS // tp
+        if expert_codec == "nvfp4":
+            return {"kind": kind, "layer": layer, "payload_type": 4, "codec": 6,
+                    "scale_encoding": 4, "groups": groups, "rows": rows, "cols": cols,
+                    "payload_bytes": rows * cols * groups,
+                    "scale_bytes": groups * (rows * (cols * 2 // 16) + 4)}
         return {"kind": kind, "layer": layer, "payload_type": 4, "codec": 7, "scale_encoding": 3,
                 "groups": groups, "rows": rows, "cols": cols,
                 "payload_bytes": rows * cols * groups,
@@ -199,10 +208,14 @@ def expected_entry(kind: int, layer: int, tp: int) -> dict:
             "payload_bytes": rows * cols * 2, "scale_bytes": 0}
 
 
-def source_ref(kind: int, layer: int, plane: int):
+def source_ref(kind: int, layer: int, plane: int, expert_codec: str = "mxfp4"):
     a = f"layers.{layer}.attn."
     f = f"layers.{layer}.ffn."
     suffix = ("weight", "scale")[plane]
+    if kind in EXPERT_KINDS and expert_codec == "nvfp4":
+        w = "w2" if kind == K_EXP_W2 else ("w1" if kind == K_EXP_W1 else "w3")
+        return (f + "experts.{e}." + w + ".weight" if plane == 0
+                else f + "experts.{e}." + w + ".weight_scale", "expert")
     if kind == K_EMBEDDING:
         return ("embed.weight", "rows")
     if kind == K_FINAL_NORM:
@@ -273,7 +286,7 @@ def source_ref(kind: int, layer: int, plane: int):
     fail(f"unknown kind {kind}")
 
 
-def derive_layout(tp: int):
+def derive_layout(tp: int, expert_codec: str = "mxfp4"):
     order = [(K_EMBEDDING, GLOBAL_LAYER), (K_FINAL_NORM, GLOBAL_LAYER), (K_LM_HEAD, GLOBAL_LAYER)]
     for layer in range(LAYER_COUNT):
         for kind in range(K_ATTN_NORM, KIND_COUNT):
@@ -283,7 +296,7 @@ def derive_layout(tp: int):
     cursor = (directory_offset + len(order) * ENTRY_BYTES + ALIGN - 1) & ~(ALIGN - 1)
     entries = []
     for kind, layer in order:
-        entry = expected_entry(kind, layer, tp)
+        entry = expected_entry(kind, layer, tp, expert_codec)
         cursor = (cursor + ALIGN - 1) & ~(ALIGN - 1)
         entry["payload_offset"] = cursor
         cursor += entry["payload_bytes"]
@@ -297,22 +310,31 @@ def derive_layout(tp: int):
     return order, entries, cursor
 
 
-def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int) -> list:
+def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int,
+               expert_codec: str = "mxfp4") -> list:
     pieces = []
     for entry, (kind, layer) in zip(entries, order):
         for plane, offset, total in ((0, entry["payload_offset"], entry["payload_bytes"]),
                                      (1, entry["scale_offset"], entry["scale_bytes"])):
             if total == 0:
                 continue
-            name, mode = source_ref(kind, layer, plane)
+            name, mode = source_ref(kind, layer, plane, expert_codec)
             if mode == "expert":
                 groups = ROUTED_EXPERTS // tp
                 per = total // groups
                 for rank in range(tp):
                     for g in range(groups):
                         src = flat[name.format(e=rank * groups + g)]
+                        span = per
+                        if plane == 1 and expert_codec == "nvfp4":
+                            span = src["shape"][0] * src["shape"][1]
                         pieces.append((rank, kind, layer, plane, src, 0, src["shape"][0],
-                                       0, src["shape"][1], offset + g * per, per))
+                                       0, src["shape"][1], offset + g * per, span))
+                        if plane == 1 and expert_codec == "nvfp4":
+                            w = "w2" if kind == K_EXP_W2 else ("w1" if kind == K_EXP_W1 else "w3")
+                            gsrc = flat[f"layers.{layer}.ffn.experts.{rank * groups + g}.{w}.weight_scale_2"]
+                            pieces.append((rank, kind, layer, plane, gsrc, 0, 1,
+                                           0, 1, offset + g * per + span, 4))
                 continue
             src0 = flat[name]
             rows, cols = src0["shape"]
@@ -367,8 +389,10 @@ def verify_header(fd: int, rank: int, tp: int, plan: dict, entries: list,
     if len(raw) != HEADER_BYTES:
         fail(f"rank{rank}: short header")
     fields = struct.unpack_from("<20I2Q", raw, 0)
+    expert_codec_id = 6 if plan.get("expert_codec") == "nvfp4" else 7
     literal = (MAGIC, 1, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0,
-               LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
+               LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5,
+               expert_codec_id, tp, rank, 0)
     if fields[:20] != literal:
         fail(f"rank{rank}: header fields {fields[:20]} != literals {literal}")
     if fields[20] != directory_offset or fields[21] != file_bytes:
@@ -401,6 +425,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
     with open(plan_path, encoding="utf-8") as handle:
         plan = json.load(handle)
     tp = plan["tp"]
+    expert_codec = plan.get("expert_codec", "mxfp4")
     with open(headers_json, encoding="utf-8") as handle:
         document = json.load(handle)
     flat = {}
@@ -411,7 +436,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
             meta["shape"] = normalize(meta["shape"])
             meta["name"] = name
             flat[name] = meta
-    order, entries, file_bytes = derive_layout(tp)
+    order, entries, file_bytes = derive_layout(tp, expert_codec)
     if len(entries) != plan["tensor_count"] or file_bytes != plan["file_bytes"]:
         fail(f"derived layout {len(entries)}/{file_bytes} != plan "
              f"{plan['tensor_count']}/{plan['file_bytes']}")
@@ -449,7 +474,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
             verify_header(dst_fds[rank], rank, tp, plan, entries, directory_offset, file_bytes)
         verify_directory(dst_fds[0], 0, entries, directory_offset)
         verify_directory(dst_fds[tp - 1], tp - 1, entries, directory_offset)
-        for piece in pieces_for(flat, tp, order, entries, lo, hi):
+        for piece in pieces_for(flat, tp, order, entries, lo, hi, expert_codec):
             shard = piece[4]["shard"]
             if shard not in src_fds:
                 src_fds[shard] = os.open(

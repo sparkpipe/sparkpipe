@@ -37,19 +37,29 @@ def tensor_bytes(name: str, count: int) -> bytes:
     return random.Random(seed).randbytes(count)
 
 
-def build_checkpoint(warm: Path):
+def build_checkpoint(warm: Path, codec: str) -> set:
     shards = {1: {}, 2: {}}
     meta = {}
     for kind, layer, spec in conv.entry_specs():
+        scale_dtype = "F8_E4M3" if codec == "nvfp4" and kind in conv.EXPERT_KINDS else "F8_E8M0"
         entries = [(spec[0], spec[2], spec[3])]
         if spec[1]:
-            entries.append((spec[1], "F8_E8M0", spec[4]))
+            entries.append((spec[1], scale_dtype, spec[4]))
         for name_t, dtype, shape in entries:
             if "{e}" in name_t:
                 for expert in range(conv.ROUTED_EXPERTS):
                     meta[name_t.format(e=expert)] = (dtype, shape)
             else:
                 meta[name_t] = (dtype, shape)
+    activation = set()
+    if codec == "nvfp4":
+        for layer in range(conv.LAYER_COUNT):
+            for kind in conv.EXPERT_KINDS:
+                for expert in range(conv.ROUTED_EXPERTS):
+                    ns = conv.nvidia_expert_spec(kind, layer, expert)
+                    meta[ns["global"]] = ("F32", [])
+                    meta[ns["input_scale"]] = ("F32", [])
+                    activation.add(ns["input_scale"])
     extras = {
         "layers.1.engram.embed.weight": ("F8_E4M3", [64, 4]),
         "layers.1.engram.embed.scale": ("F8_E8M0", [64, 1]),
@@ -70,7 +80,7 @@ def build_checkpoint(warm: Path):
         "image_start": ("BF16", [4]),
     }
     meta.update(extras)
-    dtype_bytes = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1}
+    dtype_bytes = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1, "U8": 1}
     for name, (dtype, shape) in meta.items():
         count = 1
         for dim in shape:
@@ -94,7 +104,7 @@ def build_checkpoint(warm: Path):
             handle.write(bytes(blob))
     with open(warm / "index.json", "w", encoding="utf-8") as handle:
         json.dump({"weight_map": weight_map, "metadata": {"total_size": 0}}, handle)
-    return len(meta)
+    return len(meta), activation
 
 
 def expect_fail(callable_fn, needle: str):
@@ -107,53 +117,83 @@ def expect_fail(callable_fn, needle: str):
     raise AssertionError("expected verify failure did not raise")
 
 
+def run_case(root: Path, codec: str) -> dict:
+    conv.EXPERT_CODEC = codec
+    warm = root / f"warm-{codec}"
+    out = root / f"out-{codec}"
+    warm.mkdir()
+    total, activation = build_checkpoint(warm, codec)
+    conv.cmd_headers(str(warm), str(warm / "index.json"), str(root / f"headers-{codec}.json"))
+    conv.cmd_plan(str(root / f"headers-{codec}.json"), str(out), TP, "selftest-revision",
+                  "aa" * 32, "bb" * 32, "cc" * 32, expert_codec=codec)
+    plan = json.loads((out / "plan.json").read_text())
+    assert plan["tensor_count"] == 4 * 25 + 7 + 2 + 3, plan["tensor_count"]
+    assert plan["tp"] == TP
+    assert plan["expert_codec"] == codec
+    conv.cmd_copy(str(root / f"headers-{codec}.json"), str(out / "plan.json"), str(out),
+                  str(warm), 1, conv.SHARD_COUNT)
+    report = json.loads((out / "engram_report.json").read_text())
+    assert report["accounting"]["engram_excluded"] == 12
+    assert report["accounting"]["dspark_sidecar"] == 2
+    assert report["accounting"]["vision_aligner_out_of_scope"] == 3
+    assert report["accounting"]["activation_scales_out_of_scope"] == len(activation)
+    assert report["accounting"]["pack_consumed"] + 12 + 2 + 3 + len(activation) == total
+    headers = str(root / f"headers-{codec}.json")
+    ver.cmd_verify(headers, str(out), str(warm), str(out / "plan.json"), 1, conv.SHARD_COUNT)
+    pack3 = out / "rank3.spstage"
+    payload = next(e for e in plan["entries"] if e["kind"] == conv.K_Q_A)
+    expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W1)
+    expert_scale = dict(expert)
+    for target, label in ((payload, "spine"), (expert, "expert"),
+                          (expert_scale, "expert-scale" if codec == "nvfp4" else None)):
+        if label is None:
+            continue
+        target = dict(target)
+        offset = target["payload_offset"] if label != "expert-scale" else target["scale_offset"]
+        with open(pack3, "r+b") as handle:
+            handle.seek(offset + 3)
+            original = handle.read(1)
+            handle.seek(offset + 3)
+            handle.write(bytes([original[0] ^ 0xFF]))
+        expect_fail(lambda: ver.cmd_verify(headers, str(out), str(warm),
+                                           str(out / "plan.json"), 1, conv.SHARD_COUNT),
+                    "BYTE MISMATCH")
+        with open(pack3, "r+b") as handle:
+            handle.seek(offset + 3)
+            handle.write(original)
+    if codec == "nvfp4":
+        with open(pack3, "r+b") as handle:
+            handle.seek(expert["scale_offset"] + expert["scale_bytes"] // TP - 2)
+            original = handle.read(1)
+            handle.seek(expert["scale_offset"] + expert["scale_bytes"] // TP - 2)
+            handle.write(bytes([original[0] ^ 0xFF]))
+        expect_fail(lambda: ver.cmd_verify(headers, str(out), str(warm),
+                                           str(out / "plan.json"), 1, conv.SHARD_COUNT),
+                    "BYTE MISMATCH")
+        with open(pack3, "r+b") as handle:
+            handle.seek(expert["scale_offset"] + expert["scale_bytes"] // TP - 2)
+            handle.write(original)
+    ver.cmd_verify(headers, str(out), str(warm), str(out / "plan.json"), 1, conv.SHARD_COUNT)
+    return plan
+
+
 def main() -> int:
     patch(conv)
     patch(ver)
     root = Path(tempfile.mkdtemp(prefix="dsv41-stagepack-selftest-"))
     try:
-        warm = root / "warm"
-        out = root / "out"
-        warm.mkdir()
-        total = build_checkpoint(warm)
-        conv.cmd_headers(str(warm), str(warm / "index.json"), str(root / "headers.json"))
-        conv.cmd_plan(str(root / "headers.json"), str(out), TP, "selftest-revision",
-                      "aa" * 32, "bb" * 32, "cc" * 32)
-        plan = json.loads((out / "plan.json").read_text())
-        assert plan["tensor_count"] == 4 * 25 + 7 + 2 + 3, plan["tensor_count"]
-        assert plan["tp"] == TP
-        conv.cmd_copy(str(root / "headers.json"), str(out / "plan.json"), str(out),
-                      str(warm), 1, conv.SHARD_COUNT)
-        report = json.loads((out / "engram_report.json").read_text())
-        assert report["accounting"]["engram_excluded"] == 12
-        assert report["accounting"]["dspark_sidecar"] == 2
-        assert report["accounting"]["vision_aligner_out_of_scope"] == 3
-        assert report["accounting"]["pack_consumed"] + 12 + 2 + 3 == total
-        ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
-                       str(out / "plan.json"), 1, conv.SHARD_COUNT)
-        pack3 = out / "rank3.spstage"
-        payload = next(e for e in plan["entries"] if e["kind"] == conv.K_Q_A)
-        expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W1)
-        for target, label in ((payload, "spine"), (expert, "expert")):
-            with open(pack3, "r+b") as handle:
-                handle.seek(target["payload_offset"] + 3)
-                original = handle.read(1)
-                handle.seek(target["payload_offset"] + 3)
-                handle.write(bytes([original[0] ^ 0xFF]))
-            expect_fail(lambda: ver.cmd_verify(str(root / "headers.json"), str(out),
-                                               str(warm), str(out / "plan.json"),
-                                               1, conv.SHARD_COUNT),
-                        "BYTE MISMATCH")
-            with open(pack3, "r+b") as handle:
-                handle.seek(target["payload_offset"] + 3)
-                handle.write(original)
-        ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
-                       str(out / "plan.json"), 1, conv.SHARD_COUNT)
-        spine = plan["spine_bytes"]
-        expert = plan["expert_bytes"]
-        print(f"dsv41 stagepack selftest PASS: {plan['tensor_count']} entries, "
-              f"tp{TP}, spine {spine} B, expert {expert} B, corruption localized in "
-              f"spine+expert, engram 12 excluded")
+        results = {}
+        for codec in ("mxfp4", "nvfp4"):
+            plan = run_case(root, codec)
+            results[codec] = (plan["tensor_count"], plan["spine_bytes"], plan["expert_bytes"])
+            print(f"dsv41 stagepack selftest [{codec}] PASS: {plan['tensor_count']} entries, "
+                  f"tp{TP}, spine {plan['spine_bytes']} B, expert {plan['expert_bytes']} B, "
+                  f"corruption localized in spine+expert"
+                  + ("+scale-plane+global" if codec == "nvfp4" else "")
+                  + ", engram 12 excluded")
+        assert results["nvfp4"][2] > results["mxfp4"][2], "nvfp4 expert window must carry "
+        "the denser per-16 plane plus globals"
+        print("dsv41 stagepack selftest PASS: mxfp4 + nvidia nvfp4 wires verified")
         return 0
     finally:
         shutil.rmtree(root, ignore_errors=True)

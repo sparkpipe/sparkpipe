@@ -98,8 +98,10 @@ def verify_dsv41(pack: Path) -> dict:
             fail("flags", f"{pack.name}: abi {abi} flags {flags:#x}")
         if (hidden, vocab, experts) != (dsv41.HIDDEN, dsv41.VOCAB, dsv41.ROUTED_EXPERTS):
             fail("geometry", f"{pack.name}: {hidden}x{vocab}x{experts}")
-        if (linear_codec, expert_codec) != (dsv41.CODEC_FP8, dsv41.CODEC_MXFP4):
+        if linear_codec != dsv41.CODEC_FP8 or expert_codec not in (
+                dsv41.CODEC_MXFP4, dsv41.CODEC_NVFP4):
             fail("codecs", f"{pack.name}: linear {linear_codec} expert {expert_codec}")
+        expert_codec_name = "nvfp4" if expert_codec == dsv41.CODEC_NVFP4 else "mxfp4"
         if (stage_count, stage_index) != (1, 0) or first_layer != 0 or \
                 layer_count != dsv41.LAYER_COUNT or total_layers != dsv41.LAYER_COUNT:
             fail("stages", f"{pack.name}: stage {stage_index}/{stage_count} "
@@ -127,7 +129,8 @@ def verify_dsv41(pack: Path) -> dict:
                 order.append((kind, layer))
     for kind, layer in order:
         rows, cols, groups = dsv41.entry_shape(kind, tp_degree)
-        payload_type, codec, scale_enc, pbytes, sbytes = dsv41.entry_layout(kind, tp_degree)
+        payload_type, codec, scale_enc, pbytes, sbytes = dsv41.entry_layout(
+            kind, tp_degree, expert_codec_name)
         expected.append(dict(kind=kind, layer=layer, payload_type=payload_type,
                              codec=codec, scale_encoding=scale_enc, groups=groups,
                              rows=rows, cols=cols, payload_bytes=pbytes,

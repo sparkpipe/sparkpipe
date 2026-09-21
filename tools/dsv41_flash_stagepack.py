@@ -4,8 +4,11 @@
 subcommands:
   headers WARM_DIR INDEX_JSON OUT_JSON
       read all safetensors shard headers, cross-check against the index weight_map
-  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA
-      validate the checkpoint against the kind map, write pack skeletons + plan.json
+  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA [MXFP4|NVFP4]
+      validate the checkpoint against the kind map, write pack skeletons + plan.json;
+      the expert codec defaults to the DSpark mxfp4 wire, nvfp4 selects the
+      nvidia-convention wire (payload + per-16 ue4m3 plane + weight_scale_2
+      global per expert, verbatim)
   copy HEADERS_JSON PLAN_JSON OUT_DIR WARM_DIR LO HI
       copy payload contributed by source shards [LO,HI] into every rank pack
   validate-nvidia WARM_DIR INDEX_JSON
@@ -41,7 +44,7 @@ COPY_BUDGET = 16 << 20
 MODEL_REVISION_BYTES = 65
 MAGIC = 0x31413444
 
-DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1}
+DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1, "U8": 1}
 
 K_EMBEDDING = 0
 K_FINAL_NORM = 1
@@ -173,9 +176,14 @@ def entry_shape(kind: int, tp: int):
     fail(f"unknown kind {kind}")
 
 
-def entry_layout(kind: int, tp: int):
+def entry_layout(kind: int, tp: int, expert_codec: str | None = None):
+    codec = expert_codec or EXPERT_CODEC
     rows, cols, groups = entry_shape(kind, tp)
     if kind in EXPERT_KINDS:
+        if codec == "nvfp4":
+            return (PAYLOAD_PACKED, CODEC_NVFP4, SCALE_UE4M3_F32_GLOBAL,
+                    rows * cols * groups,
+                    groups * (rows * (cols * 2 // 16) + 4))
         return (PAYLOAD_PACKED, CODEC_MXFP4, SCALE_E8M0,
                 rows * cols * groups, rows * (cols * 2 // 32) * groups)
     if kind in (K_Q_A, K_Q_B, K_KV_A, K_O_A, K_O_B, K_IDX_Q_B, K_SH_W1, K_SH_W2, K_SH_W3):
@@ -184,6 +192,42 @@ def entry_layout(kind: int, tp: int):
                 K_HC_F_FN, K_HC_F_BASE, K_HC_F_SCALE, K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return PAYLOAD_F32, 0, SCALE_NONE, rows * cols * 4, 0
     return PAYLOAD_BF16, 1, SCALE_NONE, rows * cols * 2, 0
+
+
+EXPERT_CODEC = "mxfp4"
+
+
+def consumed_names() -> set:
+    names = set()
+    for kind, _, spec in entry_specs():
+        if "{e}" not in spec[0]:
+            names.add(spec[0])
+            if spec[1]:
+                names.add(spec[1])
+            continue
+        for expert in range(ROUTED_EXPERTS):
+            names.add(spec[0].format(e=expert))
+            if spec[1]:
+                names.add(spec[1].format(e=expert))
+    if EXPERT_CODEC == "nvfp4":
+        for layer in range(LAYER_COUNT):
+            for kind in EXPERT_KINDS:
+                for expert in range(ROUTED_EXPERTS):
+                    spec = nvidia_expert_spec(kind, layer, expert)
+                    names.add(spec["payload"])
+                    names.add(spec["scale"])
+                    names.add(spec["global"])
+    return names
+
+
+def activation_scale_names() -> set:
+    names = set()
+    if EXPERT_CODEC == "nvfp4":
+        for layer in range(LAYER_COUNT):
+            for kind in EXPERT_KINDS:
+                for expert in range(ROUTED_EXPERTS):
+                    names.add(nvidia_expert_spec(kind, layer, expert)["input_scale"])
+    return names
 
 
 def checkpoint_spec(kind: int, layer: int):
@@ -256,6 +300,10 @@ def checkpoint_spec(kind: int, layer: int):
     if kind in EXPERT_KINDS:
         w = "w2" if kind == K_EXP_W2 else "w1" if kind == K_EXP_W1 else "w3"
         shape = [5120, EXPERT_WIDTH // 2] if kind == K_EXP_W2 else [EXPERT_WIDTH, HIDDEN // 2]
+        if EXPERT_CODEC == "nvfp4":
+            return (f + "experts.{e}." + w + ".weight",
+                    f + "experts.{e}." + w + ".weight_scale",
+                    "U8", shape, [shape[0], shape[1] * 2 // 16], "expert")
         return (f + "experts.{e}." + w + ".weight", f + "experts.{e}." + w + ".scale",
                 "I8", shape, expert_scale_shape(shape), "expert")
     if kind == K_SH_W1:
@@ -286,6 +334,8 @@ def normalize(shape: list) -> list:
         return shape
     if len(shape) == 1:
         return [1, shape[0]]
+    if len(shape) == 0:
+        return [1, 1]
     fail(f"tensor rank {len(shape)} unsupported: {shape}")
 
 
@@ -317,20 +367,6 @@ def entry_specs() -> list:
             if kind_in_layer(kind, layer):
                 specs.append((kind, layer, checkpoint_spec(kind, layer)))
     return specs
-
-
-def consumed_names() -> set:
-    names = set()
-    for kind, _, spec in entry_specs():
-        if "{e}" in spec[0]:
-            for expert in range(ROUTED_EXPERTS):
-                names.add(spec[0].format(e=expert))
-                names.add(spec[1].format(e=expert))
-        else:
-            names.add(spec[0])
-            if spec[1]:
-                names.add(spec[1])
-    return names
 
 
 def load_flat(headers_json: str) -> dict:
@@ -397,6 +433,8 @@ def expert_scale_shape(shape: list) -> list:
 
 
 CODEC_NVFP4 = 6
+CODEC_MXFP4 = 7
+SCALE_E8M0 = 3
 SCALE_UE4M3_F32_GLOBAL = 4
 
 
@@ -407,7 +445,9 @@ def nvidia_expert_spec(kind: int, layer: int, expert: int) -> dict:
     plane), an F8_E4M3 per-16 scale plane [rows, cols/16], and two F32
     scalars (input_scale, weight_scale_2). The pack wire for this
     convention is the nvfp4 codec: payload verbatim, per-16 plane
-    verbatim, weight_scale_2 as the per-expert 4-byte global."""
+    verbatim, weight_scale_2 as the per-expert 4-byte global;
+    input_scale is the activation-side scale and never enters the
+    weight pack."""
     w = "w2" if kind == K_EXP_W2 else "w1" if kind == K_EXP_W1 else "w3"
     shape = [5120, EXPERT_WIDTH // 2] if kind == K_EXP_W2 else [EXPERT_WIDTH, HIDDEN // 2]
     cols = shape[1] * 2
@@ -419,6 +459,11 @@ def nvidia_expert_spec(kind: int, layer: int, expert: int) -> dict:
         "payload_dtype": "U8", "payload_shape": shape,
         "scale_dtype": "F8_E4M3", "scale_shape": [shape[0], cols // 16],
     }
+
+
+def expert_stem(kind: int, layer: int) -> str:
+    w = "w2" if kind == K_EXP_W2 else "w1" if kind == K_EXP_W1 else "w3"
+    return f"layers.{layer}.ffn.experts.{{e}}.{w}"
 
 
 def cmd_validate_nvidia(warm: str, index_path: str) -> int:
@@ -521,12 +566,25 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
                     for g in range(groups):
                         src_name = name.format(e=rank * groups + g)
                         src = flat[src_name]
+                        span = per_group
+                        if plane == "scale" and EXPERT_CODEC == "nvfp4":
+                            span = shape[0] * shape[1]
                         pieces.append({"rank": rank, "kind": kind, "layer": layer,
                                        "plane": plane, "shard": src["shard"],
                                        "name": src_name, "row0": 0, "row1": shape[0],
                                        "col0": 0, "col1": shape[1],
                                        "dst_offset": entry[offset_field] + g * per_group,
-                                       "dst_bytes": per_group})
+                                       "dst_bytes": span})
+                        if plane == "scale" and EXPERT_CODEC == "nvfp4":
+                            gname = nvidia_expert_spec(
+                                kind, layer, rank * groups + g)["global"]
+                            gsrc = flat[gname]
+                            pieces.append({"rank": rank, "kind": kind, "layer": layer,
+                                           "plane": plane, "shard": gsrc["shard"],
+                                           "name": gname, "row0": 0, "row1": 1,
+                                           "col0": 0, "col1": 1,
+                                           "dst_offset": entry[offset_field] + g * per_group + span,
+                                           "dst_bytes": 4})
                 continue
             src0 = flat[name]
             for rank in range(tp):
@@ -540,7 +598,12 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
 
 
 def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
-             contract_hex: str, config_hex: str, recipe_hex: str):
+             contract_hex: str, config_hex: str, recipe_hex: str,
+             expert_codec: str = "mxfp4"):
+    global EXPERT_CODEC
+    if expert_codec not in ("mxfp4", "nvfp4"):
+        fail(f"unsupported expert codec {expert_codec}")
+    EXPERT_CODEC = expert_codec
     if tp <= 0 or ROUTED_EXPERTS % tp or VOCAB % tp or 64 % tp or 4096 % tp or 32 % tp:
         fail(f"tp {tp} does not divide the sharded dimensions")
     document, flat = load_flat(headers_json)
@@ -548,9 +611,14 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
     missing = sorted(consumed - set(flat))
     if missing:
         fail(f"kind map consumes tensors absent from the checkpoint: {missing[:8]}")
+    activation = activation_scale_names()
+    missing_activation = sorted(activation - set(flat))
+    if missing_activation:
+        fail(f"activation-side scale tensors absent from the checkpoint: "
+             f"{missing_activation[:8]}")
     engram, sidecar, scope = {}, [], []
     for name, meta in flat.items():
-        if name in consumed:
+        if name in consumed or name in activation:
             continue
         if name.startswith("layers.") and ".engram." in name:
             engram[name] = meta
@@ -562,11 +630,21 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             fail(f"unaccounted checkpoint tensor: {name}")
     if len(engram) != ENGRAM_TENSOR_COUNT:
         fail(f"engram module inventory {len(engram)} != {ENGRAM_TENSOR_COUNT}")
-    for kind, _, spec in entry_specs():
+    for kind, layer, spec in entry_specs():
         if "{e}" in spec[0]:
+            scale_dtype = "F8_E4M3" if EXPERT_CODEC == "nvfp4" else "F8_E8M0"
             for expert in range(ROUTED_EXPERTS):
                 check_shape(spec[0].format(e=expert), flat, spec[2], spec[3])
-                check_shape(spec[1].format(e=expert), flat, "F8_E8M0", spec[4])
+                check_shape(spec[1].format(e=expert), flat, scale_dtype, spec[4])
+                if EXPERT_CODEC == "nvfp4":
+                    ns = nvidia_expert_spec(kind, layer, expert)
+                    for key in ("global", "input_scale"):
+                        meta = flat.get(ns[key])
+                        if meta is None:
+                            fail(f"{ns[key]}: missing from the checkpoint")
+                        if meta["dtype"] != "F32" or meta["shape"] not in ([1, 1],):
+                            fail(f"{ns[key]}: expected F32 scalar, got "
+                                 f"{meta['dtype']} {meta['shape']}")
         else:
             check_shape(spec[0], flat, spec[2], spec[3])
             if spec[1]:
@@ -609,10 +687,11 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             expert_bytes += total
         else:
             spine_bytes += total
+    expert_codec_id = CODEC_NVFP4 if EXPERT_CODEC == "nvfp4" else CODEC_MXFP4
     header = bytearray(HEADER_BYTES)
     struct.pack_into("<20I2Q", header, 0, MAGIC, 1, HEADER_BYTES, ENTRY_BYTES, 1, 0,
                      len(entries), 1, 0, 0, LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB,
-                     ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, 0, 0,
+                     ROUTED_EXPERTS, CODEC_FP8, expert_codec_id, tp, 0, 0,
                      directory_offset, file_bytes)
     rev = revision.encode()
     if len(rev) >= MODEL_REVISION_BYTES:
@@ -641,7 +720,7 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
         finally:
             os.close(fd)
     pieces = build_pieces(flat, tp, entries, order)
-    plan = {"tp": tp, "expert_codec": "mxfp4", "revision": revision,
+    plan = {"tp": tp, "expert_codec": EXPERT_CODEC, "revision": revision,
             "contract_sha256": contract_hex, "config_sha256": config_hex,
             "recipe_sha256": recipe_hex, "directory_offset": directory_offset,
             "file_bytes": file_bytes, "tensor_count": len(entries),
@@ -655,9 +734,11 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
                      for name, meta in sorted(engram.items())}
     accounting = {"checkpoint_tensors": len(flat), "pack_consumed": len(consumed),
                   "engram_excluded": len(engram), "dspark_sidecar": len(sidecar),
-                  "vision_aligner_out_of_scope": len(scope)}
+                  "vision_aligner_out_of_scope": len(scope),
+                  "activation_scales_out_of_scope": len(activation)}
     if sum(accounting[k] for k in ("pack_consumed", "engram_excluded", "dspark_sidecar",
-                                   "vision_aligner_out_of_scope")) != len(flat):
+                                   "vision_aligner_out_of_scope",
+                                   "activation_scales_out_of_scope")) != len(flat):
         fail("tensor accounting does not close")
     with open(os.path.join(out_dir, "engram_report.json"), "w", encoding="utf-8") as handle:
         json.dump({"engram_tensors": engram_report,
@@ -737,8 +818,9 @@ def main(argv: list) -> int:
             cmd_headers(argv[2], argv[3], argv[4])
         elif argv[1] == "validate-nvidia" and len(argv) == 4:
             return cmd_validate_nvidia(argv[2], argv[3])
-        elif argv[1] == "plan" and len(argv) == 9:
-            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8])
+        elif argv[1] == "plan" and len(argv) in (9, 10):
+            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8],
+                     expert_codec=argv[9] if len(argv) == 10 else "mxfp4")
         elif argv[1] == "copy" and len(argv) == 8:
             cmd_copy(argv[2], argv[3], argv[4], argv[5], int(argv[6]), int(argv[7]))
         else:
