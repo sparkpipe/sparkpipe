@@ -15,6 +15,7 @@
 #define SPARK_LAGUNA_STAGEPACK_SHA256_BYTES 32u
 #define SPARK_LAGUNA_STAGEPACK_FLAG_DFLASH UINT32_C(0x00000002)
 #define SPARK_LAGUNA_STAGEPACK_KNOWN_FLAGS SPARK_LAGUNA_STAGEPACK_FLAG_DFLASH
+#define SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED UINT32_C(8)
 
 typedef enum SparkLagunaStagePackPayloadType
 {
@@ -256,6 +257,13 @@ static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,ui
           SparkLagunaStagePackKindIsRouted(tensor_kind) != 0u) )
         return(-4);
     return(0);
+}
+
+static inline uint32_t SparkLagunaStagePackExpertCodecIsMixedExecutable(uint32_t codec)
+{
+    return(codec == SPARK_WEIGHT_CODEC_BF16 ||
+           codec == SPARK_WEIGHT_CODEC_FP8_E4M3 ||
+           codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 ? 1u : 0u);
 }
 
 static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkLagunaStagePackTensorShape *shape)

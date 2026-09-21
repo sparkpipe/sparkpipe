@@ -1,7 +1,7 @@
 include ../../runtime/weightd_sources.mk
 
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
+$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, mxfp4, or mixed)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -10,7 +10,7 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-LAGUNA_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
+LAGUNA_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4 mixed
 ifeq ($(filter $(EXPERT_CODEC),$(LAGUNA_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(LAGUNA_EXPERT_CODECS))
 endif
@@ -35,6 +35,9 @@ LAGUNA_EXPERT_CODEC_ID := 6
 endif
 ifeq ($(EXPERT_CODEC),mxfp4)
 LAGUNA_EXPERT_CODEC_ID := 7
+endif
+ifeq ($(EXPERT_CODEC),mixed)
+LAGUNA_EXPERT_CODEC_ID := 8
 endif
 
 MODULE_FAMILY := laguna

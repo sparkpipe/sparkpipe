@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 
+#include <unistd.h>
+
 #include "spark_laguna_stagepack_format.h"
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
 
@@ -19,6 +21,7 @@ typedef struct SparkLagunaSynthesizeContext
 	uint32_t owns_head;
 	uint32_t include_dflash;
 	uint32_t expert_codec;
+	uint32_t sparse_payloads;
 	uint64_t payload_cursor;
 	uint64_t seed;
 } SparkLagunaSynthesizeContext;
@@ -36,13 +39,26 @@ typedef struct SparkLagunaSynthesizeContext
 
 #include "sparkpipe/spark_pack_synthesize_common.h"
 
+static uint32_t SparkLagunaSynthesizeLayerExpertCodec(const SparkLagunaSynthesizeContext *context, uint32_t layer_index)
+{
+	if ( context->expert_codec != SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED )
+		return(context->expert_codec);
+	if ( layer_index % 3u == 0u )
+		return(SPARK_WEIGHT_CODEC_FP8_E4M3);
+	if ( layer_index % 3u == 1u )
+		return(SPARK_WEIGHT_CODEC_NVFP4_E2M1);
+	return(SPARK_WEIGHT_CODEC_BF16);
+}
+
 static int32_t SparkLagunaSynthesizeAppend(SparkLagunaSynthesizeContext *context, uint32_t tensor_kind, uint32_t layer_index)
 {
 	SparkLagunaStagePackTensorShape shape;
 	SparkLagunaStagePackEntry *entry;
+	uint32_t expert_codec;
 	if ( context->entry_count >= SPARK_LAGUNA_SYNTHESIZE_MAX_TENSORS )
 		return(-1);
-	if ( SparkLagunaStagePackExpectedShape(tensor_kind,layer_index,context->expert_codec,context->tp_degree,&shape) != 0 )
+	expert_codec = SparkLagunaSynthesizeLayerExpertCodec(context,layer_index);
+	if ( SparkLagunaStagePackExpectedShape(tensor_kind,layer_index,expert_codec,context->tp_degree,&shape) != 0 )
 		return(-2);
 	entry = &context->entries[context->entry_count];
 	memset(entry,0,sizeof(*entry));
@@ -189,7 +205,8 @@ int main(int argc, char **argv)
 				strcmp(name,"int8") == 0 ? SPARK_WEIGHT_CODEC_INT8 :
 				strcmp(name,"fp8") == 0 ? SPARK_WEIGHT_CODEC_FP8_E4M3 :
 				strcmp(name,"nvfp4") == 0 ? SPARK_WEIGHT_CODEC_NVFP4_E2M1 :
-				strcmp(name,"mxfp4") == 0 ? SPARK_WEIGHT_CODEC_MXFP4_E2M1 : 0u;
+				strcmp(name,"mxfp4") == 0 ? SPARK_WEIGHT_CODEC_MXFP4_E2M1 :
+				strcmp(name,"mixed") == 0 ? SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED : 0u;
 			if ( context.expert_codec == 0u )
 			{
 				fprintf(stderr,"unknown expert codec '%s'\n",name);
@@ -202,6 +219,8 @@ int main(int argc, char **argv)
 			context.owns_head = 1u;
 		else if ( strcmp(argument,"--dflash") == 0 )
 			context.include_dflash = 1u;
+		else if ( strcmp(argument,"--sparse") == 0 )
+			context.sparse_payloads = 1u;
 		else if ( strcmp(argument,"--seed") == 0 && index + 1u < (uint32_t)argc )
 			context.seed = strtoull(argv[++index],0,10);
 		else if ( strcmp(argument,"--revision") == 0 && index + 1u < (uint32_t)argc )
@@ -294,26 +313,42 @@ int main(int argc, char **argv)
 			fclose(file);
 			return(1);
 		}
-	if ( SparkSynthWriteEntries(&context,file,chunk) < 0 )
+	if ( context.sparse_payloads != 0u )
 	{
-		fprintf(stderr,"payload write failed\n");
-		free(chunk);
-		fclose(file);
-		return(1);
+		header.file_bytes = context.payload_cursor;
 	}
-	if ( fseeko(file,0,SEEK_END) != 0 )
+	else
 	{
-		free(chunk);
-		fclose(file);
-		return(1);
+		if ( SparkSynthWriteEntries(&context,file,chunk) < 0 )
+		{
+			fprintf(stderr,"payload write failed\n");
+			free(chunk);
+			fclose(file);
+			return(1);
+		}
+		if ( fseeko(file,0,SEEK_END) != 0 )
+		{
+			free(chunk);
+			fclose(file);
+			return(1);
+		}
+		header.file_bytes = (uint64_t)ftello(file);
 	}
-	header.file_bytes = (uint64_t)ftello(file);
 	if ( fseeko(file,0,SEEK_SET) != 0 ||
 	     fwrite(&header,sizeof(header),1,file) != 1u )
 	{
 		free(chunk);
 		fclose(file);
 		return(1);
+	}
+	if ( context.sparse_payloads != 0u )
+	{
+		if ( ftruncate(fileno(file),(off_t)header.file_bytes) != 0 )
+		{
+			free(chunk);
+			fclose(file);
+			return(1);
+		}
 	}
 	free(chunk);
 	fclose(file);

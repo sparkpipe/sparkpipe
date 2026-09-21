@@ -17,14 +17,19 @@
 #include "modules/laguna_resident_decode_stage/source/cuda/api.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/config.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/layer.cuh"
+#include "spark_laguna_stagepack_format.h"
 
 #define LAGUNA_UNITY_TILE_N 128u
 #define LAGUNA_UNITY_TILE_K 64u
 #define LAGUNA_UNITY_STAGES 2u
 #define LAGUNA_UNITY_WARPS 8u
 
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+using LagunaExpertWeightFormat = LmBf16Format;
+#else
 using LagunaExpertWeightFormat =
     typename LmWeightCodec<LAGUNA_EXPERT_WEIGHT_CODEC>::Format;
+#endif
 
 static_assert(
     LagunaKv::kSlotBytes == LAGUNA_KV_SLOT_BYTES,
@@ -34,9 +39,26 @@ static_assert(
     "laguna BF16 tile depth must contain complete MMA steps");
 static_assert(LAGUNA_EXPERT_WEIGHT_CODEC != SPARK_WEIGHT_CODEC_NONE,
     "laguna routed experts require a package codec");
+
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+static_assert(
+    LmWeightCodec<SPARK_WEIGHT_CODEC_BF16>::Format::kMmaK ==
+        LmBf16Format::kMmaK,
+    "laguna mixed BF16 expert codec must decode to the BF16 MMA geometry");
+static_assert(
+    LmWeightCodec<SPARK_WEIGHT_CODEC_FP8_E4M3>::Format::kMmaK ==
+        LmBf16Format::kMmaK,
+    "laguna mixed FP8 expert codec must decode to the BF16 MMA geometry");
+static_assert(
+    LmWeightCodec<SPARK_WEIGHT_CODEC_NVFP4_E2M1>::Format::kMmaK ==
+        LmBf16Format::kMmaK,
+    "laguna mixed NVFP4 expert codec must decode to the BF16 MMA geometry");
+#else
 static_assert(
     LagunaExpertWeightFormat::kMmaK == LmBf16Format::kMmaK,
     "laguna expert codec must decode to the BF16 MMA geometry");
+#endif
+
 static_assert(
     LmTileKIsSwizzleable(LAGUNA_UNITY_TILE_K, LmBf16Format::kStoredBits),
     "laguna BF16 activation tile must be TMA-swizzleable");
@@ -92,6 +114,11 @@ extern "C" int32_t LagunaGemmExpertWeightBf16Activation(
     bool grouped,
     void *stream_handle)
 {
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+    (void)weight_payload;
+    (void)grouped;
+    return LM_LAUNCH_ERR_SHAPE;
+#else
     if (!grouped)
     {
         return LM_LAUNCH_ERR_SHAPE;
@@ -113,6 +140,7 @@ extern "C" int32_t LagunaGemmExpertWeightBf16Activation(
             multiprocessors,
             grouped,
             (cudaStream_t)stream_handle);
+#endif
 }
 
 extern "C" int32_t LagunaLayerAttentionBf16(
@@ -150,12 +178,33 @@ extern "C" int32_t LagunaLayerMoeExpertWeightBf16Activation(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+    if (buffers == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    switch (buffers->expert_codec)
+    {
+    case SPARK_WEIGHT_CODEC_BF16:
+        return LagunaLayerMoe<SPARK_WEIGHT_CODEC_BF16>(
+            buffers, rows, packed_rows, multiprocessors, stream);
+    case SPARK_WEIGHT_CODEC_FP8_E4M3:
+        return LagunaLayerMoe<SPARK_WEIGHT_CODEC_FP8_E4M3>(
+            buffers, rows, packed_rows, multiprocessors, stream);
+    case SPARK_WEIGHT_CODEC_NVFP4_E2M1:
+        return LagunaLayerMoe<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(
+            buffers, rows, packed_rows, multiprocessors, stream);
+    default:
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+#else
     return LagunaLayerMoe<LAGUNA_EXPERT_WEIGHT_CODEC>(
         buffers,
         rows,
         packed_rows,
         multiprocessors,
         stream);
+#endif
 }
 
 extern "C" int32_t LagunaHeadFullVocab(

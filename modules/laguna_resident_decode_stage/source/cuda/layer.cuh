@@ -74,6 +74,7 @@ struct LagunaLayerBuffers
 	const void *expert_w1_scale;
 	const void *expert_w2_weight;
 	const void *expert_w2_scale;
+	uint32_t expert_codec;
 	const void *shared_gate_up_weight;
 	const void *shared_down_weight;
 

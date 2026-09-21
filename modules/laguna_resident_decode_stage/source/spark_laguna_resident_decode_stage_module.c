@@ -89,6 +89,7 @@ struct SparkLagunaModuleState
 	uint32_t first_layer_index;
 	uint32_t layer_count;
 	uint32_t expert_weight_codec;
+	uint32_t expert_codec_by_layer[SPARK_LAGUNA_MODEL_LAYER_COUNT];
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	uint32_t tp_collective_disabled;
@@ -177,7 +178,8 @@ static SparkStatus SparkLagunaModuleConfigure(
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( SparkLagunaResidentDecodeStageSpanIsValid(context->stage_count,context->stage_index,context->first_layer_index,context->layer_count) == 0u || context->layer_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != LAGUNA_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_LAGUNA_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || (context->flags & ~SPARK_LAGUNA_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u )
+	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u &&
+	     context->expert_weight_codec != SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( context->tp_degree != SPARK_LAGUNA_MODEL_TENSOR_PARALLEL_DEGREE || context->tp_degree == 0u || SPARK_LAGUNA_MODEL_OUTPUT_VOCAB_COUNT % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_DENSE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u || SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION % context->tp_degree != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -309,15 +311,16 @@ static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest
 	const SparkLagunaStagePackEntry *entry;
 	SparkStatus status;
 	uint64_t expected = 0u;
-	uint32_t index,plane;
+	uint32_t index,plane,planes;
 	for (index=0u; index<context->count; index++)
 	{
 		entry = &context->entries[index];
 		if ( entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP && entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
 			continue;
-		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
+		if ( SparkLagunaStagePackExpertCodecIsMixedExecutable(entry->weight_codec) == 0u )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		for (plane=0u; plane<2u; plane++)
+		planes = entry->weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 2u;
+		for (plane=0u; plane<planes; plane++)
 		{
 			status = SparkLagunaManifestPlane(manifest,entry,plane);
 			if ( status != SPARK_STATUS_OK )
@@ -534,6 +537,47 @@ static uint64_t SparkLagunaModuleExpectedMtpBits(const SparkLagunaModuleState *s
 	return(0u);
 }
 
+static uint32_t SparkLagunaModuleKindIsExpert(uint32_t tensor_kind)
+{
+	return(tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP ||
+		tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN ? 1u : 0u);
+}
+
+static uint32_t SparkLagunaModuleLayerExpertCodec(
+	const SparkLagunaModuleState *state,
+	uint32_t layer)
+{
+	uint32_t codec = state->expert_codec_by_layer[layer];
+	if ( state->expert_weight_codec != SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED )
+		return(state->expert_weight_codec);
+	return(codec != 0u ? codec : SPARK_WEIGHT_CODEC_FP8_E4M3);
+}
+
+static SparkStatus SparkLagunaModuleEntryExpertCodec(
+	SparkLagunaModuleState *state,
+	const SparkLagunaStagePackEntry *entry,
+	uint32_t *codec)
+{
+	uint32_t recorded;
+	if ( SparkLagunaModuleKindIsExpert(entry->tensor_kind) == 0u ||
+		state->expert_weight_codec != SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED )
+	{
+		*codec = state->expert_weight_codec;
+		return(SPARK_STATUS_OK);
+	}
+	*codec = entry->weight_codec;
+	if ( SparkWeightCodecIsKnown(*codec) == 0u )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( SparkLagunaStagePackExpertCodecIsMixedExecutable(*codec) == 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	recorded = state->expert_codec_by_layer[entry->layer_index];
+	if ( recorded == 0u )
+		state->expert_codec_by_layer[entry->layer_index] = *codec;
+	else if ( recorded != *codec )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
 static uint64_t SparkLagunaModuleExpectedLayerBits(
 	const SparkLagunaModuleState *state,
 	uint32_t layer)
@@ -543,7 +587,7 @@ static uint64_t SparkLagunaModuleExpectedLayerBits(
 	uint32_t kind;
 	bits = 0u;
 	for (kind=SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_INPUT_NORM; kind<SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT; kind++)
-		if ( SparkLagunaStagePackExpectedShape(kind,layer,state->expert_weight_codec,state->tp_degree,&shape) == 0 )
+		if ( SparkLagunaStagePackExpectedShape(kind,layer,SparkLagunaModuleLayerExpertCodec(state,layer),state->tp_degree,&shape) == 0 )
 			bits |= UINT64_C(1) << kind;
 	if ( (state->pack_flags & SPARK_LAGUNA_STAGEPACK_FLAG_DFLASH) != 0u )
 		bits |= UINT64_C(1) << (SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT + 1u);
@@ -579,9 +623,13 @@ static SparkStatus SparkLagunaModuleValidateEntry(
 {
 	SparkLagunaStagePackTensorShape shape;
 	uint64_t expected_payload,expected_scale;
+	uint32_t codec,status;
+	status = SparkLagunaModuleEntryExpertCodec(state,entry,&codec);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
 	if ( entry->tensor_kind < SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT )
 	{
-		if ( SparkLagunaStagePackExpectedShape(entry->tensor_kind,entry->layer_index,state->expert_weight_codec,state->tp_degree,&shape) < 0 )
+		if ( SparkLagunaStagePackExpectedShape(entry->tensor_kind,entry->layer_index,codec,state->tp_degree,&shape) < 0 )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		if ( entry->payload_type != shape.payload_type || entry->weight_codec != shape.weight_codec || entry->scale_encoding != shape.scale_encoding || entry->group_count != shape.group_count || entry->rows != shape.rows || entry->columns != shape.columns )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
@@ -1413,6 +1461,7 @@ static void SparkLagunaBuildWave(SparkLagunaTpChain *chain)
 	wave->final_norm_bf16 = state->final_norm_bf16;
 	wave->lm_head_bf16 = state->lm_head_bf16;
 	wave->layers = state->layers;
+	wave->expert_codec_by_layer = state->expert_codec_by_layer;
 	wave->lazy_experts = state->lazy_pack != 0 ? 1u : 0u;
 	wave->slot = slot;
 	wave->yarn_inv_freq = state->yarn_inv_freq;

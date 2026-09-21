@@ -1177,6 +1177,53 @@ build/test_qwen38_execute: tests/test_qwen38_execute.c modules/qwen38_max_reside
 build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP build/test_qwen38_pack_load (nvcc unavailable; spark-gated pack-load smoke)"; fi
 
+# Laguna per-layer expert codec twin: compile the module's own load-path
+# validation (host C + CUDA stub) against a synthesized sparse pack and
+# drive it layer-by-layer. Mixed build (codec 8) accepts the mixed pack;
+# the uniform fp8 build (codec 5) rejects its header.
+LAGUNA_TWIN_SOURCES := \
+	runtime/stage_module_common.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
+	src/spark_status.c \
+	src/spark_sha256.c \
+	src/spark_ck128.c \
+	ring/transport/hidden_transport.c \
+	ring/transport/tp_collective.c \
+	ring/transport/tp_device_collective.c \
+	cache/kv_cache.c \
+	cache/kv_page_cache.c \
+	cache/kv_page_store.c \
+	cache/kv_model_table.c \
+	tests/cuda_stub/cuda_runtime_stub.c \
+	tests/fake_laguna_cuda_bridge.c
+
+LAGUNA_TWIN_INCLUDE_FLAGS := \
+	-Itests/cuda_stub -I. -Iinclude \
+	-Imodel-families/common/include \
+	-Imodel-families/laguna/include \
+	-Imodules/laguna_resident_decode_stage/include \
+	-Imodules/laguna_resident_decode_stage/source
+
+build/laguna_pack_synthesize: modules/laguna_resident_decode_stage/tools/laguna_pack_synthesize.c
+	$(CC) -std=c11 -Wall -Wextra -Werror -O3 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function \
+		$(LAGUNA_TWIN_INCLUDE_FLAGS) \
+		-DLAGUNA_EXPERT_CODEC_NAME='"mixed"' '-DSPARK_LAGUNA_MODEL_REVISION="wave3-cpu-twin"' \
+		$< -o $@
+
+build/test_laguna_pack_validate_mixed: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES)
+	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(LAGUNA_TWIN_INCLUDE_FLAGS) \
+		-DLAGUNA_EXPERT_WEIGHT_CODEC=8 '-DLAGUNA_EXPERT_CODEC_NAME="mixed"' \
+		-DLAGUNA_MODEL_REVISION='"wave3-cpu-twin"' \
+		-DLAGUNA_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
+		$< $(LAGUNA_TWIN_SOURCES) -lpthread -lm -o $@
+
+build/test_laguna_pack_validate_fp8: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES)
+	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(LAGUNA_TWIN_INCLUDE_FLAGS) \
+		-DLAGUNA_EXPERT_WEIGHT_CODEC=5 '-DLAGUNA_EXPERT_CODEC_NAME="fp8"' \
+		-DLAGUNA_MODEL_REVISION='"wave3-cpu-twin"' \
+		-DLAGUNA_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
+		$< $(LAGUNA_TWIN_SOURCES) -lpthread -lm -o $@
+
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 

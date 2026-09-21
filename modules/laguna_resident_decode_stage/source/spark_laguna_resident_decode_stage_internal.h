@@ -105,6 +105,7 @@ typedef struct SparkLagunaCudaWave
 	const void *lm_head_bf16;
 	const float *yarn_inv_freq;
 	const SparkLagunaLayerWeights *layers;
+	const uint32_t *expert_codec_by_layer;
 	uint32_t lazy_experts;
 	uint32_t expert_lease_local_layer;
 	const uint8_t *expert_lease_base;

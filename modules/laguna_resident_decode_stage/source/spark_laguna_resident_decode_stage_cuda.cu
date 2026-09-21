@@ -260,6 +260,14 @@ static void SparkLagunaBindLayer(
 	buffers->expert_w1_scale = weight->expert_gate_up_scale;
 	buffers->expert_w2_weight = weight->expert_down_payload;
 	buffers->expert_w2_scale = weight->expert_down_scale;
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+	buffers->expert_codec = (wave->expert_codec_by_layer != 0 &&
+		layer < LAGUNA_LAYERS && wave->expert_codec_by_layer[layer] != 0u)
+		? wave->expert_codec_by_layer[layer]
+		: SPARK_WEIGHT_CODEC_FP8_E4M3;
+#else
+	buffers->expert_codec = LAGUNA_EXPERT_WEIGHT_CODEC;
+#endif
 	if ( wave->lazy_experts != 0u )
 	{
 		buffers->expert_w1_weight = (wave->expert_lease_base == 0 || wave->expert_lease_local_layer != local_layer) ? 0 : wave->expert_lease_base + weight->expert_gate_up_payload_offset;
@@ -333,7 +341,30 @@ static int32_t SparkLagunaRunLayerMlpRoute(const SparkLagunaCudaWave *wave,uint3
 	packed_rows = wave->row_count * LAGUNA_TOP_K;
 	stream = (cudaStream_t)wave->slot->stream;
 	SparkLagunaBindLayer(wave,local_layer,&buffers);
-	status = layer < LAGUNA_FIRST_ROUTED_LAYER ? LagunaLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream) : LagunaLayerMoeRoute<LAGUNA_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
+	if ( layer >= LAGUNA_FIRST_ROUTED_LAYER )
+	{
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+		switch ( buffers.expert_codec )
+		{
+		case SPARK_WEIGHT_CODEC_BF16:
+			status = LagunaLayerMoeRoute<SPARK_WEIGHT_CODEC_BF16>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
+			break;
+		case SPARK_WEIGHT_CODEC_FP8_E4M3:
+			status = LagunaLayerMoeRoute<SPARK_WEIGHT_CODEC_FP8_E4M3>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
+			break;
+		case SPARK_WEIGHT_CODEC_NVFP4_E2M1:
+			status = LagunaLayerMoeRoute<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
+			break;
+		default:
+			status = LM_LAUNCH_ERR_SHAPE;
+			break;
+		}
+#else
+		status = LagunaLayerMoeRoute<LAGUNA_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,packed_rows,wave->multiprocessor_count,stream);
+#endif
+	}
+	else
+		status = LagunaLayerDenseMlp(&buffers,wave->row_count,wave->multiprocessor_count,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	return(LM_LAUNCH_OK);
@@ -345,7 +376,21 @@ static int32_t SparkLagunaRunLayerMlpExperts(const SparkLagunaCudaWave *wave,uin
 	if ( (wave->first_layer_index + local_layer) < LAGUNA_FIRST_ROUTED_LAYER )
 		return(LM_LAUNCH_OK);
 	SparkLagunaBindLayer(wave,local_layer,&buffers);
+#if LAGUNA_EXPERT_WEIGHT_CODEC == SPARK_LAGUNA_STAGEPACK_EXPERT_CODEC_MIXED
+	switch ( buffers.expert_codec )
+	{
+	case SPARK_WEIGHT_CODEC_BF16:
+		return(LagunaLayerMoeExperts<SPARK_WEIGHT_CODEC_BF16>(&buffers,wave->row_count,wave->row_count * LAGUNA_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	case SPARK_WEIGHT_CODEC_FP8_E4M3:
+		return(LagunaLayerMoeExperts<SPARK_WEIGHT_CODEC_FP8_E4M3>(&buffers,wave->row_count,wave->row_count * LAGUNA_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	case SPARK_WEIGHT_CODEC_NVFP4_E2M1:
+		return(LagunaLayerMoeExperts<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(&buffers,wave->row_count,wave->row_count * LAGUNA_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	default:
+		return(LM_LAUNCH_ERR_SHAPE);
+	}
+#else
 	return(LagunaLayerMoeExperts<LAGUNA_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * LAGUNA_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+#endif
 }
 
 static int32_t SparkLagunaRunLayerMlp(const SparkLagunaCudaWave *wave,uint32_t local_layer)
