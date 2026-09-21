@@ -208,6 +208,41 @@ class SourceReader:
             self._mmaps[shard] = np.memmap(path, dtype=np.uint8, mode="r", shape=(size,))
         return self._mmaps[shard]
 
+    def _pread_span(self, shard: str, start: int, want: int, name: str) -> np.ndarray:
+        fd = os.open(self.model_dir / shard, os.O_RDONLY)
+        try:
+            blob = bytearray(want)
+            done = 0
+            while done < want:
+                chunk = os.pread(fd, want - done, start + done)
+                if not chunk:
+                    raise PackFailure(f"short payload for {name}")
+                blob[done:done + len(chunk)] = chunk
+                done += len(chunk)
+        finally:
+            os.close(fd)
+        return np.frombuffer(bytes(blob), dtype=np.uint8)
+
+    def raw_rows(self, name: str, r0: int, r1: int) -> np.ndarray:
+        """Exact pread of only the requested ROW window of a 2-D tensor:
+        a per-expert projection read pulls its slice, not the full 3.5 MB
+        tensor (an ~18x network saving when the warm mount is the
+        bottleneck)."""
+        shard = self.weight_map.get(name)
+        if shard is None:
+            raise PackFailure(f"missing tensor in index: {name}")
+        header, data_start = self._header(shard)
+        entry = header.get(name)
+        begin, end = entry["data_offsets"]
+        dtype, shape, _ = self.meta(name)
+        if len(shape) != 2:
+            raise PackFailure(f"{name}: raw_rows needs a 2-D tensor, got {shape}")
+        if not (0 <= r0 < r1 <= shape[0]):
+            raise PackFailure(f"{name}: row window [{r0}:{r1}] outside {shape}")
+        row_bytes = (end - begin) // shape[0]
+        return self._pread_span(shard, data_start + begin + r0 * row_bytes,
+                                (r1 - r0) * row_bytes, name)
+
     def meta(self, name: str) -> Tuple[str, Tuple[int, ...], str]:
         shard = self.weight_map.get(name)
         if shard is None:
@@ -596,11 +631,11 @@ class Packer:
 
         def produce_w1() -> Iterator[bytes]:
             for name, lo, hi in expert_names_w1():
-                dtype, shape, _ = source.meta(name)
+                dtype, _, _ = source.meta(name)
                 if dtype != "BF16":
                     raise PackFailure(f"{name}: expected native BF16, got {dtype}")
-                codes = source.raw(name).view(np.uint16).reshape(shape[0], shape[1])
-                yield np.ascontiguousarray(codes[lo:hi, :]).tobytes()
+                codes = source.raw_rows(name, lo, hi)
+                yield codes.view(np.uint16).reshape(hi - lo, HIDDEN).tobytes()
 
         def produce_w2() -> Iterator[bytes]:
             for expert in range(EXPERTS):
@@ -665,9 +700,9 @@ class Packer:
         def produce_w1() -> Iterator[bytes]:
             for expert in range(EXPERTS):
                 for proj in ("gate_proj", "up_proj"):
-                    codes = source.raw(f"{prefix}.{expert}.{proj}.weight")
-                    matrix = codes.reshape(EXPERT_INTER, HIDDEN)
-                    yield np.ascontiguousarray(matrix[w1_r0:w1_r0 + inter_count, :]).tobytes()
+                    codes = source.raw_rows(f"{prefix}.{expert}.{proj}.weight",
+                                            w1_r0, w1_r0 + inter_count)
+                    yield codes.reshape(inter_count, HIDDEN).tobytes()
 
         def produce_w1_scale() -> Iterator[bytes]:
             for expert in range(EXPERTS):
@@ -724,9 +759,9 @@ class Packer:
         def produce_w1() -> Iterator[bytes]:
             for expert in range(EXPERTS):
                 for proj in ("gate_proj", "up_proj"):
-                    codes = source.raw(f"{prefix}.{expert}.{proj}.weight_packed")
-                    matrix = codes.reshape(EXPERT_INTER, HIDDEN // 2)
-                    yield np.ascontiguousarray(matrix[w1_r0:w1_r0 + inter_count, :]).tobytes()
+                    codes = source.raw_rows(f"{prefix}.{expert}.{proj}.weight_packed",
+                                            w1_r0, w1_r0 + inter_count)
+                    yield codes.reshape(inter_count, HIDDEN // 2).tobytes()
 
         def produce_w1_scale() -> Iterator[bytes]:
             for expert in range(EXPERTS):
@@ -735,9 +770,8 @@ class Packer:
                 for proj in ("gate_proj", "up_proj"):
                     name = f"{prefix}.{expert}.{proj}.weight_scale"
                     _dt, shape, _ = source.meta(name)
-                    plane = source.raw(name).reshape(shape)
-                    planes.append(
-                        np.ascontiguousarray(plane[w1_r0:w1_r0 + inter_count, :]).tobytes())
+                    plane = source.raw_rows(name, w1_r0, w1_r0 + inter_count)
+                    planes.append(plane.reshape(inter_count, shape[1]).tobytes())
                     gname = f"{prefix}.{expert}.{proj}.weight_global_scale"
                     globals_.append(to_bytes(source.raw(gname).view(np.float32)))
                 yield b"".join(planes + globals_)
