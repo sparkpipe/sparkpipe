@@ -780,7 +780,9 @@ class Packer:
             for expert in range(EXPERTS):
                 codes = source.raw(f"{prefix}.{expert}.down_proj.weight_packed")
                 matrix = codes.reshape(HIDDEN, EXPERT_INTER // 2)
-                yield np.ascontiguousarray(matrix[:, w1_r0:w1_r0 + inter_count]).tobytes()
+                packed_c0 = w1_r0 // 2
+                yield np.ascontiguousarray(
+                    matrix[:, packed_c0:packed_c0 + inter_count // 2]).tobytes()
 
         def produce_w2_scale() -> Iterator[bytes]:
             for expert in range(EXPERTS):
