@@ -44,13 +44,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ffn-format", choices=("bf16", "nvfp4a16"), default="bf16",
                         help="nvfp4a16 = the qwen3.8-27b-nvfp4a16-bf16-spine release's "
                              "main-layer FFN projections on the NVFP4 wire")
+    parser.add_argument("--world-rank", type=int, default=None,
+                        help="emit only this world rank (pp_stage = rank // 4)")
     args = parser.parse_args(argv)
 
     here = Path(__file__).resolve().parent
     packer = load_packer(here)
     args.output_directory.mkdir(parents=True, exist_ok=True)
     ranks = []
-    for world_rank in range(PP_STAGES * TP_DEGREE):
+    world_ranks = range(PP_STAGES * TP_DEGREE) if args.world_rank is None \
+        else [args.world_rank]
+    for world_rank in world_ranks:
         pp_stage, tp_rank = divmod(world_rank, TP_DEGREE)
         first_layer = pp_stage * STAGE_LAYERS
         layer_count = STAGE_LAYERS
