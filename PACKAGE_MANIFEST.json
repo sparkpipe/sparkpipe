@@ -1,5 +1,5 @@
 {
-  "file_count": 3215,
+  "file_count": 3218,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -4540,6 +4540,16 @@
       "path": "model-families/qwen4_flash/src/spark_qwen4_flash_work_control.c",
       "sha256": "f99e8493d6a9ba5c0c7d7e65b3af9b144283267fe5278d239ef41f5969b63dba",
       "size_bytes": 322
+    },
+    {
+      "path": "model-families/qwen_image_21/ARCHITECTURE.md",
+      "sha256": "59a8c916639c904fe2920648206e3effdbe8a51b05f51b00e373801770cba1fc",
+      "size_bytes": 2359
+    },
+    {
+      "path": "model-families/qwen_image_21/transformer_census.json",
+      "sha256": "9b9bf3af221b1898a716cc3891161c96e1af5ac5c9f66a0a8f79b5f5ac93531c",
+      "size_bytes": 45030
     },
     {
       "path": "model_contracts/dsv41_flash_authoritative.json",
@@ -12352,6 +12362,11 @@
       "size_bytes": 3571
     },
     {
+      "path": "tools/qwen_image_census.py",
+      "sha256": "81b2b707f7cb5116a7e6b87e8578f1a19ce9924cb9cb12d6ccc5060681c90a89",
+      "size_bytes": 318
+    },
+    {
       "path": "tools/qwenmax_v2_reship.sh",
       "sha256": "c8c8bcc863b065c552ecbec2dc823abe7e0013f6ffba8d50fdef9748208a8ba0",
       "size_bytes": 1321
@@ -16080,5 +16095,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 75551424
+  "total_bytes": 75599131
 }

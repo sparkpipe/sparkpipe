@@ -31,3 +31,12 @@ VAE + scheduler): ONE diffusion resident stage architecture serves both
 families. The autoregressive resident_decode_stage pattern contributes pack
 loading and kernel residency; the denoise loop, scheduler integration, and
 VAE boundary are new stage shapes defined in the driver design (to follow).
+
+
+## Census (MEASURED from shard headers, transformer_census.json)
+
+All 297 tensors BF16 — the release ships the DiT FULL-RESOLUTION (no quant).
+Dual-stream MMDiT confirmed: per-block attn 2 blocks x (to_q/k/v/out
+4096x4096 + norm_q/norm_k 128), img_mlp proj 12288x4096 + out 4096x12288
+(mlp_ratio 3), modulation per block; img_in 4096x64 (latent patch embed);
+per-block tensor count 9.
