@@ -61,6 +61,7 @@ CODEC_BF16 = 1
 CODEC_NONE = 0
 CODEC_FP8 = 5
 CODEC_NVFP4 = 6
+CODEC_MIXED = 8
 SCALE_NONE = 0
 SCALE_F32 = 1
 SCALE_UE4M3_F32_GLOBAL = 4
@@ -531,16 +532,38 @@ class Packer:
 
         self.plan.append(PlanItem(entry, produce))
 
+    def layer_native_expert_codec(self, layer: int) -> int:
+        """The checkpoint's native wire codec for one routed layer, read
+        from the safetensors dtypes: U8 *_packed tensors mean the nvfp4
+        release quantized this layer, F8_E4M3 means fp8, BF16 means the
+        release kept this layer full-resolution (the operator quality
+        law: the unquantized layers are as important as the spine and
+        are NEVER requantized to uniform)."""
+        prefix = f"model.layers.{layer}.mlp.experts"
+        if f"{prefix}.0.gate_proj.weight_packed" in self.s.weight_map:
+            return CODEC_NVFP4
+        dtype, _, _ = self.s.meta(f"{prefix}.0.gate_proj.weight")
+        if dtype == "F8_E4M3":
+            return CODEC_FP8
+        if dtype == "BF16":
+            return CODEC_BF16
+        raise PackFailure(
+            f"layer {layer}: unknown routed-expert dtype {dtype}")
+
     def add_experts(self, layer: int):
         prefix = f"model.layers.{layer}.mlp.experts"
         w1_r0, width = self._rows_slice(EXPERT_INTER)
         w1_r1 = w1_r0 + width
         w1_out_rows = 2 * width
         w2_out_cols = width
-        if self.expert_codec == CODEC_FP8:
+        if self.expert_codec == CODEC_MIXED:
+            codec = self.layer_native_expert_codec(layer)
+        else:
+            codec = self.expert_codec
+        if codec == CODEC_FP8:
             self._add_experts_fp8(layer, prefix, w1_r0, width)
             return
-        if self.expert_codec == CODEC_NVFP4:
+        if codec == CODEC_NVFP4:
             self._add_experts_nvfp4(layer, prefix, w1_r0, width)
             return
         w1 = Entry(K_EXPERT_GATE_UP, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE,
@@ -579,11 +602,11 @@ class Packer:
 
     def _check_expert_layer_codec(self, layer: int, prefix: str, dtype_want: str,
                                   packed: bool):
-        """One expert codec per pack: the module build pins a single
-        LAGUNA_EXPERT_WEIGHT_CODEC and validates every routed-expert
-        entry against it, so a layer whose experts are not native to the
-        arm's codec fails the plan here - bridging the gap would require
-        quantizing (forbidden) and a mixed-dtype pack cannot load."""
+        """Expert-carry layer must be NATIVE to the wire codec it rides:
+        the packer never quantizes, so a uniform (non-mixed) arm fails
+        closed on any layer whose released dtype differs. The mixed arm
+        resolves each layer's codec from the checkpoint first, so this
+        check passes exactly when the entry carries the release bytes."""
         for expert in (0, EXPERTS - 1):
             if packed:
                 name = f"{prefix}.{expert}.gate_proj.weight_packed"
@@ -592,8 +615,7 @@ class Packer:
                         f"layer {layer} routed experts are not native to the "
                         f"nvfp4 arm: {prefix}.{expert}.gate_proj.weight_packed "
                         f"is absent (this release quantizes a subset of the "
-                        f"routed layers; the packer never quantizes and a "
-                        f"mixed pack cannot load)")
+                        f"routed layers; the packer never quantizes)")
             else:
                 name = f"{prefix}.{expert}.gate_proj.weight"
             dtype, _, _ = self.s.meta(name)
@@ -602,7 +624,7 @@ class Packer:
                     f"layer {layer} routed experts are not native to the "
                     f"{self.expert_codec} arm: {name} is {dtype} "
                     f"(this release quantizes a subset of the routed layers; "
-                    f"the packer never quantizes and a mixed pack cannot load)")
+                    f"the packer never quantizes)")
 
     def _add_experts_fp8(self, layer: int, prefix: str, w1_r0: int, width: int):
         """Routed experts on the FP8 wire (module expert codec 5, F32
@@ -720,7 +742,7 @@ class Packer:
         self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
 
     def receipt(self) -> dict:
-        return {
+        receipt = {
             "tp_degree": self.tp_degree,
             "tp_rank": self.tp_rank,
             "first_layer": self.first_layer,
@@ -730,6 +752,19 @@ class Packer:
             "sha_feed": [f"{item.entry.kind}:{item.entry.layer}:"
                          f"{item.entry.payload_bytes}" for item in self.plan],
         }
+        if self.expert_codec == CODEC_MIXED:
+            classes = {}
+            for layer in range(self.first_layer,
+                               self.first_layer + self.layer_count):
+                if layer < FIRST_ROUTED:
+                    continue
+                classes[str(layer)] = self.layer_native_expert_codec(layer)
+            receipt["expert_codec_by_layer"] = classes
+            names = {CODEC_BF16: "bf16", CODEC_FP8: "fp8",
+                     CODEC_NVFP4: "nvfp4"}
+            receipt["expert_codec_classes"] = sorted(
+                {names[c] for c in classes.values()})
+        return receipt
     def build(self) -> None:
         p = "model.layers"
         for layer in range(self.first_layer, self.first_layer + self.layer_count):
@@ -894,6 +929,228 @@ def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
     return f"laguna_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.lgsp"
 
 
+class PackReader:
+    """Parses an emitted .lgsp (header + directory + payload windows)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        with path.open("rb") as file:
+            self.header_bytes = file.read(HEADER_BYTES)
+        fields = struct.unpack("<20I", self.header_bytes[:80])
+        (self.magic, self.format_version, self.header_size, self.entry_size,
+         self.codec_abi, self.flags, self.tensor_count, self.stage_count,
+         self.stage_index, self.first_layer, self.layer_count,
+         self.total_layers, self.hidden, self.vocab, self.experts,
+         self.linear_codec, self.expert_codec, self.kv_codec,
+         self.tp_degree, self.tp_rank) = fields
+        self.directory_offset, self.file_bytes = struct.unpack(
+            "<QQ", self.header_bytes[80:96])
+        self.revision = self.header_bytes[96:96 + 65].split(b"\x00")[0].decode()
+        if self.magic != MAGIC:
+            raise PackFailure(f"{path}: bad magic {self.magic:#x}")
+        with path.open("rb") as file:
+            file.seek(self.directory_offset)
+            raw = file.read(self.tensor_count * ENTRY_BYTES)
+        self.entries = []
+        for index in range(self.tensor_count):
+            chunk = raw[index * ENTRY_BYTES:(index + 1) * ENTRY_BYTES]
+            kind, layer, payload_type, weight_codec, scale_encoding, \
+                group_count, rows, columns, payload_offset, payload_bytes, \
+                scale_offset, scale_bytes = struct.unpack("<IIIIIII IQQQQ", chunk)
+            self.entries.append(dict(
+                kind=kind, layer=layer, payload_type=payload_type,
+                weight_codec=weight_codec, scale_encoding=scale_encoding,
+                group_count=group_count, rows=rows, columns=columns,
+                payload_offset=payload_offset, payload_bytes=payload_bytes,
+                scale_offset=scale_offset, scale_bytes=scale_bytes))
+
+    def read(self, offset: int, count: int) -> bytes:
+        with self.path.open("rb") as file:
+            file.seek(offset)
+            blob = file.read(count)
+        if len(blob) != count:
+            raise PackFailure(f"{self.path}: short read at {offset}")
+        return blob
+
+    def entry(self, kind: int, layer: int) -> dict:
+        for entry in self.entries:
+            if entry["kind"] == kind and entry["layer"] == layer:
+                return entry
+        raise PackFailure(f"{self.path}: missing entry kind={kind} layer={layer}")
+
+
+def verify_pack(reader: PackReader, source: SourceReader, tp_degree: int,
+                tp_rank: int, probe_experts: int = 4) -> dict:
+    """Elementwise pin of an emitted pack against the warm checkpoint,
+    separated by layer class (the operator quality law): the BF16 spine
+    and the full-resolution BF16 routed layers must be BYTE-identical to
+    the release, and the quantized routed layers must carry the released
+    payload/scale/global bytes VERBATIM (the packer never quantizes)."""
+    w1_r0, width = tp_shard_range(EXPERT_INTER, tp_degree, tp_rank)
+    w2_c0 = w1_r0
+    checked = {"spine_layers": 0, "bf16_expert_layers": 0,
+               "fp8_expert_layers": 0, "nvfp4_expert_layers": 0,
+               "compared_bytes": 0, "probe_experts": probe_experts}
+
+    def expect(name: str, got: bytes, want: bytes) -> None:
+        if got == want:
+            return
+        limit = min(len(got), len(want))
+        first = limit
+        for index in range(limit):
+            if got[index] != want[index]:
+                first = index
+                break
+        raise PackFailure(
+            f"{name}: {len(got)} bytes mismatch the warm checkpoint "
+            f"(first diff at {first} of {limit})")
+
+    for layer in range(reader.first_layer, reader.first_layer + reader.layer_count):
+        a = f"model.layers.{layer}.self_attn."
+        entry = reader.entry(K_FUSED_QKV, layer)
+        heads = HEADS_SLIDING if layer % 4 != 0 else HEADS_FULL
+        fused = np.concatenate((
+            source.spine_bf16(f"{a}q_proj.weight"),
+            source.spine_bf16(f"{a}k_proj.weight"),
+            source.spine_bf16(f"{a}v_proj.weight")), axis=0)
+        s0, sn = tp_shard_range(fused.shape[0], tp_degree, tp_rank)
+        blob = reader.read(entry["payload_offset"], entry["payload_bytes"])
+        expect(f"layer {layer} fused_qkv spine", blob,
+               np.ascontiguousarray(fused[s0:s0 + sn, :]).tobytes())
+        checked["spine_layers"] += 1
+        checked["compared_bytes"] += len(blob)
+        if layer < FIRST_ROUTED:
+            continue
+        codec = reader.entry(K_EXPERT_GATE_UP, layer)["weight_codec"]
+        prefix = f"model.layers.{layer}.mlp.experts"
+        w1_entry = reader.entry(K_EXPERT_GATE_UP, layer)
+        w2_entry = reader.entry(K_EXPERT_DOWN, layer)
+        w1_per = w1_entry["payload_bytes"] // EXPERTS
+        w2_per = w2_entry["payload_bytes"] // EXPERTS
+        for expert in range(probe_experts):
+            gate_raw = source.raw(f"{prefix}.{expert}.gate_proj.weight")
+            up_raw = source.raw(f"{prefix}.{expert}.up_proj.weight")
+            down_raw = source.raw(f"{prefix}.{expert}.down_proj.weight")
+            if codec == CODEC_BF16:
+                gate = gate_raw.view(np.uint16).reshape(EXPERT_INTER, HIDDEN)
+                up = up_raw.view(np.uint16).reshape(EXPERT_INTER, HIDDEN)
+                down = down_raw.view(np.uint16).reshape(HIDDEN, EXPERT_INTER)
+                w1_want = np.concatenate((
+                    np.ascontiguousarray(gate[w1_r0:w1_r0 + width, :]),
+                    np.ascontiguousarray(up[w1_r0:w1_r0 + width, :])), axis=0)
+                w2_want = np.ascontiguousarray(down[:, w2_c0:w2_c0 + width])
+                base1 = w1_entry["payload_offset"] + expert * w1_per
+                base2 = w2_entry["payload_offset"] + expert * w2_per
+                expect(f"layer {layer} expert {expert} w1 (bf16 byte-exact)",
+                       reader.read(base1, w1_per), w1_want.tobytes())
+                expect(f"layer {layer} expert {expert} w2 (bf16 byte-exact)",
+                       reader.read(base2, w2_per), w2_want.tobytes())
+                if w1_entry["scale_bytes"] != 0 or w2_entry["scale_bytes"] != 0:
+                    raise PackFailure(
+                        f"layer {layer}: bf16 expert layer carries scale bytes")
+                checked["compared_bytes"] += w1_per + w2_per
+            elif codec == CODEC_FP8:
+                gate = gate_raw.reshape(EXPERT_INTER, HIDDEN)
+                up = up_raw.reshape(EXPERT_INTER, HIDDEN)
+                down = down_raw.reshape(HIDDEN, EXPERT_INTER)
+                w1_want = np.concatenate((
+                    np.ascontiguousarray(gate[w1_r0:w1_r0 + width, :]),
+                    np.ascontiguousarray(up[w1_r0:w1_r0 + width, :])), axis=0)
+                w2_want = np.ascontiguousarray(down[:, w2_c0:w2_c0 + width])
+                base1 = w1_entry["payload_offset"] + expert * w1_per
+                base2 = w2_entry["payload_offset"] + expert * w2_per
+                expect(f"layer {layer} expert {expert} w1 (fp8 codes verbatim)",
+                       reader.read(base1, w1_per), w1_want.tobytes())
+                expect(f"layer {layer} expert {expert} w2 (fp8 codes verbatim)",
+                       reader.read(base2, w2_per), w2_want.tobytes())
+                w1_blocks = (HIDDEN + 127) // 128
+                w2_blocks = (width + 127) // 128
+                scale_parts = []
+                for raw, proj in ((gate_raw, "gate"), (up_raw, "up")):
+                    plane = source.raw(
+                        f"{prefix}.{expert}.{proj}_proj.weight_scale_inv"
+                    ).view(np.float32).reshape((EXPERT_INTER + 127) // 128, w1_blocks)
+                    scale_parts.append(
+                        plane[[r // 128 for r in range(w1_r0, w1_r0 + width)], :])
+                scale_want = to_bytes(np.concatenate(scale_parts, axis=0))
+                down_plane = source.raw(
+                    f"{prefix}.{expert}.down_proj.weight_scale_inv"
+                ).view(np.float32).reshape(
+                    (HIDDEN + 127) // 128, (EXPERT_INTER + 127) // 128)
+                cols = [(w2_c0 + b * 128) // 128 for b in range(w2_blocks)]
+                w2_scale_want = to_bytes(
+                    down_plane[[r // 128 for r in range(HIDDEN)], :][:, cols])
+                sb1 = w1_entry["scale_bytes"] // EXPERTS
+                sb2 = w2_entry["scale_bytes"] // EXPERTS
+                expect(f"layer {layer} expert {expert} w1 scale plane",
+                       reader.read(w1_entry["scale_offset"] + expert * sb1, sb1),
+                       scale_want)
+                expect(f"layer {layer} expert {expert} w2 scale plane",
+                       reader.read(w2_entry["scale_offset"] + expert * sb2, sb2),
+                       w2_scale_want)
+                checked["compared_bytes"] += w1_per + w2_per + sb1 + sb2
+            elif codec == CODEC_NVFP4:
+                gate = source.raw(f"{prefix}.{expert}.gate_proj.weight_packed")
+                up = source.raw(f"{prefix}.{expert}.up_proj.weight_packed")
+                down = source.raw(f"{prefix}.{expert}.down_proj.weight_packed")
+                gate = gate.reshape(EXPERT_INTER, HIDDEN // 2)
+                up = up.reshape(EXPERT_INTER, HIDDEN // 2)
+                down = down.reshape(HIDDEN, EXPERT_INTER // 2)
+                w1_want = np.concatenate((
+                    np.ascontiguousarray(gate[w1_r0:w1_r0 + width, :]),
+                    np.ascontiguousarray(up[w1_r0:w1_r0 + width, :])), axis=0)
+                w2_want = np.ascontiguousarray(
+                    down[:, w2_c0 // 2:(w2_c0 + width) // 2])
+                base1 = w1_entry["payload_offset"] + expert * w1_per
+                base2 = w2_entry["payload_offset"] + expert * w2_per
+                expect(f"layer {layer} expert {expert} w1 (e2m1 nibbles verbatim)",
+                       reader.read(base1, w1_per), w1_want.tobytes())
+                expect(f"layer {layer} expert {expert} w2 (e2m1 nibbles verbatim)",
+                       reader.read(base2, w2_per), w2_want.tobytes())
+                w1_blocks = HIDDEN // 16
+                w2_blocks = width // 16
+                scale_parts = []
+                global_parts = []
+                for proj in ("gate_proj", "up_proj"):
+                    plane = source.raw(
+                        f"{prefix}.{expert}.{proj}.weight_scale").reshape(
+                        EXPERT_INTER, w1_blocks)
+                    scale_parts.append(
+                        np.ascontiguousarray(plane[w1_r0:w1_r0 + width, :]))
+                    global_parts.append(to_bytes(source.raw(
+                        f"{prefix}.{expert}.{proj}.weight_global_scale").view(
+                        np.float32)))
+                scale_want = b"".join(
+                    to_bytes(part) for part in scale_parts)
+                global_want = b"".join(global_parts)
+                sb1 = w1_entry["scale_bytes"] // EXPERTS
+                sb2 = w2_entry["scale_bytes"] // EXPERTS
+                expect(f"layer {layer} expert {expert} w1 per-16 plane + global",
+                       reader.read(w1_entry["scale_offset"] + expert * sb1, sb1),
+                       scale_want + global_want)
+                w2_plane = source.raw(
+                    f"{prefix}.{expert}.down_proj.weight_scale").reshape(
+                    HIDDEN, EXPERT_INTER // 16)
+                w2_scale_want = np.ascontiguousarray(
+                    w2_plane[:, w2_c0 // 16:w2_c0 // 16 + w2_blocks]).tobytes()
+                w2_global_want = to_bytes(source.raw(
+                    f"{prefix}.{expert}.down_proj.weight_global_scale").view(
+                    np.float32))
+                expect(f"layer {layer} expert {expert} w2 per-16 plane + global",
+                       reader.read(w2_entry["scale_offset"] + expert * sb2, sb2),
+                       w2_scale_want + w2_global_want)
+                checked["compared_bytes"] += w1_per + w2_per + sb1 + sb2
+            else:
+                raise PackFailure(f"layer {layer}: unsupported expert codec {codec}")
+        if codec == CODEC_BF16:
+            checked["bf16_expert_layers"] += 1
+        elif codec == CODEC_FP8:
+            checked["fp8_expert_layers"] += 1
+        else:
+            checked["nvfp4_expert_layers"] += 1
+    return checked
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="checkpoint directory (warm ceph)")
@@ -909,16 +1166,29 @@ def main() -> int:
     parser.add_argument("--tp-all", type=int, default=0,
                         help="emit all N rank packs in one process (shared dequant cache)")
     parser.add_argument("--expert-codec", default="bf16",
-                        choices=["bf16", "fp8", "nvfp4"],
+                        choices=["bf16", "fp8", "nvfp4", "mixed"],
                         help="routed-expert wire codec; fp8/nvfp4 select the "
                              "matching census variant and fail closed unless "
-                             "EVERY routed layer is native to the codec")
+                             "EVERY routed layer is native to the codec; "
+                             "mixed emits every routed layer on its NATIVE "
+                             "wire (quantized layers verbatim, BF16 layers "
+                             "byte-identical, never requantized) with the "
+                             "mixed header sentinel 8")
+    parser.add_argument("--census", default="",
+                        choices=["", "bf16", "fp8", "nvfp4"],
+                        help="census variant to lock against; defaults to "
+                             "the expert codec (mixed derives it from the "
+                             "checkpoint's routed-expert dtypes)")
     parser.add_argument("--revision", required=True,
                         help="model revision stamped into the pack header (the warm snapshot's HF tree id)")
     parser.add_argument("--contract-sha256", required=True,
                         help="sha256 of model_contracts/laguna_authoritative.json, stamped into the pack header")
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
+    parser.add_argument("--verify", default="", metavar="PACK",
+                        help="verify an EMITTED pack elementwise against the "
+                             "warm checkpoint, per layer class (bf16 layers "
+                             "byte-exact; quantized layers verbatim), and exit")
     args = parser.parse_args()
     validate_stage(args.stage_count, args.stage_index, args.first_layer,
                    args.layer_count, args.owns_embedding, args.owns_head)
@@ -926,9 +1196,29 @@ def main() -> int:
         raise PackFailure("supported fleet shapes: tp8/pp2 (default), tp4/pp4, single-stage")
 
     source = SourceReader(Path(args.source))
-    codec_ids = {"bf16": CODEC_BF16, "fp8": CODEC_FP8, "nvfp4": CODEC_NVFP4}
+    codec_ids = {"bf16": CODEC_BF16, "fp8": CODEC_FP8, "nvfp4": CODEC_NVFP4,
+                 "mixed": CODEC_MIXED}
     expert_codec = codec_ids[args.expert_codec]
-    census_lock(source, variant=args.expert_codec)
+    if args.verify:
+        reader = PackReader(Path(args.verify))
+        if reader.tp_degree != args.tp_degree or reader.tp_rank != args.tp_rank:
+            raise PackFailure(
+                f"{args.verify}: pack is tp{reader.tp_degree} rank "
+                f"{reader.tp_rank}; pass matching --tp-degree/--tp-rank")
+        result = verify_pack(reader, source, args.tp_degree, args.tp_rank)
+        print(f"verify {Path(args.verify).name}: PASS {json.dumps(result, sort_keys=True)}")
+        source.close()
+        return 0
+    census = args.census or args.expert_codec
+    if census == "mixed":
+        probe = Packer(source, 1, 0, 0, LAYERS, False, False,
+                       expert_codec=CODEC_MIXED)
+        native = probe.layer_native_expert_codec(FIRST_ROUTED)
+        census = {CODEC_FP8: "fp8", CODEC_NVFP4: "nvfp4",
+                  CODEC_BF16: "bf16"}[native]
+        print(f"census variant derived from the checkpoint routed-expert "
+              f"dtypes: {census}")
+    census_lock(source, variant=census)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ranks = range(args.tp_all) if args.tp_all else [args.tp_rank]
