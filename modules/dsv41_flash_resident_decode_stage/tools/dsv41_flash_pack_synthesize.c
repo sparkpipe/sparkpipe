@@ -81,6 +81,8 @@ static uint64_t synth_plane_bytes(uint32_t kind,const SparkDsv41FlashStagePackTe
 	}
 	else if ( shape->weight_codec == SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
 		per_group = (uint64_t)shape->rows * ((uint64_t)shape->columns * 2u / 32u);
+	else if ( shape->weight_codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+		per_group = SparkDsv41FlashStagePackNvfp4ScaleBytesPerGroup(shape->rows,shape->columns);
 	else if ( shape->scale_encoding == SPARK_WEIGHT_SCALE_ENCODING_E8M0 )
 		per_group = (uint64_t)(shape->rows / 32u) * (shape->columns / 32u);
 	else
@@ -207,7 +209,9 @@ int main(int argc,char **argv)
 		(void)fprintf(stderr,"bad tp geometry\n");
 		return(2);
 	}
-	codec = strcmp(argv[8],"fp8") == 0 ? SPARK_WEIGHT_CODEC_FP8_E4M3 : SPARK_WEIGHT_CODEC_MXFP4_E2M1;
+	codec = strcmp(argv[8],"fp8") == 0 ? SPARK_WEIGHT_CODEC_FP8_E4M3 :
+		strcmp(argv[8],"nvfp4") == 0 ? SPARK_WEIGHT_CODEC_NVFP4_E2M1 :
+		SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 	layer_count = argc == 10 ? (uint32_t)strtoul(argv[9],0,10) : SPARK_DSV41_FLASH_MODEL_LAYER_COUNT;
 	if ( layer_count == 0u || layer_count > SPARK_DSV41_FLASH_MODEL_LAYER_COUNT )
 	{

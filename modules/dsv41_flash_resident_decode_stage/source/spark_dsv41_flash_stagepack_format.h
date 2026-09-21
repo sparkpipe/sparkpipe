@@ -225,6 +225,21 @@ static inline void SparkDsv41FlashStagePackShapeMxfp4(SparkDsv41FlashStagePackTe
 	shape->columns = columns;
 }
 
+static inline void SparkDsv41FlashStagePackShapeNvfp4(SparkDsv41FlashStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
+{
+	shape->payload_type = SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
+	shape->weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1;
+	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_UE4M3_F32_GLOBAL;
+	shape->group_count = groups;
+	shape->rows = rows;
+	shape->columns = columns;
+}
+
+static inline uint64_t SparkDsv41FlashStagePackNvfp4ScaleBytesPerGroup(uint32_t rows,uint32_t columns)
+{
+	return((uint64_t)rows * ((uint64_t)columns * 2u / 16u) + sizeof(float));
+}
+
 static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kind,uint32_t expert_weight_codec,uint32_t tp_degree,SparkDsv41FlashStagePackTensorShape *shape)
 {
 	switch ( tensor_kind )
@@ -312,6 +327,8 @@ static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kin
 			SparkDsv41FlashStagePackShapeMxfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / 2u);
 		else if ( expert_weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
 			SparkDsv41FlashStagePackShapeFp8(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION);
+		else if ( expert_weight_codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+			SparkDsv41FlashStagePackShapeNvfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / 2u);
 		else
 			return(0u);
 		return(1u);
@@ -322,6 +339,8 @@ static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kin
 			SparkDsv41FlashStagePackShapeMxfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / 2u);
 		else if ( expert_weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
 			SparkDsv41FlashStagePackShapeFp8(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION);
+		else if ( expert_weight_codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+			SparkDsv41FlashStagePackShapeNvfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree,SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / 2u);
 		else
 			return(0u);
 		return(1u);

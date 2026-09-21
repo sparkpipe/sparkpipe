@@ -1,7 +1,7 @@
 include ../../runtime/weightd_sources.mk
 
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: fp8 or mxfp4)
+$(error EXPERT_CODEC is required: fp8, mxfp4, or nvfp4)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -10,7 +10,7 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-DSV41_FLASH_EXPERT_CODECS := fp8 mxfp4
+DSV41_FLASH_EXPERT_CODECS := fp8 mxfp4 nvfp4
 ifeq ($(filter $(EXPERT_CODEC),$(DSV41_FLASH_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(DSV41_FLASH_EXPERT_CODECS))
 endif
@@ -20,6 +20,9 @@ DSV41_FLASH_EXPERT_CODEC_ID := 5
 endif
 ifeq ($(EXPERT_CODEC),mxfp4)
 DSV41_FLASH_EXPERT_CODEC_ID := 7
+endif
+ifeq ($(EXPERT_CODEC),nvfp4)
+DSV41_FLASH_EXPERT_CODEC_ID := 6
 endif
 
 MODULE_FAMILY := dsv41_flash

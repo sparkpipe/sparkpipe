@@ -1224,6 +1224,59 @@ build/test_laguna_pack_validate_fp8: tests/test_laguna_pack_validate.c $(LAGUNA_
 		-DLAGUNA_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
 		$< $(LAGUNA_TWIN_SOURCES) -lpthread -lm -o $@
 
+# DSV41 flash per-codec twin: compile the module's own load-path
+# validation (host C + CUDA stub) against a synthesized pack and drive it
+# entry-by-entry. nvfp4 build (codec 6) accepts the nvidia-convention
+# pack; the uniform mxfp4 build (codec 7) rejects every expert entry.
+DSV41_TWIN_SOURCES := \
+	runtime/stage_module_common.c \
+	$(SPARKPIPE_WEIGHTD_SOURCES) \
+	src/spark_status.c \
+	src/spark_sha256.c \
+	src/spark_ck128.c \
+	tests/cuda_stub/cuda_runtime_stub.c
+
+DSV41_TWIN_INCLUDE_FLAGS := \
+	-Itests/cuda_stub -I. -Iinclude \
+	-Imodel-families/common/include \
+	-Imodel-families/dsv41_flash/include \
+	-Imodules/dsv41_flash_resident_decode_stage/include \
+	-Imodules/dsv41_flash_resident_decode_stage/source
+
+build/dsv41_flash_pack_synthesize: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_pack_synthesize.c
+	$(CC) -std=c11 -Wall -Wextra -Werror -O2 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 \
+		$(DSV41_TWIN_INCLUDE_FLAGS) $< -o $@
+
+build/test_dsv41_pack_validate_nvfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES)
+	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(DSV41_TWIN_INCLUDE_FLAGS) \
+		-DDSV41_FLASH_EXPERT_WEIGHT_CODEC=6 '-DDSV41_FLASH_EXPERT_CODEC_NAME="nvfp4"' \
+		-DSPARK_DSV41_FLASH_MODEL_REVISION='"wave3-cpu-twin"' \
+		-DSPARK_DSV41_FLASH_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
+		$< $(DSV41_TWIN_SOURCES) -lpthread -lm -o $@
+
+build/test_dsv41_pack_validate_mxfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES)
+	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(DSV41_TWIN_INCLUDE_FLAGS) \
+		-DDSV41_FLASH_EXPERT_WEIGHT_CODEC=7 '-DDSV41_FLASH_EXPERT_CODEC_NAME="mxfp4"' \
+		-DSPARK_DSV41_FLASH_MODEL_REVISION='"wave3-cpu-twin"' \
+		-DSPARK_DSV41_FLASH_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
+		$< $(DSV41_TWIN_SOURCES) -lpthread -lm -o $@
+
+# Module-codec wave 3 CPU twin sweep: synthesize nvidia-convention and
+# DSpark packs, then drive the module load path against both.
+test-module-codec-wave3: build/dsv41_flash_pack_synthesize build/test_dsv41_pack_validate_nvfp4 build/test_dsv41_pack_validate_mxfp4 build/laguna_pack_synthesize build/test_laguna_pack_validate_mixed build/test_laguna_pack_validate_fp8
+	./build/dsv41_flash_pack_synthesize build/wave3-dsv41-nvfp4.bin wave3-twin 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 8 0 nvfp4 4
+	./build/test_dsv41_pack_validate_nvfp4 build/wave3-dsv41-nvfp4.bin accept
+	./build/test_dsv41_pack_validate_mxfp4 build/wave3-dsv41-nvfp4.bin reject-codec
+	./build/test_dsv41_pack_validate_nvfp4 build/wave3-dsv41-nvfp4.bin reject-entry
+	./build/dsv41_flash_pack_synthesize build/wave3-dsv41-mxfp4.bin wave3-twin 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 8 0 mxfp4 4
+	./build/test_dsv41_pack_validate_mxfp4 build/wave3-dsv41-mxfp4.bin accept
+	./build/laguna_pack_synthesize --output build/wave3-laguna-mixed.lgsp --expert-codec mixed --sparse --owns-embedding --owns-head --seed 3 --revision wave3-twin --contract-sha256 0000000000000000000000000000000000000000000000000000000000000000
+	./build/test_laguna_pack_validate_mixed build/wave3-laguna-mixed.lgsp accept
+	./build/test_laguna_pack_validate_mixed build/wave3-laguna-mixed.lgsp reject-entry
+	./build/test_laguna_pack_validate_mixed build/wave3-laguna-mixed.lgsp reject-coverage
+	./build/test_laguna_pack_validate_fp8 build/wave3-laguna-mixed.lgsp reject-header
+	rm -f build/wave3-dsv41-nvfp4.bin build/wave3-dsv41-mxfp4.bin build/wave3-laguna-mixed.lgsp
+
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 

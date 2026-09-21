@@ -243,7 +243,9 @@ static SparkStatus SparkDsv41FlashManifestCheck(
 		entry = &context->entries[index];
 		if ( SparkDsv41FlashStagePackKindIsExpert(entry->tensor_kind) == 0u )
 			continue;
-		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 && entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
+		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 &&
+			entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 &&
+			entry->weight_codec != SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		for (plane=0u; plane<2u; plane++)
 		{
