@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true",
                         help="plan only: no packs are written")
+    parser.add_argument("--ffn-format", choices=("bf16", "nvfp4a16"), default="bf16",
+                        help="nvfp4a16 = the qwen3.8-27b-nvfp4a16-bf16-spine release's "
+                             "main-layer FFN projections on the NVFP4 wire")
     args = parser.parse_args(argv)
 
     here = Path(__file__).resolve().parent
@@ -60,12 +63,15 @@ def main(argv: list[str] | None = None) -> int:
             "world_rank": world_rank,
             "pp_stage": pp_stage,
             "tp_rank": tp_rank,
-            "weight_formats": {"projections": "bf16", "gdn_a_log_dt_bias": "f32"},
+            "weight_formats": {"ffn": args.ffn_format, "projections": "bf16",
+                               "gdn_a_log_dt_bias": "f32"},
+            "ffn_format": args.ffn_format,
         }
         try:
             result = packer.convert(args.checkpoint, output, first_layer,
                                     layer_count, receipt, args.dry_run,
-                                    TP_DEGREE, tp_rank)
+                                    TP_DEGREE, tp_rank,
+                                    ffn_format=args.ffn_format)
         except packer.PackFailure as error:
             print(f"rank{world_rank:02d} BUILD FAILED: {error}", flush=True)
             return 1
@@ -92,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest = {
             "schema_version": 1,
             "topology": "TP4xPP4",
+            "ffn_format": args.ffn_format,
             "world_size": PP_STAGES * TP_DEGREE,
             "tp_degree": TP_DEGREE,
             "pp_stage_count": PP_STAGES,
