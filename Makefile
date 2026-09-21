@@ -1210,14 +1210,14 @@ build/laguna_pack_synthesize: modules/laguna_resident_decode_stage/tools/laguna_
 		-DLAGUNA_EXPERT_CODEC_NAME='"mixed"' '-DSPARK_LAGUNA_MODEL_REVISION="wave3-cpu-twin"' \
 		$< -o $@
 
-build/test_laguna_pack_validate_mixed: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES)
+build/test_laguna_pack_validate_mixed: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES) modules/laguna_resident_decode_stage/source/spark_laguna_stagepack_format.h
 	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(LAGUNA_TWIN_INCLUDE_FLAGS) \
 		-DLAGUNA_EXPERT_WEIGHT_CODEC=8 '-DLAGUNA_EXPERT_CODEC_NAME="mixed"' \
 		-DLAGUNA_MODEL_REVISION='"wave3-cpu-twin"' \
 		-DLAGUNA_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
 		$< $(LAGUNA_TWIN_SOURCES) -lpthread -lm -o $@
 
-build/test_laguna_pack_validate_fp8: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES)
+build/test_laguna_pack_validate_fp8: tests/test_laguna_pack_validate.c $(LAGUNA_TWIN_SOURCES) modules/laguna_resident_decode_stage/source/spark_laguna_stagepack_format.h
 	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(LAGUNA_TWIN_INCLUDE_FLAGS) \
 		-DLAGUNA_EXPERT_WEIGHT_CODEC=5 '-DLAGUNA_EXPERT_CODEC_NAME="fp8"' \
 		-DLAGUNA_MODEL_REVISION='"wave3-cpu-twin"' \
@@ -1247,14 +1247,14 @@ build/dsv41_flash_pack_synthesize: modules/dsv41_flash_resident_decode_stage/too
 	$(CC) -std=c11 -Wall -Wextra -Werror -O2 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 \
 		$(DSV41_TWIN_INCLUDE_FLAGS) $< -o $@
 
-build/test_dsv41_pack_validate_nvfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES)
+build/test_dsv41_pack_validate_nvfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES) modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h
 	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(DSV41_TWIN_INCLUDE_FLAGS) \
 		-DDSV41_FLASH_EXPERT_WEIGHT_CODEC=6 '-DDSV41_FLASH_EXPERT_CODEC_NAME="nvfp4"' \
 		-DSPARK_DSV41_FLASH_MODEL_REVISION='"wave3-cpu-twin"' \
 		-DSPARK_DSV41_FLASH_CONTRACT_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' \
 		$< $(DSV41_TWIN_SOURCES) -lpthread -lm -o $@
 
-build/test_dsv41_pack_validate_mxfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES)
+build/test_dsv41_pack_validate_mxfp4: tests/test_dsv41_pack_validate.c $(DSV41_TWIN_SOURCES) modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h
 	$(CC) -std=c11 -O1 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 $(DSV41_TWIN_INCLUDE_FLAGS) \
 		-DDSV41_FLASH_EXPERT_WEIGHT_CODEC=7 '-DDSV41_FLASH_EXPERT_CODEC_NAME="mxfp4"' \
 		-DSPARK_DSV41_FLASH_MODEL_REVISION='"wave3-cpu-twin"' \

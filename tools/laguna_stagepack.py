@@ -685,11 +685,12 @@ class Packer:
     def _add_experts_nvfp4(self, layer: int, prefix: str, w1_r0: int, width: int):
         """Routed experts on the NVFP4 wire (module expert codec 6,
         UE4M3_F32_GLOBAL scale encoding): U8-packed e2m1 codes and the
-        per-16 e4m3 plane pass through verbatim; the F32
-        weight_global_scale rides the 4-byte tail of each expert's scale
-        slab (the manifest slices per-expert slabs of
-        scale_bytes/group_count). input_global_scale is the activation
-        side and is not carried."""
+        per-16 e4m3 plane pass through verbatim; each expert's scale
+        slab (scale_bytes/group_count, the manifest slice unit) is
+        [gate plane][up plane][gate weight_global_scale][up
+        weight_global_scale] - one 4-byte F32 global PER PROJECTION, so
+        the fused gate_up slab ends in 8 global bytes. input_global_scale
+        is the activation side and is not carried."""
         self._check_expert_layer_codec(layer, prefix, "U8", packed=True)
         inter_count = width
         w1_rows = 2 * inter_count
@@ -698,7 +699,7 @@ class Packer:
         w1 = Entry(K_EXPERT_GATE_UP, layer, PAYLOAD_PACKED_WEIGHT, CODEC_NVFP4,
                    SCALE_UE4M3_F32_GLOBAL, EXPERTS, w1_rows, HIDDEN)
         w1.payload_bytes = EXPERTS * w1_rows * HIDDEN // 2
-        w1.scale_bytes = EXPERTS * (w1_rows * w1_blocks + 4)
+        w1.scale_bytes = EXPERTS * (w1_rows * w1_blocks + 8)
         w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT, CODEC_NVFP4,
                    SCALE_UE4M3_F32_GLOBAL, EXPERTS, HIDDEN, inter_count)
         w2.payload_bytes = EXPERTS * HIDDEN * inter_count // 2
@@ -714,13 +715,17 @@ class Packer:
 
         def produce_w1_scale() -> Iterator[bytes]:
             for expert in range(EXPERTS):
+                planes = []
+                globals_ = []
                 for proj in ("gate_proj", "up_proj"):
                     name = f"{prefix}.{expert}.{proj}.weight_scale"
                     _dt, shape, _ = source.meta(name)
                     plane = source.raw(name).reshape(shape)
-                    yield np.ascontiguousarray(plane[w1_r0:w1_r0 + inter_count, :]).tobytes()
+                    planes.append(
+                        np.ascontiguousarray(plane[w1_r0:w1_r0 + inter_count, :]).tobytes())
                     gname = f"{prefix}.{expert}.{proj}.weight_global_scale"
-                    yield to_bytes(source.raw(gname).view(np.float32))
+                    globals_.append(to_bytes(source.raw(gname).view(np.float32)))
+                yield b"".join(planes + globals_)
 
         def produce_w2() -> Iterator[bytes]:
             for expert in range(EXPERTS):

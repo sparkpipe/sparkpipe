@@ -352,7 +352,31 @@ static inline uint64_t SparkLagunaStagePackExpectedPayloadBytes(const SparkLagun
     return(shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
 }
 
+static inline uint32_t SparkLagunaStagePackNvfp4GlobalsPerGroup(uint32_t tensor_kind)
+{
+    /* The routed gate_up entry fuses the gate and up projections, and the
+       nvidia release carries one weight_global_scale PER PROJECTION, so
+       that slab ends with two 4-byte globals; every other slab carries
+       exactly one. */
+    return(tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP ? 2u : 1u);
+}
+
+static inline uint64_t SparkLagunaStagePackExpectedScaleBytesForKind(const SparkLagunaStagePackTensorShape *shape,uint32_t tensor_kind)
+{
+    uint64_t plane,groups;
+    if ( shape == 0 || shape->payload_type != SPARK_LAGUNA_STAGEPACK_PAYLOAD_PACKED_WEIGHT )
+        return(0u);
+    if ( shape->weight_codec != SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+        return(SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns));
+    if ( shape->group_count == 0u || shape->rows == 0u || shape->columns == 0u || shape->group_count > UINT64_MAX / shape->rows )
+        return(0u);
+    groups = shape->group_count;
+    plane = groups * shape->rows * (((uint64_t)shape->columns + 15u) / 16u);
+    return(plane + groups * (uint64_t)SparkLagunaStagePackNvfp4GlobalsPerGroup(tensor_kind) * 4u);
+}
+
 static inline uint64_t SparkLagunaStagePackExpectedScaleBytes(const SparkLagunaStagePackTensorShape *shape)
 {
-    return(shape != 0 && shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
+    return(SparkLagunaStagePackExpectedScaleBytesForKind(shape,0u));
 }
+

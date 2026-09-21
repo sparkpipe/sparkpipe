@@ -71,7 +71,7 @@ static int32_t SparkLagunaSynthesizeAppend(SparkLagunaSynthesizeContext *context
 	entry->rows = shape.rows;
 	entry->columns = shape.columns;
 	entry->payload_bytes = SparkLagunaStagePackExpectedPayloadBytes(&shape);
-	entry->scale_bytes = SparkLagunaStagePackExpectedScaleBytes(&shape);
+	entry->scale_bytes = SparkLagunaStagePackExpectedScaleBytesForKind(&shape,tensor_kind);
 	entry->payload_offset = SparkSynthAlign(context->payload_cursor);
 	entry->scale_offset = entry->scale_bytes != 0u ? SparkSynthAlign(entry->payload_offset + entry->payload_bytes) : 0u;
 	context->payload_cursor = entry->scale_bytes != 0u ? (entry->scale_offset + entry->scale_bytes) : (entry->payload_offset + entry->payload_bytes);

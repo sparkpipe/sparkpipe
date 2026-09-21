@@ -634,7 +634,7 @@ static SparkStatus SparkLagunaModuleValidateEntry(
 		if ( entry->payload_type != shape.payload_type || entry->weight_codec != shape.weight_codec || entry->scale_encoding != shape.scale_encoding || entry->group_count != shape.group_count || entry->rows != shape.rows || entry->columns != shape.columns )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		expected_payload = SparkLagunaStagePackExpectedPayloadBytes(&shape);
-		expected_scale = SparkLagunaStagePackExpectedScaleBytes(&shape);
+		expected_scale = SparkLagunaStagePackExpectedScaleBytesForKind(&shape,entry->tensor_kind);
 		if ( entry->payload_bytes != expected_payload || entry->scale_bytes != expected_scale )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		if ( entry->payload_offset % SPARK_LAGUNA_STAGEPACK_ALIGNMENT_BYTES != 0u )
