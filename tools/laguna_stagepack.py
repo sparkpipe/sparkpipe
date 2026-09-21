@@ -219,16 +219,31 @@ class SourceReader:
         return entry["dtype"], tuple(entry["shape"]), shard
 
     def raw(self, name: str) -> np.ndarray:
+        """Exact-span pread of one tensor. Under a contended warm mount
+        this is strictly better than an mmap window: every byte fetched is
+        a byte returned (no ceph stripe overfetch from page faults), the
+        client queues the reads fairly, and the shard pages are advised
+        away so three concurrent readers do not thrash."""
         shard = self.weight_map.get(name)
         if shard is None:
             raise PackFailure(f"missing tensor in index: {name}")
         header, data_start = self._header(shard)
         entry = header.get(name)
         begin, end = entry["data_offsets"]
-        view = self._mmap(shard)[data_start + begin:data_start + end]
-        if view.shape[0] != end - begin:
-            raise PackFailure(f"short payload for {name}")
-        return view
+        want = end - begin
+        fd = os.open(self.model_dir / shard, os.O_RDONLY)
+        try:
+            blob = bytearray(want)
+            done = 0
+            while done < want:
+                chunk = os.pread(fd, want - done, data_start + begin + done)
+                if not chunk:
+                    raise PackFailure(f"short payload for {name}")
+                blob[done:done + len(chunk)] = chunk
+                done += len(chunk)
+        finally:
+            os.close(fd)
+        return np.frombuffer(bytes(blob), dtype=np.uint8)
 
     def spine_bf16(self, name: str) -> np.ndarray:
         """Full-width bf16 matrix [rows, cols]; F8_E4M3 dequantizes through
