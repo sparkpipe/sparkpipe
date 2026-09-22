@@ -2530,3 +2530,16 @@ PR's explicit-graph-mode default is live.
   + this state stalls before first completion — the request-level gap
   moved earlier. Next: trace the graph-mode chain start (gate armed?
   experts_warm under graph default? the demand walk inside graph mode).
+
+## 09-24 08:00 — NEW GOAL SET: 13.5 -> >=50 tok/s (operator; 10% roofline, room acknowledged)
+
+- BASELINE: 13.5 tok/s = ~74ms/token = 91 rounds = ~810us/round.
+- TARGET: >=50 tok/s = <=20ms/token = <=220us/round (3.7x).
+- The 2MB chunk inflation is PARKED by operator decision (later).
+- CLIMB LADDER (next session): (1) re-attribute the 810us/round on the
+  current merged stack (stage_ms + SM/mem sampling — spin/launch vs real
+  reads); (2) multi-row decode (rows>1 rounds — amortizes per-round
+  submit/wait/launch across 8 sequences); (3) the graph one-launch path
+  (deletes per-round host submits); (4) push-cells (sub-us waits).
+  Merge main first (astra SIGSEGV fix, reclaim tool, cold-launch
+  tooling; their receipts ran with explicit GRAPH_PATH=1 + PIN_EXPERTS=1).
