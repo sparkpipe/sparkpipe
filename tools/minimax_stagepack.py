@@ -224,8 +224,10 @@ def copy_entry(source: SafetensorsSource, entry: dict, out, offset: int) -> None
     rows, columns = entry["rows"], entry["columns"]
     full_rows, full_columns, _ = kind_shape(entry["kind"])
     with open(path, "rb") as file:
+        row_bytes = full_columns * element
         if entry["row_base"] == 0 and entry["col_base"] == 0 \
                 and rows == full_rows and columns == full_columns:
+            file.seek(base)
             want = rows * columns * element
             remaining = want
             while remaining > 0:
@@ -236,7 +238,6 @@ def copy_entry(source: SafetensorsSource, entry: dict, out, offset: int) -> None
                 out.write(chunk)
                 remaining -= step
             return
-        row_bytes = full_columns * element
         if entry["col_base"] == 0 and columns == full_columns:
             file.seek(base + entry["row_base"] * row_bytes)
             want = rows * row_bytes
@@ -250,6 +251,8 @@ def copy_entry(source: SafetensorsSource, entry: dict, out, offset: int) -> None
                 remaining -= step
             return
         step_rows = max(1, CHUNK_BYTES // row_bytes)
+        if columns != full_columns:
+            step_rows = 1
         row = 0
         while row < rows:
             block = min(step_rows, rows - row)
