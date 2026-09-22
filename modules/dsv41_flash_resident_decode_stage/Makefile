@@ -119,5 +119,6 @@ attach_probe: contract $(MODULE_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_r
 		$(MODULE_ARCHIVE) \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
-		-lcuda -lcudart -lstdc++ -lm -ldl -pthread \
-		-o $(BUILD_DIRECTORY)/dsv41_flash_attach_probe
+	-lcuda -lcudart -lstdc++ -lm -ldl -pthread \
+	-L"$(CUDA_HOME)/lib64" -L"$(CUDA_HOME)/targets/sbsa-linux/lib" \
+	-o $(BUILD_DIRECTORY)/dsv41_flash_attach_probe
