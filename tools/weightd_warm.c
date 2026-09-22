@@ -82,6 +82,33 @@ int main(int argument_count,char **arguments)
     uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology;
     uint32_t first,index,count = 0u;
     int exit_status = 1;
+    if ( argument_count == 3 && strcmp(arguments[2],"--reclaim") == 0 )
+    {
+        /* Lane utility (additive): free every COLD arena (refcount 0, no
+           leases). The pool size is fixed at arena creation, so a stale
+           arena created with the wrong expert-pool budget blocks the
+           correctly-sized one until reclaimed - measured on the lane-4
+           rank3 cell (ACQUIRE-LOAD-STAGE stage=budget). */
+        SparkWeightdReclaimResult reclaim = {0};
+        SparkWeightdClient *reclaim_client = 0;
+        status = SparkWeightdClientConnect(arguments[1],&reclaim_client,0);
+        if ( status == SPARK_STATUS_OK )
+            status = SparkWeightdClientReclaim(reclaim_client,&reclaim,
+                30u * UINT64_C(1000000000));
+        if ( status != SPARK_STATUS_OK || reclaim.status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"weightd_warm: reclaim failed status=%d daemon=%u\n",
+                (int)status,reclaim.status);
+            SparkWeightdClientClose(reclaim_client);
+            return 1;
+        }
+        fprintf(stderr,"weightd_warm: RECLAIM freed=%llu arenas=%u resident=%llu\n",
+            (unsigned long long)reclaim.reclaimed_bytes,
+            reclaim.reclaimed_arena_count,
+            (unsigned long long)reclaim.resident_bytes);
+        SparkWeightdClientClose(reclaim_client);
+        return 0;
+    }
     if ( argument_count > 6 && strcmp(arguments[6],"--wset") == 0 )
     {
         if ( argument_count < 8 )
@@ -196,6 +223,7 @@ done:
 usage:
     fprintf(stderr,"usage: weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY [LAYERS=45 [EXPERTS=288 [TIMEOUT_S=1800]]]\n"
         "       weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY --wset FILE [TIMEOUT_S=300]\n"
+        "       weightd_warm SOCKET --reclaim\n"
         "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n"
         "       SPARK_WEIGHTD_WARM_MODEL overrides the attach identity tag (default glm5_next_stage)\n");
     return 2;
