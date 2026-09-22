@@ -10933,8 +10933,8 @@
     },
     {
       "path": "tools/dsv41_flash_smoke_experts.py",
-      "sha256": "bed163075def06bf7af35955fccc4834f38e9dd7cd394ec9a76ea62dce93dac7",
-      "size_bytes": 11706
+      "sha256": "6080aff250cdc4f47474053ba6ed065b31813e7dd35e0d8babbf68dc308f6d02",
+      "size_bytes": 12053
     },
     {
       "path": "tools/dsv41_flash_stagepack.py",
@@ -16400,5 +16400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 78170501
+  "total_bytes": 78170848
 }

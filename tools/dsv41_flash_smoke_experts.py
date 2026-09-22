@@ -246,11 +246,16 @@ def main() -> int:
             fail(f"--wset-rank {args.wset_rank}: no canonical pairs on that shard")
         blob = bytearray()
         for entry in selected:
-            blob += struct.pack("<II", entry["layer"], entry["expert"])
+            # The rank pack's .experts manifest keys experts LOCALLY
+            # (0..shard-1: the manifest tool writes the per-rank group
+            # index), so a rank-filtered wset remaps global -> local.
+            expert = entry["expert"] if args.wset_rank is None \
+                else entry["expert"] - shard * args.wset_rank
+            blob += struct.pack("<II", entry["layer"], expert)
         Path(args.emit_wset).write_bytes(bytes(blob))
         print(f"{args.emit_wset}: {len(selected)} wset pairs "
               f"({len(blob)} bytes)"
-              + (f" rank {args.wset_rank}" if args.wset_rank is not None else ""))
+              + (f" rank {args.wset_rank} (local expert ids)" if args.wset_rank is not None else ""))
     amortized = len(manifest["experts"]) * manifest["provenance"]["per_expert_bytes"] / NODES
     print(f"{args.output}: {len(manifest['experts'])} canonical pairs, "
           f"amortized {amortized / 2**20:.0f} MiB/node, "
