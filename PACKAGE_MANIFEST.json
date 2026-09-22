@@ -4818,8 +4818,8 @@
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/Makefile",
-      "sha256": "cb8ba43eda2cc100736dfbf973c435c92b4e49c80bd3a179c775a65048115dbd",
-      "size_bytes": 5716
+      "sha256": "8682aee67db4ae4bb098f6f3fb4bb85f42912c6c9a6aa01411b735bce52c3845",
+      "size_bytes": 5745
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/include/sparkpipe/spark_dsv41_flash_resident_decode_stage_firmware.h",
@@ -16400,5 +16400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 78169564
+  "total_bytes": 78169593
 }

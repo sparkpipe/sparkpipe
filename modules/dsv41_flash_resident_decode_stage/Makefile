@@ -114,6 +114,7 @@ attach_probe: contract $(MODULE_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_r
 	mkdir -p $(BUILD_DIRECTORY)
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \
 		-DDSV41_FLASH_PROBE_TP_DEGREE=$(TP_DEGREE) \
+		-I"$(CUDA_HOME)/include" \
 		tools/dsv41_flash_attach_probe.c \
 		$(MODULE_ARCHIVE) \
 		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
