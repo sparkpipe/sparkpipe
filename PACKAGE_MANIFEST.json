@@ -10933,8 +10933,8 @@
     },
     {
       "path": "tools/dsv41_flash_smoke_experts.py",
-      "sha256": "8aefbde68ac2a6d7d443299759efb01bcf3bcabb8eabeddeb2b94a2a0c56d371",
-      "size_bytes": 10257
+      "sha256": "0b6f6b21a09067b9249e706fdec455614b17525e525fa1a8198c4b1bc4a5507c",
+      "size_bytes": 10862
     },
     {
       "path": "tools/dsv41_flash_stagepack.py",
@@ -13148,8 +13148,8 @@
     },
     {
       "path": "tools/weightd_warm.c",
-      "sha256": "4bf676a96798282b93d599dd586b4d3d104211749f1a6c1229450d04fb62ceb5",
-      "size_bytes": 8079
+      "sha256": "9f4cfbb7b9815e116b0198ab8304312c59786bf646d034f2347fee02d9e10839",
+      "size_bytes": 8759
     },
     {
       "path": "tools/weightdctl.c",
@@ -16400,5 +16400,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 78167140
+  "total_bytes": 78168425
 }

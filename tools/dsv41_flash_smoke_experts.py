@@ -214,6 +214,10 @@ def build_manifest() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default=str(MANIFEST_PATH))
+    parser.add_argument("--emit-wset", metavar="PATH",
+                        help="also write the canonical set as a weightd "
+                             ".wset file (native-endian u32 (layer, expert) "
+                             "pairs, tools/weightd_warm.c format)")
     parser.add_argument("--check", action="store_true",
                         help="regenerate and compare against the committed manifest")
     args = parser.parse_args()
@@ -227,6 +231,13 @@ def main() -> int:
         print("dsv41_flash smoke-expert manifest matches regeneration")
         return 0
     Path(args.output).write_text(rendered)
+    if args.emit_wset:
+        blob = bytearray()
+        for entry in manifest["experts"]:
+            blob += struct.pack("<II", entry["layer"], entry["expert"])
+        Path(args.emit_wset).write_bytes(bytes(blob))
+        print(f"{args.emit_wset}: {len(manifest['experts'])} wset pairs "
+              f"({len(blob)} bytes)")
     amortized = len(manifest["experts"]) * manifest["provenance"]["per_expert_bytes"] / NODES
     print(f"{args.output}: {len(manifest['experts'])} canonical pairs, "
           f"amortized {amortized / 2**20:.0f} MiB/node, "

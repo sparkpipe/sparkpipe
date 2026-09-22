@@ -107,7 +107,19 @@ int main(int argument_count,char **arguments)
         return 2;
     }
     memcpy(request.identity.pack_sha256,arguments[3],65u);
-    strcpy(request.identity.model,"glm5_next_stage");
+    /* Family tag override (additive, lane 4): the attach identity model must
+       equal the family module tag ("glm5_next_stage", "dsv41_flash_stage",
+       ...) so the daemon reuses ONE arena per pack instead of mapping the
+       same pack twice under two identities. Default keeps the GLM behavior
+       byte-identical. */
+    {
+        const char *warm_model = getenv("SPARK_WEIGHTD_WARM_MODEL");
+        if ( warm_model == 0 )
+            warm_model = "glm5_next_stage";
+        if ( strlen(warm_model) >= sizeof(request.identity.model) )
+            goto usage;
+        strcpy(request.identity.model,warm_model);
+    }
     strcpy(request.identity.revision,arguments[4]);
     request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
     request.identity.arena_bytes = (uint64_t)pack.st_size;
@@ -184,6 +196,7 @@ done:
 usage:
     fprintf(stderr,"usage: weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY [LAYERS=45 [EXPERTS=288 [TIMEOUT_S=1800]]]\n"
         "       weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY --wset FILE [TIMEOUT_S=300]\n"
-        "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n");
+        "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n"
+        "       SPARK_WEIGHTD_WARM_MODEL overrides the attach identity tag (default glm5_next_stage)\n");
     return 2;
 }
