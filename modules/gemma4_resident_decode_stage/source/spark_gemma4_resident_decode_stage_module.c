@@ -54,6 +54,7 @@ typedef struct SparkGemma4ModuleSlot
 	void *normalized_bf16;
 	void *sliding_query_bf16;
 	void *sliding_kv_bf16;
+	void *sliding_value_bf16;
 	void *full_query_bf16;
 	void *full_key_bf16;
 	void *full_value_bf16;
@@ -74,6 +75,8 @@ typedef struct SparkGemma4ModuleSlot
 	void *moe_gate_packed_bf16;
 	void *moe_slot_out_bf16;
 	void *argmax_score_f32;
+	void *argmax_scratch;
+	uint32_t *argmax_candidate_counts;
 	void *argmax_token_ids;
 	uint64_t *head_maxloc_u64;
 	uint32_t *frame_error;
@@ -639,7 +642,8 @@ extern cudaError_t SparkGemma4LaunchAttentionDecodeFull(cudaStream_t stream, voi
 extern cudaError_t SparkGemma4LaunchGatedGelu(cudaStream_t stream, void *gate_up_bf16, uint32_t row_count, uint32_t intermediate);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
-extern cudaError_t SparkGemma4LaunchHeadDirectArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count);
+extern uint32_t SparkGemma4HeadDirectArgmaxScratchElements(uint32_t rows);
+extern cudaError_t SparkGemma4LaunchHeadDirectArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, void *scratch, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count);
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 extern cudaError_t SparkGemma4LaunchRouterSoftmax(cudaStream_t stream, float *scores_f32, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchRouterTopk(cudaStream_t stream, const float *scores_f32, uint32_t *indices_u32, float *weights_f32, uint32_t row_count);
@@ -785,12 +789,17 @@ static void SparkGemma4ModuleSnapshotExtend(
 	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 }
 
-static void SparkGemma4ModuleStateTeardown(void *module_state)
+static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	uint32_t slot_index;
 	if ( state->tp_collective_initialized != 0u )
+	{
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_collective_initialized = 0u;
+	}
+	uint32_t slot_index;
 	for (slot_index = 0u; slot_index < SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
 	{
 		free(state->slots[slot_index].host_row_lane_indices);
@@ -801,6 +810,7 @@ static void SparkGemma4ModuleStateTeardown(void *module_state)
 		free(state->slots[slot_index].host_context_lengths);
 		free(state->slots[slot_index].host_frame_error);
 	}
+	return(SPARK_STATUS_OK);
 }
 
 static const SparkStageModuleLifecycleOps SparkGemma4ModuleLifecycle =
@@ -846,7 +856,12 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t local_hidden_bytes = rows * (SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION / state->tp_degree) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
-	uint64_t sliding_kv_bytes = rows * 2u * (state->sliding_kv_heads_per_rank * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
+	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
+	   the fused per-row [K|V] layout cannot be head-normed, roped or stored by
+	   the head-strided kernels - the head-norm/store row stride is
+	   heads*head_dimension, which addressed row r's V (and roped it) as row
+	   r+1's K, corrupting every decode row past the first. */
+	uint64_t sliding_kv_bytes = rows * (state->sliding_kv_heads_per_rank * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_query_bytes = rows * ((SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_kv_bytes = rows * (state->full_kv_heads_per_rank * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t mlp_gate_up_bytes = rows * 2u * (SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION / state->tp_degree) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
@@ -884,6 +899,8 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,sliding_kv_bytes,&slot->sliding_kv_bf16);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,sliding_kv_bytes,&slot->sliding_value_bf16);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,full_query_bytes,&slot->full_query_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,full_kv_bytes,&slot->full_key_bf16);
@@ -905,6 +922,10 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	{
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(float),(void **)&slot->argmax_score_f32);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)SparkGemma4HeadDirectArgmaxScratchElements(rows) * (sizeof(float) + sizeof(uint32_t)),(void **)&slot->argmax_scratch);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->argmax_candidate_counts);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->argmax_token_ids);
 		if ( status == SPARK_STATUS_OK )
@@ -1008,6 +1029,7 @@ static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4Modul
 	}
 }
 
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
 static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
 {
 	static uint32_t *ids_host = 0;
@@ -1042,6 +1064,7 @@ static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleS
 		fputc('\n',stderr);
 	}
 }
+#endif
 
 static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t first_row, uint32_t copy_rows)
 {
@@ -1110,25 +1133,32 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 	{
 		const SparkGemma4SlidingLayerWeights *weights = &state->sliding_by_layer[layer];
 		uint32_t kv_per_rank = state->sliding_kv_heads_per_rank;
-		uint64_t kv_half_bytes = (uint64_t)rows * kv_per_rank * head_dimension * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
-		void *value_half = (void *)((uint8_t *)slot->sliding_kv_bf16 + kv_half_bytes);
+		uint32_t kv_half_dimension = kv_per_rank * head_dimension;
+		SparkGemma4LinearView key_view = weights->kv_fused;
+		SparkGemma4LinearView value_view = weights->kv_fused;
+		key_view.output_dimension = kv_half_dimension;
+		value_view.output_dimension = kv_half_dimension;
+		value_view.weight_payload = (const uint8_t *)weights->kv_fused.weight_payload
+			+ ((uint64_t)kv_half_dimension * weights->kv_fused.input_dimension * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
 		cudaError_t error = SparkGemma4LaunchLinear(stream,&weights->query,slot->normalized_bf16,slot->sliding_query_bf16,rows);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->sliding_query_bf16,weights->query_norm_weight_bf16,slot->sliding_query_bf16,rows,query_heads,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->sliding_query_bf16,slot->row_positions_u32,rows,query_heads,&state->sliding_rope);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchLinear(stream,&weights->kv_fused,slot->normalized_bf16,slot->sliding_kv_bf16,rows);
+			error = SparkGemma4LaunchLinear(stream,&key_view,slot->normalized_bf16,slot->sliding_kv_bf16,rows);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->sliding_kv_bf16,weights->key_norm_weight_bf16,slot->sliding_kv_bf16,rows,kv_per_rank,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchHeadRmsNorm(stream,value_half,0,value_half,rows,kv_per_rank,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+			error = SparkGemma4LaunchLinear(stream,&value_view,slot->normalized_bf16,slot->sliding_value_bf16,rows);
+		if ( error == cudaSuccess )
+			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->sliding_value_bf16,0,slot->sliding_value_bf16,rows,kv_per_rank,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->sliding_kv_bf16,slot->row_positions_u32,rows,kv_per_rank,&state->sliding_rope);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchSlidingWindowPositions(stream,slot->row_sequences_u32,slot->context_lengths,slot->row_positions_u32,rows,slot->window_positions_u32);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->sliding_kv_bf16,value_half,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
+			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->sliding_kv_bf16,slot->sliding_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
 		if ( error == cudaSuccess )
@@ -1352,7 +1382,7 @@ static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, Spar
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	cudaError_t error = SparkGemma4LaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
-		error = SparkGemma4LaunchHeadDirectArgmax(stream,slot->normalized_bf16,state->token_embedding_bf16,slot->argmax_token_ids,slot->argmax_score_f32,state->tp_vocab_base,rows,state->tp_vocab_rows);
+		error = SparkGemma4LaunchHeadDirectArgmax(stream,slot->normalized_bf16,state->token_embedding_bf16,slot->argmax_scratch,slot->argmax_candidate_counts,slot->argmax_token_ids,slot->argmax_score_f32,state->tp_vocab_base,rows,state->tp_vocab_rows);
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadMaxLocPack(stream,slot->argmax_score_f32,slot->argmax_token_ids,slot->head_maxloc_u64,rows);
 	if ( error == cudaSuccess && state->tp_degree > 1u )

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdatomic.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -29,6 +30,22 @@ typedef struct SparkStageModuleLedger
     uint64_t device_bytes_resident;
     void *pack_arena;
 } SparkStageModuleLedger;
+
+typedef struct SparkStageModuleCudaWait
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t changed;
+    cudaStream_t stream;
+    uint64_t generation;
+    uint64_t completed_generation;
+    uint32_t initialized;
+    uint32_t waiting;
+    uint32_t terminal_pending;
+} SparkStageModuleCudaWait;
+
+SparkStatus SparkStageModuleCudaWaitInitialize(SparkStageModuleCudaWait *wait,cudaStream_t stream);
+SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t timeout_ns);
+SparkStatus SparkStageModuleCudaWaitDestroy(SparkStageModuleCudaWait *wait);
 
 typedef struct SparkStageModuleCudaFork
 {

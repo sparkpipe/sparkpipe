@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "model": {
-  "id": "laguna.laguna-s-2-1.resident-decode-stage-firmware",
+  "id": "laguna.laguna-s-2.1.resident-decode-stage-firmware",
   "revision": "0f573140834b11cfac0c2af97a101a7a69a13e22"
  },
  "metadata": {

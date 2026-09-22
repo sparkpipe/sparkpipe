@@ -1,0 +1,412 @@
+{
+ "schema_version": 1,
+ "family": "qwen38_27b",
+ "prompt_set": "qwen38-27b-lane-smoke-v1",
+ "topology": "TP4",
+ "nodes": 4,
+ "expert_shard": "tp",
+ "spine_bytes": 37576571904,
+ "kv_floor_bytes": 11534336,
+ "workspace_bytes": 1073741824,
+ "experts": [
+  {
+   "layer": 0,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 1,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 2,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 3,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 4,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 5,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 6,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 7,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 8,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 9,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 10,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 11,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 12,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 13,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 14,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 15,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 16,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 17,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 18,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 19,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 20,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 21,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 22,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 23,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 24,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 25,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 26,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 27,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 28,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 29,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 30,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 31,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 32,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 33,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 34,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 35,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 36,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 37,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 38,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 39,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 40,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 41,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 42,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 43,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 44,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 45,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 46,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 47,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 48,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 49,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 50,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 51,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 52,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 53,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 54,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 55,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 56,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 57,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 58,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 59,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 60,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 61,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 62,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  },
+  {
+   "layer": 63,
+   "expert": 0,
+   "codec": "nvfp4a16",
+   "bytes": 150405168
+  }
+ ],
+ "provenance": {
+  "generator": "tools/qwen38_27b_smoke_experts.py",
+  "dense_family_note": "dense SwiGLU FFN: the touched set is every layer; no prompt-dependence to trim",
+  "ffn_codec": "nvfp4a16",
+  "expert_bytes_full_model": 9625930752,
+  "expert_bytes_per_rank": 2406482688,
+  "spine_bytes_per_rank": 9394142976,
+  "kv_floor": {
+   "tokens": 512,
+   "sequences": 16,
+   "formula": "16 attn layers x tokens x (kv_heads/tp) x 256 x 2(K+V) x 2B + 48 GDN layers x sequences x ((16/4)x128 + (48/4)x128) x 2B"
+  },
+  "workspace_note": "1 GiB conservative estimate; replaced by the measured resident allocation at the M4 smoke",
+  "mtp_ffn_note": "the MTP layer's FFN stays in the spine (non-speculative lane)"
+ }
+}

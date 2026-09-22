@@ -16,6 +16,10 @@ extern "C" {
 /* NVFP4 (modelopt): U8-packed 4-bit payloads, e4m3 scale bytes per 16
  * values, F32 global/input scales. Used by the nvfp4 release arms. */
 #define SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED 8u
+/* MXFP4 as trained (kimi-k3, mimo-2.6): U8-packed e2m1 payloads (two 4-bit
+ * values per byte) with one E8M0 scale byte per 32 values, no global scale.
+ * Payload and scale planes are moved verbatim from the checkpoint. */
+#define SPARK_STAGEPACK_FORMAT_WEIGHT_MXFP4_E2M1_E8M0G32 9u
 
 #define SPARK_STAGEPACK_FORMAT_LAYER_CLASS_GLOBAL 0u
 #define SPARK_STAGEPACK_FORMAT_LAYER_CLASS_EVERY_LAYER 1u

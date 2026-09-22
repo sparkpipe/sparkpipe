@@ -1405,6 +1405,7 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	wave->resident_sequence_capacity = 1u;
 	wave->max_sequence_positions = SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u;
 	wave->pages_per_sequence = SPARK_GLM5_NEXT_VALIDATION_PAGES;
+	wave->physical_page_count = SPARK_GLM5_NEXT_VALIDATION_PAGES;
 	wave->owns_embedding = 0u;
 	wave->owns_final_head = 0u;
 	wave->hidden_input_bf16 = fixture->boundary_input;
@@ -1576,6 +1577,15 @@ static int SparkGlm5NextValRunTier2aAttention(SparkGlm5NextValFixture *fixture,u
 			return(SparkGlm5NextValFail("tier2a_attention_post","status"));
 		if (cudaStreamSynchronize(fixture->stream) != cudaSuccess)
 			return(SparkGlm5NextValFail("tier2a","sync"));
+		uint32_t access_error[SPARK_GLM5_NEXT_VALIDATION_KV_ACCESS_WORDS];
+		if (cudaMemcpy(access_error,fixture->kv_access_error,sizeof(access_error),cudaMemcpyDeviceToHost) != cudaSuccess)
+			return(SparkGlm5NextValFail("tier2a","access_error_readback"));
+		if (access_error[0] != 0u)
+		{
+			fprintf(stderr,"tier2a cache error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n",
+				access_error[0],access_error[1],access_error[2],access_error[3],access_error[4],access_error[5]);
+			return(SparkGlm5NextValFail("tier2a","cache_access"));
+		}
 	}
 	if (cudaMemcpy(streams_out,fixture->streams,
 		(uint64_t)SPARK_GLM5_NEXT_VHC_FLAT * sizeof(uint16_t),cudaMemcpyDeviceToHost) != cudaSuccess)

@@ -25,8 +25,14 @@ extern SparkStatus SparkDsv41FlashResidentDecodeStageExecute(
 	void *module_state,
 	SparkModelDriverFrame *frame);
 
-#define DSV41_FLASH_PROBE_MODEL_REVISION "dba1be0a40aa45a94ad051997016db3960a90277"
+/* TP-parameterized (lane 4): the probe validates the node context this
+   degree was compiled for; the M7 sessions built TP8. Override with
+   -DDSV41_FLASH_PROBE_TP_DEGREE=<n> (the module Makefile attach_probe
+   target passes $(TP_DEGREE)). */
+#ifndef DSV41_FLASH_PROBE_TP_DEGREE
 #define DSV41_FLASH_PROBE_TP_DEGREE 8u
+#endif
+#define DSV41_FLASH_PROBE_MODEL_REVISION "dba1be0a40aa45a94ad051997016db3960a90277"
 #define DSV41_FLASH_PROBE_EXPERT_WEIGHT_CODEC 7u
 
 typedef struct SparkDsv41FlashProbePackCensus

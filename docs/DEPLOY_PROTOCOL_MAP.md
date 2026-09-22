@@ -1,5 +1,10 @@
 # Fleet deploy protocol — as-deployed map (2026-09-14)
 
+This document describes the historical global fleet publisher. For concurrent
+development use [the current development cycle](DEVCYCLE.md).
+`module_build_release.sh` now builds an isolated artifact and rejects the legacy
+branch argument; it does not restart or publish to this global fleet.
+
 Evidence collected read-only on 2026-09-14 17:10-17:45 JST via ssh to sparkf
 and spark1 (no writes, no kills, no restarts, no daemon contact). `agent` =
 `fleet_node_agent.sh`; line numbers refer to the deployed copy

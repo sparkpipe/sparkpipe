@@ -78,9 +78,24 @@ typedef struct SpineReceipt
 	uint64_t ctime_ns;
 	uint8_t sha[32];
 	uint8_t ck[16];
+	uint64_t proof;
 } SpineReceipt;
 
 #define SPINE_RECEIPT_MAGIC UINT64_C(0x5350494e45524531)
+/* Trust chain (receipt proof basis). CLIENT_SHA: the client spine loader
+ * hashed the whole pack image and matched SHA256 against the expected
+ * digest. DAEMON_SHA: the weightd daemon hashed the whole pack image at
+ * arena materialization, matched SHA256 against the SAME expected digest
+ * with the file stat stable across the read (spark_weightd.c), and
+ * recorded this receipt. The fast path accepts exactly these two - they
+ * prove the same predicate over the same bytes. Anything else (including
+ * the pre-proof 80-byte receipts, which fail the exact-size read) is
+ * treated as absent and re-proven by a full client hash. The daemon
+ * writes NO receipt in ck128-sidecar mode: there the client full hash is
+ * the only SHA256 proof, so this skip is structurally narrowed to the
+ * strictly-redundant case (trust-chain document, dedicated PR). */
+#define SPINE_RECEIPT_PROOF_CLIENT_SHA UINT64_C(0)
+#define SPINE_RECEIPT_PROOF_DAEMON_SHA UINT64_C(1)
 
 static void spine_receipt_path(char *out,size_t out_bytes,int32_t fd,
 	const char *expected)
@@ -128,7 +143,9 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 			receipt.magic == SPINE_RECEIPT_MAGIC &&
 			receipt.size == (uint64_t)st.st_size &&
 			receipt.mtime_ns == spine_stat_mtime_ns(&st) &&
-			receipt.ctime_ns == spine_stat_ctime_ns(&st) )
+			receipt.ctime_ns == spine_stat_ctime_ns(&st) &&
+			(receipt.proof == SPINE_RECEIPT_PROOF_CLIENT_SHA ||
+			 receipt.proof == SPINE_RECEIPT_PROOF_DAEMON_SHA) )
 			have_receipt = 1;
 		close(receipt_fd);
 	}
@@ -187,6 +204,7 @@ static SparkStatus spine_stream(int32_t fd,const SparkWeightdManifest *manifest,
 				receipt.ctime_ns = spine_stat_ctime_ns(&st);
 				memcpy(receipt.sha,digest,32u);
 				memcpy(receipt.ck,ck,16u);
+				receipt.proof = SPINE_RECEIPT_PROOF_CLIENT_SHA;
 				receipt_fd = open(receipt_path,O_WRONLY | O_CREAT | O_TRUNC,0644);
 				if ( receipt_fd >= 0 )
 				{
@@ -228,5 +246,37 @@ SparkStatus SparkWeightdSpineLoad(int32_t fd,const SparkWeightdManifest *manifes
 		SPARK_RETURN(status);
 	if ( fstat(fd,&after) != 0 || spine_unchanged(&before,&after) == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdSpineReceiptRecordDaemon(int32_t fd,const char *expected,
+	const uint8_t sha_digest[32])
+{
+	char receipt_path[192];
+	SpineReceipt receipt;
+	struct stat st;
+	int receipt_fd;
+	if ( fd < 0 || expected == 0 || sha_digest == 0 ||
+		SparkSha256HexIsValid(expected) == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( fstat(fd,&st) != 0 || S_ISREG(st.st_mode) == 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	memset(&receipt,0,sizeof(receipt));
+	receipt.magic = SPINE_RECEIPT_MAGIC;
+	receipt.size = (uint64_t)st.st_size;
+	receipt.mtime_ns = spine_stat_mtime_ns(&st);
+	receipt.ctime_ns = spine_stat_ctime_ns(&st);
+	memcpy(receipt.sha,sha_digest,32u);
+	receipt.proof = SPINE_RECEIPT_PROOF_DAEMON_SHA;
+	spine_receipt_path(receipt_path,sizeof(receipt_path),fd,expected);
+	receipt_fd = open(receipt_path,O_WRONLY | O_CREAT | O_TRUNC,0644);
+	if ( receipt_fd < 0 )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( write(receipt_fd,&receipt,sizeof(receipt)) != (ssize_t)sizeof(receipt) )
+	{
+		close(receipt_fd);
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	close(receipt_fd);
 	return(SPARK_STATUS_OK);
 }

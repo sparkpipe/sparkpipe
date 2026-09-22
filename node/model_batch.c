@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include <fcntl.h>
 #include <poll.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,6 @@
 #include "sparkpipe/spark_continuous_batch.h"
 
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
-#define SPARK_MODEL_BATCH_POLL_TIMEOUT_MS 10
 #define SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX 1048576u
 #define SPARK_MODEL_BATCH_CONTINUOUS_STARVATION_BOUND 4u
 
@@ -629,11 +629,14 @@ static SparkStatus SparkModelBatchReleaseReady(
 
 static int32_t SparkModelBatchPoll(
 	const SparkModelResidentClientPollDescriptor *descriptors,
-	uint32_t descriptor_count)
+	uint32_t descriptor_count,
+	uint64_t deadline_ns)
 {
 	struct pollfd poll_descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 	uint32_t index;
-	int32_t status;
+	int32_t status,timeout_ms;
+	uint64_t now_ns,remaining_ms;
+	struct timespec now;
 	for (index=0u; index<descriptor_count; index++)
 	{
 		poll_descriptors[index].fd = descriptors[index].fd;
@@ -644,7 +647,16 @@ static int32_t SparkModelBatchPoll(
 		if ( (descriptors[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE) != 0u )
 			poll_descriptors[index].events |= POLLOUT;
 	}
-	status = poll(poll_descriptors,descriptor_count,SPARK_MODEL_BATCH_POLL_TIMEOUT_MS);
+	timeout_ms = -1;
+	if ( deadline_ns != 0u )
+	{
+		if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+			return(-1);
+		now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+		remaining_ms = deadline_ns > now_ns ? (deadline_ns - now_ns + 999999u) / 1000000u : 0u;
+		timeout_ms = remaining_ms > INT32_MAX ? INT32_MAX : (int32_t)remaining_ms;
+	}
+	status = poll(poll_descriptors,descriptor_count,timeout_ms);
 	return(status >= 0 || errno == EINTR ? 0 : -1);
 }
 
@@ -682,14 +694,12 @@ static SparkStatus SparkModelBatchRun(
 			break;
 		SparkModelBatchFlushOutput(output);
 		status = SparkModelBatchEngineProgress(engine,file->maximum_new_submissions_per_progress);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&descriptor_count);
-		if ( status == SPARK_STATUS_OK && SparkModelBatchPoll(descriptors,descriptor_count) < 0 )
-			status = SPARK_STATUS_IO_ERROR;
+		SparkModelBatchFlushOutput(output);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		if ( output->admission != 0 )
 		{
+			uint32_t before = submitted;
 			status = SparkModelBatchReleaseReady(engine,file,output,&submitted);
 			*submitted_count = submitted;
 			if ( status == SPARK_STATUS_OK && submitted == file->request_count && admission_closed == 0u )
@@ -697,7 +707,16 @@ static SparkStatus SparkModelBatchRun(
 				status = SparkModelBatchEngineCloseAdmission(engine);
 				admission_closed = 1u;
 			}
+			if ( status == SPARK_STATUS_OK && submitted != before )
+				continue;
 		}
+		if ( status != SPARK_STATUS_OK || output->terminal_count == file->request_count || output->write_failed != 0u )
+			break;
+		if ( file->sequential_submissions != 0u && submitted < file->request_count && output->terminal_count == submitted )
+			continue;
+		status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&descriptor_count);
+		if ( status == SPARK_STATUS_OK && SparkModelBatchPoll(descriptors,descriptor_count,SparkModelBatchEngineNextProgressNs(engine)) < 0 )
+			status = SPARK_STATUS_IO_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchEngineGetView(engine,&view);

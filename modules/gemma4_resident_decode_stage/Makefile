@@ -40,6 +40,16 @@ ALLOW_UNQUALIFIED_EXECUTION ?= 0
 TP_DEGREE ?= 1
 TP_RANK ?= 0
 TP_STANDALONE ?= 0
+
+# The dense 31B module has no expert-codec dimension: bf16 is the only
+# codec this Makefile builds (the 26B MoE variant lives in Makefile.moe).
+# EXPERT_CODEC still names the build slot so tools/module_build_release.sh
+# and the shared adapter/library layout stay uniform across families.
+EXPERT_CODEC ?= bf16
+ifeq ($(filter $(EXPERT_CODEC),bf16),)
+$(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': the dense gemma4 module builds bf16 only)
+endif
+BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/gemma4_resident_decode_stage/$(EXPERT_CODEC)
 override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
 override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum ../../validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
 
@@ -63,3 +73,33 @@ RUNTIME_CONFIGURATION := \
 GPU_VALIDATOR := validation/validate_gemma4_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+ADAPTER_SHARED_FLAGS := -dynamiclib
+ADAPTER_LIBRARY_EXT := dylib
+else
+ADAPTER_SHARED_FLAGS := -shared
+ADAPTER_LIBRARY_EXT := so
+endif
+ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libgemma4_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
+
+.PHONY: adapter
+
+# Dense 31B TP16 serving adapter: same sources and defines as the
+# top-level build/libgemma4_serving_adapter target, placed in the
+# codec-scoped module build slot tools/module_build_release.sh expects.
+adapter:
+	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
+	@mkdir -p "$(BUILD_DIRECTORY)"
+	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
+		-D_POSIX_C_SOURCE=200809L \
+		-DGEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" \
+		-DGEMMA4_CONTRACT_SHA256=\"$(GEMMA4_CONTRACT_SHA256)\" \
+		-I"$(CUDA_HOME)/include" \
+		$(MODULE_INCLUDE_FLAGS) -DSPARK_BATCH_BUCKET=1024u \
+		source/spark_gemma4_serving_adapter.c \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a -ldl -pthread \
+		-o "$(ADAPTER_LIBRARY)"

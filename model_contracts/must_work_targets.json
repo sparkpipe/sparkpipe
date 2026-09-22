@@ -58,7 +58,8 @@
     {
       "id": "qwen38_27b_27b_bf16",
       "model_family": "qwen38_27b",
-      "model_id": "Qwen/Qwen3.6-27B",
+      "model_id": "Qwen/Qwen3.8-27B",
+      "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
       "contract": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
       "routed_expert_weight_format": "none",
       "routed_expert_activation_format": "none",
@@ -114,6 +115,54 @@
         "shared_expert",
         "mtp",
         "pipeline_parallel"
+      ],
+      "production_ready": false
+    },
+    {
+      "id": "mimo26_pro_mxfp4_experts_fp8_spine",
+      "model_family": "mimo26_pro",
+      "model_id": "XiaomiMiMo/mimo-v2.6-pro-rl",
+      "contract": "model_contracts/mimo26_pro_authoritative.json",
+      "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
+      "routed_expert_activation_format": "bf16",
+      "non_expert_weight_format": "fp8_e4m3_block_128x128_with_bf16_o_proj_embed_head",
+      "non_expert_activation_format": "bf16",
+      "accumulator_format": "fp32",
+      "required_features": [
+        "hybrid_full_swa_attention",
+        "swa_sink_bias",
+        "fused_qkv",
+        "gqa_per_kind_kv_heads",
+        "partial_rope_64",
+        "noaux_tc_sigmoid_router",
+        "mxfp4_grouped_experts",
+        "fp8_block128_spine",
+        "bf16_full_resolution_spine_layers",
+        "prefix_cache"
+      ],
+      "production_ready": false
+    },
+    {
+      "id": "mimo26_flash_mxfp4_experts_fp8_spine",
+      "model_family": "mimo26_flash",
+      "model_id": "XiaomiMiMo/mimo-v2.6-flash-rl",
+      "contract": "model_contracts/mimo26_flash_authoritative.json",
+      "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
+      "routed_expert_activation_format": "bf16",
+      "non_expert_weight_format": "fp8_e4m3_block_128x128_with_bf16_o_proj_embed_head",
+      "non_expert_activation_format": "bf16",
+      "accumulator_format": "fp32",
+      "required_features": [
+        "hybrid_full_swa_attention",
+        "swa_sink_bias",
+        "fused_qkv",
+        "gqa_per_kind_kv_heads",
+        "partial_rope_64",
+        "noaux_tc_sigmoid_router",
+        "mxfp4_grouped_experts",
+        "fp8_block128_spine",
+        "bf16_full_resolution_spine_layers",
+        "prefix_cache"
       ],
       "production_ready": false
     }

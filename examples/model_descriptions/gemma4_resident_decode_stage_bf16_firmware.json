@@ -1,0 +1,79 @@
+{
+    "schema_version": 1,
+    "model": {
+        "id": "gemma4.31b.resident-decode-stage-firmware",
+        "revision": "h5376-l60-swa1024-f1of6-v262144-v1"
+    },
+    "metadata": {
+        "architecture": "gemma4_resident_decode_stage",
+        "purpose": "resident decode-stage firmware for Gemma-4-31B-it (dense): 5:1 sliding to full attention with per-head q/k norms and k_eq_v on full layers, partial rotary on full layers, BF16 spine, layer scalars",
+        "provenance": {
+            "status": "in bring-up; first serving arm is shared-socket lane 6 (TP16 packs verified on NVMe, tools/gemma4_stagepack.py receipts)",
+            "disclosed_source": [
+                "google/gemma-4-31b-it warm snapshot, contract source_revision 842da3794eaa0b77d5f08bae87a17459d91ff475"
+            ]
+        },
+        "module_geometry": {
+            "hidden_dimension": 5376,
+            "layer_count": 60,
+            "attention_period": 6,
+            "full_attention_phase": 5,
+            "sliding_query_head_count": 32,
+            "sliding_kv_head_count": 16,
+            "sliding_head_dimension": 256,
+            "full_query_head_count": 32,
+            "full_kv_head_count": 4,
+            "full_head_dimension": 512,
+            "full_rotated_pair_count": 64,
+            "dense_intermediate_dimension": 21504,
+            "output_vocab_count": 262144
+        },
+        "precision": {
+            "non_expert_weight_format": "bf16",
+            "activation_format": "bf16",
+            "kv_cache_codec": "bf16",
+            "accumulator_format": "fp32"
+        }
+    },
+    "stages": [
+        {
+            "name": "gemma4_resident_decode_stage",
+            "target": "cuda.sm121.gemma4.31b.resident_decode_stage.bf16",
+            "programs": [
+                {
+                    "name": "resident_decode",
+                    "id": 1,
+                    "max_inflight": 4,
+                    "completion": "submit_return",
+                    "scheduling": {
+                        "flags": [
+                            "stream_ordered",
+                            "driver_owns_resident_state",
+                            "driver_owns_kv_cache",
+                            "fixed_firmware",
+                            "requires_hidden_transport",
+                            "no_file_transport",
+                            "no_shell_transport"
+                        ],
+                        "max_active_slots": 512,
+                        "max_new_tokens": 512,
+                        "max_resident_sequences": 512,
+                        "max_sequence_tokens": 262144
+                    },
+                    "operations": [
+                        {
+                            "name": "gemma4_resident_decode_stage",
+                            "module": "spark.gemma4.31b.resident_decode_stage.bf16.linear_bf16.kv_bf16.h5376.l60.v1",
+                            "configuration": {
+                                "qualification_status": "GPU_VALIDATED",
+                                "production_ready": false,
+                                "fallback_allowed": false,
+                                "runtime_backend_selection": "forbidden"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

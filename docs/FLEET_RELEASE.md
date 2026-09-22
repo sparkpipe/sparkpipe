@@ -1,5 +1,10 @@
 # Fleet release & update system
 
+This document describes the historical global fleet publisher. For concurrent
+development use [the current development cycle](DEVCYCLE.md).
+`module_build_release.sh` now builds an isolated artifact and rejects the legacy
+branch argument; it does not restart or publish to this global fleet.
+
 One channel delivers every artifact to the 16 sparks: binaries, configs,
 the weights daemon, and the agent itself. No ssh fanout, no rsync, no
 manual scp of binaries. Everything converges by itself after a publish;

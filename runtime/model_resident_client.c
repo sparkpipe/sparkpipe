@@ -1063,6 +1063,14 @@ SparkStatus SparkModelResidentClientProgress(
 	SPARK_RETURN(status);
 }
 
+uint64_t SparkModelResidentClientNextProgressNs(
+	const SparkModelResidentClient *client)
+{
+	if ( client == 0 || client->connected != 0u )
+		return(0u);
+	return(client->reconnect_not_before_ns != 0u ? client->reconnect_not_before_ns : 1u);
+}
+
 SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientPollDescriptor *descriptor)

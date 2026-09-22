@@ -1,5 +1,10 @@
 # Fleet rollout: multi-dev deploy protocol
 
+This document describes the historical global fleet publisher. For concurrent
+development use [the current development cycle](DEVCYCLE.md).
+`module_build_release.sh` now builds an isolated artifact and rejects the legacy
+branch argument; it does not restart or publish to this global fleet.
+
 Companion to `docs/DEPLOY_PROTOCOL_MAP.md` (as-deployed evidence) and
 `docs/DEPLOY_MULTI_DEV_PROPOSAL.md` (approved items 0-6, now implemented
 in `tools/fleet_node_agent.sh`, `tools/publish_local.sh`,

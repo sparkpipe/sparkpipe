@@ -8,14 +8,24 @@
   "family": "qwen38_max",
   "fixtures": {
     "capital_of_france.t1r": {
-      "bytes": 673260,
-      "sha256": "74fc4bed5354b73443921d5be57c9baf463daaa06b624de33dcfafe2661438e0"
+      "bytes": 866396,
+      "sha256": "7d32ccd0b783dde12bbead84b8ea94a778c3a3ca55ad60c0506e81ca1a4a51fe"
+    },
+    "count_up.t1r": {
+      "bytes": 1154177,
+      "sha256": "6ca580b728aea757e86af4740a6396586c3f8d8fac52629f441236573df2becc"
     }
   },
-  "generated_utc": "2026-09-14T05:04:50Z",
+  "generated_utc": "2026-09-20T19:06:06Z",
   "generator": "t1_reference_decoder.py",
-  "llm_defines_sha256": "2478506aa9ef0d628993f2a293936de2450a41d246fdb52f2a154f61a9f92abd",
+  "host": "spark1",
+  "llm_defines_sha256": "21a51f9e2ef4a58cd3f0452f198de70330fd32f577100fe34ee55ebcdcd9dafe",
   "numpy_version": "1.26.4",
-  "prompts_sha256": "e70a99dc62c3d6c0d5fc269e8b2e6495a59d70d1667c8d8c5418d3366009d237",
-  "python_version": "3.12.3"
+  "prompts_sha256": "855eeb72ee13d2372074da7247b7a9046fa368d770fc7a316bb343f07677de0d",
+  "python_version": "3.12.3",
+  "threading_env": {
+    "MKL_NUM_THREADS": "8",
+    "OMP_NUM_THREADS": "8",
+    "OPENBLAS_NUM_THREADS": "8"
+  }
 }

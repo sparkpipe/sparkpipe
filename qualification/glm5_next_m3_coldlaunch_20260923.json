@@ -1,0 +1,62 @@
+{
+ "schema_version": 1,
+ "kind": "sparkpipe.m3-coldlaunch-receipts.v1",
+ "family": "glm5_next",
+ "model": "glm53flash.fp8.tp16",
+ "topology": "TP16 identity, spark0-f",
+ "mode_claim": "SPARK_GLM5_NEXT_GRAPH_PATH=1 + SPARK_GLM5_NEXT_PIN_EXPERTS=1 (full-pool intended); smoke-relative shared-lane stdout timings under gpu-shared queue admission; not isolated-fleet receipts",
+ "exec_bundle": {
+  "source_commit": "ed9ff7f52f2721091e01fd804833450c68910377",
+  "residentd_sha256": "b1b82ed8375cffbbd75edd027a3b61b6d988b75a39a13d9c705a402a480fdada",
+  "weightd_warm_sha256": "d54ae8c84a738ad13f0fe3a617a9a6e5a1a2fb93f5abbd09b97d68064dbe023a",
+  "model_batch_sha256": "3eaff60693c576a7da108620fa09c0f92702f242cb835acc35e66730c8214",
+  "wset_sha256": "fbd8e8a4bff8ec99840b9bd1be5039d7ca73d305bb92ee0bafd5552bbbfcd06b",
+  "smoke_batch_sha256": "f6aa43dfc185367ef54a5158dcfce904793c4c85e29b9a8795e45422ef8e5d9a"
+ },
+ "daemon": "operator shared sparkpipe-weightd-shared.service (release bundle b690c3a5), 28.5 GiB device arena per node",
+ "smoke_set": {
+  "keys": 336,
+  "raw_bytes_per_node": 544997376,
+  "chunked_bytes_per_node": 2818572288,
+  "chunk_basis": "2 MiB ceil per expert span; GLM per-rank spans all sub-2MiB (5.17x raw)"
+ },
+ "measured": {
+  "daemon_cold_warm_seconds_smoke_set": {
+   "spark0": 0.999,
+   "spark1": 1.088,
+   "spark5": 0.927,
+   "sparkf": 0.65,
+   "note": "WSET-WARM keys=336 via weightd_warm --wset through the shared socket, attempt 2f3fca14 (glm-m3-cold-b2); per-rank wall including attach handshake 2.16-4.53 s"
+  },
+  "daemon_full_warm_seconds_12096_experts": {"bound": 31, "note": "probe2 spark0 submit-to-last-warm-line; partial-cold caveat (daemon already held 11 GiB from a5 lineage)"},
+  "daemon_cold_load_rate_gbps": {"observations": [0.82, 1.61], "note": "daemon journal, 11.0 GiB cold-loads: 14.305 s (contended, a5) and 7.309 s (clean, post-reclaim)"}
+ },
+ "not_landed": {
+  "instance_ready_seconds": "BLOCKED: EXPERT-PIN-FAILED status=15 (BUSY) at ~59% of pin-all (13-14 of 24 lease batches x 512 keys, all completed batches status=0). Root cause narrowed: pin-all through the per-chunk lazy expert tier at GLM's 5.17x chunk inflation needs ~96.8 GiB against the 24 GiB qualified pool ceiling - structurally impossible on a 28.5 GiB arena. The campaign's pin-all succeeded via the whole-arena residency path; the release daemon's lazy tier materializes per-expert chunks. Needs a shared-runtime decision (arena-basis pin when the pack is arena-resident, or a pool-basis change). File-disjoint handoff: manager/coredev.",
+  "steady_state_decode_tokens_per_second": "blocked behind instance_ready"
+ },
+ "fleet_firsts_on_the_fixed_stack": [
+  "lazy attach + whole-pack single-import map: WD-MAP-POOL-BULK chunks=10351 span=21707620352 in ONE import (a10/a11/b2, all 16 ranks)",
+  "shared-daemon smoke-set preload sub-second fleet-wide (b2)",
+  "mesh register-skip fix (#1135) verified in production path: no MESH-REGISTER-FAIL in any post-fix run"
+ ],
+ "defect_ledger": [
+  "r1: queue provides RUNTIME_ROOT as a path - wrappers mkdir (a2)",
+  "r2: adapter/driver/transport must be symlinked into the private runtime (a2)",
+  "r3: sync cwd must be the exact printed full-sha path (a3, operator error class)",
+  "r4: module requires finite SPARK_WEIGHTD_EXPERT_POOL_BYTES/SPINE_BUDGET at driver load (a4)",
+  "r5: release daemon requires whole-pack .ck128 sidecar - one-time stamp per node (a5; tools/glm5_next_ck128_stamp.sh)",
+  "r6: campaign-era client cannot IPC with the release daemon - measure with the coherent bundle (a6)",
+  "r7: mesh register EINVAL on RDMA-pinned shmem - fixed in #1135 (a7)",
+  "r8: stale refcount-0 arenas from crashed runs starve admissions - weightd_warm --reclaim (a8-a11)",
+  "r9: concurrent multi-lane full-pool pins cannot share one 28.5 GiB daemon - admission-budget design item filed",
+  "r10: warmer needs the pool env before invocation (b1)",
+  "open: pin-all via lazy tier vs pool ceiling at 5.17x chunk inflation (see not_landed)"
+ ],
+ "attempts": {
+  "a2": "80c741e3", "a4": "a3530466", "a5": "91a68dd6", "a6": "52ad5f06", "a7": "d4cbbcb6",
+  "a8": "8a33ce47", "a9": "c4b06953", "a10": "7163e150", "a11": "e80654f5",
+  "b1": "2d92fc9d", "b2": "2f3fca14",
+  "probes": {"mesh_flag": "b69034d8", "mesh_attach": "0bd7eb31", "fresh_memfd_control": "36a66421", "attach_probe_release_client": "826ed9c0", "campaign_client_probe": "4696674c"}
+ }
+}

@@ -6,6 +6,33 @@
 #include <unistd.h>
 #include <time.h>
 
+#include <sys/mman.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "sparkpipe/spark_weightd.h"
+
+static uint32_t mesh_map_forced,mesh_map_offset,mesh_map_failure,mesh_map_calls;
+static uint8_t *mesh_map_raw;
+static void *test_mmap(void *address,size_t bytes,int protection,int flags,int fd,off_t offset)
+{
+    if (mesh_map_forced == 0u) return mmap(address,bytes,protection,flags,fd,offset);
+    mesh_map_calls++;
+    if (mesh_map_calls == mesh_map_failure) { errno = ENOMEM;return MAP_FAILED; }
+    if (mesh_map_calls == 1u)
+    {
+        size_t alignment = SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES;
+        uint8_t *reservation = mmap(0,bytes + 2u * alignment,PROT_NONE,MAP_PRIVATE | MAP_ANONYMOUS,-1,0);
+        assert(reservation != MAP_FAILED);
+        mesh_map_raw = (uint8_t *)(((uintptr_t)reservation + alignment - 1u) & ~(uintptr_t)(alignment - 1u)) + mesh_map_offset;
+        size_t prefix = (size_t)(mesh_map_raw - reservation);
+        size_t suffix = bytes + 2u * alignment - prefix - bytes;
+        if (prefix != 0u) assert(munmap(reservation,prefix) == 0);
+        if (suffix != 0u) assert(munmap(mesh_map_raw + bytes,suffix) == 0);
+        return mmap(mesh_map_raw,bytes,protection,flags | MAP_FIXED,fd,offset);
+    }
+    return mmap(address,bytes,protection,flags,fd,offset);
+}
+
 static pthread_mutex_t read_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t read_changed = PTHREAD_COND_INITIALIZER;
 static unsigned read_blocked,read_entered;
@@ -38,11 +65,13 @@ static int test_rename(const char *source,const char *destination)
 	return rename(source,destination);
 }
 
+#define mmap test_mmap
 #define rename test_rename
 #define pread test_pread
 #include "../runtime/spark_weightd.c"
 #undef pread
 #undef rename
+#undef mmap
 
 void spark_stub_cuda_fail_alloc_after(uint32_t calls);
 
@@ -52,6 +81,98 @@ static uint32_t fd_count(void)
 	for (i=0u; i<1024u; i++)
 		count += fcntl((int32_t)i,F_GETFD) >= 0;
 	return(count);
+}
+
+static void check_mesh_mapping(uint32_t raw_offset,uint32_t failure,uint64_t advertised,uint64_t file_bytes)
+{
+    SparkWeightdClient client = {0};
+    SparkWeightdLazyAttachRequest request = {0};
+    SparkWeightdLazyAttachResult result;
+    SparkWeightdIpcAttachLazyResult wire = {0};
+    union { struct cmsghdr align; unsigned char bytes[CMSG_SPACE(2u * sizeof(int))]; } control = {0};
+    struct msghdr message = {0};
+    struct iovec vector = {&wire,sizeof(wire)};
+    struct cmsghdr *header;
+    char path[] = "/tmp/spark-mesh-mapping-XXXXXX";
+    int sockets[2],source = mkstemp(path),pool = open("/dev/null",O_RDONLY),fds[2];
+    uint32_t before;
+    unsigned char first = 0x31u,last = 0xe7u,observed;
+    assert(source >= 0 && pool >= 0 && unlink(path) == 0);
+    assert(ftruncate(source,(off_t)file_bytes) == 0);
+    assert(pwrite(source,&first,1u,0) == 1 && pwrite(source,&last,1u,(off_t)file_bytes - 1) == 1);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    client.fd = sockets[0];
+    request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    request.identity.arena_bytes = 4096u;
+    memcpy(request.identity.model,"mesh-map",9u);
+    memset(request.identity.pack_sha256,'a',64u);
+    memcpy(request.pack_path,"/unused",8u);
+    request.expert_pool_bytes = 4096u;
+    SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT,1u);
+    wire.mesh_ready = 1u;
+    wire.pool_fd_staged = 1u;
+    wire.mesh_send_buffer_bytes = advertised;
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1u;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(fds));
+    fds[0] = source;fds[1] = pool;
+    memcpy(CMSG_DATA(header),fds,sizeof(fds));
+    before = fd_count();
+    assert(sendmsg(sockets[1],&message,0) == (ssize_t)sizeof(wire));
+    mesh_map_offset = raw_offset;
+    mesh_map_failure = failure;
+    mesh_map_calls = 0u;
+    mesh_map_raw = 0;
+    mesh_map_forced = 1u;
+    SparkStatus status = SparkWeightdClientAttachLazy(&client,&request,&result,UINT64_C(1000000000));
+    mesh_map_forced = 0u;
+    SparkStatus expected = advertised != SPARK_WEIGHTD_MESH_REGION_BYTES || file_bytes < advertised ?
+        SPARK_STATUS_SCHEMA_ERROR : failure != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+    assert(status == expected);
+    if (status == SPARK_STATUS_OK)
+    {
+        unsigned char *mapped = result.mesh_mapping;
+        assert(mapped != 0 && (uintptr_t)mapped % SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES == 0u);
+        assert(mapped[0] == first && mapped[SPARK_WEIGHTD_MESH_REGION_BYTES - 1u] == last);
+        mapped[0] = 0x79u;
+        assert(pread(source,&observed,1u,0) == 1 && observed == 0x79u);
+        assert(result.mesh_send_buffer_addr == (uint64_t)(uintptr_t)mapped);
+        if (mesh_map_raw != mapped)
+        { errno = 0;assert(msync(mesh_map_raw,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM); }
+        errno = 0;
+        assert(msync(mapped + SPARK_WEIGHTD_MESH_REGION_BYTES,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM);
+        assert(munmap(mapped,SPARK_WEIGHTD_MESH_REGION_BYTES) == 0 && close(result.pool_fd) == 0);
+        errno = 0;
+        assert(msync(mapped,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM);
+    }
+    else
+    {
+        assert(result.mesh_mapping == 0);
+        if (mesh_map_raw != 0)
+        { errno = 0;assert(msync(mesh_map_raw,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM); }
+    }
+    assert(fd_count() == before);
+    assert(close(source) == 0 && close(pool) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
+}
+
+static void check_mesh_mapping_offsets(void)
+{
+    uint32_t page = (uint32_t)sysconf(_SC_PAGESIZE),cases = 0u;
+    assert(page > 0u && page <= SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES && SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES % page == 0u);
+    for (uint32_t offset=page; offset<SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES; offset+=page)
+    { check_mesh_mapping(offset,0u,SPARK_WEIGHTD_MESH_REGION_BYTES,SPARK_WEIGHTD_MESH_REGION_BYTES); cases++; }
+    check_mesh_mapping(0u,0u,SPARK_WEIGHTD_MESH_REGION_BYTES,SPARK_WEIGHTD_MESH_REGION_BYTES); cases++;
+    for (uint32_t failure=1u; failure<=2u; failure++)
+    { check_mesh_mapping(page,failure,SPARK_WEIGHTD_MESH_REGION_BYTES,SPARK_WEIGHTD_MESH_REGION_BYTES); cases++; }
+    check_mesh_mapping(page,0u,SPARK_WEIGHTD_MESH_REGION_BYTES - 1u,SPARK_WEIGHTD_MESH_REGION_BYTES);
+    check_mesh_mapping(page,0u,UINT64_MAX,SPARK_WEIGHTD_MESH_REGION_BYTES);
+    check_mesh_mapping(page,0u,SPARK_WEIGHTD_MESH_REGION_BYTES,SPARK_WEIGHTD_MESH_REGION_BYTES - 1u);
+    printf("PASS mesh mapping: %u actual mmap offsets/faults/schema cases; offset zero, final byte, shared writes, trimmed reservation, FD conservation\n",cases + 3u);
 }
 
 static void send_fds(int32_t socket_fd,int32_t source,uint32_t count)
@@ -405,6 +526,7 @@ static void check_cold_control_progress(void)
 
 int main(void)
 {
+	check_mesh_mapping_offsets();
 	check_frame(2u,2u,SPARK_STATUS_OK);
 	check_frame(64u,64u,SPARK_STATUS_OK);
 	check_frame(2u,1u,SPARK_STATUS_IO_ERROR);

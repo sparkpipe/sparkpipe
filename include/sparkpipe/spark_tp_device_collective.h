@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 14u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 15u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -230,6 +230,11 @@ typedef struct SparkTpDeviceCollectiveTopology
 #define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES \
     ((uint32_t)sizeof(SparkTpDeviceCollectiveTopology))
 
+struct SparkWeightdClient;
+struct SparkWeightdMeshTopology;
+SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,
+    struct SparkWeightdMeshTopology *topology);
+
 typedef struct SparkTpDeviceCollectiveConfig
 {
 	uint32_t abi_version;
@@ -251,6 +256,8 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
         [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     uint64_t collective_identifier;
+    struct SparkWeightdClient *mesh_lane_client;
+    uint32_t mesh_band_index;
 	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
@@ -352,6 +359,18 @@ SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
     SparkTpDeviceCollective *collective,
     uint32_t timeout_milli);
 
+typedef struct SparkTpDeviceCollectiveHardwareTiming
+{
+    uint64_t source_wait_ns;
+    uint64_t peer_wait_ns;
+    uint64_t copy_ns;
+    uint64_t combine_ns;
+} SparkTpDeviceCollectiveHardwareTiming;
+
+SparkStatus SparkTpDeviceCollectiveHardwareStats(
+    SparkTpDeviceCollective *collective,
+    SparkTpDeviceCollectiveHardwareTiming *timing_out);
+
 void SparkTpDeviceCollectiveRoundStats(
     SparkTpDeviceCollective *collective,
     uint64_t *count_out,
@@ -401,6 +420,9 @@ SparkStatus SparkTpDeviceCollectiveChainRetire(
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,
     uint64_t request_id);
+SparkStatus SparkTpDeviceCollectiveEndChain(
+    SparkTpDeviceCollective *collective,
+    void *cuda_stream);
 
 uint64_t SparkTpDeviceCollectiveRoundIndex(
     SparkTpDeviceCollective *collective);

@@ -1,0 +1,53 @@
+{
+  "lane": "dsv41_flash (lane 4)",
+  "session": "m3-rank-census (3 of 4 ranks; rank2 parked) - MECHANISM CORRECTED after A2 control legs",
+  "build": "merged main @ 2872d3ae (post #1121/#1123): probe TP_DEGREE=4 mxfp4, weightd_warm --family dsv41_flash",
+  "method": "per rank: posix_fadvise DONTNEED scoped to pack+.experts (no reclaim on spark4/5 - first-ever dsv41 arena on those daemons, no stale arena to free, other lanes' cold arenas undisturbed); CUDA events + CLOCK_MONOTONIC around Initialize; exec is the fail-closed stub (status 19 expected)",
+  "budgets": {
+    "expert_pool_math": "chunk law: rank pairs x 18,800,640 B x 2.15",
+    "rank0_pool_bytes": 4648458240,
+    "rank1_pool_bytes": 5012250624,
+    "rank3_pool_bytes": 4365508608,
+    "spine_budget_bytes": 4294967296
+  },
+  "ranks": {
+    "spark4_rank0": {
+      "pack_sha256": "95ba0423274f7572eb82908a50a50f2c2f04d4b2f9b0a0fc9c5ebcde24b63a3f",
+      "wset_keys": 115,
+      "A_first_load_init_ms": 106828.304,
+      "A2_receipt_present_cache_evicted_init_ms": 3512.085,
+      "B_preloaded_init_ms": 3409.978,
+      "warm_one_shot_s": 2.637,
+      "first_load_effective_mbps": 713,
+      "receipt_span_copy_cold_mbps": 1136
+    },
+    "spark5_rank1": {
+      "pack_sha256": "8ad369d77b5fcc88a0337bb7c81bb8adc67554eee73a2ce0f3f25acd60c98bf3",
+      "wset_keys": 124,
+      "A_first_load_init_ms": 130316.328,
+      "A2_receipt_present_cache_evicted_init_ms": 3689.0,
+      "B_preloaded_init_ms": 3729.763,
+      "warm_one_shot_s": 3.316,
+      "first_load_effective_mbps": 585,
+      "receipt_span_copy_cold_mbps": 1082
+    },
+    "spark7_rank3": {
+      "pack_sha256": "26745868172b52c166f68166a8bb66caccf5552369bda6687369de3300ba37d0",
+      "wset_keys": 108,
+      "A_receipt_present_init_ms": 4523.114,
+      "B_preloaded_init_ms": 913.535,
+      "B_family_confirm_init_ms": 626.831,
+      "B_prime_cache_evicted_init_ms": 3640.691,
+      "note": "this cell never measured a true first load in this session - the predecessor's 23:5x session had already created the spine receipt; its 881 MB/s 'cold' figure was the receipt fast path"
+    },
+    "spark6_rank2": "PARKED - operator spark6 disk ruling pending (80G free vs 70.9G pack); not measured"
+  },
+  "mechanism_correction": {
+    "wrong_claim_retracted": "the earlier version of this receipt attributed spark4/5's 107-130 s first loads to a 31-37 MB/s per-node NVMe deficit vs spark7's 881 MB/s. WRONG: spine_stream (runtime/spark_weightd_spine.c) hashes the ENTIRE pack (SHA256+Ck128, 76,180,410,880 B) on the FIRST load of a pack on a node, then writes a /tmp/spark-weightd-spine receipt keyed by identity-size-inode validated on mtime/ctime; subsequent loads copy only the ~4 GB spine spans",
+    "correct_reading": "spark4/5 streamed the whole 76 GB pack at 713/585 MB/s WHILE dual-hashing - healthy NVMe. spark7's 881 MB/s measured the receipt fast path (span copy), not first-load storage. A2 control legs prove it: spark4 3,512 ms and spark5 3,689 ms cold-cache with the receipt present",
+    "operator_note": "NO per-node storage variance to chase: whole-pack hash throughput 713/585 MB/s on spark4/5; receipt-path span copies ~1.1 GB/s cold-cache on both; spark7 consistent once its receipt history is accounted for"
+  },
+  "verdict": "preloaded attach meets the <5000 ms target on every measurable rank (3410 / 3730 / 914 ms); the receipt fast path alone (no preload, cache evicted) also meets it on spark4/5 (3512 / 3689 ms); the one-time cost is the first-load whole-pack verification hash: 107-130 s per pack per node, cached by the /tmp receipt until the file changes",
+  "hill_climb": "(1) skip the client-side whole-pack hash when the daemon attach already carries verified digests (the LAZY-MANIFEST-MISMATCH cross-check guards manifest integrity) - removes the 107-130 s first-load class entirely; (2) read the spine spans from the daemon's materialized arena instead of re-preading the pack file (lazy_spine_load) - removes the B-prime eviction degradation (spark7: 3641 ms evicted vs 914 ms warm)",
+  "fleet_laws_observed": "ceph zero-touch; sole-copy members untouched; no reclaim on shared daemons of other lanes; explicit chunk-math pools with stated slack; cell-level measurement only, queue untouched"
+}

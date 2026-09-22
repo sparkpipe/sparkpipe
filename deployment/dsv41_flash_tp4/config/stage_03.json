@@ -1,0 +1,53 @@
+{
+ "schema_version": 1,
+ "model_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+ "expert_weight_codec": "mxfp4",
+ "stage_count": 1,
+ "stage_index": 0,
+ "first_layer_index": 0,
+ "layer_count": 40,
+ "stage_pack_path": "packs/rank3.spstage",
+ "max_sequence_positions": 32768,
+ "execution_row_capacity": 64,
+ "resident_sequence_capacity": 16,
+ "pipeline_slot_count": 2,
+ "tp_degree": 4,
+ "tp_rank": 3,
+ "tp_collective": {
+  "backend": "hidden_transport",
+  "backend_module_path": "lib/hidden_transport.so",
+  "collective_identifier": 9911223344556684,
+  "listen_port": 53067,
+  "connect_timeout_milli": 30000,
+  "operation_timeout_milli": 30000,
+  "peer_hosts": [
+   "spark4",
+   "spark5",
+   "spark6",
+   "spark7"
+  ],
+  "peer_ports": [53064,53065,53066,53067],
+  "algorithms": [
+   "recursive_doubling",
+   "direct_all_to_all",
+   "counter_rotating_split_ring"
+  ],
+  "direct_all_to_all_max_payload_bytes": 81920,
+  "split_ring_min_payload_bytes": 655360,
+  "rail_peer_hosts": [
+   [
+    "10.10.200.4",
+    "10.10.200.5",
+    "10.10.200.6",
+    "10.10.200.7"
+   ],
+   [
+    "10.10.100.14",
+    "10.10.100.15",
+    "10.10.100.16",
+    "10.10.100.17"
+   ]
+  ],
+  "step_rail_indices": [0,1,1,1]
+ }
+}

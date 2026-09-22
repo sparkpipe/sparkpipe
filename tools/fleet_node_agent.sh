@@ -507,7 +507,7 @@ ensure_weightd() {
     echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
-        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \
         --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
     rm -f /tmp/weightd-mesh/.shipped_sha 2>/dev/null

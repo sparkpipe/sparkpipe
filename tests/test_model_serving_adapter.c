@@ -382,18 +382,68 @@ static void TestSubmissionValidation(void)
 	submission.row_positions = &row_position;
 	submission.row_sequence_ids = &row_sequence;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.sequence_position = row_position = 63u;
+	lane.context_token_count = 64u;
+	lane.cache_prefix_token_count = 63u;
+	lane.cache_publish_token_count = 64u;
+	lane.cache_prefix_identity.sha256[0] = 1u;
+	lane.cache_publish_identity.sha256[0] = 2u;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.sequence_position = row_position = 64u;
+	lane.context_token_count = lane.cache_publish_token_count = 65u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.cache_prefix_token_count = 65u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.cache_prefix_token_count = 63u;
+	lane.cache_publish_token_count = 66u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.cache_publish_token_count = 65u;
 	row_sequence = 8u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_sequence = 7u;
 	row_lane = 1u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_lane = 0u;
+	lane.flags = 0u;
+	lane.cache_prefix_token_count = lane.cache_publish_token_count = 0u;
+	memset(&lane.cache_prefix_identity,0,sizeof(lane.cache_prefix_identity));
+	memset(&lane.cache_publish_identity,0,sizeof(lane.cache_publish_identity));
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	submission.tokens_per_sequence = 0u;
 	submission.row_count = 0u;
 	submission.token_count = 0u;
 	submission.new_token_count = 0u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	lane.sequence_position = lane.context_token_count = lane.cache_publish_token_count = 65u;
+	lane.cache_publish_identity.sha256[0] = 9u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.sequence_position--;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sequence_position++;
+	lane.cache_publish_token_count--;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.cache_publish_token_count++;
+	lane.flags |= SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	submission.tokens_per_sequence = 1u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.tokens_per_sequence = 0u;
+	submission.row_count = submission.token_count = submission.new_token_count = 1u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.row_count = submission.token_count = submission.new_token_count = 0u;
+	submission.hidden_output_address = &token_id;
+	submission.hidden_output_bytes = sizeof(token_id);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.hidden_output_address = 0;
+	submission.hidden_output_bytes = 0u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+
 }
 
 static void TestPreparationRequiresPrefetch(void)
@@ -510,6 +560,24 @@ static void TestDriverCacheAdmissionIdentity(void)
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
 	request.transaction_id = 0u;
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	request.transaction_id = 12u;
+	request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH;
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
+	lane.sequence_position = lane.context_token_count = lane.publish_token_count = 8u;
+	lane.publish_identity.sha256[0] = 9u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	request.new_token_count = 1u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	request.new_token_count = 0u;
+	request.frame_flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH;
+	lane.sequence_position--;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	lane.sequence_position++;
+	lane.flags = 0u;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+
 }
 
 static void TestRuntimeSubmissionValidation(void)
@@ -712,6 +780,15 @@ static void TestCompletionValidation(void)
 	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,12u,
 		SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,0u,&residency,
 		&completion) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
+	completion.completion_flags = 0u;
+	completion.token_count = completion.tokens_per_sequence = 0u;
+	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,0u,
+		SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH,1u,0u,&residency,&completion) == SPARK_STATUS_OK);
+	completion.accepted_token_count = 1u;
+	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,0u,
+		SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH,1u,0u,&residency,&completion) == SPARK_STATUS_SCHEMA_ERROR);
+
 }
 
 static void TestDynamicLoader(void)

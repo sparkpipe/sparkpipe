@@ -165,6 +165,7 @@ enum ibv_mtu
 #define IBV_WR_RDMA_WRITE_WITH_IMM 1
 #define IBV_WR_SEND_WITH_IMM 2
 #define IBV_SEND_SIGNALED 2
+#define IBV_SEND_INLINE 8
 #define IBV_WC_SUCCESS 0
 #define IBV_WC_RECV_RDMA_WITH_IMM 1
 #define IBV_WC_SEND 2
@@ -220,3 +221,23 @@ int spark_stub_ibv_qp_remote_qpn(uint32_t qpn);
 #ifdef __cplusplus
 }
 #endif
+
+typedef struct SparkStubIbvPostedWork
+{
+    uint64_t wr_id;
+    uint64_t source;
+    uint64_t remote;
+    uint32_t length;
+    uint32_t qp_number;
+    uint32_t flags;
+} SparkStubIbvPostedWork;
+
+uint32_t spark_stub_ibv_posted_count(void);
+int spark_stub_ibv_posted(uint32_t index, SparkStubIbvPostedWork *work);
+int spark_stub_ibv_complete(uint64_t work_id, int status);
+void spark_stub_ibv_fail_post_call(uint64_t call);
+struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
+    size_t length, uint64_t iova, int fd, int access);
+
+int ibv_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
+    int mask, struct ibv_qp_init_attr *initial);

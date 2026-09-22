@@ -1103,12 +1103,17 @@ static void SparkMuseGlimmerModuleReportReady(void *module_state)
 	fprintf(stderr,"%s initialize ok slice=%u+%u tp=%u/%u owns_embedding=%u owns_head=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->first_layer_index,state->layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head);
 }
 
-static void SparkMuseGlimmerModuleStateTeardown(void *module_state)
+static SparkStatus SparkMuseGlimmerModuleStateTeardown(void *module_state)
 {
 	SparkMuseGlimmerModuleState *state = (SparkMuseGlimmerModuleState *)module_state;
-	SparkStageKvClientClose(&state->kv_client);
 	if ( state->tp_collective_initialized != 0u )
+	{
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_collective_initialized = 0u;
+	}
+	SparkStageKvClientClose(&state->kv_client);
 	free(state->kv_logical_to_slot);
 	free(state->kv_slot_lane);
 	free(state->kv_slot_logical);
@@ -1123,6 +1128,7 @@ static void SparkMuseGlimmerModuleStateTeardown(void *module_state)
 		cudaFree(state->kv_table_indices_device);
 	if ( state->kv_table_counts_device != 0 )
 		cudaFree(state->kv_table_counts_device);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkMuseGlimmerModuleAdmit(

@@ -32,6 +32,16 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 // BUSY retains mappings/pins. Unmap/release precedes the daemon RELEASE message.
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 
+// Startup-only spine copy straight from the daemon's verified arena image:
+// with the pool mapped, every spine span is device-readable at base + file
+// offset, so the compacted spine is assembled device-to-device instead of
+// re-reading the pack file (no page-cache dependence). UNSUPPORTED when the
+// pool is not mapped - callers fall back to SparkWeightdSpineLoad. The
+// destination must stay quarantined until success; a fallback rewrites the
+// same span bytes.
+SparkStatus SparkWeightdMapSpineCopy(const SparkWeightdMap *map,
+    const SparkWeightdManifest *manifest,void *destination,uint64_t capacity);
+
 #ifdef __cplusplus
 }
 #endif

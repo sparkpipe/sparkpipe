@@ -34,7 +34,8 @@ SparkStatus SparkAdmissionRequestFromSubmission(
             ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL
             : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE
                 ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE
-                : 0u;
+                : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH
+                    ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH : 0u;
     request->admission_flags = admission_flags;
     request->cache_lane_count =
         cache_lanes != 0 ? submission->active_sequence_count : 0u;

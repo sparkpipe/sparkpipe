@@ -1,5 +1,6 @@
 
 #include <stdlib.h>
+#include <stdio.h>
 #include "sparkpipe/spark_error_site.h"
 
 #include "sparkpipe/spark_stage_module_lifecycle.h"
@@ -121,29 +122,37 @@ SparkStatus SparkStageModuleLifecycleSnapshot(
     return SPARK_STATUS_OK;
 }
 
-void SparkStageModuleLifecycleDestroy(
+SparkStatus SparkStageModuleLifecycleDestroy(
     void *module_state,
     const SparkStageModuleLifecycleOps *ops)
 {
     SparkStageModuleLifecycle lifecycle;
+    SparkStatus status;
 
     if (module_state == 0)
     {
-        return;
+        return SPARK_STATUS_OK;
     }
     ops->describe(module_state, &lifecycle);
-    if (SparkStageModuleWaitForSlots(
+    status = lifecycle.pipeline_slot_count == 0u ? SPARK_STATUS_OK : SparkStageModuleWaitForSlots(
             lifecycle.module_tag,
             lifecycle.slot_states,
             lifecycle.pipeline_slot_count,
-            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK)
+            SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+    if (status != SPARK_STATUS_OK)
     {
-        return;
+        return status;
     }
     if (ops->state_destroy != 0)
     {
-        ops->state_destroy(module_state);
+        status = ops->state_destroy(module_state);
+        if (status != SPARK_STATUS_OK)
+        {
+            fprintf(stderr,"%s destroy retained status=%d\n",lifecycle.module_tag,(int)status);
+            return status;
+        }
     }
     SparkStageModuleLedgerRelease(lifecycle.ledger);
     free(module_state);
+    return SPARK_STATUS_OK;
 }

@@ -79,12 +79,12 @@ def summarize(events, status):
     return result
 
 
-def measure(command, timeout):
+def measure(command, timeout, env=None, event_sink=None, stderr_path=None):
     events, failure = [], []
     start = time.monotonic()
-    with tempfile.TemporaryFile() as stderr:
+    with (open(stderr_path, "w+b") if stderr_path is not None else tempfile.TemporaryFile()) as stderr:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr,
-                                   start_new_session=True)
+                                   start_new_session=True, env=env)
         def stop():
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -100,6 +100,8 @@ def measure(command, timeout):
                 line = process.stdout.readline(1048577)
                 if not line:
                     break
+                if event_sink is not None:
+                    event_sink.write(line)
                 if len(line) > 1048576 or not line.endswith(b"\n"):
                     raise ValueError("oversized or incomplete output line")
                 try:

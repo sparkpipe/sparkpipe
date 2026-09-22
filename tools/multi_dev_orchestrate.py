@@ -141,6 +141,20 @@ def parse_smoke(text):
     return events
 
 
+
+def child_succeeded(output, returncode, marker):
+    return returncode == 0 and [line for line in output.splitlines() if line.startswith(marker + "=")] == [marker + "=0"]
+
+
+def rig_succeeded(output, returncode, rounds, marker=True):
+    events = parse_smoke(output)
+    summaries = [payload for kind, payload in events if kind == "DEV-SUMMARY"]
+    return (returncode == 0 and (not marker or child_succeeded(output, returncode, "RIG_RC")) and
+            len(summaries) == 1 and summaries[0].get("verify_fails") == 0 and
+            summaries[0].get("rounds_done") == rounds and
+            not any(kind in {"DEV-FAIL", "DEV-TEARDOWN"} for kind, _ in events))
+
+
 def launch_rig(node, root, pack, name, rounds, pool, pins, mps=False, timeout=1500):
     env_prefix = ("env CUDA_MPS_PIPE_DIRECTORY=/home/spark9/smokemd-mds/mps-pipe "
                   "CUDA_MPS_LOG_DIRECTORY=/home/spark9/smokemd-mds/mps-log "
@@ -195,8 +209,7 @@ def spread_stage(count, rounds, healthy=None):
         lanes_seen.extend(lanes)
         summaries = [p for k, p in events if k == "DEV-SUMMARY"]
         teardown = [p for k, p in events if k == "DEV-TEARDOWN"]
-        ok = bool(summaries) and all(s["verify_fails"] == 0 for s in summaries) \
-            and ("RIG_RC=0" in out or (teardown and "RIG_RC=1" in out))
+        ok = rig_succeeded(out, proc.returncode, rounds)
         print(f"DEV {dev['name']} node={dev['node']} lane={lanes} "
               f"summary={summaries[0] if summaries else None} teardown={teardown} ok={ok}")
         stage_pass = stage_pass and ok
@@ -270,6 +283,10 @@ def coresidency(tag, count, rounds, use_mps=False):
         with open(stage_log, "a") as handle:
             handle.write(f"### member={name}\n{out}\n")
         events = parse_smoke(out)
+        if name == "aggregate-bandwidth":
+            stage_pass = stage_pass and child_succeeded(out, proc.returncode, "BW_RC") and sum(kind == "BANDWIDTH" for kind, _ in events) == 1
+        else:
+            stage_pass = stage_pass and rig_succeeded(out, proc.returncode, rounds)
         for kind, payload in events:
             if kind == "BANDWIDTH":
                 bandwidth_line = payload
@@ -280,7 +297,7 @@ def coresidency(tag, count, rounds, use_mps=False):
                       f"p99={payload['p99_us']}us verify_fails={payload['verify_fails']}")
                 stage_pass = stage_pass and payload["verify_fails"] == 0
             if kind == "DEV-TEARDOWN":
-                print(f"CORE {tag} {name} teardown={payload} (known finding)")
+                print(f"CORE {tag} {name} teardown={payload} FAILED")
     time.sleep(1)
     snap = snapshot("spark9", root, tag, stage_log)
     live = midrun_count = 0
@@ -354,7 +371,7 @@ rm -f press.pack press.pack.experts
             handle.write(f"### evictor {tag}\n{out}\n")
         events = [(k, p) for k, p in parse_smoke(out) if k == "EVICT"]
         got = [(p["evictor_lane"], p["target_lane"], p["status"]) for k, p in events]
-        ok = len(got) == len(expect) and all(e[2] == w for e, w in zip(got, expect))
+        ok = child_succeeded(out, merged.returncode, "EVICTOR_RC") and len(got) == len(expect) and all(e[2] == w for e, w in zip(got, expect))
         print(f"EVICTION {tag} got={got} expect={expect} ok={ok}")
         matrix_pass = matrix_pass and ok
 
@@ -376,7 +393,7 @@ rm -f press.pack press.pack.experts
     events = parse_smoke(out)
     summaries = [p for k, p in events if k == "DEV-SUMMARY"]
     fails = [p for k, p in events if k == "DEV-FAIL"]
-    holder_ok = bool(summaries) and summaries[0]["verify_fails"] == 0 and not fails
+    holder_ok = rig_succeeded(out, holder.returncode, 4000, marker=False)
     print(f"EVICTION holder phase1 survived_ok={holder_ok} summary={summaries}")
     matrix_pass = matrix_pass and holder_ok
 
@@ -395,7 +412,7 @@ rm -f press.pack press.pack.experts
     events = parse_smoke(out)
     summaries = [p for k, p in events if k == "DEV-SUMMARY"]
     fails = [p for k, p in events if k == "DEV-FAIL"]
-    victim_ok = bool(summaries) and summaries[0]["verify_fails"] == 0 and not fails
+    victim_ok = rig_succeeded(out, victim.returncode, 4000, marker=False)
     print(f"EVICTION victim re-streamed_ok={victim_ok} summary={summaries}")
     matrix_pass = matrix_pass and victim_ok
 
@@ -412,7 +429,7 @@ rm -f press.pack press.pack.experts
     events = parse_smoke(out)
     summaries = [p for k, p in events if k == "DEV-SUMMARY"]
     misses = summaries[0]["misses"] if summaries else -1
-    pressure_ok = bool(summaries) and summaries[0]["verify_fails"] == 0
+    pressure_ok = rig_succeeded(out, pressure.returncode, 300, marker=False)
     print(f"EVICTION pressure verify_clean={pressure_ok} lazy_miss_rounds={misses} "
           f"summary={summaries}")
     matrix_pass = matrix_pass and pressure_ok and misses > 0
@@ -450,14 +467,16 @@ cd {root}
                   f"{dev['pool']} {dev['sha']} 2>&1; echo REALWS_RC=$?\"")
         print(f"REALWS attaching {dev['name']} on {node} "
               f"(first attach streams the full pack once)...")
-        out = run(esc(remote), timeout=1800).stdout
+        result = run(esc(remote), timeout=1800)
+        out = result.stdout
         with open(stage_log, "a") as handle:
             handle.write(f"### {dev['name']} node={node}\n{out}\n")
         events = parse_smoke(out)
         for kind, payload in events:
             if kind in ("REALWS", "REALWS-FAIL"):
                 print(f"REALWS {dev['name']} {payload}")
-        budget[dev["name"]] = events
+        if child_succeeded(out, result.returncode, "REALWS_RC") and any(kind == "REALWS" and payload.get("op") == "realws-working-set" for kind, payload in events) and not any(kind == "REALWS-FAIL" for kind, _ in events):
+            budget[dev["name"]] = events
     return budget
 
 
@@ -485,32 +504,39 @@ done
 def main():
     os.makedirs(RECEIPTS, exist_ok=True)
     phase = sys.argv[1] if len(sys.argv) > 1 else "all"
+    failed = False
     healthy = probe_nodes()
     print("HEALTHY:", healthy)
     if phase in ("all", "spread"):
         for count in (2, 4, 7):
             if not spread_stage(count, 120, healthy):
+                failed = True
                 print(f"SPREAD STAGE {count} FAILED")
                 if phase == "all":
                     break
     if phase in ("all", "core"):
         for tag, count in (("c2", 2), ("c4", 4), ("c7", 7)):
-            coresidency(tag, count, 240)
+            passed, _ = coresidency(tag, count, 240)
+            failed = failed or not passed
     if phase in ("all", "mps"):
         print("== MPS OFF measurement is the c7 core stage; now MPS ON ==")
         if mps_daemon(True):
-            coresidency("c7-mps", 7, 240, use_mps=True)
-            mps_daemon(False)
+            passed, _ = coresidency("c7-mps", 7, 240, use_mps=True)
+            failed = failed or not passed
+            failed = not mps_daemon(False) or failed
         else:
-            print("MPS control daemon failed to start; c7-mps skipped")
+            failed = True
+            print("MPS control daemon failed to start; c7-mps FAILED")
     if phase in ("all", "evict"):
-        eviction_matrix()
+        failed = not eviction_matrix() or failed
     if phase in ("all", "realws"):
-        realws_track()
+        failed = set(realws_track()) != {dev["name"] for dev in REALWS} or failed
     if phase in ("all", "cleanup"):
         cleanup()
     if phase == "cleanup-only":
         cleanup()
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

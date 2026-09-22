@@ -1050,20 +1050,25 @@ static void SparkQwen38MaxModuleReportReady(void *module_state)
 	fprintf(stderr,"%s initialize ok slice=%u+%u gdn=%u attn=%u owns_embedding=%u owns_head=%u\n",SPARK_QWEN38_MAX_MODULE_TAG,state->first_layer_index,state->layer_count,state->gdn_layer_count,state->attn_layer_count,state->owns_embedding,state->owns_final_head);
 }
 
-static void SparkQwen38MaxModuleStateTeardown(void *module_state)
+static SparkStatus SparkQwen38MaxModuleStateTeardown(void *module_state)
 {
 	SparkQwen38MaxModuleState *state = (SparkQwen38MaxModuleState *)module_state;
-	SparkStageModuleStageTimingShutdown(&state->stage_timing);
-	SparkStageKvClientClose(&state->kv.client);
+	if ( state->tp_collective_initialized != 0u )
+	{
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_collective_initialized = 0u;
+	}
 	if ( state->lazy_pack != 0 )
 	{
-		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
-			fprintf(stderr,"%s lazy pack teardown incomplete; retaining resources\n",SPARK_QWEN38_MAX_MODULE_TAG);
-		else
-			state->lazy_pack = 0;
+		SparkStatus status = SparkWeightdLazyPackDestroy(state->lazy_pack);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		state->lazy_pack = 0;
 	}
-	if ( state->tp_collective_initialized != 0u )
-		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+	SparkStageModuleStageTimingShutdown(&state->stage_timing);
+	SparkStageKvClientClose(&state->kv.client);
 	free(state->kv.logical_to_slot);
 	free(state->kv.slot_lane);
 	free(state->kv.slot_logical);
@@ -1084,6 +1089,7 @@ static void SparkQwen38MaxModuleStateTeardown(void *module_state)
 	free(state->t1_stage_score);
 	if ( state->t1_score_device != 0 )
 		cudaFree(state->t1_score_device);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38MaxModuleAdmit(

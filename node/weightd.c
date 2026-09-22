@@ -16,13 +16,14 @@
 #include "sparkpipe/spark_weightd.h"
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
-    uint32_t sgid_index, const char *mesh_dir);
+    uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask);
 uint32_t SparkWeightdMeshReady(void);
 void SparkWeightdMeshDoorbellLoop(void);
 
 typedef struct SparkWeightdMeshLaunch
 {
     uint32_t rank;
+    uint32_t rank_mask;
     const char *interface_name;
     uint32_t sgid_index;
     const char *mesh_dir;
@@ -32,15 +33,8 @@ static SparkWeightdMeshLaunch weightd_mesh_launch;
 
 static void *SparkWeightdMeshThread(void *argument)
 {
-    SparkWeightdMeshLaunch *launch = (SparkWeightdMeshLaunch *)argument;
-    SparkStatus status;
-    status = SparkWeightdMeshInit(launch->rank,launch->interface_name,
-        launch->sgid_index,launch->mesh_dir);
-    if (status == SPARK_STATUS_BUSY)
-        SparkWeightdMeshDoorbellLoop();
-    else if (status != SPARK_STATUS_OK)
-        fprintf(stderr, "weightd-mesh init=%s (serving degraded)\n",
-            SparkStatusToString(status));
+    (void)argument;
+    SparkWeightdMeshDoorbellLoop();
     return 0;
 }
 
@@ -63,8 +57,9 @@ static void SparkWeightdUsage(const char *program)
             "operator 110 GiB device law; lower it when the node is "
             "shared, never raise it)\n"
         "  --mesh-rank <n>          mesh rank 0..%u; with "
-            "--mesh-interface and --mesh-sgid-index, state all three "
+            "--mesh-interface, --mesh-sgid-index and --mesh-rank-mask; state all four "
             "or none\n"
+        "  --mesh-rank-mask <mask>  exact participant ranks including self (e.g. 0xf for TP4)\n"
         "  --mesh-interface <name>  verbs device name to bind\n"
         "  --mesh-sgid-index <n>    source GID index 0..255\n"
         "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n",
@@ -184,7 +179,25 @@ int main(int argument_count, char **arguments)
                 return 2;
             }
             weightd_mesh_launch.rank = (uint32_t)parsed;
-            mesh_fields++;
+            mesh_fields |= 1u;
+            index++;
+        }
+        else if (strcmp(arguments[index], "--mesh-rank-mask") == 0 &&
+            index + 1 < argument_count)
+        {
+            char *parse_end = 0;
+            unsigned long parsed;
+            errno = 0;
+            parsed = strtoul(arguments[index + 1],&parse_end,0);
+            if ( errno != 0 || parse_end == arguments[index + 1] ||
+                 *parse_end != '\0' || parsed >= (1ul << SPARK_WEIGHTD_MESH_RANKS) ||
+                 __builtin_popcount((uint32_t)parsed) < 2 )
+            {
+                fprintf(stderr,"weightd: bad --mesh-rank-mask '%s'\n",arguments[index + 1]);
+                return 2;
+            }
+            weightd_mesh_launch.rank_mask = (uint32_t)parsed;
+            mesh_fields |= 8u;
             index++;
         }
         else if (strcmp(arguments[index], "--mesh-interface") == 0 &&
@@ -197,7 +210,7 @@ int main(int argument_count, char **arguments)
                 SparkWeightdUsage(arguments[0]);
                 return 2;
             }
-            mesh_fields++;
+            mesh_fields |= 2u;
         }
         else if (strcmp(arguments[index], "--mesh-sgid-index") == 0 &&
             index + 1 < argument_count)
@@ -215,7 +228,7 @@ int main(int argument_count, char **arguments)
                 return 2;
             }
             weightd_mesh_launch.sgid_index = (uint32_t)parsed;
-            mesh_fields++;
+            mesh_fields |= 4u;
             index++;
         }
         else if (strcmp(arguments[index], "--mesh-dir") == 0 &&
@@ -241,12 +254,13 @@ int main(int argument_count, char **arguments)
             return 2;
         }
     }
-    if (mesh_fields != 0u && mesh_fields != 3u)
+    if (mesh_fields != 0u && (mesh_fields != 15u ||
+        (weightd_mesh_launch.rank_mask & (1u << weightd_mesh_launch.rank)) == 0u))
     {
         fprintf(stderr,
-            "weightd: mesh identity partially stated (%u of 3: "
-            "--mesh-rank --mesh-interface --mesh-sgid-index); "
-            "state all three or none\n", mesh_fields);
+            "weightd: mesh identity incomplete or rank outside group (fields=%x: "
+            "--mesh-rank --mesh-interface --mesh-sgid-index --mesh-rank-mask); "
+            "state all four or none\n", mesh_fields);
         return 2;
     }
     {
@@ -338,22 +352,34 @@ int main(int argument_count, char **arguments)
             SparkStatusToString(status), socket_path);
         return 1;
     }
-    printf("spark_weightd ready unix=%s ceiling=%llu\n",
-        socket_path, (unsigned long long)device_bytes_max);
-    fflush(stdout);
-
-    if (mesh_fields == 3u)
+    if (mesh_fields == 15u)
     {
         static pthread_t mesh_thread;
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,
-            &weightd_mesh_launch) != 0)
-            fprintf(stderr, "weightd-mesh: thread create failed\n");
+        status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
+            weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
+            weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask);
+        if ( status != SPARK_STATUS_BUSY && status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"weightd-mesh init=%s; startup failed\n",SparkStatusToString(status));
+            SparkWeightdServerDestroy(server);
+            return 1;
+        }
+        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
+        {
+            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
+            SparkWeightdServerDestroy(server);
+            return 1;
+        }
     }
     else
     {
         fprintf(stderr,
             "weightd-mesh: identity not stated; mesh disabled\n");
     }
+
+    printf("spark_weightd ready unix=%s ceiling=%llu\n",
+        socket_path, (unsigned long long)device_bytes_max);
+    fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
 

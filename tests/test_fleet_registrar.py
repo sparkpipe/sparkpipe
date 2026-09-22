@@ -23,6 +23,8 @@ Run: python3 tests/test_fleet_registrar.py
 """
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
 import signal
 import socket
@@ -35,15 +37,33 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[1]
 BINARY = REPOSITORY / "build" / "sparkpipe_registrar"
 HOSTS_16 = ",".join(["127.0.0.1"] * 16)
-# Per-run port base: concurrent suites (coordinator offline-gates vs a lane
-# worktree) must not collide on the registrar's fixed offsets (scenario
-# +0/+100/+200/+300, then rank r = +r, max span +315). pid-derived
-# 512-port windows keep runs disjoint and below the registrar's own
-# default base (22480); ephemeral ports (49152+) are never touched.
-PORT_BASE = 12000 + (os.getpid() % 80) * 512
+PORT_BASE = 0
 HAVE_PROC = os.path.isdir("/proc")
 
 failures: list[str] = []
+
+
+def reserve_test_ports():
+    if sys.platform.startswith("linux"):
+        ephemeral_first = int(Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0])
+    elif sys.platform == "darwin":
+        ephemeral_first = int(subprocess.check_output(
+            ["sysctl", "-n", "net.inet.ip.portrange.first"], text=True))
+    else:
+        raise RuntimeError("cannot verify ephemeral port range on this host")
+    for base in range(12000, ephemeral_first - 511, 512):
+        lease = open(Path(tempfile.gettempdir()) / f"sparkpipe-registrar-ports-{base}.lock", "a")
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for port in range(base, base + 512):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.bind(("127.0.0.1", port))
+            return base, lease
+        except OSError as error:
+            lease.close()
+            if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EADDRINUSE):
+                raise
+    raise RuntimeError("no free non-ephemeral registrar test port block")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -71,6 +91,7 @@ class Registrar:
             self.returncode = self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            self.proc.wait()
             self.returncode = None
         self.log.close()
         return self.returncode
@@ -91,7 +112,7 @@ def launchfleet(ranks: range, port_base: int, workdir: Path,
 def test_go_path(workdir: Path) -> None:
     port = PORT_BASE + 0
     started = time.monotonic()
-    fleet = launchfleet(range(16), port, workdir / "go")
+    fleet = launchfleet(range(16), port, workdir / "go", ["--timeout-ms", "10000"])
     codes = [r.wait(15.0) for r in fleet]
     elapsed = time.monotonic() - started
     check("go: all 16 exit 0", codes == [0] * 16, f"codes={codes}")
@@ -283,6 +304,7 @@ def test_cleanslate(workdir: Path) -> None:
 
 
 def main() -> int:
+    global PORT_BASE
     if not BINARY.exists():
         print(f"FAIL {BINARY} missing; run: make build/sparkpipe_registrar")
         return 1
@@ -291,11 +313,14 @@ def main() -> int:
     (workdir / "missing").mkdir()
     (workdir / "partial").mkdir(parents=True)
     (workdir / "subset").mkdir()
-    test_go_path(workdir)
-    test_missing_node(workdir)
-    test_partial_view(workdir)
-    test_subset(workdir)
-    test_cleanslate(workdir)
+    PORT_BASE, lease = reserve_test_ports()
+    with lease:
+        print(f"registrar fixture port_base={PORT_BASE} logs={workdir}")
+        test_go_path(workdir)
+        test_missing_node(workdir)
+        test_partial_view(workdir)
+        test_subset(workdir)
+        test_cleanslate(workdir)
     print(f"\n{len(failures)} failure(s)" + (f": {failures}" if failures else ""))
     return 1 if failures else 0
 

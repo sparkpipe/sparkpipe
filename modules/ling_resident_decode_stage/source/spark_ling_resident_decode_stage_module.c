@@ -2010,9 +2010,15 @@ void SparkLingResidentDecodeStageDestroy(void *module_state)
 		return;
 	if ( SparkStageModuleWaitForSlots(SPARK_LING_MODULE_TAG,state->slot_states,state->pipeline_slot_count,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		return;
-	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
+	if ( cudaStreamSynchronize((cudaStream_t)state->execution_stream) != cudaSuccess )
+		return;
 	if ( state->tp_device_collective_initialized != 0u )
+	{
 		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return;
+		state->tp_device_collective_initialized = 0u;
+	}
 	if ( state->lazy_pack != 0 )
 	{
 		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )

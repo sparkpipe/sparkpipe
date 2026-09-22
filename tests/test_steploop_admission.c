@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -16,6 +17,7 @@
 
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_batch_engine.h"
+#include "sparkpipe/spark_model_resident_ipc.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -98,6 +100,48 @@ static pid_t TestSteploopStartResident(
 		_exit(127);
 	}
 	return(child);
+}
+
+static void TestSteploopWaitPrepared(SparkModelBatchEngine *engine)
+{
+	SparkModelResidentClientPollDescriptor descriptors[TEST_STEPLOOP_RANK_COUNT];
+	SparkModelResidentIpcSubmitResult results[TEST_STEPLOOP_REQUEST_COUNT];
+	struct timespec delay = {0,1000000};
+	uint32_t count,rank,attempt,index;
+	assert(SparkModelBatchEngineGetPollDescriptors(engine,descriptors,TEST_STEPLOOP_RANK_COUNT,&count) == SPARK_STATUS_OK);
+	assert(count == TEST_STEPLOOP_RANK_COUNT);
+	for (rank=0u; rank<count; rank++)
+	{
+		assert((fcntl(descriptors[rank].fd,F_GETFL) & O_NONBLOCK) != 0);
+		for (attempt=0u; attempt<5000u; attempt++)
+		{
+			ssize_t bytes = recv(descriptors[rank].fd,results,sizeof(results),MSG_PEEK);
+			if ( bytes == (ssize_t)sizeof(results) )
+				break;
+			assert(bytes > 0 || (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)));
+			nanosleep(&delay,0);
+		}
+		assert(attempt < 5000u);
+		for (index=0u; index<TEST_STEPLOOP_REQUEST_COUNT; index++)
+		{
+			assert(results[index].header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT);
+			assert(results[index].header.message_bytes == sizeof(results[index]));
+			assert(results[index].status == SPARK_STATUS_OK);
+		}
+	}
+}
+
+static void TestSteploopPauseResidents(pid_t children[TEST_STEPLOOP_RANK_COUNT])
+{
+	uint32_t rank;
+	int status;
+	for (rank=0u; rank<TEST_STEPLOOP_RANK_COUNT; rank++)
+		assert(kill(children[rank],SIGSTOP) == 0);
+	for (rank=0u; rank<TEST_STEPLOOP_RANK_COUNT; rank++)
+	{
+		assert(waitpid(children[rank],&status,WUNTRACED) == children[rank]);
+		assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+	}
 }
 
 static uint32_t TestSteploopMaxOpsPerPass(
@@ -315,7 +359,13 @@ int main(void)
 	delay.tv_sec = 0;
 	delay.tv_nsec = 1000000;
 	assert(SparkModelBatchEngineProgress(engine,TEST_STEPLOOP_REQUEST_COUNT) == SPARK_STATUS_OK);
-	drain_calls = 1u;
+	TestSteploopWaitPrepared(engine);
+	TestSteploopPauseResidents(children);
+	SparkStatus status = SparkModelBatchEngineProgress(engine,TEST_STEPLOOP_REQUEST_COUNT);
+	for (index=0u; index<TEST_STEPLOOP_RANK_COUNT; index++)
+		assert(kill(children[index],SIGCONT) == 0);
+	assert(status == SPARK_STATUS_OK);
+	drain_calls = 2u;
 	while ( state.completed_count < TEST_STEPLOOP_REQUEST_COUNT )
 	{
 		assert(SparkModelBatchEngineProgress(engine,TEST_STEPLOOP_REQUEST_COUNT) == SPARK_STATUS_OK);

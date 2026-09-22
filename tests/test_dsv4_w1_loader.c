@@ -1,11 +1,33 @@
 #include <assert.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_weightd.h"
+
+static volatile sig_atomic_t SparkTestWeightdStop;
+static char SparkTestWeightdSocket[128];
+
+static void *SparkTestWeightdRun(void *context)
+{
+    assert(SparkWeightdServerRun(context,&SparkTestWeightdStop) == SPARK_STATUS_OK);
+    return 0;
+}
+
+static void SparkTestUseWeightdPack(const char *path)
+{
+    char digest[SPARK_SHA256_HEX_BYTES];
+    assert(SparkSha256File(path,digest) == SPARK_STATUS_OK);
+    assert(setenv("SPARK_WEIGHTD_ATTACH","1",1) == 0);
+    assert(setenv("SPARK_WEIGHTD_SOCKET",SparkTestWeightdSocket,1) == 0);
+    assert(setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1) == 0);
+}
 
 static uint32_t SparkTestNextRandom(uint32_t *state)
 {
@@ -257,7 +279,7 @@ static void SparkTestWriteLoaderPack(
     free(buffer);
 }
 
-static void SparkTestLoaderPipelineLandsExactBytes(void)
+static void SparkTestMappedLoaderLandsExactBytes(void)
 {
     const char *path = "/tmp/spark_w1_loader_pack.bin";
     static const SparkTestLoaderRegion regions[] = {
@@ -271,31 +293,26 @@ static void SparkTestLoaderPipelineLandsExactBytes(void)
     const uint32_t region_count =
         (uint32_t)(sizeof(regions) / sizeof(regions[0]));
     SparkStageModuleLedger ledger;
-    SparkStageModuleLoadPipeline *pipeline = 0;
     FILE *file;
     void *device_pointers[6];
     uint8_t *expected;
     uint32_t region;
 
     assert(region_count <= 6u);
-    setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "1", 1);
     SparkTestWriteLoaderPack(path, regions, region_count);
+    SparkTestUseWeightdPack(path);
 
     memset(&ledger, 0, sizeof(ledger));
     ledger.module_tag = "w1_loader_test";
     file = fopen(path, "rb");
     assert(file != 0);
-    assert(SparkStageModuleLoadPipelineCreate("w1_loader_test", file,
-        &pipeline) == SPARK_STATUS_OK);
     for (region = 0; region < region_count; region++)
     {
-        assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
+        assert(SparkStageModuleLoadDeviceRegion(&ledger, file,
             regions[region].offset, regions[region].bytes,
             &device_pointers[region]) == SPARK_STATUS_OK);
         assert(device_pointers[region] != 0);
     }
-    assert(SparkStageModuleLoadPipelineFinish(pipeline) == SPARK_STATUS_OK);
-    SparkStageModuleLoadPipelineDestroy(pipeline);
 
     expected = (uint8_t *)malloc(10ull * 1024ull * 1024ull);
     assert(expected != 0);
@@ -307,60 +324,47 @@ static void SparkTestLoaderPipelineLandsExactBytes(void)
     }
     for (region = 0; region < region_count; region++)
     {
+        assert((uint8_t *)device_pointers[region] - (uint8_t *)device_pointers[0] ==
+            (int64_t)regions[region].offset);
         assert(memcmp(device_pointers[region],
             expected + regions[region].offset,
             (size_t)regions[region].bytes) == 0);
     }
     free(expected);
-    assert(ledger.device_allocation_count == region_count);
-    assert(ledger.device_bytes_resident ==
-        1024ull * 1024ull + 64ull * 1024ull + 512ull * 1024ull + 3ull + 2048ull + 17ull);
+    assert(ledger.pack_arena != 0 && ledger.device_allocation_count == 0u &&
+        ledger.device_bytes_resident == 0u);
 
     assert(fclose(file) == 0);
     SparkStageModuleLedgerRelease(&ledger);
     (void)remove(path);
-    unsetenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
 }
 
-static void SparkTestLoaderPipelineFailsClosedOnShortPack(void)
+static void SparkTestMappedLoaderRejectsShortPack(void)
 {
     const char *path = "/tmp/spark_w1_loader_short.bin";
-    SparkStageModuleLedger ledger;
-    SparkStageModuleLoadPipeline *pipeline = 0;
-    FILE *file;
+    SparkStageModuleLedger ledger = {0};
+    FILE *file = fopen(path,"wb");
     void *pointer = 0;
-
-    setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "1", 1);
-    file = fopen(path, "wb");
-    assert(file != 0);
-    assert(fwrite("0123456789", 1u, 10u, file) == 10u);
+    assert(file != 0 && fwrite("0123456789",1u,10u,file) == 10u);
     assert(fclose(file) == 0);
-    file = fopen(path, "rb");
+    SparkTestUseWeightdPack(path);
+    file = fopen(path,"rb");
     assert(file != 0);
-
-    memset(&ledger, 0, sizeof(ledger));
     ledger.module_tag = "w1_loader_test";
-    assert(SparkStageModuleLoadPipelineCreate("w1_loader_test", file,
-        &pipeline) == SPARK_STATUS_OK);
-    assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
-        0ull, 8ull, &pointer) == SPARK_STATUS_OK);
-    assert(pointer != 0);
-    assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
-        4096ull, 16ull, &pointer) == SPARK_STATUS_OK ||
-        SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
-            4096ull, 16ull, &pointer) == SPARK_STATUS_IO_ERROR);
-    assert(SparkStageModuleLoadPipelineFinish(pipeline) ==
-        SPARK_STATUS_IO_ERROR);
-    assert(SparkStageModuleLoadPipelineRegion(pipeline, &ledger,
-        0ull, 4ull, &pointer) == SPARK_STATUS_IO_ERROR);
-    SparkStageModuleLoadPipelineDestroy(pipeline);
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,0u,8u,&pointer) == SPARK_STATUS_OK);
+    assert(pointer != 0 && memcmp(pointer,"01234567",8u) == 0);
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,4096u,16u,&pointer) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(pointer == 0 && ledger.device_allocation_count == 0u && ledger.device_bytes_resident == 0u);
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,0u,11u,&pointer) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(pointer == 0);
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,0u,10u,&pointer) == SPARK_STATUS_OK);
+    assert(pointer != 0 && memcmp(pointer,"0123456789",10u) == 0);
     assert(fclose(file) == 0);
     SparkStageModuleLedgerRelease(&ledger);
-    (void)remove(path);
-    unsetenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
+    assert(remove(path) == 0);
 }
 
-static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
+static void SparkTestLoaderRequiresWeightd(void)
 {
     const char *path = "/tmp/spark_w1_loader_dispatch.bin";
     SparkStageModuleLedger ledger;
@@ -368,26 +372,28 @@ static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
     uint8_t expected[4096];
     FILE *file;
     void *pointer = 0;
+    SparkStageModuleLoadPipeline *pipeline = 0;
 
     memset(&ledger, 0, sizeof(ledger));
     ledger.module_tag = "w1_loader_test";
-
-    setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "0", 1);
-    assert(SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_BUSY);
-    setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "1", 1);
-    assert(SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK);
-    unsetenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
-    assert(SparkStageModuleLoadPipelineRequested() == SPARK_STATUS_OK);
 
     SparkTestWriteLoaderPack(path, &one, 1u);
     SparkTestFillPattern(expected, one.bytes, one.seed);
     file = fopen(path, "rb");
     assert(file != 0);
-    setenv("SPARK_STAGE_MODULE_LOAD_PIPELINE", "0", 1);
-    assert(SparkStageModuleLoadDeviceRegion(&ledger, file,
-        one.offset, one.bytes, &pointer) == SPARK_STATUS_OK);
-    assert(memcmp(pointer, expected, sizeof(expected)) == 0);
-    unsetenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
+    unsetenv("SPARK_WEIGHTD_SOCKET");
+    unsetenv("SPARK_WEIGHTD_ATTACH");
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,one.offset,one.bytes,&pointer) == SPARK_STATUS_UNSUPPORTED);
+    assert(pointer == 0 && ledger.pack_arena == 0 && ledger.device_allocation_count == 0u);
+    assert(SparkStageModuleLoadPipelineCreate("w1_loader_test",file,&pipeline) == SPARK_STATUS_OK);
+    assert(SparkStageModuleLoadPipelineRegion(pipeline,&ledger,one.offset,one.bytes,&pointer) == SPARK_STATUS_UNSUPPORTED);
+    assert(pointer == 0 && ledger.pack_arena == 0 && ledger.device_allocation_count == 0u);
+    SparkTestUseWeightdPack(path);
+    assert(SparkStageModuleLoadPipelineRegion(pipeline,&ledger,one.offset,one.bytes,&pointer) == SPARK_STATUS_UNSUPPORTED);
+    assert(pointer == 0 && ledger.pack_arena == 0 && ledger.device_allocation_count == 0u);
+    SparkStageModuleLoadPipelineDestroy(pipeline);
+    assert(SparkStageModuleLoadDeviceRegion(&ledger,file,one.offset,one.bytes,&pointer) == SPARK_STATUS_OK);
+    assert(pointer != 0 && ledger.pack_arena != 0 && memcmp(pointer,expected,sizeof(expected)) == 0);
     assert(fclose(file) == 0);
     SparkStageModuleLedgerRelease(&ledger);
     (void)remove(path);
@@ -395,13 +401,32 @@ static void SparkTestLoaderRegionDispatcherHonorsKillSwitch(void)
 
 int main(void)
 {
+    SparkWeightdServerConfig config = {0};
+    SparkWeightdServer *server = 0;
+    pthread_t worker;
+    signal(SIGPIPE,SIG_IGN);
+    assert(snprintf(SparkTestWeightdSocket,sizeof(SparkTestWeightdSocket),
+        "/tmp/spark_w1_weightd_%ld.sock",(long)getpid()) > 0);
+    config.socket_path=SparkTestWeightdSocket;
+    config.device_bytes_max=256ull << 20;
+    config.kv_reserve_bytes=0u;
+    unsetenv("SPARK_WEIGHTD_ATTACH_LAZY");
+    assert(SparkWeightdServerCreate(&config,&server) == SPARK_STATUS_OK);
+    assert(pthread_create(&worker,0,SparkTestWeightdRun,server) == 0);
     SparkTestSha256NistVectors();
     SparkTestSha256LongMessageVector();
     SparkTestSha256FileSizes();
     SparkTestSha256FileMultiBufferBoundaries();
-    SparkTestLoaderPipelineLandsExactBytes();
-    SparkTestLoaderPipelineFailsClosedOnShortPack();
-    SparkTestLoaderRegionDispatcherHonorsKillSwitch();
-    printf("w1 loader lane: sha identity + pipeline byte-exactness green\n");
+    SparkTestMappedLoaderLandsExactBytes();
+    SparkTestMappedLoaderRejectsShortPack();
+    SparkTestLoaderRequiresWeightd();
+    __atomic_store_n(&SparkTestWeightdStop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(worker,0) == 0);
+    assert(SparkWeightdServerArenaCount(server) == 3u);
+    SparkWeightdServerDestroy(server);
+    unsetenv("SPARK_WEIGHTD_ATTACH");
+    unsetenv("SPARK_WEIGHTD_SOCKET");
+    unsetenv("SPARK_WEIGHTD_PACK_SHA256");
+    printf("w1 loader: SHA identity, required weightd mapping bytes, stride and bounds PASS\n");
     return 0;
 }

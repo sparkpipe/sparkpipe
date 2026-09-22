@@ -1,64 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-FAMILY="${1:?module family dir under modules/}"
-CODEC="${2:?expert codec (fp8, bf16, nvfp4, ...)}"
-ROOT_NAME="${3:?runtime root name under ~/sparkdata and the hub release dir}"
-REVISION="${4:?model source revision}"
-CONTRACT="${5:?contract json path}"
-BRANCH="${6:-${G5_BRANCH:-origin/lane/glm53-p0}}"
-TREE="${SPARKPIPE_BUILD_TREE:-$HOME/sparkpipe-build}"
-FIRMWARE="${FIRMWARE_JSON:-examples/model_descriptions/${FAMILY}_${CODEC}_firmware.json}"
-
-cd "$TREE"
-mkdir -p "$HOME/release"
-exec 9>"$HOME/release/.publish.lock"
-flock 9
-git fetch -q origin main "${G5_SOURCE_BRANCH:-lane/glm53-p0}" || git fetch -q origin main
-if ! git cat-file -e "$BRANCH^{commit}" 2>/dev/null; then
-    BRANCH="${G5_SOURCE_BRANCH:-origin/lane/glm53-p0}"
+if [ "$#" -ne 5 ]; then
+    printf '%s\n' 'usage: module_build_release.sh FAMILY CODEC OUTPUT_NAME MODEL_REVISION CONTRACT; build from the queue-synced checkout, no branch argument' >&2
+    exit 2
 fi
-git reset -q --hard "$BRANCH"
-git clean -q -fd build "modules/$FAMILY" 2>/dev/null || true
-REV=$(git rev-parse --short HEAD)
-echo "== $REV"
-
+: "${SPARK_QUEUE_ID:?run inside a GPU-owned spark_queue job}"
+family=$1
+codec=$2
+name=$3
+revision=$4
+contract=$5
+for value in "$family" "$codec" "$name"; do
+    [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || exit 2
+done
+cd "$(dirname "$0")/.."
+git diff --quiet HEAD || { printf '%s\n' 'tracked build inputs differ from HEAD' >&2; exit 2; }
+source_commit=$(git rev-parse HEAD)
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || exit 2
+if [ -d build/obj ] || [ -d build/modules ]; then
+    printf '%s\n' 'use a fresh queue-synced checkout; existing objects can carry a different contract' >&2
+    exit 2
+fi
+mkdir -p build
+exec 9>build/.firmware-build.lock
+flock -n 9 || { printf '%s\n' 'another build owns this checkout' >&2; exit 2; }
+output="build/$name"
+[ ! -e "$output" ] || { printf '%s\n' "output already exists: $output" >&2; exit 2; }
+mkdir -p "$output/qualification/serving-receipts"
+receipts="$output/qualification/serving-receipts"
+exec 3>&1
+exec > "$receipts/build.log" 2>&1
+trap 'code=$?; if [ "$code" -ne 0 ]; then tail -30 "$receipts/build.log" >&3; fi' EXIT
+printf '%s\n' "$source_commit" > "$receipts/source-commit.txt"
+sha256sum "$contract" > "$receipts/contract.sha256"
+contract_sha=$(cut -d' ' -f1 "$receipts/contract.sha256")
+export CUDA_MODULE_LOADING=LAZY CUDA_MODULE_DATA_LOADING=LAZY CUDA_DEVICE_MAX_CONNECTIONS=32
 export PATH="/usr/local/cuda/bin:$PATH"
-SHA=$(shasum -a 256 "$CONTRACT" | cut -d' ' -f1)
-
-echo "== host build"
-make -j16 build/sparkpipe_model_compile build/sparkpipe_model_residentd build/sparkpipe_model_api build/libhidden_transport_spark_host_rdma_verbs.so
-make -j16 -C "modules/$FAMILY" adapter EXPERT_CODEC="$CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$SHA" NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a > /dev/null
-ADAPTER_SO="build/modules/$FAMILY/$CODEC/lib${FAMILY}_serving_adapter_$CODEC.so"
-[ -f "$ADAPTER_SO" ] || { echo "adapter not built"; exit 1; }
-
-echo "== park local agent + daemon (validator needs the GPU; UPDATE restores the fleet)"
-systemctl --user stop fleet-agent 2>/dev/null || true
-for l in $(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model_residentd | sed 's|.*/proc/\([0-9]*\)/exe.*|\1|'); do
-    kill -TERM "$l" 2>/dev/null || true
-done
-for t in $(seq 1 15); do
-    ls -l /proc/[0-9]*/exe 2>/dev/null | grep -q sparkpipe_model_residentd || break
-    sleep 1
-done
-
-echo "== module publish (GPU receipts)"
-make -j16 -C "modules/$FAMILY" publish \
-    EXPERT_CODEC="$CODEC" \
-    MODEL_REVISION="$REVISION" \
-    CONTRACT_SHA256="$SHA" \
-    NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a 2>&1 | tail -2
-
-echo "== driver compile"
-mkdir -p "$HOME/sparkdata/out"
-build/sparkpipe_model_compile \
-    --model "$FIRMWARE" \
-    --library build/module_library --output "$HOME/sparkdata/out" \
-    --cc /usr/bin/cc --include include \
-    --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib \
-    --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm \
-    --cc-arg -ldl --cc-arg -pthread 2>&1 | tail -1
-
-"$(dirname "$0")/publish_local.sh" "$FAMILY" "$CODEC" "$ROOT_NAME"
-systemctl --user start fleet-agent 2>/dev/null || true
-exec "$(dirname "$0")/publish_core.sh" agent
+make -j4 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile build/sparkpipe_module_publish build/sparkpipe_driver_inspect hidden_transport_spark_host_rdma_verbs
+nvcc --version > "$receipts/toolchain.txt"
+cc --version >> "$receipts/toolchain.txt"
+make -j4 -C "modules/$family" CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$codec" MODEL_REVISION="$revision" CONTRACT_SHA256="$contract_sha" archive adapter
+prefix=${family%_resident_decode_stage}
+adapter="build/modules/$family/$codec/lib${prefix}_serving_adapter_${codec}.so"
+[ -f "$adapter" ] || { printf '%s\n' "adapter not built: $adapter" >&2; exit 1; }
+env_prefix="SPARK_$(printf '%s' "$prefix" | tr '[:lower:]' '[:upper:]')"
+export "${env_prefix}_MODEL_REVISION=$revision" "${env_prefix}_CONTRACT_SHA256=$contract_sha"
+make -j4 -C "modules/$family" CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$codec" MODEL_REVISION="$revision" CONTRACT_SHA256="$contract_sha" publish > "$receipts/publish.log" 2>&1
+firmware="${FIRMWARE_JSON:-examples/model_descriptions/${family}_${codec}_firmware.json}"
+# Static archives come before the -l libs: module archives reference
+# runtime (stagepack format) and core (sha256/ck128, pulled into every
+# module archive by the spine DAEMON_SHA change) symbols that only
+# libsparkpipe_runtime.a / libsparkpipe_core.a define - without them the
+# driver link fails undefined on every family's release build (evidence:
+# gemma4-fleet-build-3, 16/16 nodes; same cluster as #1127).
+build/sparkpipe_model_compile --model "$firmware" --library build/module_library --output "$output/compiled" --cc /usr/bin/cc --include include --cc-arg build/libsparkpipe_runtime.a --cc-arg build/libsparkpipe_core.a --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm --cc-arg -ldl --cc-arg -pthread > "$receipts/driver-link.log" 2>&1
+target=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert len(v["stages"])==1; print(v["stages"][0]["target"])' "$firmware")
+build/sparkpipe_driver_inspect "$output/compiled/stages/stage_000/model_driver.so" "$target" > "$receipts/driver-inspect.log" 2>&1
+ldd -r "$output/compiled/stages/stage_000/model_driver.so" > "$receipts/driver-dependencies.log" 2>&1
+if grep -Eq 'not found|undefined symbol' "$receipts/driver-dependencies.log"; then cat "$receipts/driver-dependencies.log"; exit 1; fi
+mkdir -p "$output/bin" "$output/lib"
+cp build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile "$output/bin/"
+cp build/libhidden_transport_spark_host_rdma_verbs.so "$output/lib/hidden_transport.so"
+cp "$adapter" "$output/lib/model_serving_adapter.so"
+mv "$output/compiled/stages" "$output/compiled/model_package.json" "$output/"
+rmdir "$output/compiled"
+cp -a build/module_library/active "$output/qualification/module-records"
+cp "$firmware" "$contract" "$output/qualification/"
+git diff --quiet HEAD || { printf '%s\n' 'tracked build inputs changed during build' >&2; exit 1; }
+[ "$(git rev-parse HEAD)" = "$source_commit" ] || exit 1
+printf '%s\n' "$source_commit" > "$output/SOURCE_COMMIT"
+exec 1>&3 2>&1
+(cd "$output" && find bin lib stages qualification model_package.json SOURCE_COMMIT -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+tar -czf "$output.tar.gz" -C "$output" .
+sha256sum "$output.tar.gz" > "$output.tar.gz.sha256"
+printf 'BUILD-PASS %s\n' "$output.tar.gz" >&3

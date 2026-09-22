@@ -221,7 +221,8 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.capability_flags = SPARK_GLM5_NEXT_SERVING_TOPOLOGY_FLAG |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -908,7 +909,7 @@ static void SparkGlm5NextServingDriverCompletion(
 		completion.accepted_token_count = 0u;
 		completion.completion_flags = 0u;
 	}
-	if ( completion.status == SPARK_STATUS_OK && pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( completion.status == SPARK_STATUS_OK && pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && pending->work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
 	{
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
@@ -1246,7 +1247,7 @@ static void SparkGlm5NextServingBuildFrame(
 	frame->new_token_count = submission->row_count;
 	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
-	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
+	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH : 0u;
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;

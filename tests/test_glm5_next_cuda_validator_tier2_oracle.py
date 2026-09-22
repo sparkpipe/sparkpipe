@@ -21,7 +21,6 @@ ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = (ROOT / "modules" / "glm5_next_resident_decode_stage" /
              "validation" /
              "spark_glm5_next_resident_decode_stage_cuda_validation.cu")
-CUDA_STUB = ROOT / "tests" / "cuda_stub" / "cuda_runtime_stub.c"
 BINARY = Path("/tmp") / "glm5_next_validator_oracle_selftest"
 
 
@@ -45,7 +44,7 @@ def main() -> int:
          f"-I{ROOT}/model-families/glm5_next/include",
          f"-I{ROOT}/modules/glm5_next_resident_decode_stage/include",
          f"-I{ROOT}/modules/glm5_next_resident_decode_stage/source",
-         str(VALIDATOR), str(CUDA_STUB),
+         str(VALIDATOR),
          "-o", str(BINARY)],
         capture_output=True, text=True)
     if build.returncode != 0:

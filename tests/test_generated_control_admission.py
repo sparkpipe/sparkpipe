@@ -83,15 +83,21 @@ int32_t main(void)
 }
 '''
 
+def generate_admission(directory, program_id=7, admit_symbol="TestAdmit"):
+    source, emitter = directory / "emit.c", directory / "emit"
+    source.write_text(EMITTER.replace("program.program_id = 7u;", f"program.program_id = {program_id}u;").replace('"TestAdmit"', f'"{admit_symbol}"'))
+    command = ["cc", "-std=c11", "-D_GNU_SOURCE", "-O2", "-ffunction-sections", "-fdata-sections",
+               "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
+               "-I.", "-Iinclude", "-Isrc", str(source), "-o", str(emitter)]
+    subprocess.run(command, cwd=ROOT, check=True, timeout=60)
+    return emitter
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="glm-generated-control-") as directory:
         directory = Path(directory)
-        source, emitter = directory / "emit.c", directory / "emit"
-        source.write_text(EMITTER)
-        command = ["cc", "-std=c11", "-D_GNU_SOURCE", "-O2", "-ffunction-sections", "-fdata-sections",
-                   "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
-                   "-I.", "-Iinclude", "-Isrc", str(source), "-o", str(emitter)]
-        subprocess.run(command, cwd=ROOT, check=True, timeout=60)
+        source = directory / "check.c"
+        emitter = generate_admission(directory)
         for module in (False, True):
             emitted = subprocess.check_output([str(emitter)] + (["module"] if module else []), text=True)
             source.write_text(f"#define HAS_MODULE {int(module)}\n" + PRELUDE + emitted + CHECK)

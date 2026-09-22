@@ -128,3 +128,43 @@ static inline uint32_t SparkRowLayoutRoundMajorWaveRowCount(
 	}
 	return(count);
 }
+
+static inline SparkStatus SparkRowLayoutGroupRows(
+	uint32_t row_count,
+	uint32_t lane_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutLaneOrdinalFunction ordinal_function,
+	void *ordinal_context,
+	uint32_t *row_begin,
+	uint32_t *row_indices,
+	uint32_t *cursor)
+{
+	uint32_t row,lane;
+	SparkStatus status;
+	if ( row_count < lane_count || lane_count == 0u || row_lane_ids == 0 || ordinal_function == 0 || row_begin == 0 || row_indices == 0 || cursor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (lane=0u; lane<=lane_count; lane++)
+		row_begin[lane] = 0u;
+	for (row=0u; row<row_count; row++)
+	{
+		status = ordinal_function(ordinal_context,row_lane_ids[row],&lane);
+		if ( status != SPARK_STATUS_OK || lane >= lane_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		row_begin[lane + 1u]++;
+	}
+	for (lane=0u; lane<lane_count; lane++)
+	{
+		if ( row_begin[lane + 1u] == 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		row_begin[lane + 1u] += row_begin[lane];
+		cursor[lane] = row_begin[lane];
+	}
+	for (row=0u; row<row_count; row++)
+	{
+		status = ordinal_function(ordinal_context,row_lane_ids[row],&lane);
+		if ( status != SPARK_STATUS_OK || lane >= lane_count )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		row_indices[cursor[lane]++] = row;
+	}
+	return(SPARK_STATUS_OK);
+}

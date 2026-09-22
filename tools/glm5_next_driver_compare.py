@@ -14,14 +14,38 @@ import time
 def token_receipt(path, rows, prefix=False):
     lines = path.read_text().splitlines()
     tokens = [line for line in lines if line.startswith("TOKEN ")]
-    steps = list(range(68)) + list(range(64, 68)) + list(range(4)) if prefix else list(range(4))
+    batches = ([(step, rows) for step in range(67)] + [(1000, 3 if rows == 5 else 1), (1001, rows), (1002, rows)] +
+               [(step, rows) for step in list(range(63, 67)) + list(range(4))] + [(2000, 4 + sum(1 + lane % 4 for lane in range(1, rows)))] if prefix else
+               [(step, rows) for step in range(4)])
+    expected_rows = [(step, row) for step, width in batches for row in range(width)]
     marker = "PASS local-prefix-reuse " if prefix else "PASS local-token-smoke "
-    if len(tokens) != rows * len(steps) or not any(line.startswith(marker) for line in lines):
+    if len(tokens) != len(expected_rows) or not any(line.startswith(marker) for line in lines):
         raise RuntimeError(f"incomplete driver receipt: {path}")
     for index, line in enumerate(tokens):
         match = re.fullmatch(r"TOKEN step=(\d+) row=(\d+) input=(\d+) output=(\d+)", line)
-        if match is None or tuple(map(int, match.groups()[:2])) != (steps[index // rows], index % rows):
+        if match is None or tuple(map(int, match.groups()[:2])) != expected_rows[index]:
             raise RuntimeError(f"invalid token ordering: {path}")
+    if prefix:
+        states = [line for line in lines if line.startswith("STATE ")]
+        state_steps = list(range(4)) + list(range(63, 67)) * 2 + list(range(4)) + [2000]
+        if len(states) != rows * len(state_steps):
+            raise RuntimeError(f"incomplete state receipt: {path}")
+        for index, line in enumerate(states):
+            match = re.fullmatch(r"STATE step=(\d+) row=(\d+) bytes=([1-9]\d*) hash=([0-9a-f]{16}) score=([0-9a-f]{8})", line)
+            if match is None or tuple(map(int, match.groups()[:2])) != (state_steps[index // rows], index % rows):
+                raise RuntimeError(f"invalid state ordering: {path}")
+        temporal_rows = 4 + sum(1 + lane % 4 for lane in range(1, rows))
+        temporal = f"TEMPORAL lanes={rows} rows={temporal_rows} unequal_lengths={int(rows > 1)} state=exact selected-logit=exact tokens=exact"
+        if lines.count(temporal) != 1:
+            raise RuntimeError(f"missing temporal batch differential receipt: {path}")
+        existing = 3 if rows == 5 else 1
+        joined = f"JOIN existing={existing} new={rows-existing} launched={rows} unequal_positions={int(rows > 1)}"
+        if lines.count(joined) != 1:
+            raise RuntimeError(f"missing mixed batch join receipt: {path}")
+        expected = f"RESTORE rows={rows} moved={rows} state=exact selected-logit=exact full-vocabulary-logits=unavailable"
+        if lines.count(expected) != 1:
+            raise RuntimeError(f"missing exact restore receipt: {path}")
+        return tokens + states
     return tokens
 
 
@@ -46,6 +70,7 @@ def compare(args):
     deadline = time.monotonic() + 720
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("SPARK_WEIGHTD_")}
+    environment["SPARK_GLM5_NEXT_GRAPH_PATH"] = "0"
     processes = []
     with contextlib.ExitStack() as files, tempfile.TemporaryDirectory(prefix="glm-driver-") as directory:
         def launch(command, name, env):
@@ -65,7 +90,7 @@ def compare(args):
 
         try:
             baseline = {}
-            for rows in (1, 3):
+            for rows in (1, 3, 5):
                 name = f"resident-b{rows}"
                 wait(probe("resident", rows, name, environment))
                 baseline[rows] = token_receipt(args.output / (name + ".log"), rows, args.prefix)
@@ -84,18 +109,19 @@ def compare(args):
             wait(probe("lazy", 1, "lazy-b1", lazy))
             # Both real processes start before either is waited on. This does
             # not assert simultaneous lease ownership at every layer.
-            clients = [probe("lazy", 3, f"lazy-b3-{index}", lazy) for index in range(2)]
+            clients = [probe("lazy", rows, f"lazy-b{rows}", lazy) for rows in (3, 5)]
             for client in clients:
                 wait(client)
-            for name, rows in (("lazy-b1", 1), ("lazy-b3-0", 3), ("lazy-b3-1", 3)):
+            for name, rows in (("lazy-b1", 1), ("lazy-b3", 3), ("lazy-b5", 5)):
                 if token_receipt(args.output / (name + ".log"), rows, args.prefix) != baseline[rows]:
                     raise RuntimeError(f"local token mismatch: {name}")
             server.terminate()
             wait(server)
-            receipt = {"result": "PASS local token parity", "queue": os.environ["SPARK_QUEUE_ID"],
+            receipt = {"result": "PASS local state and token parity" if args.prefix else "PASS local token parity", "queue": os.environ["SPARK_QUEUE_ID"],
                        "pack_sha256": args.pack_sha256, "pool_bytes": args.pool_bytes,
                        "spine_bytes_per_consumer": args.spine_bytes,
-                       "probe": "prefix-reuse-reset" if args.prefix else "token-smoke",
+                       "probe": "prefix-eviction-movement-state-reset-temporal" if args.prefix else "token-smoke",
+                       "full_vocabulary_logits": False, "batch_widths": [1, 3, 5],
                        "collectives": "disabled", "tp_degree": 16, "rank": 0,
                        "full_model_numerical_qualification": False}
             (args.output / "RESULT.json").write_text(json.dumps(receipt, indent=2) + "\n")

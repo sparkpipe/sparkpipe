@@ -3123,7 +3123,7 @@ static void SparkQwen38_27bModuleSnapshotExtend(
     snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 }
 
-static void SparkQwen38_27bModuleStateTeardown(void *module_state)
+static SparkStatus SparkQwen38_27bModuleStateTeardown(void *module_state)
 {
     SparkQwen38_27bModuleState *state;
     uint32_t slot_index;
@@ -3154,6 +3154,7 @@ static void SparkQwen38_27bModuleStateTeardown(void *module_state)
     if (state->dspark_weights.selector_hidden_proj_host != 0)
         free(state->dspark_weights.selector_hidden_proj_host);
     SparkStageKvClientClose(&state->kv_client);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkQwen38_27bModuleInitializeGate(void)

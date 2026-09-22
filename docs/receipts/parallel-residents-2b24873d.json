@@ -1,0 +1,109 @@
+{
+  "source_commit": "2b24873d89c0da9744391d104f9d61369fb750f0",
+  "bundle_sha256": "025d789873dfad4cbc3f12779e23274f3c7a913b35e7980e9ee73d90530cc906",
+  "oracle": "Exact outputs from isolated 1a08cb81 run; not independent model quality validation",
+  "mode": "GLM5.3 Flash FP8 TP16; hardware waits; full pinned pool; B1; context512; 128 pages; 2GiB backing per resident",
+  "campaigns": [
+    {
+      "residents_per_spark": 2,
+      "attempt": "e3a1ff8015cf4e15912bb39f4f7387d2",
+      "verdict": "PASS",
+      "ranks": 16,
+      "output_tokens": 64,
+      "owned_processes_absent": 48,
+      "decode_tokens_per_second": [
+        6.544797296827668,
+        6.301101312925921
+      ],
+      "common_window": {
+        "start_seconds": 26.70356797298882,
+        "end_seconds": 31.417739581898786,
+        "tokens": 61,
+        "aggregate_tokens_per_second": 12.939707134273107
+      },
+      "gpu_mib_per_spark": 27742.0,
+      "budgets": {
+        "expert_pool_bytes": 25769803776,
+        "model_device_bytes": 4294967296,
+        "spine_bytes": 4294967296,
+        "weightd_device_bytes": 30064771072,
+        "weightd_overhead_bytes": 536870912
+      },
+      "rank_receipt_sha256": {
+        "spark0-gather": "fecda4a530f4a181146beed24b1ef09ec3b02c0e1226ca151d12353804471cf1",
+        "spark1-gather": "8804ef58505c0dda537bf74c456416ef6bc68f903f6862836c84cdf46027a820",
+        "spark2-gather": "aa2817e694c20387c50ee0ecfb9633e8cc723424025320d0fe74147003cef724",
+        "spark3-gather": "178138098afdc342da10aec7f1d44bd30e8a29c87ce80eee1efcbfc370532a10",
+        "spark4-gather": "9d9fdf203909f085474009b63aa179e7b110cc1b0dd2d29341a56b82039d5e1a",
+        "spark5-gather": "7b266133e3f8fe9ae04a0ef5f23b22d600ea26654fd91f3371caa2958eb56da2",
+        "spark6-gather": "03f17131c34d3a7bd59440fd8a71eed69ec77fc617f6ed8ca743e86f9e1f7f54",
+        "spark7-gather": "dfdcc7bf895e091e39ad68679d9fa04a83fb4342fed72a06fd88357f2fcf33c2",
+        "spark8-gather": "8364473cff0929f1778323262b02a64c091b50df1227fd7914de3c430caa89b9",
+        "spark9-gather": "111bcd506b4e46e88d1fbbd79c20eceb2fa55e4fd39381f26669ddc03290a21e",
+        "sparka-gather": "5a3b01a62c11c0099fbc17363b3fa948dc20e93d63db16497631a92159c37215",
+        "sparkb-gather": "dc238db3d6cb9301bff877c0926fbc992298cc4c5d2a9704de0cda5f69ecb935",
+        "sparkc-gather": "58bdfa7ed9ba19a845070774c5f293c4d25598a6c736f450ed7a6995cd9c64c3",
+        "sparkd-gather": "55a85c7431d2c90891254c3b2cba7acca258df0726988cf0a23b4380c3035c35",
+        "sparke-gather": "56c74921bfb82284b142841dbebc910ef35d45040bad40ddb16dd41d4f92454e",
+        "sparkf-gather": "605aaf0e15c71e6ad675afc5e3de368c6fcf6bbbf87d18ced26ccbac04c9da61"
+      }
+    },
+    {
+      "residents_per_spark": 3,
+      "attempt": "eec6c43af65b4936be9c29fb6f4a355f",
+      "verdict": "PASS",
+      "ranks": 16,
+      "output_tokens": 96,
+      "owned_processes_absent": 64,
+      "decode_tokens_per_second": [
+        4.321734528785051,
+        4.325560012021277,
+        4.3301668938669255
+      ],
+      "common_window": {
+        "start_seconds": 40.275128879002295,
+        "end_seconds": 47.29800248402171,
+        "tokens": 91,
+        "aggregate_tokens_per_second": 12.957658804361815
+      },
+      "gpu_mib_per_spark": 31176.0,
+      "budgets": {
+        "expert_pool_bytes": 25769803776,
+        "model_device_bytes": 4294967296,
+        "spine_bytes": 4294967296,
+        "weightd_device_bytes": 30064771072,
+        "weightd_overhead_bytes": 536870912
+      },
+      "rank_receipt_sha256": {
+        "spark0-gather": "fc9e3cbfa15123170ff4267049e82b814e932e6fa6fd4e4b264b65f580f76098",
+        "spark1-gather": "2d1afba140c45123cd46f193dc5effac05b0f96c7e19d91b48d2fc8780e15b57",
+        "spark2-gather": "2a5c8be10a507814220a787e5376fe39704311c93467a17d68d757c787a482e1",
+        "spark3-gather": "b2fdcb93985fa33449c99c620c6d464e1f8741ad89e96022bc8b59128dee1a9c",
+        "spark4-gather": "89b0387f9c6d217e2038d05a10c31675651006f903ec66fd8b4569a3f5be6042",
+        "spark5-gather": "598b808614de34e1724fdb896319cf3fd0f985bf809e2e01dabf47094daf8094",
+        "spark6-gather": "5b4dd49d740f28dd3a7342d4e5026b9fd2f864376c13882ded60fd364bd8dfad",
+        "spark7-gather": "33645587f57f485d56fa9686ca4461fd41df0151c452b65070755e143e06c419",
+        "spark8-gather": "6bc55f050cabf3b8b04df3ba3d9067a50d179ba6230ef04e03e67d51b4913b2e",
+        "spark9-gather": "1ac1621d612784108bbf96815f2671699ed28a92c6c33503395b268cdf79daa0",
+        "sparka-gather": "146e61cbf098985c1bdefe303c397158034245806ed2f66f5a422e1c47c1a6c8",
+        "sparkb-gather": "da3fee8a288bc23f60dff4603b3420e03eb4cd34b93ad9d48edeee1e0f52c98e",
+        "sparkc-gather": "1fe1446dbdb809699f92ce13fe087fdd71df96cf45f18da0ec491d386eef81c2",
+        "sparkd-gather": "bb138b53d80a73b7d514ad4f9c900e712481b21a09fbcf8110c3e24bbdb7cbbb",
+        "sparke-gather": "c1e459babed42208a9453c4966ddfdad8946cdefa41c25751fb0e903d74dbb66",
+        "sparkf-gather": "e7889e81c653f53d339a646b7b83d21db64a1f79b28885bd6c5a71c1d749b250"
+      }
+    },
+    {
+      "residents_per_spark": 4,
+      "attempt": "2b657444aecb4fee9e35083dd56d5e40",
+      "verdict": "FAIL",
+      "completed_residents": 3,
+      "blocked_lane": 2,
+      "blocked_rank": 0,
+      "submission": 172,
+      "error": "collective-end BUSY15 after successful graph completion; retained slot; request never completed",
+      "controller_exit": 125,
+      "cleanup": "queue confirmed all participant control groups stopped; cancelled after preserving evidence"
+    }
+  ]
+}

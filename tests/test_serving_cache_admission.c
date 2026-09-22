@@ -124,6 +124,25 @@ int main(void)
 		return(6);
 	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) != SPARK_STATUS_OK || request.cache_lane_count != 3u || request.cache_lanes[0].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE )
 		return(7);
+
+	submissions[0].work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
+	submissions[0].tokens_per_sequence = submissions[0].new_token_count = 0u;
+	for (uint32_t lane=0u; lane<3u; lane++)
+	{
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+		lanes[lane].sequence_position = lanes[lane].context_token_count = lanes[lane].cache_publish_token_count = 65u;
+		lanes[lane].cache_prefix_token_count = 0u;
+		memset(&lanes[lane].cache_prefix_identity,0,sizeof(lanes[lane].cache_prefix_identity));
+		lanes[lane].cache_publish_identity.sha256[0] = (uint8_t)(lane + 1u);
+	}
+	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) != SPARK_STATUS_OK ||
+		request.frame_flags != SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH || request.new_token_count != 0u ||
+		request.cache_lane_count != 3u || SparkModelDriverAdmissionRequestIsValid(&request) == 0u )
+		return(10);
+	for (uint32_t lane=0u; lane<3u; lane++)
+		if ( request.cache_lanes[lane].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH ||
+			request.cache_lanes[lane].publish_identity.sha256[0] != lane + 1u )
+			return(11);
 	cache.lane_capacity = 2u;
 	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) == SPARK_STATUS_OK )
 		return(8);

@@ -138,10 +138,20 @@ static const SparkModelServingAdapterDescriptor SparkLagunaServingDescriptor =
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
 	.capability_flags = SPARK_LAGUNA_SERVING_TOPOLOGY_FLAG |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = SPARK_LAGUNA_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_LAGUNA_MODEL_LAYER_COUNT,
+	/* Hybrid TP8xPP2: the 16 deployment stages are two parallel groups
+	   of eight; SparkDescriptorCheckStageLayerTotals sums ONE stage's
+	   layers per group (24 + 24 = 48) and the pairing check requires
+	   PARALLEL_FANOUT | HIDDEN_TRANSPORT alongside HYBRID_TP_PP (the k3
+	   TP4xPP4 descriptor shape - the laguna descriptor declared a
+	   pipeline topology without the hybrid flag and failed adapter_load
+	   with INVALID_ARGUMENT at the totals check). */
+	.parallel_group_size = SPARK_LAGUNA_SERVING_TP_DEGREE,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT,
 	.boundary_element_bytes = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES,

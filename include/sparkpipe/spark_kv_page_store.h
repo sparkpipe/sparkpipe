@@ -142,6 +142,10 @@ void SparkKvPageStoreDestroy(SparkKvPageStore *store);
 // Caller retains buffers and excludes destruction; poll the original operation
 // afterward to consume its terminal status. Not callable from a copy callback.
 SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
+SparkStatus SparkKvPageStoreCopyResidentPage(
+	SparkKvPageStore *store,
+	const SparkKvCacheBlockView *source,
+	const SparkKvCacheBlockView *destination);
 SparkStatus SparkKvPageStoreWriteback(
 	void *context,
 	uint32_t logical_page_index,

@@ -219,6 +219,25 @@ static void TestSubmissionRoundTrip(void)
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->row_positions_offset++;
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_SCHEMA_ERROR);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
+	submission.tokens_per_sequence = submission.new_token_count = submission.row_count = submission.token_count = 0u;
+	for (uint32_t lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+		lanes[lane].sequence_position = lanes[lane].context_token_count = lanes[lane].cache_publish_token_count = 17u + lane;
+		memset(&lanes[lane].cache_publish_identity,(int)(0x60u + lane),sizeof(lanes[lane].cache_publish_identity));
+	}
+	assert(SparkModelResidentIpcEncodePreparation(&submission,8u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	assert(((const SparkModelResidentIpcHeader *)buffer)->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE);
+	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
+	assert(decoded.work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH);
+	assert(decoded.row_count == 0u && decoded.token_count == 0u && decoded.new_token_count == 0u && decoded.tokens_per_sequence == 0u);
+	assert(decoded.hidden_input_address == 0 && decoded.hidden_output_address == 0);
+	assert(decoded.boundary_sideband_input_address == 0 && decoded.boundary_sideband_output_address == 0);
+	assert(memcmp(decoded.lanes,lanes,sizeof(lanes)) == 0);
+	assert(memcmp(&decoded.residency,&submission.residency,sizeof(decoded.residency)) == 0);
+	assert(decoded.control_generation == submission.control_generation && decoded.transaction_id == submission.transaction_id && decoded.dispatch_generation == submission.dispatch_generation);
+
 }
 
 static void TestContinuationLease(void)

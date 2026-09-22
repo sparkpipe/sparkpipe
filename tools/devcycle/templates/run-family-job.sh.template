@@ -1,0 +1,274 @@
+#!/bin/bash
+# Shared-socket family wrapper template (multidev lanes 0-7).
+#
+# Provenance: extracted from the VALIDATED GLM5.3-flash multidev wrapper that
+# produced the PR #1082 receipts (8 concurrent TP16 residents per fleet run:
+# 13.3-13.5 aggregate tok/s, 48,346 MiB device per Spark, 256/256 tokens exact,
+# clean shutdown). The behavioral contract behind every rewrite below is pinned
+# by tests/test_inference_smoke.py; the process contract is
+# docs/MULTIDEV_QUICKSTART.md + docs/PARALLEL_DRIVER_DEBUG.md.
+#
+# Porting (the ONLY block you edit is FAMILY PARAMETERS below):
+#   1. Commit your family deployment from family_deployment.template.json
+#      (one nodes[] entry per rank) and your stage config beside it.
+#   2. Fill FAMILY PARAMETERS from tools/devcycle/lane_assignments.json (PR
+#      #1083) and your family facts.
+#   3. Generate your pack sidecars: <pack>.sha256 (one, exact) and
+#      <pack>.experts via your family manifest tool (GLM precedent:
+#      tools/glm5_next_experts_manifest.c). Loading fails closed without them.
+#   4. Submit through the controller (spark_queue.py sync + add --cmd-file);
+#      reserve EVERY listener range you parameterize below with --ports.
+#   5. Numerical smoke validation stays on the qualified harness:
+#      python3 tools/inference_smoke.py --spec <family spec>.  This wrapper is
+#      the resident launch path, not a second verifier.
+#
+# Laws encoded here (each paid for with an incident):
+#   - Fail closed: missing/malformed pack identity, unknown listener key,
+#     unreserved port, or a missing shared socket is a hard error.
+#   - The wrapper never starts daemons in shared-socket mode. Private-daemon
+#     mode is the qualified single-node smoke shape only.
+#   - No nested SSH GPU launches; every child stays in this queue cgroup.
+
+set -euo pipefail
+
+# ----------------------------- FAMILY PARAMETERS -----------------------------
+
+FAMILY="@FAMILY@"                      # e.g. glm5_next
+LANE=@LANE@                            # lane index from lane_assignments.json
+TOPOLOGY="@TOPOLOGY@"                  # TP16 | TP4 | TP4xPP4 | ...
+HOSTS=(@HOSTS_CSV@)                    # node order, e.g. spark0 spark1 ... sparkf
+MESH_RANKS="@MESH_RANKS@"              # physical rank per logical index (see
+                                       # MULTIDEV_QUICKSTART topology table;
+                                       # identity TP16 = 0,1,...,15)
+EXEC_PREFIX="@EXEC_PREFIX@"            # verified build prefix of the synced checkout (e.g. build)
+
+# Lane port math (lane_assignments.json, amended by PR #1094): lane L owns
+#   control 23000+16L..+15, collective 53000+16L..+15, transport 64000+16L..+15
+CONTROL_BASE=$((23000 + 16 * LANE))
+COLLECTIVE_BASE=$((53000 + 16 * LANE))
+TRANSPORT_BASE=$((64000 + 16 * LANE))
+# Stage-config session matrices/draft bridge need their own reserved block;
+# default per-lane extra block: 23168+64L..+63 (reserve it with --ports).
+SESSION_BASE=$((23168 + 64 * LANE))
+
+# Resident GPU plan (per node). Shared-socket mode: the daemon's budgets are
+# the operator's; these are NOT exported for attach. Private mode uses them.
+DEVICE_MIB=@DEVICE_MIB@                # lane device per node (default 6400)
+
+# Weightd mode: shared-socket (multidev default) | private (single-node
+# qualified smoke shape only; multi-node must use inference_smoke.py).
+WEIGHTD_MODE="${FAMILY_WEIGHTD_MODE:-shared-socket}"
+SHARED_SOCKET="${FAMILY_WEIGHTD_SOCKET:-}"
+
+# Family model environment (GLM precedent shown; substitute your family's
+# qualified flags -- never invent new ones).
+FAMILY_ENV=(
+  "CUDA_MODULE_LOADING=LAZY"
+  "CUDA_MODULE_DATA_LOADING=LAZY"
+  "CUDA_DEVICE_MAX_CONNECTIONS=32"
+  "@FAMILY_GRAPH_ENV@"                  # GLM: SPARK_GLM5_NEXT_GRAPH_PATH=1
+  "@FAMILY_PIN_ENV@"                    # GLM: SPARK_GLM5_NEXT_PIN_EXPERTS=1
+)
+
+# Optional cold-launch preload hook (milestone 3): a .wset file listing the
+# deduplicated routed-expert keys your smoke prompt set touches. Leave empty
+# to skip. Warmed through the SAME socket the resident attaches to (on a
+# shared socket this materializes pages in the operator's daemon - keep the
+# working set inside its declared expert-pool budget).
+WORKING_SET="${FAMILY_WORKING_SET:-}"
+
+# ------------------------------ QUEUE CONTRACT -------------------------------
+
+ATTEMPT="${SPARK_QUEUE_ATTEMPT:?run through the authoritative spark queue}"
+case "$ATTEMPT" in
+  *[!0-9a-f]*|""|?????????????????????????????????*) echo "bad attempt id" >&2; exit 2 ;;
+esac
+[ "${#ATTEMPT}" -eq 32 ] || { echo "bad attempt id length" >&2; exit 2; }
+
+ROOT="${SPARK_QUEUE_RUNTIME_ROOT:?missing queue runtime root}"
+[ "$ROOT" = "/tmp/sparkqueue-$ATTEMPT" ] || { echo "unexpected job namespace: $ROOT" >&2; exit 2; }
+
+RANK="${SPARK_QUEUE_RANK:?}"; SIZE="${SPARK_QUEUE_SIZE:?}"
+[ "$SIZE" -eq "${#HOSTS[@]}" ] || { echo "queue size ${SIZE} != deployment hosts ${#HOSTS[@]}" >&2; exit 2; }
+[ "$RANK" -ge 0 ] && [ "$RANK" -lt "$SIZE" ] || { echo "rank out of range" >&2; exit 2; }
+
+reserved_ok() {  # every emitted listener must fall inside a queue-reserved range
+  local port="$1" entry first last
+  [ -n "${SPARK_QUEUE_PORTS:-}" ] || { echo "queue reserved no ports" >&2; exit 2; }
+  for entry in ${SPARK_QUEUE_PORTS//,/ }; do
+    first="${entry%%:*}"; last="${entry##*:}"
+    if [ "$port" -ge "$first" ] && [ "$port" -le "$last" ]; then return 0; fi
+  done
+  echo "listener port $port is not inside a queue-reserved range" >&2; return 1
+}
+
+for r in $(seq 0 $((SIZE - 1))); do
+  reserved_ok $((CONTROL_BASE + r)) || exit 2
+  reserved_ok $((COLLECTIVE_BASE + r)) || exit 2
+  reserved_ok $((TRANSPORT_BASE + r)) || exit 2
+done
+
+# --------------------------- PRIVATE RUNTIME PREP ----------------------------
+
+# Rewrites the committed family deployment + stage config into a private
+# deployment under $ROOT (same semantics as the validated harness):
+#   - runtime_root/kv_backing_directory become per-job private paths
+#   - control/transport/collective/session listeners remap into this lane's
+#     reserved ranges; unknown listener keys fail closed
+#   - packs/ holds exactly one *.sha256 digest sidecar for weightd attach
+#   - collective_identifier derives from the attempt id (+ lane offset)
+python3 - "$ROOT" "$RANK" "$SIZE" "$CONTROL_BASE" "$COLLECTIVE_BASE" \
+         "$TRANSPORT_BASE" "$SESSION_BASE" "$ATTEMPT" "$LANE" \
+         "@DEPLOYMENT_SOURCE@" <<'PYEOF'
+import json, sys
+from pathlib import Path
+
+root, rank, size = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+control_base, collective_base, transport_base, session_base = (int(a) for a in sys.argv[4:8])
+attempt, lane, deployment_source = sys.argv[8], int(sys.argv[9]), sys.argv[10]
+
+def fail(msg):
+    raise SystemExit("family wrapper prepare: FAIL: " + msg)
+
+if not 1 <= size <= 16:
+    fail(f"topology size {size} outside 1..16")
+host_names = [f"spark{index:x}" for index in range(size)]
+
+def load(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        fail(f"cannot read {path}: {error}")
+
+deployment = load(deployment_source)
+if len(deployment["nodes"]) != size:
+    fail("deployment node count differs from queue topology")
+value = json.loads(json.dumps(deployment))
+value["transport"]["control_port_base"] = transport_base
+for r, node in enumerate(value["nodes"]):
+    if node["rank_index"] != r:
+        fail("deployment ranks must be ordered")
+    node["runtime_root"] = str(root / "runtime")
+    node["transport_host"] = host_names[r]
+    node["control_endpoint"] = {"kind": "tcp", "host": host_names[r], "port": control_base + r}
+    if node.get("kv_backing_directory") is not None:
+        if not node.get("kv_backing_maximum_bytes", 0) > 0:
+            fail("unbounded kv backing store")
+        node["kv_backing_directory"] = str(root / "kv")
+
+config_name = value["nodes"][rank]["adapter_configuration_path"]
+source_root = Path(deployment["nodes"][rank]["runtime_root"])
+config = load(source_root / config_name)
+
+PORT_NAMES = {"listen_port", "peer_ports", "session_ports", "session_ports_hc", "draft_bridge_port"}
+
+def remap(item):
+    if isinstance(item, list):
+        return [remap(entry) for entry in item]
+    if not isinstance(item, int):
+        fail("non-integer listener value")
+    return 0 if item == 0 else session_base + (item % 4096)
+
+def rewrite(node):
+    result = {}
+    for key, item in node.items():
+        if key.endswith("_port") or key.endswith("_ports") or key.startswith("session_ports"):
+            if key not in PORT_NAMES:
+                fail(f"unhandled listener configuration: {key}")
+            result[key] = remap(item)
+        elif isinstance(item, dict):
+            result[key] = rewrite(item)
+        else:
+            result[key] = item
+    return result
+
+config = rewrite(config)
+if "tp_collective" in config:
+    tp = config["tp_collective"]
+    tp["collective_identifier"] = int(attempt[:15], 16) + 1 + lane
+    tp["listen_port"] = collective_base + rank
+    tp["peer_ports"] = [collective_base + peer for peer in range(size)]
+
+runtime = root / "runtime"
+runtime.mkdir(parents=True, exist_ok=True)
+pack_path = config["stage_pack_path"]
+if Path(pack_path).is_absolute() or ".." in Path(pack_path).parts:
+    fail("pack escapes runtime root")
+source_pack = source_root / pack_path
+if not source_pack.is_file():
+    fail(f"stage pack missing: {source_pack}")
+pack_dir = runtime / "packs"
+pack_dir.mkdir()
+pack_dir.joinpath(source_pack.name).symlink_to(source_pack.resolve())
+for suffix in (".sha256", ".experts"):
+    sidecar = Path(str(source_pack) + suffix)
+    if not sidecar.is_file():
+        fail(f"missing pack sidecar {suffix} - generate the family expert manifest first")
+    pack_dir.joinpath(sidecar.name).write_bytes(sidecar.read_bytes())
+digests = sorted(pack_dir.glob("*.sha256"))
+if len(digests) != 1:
+    fail(f"packs/ must contain exactly one *.sha256 digest, found {len(digests)}")
+(runtime / config_name).parent.mkdir(parents=True, exist_ok=True)
+(runtime / config_name).write_text(json.dumps(config) + "\n")
+(root / "kv").mkdir(exist_ok=True)
+(root / "deployment.json").write_text(json.dumps(value) + "\n")
+print("family wrapper prepare: rank", rank, "pack", source_pack.name,
+      "digest", digests[0].name, "collective_id", config.get("tp_collective", {}).get("collective_identifier"))
+PYEOF
+
+# ------------------------------ WEIGHTD MODE ---------------------------------
+
+if [ "$WEIGHTD_MODE" = "shared-socket" ]; then
+  [ -n "$SHARED_SOCKET" ] || { echo "shared-socket mode requires FAMILY_WEIGHTD_SOCKET" >&2; exit 2; }
+  [ -S "$SHARED_SOCKET" ] || { echo "shared weightd socket is not present: $SHARED_SOCKET (operator-level; do not start daemons by hand)" >&2; exit 2; }
+  WEIGHTD_SOCKET="$SHARED_SOCKET"
+elif [ "$WEIGHTD_MODE" = "private" ]; then
+  # Qualified single-node smoke shape only (inference_smoke.py parity).
+  [ "$SIZE" -eq 1 ] || { echo "private-daemon mode is single-node; use tools/inference_smoke.py for the qualified multi-node smoke" >&2; exit 2; }
+  WEIGHTD_SOCKET="$ROOT/weightd.sock"
+  "$EXEC_PREFIX/sparkpipe_weightd" --socket "$WEIGHTD_SOCKET" \
+    --device-bytes-max $((DEVICE_MIB * 1024 * 1024)) \
+    >"$ROOT/weightd.log" 2>&1 &
+  WEIGHTD_PID=$!
+  for _ in $(seq 1 300); do
+    grep -q "spark_weightd ready " "$ROOT/weightd.log" 2>/dev/null && break
+    kill -0 "$WEIGHTD_PID" 2>/dev/null || { echo "private weightd exited early" >&2; exit 2; }
+    sleep 0.1
+  done
+  grep -q "spark_weightd ready " "$ROOT/weightd.log" || { echo "private weightd not ready in 30s" >&2; exit 2; }
+else
+  echo "unknown WEIGHTD_MODE: $WEIGHTD_MODE" >&2; exit 2
+fi
+
+# Optional cold-launch preload of the smoke expert set (same socket, before
+# the resident attaches; the set is model-families/<family>/smoke_experts.json).
+if [ -n "$WORKING_SET" ]; then
+  CONFIG_REL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes"][int(sys.argv[2])]["adapter_configuration_path"])' "$ROOT/deployment.json" "$RANK")"
+  PACK_REL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$CONFIG_REL")"
+  REVISION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model_revision","0"))' "$ROOT/runtime/$CONFIG_REL")"
+  PACK="$ROOT/runtime/$PACK_REL"
+  SHA="$(cut -d' ' -f1 "$PACK.sha256")"
+  "$EXEC_PREFIX/weightd_warm" "$WEIGHTD_SOCKET" "$PACK" "$SHA" "$REVISION" "$SIZE" \
+    --wset "$WORKING_SET" 300 >"$ROOT/warm.log" 2>&1
+  grep -q "WSET-WARM keys=" "$ROOT/warm.log" || { echo "working set warm failed" >&2; exit 2; }
+fi
+
+# ----------------------------- RESIDENT LAUNCH -------------------------------
+
+export SPARK_WEIGHTD_ATTACH=1
+export SPARK_WEIGHTD_SOCKET="$WEIGHTD_SOCKET"
+export SPARK_WEIGHTD_LANE="$LANE"
+export SPARK_TP_MESH_RANKS="$MESH_RANKS"
+for entry in "${FAMILY_ENV[@]}"; do
+  [ -n "$entry" ] || continue
+  case "$entry" in *=*) export "$entry" ;; *) echo "bad FAMILY_ENV entry: $entry" >&2; exit 2 ;; esac
+done
+
+if [ "$WEIGHTD_MODE" = "private" ]; then
+  # Keep the private daemon inside this cgroup until the resident exits.
+  trap 'kill -TERM "$WEIGHTD_PID" 2>/dev/null || true' EXIT
+fi
+
+exec "$EXEC_PREFIX/sparkpipe_model_residentd" \
+  --deployment "$ROOT/deployment.json" \
+  --rank-index "$RANK"

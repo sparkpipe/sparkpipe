@@ -1,0 +1,158 @@
+{
+  "source_commit": "44fe4af719daeb5ad3ecaacd78daed5247067fb4",
+  "bundle_sha256": "5a1af592cde49d57eda63d350e522cba321cdf642d59d2a20245fdbf9fab6426",
+  "oracle": "Exact outputs from isolated 1a08cb81 run; not independent model quality validation",
+  "mode": "GLM5.3 Flash FP8 TP16; hardware waits; full pinned pool; B1; context512; 128 pages; 2GiB backing per resident",
+  "campaigns": [
+    {
+      "residents_per_spark": 4,
+      "attempt": "da89044bd01f4d1a898f4b6a1af5b08e",
+      "verdict": "PASS",
+      "ranks": 16,
+      "output_tokens": 128,
+      "owned_processes_absent": 80,
+      "decode_tokens_per_second": [
+        3.099987018173209,
+        3.1184109793000614,
+        3.1325570788953816,
+        3.1276981226764056
+      ],
+      "ttft_seconds": [
+        54.405786514049396,
+        54.42249723698478,
+        54.59550523001235,
+        54.56479726207908
+      ],
+      "common_window": {
+        "start_seconds": 54.59635878901463,
+        "end_seconds": 64.36426317796577,
+        "tokens": 121,
+        "aggregate_tokens_per_second": 12.38750863868691
+      },
+      "gpu_peak_mib_per_spark": [
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0,
+        34610.0
+      ],
+      "budgets": {
+        "expert_pool_bytes": 25769803776,
+        "model_device_bytes": 4294967296,
+        "spine_bytes": 4294967296,
+        "weightd_device_bytes": 30064771072,
+        "weightd_overhead_bytes": 536870912
+      },
+      "queue_host_memory_mib": 16384,
+      "queue_device_memory_mib": 45568,
+      "rank_receipt_sha256": {
+        "spark0-gather": "60e95d08eb1fad2f8737609bb999df51105b9545627aac0afbdb0d4357bcfa68",
+        "spark1-gather": "aafbc368042864e031d7ad7a9e3bdf51efb4d0fdaa5f60b83b9b835cbda89e5e",
+        "spark2-gather": "74e0cf77bfec4d1190ad8b471c5a6ac024ec756356f816088fea81b23dda2553",
+        "spark3-gather": "a37c661f1b642e87b41fe3eb2ca8a89a5f9199b9aff4195949a039ab19a88905",
+        "spark4-gather": "1431502a53f68e980e0ed51d1930f8f73d97dc89c9ad5665470b6354e587a188",
+        "spark5-gather": "c9a84eb0f56e5332e20666aac3cd94ab028513138cc799b06282e9760a7e24f2",
+        "spark6-gather": "07c04abea2ca67a5a30ab1ac70b13b5f3818404036f3785477d4dec80fc6e66d",
+        "spark7-gather": "06ec31efcb45127d6f65fd3fb4a69eda03055e589d1877499667706f8eb4aa2c",
+        "spark8-gather": "5c253025aae05e55c6f5b72fce242f36bdd80d7ece2a4333fe794ce39edb569b",
+        "spark9-gather": "c24c151414cb76f6530b81bb3d912684bf951fdde1d8bd1470ccca0de898eda8",
+        "sparka-gather": "958418df1060754404fcae6b3cad6c09c6fa049049910e54edde98b36d483fa6",
+        "sparkb-gather": "fa9346c2669ed9fb3bcc983a7137a119818007ee5d609f21f4e46bf470f457eb",
+        "sparkc-gather": "0036e1bf5bb3858fb811f3765c507da27c668e0233418b9c02435af126840102",
+        "sparkd-gather": "ac75bd461014b42010226276a798fc10827087373dac8588537b1501e172d4cf",
+        "sparke-gather": "6208d9973831909ad7653f59ae4ecfa6483297613f512119a687775afc480542",
+        "sparkf-gather": "bf30b182ac3f2ca1d93ab0ea3a739c472d60394d42570c85a74d4859985655ba"
+      }
+    },
+    {
+      "residents_per_spark": 8,
+      "attempt": "d5223ae9254241eeb203651be376d903",
+      "verdict": "PASS",
+      "ranks": 16,
+      "output_tokens": 256,
+      "owned_processes_absent": 144,
+      "decode_tokens_per_second": [
+        1.6722038911487422,
+        1.687200174254418,
+        1.708176376140346,
+        1.6901822746061752,
+        1.6844519077660132,
+        1.6796961234944738,
+        1.65781131033236,
+        1.678319775669715
+      ],
+      "ttft_seconds": [
+        107.86776113393717,
+        108.14224752993323,
+        108.41247326496523,
+        108.19207033095881,
+        108.07093604200054,
+        107.82021872897167,
+        107.45830278599169,
+        107.87013944995124
+      ],
+      "common_window": {
+        "start_seconds": 108.41384693793952,
+        "end_seconds": 126.15876796096563,
+        "tokens": 236,
+        "aggregate_tokens_per_second": 13.299580183747361
+      },
+      "gpu_peak_mib_per_spark": [
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0
+      ],
+      "budgets": {
+        "expert_pool_bytes": 25769803776,
+        "model_device_bytes": 4294967296,
+        "spine_bytes": 4294967296,
+        "weightd_device_bytes": 30064771072,
+        "weightd_overhead_bytes": 536870912
+      },
+      "queue_host_memory_mib": 16384,
+      "queue_device_memory_mib": 61952,
+      "rank_receipt_sha256": {
+        "spark0-gather": "8f6f802e3239ecf8d73deb754d6c887038bb954ca519a62721a2d18aca9a5de8",
+        "spark1-gather": "20d26a84e63c8b98aa1c725dc5d7554ec6bfcb2d404750c7448f71e500fb6323",
+        "spark2-gather": "5e5221ab1aea29a27a52769abed99a77621100a664f508fdb0eccd3a473c3d43",
+        "spark3-gather": "b87f15b35f2a6ee4a92dd34bf4276b2df7431eacd6b4fbb5d0b8a5ef45c2c942",
+        "spark4-gather": "100e8c25e6c0f96260e3c06b5d49b64f50cdf120748cfff22ecf8969e7f9e1a8",
+        "spark5-gather": "b816e767b3d84b2ef1eb46ca006c7ae0f7b4b462ed0b09e7996054b997ebc578",
+        "spark6-gather": "df3ea787b76b7d861745814c7a0f415b15b6a497b0cbc315e3866146df18e61f",
+        "spark7-gather": "7f93b45a36d3fca8ad4dc4a8d308af7ad8a88c3a5eba15e95cdfaa380ff5aee0",
+        "spark8-gather": "49b7b1ba613f9b080f0a90e792d998013d57423561e9eb9a1fb2a7d1d4b86add",
+        "spark9-gather": "87c4fb25582ad4e13705e60321e257e6994b9f8a10a8c51457244829111fcd78",
+        "sparka-gather": "1b46d519841ce3f8419f15957cd78d28f0724772e3919c062f13625f7e561e7c",
+        "sparkb-gather": "63bdc43c59d0937e32bcb6f411fdd22db220ee1e857e67e22cb85c7e7cfc83c5",
+        "sparkc-gather": "a9b77232d0ee3b103e76f0c8e002fd4e65f7f556c6dfd1d30c317335d4af5877",
+        "sparkd-gather": "c9da40b169ee3a3458d2db53a8e0c6eb04c58cfe3c55bb5d1dc0cb3789841d13",
+        "sparke-gather": "5a467115ae1d081e77eaa589f2edb8f0e3474bfdb3d9eaea8d06c1312db102a2",
+        "sparkf-gather": "3129cbb938613a2ebcf5b0b44412dd03cafb15c1ed490d12b63d49817e2f62b7"
+      }
+    }
+  ]
+}

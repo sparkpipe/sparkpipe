@@ -32,6 +32,8 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
 #define cudaErrorNotReady 600
+#define cudaErrorHostMemoryAlreadyRegistered 712
+#define cudaErrorHostMemoryNotRegistered 713
 #define cudaErrorLaunchFailure 719
 #define cudaErrorUnknown 999
 #define cudaDevAttrMultiProcessorCount 16
@@ -101,6 +103,7 @@ cudaError_t cudaHostRegister(
     void *address,
     size_t bytes,
     unsigned int flags);
+cudaError_t cudaHostUnregister(void *address);
 cudaError_t cudaLaunchHostFunc(
     cudaStream_t stream,
     cudaHostFn_t function,

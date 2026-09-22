@@ -1,0 +1,8856 @@
+{
+ "codec": "bf16",
+ "expert_shard": "tp",
+ "experts": [
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 35,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 36,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 67,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 101,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 121,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 135,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 149,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 153,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 156,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 161,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 203,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 208,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 217,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 1
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 1,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 21,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 24,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 29,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 55,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 64,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 76,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 78,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 118,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 148,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 153,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 2
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 11,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 34,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 93,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 114,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 125,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 146,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 154,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 159,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 165,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 216,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 222,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 230,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 233,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 3
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 83,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 103,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 115,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 127,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 142,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 144,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 216,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 219,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 221,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 230,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 237,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 4
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 3,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 10,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 42,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 60,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 73,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 112,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 128,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 141,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 142,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 160,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 250,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 5
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 18,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 72,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 130,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 136,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 154,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 164,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 171,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 184,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 206,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 226,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 232,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 240,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 251,
+   "layer": 6
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 33,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 34,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 49,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 53,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 62,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 132,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 154,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 155,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 163,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 165,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 175,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 179,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 192,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 205,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 246,
+   "layer": 7
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 0,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 29,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 62,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 67,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 72,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 115,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 118,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 127,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 144,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 160,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 172,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 179,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 186,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 203,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 211,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 233,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 236,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 253,
+   "layer": 8
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 11,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 44,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 55,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 90,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 107,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 135,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 168,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 186,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 229,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 231,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 233,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 9
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 3,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 33,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 61,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 74,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 76,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 93,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 110,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 112,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 118,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 124,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 126,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 143,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 149,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 151,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 174,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 187,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 190,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 207,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 221,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 224,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 10
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 46,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 48,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 64,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 101,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 103,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 105,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 113,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 131,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 139,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 146,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 199,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 203,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 247,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 11
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 3,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 56,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 96,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 107,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 124,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 136,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 142,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 164,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 177,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 180,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 184,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 188,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 196,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 207,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 216,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 237,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 241,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 12
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 8,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 19,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 46,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 49,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 76,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 112,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 118,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 121,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 171,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 181,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 188,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 193,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 206,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 222,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 238,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 240,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 253,
+   "layer": 13
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 1,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 59,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 63,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 64,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 73,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 104,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 130,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 133,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 134,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 161,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 176,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 193,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 212,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 247,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 14
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 0,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 18,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 47,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 48,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 57,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 59,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 82,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 85,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 103,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 117,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 135,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 140,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 163,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 171,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 177,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 203,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 212,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 246,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 15
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 15,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 56,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 57,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 79,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 84,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 96,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 110,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 124,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 130,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 163,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 190,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 196,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 199,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 210,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 226,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 246,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 252,
+   "layer": 16
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 0,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 16,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 21,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 29,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 74,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 101,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 104,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 107,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 142,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 166,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 191,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 210,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 250,
+   "layer": 17
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 25,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 49,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 59,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 60,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 90,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 98,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 112,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 117,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 145,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 149,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 164,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 178,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 179,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 223,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 232,
+   "layer": 18
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 10,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 16,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 45,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 52,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 53,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 75,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 77,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 131,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 132,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 146,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 159,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 224,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 232,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 238,
+   "layer": 19
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 19,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 25,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 46,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 47,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 62,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 76,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 104,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 121,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 136,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 140,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 154,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 167,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 172,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 180,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 183,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 205,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 237,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 238,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 241,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 243,
+   "layer": 20
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 13,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 28,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 37,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 45,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 64,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 111,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 166,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 196,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 199,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 229,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 231,
+   "layer": 21
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 18,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 28,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 79,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 91,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 101,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 133,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 137,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 145,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 181,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 233,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 237,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 241,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 243,
+   "layer": 22
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 73,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 79,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 83,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 101,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 107,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 139,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 141,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 216,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 224,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 239,
+   "layer": 23
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 16,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 22,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 24,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 34,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 42,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 74,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 111,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 140,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 143,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 148,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 178,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 193,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 199,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 210,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 24
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 36,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 42,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 48,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 70,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 117,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 133,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 178,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 208,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 250,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 25
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 10,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 37,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 42,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 53,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 55,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 114,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 133,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 184,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 186,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 207,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 233,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 26
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 13,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 29,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 31,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 59,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 98,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 114,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 126,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 132,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 140,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 149,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 172,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 213,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 221,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 231,
+   "layer": 27
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 28,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 49,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 85,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 121,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 143,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 174,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 247,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 252,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 28
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 8,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 19,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 58,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 98,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 103,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 104,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 128,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 146,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 179,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 222,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 232,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 251,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 255,
+   "layer": 29
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 16,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 35,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 44,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 77,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 163,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 172,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 212,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 217,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 30
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 0,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 9,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 21,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 28,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 35,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 84,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 114,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 135,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 137,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 153,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 31
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 25,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 55,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 57,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 115,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 119,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 120,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 156,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 174,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 179,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 188,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 32
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 11,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 29,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 34,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 56,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 74,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 102,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 117,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 137,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 153,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 159,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 164,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 175,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 178,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 236,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 247,
+   "layer": 33
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 112,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 125,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 132,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 146,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 166,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 167,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 178,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 190,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 206,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 229,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 237,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 250,
+   "layer": 34
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 20,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 46,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 67,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 72,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 109,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 131,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 133,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 137,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 165,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 175,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 183,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 195,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 210,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 227,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 35
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 1,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 5,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 11,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 17,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 57,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 58,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 63,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 79,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 93,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 184,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 187,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 191,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 192,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 213,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 217,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 229,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 250,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 252,
+   "layer": 36
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 8,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 15,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 41,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 113,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 115,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 127,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 129,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 143,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 147,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 155,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 165,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 170,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 175,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 176,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 196,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 204,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 205,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 239,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 241,
+   "layer": 37
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 5,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 8,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 21,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 25,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 54,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 61,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 77,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 96,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 111,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 128,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 139,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 151,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 153,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 167,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 176,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 187,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 219,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 236,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 38
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 3,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 70,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 73,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 97,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 118,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 124,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 131,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 156,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 167,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 183,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 191,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 193,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 203,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 225,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 227,
+   "layer": 39
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 7,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 18,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 27,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 63,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 66,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 70,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 71,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 90,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 103,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 124,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 126,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 145,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 155,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 161,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 165,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 188,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 192,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 230,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 234,
+   "layer": 40
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 13,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 15,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 43,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 47,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 55,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 72,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 87,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 89,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 104,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 168,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 208,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 219,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 228,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 247,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 248,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 252,
+   "layer": 41
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 3,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 5,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 19,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 31,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 35,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 44,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 47,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 51,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 85,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 92,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 158,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 160,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 162,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 168,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 184,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 189,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 196,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 209,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 213,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 214,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 252,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 253,
+   "layer": 42
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 4,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 8,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 13,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 40,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 49,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 54,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 70,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 105,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 113,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 151,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 166,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 168,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 180,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 192,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 194,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 206,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 222,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 235,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 249,
+   "layer": 43
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 1,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 2,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 15,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 20,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 50,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 53,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 72,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 73,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 86,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 88,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 95,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 99,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 108,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 115,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 131,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 151,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 154,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 157,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 159,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 161,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 182,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 197,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 202,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 221,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 254,
+   "layer": 44
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 23,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 24,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 39,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 45,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 80,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 90,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 98,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 110,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 126,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 127,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 130,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 144,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 159,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 160,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 163,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 164,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 176,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 200,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 206,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 208,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 222,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 229,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 242,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 243,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 245,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 253,
+   "layer": 45
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 16,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 25,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 26,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 36,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 44,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 48,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 68,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 81,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 93,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 94,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 106,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 116,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 150,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 162,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 167,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 187,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 191,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 199,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 218,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 219,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 243,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 244,
+   "layer": 46
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 6,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 14,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 30,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 32,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 33,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 38,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 48,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 65,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 83,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 84,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 91,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 100,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 122,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 134,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 135,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 138,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 152,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 156,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 160,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 169,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 173,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 176,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 185,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 191,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 198,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 201,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 212,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 213,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 215,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 220,
+   "layer": 47
+  },
+  {
+   "bytes": 18874368,
+   "codec": "bf16",
+   "expert": 253,
+   "layer": 47
+  }
+ ],
+ "family": "laguna",
+ "kv_floor_bytes": 3145728,
+ "nodes": 16,
+ "prompt_set": "laguna-t1-prompts-v1",
+ "provenance": {
+  "byte_bases": {
+   "chunk_union_factor": 8,
+   "full_model_expert_bytes": 18874368,
+   "per_node_note": "a node's preload cost is its stage's pairs at the per-rank span (laguna replicates expert identity across the stage TP group; the span is the intermediate-dim shard); experts_gib_per_node in the curve is the fleet-comparable full/16 metric, experts_mib_per_node_worst_stage is the real cost",
+   "per_rank_expert_span_bytes": {
+    "w1": 1572864,
+    "w2": 786432
+   }
+  },
+  "census": {
+   "coverage_curve": [
+    {
+     "experts_gib_per_node": 3.573,
+     "experts_mib_per_node_worst_stage": 3737.25,
+     "min_positions": 1,
+     "pairs": 3252,
+     "selection_coverage": 1.0
+    },
+    {
+     "experts_gib_per_node": 2.032,
+     "experts_mib_per_node_worst_stage": 2112.75,
+     "min_positions": 2,
+     "pairs": 1850,
+     "selection_coverage": 0.8509
+    },
+    {
+     "experts_gib_per_node": 1.295,
+     "experts_mib_per_node_worst_stage": 1345.5,
+     "min_positions": 3,
+     "pairs": 1179,
+     "selection_coverage": 0.7081
+    },
+    {
+     "experts_gib_per_node": 0.883,
+     "experts_mib_per_node_worst_stage": 918.0,
+     "min_positions": 4,
+     "pairs": 804,
+     "selection_coverage": 0.5884
+    },
+    {
+     "experts_gib_per_node": 0.619,
+     "experts_mib_per_node_worst_stage": 641.25,
+     "min_positions": 5,
+     "pairs": 563,
+     "selection_coverage": 0.4859
+    }
+   ],
+   "cut_rule": ">= 3 positions (repetition head; the <= ~2 GiB/node law picks 3: cut 2 measures 3737.25 MiB on the worst stage - over; the curve is pinned and moves with M3 stray data, k3-style)",
+   "head_pairs": 1179,
+   "head_selection_coverage": 0.7081,
+   "positions": 940,
+   "prompt_set_sha256": "0532b1582255d56fdc98a81bf303b5e24962430d3ee72a8a28b0186ca151576c",
+   "route_arrays": 940,
+   "selections": 9400,
+   "stray_rule": "lazy attach covers pairs below the cut; the M3 receipt measures the real stray rate against head_selection_coverage",
+   "touched_pairs": 3252,
+   "used_fixtures": [
+    {
+     "fixture": "capital_of_france.t1r",
+     "route_arrays": 423
+    },
+    {
+     "fixture": "count_up.t1r",
+     "route_arrays": 517
+    }
+   ]
+  },
+  "fixtures": [
+   {
+    "fixture": "capital_of_france.t1r",
+    "route_arrays": 423,
+    "sha256": "fe207c891e1f303eb24389445f5741bc70bcee7f6427b9a1d4a104632cebd378"
+   },
+   {
+    "fixture": "count_up.t1r",
+    "route_arrays": 517,
+    "sha256": "28eabd92786ca4f8282662cb5147e23766c13bf0677987a75c8be1d3d166b374"
+   }
+  ],
+  "kv_floor": {
+   "sequences": 1,
+   "tokens": 128
+  },
+  "llm_defines_sha256": "aaceeedaa8896fbde667ce361de8311d3beb0bade16c321ebdc0a51d672587c0",
+  "ranks": [
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank0.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "151ced0f6aa76241c6c37cab04f70f6121f02e097f72103740be3f46992ca057",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank1.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "0f9786065c353ced4ec3db8e88cfb919b3548bf9453cc960653b136c0eb39fac",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank2.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "b2050045962125ecf888227925fd851f3bdc32a2c10c2c35c2ae10564fe2a6c4",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank3.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "a0af466c5046bc2fddc133a109b4dedf0b510321ad0e7e6703e050a5173dd659",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank4.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "9605db2fcb851a276c79493facd02471172c16e3c3692e9de65aecbbf7c0abac",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank5.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "2e5444e177e2d7c34c17049f3efeb909bc16b777b1d3dc2de09da169db5bcf0b",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank6.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "53f7b042cb3222bfed5e31110b39fd6cd7f2928e11fd665029ae3ea351e464e2",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 13891534848,
+    "expert_layers": 23,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "1": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "10": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "11": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "12": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "13": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "14": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "15": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "16": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "17": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "18": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "19": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "2": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "20": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "21": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "22": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "23": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "3": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "4": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "5": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "6": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "7": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "8": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "9": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage0.rank7.lgsp",
+    "pack_bytes": 14438099968,
+    "pack_sha256": "3f4f483d706cc1024ddb5cf5a5df04ad6f3b7869b51ef43a58b3739d5db0c263",
+    "spine_bytes": 546565120
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank8.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "3eb373d76955248ae17a9438825cdc63923cc3be197ac6df76e278eb51e9b535",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank9.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "460d2eefd7c3eea1a86b98dd063a8c45c5151169be3a52ada3efab75cecf168c",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank10.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "628ec7be77b70823ba5fdf009beed283c3659c65b67ada972a25eb0849df81d0",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank11.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "0bc9fca31eeed86ce22257dae1510bed3cce6b14ebf53ff4af6c5c3bf93d1352",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank12.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "624dea7169c15c4205fc5e38cbc9b4cae568c11f4b3c62502a6f9b5d84462f6f",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank13.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "b01815ff6e724983f9d637d1677ee989deb36a636396a0c9f0f0b3f7d4d589c6",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank14.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "7f52c8dd16ec7b813cf957fefbdb671e715c1a03d68015ca74267855472674ad",
+    "spine_bytes": 522193152
+   },
+   {
+    "expert_bytes": 14495514624,
+    "expert_layers": 24,
+    "expert_records": null,
+    "expert_span_bytes": {
+     "24": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "25": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "26": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "27": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "28": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "29": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "30": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "31": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "32": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "33": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "34": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "35": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "36": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "37": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "38": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "39": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "40": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "41": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "42": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "43": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "44": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "45": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "46": {
+      "w1": 1572864,
+      "w2": 786432
+     },
+     "47": {
+      "w1": 1572864,
+      "w2": 786432
+     }
+    },
+    "pack": "laguna_stage.tp8.pp2.stage1.rank15.lgsp",
+    "pack_bytes": 15017707776,
+    "pack_sha256": "80b719b982a5c8c473717ee2f6d2f146a066d276c1935e183a38c1de498f3130",
+    "spine_bytes": 522193152
+   }
+  ]
+ },
+ "schema_version": 1,
+ "spine_bytes": 8550066176,
+ "topology": "TP8xPP2",
+ "workspace_bytes": 268435456
+}

@@ -113,10 +113,14 @@ int main(void)
 	SparkWeightdLazyPack pack = {0};
 	uint32_t offsets[SPARK_GLM5_NEXT_MODEL_LAYER_COUNT * 289u] = {0},i,scenario;
 	cudaEvent_t event;
+	cudaStream_t stream;
 	check_manifest_geometry();
 	atomic_init(&state.lazy_retained[0],0);
+	assert(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess);
+	state.execution_stream = slot.stream = stream;
+	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,stream) == SPARK_STATUS_OK);
 	assert(cudaEventCreateWithFlags(&event,cudaEventDisableTiming) == cudaSuccess);
-	assert(cudaEventRecord(event,0) == cudaSuccess);
+	assert(cudaEventRecord(event,stream) == cudaSuccess);
 	for (i=0u; i<289u; i++) offsets[3u * 289u + i] = i == 0u ? 0u : (i <= 17u ? 4u : 8u);
 	state.lazy_pack = &pack;
 	slot.route_ready_event = event;
@@ -150,7 +154,9 @@ int main(void)
 			assert(SparkGlm5NextLazyRecoverLease(&state,0u,&recovered) == SPARK_STATUS_NOT_FOUND && recovered == 0);
 		}
 	}
+	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 	assert(cudaEventDestroy(event) == cudaSuccess);
+	assert(cudaStreamDestroy(stream) == cudaSuccess);
 	puts("PASS GLM lazy dispatch ordering and partial failure ownership (CUDA/map stubs)");
 	return(0);
 }

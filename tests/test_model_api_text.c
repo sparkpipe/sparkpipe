@@ -681,6 +681,26 @@ static void TestApiMissingAssetIsFatal(void)
 	printf("test_model_api_text: missing tokenizer asset refuses startup OK\n");
 }
 
+static void TestApiIdleWake(TestApiStack *stack)
+{
+	struct timespec delay = {0,120000000L};
+	struct timespec before,after;
+	char response[4096];
+	uint64_t elapsed_ns;
+	nanosleep(&delay,0);
+	assert(clock_gettime(CLOCK_MONOTONIC,&before) == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(clock_gettime(CLOCK_MONOTONIC,&after) == 0);
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(response,"\"tokens\":[4203,4200]") != 0);
+	elapsed_ns = ((uint64_t)after.tv_sec * UINT64_C(1000000000) + (uint64_t)after.tv_nsec) -
+		((uint64_t)before.tv_sec * UINT64_C(1000000000) + (uint64_t)before.tv_nsec);
+	assert(elapsed_ns < UINT64_C(2000000000));
+	printf("test_model_api_text: idle worker wakes for queued request in %llu us\n",
+		(unsigned long long)(elapsed_ns / 1000u));
+}
+
 int main(void)
 {
 	TestApiStack stack;
@@ -692,6 +712,7 @@ int main(void)
 		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
 	TestApiStartStack(&stack,0);
 	TestApiStartApi(&stack);
+	TestApiIdleWake(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiStopApi(&stack);
 	TestApiStopResidents(stack.residents,stack.paths);

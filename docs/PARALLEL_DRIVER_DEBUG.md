@@ -1,5 +1,8 @@
 # Parallel driver debugging
 
+Start with the [multideveloper quickstart](MULTIDEV_QUICKSTART.md) for the current
+controller, shared-daemon setup, lane assignments and model-specific boundaries.
+
 This is the shared workflow for every driver lane. Family code owns geometry,
 tensor descriptions and model math. Reuse stage_module_common for ownership,
 weightd for shared residency, the serving adapter/session lifecycle, the topology
@@ -27,7 +30,8 @@ never occur inside the state transaction. Lost launch acknowledgements
 are reconciled using the retained unit, not by blindly launching another process.
 Local transactions never wait for SSH; remote operations run concurrently with
 bounded timeouts. CPU tasks may overlap within their summed declared memory
-budget; GPU ownership remains exclusive per node. CPU tasks must use independent
+budget. `gpu` ownership remains exclusive; `gpu-shared` uses the explicit
+shared budget and live-owner checks below. CPU tasks must use independent
 outputs when they share a checkout. CPU and GPU ownership are independent. Exclusive jobs exclude
 both classes, and waiting exclusive jobs drain conflicting work before starting.
 
@@ -63,17 +67,19 @@ Use disjoint ports/socket paths for independent deployment roots.
 
 ## Commands
 
-Run from a clean checkout of merged main on the controller:
+Test a committed PR branch or main from the controller:
 
 ```sh
 python3 tools/spark_queue.py doctor
 python3 tools/spark_queue.py list
-python3 tools/spark_queue.py sync --id glm-flash-debug --nodes spark0
+python3 tools/spark_queue.py sync --id glm-flash-debug --nodes spark0 --ref HEAD
 ```
 
-sync clones the current clean main into a temporary source checkout, rsyncs it
-into a new node-local directory, verifies its Git identity and tracked content,
-then renames the completed directory. It prints the exact cwd template. Reusing
+sync resolves `--ref` (default committed HEAD) and clones that exact commit into
+an isolated detached checkout, rsyncs it into a new node-local directory, verifies
+its Git identity and tracked content, then renames the completed directory.
+Uncommitted working-tree changes are not included. PR commits can be tested
+before merge; the receipt names the source ref and exact commit. It prints the exact cwd template. Reusing
 an existing destination is an error; select a new lane ID. It copies committed
 source and Git metadata, not local build products or model packs.
 
@@ -142,11 +148,11 @@ contract identities, model/topology/rank, command, shapes, token positions,
 numerical reference and memory measurements. Compile, one-node numerical,
 multi-rank functional and fleet performance receipts are separate evidence.
 
-Deployment qualification follows merge, clean main installation on every
-participant, rebuild, restart, readiness and testing. Never describe dirty or
-unmerged builds as a main deployment receipt. Publish residentd, driver,
-adapter, transport and config coherently; replacing only model_driver.so is
-not a coherent release.
+Hardware testing precedes merge when validating a PR. Install the exact recorded
+commit in a separate test root, rebuild all changed components and validate it.
+A PR receipt identifies that revision; a main rollout receipt identifies its
+merged revision. Publish residentd, driver, adapter, transport and config
+coherently; replacing only model_driver.so is not a coherent release.
 
 The B1 plan uses all-rank fan-out and local reduction. B2+ uses tree reduction
 with compute overlap. Carry the logical batch policy across split chains:
@@ -185,9 +191,9 @@ validation, so a CPU-only queue reservation is insufficient.
 
 The script builds the host services, native transport, serving adapter and
 validated module, then compiles the model driver. Its local output is
-`build/glm53_release`, with `SOURCE_COMMIT` and relative
-`ARTIFACT_SHA256SUMS` for provenance. A failed build does not leave a current
-checksum receipt. Use `sha256sum -c ARTIFACT_SHA256SUMS` inside that directory
+`build/glm53_release` and `build/glm53_release.tar.gz`, with `SOURCE_COMMIT`
+and relative `SHA256SUMS` for provenance. A failed build does not leave a current
+checksum receipt. Use `sha256sum -c SHA256SUMS` inside that directory
 before assembling a deployment with its verified packs and topology config.
 
 The script no longer accepts a branch argument, resets a shared tree, stops
@@ -195,3 +201,73 @@ resident processes, writes to the hub or triggers fleet updates. Those old
 invocations fail explicitly. Build completion is not a deployment or serving
 qualification; deploy the coherent artifact through the queue-owned workflow
 and retain numerical and performance receipts separately.
+
+## Shared GPU inference jobs
+
+Use the same controller and ledger for every developer and persistent engine.
+`gpu-shared` requires both `--memory-mib TOTAL` and
+`--device-memory-mib DEVICE`. The host cgroup limit is TOTAL minus DEVICE;
+the queue reserves their sum, leaves 8192 MiB node headroom, checks current
+MemAvailable, and rejects unknown GPU owners or observed device usage above
+the declaration. Port ranges are reserved with repeated `--ports START:END`.
+
+Register an existing finite host service using `track --node spark0 --unit UNIT
+--scope system --device-memory-mib DEVICE --ports START:END`. Tracking retains
+the exact service invocation and cgroup; a restart or changed budget requires
+reconciliation. `preflight --nodes spark0 --memory-mib TOTAL
+--device-memory-mib DEVICE --ports START:END` reports blockers without launch.
+Cgroups on GB10 do not bound all CUDA allocations. Match the declared device
+budget to the exact model's finite KV/workspace/weight allocation plan and
+measure it during qualification. The census deliberately does not credit GPU
+memory a second time when its overlap with host charges is unknown.
+
+`tools/inference_smoke.py --spec JOB.json` runs inside an admitted queue job.
+It starts that rank's private weightd and residentd, exchanges only its own
+mesh records, and runs the real model_batch client on the coordinator. Every
+participant stays in its queue cgroup. Read-only peer file transfers do not
+launch remote inference. Completion requires exact reference tokens for every
+request, correct sequence/handle/token order and successful daemon shutdown.
+The existing benchmark wrapper records TTFT, per-sequence arrivals and the
+common decode window; these are stdout-observed timings, not GPU kernel time.
+
+A job specification supplies `hosts`, `deployment`, `batch`, `reference`,
+`port_base`, `port_map`, `environment`, `timeout_seconds` (at most840), and
+`budgets` containing `weightd_device_bytes`, `model_device_bytes`,
+`expert_pool_bytes`, `spine_bytes`. Multi-rank jobs also supply `mesh.interface`
+and `mesh.sgid_index`. All values describe the actual model and workload.
+The same specification is present in every synced participant checkout.
+
+Reserve base..base+2N-1 for transport/resident control and base+3N for the
+private weightd latch. `port_map` maps original model listener port strings
+to distinct reserved ports, including both session matrices and the draft
+bridge. Zero matrix entries remain zero. Every listener must be accounted
+for; an unknown listener field fails preparation. Peers and rail topology
+remain the deployment's declared participants.
+
+The reference contains model_id, model_revision, vocabulary_size,
+eos_token_ids, expected `tokens` keyed by request ID, batch_sha256,
+deployment_sha256, source_commit, exact environment, and hashes for the
+three executables under `executables`. Each `ranks` entry supplies
+model_device_bytes and an `assets` path-to-hash map. Include driver, adapter,
+transport, configuration, collective backend library, tokenizer assets when
+used, the pack digest sidecar and expert manifest. Pack bytes are shared
+read-only through private symlinks; per-job configuration, working-set files,
+mesh records, backing cache, sockets and logs live under the attempt root.
+Use a pinned independently qualified token reference; recording the candidate's
+own output is not numerical validation.
+
+Build the exact source and driver artifacts through the existing queue sync
+and family build path before submitting inference. A typical submission is:
+
+```sh
+python3 tools/spark_queue.py add --id MODEL-smoke-001 --nodes spark0,spark1 \
+  --per-node --resources gpu-shared --memory-mib TOTAL --device-memory-mib DEVICE \
+  --ports START:END --ttl-min 14 --cwd CHECKOUT --by DEVELOPER \
+  --cmd 'python3 tools/inference_smoke.py --spec JOB.json'
+```
+
+Inspect every rank's `/tmp/sparkqueue-ATTEMPT/receipt.json` and the queue's
+aggregate result. The coordinator's `inference.json` reports token comparison;
+only final receipts and queue cleanup establish full job completion. Private
+runtime roots are never reused. Host parser/lifecycle tests do not qualify
+concurrent GPU inference or establish a hard CUDA allocation limit.

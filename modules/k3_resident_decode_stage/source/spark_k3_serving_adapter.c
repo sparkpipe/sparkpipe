@@ -720,7 +720,11 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
 	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
 	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = 0u,
+	/* the KV page is the cache block: K3_KV_PAGE_SLOTS tokens per page
+	 * (inference/llms/kimi_k3/config.h; seam_config max_committed uses the
+	 * same product). The generic descriptor check fails closed on zero —
+	 * caught by the first resident launch, like the mesh-kernel symbol. */
+	.cache_block_token_count = SPARK_K3_KV_PAGE_SLOTS,
 	.parallel_group_size = 4u,
 };
 

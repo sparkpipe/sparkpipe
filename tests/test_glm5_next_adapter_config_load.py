@@ -60,14 +60,18 @@ static uint32_t ReleaseCount;
 static SparkStatus TestLifecycleAdmit(void *context,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
     uint32_t lane;
-    if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) == 0u )
+    if ( (request->frame_flags & (SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE | SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH)) == 0u )
         return(TestAdmit(context,request,decision));
     if ( request->new_token_count != 0u || request->cache_lane_count != 3u )
         return(SPARK_STATUS_SCHEMA_ERROR);
     for (lane=0u; lane<3u; lane++)
-        if ( request->cache_lanes[lane].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE )
+        if ( request->cache_lanes[lane].flags != ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH) != 0u ? SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH : SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE) )
             return(SPARK_STATUS_SCHEMA_ERROR);
     ReleaseCount++;
+    decision->driver_dispatch_slot = 0u;
+    decision->driver_dispatch_generation = request->control_generation;
+    decision->driver_dispatch_cookie0 = request->transaction_id;
+    decision->driver_dispatch_cookie1 = request->submission_id;
     decision->accepted = 1u;
     decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
     return(SPARK_STATUS_OK);
@@ -115,7 +119,7 @@ static int32_t TestSubmitBorrowedRows(SparkGlm5NextServingState *state)
     return(0);
 }
 
-static int32_t TestSubmitRelease(SparkGlm5NextServingState *state)
+static int32_t TestSubmitControl(SparkGlm5NextServingState *state,uint32_t kind)
 {
     SparkModelServingSubmission submissions[2] = {0};
     SparkModelServingLane lanes[3] = {0};
@@ -123,12 +127,17 @@ static int32_t TestSubmitRelease(SparkGlm5NextServingState *state)
     TestBuildSubmissions(submissions,lanes);
     submissions[0].request_id = submissions[0].sequence_id = 100u;
     submissions[0].dispatch_generation = 1u;
-    submissions[0].work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+    submissions[0].work_kind = kind;
     submissions[0].tokens_per_sequence = submissions[0].new_token_count = 0u;
     for (row=0u; row<3u; row++)
     {
         lanes[row].request_id = 100u + row;
-        lanes[row].flags = 0u;
+        lanes[row].flags = kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH : 0u;
+        if ( kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+        {
+            lanes[row].context_token_count = lanes[row].cache_publish_token_count = (uint32_t)lanes[row].sequence_position;
+            lanes[row].cache_publish_identity.sha256[0] = (uint8_t)(row + 1u);
+        }
         lanes[row].cache_prefix_token_count = 0u;
         memset(&lanes[row].cache_prefix_identity,0,sizeof(lanes[row].cache_prefix_identity));
     }
@@ -137,6 +146,13 @@ static int32_t TestSubmitRelease(SparkGlm5NextServingState *state)
     memset(&DeferredCompletion,0xff,sizeof(DeferredCompletion));
     if ( SparkGlm5NextServingSubmit(state,submissions) != SPARK_STATUS_OK )
         return(-9);
+    if ( kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+    {
+        SparkModelDriverCompletion complete = {.request_id=100u,.sequence_id=100u,.sequence_position=64u,.program_id=1u};
+        if ( DeferredFrame == 0 || DeferredFrame->new_token_count != 0u || DeferredFrame->flags != (SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH | SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) || ReleaseCount != 1u || state->pending[0].active == 0u ) return(-31);
+        DeferredFrame->completion_function(DeferredFrame->completion_context,&complete);
+        DeferredFrame = 0;
+    }
     if ( ReleaseCount != 1u || DeferredFrame != 0 || state->pending[0].active != 0u )
         return(-10);
     if ( DeferredCompletion.status != SPARK_STATUS_OK || DeferredCompletion.token_count != 0u || DeferredCompletion.tokens_per_sequence != 0u || DeferredCompletion.accepted_token_count != 0u || DeferredCompletion.completion_flags != 0u )
@@ -216,7 +232,8 @@ static int32_t TestDeferredFrameLifetime(void)
     DeferredFrame->completion_function(DeferredFrame->completion_context,&completion);
     if ( pending->active != 0u || DeferredCompletion.status != SPARK_STATUS_OK || DeferredCompletion.token_count != 3u || DeferredCompletion.token_ids[2] != 22u )
         return(-8);
-    return(TestSubmitRelease(&state));
+    if ( TestSubmitControl(&state,SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH) != 0 ) return(-30);
+    return(TestSubmitControl(&state,SPARK_MODEL_SERVING_WORK_KIND_RELEASE));
 }
 
 static uint32_t ResetCalls,ResetSnapshotActive;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sparkpipe/llm_defines.h"
+#include "llm_defines.h"
 
 #define SPARK_LING_MODEL_HIDDEN_DIMENSION SPARK_LLM_HIDDEN_DIMENSION
 #define SPARK_LING_MODEL_LAYER_COUNT SPARK_LLM_LAYER_COUNT

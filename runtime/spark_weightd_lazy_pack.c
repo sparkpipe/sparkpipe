@@ -55,6 +55,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const SparkWeightdLazyAttachRequest *request,uint64_t budget)
 {
 	uint64_t bytes = pack->manifest.spine_allocation_bytes;
+	SparkStatus status;
 	if ( bytes != 0u )
 	{
 		if ( bytes > (SIZE_MAX - 255u) || (bytes + 255u) > budget )
@@ -63,6 +64,21 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 		if ( cudaMalloc(&pack->spine_allocation,(size_t)pack->spine_allocation_bytes) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
+	}
+	/* Prong 2 (hill-climb): when the pool is mapped, the spine spans are
+	 * device-readable in the arena image at their file offsets - copy
+	 * device-to-device from the daemon's VERIFIED materialization instead
+	 * of re-reading the pack file (removes the page-cache dependence that
+	 * degrades evicted-cold starts). Programming errors propagate; an
+	 * unmapped pool or a copy fault falls back to the proven file path,
+	 * which rewrites exactly the same span bytes. */
+	if ( pack->map != 0 )
+	{
+		status = SparkWeightdMapSpineCopy(pack->map,&pack->manifest,pack->spine,bytes);
+		if ( status == SPARK_STATUS_OK )
+			return(SPARK_STATUS_OK);
+		if ( status != SPARK_STATUS_UNSUPPORTED && status != SPARK_STATUS_IO_ERROR )
+			SPARK_RETURN(status);
 	}
 	return(SparkWeightdSpineLoad(fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
 }
@@ -93,6 +109,21 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
+	/* Map before the spine load (hill-climb prong 2): with the pool
+	 * mapped, lazy_spine_load copies the spine device-to-device from the
+	 * daemon's verified arena image instead of re-reading the pack file.
+	 * Destroy-on-failure already covers a map created before a later
+	 * spine fault (SparkWeightdLazyPackCreateChecked destroys the pack). */
+	{
+		int epoch_fd = -1;
+		(void)SparkWeightdClientEpochExport(pack->client,
+		    pack->attached.arena_generation,&epoch_fd,timeout);
+		status = SparkWeightdMapCreate(pack->client,
+		    &pack->attached,epoch_fd,
+		    pack->attached.pool_fd,&pack->map);
+	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = lazy_spine_load(pack,fd,request,budget);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -109,17 +140,6 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 			status = SPARK_STATUS_HASH_MISMATCH;
 		}
 	}
-	if ( status == SPARK_STATUS_OK )
-		{
-			int epoch_fd = -1;
-			(void)SparkWeightdClientEpochExport(pack->client,
-			    pack->attached.arena_generation,&epoch_fd,timeout);
-			{
-				status = SparkWeightdMapCreate(pack->client,
-				    &pack->attached,epoch_fd,
-				    pack->attached.pool_fd,&pack->map);
-			}
-		}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdWorkerCreate(&pack->worker);
 	SPARK_RETURN(status);

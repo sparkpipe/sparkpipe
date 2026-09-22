@@ -1,3 +1,3 @@
 #pragma once
 
-#include "sparkpipe/llm_defines.h"
+#include "llm_defines.h"

@@ -1,0 +1,29 @@
+{
+  "attempt": "76dbd15ed4154c38a49cef183513a116",
+  "source_commit": "44fe4af719daeb5ad3ecaacd78daed5247067fb4",
+  "classification": "runtime initialization failure; mixed-topology numerical qualification not executed",
+  "totals": {
+    "nodes_failed": 16,
+    "ladder_ready": 34,
+    "cuda_host_register_failures": 15,
+    "rounds": 0,
+    "done": 0
+  },
+  "first_observed_failure": {
+    "host": "spark0",
+    "lane": 1,
+    "message": "MESH-REGISTER-FAIL ptr=0xec5db2fd0000 region_bytes=134283264 cuda=1 (invalid argument)",
+    "primary_error": "LADDER-FAIL phase=collective-prepare status=io_error"
+  },
+  "production_defect": {
+    "file": "runtime/spark_weightd.c",
+    "lines": [
+      3824,
+      3844
+    ],
+    "description": "mmap MAP_SHARED fd offset0 receives system-page-aligned raw address; returning align_up(raw,65536) shifts file offset by delta. With exact region-sized memfd, returned full-region interval extends delta past EOF. No MAP_FIXED/remap restores file offset0.",
+    "daemon_extent": "node/weightd_mesh.c:785 ftruncate(memfd,SPARK_WEIGHTD_MESH_REGION_BYTES)",
+    "cuda_failure_causality": "Strong source-level explanation consistent with observed registration failures. Raw mmap address was not logged, so per-failed-process alignment delta is not captured."
+  },
+  "scope": "No GPU relaunch or source edits. Evidence retained verbatim per host; top-level cleanup failure is secondary to primary_error."
+}

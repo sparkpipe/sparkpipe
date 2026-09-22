@@ -79,14 +79,12 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *context_lengths;
 	uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
-	/* Multi-row runs (chunked prefill): consecutive wave rows of one
-	 * resident slot form a single sequential run through the KDA
-	 * recurrence. Run structure is staged per wave like the row arrays;
-	 * run_count+1 begin entries, run_count slot-keyed state indices. */
 	uint32_t *host_run_begin;
 	uint32_t *host_run_state_index;
+	uint32_t *host_run_row_indices;
 	uint32_t *run_begin;
 	uint32_t *run_state_index;
+	uint32_t *run_row_indices;
 	uint16_t *hidden_bf16;
 	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
@@ -174,6 +172,7 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t resident_sequence_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pages_per_sequence;
+	uint32_t physical_page_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	uint32_t sideband_input;
@@ -217,15 +216,13 @@ typedef struct SparkGlm5NextCudaWave
 	uint64_t kda_window_layer_stride_bytes;
 	const uint32_t *kda_ordinal_by_local_layer;
 	const uint32_t *kda_state_index;
-	/* Run structure for this wave (device arrays, staged by the module):
-	 * sequence_row_begin[run_count+1] row ranges, run_state_index[run_count]
-	 * resident-slot state keys. Decode = run per row; a same-slot chunk is
-	 * one multi-row run through the recurrence kernels. */
 	uint32_t run_count;
 	const uint32_t *sequence_row_begin;
 	const uint32_t *run_state_index;
+	const uint32_t *sequence_row_indices;
 	const uint32_t *host_sequence_row_begin;
 	const uint32_t *host_run_state_index;
+	const uint32_t *host_sequence_row_indices;
 	uint32_t commit;
 	uint32_t execution_row_capacity;
 	uint32_t kda_layer_count;

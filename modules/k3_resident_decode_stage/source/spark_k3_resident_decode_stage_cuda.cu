@@ -6,6 +6,15 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
 
+/* The weightd-mesh device kernels (extern "C" launchers named for the GLM
+ * pattern that first validated them). ring/transport/tp_device_collective.c
+ * — pulled into every serving adapter whose runner creates a device
+ * collective — calls these, so each family's CUDA TU must instantiate them
+ * into its own .so or dlopen fails closed on the undefined symbol (the
+ * compile gates never dlopen; first resident launch is what catches it).
+ * Same include as the glm5_next/gemma4/ling modules. */
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
+
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,

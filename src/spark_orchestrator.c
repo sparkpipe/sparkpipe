@@ -406,10 +406,11 @@ SparkStatus SparkOrchestratorResolveRoute(
                      strcmp(compiled_program_sha256, descriptor->compiled_program_sha256) != 0)
             {
                 fprintf(stderr,
-                    "spark_orchestrator mixed_versions model_id=%s revision=%s stage=%s program=%s first_sha=%s driver_sha=%s\n",
+                    "spark_orchestrator mixed_versions model_id=%s revision=%s stage=%s program=%s first_model_sha=%s driver_model_sha=%s first_program_sha=%s driver_program_sha=%s\n",
                     model_id, model_revision, stage_name, program_name,
-                    model_description_sha256,
-                    descriptor->model_description_sha256);
+                    model_description_sha256, descriptor->model_description_sha256,
+                    compiled_program_sha256, descriptor->compiled_program_sha256);
+                SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
             }
             endpoint_count += 1u;
         }

@@ -1,0 +1,102 @@
+{
+ "schema_version": 1,
+ "model_id": "XiaomiMiMo/mimo-v2.6-pro-rl",
+ "architecture": "MiMoV2ForCausalLM (hybrid full/sliding-window GQA, MoE; text stack of the multimodal RL checkpoint)",
+ "sources": {
+  "host_geometry": "model-families/mimo26/include/sparkpipe/spark_mimo26_pro_model.h, derived 2026-09-22 from the released config.json, modeling_mimo_v2.py and the safetensors shard headers (ranged header reads - exact dtypes and shapes, not inference)",
+  "census": "model-families/mimo26/census/pro_census.json",
+  "census_sha256": "7600a87761b6976518a7c31b85ba62cc419595338a1517d1c867efe2fdd11f24",
+  "contract_note": "transcribed from the family header and census so tools/generate_recipe.py has one authoritative JSON per served model; the header remains the ground truth the C side compiles against and tests/test_mimo26_census.py binds the two",
+  "precision_policy": "routed experts MXFP4 (e2m1 weights, e8m0 scales, 32-element blocks) exactly as trained; fp8 e4m3 linear weights with F32 scale_inv per [128,128] block; o_proj, embeddings, lm_head, norms and sink biases BF16 byte-identical to source; router gate and bias BF16/F32 as stored; GEMM accumulation FP32; NO requantization anywhere"
+ },
+ "model": {
+  "hidden_dimension": 6144,
+  "layer_count": 70,
+  "vocabulary_size": 152576,
+  "maximum_context_tokens": 1048576,
+  "rms_norm_epsilon": 1e-05,
+  "first_dense_layer": 0,
+  "dense_intermediate_dimension": 16384,
+  "mtp_layer_count": 3
+ },
+ "hybrid_attention": {
+  "full_layer_count": 10,
+  "swa_layer_count": 60,
+  "full_layer_indices": [
+   0,
+   7,
+   15,
+   23,
+   31,
+   39,
+   47,
+   55,
+   62,
+   69
+  ],
+  "sliding_window_tokens": 128,
+  "layer_kind_note": "SPARK_MIMO26_PRO_MODEL_LAYER_KIND in the family header; sink-bias tensor count 60 equals the SWA layer count"
+ },
+ "attention": {
+  "query_head_count": 128,
+  "head_dimension": 192,
+  "value_head_dimension": 128,
+  "full_kv_head_count": 8,
+  "swa_kv_head_count": 8,
+  "rope_dimension": 64,
+  "rope_convention": "half_split_rotate_half_first_dims",
+  "full_rope_theta": 10000000,
+  "swa_rope_theta": 10000,
+  "cached_value_scale": 0.612,
+  "swa_sink_bias": true,
+  "full_sink_bias": false,
+  "full_qkv_rows": 27136,
+  "swa_qkv_rows": 27136,
+  "o_input_dimension": 16384
+ },
+ "moe": {
+  "routed_expert_count": 384,
+  "experts_per_token": 8,
+  "shared_expert_count": 0,
+  "expert_intermediate_dimension": 2048,
+  "routed_scaling_factor": 1.0,
+  "router_activation": "sigmoid",
+  "router_bias": "e_score_correction_bias",
+  "router_norm_epsilon": 1e-20,
+  "norm_topk_prob": true,
+  "routing_weight_position": "expert_output"
+ },
+ "precision": {
+  "linear_weight_format": "fp8_e4m3_block_128x128",
+  "scale_format": "f32_scale_inv",
+  "fp8_scale_block": 128,
+  "qkv_scale_row_rule": "measured per-arm constants (block-128 scale_inv grids; the upstream emitter's row padding is not a clean closed form, so the module and packer pin the measured values: pro 216/216, flash 108/116)",
+  "routed_expert_format": "mxfp4_e2m1_e8m0_block32",
+  "expert_scale_block": 32,
+  "non_linear_weight_format": "bf16",
+  "router_format": "bf16",
+  "accumulator_format": "fp32",
+  "qkv_scale_rows": {
+   "full": 216,
+   "swa": 216
+  }
+ },
+ "cache": {
+  "kv_element_bits": 16,
+  "kv_element_source": "KV is cached pre-scaled BF16 (value scale folded before the cache write); SWA layers cache 128-token windows only"
+ },
+ "served": {
+  "topology": "tp8",
+  "spine_bytes": 28270757376,
+  "expert_payload_bytes": 531351207936,
+  "expert_gib": 494.859,
+  "spine_gib": 26.329
+ },
+ "out_of_scope_regions_v1": {
+  "note": "documented with byte ranges in the census, retained in source, not stripped; the v1 driver serves the non-speculative text tower only",
+  "mtp_head_bytes": 2463635712,
+  "vision_tower_bytes": 1478160384,
+  "audio_encoder_bytes": 0,
+  "speech_embeddings_bytes": 0
+ }
+}

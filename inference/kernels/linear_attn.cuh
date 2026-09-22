@@ -145,14 +145,14 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
 __global__ __launch_bounds__(THREADS, 1)
-void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit)
+void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
 {
 	extern __shared__ float state_s[];
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_query[KEY_DIM];
 	__shared__ float norm_reduction[2u * (THREADS / LM_WARP_LANES)];
 	__shared__ float shared_predicted[VALUE_DIM];
-	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat;
+	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat,ordinal;
 	State *state;
 	float beta,key_inverse,query_inverse;
 	if ( sequence >= sequences || head >= key_heads )
@@ -166,8 +166,9 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
 	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
 		state_s[flat] = LmScalarToFloat(state[flat]);
-	for (row = begin; row < end; ++row)
+	for (ordinal = begin; ordinal < end; ++ordinal)
 	{
+		row = sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal;
 		const float *forget = forget_gate + ((((uint64_t)row * key_heads) + head) * KEY_DIM);
 		beta = write_gate[(row * key_heads) + head];
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
@@ -244,10 +245,10 @@ enum LmConvActivation
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
 {
 	uint32_t sequence = blockIdx.x,channel = (blockIdx.y * THREADS) + threadIdx.x;
-	uint32_t begin,end,row,tap;
+	uint32_t begin,end,row,tap,ordinal;
 	uint16_t taps[KERNEL];
 	uint16_t *slot;
 	if ( sequence >= sequences || channel >= channels )
@@ -259,8 +260,9 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 	slot = window + ((uint64_t)state_index[sequence] * channels * KERNEL);
 	for (tap = 0u; tap < KERNEL; ++tap)
 		taps[tap] = slot[(channel * KERNEL) + tap];
-	for (row = begin; row < end; ++row)
+	for (ordinal = begin; ordinal < end; ++ordinal)
 	{
+		row = sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal;
 		float total = 0.0f;
 		for (tap = 0u; tap + 1u < KERNEL; ++tap)
 			taps[tap] = taps[tap + 1u];

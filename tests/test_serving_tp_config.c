@@ -95,6 +95,21 @@ static SparkStatus load_shape(const char *text,const SparkTpCollectiveConfigPoli
 	return(status);
 }
 
+static SparkStatus load_algorithms(const char *algorithms,
+	const SparkTpCollectiveConfigPolicy *policy,
+	SparkTpCollectiveAdapterConfig *config)
+{
+	const char *first,*last;
+	char text[2048];
+	first = strstr(SHAPE_LING,"[\"recursive_doubling\",\"direct_all_to_all\"]");
+	if ( first == 0 || (last = strchr(first,']')) == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( snprintf(text,sizeof(text),"%.*s%s%s",(int)(first - SHAPE_LING),
+	        SHAPE_LING,algorithms,last + 1) >= (int)sizeof(text) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(load_shape(text,policy,config));
+}
+
 static void expect_ling_laguna_identical(
 	const SparkTpCollectiveAdapterConfig *ling,
 	const SparkTpCollectiveAdapterConfig *laguna)
@@ -163,6 +178,21 @@ int32_t main(void)
 	expect_status("laguna_shape_loads",status,SPARK_STATUS_OK);
 	if ( status == SPARK_STATUS_OK )
 		expect_ling_laguna_identical(&ling,&laguna);
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET;
+	expect_status("all_known_algorithms_load",load_algorithms(
+		"[\"tree\",\"recursive_doubling\",\"direct_all_to_all\",\"counter_rotating_split_ring\"]",
+		&policy,&glm52),SPARK_STATUS_OK);
+	expect_true("all_known_algorithms_preserved",
+		glm52.topology.algorithm_mask == SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS);
+	expect_status("duplicate_known_algorithm_rejected",load_algorithms(
+		"[\"tree\",\"recursive_doubling\",\"direct_all_to_all\",\"counter_rotating_split_ring\",\"tree\"]",
+		&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
+	expect_status("incomplete_known_algorithms_rejected",load_shape(
+		SHAPE_LING,&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
+	expect_status("duplicate_adaptive_algorithm_rejected",load_algorithms(
+		"[\"recursive_doubling\",\"direct_all_to_all\",\"recursive_doubling\"]",
+		&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
 	policy.allow_zero_collective_identifier = 1u;

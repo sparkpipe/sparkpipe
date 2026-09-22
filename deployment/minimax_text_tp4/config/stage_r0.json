@@ -1,0 +1,7 @@
+{
+ "schema_version": 3,
+ "model_revision": "minimax-h3-text-bf16-h5120-l64-mrope24-20-20-tp4-v1",
+ "stage_pack_path": "packs/minimax.text.bf16.tp4.rank0.mntx",
+ "max_sequence_positions": 8192,
+ "tp_degree": 4
+}

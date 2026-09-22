@@ -1,0 +1,38 @@
+{
+  "binary_sha256": "2139eff5fc2458dae58b6bd698c8ef7f7c3e70b60cc0e283ccea163941bd8076",
+  "processes": [
+    {
+      "index": 0,
+      "pid": 2713063,
+      "exit": 0,
+      "stdout": "iterations=50000 success_followed_by_not_ready=0\n",
+      "stderr": "",
+      "proc_absent": true
+    },
+    {
+      "index": 1,
+      "pid": 2713062,
+      "exit": 0,
+      "stdout": "iterations=50000 success_followed_by_not_ready=0\n",
+      "stderr": "",
+      "proc_absent": true
+    },
+    {
+      "index": 2,
+      "pid": 2713060,
+      "exit": 0,
+      "stdout": "iterations=50000 success_followed_by_not_ready=0\n",
+      "stderr": "",
+      "proc_absent": true
+    },
+    {
+      "index": 3,
+      "pid": 2713061,
+      "exit": 0,
+      "stdout": "iterations=50000 success_followed_by_not_ready=0\n",
+      "stderr": "",
+      "proc_absent": true
+    }
+  ],
+  "seconds": 18.064405996003188
+}

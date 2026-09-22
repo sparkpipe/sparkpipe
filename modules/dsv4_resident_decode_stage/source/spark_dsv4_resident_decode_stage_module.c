@@ -5983,12 +5983,19 @@ static void SparkDsv4ModuleSnapshotExtend(
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
 }
 
-static void SparkDsv4ModuleStateTeardown(void *module_state)
+static SparkStatus SparkDsv4ModuleStateTeardown(void *module_state)
 {
     SparkDsv4ModuleState *state;
 	uint32_t slot_index,admission_index;
 
     state = (SparkDsv4ModuleState *)module_state;
+	if ( state->tp_device_collective_initialized != 0u )
+	{
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_device_collective_initialized = 0u;
+	}
 	if ( state->weightd_outcome.client != 0 || state->weightd_outcome.map_base != 0 )
 	{
 		SparkWeightdAttachRelease(&state->weightd_outcome);
@@ -6061,11 +6068,6 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
 		(void)cudaFreeHost(state->kv_page_store_staging);
 		state->kv_page_store_staging = 0;
 	}
-	if ( state->tp_device_collective_initialized != 0u )
-	{
-		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
-		state->tp_device_collective_initialized = 0u;
-	}
 	if ( state->tp_host_credit_send_bf16 != 0 )
 		(void)cudaFreeHost(state->tp_host_credit_send_bf16);
 	if ( state->tp_host_credit_receive_bf16 != 0 )
@@ -6080,6 +6082,7 @@ static void SparkDsv4ModuleStateTeardown(void *module_state)
 		(void)pthread_mutex_destroy(&state->cache_mutex);
 		state->cache_mutex_initialized = 0u;
 	}
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkDsv4ModuleDescribe(

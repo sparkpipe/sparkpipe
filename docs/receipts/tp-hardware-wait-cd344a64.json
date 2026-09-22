@@ -1,0 +1,40 @@
+{
+  "source_commit": "cd344a64440d075552a7f4eb3e3e01c830ef4b7d",
+  "commands": {
+    "receiver": "cd /tmp/sparkpipe-hw-rdma-cd344a64 && timeout 35s python3 tools/tp_stream_memop_probe.py --run --rdma-receive --memfd --ib-device rocep1s0f0 --ib-port 1 --gid-index 3 --address 10.10.200.0 --tcp-port 49387 --iterations 8",
+    "sender": "cd /tmp/sparkpipe-hw-rdma-cd344a64 && timeout 35s python3 tools/tp_stream_memop_probe.py --run --rdma-send --ib-device rocep1s0f0 --ib-port 1 --gid-index 3 --address 10.10.200.0 --tcp-port 49387 --iterations 8"
+  },
+  "sender_exit": 0,
+  "receiver_exit": 0,
+  "elapsed_seconds": 2.0768250830005854,
+  "receiver_output": "mapping=memfd-shared-portable-mapped registration_bytes=8192\ngraph_nodes=91 updates=1000 ns_per_replay=4249.49 ns_per_node=46.70 gpu_launches=0\nRDMA-LISTEN address=10.10.200.0 port=49387 device=rocep1s0f0 ib_port=1 gid=3\nPASS delayed-ready stale-generation cancellation-before-release recovery; gpu_launches=24 payload_bytes=4096 network_visibility=NIC-to-mapped-host-GPU\n",
+  "sender_output": "PASS RDMA sender trials=24 source_reuse=all_signaled_completions cuda_contexts=0\n",
+  "source_sha256": "e044fd958a4187a8b63284571ce48c1ed38e51d33c06322fefa10e0d88d5f25c",
+  "wrapper_sha256": "1316b5443f05e61f1588b5d0b5bd7410113a41c3338c1c4cf948f8a346cfcb14",
+  "receiver_binary_sha256": "3064edc6f2e8759df9d88b896e8afee13bdc05a15ad7c8c9f65bb283b68b5cc5",
+  "sender_binary_sha256": "a6048bc899ae09637c959aa60bf376faea2d4408ab26a220362f706e5a219776",
+  "local": {
+    "output": "mapping=memfd-shared-portable-mapped registration_bytes=8192\ngraph_nodes=91 updates=1000 ns_per_replay=4078.29 ns_per_node=44.82 gpu_launches=0\nPASS delayed-ready stale-generation cancellation-before-release recovery; gpu_launches=3 payload_bytes=4096 network_visibility=unqualified\n",
+    "exit_code": 0
+  },
+  "negative_control": {
+    "output": "FAIL assertion line=478 errno=2\nmapping=memfd-shared-portable-mapped registration_bytes=8192\ngraph_nodes=91 updates=1000 ns_per_replay=4344.45 ns_per_node=47.74 gpu_launches=0\n",
+    "exit_code": 1,
+    "source_sha256": "25107f4073902d8f287ad6366b96d5cd36950946a7b25dc7359d26c82a6080f6",
+    "binary_sha256": "4af9ebf224cfbcdb014850bb67d1701988989dc3ef850bea713bc318ab09a9d2",
+    "mutation": "Replace EQ waits with GEQ zero; fail incomplete-stream assertion after GPU entry"
+  },
+  "existing_cuda_processes_before_and_after": [
+    {
+      "pid": 614456,
+      "process": "sparkpipe_weightd",
+      "used_memory_mib": 20874
+    },
+    {
+      "pid": 1539682,
+      "process": "sparkpipe_model_residentd",
+      "used_memory_mib": 11195
+    }
+  ],
+  "scope": "Local memfd registration and one RC RDMA link; no allreduce, model parity or inference throughput claim"
+}

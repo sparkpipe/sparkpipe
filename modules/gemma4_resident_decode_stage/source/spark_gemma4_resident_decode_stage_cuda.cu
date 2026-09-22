@@ -267,6 +267,18 @@ static __global__ void SparkGemma4HeadMaxLocUnpackKernel(const uint64_t *keys_u6
 	token_ids_u32[row] = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID - (uint32_t)keys_u64[row];
 }
 
+extern "C" uint32_t SparkGemma4HeadDirectArgmaxScratchElements(uint32_t rows)
+{
+	return(rows * SPARK_LM_HEAD_FALLBACK_CHUNK_COUNT);
+}
+
+extern "C" cudaError_t SparkGemma4LaunchHeadDirectArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, void *scratch, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count)
+{
+	return(SparkLmHostLaunchHeadDirectArgmaxWithScore(stream,hidden_bf16,head_weight_bf16,
+		scratch,candidate_counts,output_token_ids,output_scores,candidate_offset,
+		row_count,candidate_count,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION));
+}
+
 extern "C" cudaError_t SparkGemma4LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
 {
 	SparkGemma4HeadMaxLocPackKernel<<<row_count,1u,0,stream>>>(scores_f32,token_ids_u32,keys_u64,row_count);

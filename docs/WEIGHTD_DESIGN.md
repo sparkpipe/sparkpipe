@@ -22,6 +22,43 @@ is the module library's runtime twin — content-addressing throughout.
 READ-ONLY EXPORT: VMM access flags map consumers read-only (the
 marketplace tenant-scribble protection for free).
 
+## Concurrent GLM mesh reservations
+
+Weightd IPC ABI 7 extends the existing `LANE_ACQUIRE` request with an exact
+`requested_lane`. Each lane owns two mesh bands. A coordinator must assign a
+unique lane from 0 through 7 to each concurrent GLM job and set
+`SPARK_WEIGHTD_LANE` to that same value on every participating rank. Local
+first-free allocation alone is insufficient: reversed job startup order on two
+hosts can otherwise assign one job different bands.
+
+An occupied explicit lane returns `NO_LANE`; it never redirects to another
+lane. A second acquire on an owning connection returns `DUPLICATE`, preserving
+its original reservation. The client validates that the returned lane matches
+its request. GLM logs mode, requested lane, resolved lane, capacity and rank.
+The multi-job runner checks every rank's log. An absent environment variable
+retains the existing automatic single-job mode and logs it explicitly; an
+empty or malformed value fails initialization.
+
+The shared device collective now acquires its reservation through its existing
+weightd connection. All single-collective model families inherit this behavior;
+logical collective identifiers no longer select mesh bands by their low bits.
+GLM lends its existing reservation to its main and HC collectives, with separate
+band bindings. Binding rejects an unreserved owner, another daemon generation
+or a duplicate band. Common teardown releases bindings only after stream and
+registration cleanup; borrowed reservations remain with their caller.
+
+Normal GLM teardown keeps its reservation until collective drain and cleanup
+succeed. Closing one idle owner releases only its lane. An unexpected active
+producer disconnect retains the existing daemon-wide orphan fence, including
+new lane acquisition, because GPU drain is unproven. This is fail-closed
+behavior, not independent crash recovery for other jobs. Lane reservation does
+not partition the shared expert-memory budget.
+
+`test_weightd_mesh_mock` runs two actual IPC servers with reversed 2-, 3- and
+4-job startup order across 24 seeded lane permutations, plus capacity,
+occupied/duplicate rejection, neighbor retention and reuse. CUDA and verbs are
+host mocks; concurrent real-model inference needs a separate fleet receipt.
+
 ## The perf notes (preserved verbatim from the analysis)
 
 - Consumers' kernels read the same physical DRAM pages — zero copies
@@ -73,6 +110,36 @@ W3 fleet integration: the registrar's GO gains weightd-healthy;
   the wave tools attach instead of load; the qualification gates
   re-run on attached-arena serving (determinism must be identical).
 W4 multi-family + the multi-topology operational win.
+
+## Shared mesh topology profiles
+
+Weightd IPC ABI 8 carries the logical-to-physical rank map with the existing
+lane reservation. The coordinator assigns one lane in 0–7 and one ordered
+`SPARK_TP_MESH_RANKS` list to every rank of a job before launching it. For
+example, TP4 on physical hosts 4–7 uses `4,5,6,7`; logical rank 2 must run on
+physical host 6. The list must have exactly the collective degree, contain
+unique physical ranks in 0–15, and match the daemon's physical rank and
+configured participant mask. Omitting the list selects explicit identity;
+an invalid explicit list fails. Startup logs the resolved map and physical
+peer mask. TP groups with different mappings require separate lane profiles.
+
+Each daemon fixes a lane's topology on its first configured reservation.
+Changing its root, membership, order or degree returns `UNSUPPORTED`, even
+while idle. Changing profiles requires draining all dependent residents and
+starting a fresh daemon. A healthy same-profile restart preserves source
+tags and request watermarks and must wait for that lane's activity,
+doorbells, hardware gates and transfer completions to drain. Outstanding raw
+mesh RPC writes conservatively block all lane reconfiguration. A null
+reservation topology is allocation-only and cannot begin GPU mesh activity.
+
+GPU slot indices, peer tails and doorbells remain logical. The existing
+transport selects physical QPs from the reserved map, and common host
+control broadcasts use physical masks. Chain publication sends the exact
+packed map and degree in the existing BASE cell before its ordered key;
+peers reject a different topology before adopting that key. Borrowed main
+and HC clients must match their owner's full topology. None of these shared
+host checks qualifies an individual model's math or GPU serving path; those
+still require its numerical and inference gates.
 
 ## The lazy expert arena (2026-09, shipped)
 

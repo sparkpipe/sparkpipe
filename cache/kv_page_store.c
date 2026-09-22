@@ -611,6 +611,42 @@ SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store)
 	SPARK_RETURN(status);
 }
 
+SparkStatus SparkKvPageStoreCopyResidentPage(
+	SparkKvPageStore *store,
+	const SparkKvCacheBlockView *source,
+	const SparkKvCacheBlockView *destination)
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	uint8_t *staging;
+	if ( SparkKvPageStoreIsValid(store) == 0u || source == 0 || destination == 0 ||
+		(source->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+		(destination->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+		source->key_block_stride_bytes > store->page_bytes ||
+		source->value_block_stride_bytes != store->page_bytes - source->key_block_stride_bytes ||
+		destination->key_block_stride_bytes != source->key_block_stride_bytes ||
+		destination->value_block_stride_bytes != source->value_block_stride_bytes )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	for (index=0u; index<store->transfer_capacity; index++)
+		if ( worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_QUEUED || worker->jobs[index].state == SPARK_KV_PAGE_STORE_JOB_ACTIVE )
+			status = SPARK_STATUS_BUSY;
+	staging = (uint8_t *)store->staging_address;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,source->key_device_address,staging,source->key_block_stride_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,source->value_device_address,staging + source->key_block_stride_bytes,source->value_block_stride_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,destination->key_device_address,staging,destination->key_block_stride_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageStoreCopy(store,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,destination->value_device_address,staging + source->key_block_stride_bytes,destination->value_block_stride_bytes);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	SPARK_RETURN(status);
+}
+
 static SparkKvPageStoreJob *SparkKvPageStoreFindJob(
 	SparkKvPageStoreWorker *worker,
 	uint32_t direction,

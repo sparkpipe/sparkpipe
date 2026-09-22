@@ -1,0 +1,46 @@
+{
+ "schema_version": 2,
+ "@comment": "Shared-socket family deployment template, extracted from the validated GLM5.3-flash TP16 deployment (deployment/glm5_next_tp16/model_resident.json, PR #1082 receipts). One nodes[] entry per rank, rank_index strictly ordered from 0; the wrapper rewrites runtime_root, kv_backing_directory, control/transport ports into the lane's reserved ranges before launch. Replace every @PLACEHOLDER@; never commit a privatized copy.",
+ "eos_token_ids": [@EOS_TOKEN_IDS@],
+ "coordinator_rank_index": 0,
+ "adapter": {
+  "shared_object_path": "lib/@FAMILY@_model_serving_adapter.so"
+ },
+ "driver": {
+  "shared_object_path": "stages/stage_000/@FAMILY@_model_driver.so",
+  "program_name": "@PROGRAM_NAME@"
+ },
+ "transport": {
+  "shared_object_path": "lib/hidden_transport.so",
+  "mode": "host-rdma",
+  "control_port_base": @TRANSPORT_PORT_BASE@
+ },
+ "weightd": {
+  "socket_path": "@WEIGHTD_SOCKET@"
+ },
+ "runtime_limits": {
+  "max_inflight_submissions": @MAX_INFLIGHT_SUBMISSIONS@,
+  "max_active_sequences": @MAX_ACTIVE_SEQUENCES@,
+  "max_input_rows": @MAX_INPUT_ROWS@,
+  "resident_sequence_capacity": @RESIDENT_SEQUENCE_CAPACITY@,
+  "kv_logical_page_capacity": @KV_LOGICAL_PAGE_CAPACITY@,
+  "kv_physical_page_capacity": @KV_PHYSICAL_PAGE_CAPACITY@
+ },
+ "nodes": [
+  {
+   "rank_index": 0,
+   "stage_index": 0,
+   "runtime_root": "@HOME@/sparkdata/@FAMILY@.@QUANT@.@TOPOLOGY@",
+   "node_target": "@NODE_TARGET@",
+   "transport_host": "@HOST0@",
+   "adapter_configuration_path": "config/stage.json",
+   "kv_backing_directory": "@HOME@/kvcache/@FAMILY@.@QUANT@.@TOPOLOGY@",
+   "kv_backing_maximum_bytes": @KV_BACKING_MAXIMUM_BYTES@,
+   "control_endpoint": {
+    "kind": "tcp",
+    "host": "@HOST0@",
+    "port": @CONTROL_PORT_BASE@
+   }
+  }
+ ]
+}

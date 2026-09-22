@@ -230,6 +230,8 @@ static uint32_t SparkModelPipelineClientCanContinue(
 	const SparkModelServingSubmission *submission)
 {
 	uint32_t lane;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+		return(0u);
 	if ( (pipeline->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
 		return(0u);
@@ -1011,6 +1013,23 @@ SparkStatus SparkModelPipelineClientProgress(
 		return((SparkStatus)pipeline->failed_status);
 	}
 	return(SPARK_STATUS_OK);
+}
+
+uint64_t SparkModelPipelineClientNextProgressNs(
+	const SparkModelPipelineClient *pipeline)
+{
+	uint64_t deadline,candidate;
+	uint32_t rank;
+	if ( pipeline == 0 )
+		return(0u);
+	deadline = 0u;
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+	{
+		candidate = SparkModelResidentClientNextProgressNs(pipeline->clients[rank]);
+		if ( candidate != 0u && (deadline == 0u || candidate < deadline) )
+			deadline = candidate;
+	}
+	return(deadline);
 }
 
 SparkStatus SparkModelPipelineClientGetPollDescriptors(

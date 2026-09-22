@@ -65,12 +65,29 @@ static void TestEosMetadata(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
-int main(void)
+int main(int argc,char **argv)
 {
 	SparkModelResidentDeployment deployment;
 	SparkModelServingAdapterDescriptor descriptor;
 	const SparkModelResidentDeploymentNode *node;
 	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	if ( argc == 2 )
+	{
+		SparkStatus status;
+		SparkModelResidentDeploymentReset(&deployment);
+		status = SparkModelResidentDeploymentLoad(argv[1],&deployment);
+		if ( status == SPARK_STATUS_OK )
+		{
+			if ( deployment.tokenizer_asset_path == 0 )
+				puts("none");
+			else
+				printf("%s\n%u\n%s\n",deployment.tokenizer_asset_path,
+				    deployment.tokenizer_vocabulary_size,deployment.tokenizer_asset_sha256);
+		}
+		SparkModelResidentDeploymentDestroy(&deployment);
+		return(status == SPARK_STATUS_OK ? 0 : 1);
+	}
+	assert(argc == 1);
 	TestEosMetadata("\"eos_token_ids\":[0,154820],",SPARK_STATUS_OK);
 	TestEosMetadata("\"eos_token_ids\":[],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);

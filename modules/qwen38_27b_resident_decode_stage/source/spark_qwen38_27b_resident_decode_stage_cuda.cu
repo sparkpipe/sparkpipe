@@ -3,6 +3,7 @@
 
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "inference/kernels/frame_error.cuh"
 #include "spark_qwen38_27b_dspark_cuda.cuh"
 #include "spark_qwen38_27b_dspark_format.h"

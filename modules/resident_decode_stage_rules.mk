@@ -37,6 +37,7 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
+MODULE_MESH_KERNELS_MARKER := $(shell sed -n 's/^\#define SPARK_TP_MESH_KERNELS_MARKER "\(.*\)"/\1/p' "$(REPOSITORY_ROOT)/model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh")
 GPU_VALIDATOR ?=
 GPU_VALIDATOR_ARGUMENTS ?=
 
@@ -201,7 +202,7 @@ validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_
 
 publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
-	@if strings $(MODULE_ARCHIVE) 2>/dev/null | grep -q SPARK-TP-MESH-KERNELS-V6-SEQRING-EPOCHMATCH-PREPAD; then \
+	@if test -n "$(MODULE_MESH_KERNELS_MARKER)" && strings $(MODULE_ARCHIVE) 2>/dev/null | grep -Fxq "$(MODULE_MESH_KERNELS_MARKER)"; then \
 		echo "mesh-kernels marker OK"; \
 	else \
 		echo "MESH-KERNELS-MARKER-MISSING: the module did not compile the common kernels header (private/stale copy suspected)"; exit 1; \

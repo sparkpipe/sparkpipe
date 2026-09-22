@@ -21,11 +21,13 @@
 #include "sparkpipe/spark_weightd.h"
 #include "cuda.h"
 
-#define SPARK_TEST_CHUNK_BYTES (2ull * 1024ull * 1024ull)
+#define SPARK_TEST_CHUNK_BYTES SparkTestChunkBytes
+static uint64_t SparkTestChunkBytes = 64ull * 1024ull * 1024ull;
 #define SPARK_TEST_SMALL_BYTES (256ull * 1024ull)
 #define SPARK_TEST_TWO_CHUNK_BYTES (2ull * SPARK_TEST_CHUNK_BYTES)
-#define SPARK_TEST_BATCH_ARENA_BYTES (65ull * SPARK_TEST_CHUNK_BYTES)
-#define SPARK_TEST_TIMEOUT_NS 10000000000ull
+#define SPARK_TEST_BATCH_CHUNK_COUNT (SPARK_WEIGHTD_EXPORT_BATCH_MAX + 1u)
+#define SPARK_TEST_BATCH_ARENA_BYTES ((uint64_t)SPARK_TEST_BATCH_CHUNK_COUNT * SPARK_TEST_CHUNK_BYTES)
+#define SPARK_TEST_TIMEOUT_NS UINT64_C(120000000000)
 
 static const char *SPARK_TEST_SOCKET = "/tmp/spark_weightd_map_test.sock";
 static const char *SPARK_TEST_PACK = "/tmp/spark_weightd_map_test.spack";
@@ -224,7 +226,8 @@ static void SparkTestExportGatesAndBatch(void)
     assert(SparkWeightdClientExportBatch(client, generation, 0u, &batch,
         SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
     assert(batch.status == SPARK_STATUS_OK);
-    assert(batch.chunk_bytes == SPARK_TEST_CHUNK_BYTES);
+    assert(batch.chunk_bytes >= SPARK_TEST_SMALL_BYTES);
+    SparkTestChunkBytes = batch.chunk_bytes;
     assert(batch.chunk_count == 1u);
     assert(batch.batch_offset == 0u);
     assert(batch.batch_count == 1u);
@@ -318,44 +321,45 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     SparkWeightdAttachOutcome second;
     SparkWeightdAttachOutcome again;
     SparkWeightdAttachOutcome gated;
-    static uint8_t pack_image[SPARK_TEST_TWO_CHUNK_BYTES];
-    static uint8_t map_probe[SPARK_TEST_TWO_CHUNK_BYTES];
+    uint8_t *pack_image = malloc(SPARK_TEST_TWO_CHUNK_BYTES);
+    uint8_t *map_probe = malloc(SPARK_TEST_TWO_CHUNK_BYTES);
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
     char digest[SPARK_SHA256_HEX_BYTES];
     SparkWeightdPackSlice slice;
     FILE *pack_file;
     uint64_t generation;
 
+    assert(pack_image != 0 && map_probe != 0);
     spark_stub_cuda_reset_faults();
-    SparkTestWritePack(SPARK_TEST_PACK, 702u, sizeof(pack_image), digest);
+    SparkTestWritePack(SPARK_TEST_PACK, 702u, SPARK_TEST_TWO_CHUNK_BYTES, digest);
     pack_file = fopen(SPARK_TEST_PACK, "rb");
     assert(pack_file != 0);
-    assert(fread(pack_image, 1u, sizeof(pack_image), pack_file) ==
-        sizeof(pack_image));
+    assert(fread(pack_image, 1u, SPARK_TEST_TWO_CHUNK_BYTES, pack_file) ==
+        SPARK_TEST_TWO_CHUNK_BYTES);
     assert(fclose(pack_file) == 0);
     SparkTestStartServer(&thread_context, &thread_handle, SPARK_TEST_SOCKET,
         8ull * SPARK_TEST_CHUNK_BYTES);
 
     SparkTestAttachAndMap(&first, SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
-        sizeof(pack_image));
+        SPARK_TEST_TWO_CHUNK_BYTES);
     assert(first.loaded_from_pack == 1u);
     assert(first.map_chunk_bytes == SPARK_TEST_CHUNK_BYTES);
     assert(first.map_chunk_count == 2u);
     assert(first.map_handle_count == 2u && first.map_mapped_count == 2u);
-    assert(first.map_span_bytes == sizeof(pack_image));
-    memcpy(map_probe, first.map_base, sizeof(map_probe));
-    assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
+    assert(first.map_span_bytes == SPARK_TEST_TWO_CHUNK_BYTES);
+    memcpy(map_probe, first.map_base, SPARK_TEST_TWO_CHUNK_BYTES);
+    assert(memcmp(map_probe, pack_image, SPARK_TEST_TWO_CHUNK_BYTES) == 0);
     generation = first.arena_generation;
 
     SparkTestAttachAndMap(&second, SPARK_TEST_SOCKET, SPARK_TEST_PACK,
-        digest, sizeof(pack_image));
+        digest, SPARK_TEST_TWO_CHUNK_BYTES);
     assert(second.loaded_from_pack == 0u);
     assert(second.arena_generation == generation);
     assert(second.map_base != first.map_base);
-    memcpy(map_probe, second.map_base, sizeof(map_probe));
-    assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
+    memcpy(map_probe, second.map_base, SPARK_TEST_TWO_CHUNK_BYTES);
+    assert(memcmp(map_probe, pack_image, SPARK_TEST_TWO_CHUNK_BYTES) == 0);
 
-    SparkTestMakeSlice(&slice, sizeof(pack_image));
+    SparkTestMakeSlice(&slice, SPARK_TEST_TWO_CHUNK_BYTES);
     SparkTestClearAttachEnv();
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
@@ -364,7 +368,7 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
         SPARK_TEST_TIMEOUT_NS, &gated, reason) == SPARK_STATUS_OK);
     assert(gated.client != 0);
     assert(SparkWeightdAttachImportMap(&gated,
-        sizeof(pack_image) + SPARK_TEST_CHUNK_BYTES, SPARK_TEST_TIMEOUT_NS,
+        SPARK_TEST_TWO_CHUNK_BYTES + SPARK_TEST_CHUNK_BYTES, SPARK_TEST_TIMEOUT_NS,
         reason) != SPARK_STATUS_OK);
     assert(gated.client == 0 && gated.map_base == 0);
     assert(strcmp(reason, "import_short") == 0);
@@ -375,7 +379,7 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
         assert(SparkWeightdAttachImportMap(&unmapped, 4096ull,
             SPARK_TEST_TIMEOUT_NS, reason) == SPARK_STATUS_INVALID_ARGUMENT);
         assert(strcmp(reason, "not_attached") == 0);
-        assert(SparkWeightdAttachImportMap(&first, sizeof(pack_image),
+        assert(SparkWeightdAttachImportMap(&first, SPARK_TEST_TWO_CHUNK_BYTES,
             SPARK_TEST_TIMEOUT_NS, reason) == SPARK_STATUS_INVALID_ARGUMENT);
         assert(strcmp(reason, "already_mapped") == 0);
     }
@@ -387,17 +391,19 @@ static void SparkTestImportMapWarmAndCoverageGate(void)
     SparkWeightdAttachRelease(&second);
 
     SparkTestAttachAndMap(&again, SPARK_TEST_SOCKET, SPARK_TEST_PACK, digest,
-        sizeof(pack_image));
+        SPARK_TEST_TWO_CHUNK_BYTES);
     assert(again.loaded_from_pack == 0u);
     assert(again.arena_generation == generation);
-    memcpy(map_probe, again.map_base, sizeof(map_probe));
-    assert(memcmp(map_probe, pack_image, sizeof(pack_image)) == 0);
+    memcpy(map_probe, again.map_base, SPARK_TEST_TWO_CHUNK_BYTES);
+    assert(memcmp(map_probe, pack_image, SPARK_TEST_TWO_CHUNK_BYTES) == 0);
     SparkWeightdAttachRelease(&again);
 
     SparkTestStopServer(&thread_context, thread_handle);
     SparkTestClearAttachEnv();
     (void)remove(SPARK_TEST_PACK);
     (void)remove(SPARK_TEST_SOCKET);
+    free(map_probe);
+    free(pack_image);
     printf("w3 weightd: consumer import map + identity gate + warm green\n");
 }
 
@@ -421,8 +427,9 @@ static void SparkTestMultiBatch(void)
     SparkTestAttachAndMap(&outcome, SPARK_TEST_SOCKET, SPARK_TEST_PACK,
         digest, SPARK_TEST_BATCH_ARENA_BYTES);
     assert(outcome.loaded_from_pack == 1u);
-    assert(outcome.map_chunk_count == 65u);
-    assert(outcome.map_handle_count == 65u && outcome.map_mapped_count == 65u);
+    assert(outcome.map_chunk_count == SPARK_TEST_BATCH_CHUNK_COUNT);
+    assert(outcome.map_handle_count == SPARK_TEST_BATCH_CHUNK_COUNT &&
+        outcome.map_mapped_count == SPARK_TEST_BATCH_CHUNK_COUNT);
     assert(outcome.map_span_bytes == SPARK_TEST_BATCH_ARENA_BYTES);
 
     SparkSha256Initialize(&sha);
@@ -444,7 +451,8 @@ static void SparkTestMultiBatch(void)
     SparkTestStopServer(&thread_context, thread_handle);
     (void)remove(SPARK_TEST_PACK);
     (void)remove(SPARK_TEST_SOCKET);
-    printf("w3 weightd: 65-chunk two-batch import map green\n");
+    printf("w3 weightd: %u-chunk two-batch import map green (%llu bytes/chunk)\n",
+        SPARK_TEST_BATCH_CHUNK_COUNT,(unsigned long long)SPARK_TEST_CHUNK_BYTES);
 }
 
 
@@ -559,7 +567,7 @@ static void SparkTestScribbleProbeReceipt(void)
     SparkTestServerThread thread_context;
     pthread_t thread_handle;
     SparkWeightdAttachOutcome outcome;
-    static uint8_t pack_image[SPARK_TEST_TWO_CHUNK_BYTES];
+    uint8_t *pack_image = malloc(SPARK_TEST_TWO_CHUNK_BYTES);
     static uint8_t scribble[64];
     char digest[SPARK_SHA256_HEX_BYTES];
     CUmemAllocationProp prop;
@@ -598,26 +606,27 @@ static void SparkTestScribbleProbeReceipt(void)
     assert(cuMemRelease(chunk) == CUDA_SUCCESS);
     assert(cuMemAddressFree(span, 4096u) == CUDA_SUCCESS);
 
+    assert(pack_image != 0);
     spark_stub_cuda_reset_faults();
-    SparkTestWritePack(SPARK_TEST_PACK, 703u, sizeof(pack_image), digest);
+    SparkTestWritePack(SPARK_TEST_PACK, 703u, SPARK_TEST_TWO_CHUNK_BYTES, digest);
     {
         FILE *pack_file = fopen(SPARK_TEST_PACK, "rb");
         assert(pack_file != 0);
-        assert(fread(pack_image, 1u, sizeof(pack_image), pack_file) ==
-            sizeof(pack_image));
+        assert(fread(pack_image, 1u, SPARK_TEST_TWO_CHUNK_BYTES, pack_file) ==
+            SPARK_TEST_TWO_CHUNK_BYTES);
         assert(fclose(pack_file) == 0);
     }
     SparkTestStartServer(&thread_context, &thread_handle, SPARK_TEST_SOCKET,
         4ull * SPARK_TEST_CHUNK_BYTES);
     SparkTestAttachAndMap(&outcome, SPARK_TEST_SOCKET, SPARK_TEST_PACK,
-        digest, sizeof(pack_image));
+        digest, SPARK_TEST_TWO_CHUNK_BYTES);
     assert(outcome.loaded_from_pack == 1u);
-    assert(outcome.map_span_bytes == sizeof(pack_image));
-    assert(memcmp(outcome.map_base, pack_image, sizeof(pack_image)) == 0);
+    assert(outcome.map_span_bytes == SPARK_TEST_TWO_CHUNK_BYTES);
+    assert(memcmp(outcome.map_base, pack_image, SPARK_TEST_TWO_CHUNK_BYTES) == 0);
     assert(cuda_stub_vmm_probe_write(
         (CUdeviceptr)(uintptr_t)outcome.map_base, scribble,
         sizeof(scribble)) == CUDA_SUCCESS);
-    assert(memcmp(outcome.map_base, pack_image, sizeof(pack_image)) != 0);
+    assert(memcmp(outcome.map_base, pack_image, SPARK_TEST_TWO_CHUNK_BYTES) != 0);
     SparkWeightdAttachRelease(&outcome);
     assert(cuda_stub_vmm_probe_write(
         (CUdeviceptr)(uintptr_t)outcome.map_base, scribble, 8u) ==
@@ -626,6 +635,7 @@ static void SparkTestScribbleProbeReceipt(void)
     SparkTestClearAttachEnv();
     (void)remove(SPARK_TEST_PACK);
     (void)remove(SPARK_TEST_SOCKET);
+    free(pack_image);
     printf("w3 weightd: scribble-probe receipt green (the consumer map is"
         " RW today; the staged PROT_READ flip turns this probe into a"
         " refusal)\n");

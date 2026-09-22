@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
+#include <poll.h>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <errno.h>
@@ -58,12 +59,15 @@ static double ladder_percentile(const struct LadderTimed *timed,double fraction)
 {
     double sorted[LADDER_MAX_TIMED];
     uint32_t index;
+    double position;
     if (timed->count == 0u)
         return 0.0;
     memcpy(sorted,timed->values,sizeof(double) * timed->count);
     qsort(sorted,timed->count,sizeof(double),ladder_compare_double);
-    index = (uint32_t)(fraction * (double)(timed->count - 1u));
-    return sorted[index];
+    position = fraction * (double)(timed->count - 1u);
+    index = (uint32_t)position;
+    return index + 1u == timed->count ? sorted[index] :
+        sorted[index] + (position - index) * (sorted[index + 1u] - sorted[index]);
 }
 
 static void ladder_completion_mark(void *context,
@@ -71,18 +75,10 @@ static void ladder_completion_mark(void *context,
 {
     struct LadderCompletion *state = (struct LadderCompletion *)context;
     pthread_mutex_lock(&state->lock);
-    state->done = 1u;
+    state->done++;
     state->status = (uint32_t)completion->status;
     pthread_cond_signal(&state->wake);
     pthread_mutex_unlock(&state->lock);
-}
-
-static __global__ void ladder_fill_bf16(__nv_bfloat16 *destination,
-    float value,uint32_t elements)
-{
-    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index < elements)
-        destination[index] = __float2bfloat16(value);
 }
 
 static int ladder_acquire_lane(const char *socket_path,
@@ -97,7 +93,7 @@ static int ladder_acquire_lane(const char *socket_path,
             socket_path);
         return 2;
     }
-    status = SparkWeightdClientLaneAcquire(client,&lane,LADDER_WAIT_NS);
+    status = SparkWeightdClientLaneAcquire(client,SPARK_WEIGHTD_LANE_NONE,0,&lane,LADDER_WAIT_NS);
     if (status != SPARK_STATUS_OK)
     {
         fprintf(stderr,"LADDER lane_acquire=FAILED status=%s\n",
@@ -132,71 +128,137 @@ static int ladder_hold_lane(const char *socket_path,uint32_t ephemeral)
     return 0;
 }
 
+static void ladder_require(int valid,const char *phase)
+{
+    if (valid != 0) return;
+    fprintf(stderr,"LADDER-FAIL phase=%s\n",phase);
+    exit(1);
+}
+
+static void ladder_status(SparkStatus status,const char *phase)
+{
+    if (status == SPARK_STATUS_OK) return;
+    fprintf(stderr,"LADDER-FAIL phase=%s status=%s\n",phase,SparkStatusToString(status));
+    exit(1);
+}
+
+static void ladder_wait_stream(cudaStream_t stream)
+{
+    uint64_t deadline = ladder_now_ns() + LADDER_WAIT_NS;
+    for (;;)
+    {
+        cudaError_t status = cudaStreamQuery(stream);
+        if (status == cudaSuccess) return;
+        ladder_require(status == cudaErrorNotReady && ladder_now_ns() < deadline,"stream-terminal");
+        usleep(100u);
+    }
+}
+
+static uint32_t ladder_number(const char *text,uint32_t minimum,uint32_t maximum)
+{
+    uint64_t value = 0u;
+    ladder_require(text != 0 && *text != 0,"empty-number");
+    for (const char *p = text; *p != 0; p++)
+    {
+        ladder_require(*p >= '0' && *p <= '9',"invalid-number");
+        value = value * 10u + (uint32_t)(*p - '0');
+        ladder_require(value <= maximum,"number-range");
+    }
+    ladder_require(value >= minimum,"number-range");
+    return (uint32_t)value;
+}
+
+static void ladder_barrier(char expected)
+{
+    struct pollfd input = {STDIN_FILENO,POLLIN,0};
+    char actual = 0;
+    ladder_require(poll(&input,1u,60000) == 1 &&
+        (input.revents & POLLIN) != 0 && read(STDIN_FILENO,&actual,1u) == 1 &&
+        actual == expected,"coordinator-barrier");
+}
+
+static uint16_t ladder_bf16(float value)
+{
+    uint32_t bits;
+    memcpy(&bits,&value,sizeof(bits));
+    return (uint16_t)(bits >> 16u);
+}
+
+static float ladder_value(uint32_t lane,uint32_t rank,uint32_t ordinal,uint32_t index)
+{
+    if (index == 0u)
+        return rank == 0u ? 256.0f : rank == 2u ? -256.0f :
+            (rank == 1u || rank == 3u) ? 1.0f : 0.0f;
+    return (float)((int32_t)((lane * 19u + rank * 13u + ordinal * 23u + index * 7u) % 127u) - 63);
+}
+
+static uint64_t ladder_u64(uint32_t lane,uint32_t rank,uint32_t degree,uint32_t ordinal,uint32_t index)
+{
+    return (rank == index % degree ? UINT64_C(0x8000000000000000) : 0u) |
+        ((uint64_t)(lane + 1u) << 52u) | ((uint64_t)(ordinal + 1u) << 32u) |
+        ((uint64_t)(rank + 1u) << 16u) | index;
+}
+
 static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     uint32_t degree,uint32_t iters,uint32_t rows,uint32_t lane,
-    const char *shm_path)
+    const char *pack_path,const char *rank_map)
 {
-    SparkTpDeviceCollectiveConfig config;
-    SparkTpDeviceCollective collective;
-    SparkTpDeviceCollectiveSubmission submission;
-    struct LadderCompletion completion;
-    struct LadderTimed timed;
-    uint16_t *verify_host = 0;
-    __nv_bfloat16 *local_device = 0;
-    __nv_bfloat16 *full_device = 0;
-    void *shm_base = MAP_FAILED;
-    double latency_us;
-    uint64_t started_ns;
-    uint64_t waited_ns;
-    uint64_t expected_bits;
-    uint64_t wait_deadline_ns;
-    uint32_t elements;
-    uint32_t payload_bytes;
-    uint32_t ordinal;
-    uint32_t bad_rounds = 0u;
-    uint32_t bad_elements;
-    uint32_t index;
-    int shm_fd;
-    int acquired;
+    SparkTpDeviceCollectiveConfig config = {};
+    SparkTpDeviceCollective collective = {};
+    SparkTpDeviceCollectiveSubmission submission = {};
+    SparkWeightdMeshTopology topology = {};
+    SparkWeightdLazyAttachRequest request = {};
+    SparkWeightdLazyAttachResult attached = {};
+    SparkWeightdDetachResult detached = {};
+    SparkWeightdClient *owner = 0;
+    LadderCompletion completion = {};
+    LadderTimed timed = {};
+    cudaGraph_t graphs[3] = {};
+    cudaGraphExec_t executables[3] = {};
     cudaStream_t stream = 0;
-    cudaError_t error;
-    SparkStatus status;
-
-    memset(&timed,0,sizeof(timed));
-    elements = rows * LADDER_HIDDEN;
-    payload_bytes = elements * 2u;
-    shm_fd = open(shm_path,O_RDWR | O_CREAT,0600);
-    if (shm_fd < 0)
-    {
-        fprintf(stderr,"LADDER shm open failed errno=%d\n",errno);
-        return 2;
-    }
-    if (ftruncate(shm_fd,(off_t)LADDER_SHM_BYTES) != 0 ||
-        (shm_base = mmap(0,LADDER_SHM_BYTES,PROT_READ | PROT_WRITE,
-            MAP_SHARED,shm_fd,0)) == MAP_FAILED)
-    {
-        fprintf(stderr,"LADDER shm map failed errno=%d\n",errno);
-        (void)close(shm_fd);
-        return 2;
-    }
-    (void)close(shm_fd);
-    error = cudaFree(0);
-    if (error != cudaSuccess)
-    {
-        fprintf(stderr,"LADDER cuda init failed\n");
-        return 2;
-    }
-    if (cudaMalloc((void **)&local_device,payload_bytes) != cudaSuccess ||
-        cudaMalloc((void **)&full_device,payload_bytes) != cudaSuccess ||
-        cudaStreamCreate(&stream) != cudaSuccess)
-    {
-        fprintf(stderr,"LADDER cuda alloc failed\n");
-        return 2;
-    }
-    verify_host = (uint16_t *)malloc(payload_bytes);
-    if (verify_host == 0)
-        return 2;
-    memset(&config,0,sizeof(config));
+    uint8_t *local = 0,*output = 0;
+    uint32_t acquired_lane = SPARK_WEIGHTD_LANE_NONE;
+    uint32_t elements = rows * LADDER_HIDDEN;
+    size_t capacity = (size_t)elements * degree * sizeof(uint16_t);
+    uint8_t *input = (uint8_t *)malloc(capacity);
+    uint8_t *actual = (uint8_t *)malloc(capacity + 256u);
+    uint8_t *input_after = (uint8_t *)malloc(capacity);
+    const uint32_t operations[3] = {1u,2u,0u};
+    uint32_t completed = 0u;
+    uint32_t callback_count = 0u;
+    alarm(180u);
+    ladder_require(input != 0 && actual != 0 && input_after != 0,"host-allocation");
+    ladder_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 &&
+        setenv("SPARK_TP_MESH_RANKS",rank_map,1) == 0,"environment");
+    ladder_require(getenv("SPARK_TP_WAIT_MODE") != 0 &&
+        strcmp(getenv("SPARK_TP_WAIT_MODE"),"hardware") == 0,"hardware-mode-required");
+    ladder_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,&topology),"topology");
+    ladder_require(cudaFree(0) == cudaSuccess,"cuda-init");
+    ladder_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
+    ladder_status(SparkWeightdClientLaneAcquire(owner,lane,&topology,&acquired_lane,
+        LADDER_WAIT_NS),"lane-acquire");
+    ladder_require(acquired_lane == lane,"exact-lane");
+    request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    request.identity.arena_bytes = LADDER_PACK_BYTES;
+    memcpy(request.identity.model,"mesh-lane-evict",16u);
+    request.expert_pool_bytes = 3u * LADDER_CHUNK;
+    ladder_require(snprintf(request.pack_path,sizeof(request.pack_path),"%s",pack_path) <
+        (int)sizeof(request.pack_path),"pack-path");
+    ladder_status(SparkSha256File(pack_path,request.identity.pack_sha256),"pack-sha");
+    ladder_status(SparkWeightdClientAttachLazy(owner,&request,&attached,LADDER_WAIT_NS),"attach");
+    ladder_status(attached.status,"attach-result");
+    ladder_require(attached.mesh_ready != 0u && attached.mesh_mapping != 0 &&
+        attached.mesh_send_buffer_bytes == SPARK_WEIGHTD_MESH_REGION_BYTES,"real-mesh-mapping");
+    if (attached.pool_fd >= 0) ladder_require(close(attached.pool_fd) == 0,"pool-fd-close");
+    ladder_require(cudaMalloc((void **)&local,capacity) == cudaSuccess &&
+        cudaMalloc((void **)&output,capacity + 256u) == cudaSuccess &&
+        cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess,"cuda-allocation");
+    ladder_require(pthread_mutex_init(&completion.lock,0) == 0,"completion-lock");
+    pthread_condattr_t attr;
+    ladder_require(pthread_condattr_init(&attr) == 0 &&
+        pthread_condattr_setclock(&attr,CLOCK_MONOTONIC) == 0 &&
+        pthread_cond_init(&completion.wake,&attr) == 0 &&
+        pthread_condattr_destroy(&attr) == 0,"completion-condition");
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
     config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
     config.tp_degree = degree;
@@ -207,348 +269,137 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     config.max_active_sequence_count = rows;
     config.connect_timeout_milli = 60000u;
     config.operation_timeout_milli = 60000u;
+    config.mesh_lane_client = owner;
+    config.mesh_band_index = 0u;
     config.collective_identifier = 2u * (uint64_t)lane;
     SparkTpMeshRegisterCommonCombines(&config);
-    status = SparkTpDeviceCollectiveCreate(&config,&collective);
-    if (status != SPARK_STATUS_OK)
-    {
-        fprintf(stderr,"LADDER create failed status=%s\n",
-            SparkStatusToString(status));
-        return 2;
-    }
-    status = SparkTpDeviceCollectivePrepareReceiveBf16(&collective,shm_base,
-        0u,0u,0u,0);
-    if (status != SPARK_STATUS_OK)
-    {
-        fprintf(stderr,"LADDER prepare failed status=%s\n",
-            SparkStatusToString(status));
-        return 2;
-    }
-    {
-        static volatile uint32_t ship_stop;
-        pthread_t ship_thread;
-        uint8_t *mesh_bytes = (uint8_t *)shm_base;
-        uint32_t band = (uint32_t)((2u * (uint64_t)lane) &
-            (uint64_t)(SPARK_WEIGHTD_MESH_BANDS - 1u));
-        struct ShipArgs
-        {
-            uint8_t *mesh;
-            uint32_t band;
-            uint32_t degree;
-            volatile uint32_t *stop;
-        };
-        ShipArgs *ship_args = (ShipArgs *)malloc(sizeof(*ship_args));
-        ship_args->mesh = mesh_bytes;
-        ship_args->band = band;
-        ship_args->degree = degree;
-        ship_args->stop = &ship_stop;
-        pthread_create(&ship_thread,0,
-            [](void *raw) -> void *
-            {
-                ShipArgs *args = (ShipArgs *)raw;
-                while ( *args->stop == 0u )
-                {
-                    uint32_t peer;
-                    for ( peer = 0u; peer < args->degree; peer++ )
-                    {
-                        volatile uint64_t *entry = (volatile uint64_t *)
-                            (args->mesh + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(
-                                args->band,peer));
-                        volatile uint32_t *shipped =
-                            (volatile uint32_t *)
-                            (args->mesh + SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(
-                                args->band,peer));
-                        if ( entry[0] != 0ull &&
-                             *shipped != (uint32_t)entry[0] )
-                            *shipped = (uint32_t)entry[0];
-                    }
-                    usleep(50);
-                }
-                free(args);
-                return 0;
-            },
-            ship_args);
-        (void)ship_thread;
-    }
-    pthread_mutex_init(&completion.lock,0);
-    pthread_cond_init(&completion.wake,0);
-    printf("LADDER-INIT lane=%u hold=0 rank=%u\n",lane,rank);
+    ladder_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
+    ladder_status(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,
+        attached.mesh_mapping,0u,0u,0u,0),"collective-prepare");
+    printf("LADDER-READY lane=%u rank=%u physical=%u degree=%u rows=%u map=%s transport=rdma\n",
+        lane,rank,topology.physical_ranks[rank],degree,rows,rank_map);
     fflush(stdout);
+    ladder_barrier('G');
+    ladder_status(SparkTpDeviceCollectiveChainKey(&collective,1u),"chain-key");
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.active_sequence_count = rows;
+    submission.logical_sequence_count = rows;
+    submission.local_device = local;
+    submission.full_device = output + 128u;
+    submission.cuda_stream = stream;
+    submission.completion_context = &completion;
+    for (uint32_t ordinal = 0u; ordinal <= iters; ordinal++)
     {
-        float expected_sum = (float)degree * ((float)degree + 1.0f) / 2.0f;
-        __nv_bfloat16 expected = __float2bfloat16(expected_sum);
-        uint16_t expected_u16;
-        memcpy(&expected_u16,&expected,sizeof(expected_u16));
-        expected_bits = expected_u16;
+        for (uint32_t op_index = 0u; op_index < 3u; op_index++)
+        {
+            uint32_t operation = operations[op_index];
+            size_t local_bytes = operation == 2u ? (size_t)rows * 8u : (size_t)elements * 2u;
+            size_t result_bytes = operation == 0u ? local_bytes * degree : local_bytes;
+            if (operation == 2u)
+                for (uint32_t i = 0u; i < rows; i++)
+                    ((uint64_t *)input)[i] = ladder_u64(lane,rank,degree,ordinal,i);
+            else
+                for (uint32_t i = 0u; i < elements; i++)
+                    ((uint16_t *)input)[i] = ladder_bf16(ladder_value(lane,rank,ordinal,i));
+            ladder_require(cudaMemcpyAsync(local,input,local_bytes,cudaMemcpyHostToDevice,stream) == cudaSuccess &&
+                cudaMemsetAsync(output,0xa5,capacity + 256u,stream) == cudaSuccess,"round-input");
+            uint64_t started = ladder_now_ns();
+            if (ordinal == 0u)
+            {
+                submission.ordinal = op_index;
+                submission.completion_function = ladder_completion_mark;
+                ladder_status(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation),"enqueue");
+                struct timespec deadline;
+                ladder_require(clock_gettime(CLOCK_MONOTONIC,&deadline) == 0,"completion-clock");
+                deadline.tv_sec += 60;
+                pthread_mutex_lock(&completion.lock);
+                while (completion.done == callback_count)
+                    if (pthread_cond_timedwait(&completion.wake,&completion.lock,&deadline) != 0) break;
+                ladder_require(completion.done == callback_count + 1u,"exact-completion-count");
+                ladder_status((SparkStatus)completion.status,"completion-status");
+                callback_count = completion.done;
+                pthread_mutex_unlock(&completion.lock);
+            }
+            else
+            {
+                ladder_status(SparkTpDeviceCollectiveGraphCancelSeed(&collective,stream),"graph-cancel-seed");
+                ladder_status(SparkTpDeviceCollectiveGraphPreLaunch(&collective,stream),"graph-prelaunch");
+                ladder_require(cudaGraphLaunch(executables[op_index],stream) == cudaSuccess,"graph-launch");
+            }
+            ladder_wait_stream(stream);
+            ladder_require(SparkTpDeviceCollectiveGraphError(&collective) == 0u,"collective-error");
+            double elapsed = (double)(ladder_now_ns() - started) / 1000.0;
+            ladder_require(cudaMemcpy(actual,output,capacity + 256u,cudaMemcpyDeviceToHost) == cudaSuccess &&
+                cudaMemcpy(input_after,local,local_bytes,cudaMemcpyDeviceToHost) == cudaSuccess,"readback");
+            ladder_require(memcmp(input,input_after,local_bytes) == 0,"input-preserved");
+            for (size_t i = 0u; i < capacity + 256u; i++)
+                if (i < 128u || i >= 128u + result_bytes)
+                    ladder_require(actual[i] == 0xa5u,"output-sentinel");
+            for (uint32_t i = 0u; i < (operation == 2u ? rows : elements * (operation == 0u ? degree : 1u)); i++)
+            {
+                if (operation == 2u)
+                {
+                    uint64_t expected = 0u;
+                    for (uint32_t peer = 0u; peer < degree; peer++)
+                    {
+                        uint64_t value = ladder_u64(lane,peer,degree,ordinal,i);
+                        if (value > expected) expected = value;
+                    }
+                    ladder_require(((uint64_t *)(actual + 128u))[i] == expected,"unsigned-max");
+                }
+                else
+                {
+                    float expected = 0.0f;
+                    if (operation == 0u) expected = ladder_value(lane,i / elements,ordinal,i % elements);
+                    else for (uint32_t peer = 0u; peer < degree; peer++)
+                        expected += ladder_value(lane,peer,ordinal,i);
+                    ladder_require(((uint16_t *)(actual + 128u))[i] == ladder_bf16(expected),
+                        operation == 0u ? "gather-logical-order" : "sum-fp32-final-bf16");
+                }
+            }
+            if (timed.count < LADDER_MAX_TIMED) timed.values[timed.count++] = elapsed;
+            completed++;
+            printf("ROUND rank=%u lane=%u ordinal=%u operation=%u graph=%u latency_us=%.1f status=ok\n",
+                rank,lane,ordinal,operation,ordinal != 0u,elapsed);
+            fflush(stdout);
+        }
+        if (ordinal == 0u)
+        {
+            submission.completion_function = 0;
+            for (uint32_t op_index = 0u; op_index < 3u; op_index++)
+            {
+                ladder_status(SparkTpDeviceCollectiveArmCapture(&collective),"capture-arm");
+                ladder_require(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) == cudaSuccess,"capture-begin");
+                ladder_status(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operations[op_index]),"capture-enqueue");
+                ladder_require(cudaStreamEndCapture(stream,&graphs[op_index]) == cudaSuccess && graphs[op_index] != 0,"capture-end");
+                ladder_status(SparkTpDeviceCollectiveDisarmCapture(&collective),"capture-disarm");
+                ladder_require(cudaGraphInstantiate(&executables[op_index],graphs[op_index],0) == cudaSuccess,"graph-instantiate");
+            }
+        }
     }
-    for (ordinal = 0u; ordinal < iters; ordinal++)
-    {
-        ladder_fill_bf16<<<(elements + 255u) / 256u,256u,0,stream>>>(
-            local_device,(float)(rank + 1u),elements);
-        pthread_mutex_lock(&completion.lock);
-        completion.done = 0u;
-        completion.status = (uint32_t)SPARK_STATUS_OK;
-        pthread_mutex_unlock(&completion.lock);
-        memset(&submission,0,sizeof(submission));
-        submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-        submission.descriptor_bytes = sizeof(submission);
-        submission.slot_index = 0u;
-        submission.active_sequence_count = rows;
-        submission.logical_sequence_count = rows;
-        submission.ordinal = ordinal;
-        submission.local_device = local_device;
-        submission.full_device = full_device;
-        submission.cuda_stream = stream;
-        submission.completion_function = ladder_completion_mark;
-        submission.completion_context = &completion;
-        started_ns = ladder_now_ns();
-        status = SparkTpDeviceCollectiveSubmitBf16(&collective,&submission);
-        if (status != SPARK_STATUS_OK)
-        {
-            fprintf(stderr,"LADDER submit failed ordinal=%u status=%s\n",
-                ordinal,SparkStatusToString(status));
-            bad_rounds++;
-            break;
-        }
-        acquired = 0;
-        wait_deadline_ns = ladder_now_ns() + LADDER_WAIT_NS;
-        pthread_mutex_lock(&completion.lock);
-        while (completion.done == 0u)
-        {
-            struct timespec pause;
-            uint64_t remaining_ns;
-            waited_ns = ladder_now_ns();
-            if (waited_ns >= wait_deadline_ns)
-                break;
-            remaining_ns = wait_deadline_ns - waited_ns;
-            clock_gettime(CLOCK_REALTIME,&pause);
-            pause.tv_sec += (time_t)(remaining_ns / 1000000000ull);
-            pause.tv_nsec += (long)(remaining_ns % 1000000000ull);
-            if (pause.tv_nsec >= 1000000000L)
-            {
-                pause.tv_sec += 1;
-                pause.tv_nsec -= 1000000000L;
-            }
-            pthread_cond_timedwait(&completion.wake,&completion.lock,&pause);
-        }
-        acquired = completion.done;
-        status = (SparkStatus)completion.status;
-        pthread_mutex_unlock(&completion.lock);
-        waited_ns = ladder_now_ns() - started_ns;
-        latency_us = (double)waited_ns / 1000.0;
-        bad_elements = 0u;
-        if (acquired == 0u || status != SPARK_STATUS_OK)
-        {
-            fprintf(stderr,
-                "LADDER round-failed rank=%u ordinal=%u done=%u status=%s\n",
-                rank,ordinal,acquired,SparkStatusToString(status));
-            bad_rounds++;
-            continue;
-        }
-        if (ordinal + 1u == iters || (ordinal & 7u) == 0u || ordinal < 4u)
-        {
-            if (cudaMemcpy(verify_host,full_device,payload_bytes,
-                    cudaMemcpyDeviceToHost) != cudaSuccess)
-            {
-                fprintf(stderr,"LADDER verify copy failed rank=%u\n",rank);
-                bad_rounds++;
-                continue;
-            }
-            for (index = 0u; index < elements; index++)
-            {
-                uint64_t bits = verify_host[index];
-                if (bits != expected_bits)
-                    bad_elements++;
-            }
-            if (bad_elements != 0u)
-            {
-                fprintf(stderr,
-                    "LADDER checksum-failed rank=%u ordinal=%u bad=%u expected_bits=%llx\n",
-                    rank,ordinal,bad_elements,
-                    (unsigned long long)expected_bits);
-                bad_rounds++;
-            }
-        }
-        if (timed.count < LADDER_MAX_TIMED)
-            timed.values[timed.count++] = latency_us;
-        printf(
-            "ROUND rank=%u lane=%u ordinal=%u latency_us=%.1f status=ok\n",
-            rank,lane,ordinal,latency_us);
-    }
-    printf(
-        "SUMMARY rank=%u lane=%u rounds=%u ok=%u bad=%u p50_us=%.1f p99_us=%.1f max_us=%.1f\n",
-        rank,lane,timed.count,timed.count - bad_rounds,bad_rounds,
-        ladder_percentile(&timed,0.50),ladder_percentile(&timed,0.99),
-        ladder_percentile(&timed,1.0));
+    ladder_status(SparkTpDeviceCollectiveEndChain(&collective,stream),"chain-end");
+    printf("LADDER-DONE lane=%u rank=%u rounds=%u callbacks=%u\n",lane,rank,completed,callback_count);
     fflush(stdout);
-    {
-        const char *graph_rounds_env = getenv("LADDER_GRAPH_ROUNDS");
-        if (graph_rounds_env != 0 && iters != 0u)
-        {
-            uint32_t graph_rounds = (uint32_t)strtoul(graph_rounds_env,0,10);
-            uint32_t graph_replays = 5u;
-            const char *replays_env = getenv("LADDER_GRAPH_REPLAYS");
-            cudaGraph_t graph = 0;
-            cudaGraphExec_t exec = 0;
-            uint32_t replay_index;
-            if (replays_env != 0)
-                graph_replays = (uint32_t)strtoul(replays_env,0,10);
-            if (graph_rounds != 0u &&
-                 SparkTpDeviceCollectiveArmCapture(&collective) ==
-                    SPARK_STATUS_OK &&
-                 cudaStreamBeginCapture(stream,
-                    cudaStreamCaptureModeGlobal) == cudaSuccess)
-            {
-                SparkStatus record_status = SPARK_STATUS_OK;
-                for ( ordinal = 0u; ordinal < graph_rounds; ordinal++ )
-                {
-                    ladder_fill_bf16<<<(elements + 255u) / 256u,256u,0,
-                        stream>>>(local_device,(float)(rank + 1u),elements);
-                    memset(&submission,0,sizeof(submission));
-                    submission.abi_version =
-                        SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-                    submission.descriptor_bytes = sizeof(submission);
-                    submission.slot_index = 0u;
-                    submission.active_sequence_count = rows;
-                    submission.logical_sequence_count = rows;
-                    submission.ordinal = ordinal;
-                    submission.local_device = local_device;
-                    submission.full_device = full_device;
-                    submission.cuda_stream = stream;
-                    submission.completion_function = 0;
-                    submission.completion_context = 0;
-                    record_status = SparkTpDeviceCollectiveSubmitBf16(
-                        &collective,&submission);
-                    if (record_status != SPARK_STATUS_OK)
-                        break;
-                }
-                if (cudaStreamEndCapture(stream,&graph) != cudaSuccess ||
-                     graph == 0 || record_status != SPARK_STATUS_OK)
-                {
-                    fprintf(stderr,
-                        "GRAPH-CAPTURE-FAIL rank=%u rounds=%u cuda=%s\n",
-                        rank,graph_rounds,
-                        cudaGetErrorString(cudaGetLastError()));
-                    graph = 0;
-                }
-            }
-            else if (graph_rounds != 0u)
-                fprintf(stderr,"GRAPH-ARM-FAIL rank=%u\n",rank);
-            if (graph != 0 &&
-                 cudaGraphInstantiate(&exec,graph,0) != cudaSuccess)
-            {
-                fprintf(stderr,"GRAPH-INSTANTIATE-FAIL rank=%u %s\n",rank,
-                    cudaGetErrorString(cudaGetLastError()));
-                exec = 0;
-            }
-            SparkTpDeviceCollectiveDisarmCapture(&collective);
-            for ( replay_index = 0u;
-                  replay_index < graph_replays && exec != 0;
-                  replay_index++ )
-            {
-                uint64_t graph_error;
-                uint64_t replay_t0;
-                uint64_t replay_t1;
-                uint64_t watch_deadline;
-                if (SparkTpDeviceCollectiveGraphCancelSeed(&collective,
-                        stream) != SPARK_STATUS_OK ||
-                     SparkTpDeviceCollectiveGraphPreLaunch(&collective,
-                        stream) != SPARK_STATUS_OK)
-                {
-                    fprintf(stderr,
-                        "GRAPH-PRELAUNCH-FAIL rank=%u replay=%u\n",
-                        rank,replay_index);
-                    bad_rounds++;
-                    break;
-                }
-                replay_t0 = ladder_now_ns();
-                if (cudaGraphLaunch(exec,stream) != cudaSuccess)
-                {
-                    fprintf(stderr,"GRAPH-LAUNCH-FAIL rank=%u replay=%u %s\n",
-                        rank,replay_index,
-                        cudaGetErrorString(cudaGetLastError()));
-                    bad_rounds++;
-                    break;
-                }
-                watch_deadline = replay_t0 + LADDER_WAIT_NS;
-                for ( ;; )
-                {
-                    cudaError_t poll = cudaStreamQuery(stream);
-                    if (poll == cudaSuccess)
-                        break;
-                    if (poll != cudaErrorNotReady)
-                    {
-                        fprintf(stderr,
-                            "GRAPH-STREAM-ERR rank=%u replay=%u %s\n",
-                            rank,replay_index,cudaGetErrorString(poll));
-                        bad_rounds++;
-                        break;
-                    }
-                    if (ladder_now_ns() >= watch_deadline)
-                    {
-                        fprintf(stderr,
-                            "GRAPH-REPLAY-HUNG rank=%u replay=%u\n",
-                            rank,replay_index);
-                        (void)SparkTpDeviceCollectiveGraphStuckDump(
-                            &collective);
-                        SparkTpDeviceCollectiveBroadcastCancel(&collective);
-                        bad_rounds++;
-                        break;
-                    }
-                    usleep(200);
-                }
-                replay_t1 = ladder_now_ns();
-                graph_error = SparkTpDeviceCollectiveGraphError(&collective);
-                SparkTpDeviceCollectiveClearGraphError(&collective);
-                if ( graph_error == 0ull )
-                    (void)SparkTpDeviceCollectiveGraphArrivalDump(
-                        &collective,rank);
-                if (graph_error != 0ull)
-                {
-                    fprintf(stderr,
-                        "GRAPH-ERROR rank=%u replay=%u error=%llu\n",
-                        rank,replay_index,(unsigned long long)graph_error);
-                    SparkTpDeviceCollectiveBroadcastCancel(&collective);
-                    bad_rounds++;
-                    break;
-                }
-                if (cudaMemcpy(verify_host,full_device,payload_bytes,
-                        cudaMemcpyDeviceToHost) != cudaSuccess)
-                {
-                    bad_rounds++;
-                    break;
-                }
-                bad_elements = 0u;
-                for (index = 0u; index < elements; index++)
-                    if (verify_host[index] != expected_bits)
-                        bad_elements++;
-                printf(
-                    "GRAPH-REPLAY rank=%u replay=%u rounds=%u total_us=%.1f per_round_us=%.1f bad_elements=%u\n",
-                    rank,replay_index,graph_rounds,
-                    (double)(replay_t1 - replay_t0) / 1000.0,
-                    (double)(replay_t1 - replay_t0) / 1000.0 /
-                        (double)graph_rounds,
-                    bad_elements);
-                fflush(stdout);
-                if (bad_elements != 0u)
-                {
-                    bad_rounds++;
-                    break;
-                }
-            }
-            if (exec != 0)
-                cudaGraphExecDestroy(exec);
-            if (graph != 0)
-                cudaGraphDestroy(graph);
-        }
-    }
+    ladder_barrier('R');
+    for (uint32_t i = 0u; i < 3u; i++)
+        ladder_require(cudaGraphExecDestroy(executables[i]) == cudaSuccess &&
+            cudaGraphDestroy(graphs[i]) == cudaSuccess,"graph-destroy");
     SparkTpDeviceCollectiveDestroy(&collective);
-    (void)munmap(shm_base,LADDER_SHM_BYTES);
-    (void)cudaFree(local_device);
-    (void)cudaFree(full_device);
-    (void)cudaStreamDestroy(stream);
-    free(verify_host);
-    return bad_rounds != 0u ? 1 : 0;
+    ladder_require(collective.implementation == 0,"collective-destroy");
+    ladder_require(cudaFree(local) == cudaSuccess && cudaFree(output) == cudaSuccess &&
+        cudaStreamDestroy(stream) == cudaSuccess,"cuda-destroy");
+    ladder_require(munmap(attached.mesh_mapping,attached.mesh_send_buffer_bytes) == 0,"mesh-unmap");
+    ladder_status(SparkWeightdClientDetach(owner,attached.arena_generation,&detached,LADDER_WAIT_NS),"detach");
+    ladder_status(detached.status,"detach-result");
+    SparkWeightdClientClose(owner);
+    ladder_require(pthread_cond_destroy(&completion.wake) == 0 &&
+        pthread_mutex_destroy(&completion.lock) == 0,"completion-destroy");
+    free(input); free(actual); free(input_after);
+    printf("SUMMARY rank=%u lane=%u rounds=%u ok=%u bad=0 callbacks=%u p50_us=%.1f p99_us=%.1f max_us=%.1f transport=rdma\n",
+        rank,lane,completed,completed,callback_count,
+        ladder_percentile(&timed,0.50),ladder_percentile(&timed,0.99),ladder_percentile(&timed,1.0));
+    return 0;
 }
 
 static int ladder_evict_matrix(const char *socket_path,uint32_t lanes,
@@ -584,7 +435,7 @@ static int ladder_evict_matrix(const char *socket_path,uint32_t lanes,
             fprintf(stderr,"EVICT connect failed lane-index=%u\n",i);
             return 2;
         }
-        status = SparkWeightdClientLaneAcquire(clients[i],&released,
+        status = SparkWeightdClientLaneAcquire(clients[i],SPARK_WEIGHTD_LANE_NONE,0,&released,
             LADDER_WAIT_NS);
         if (status != SPARK_STATUS_OK || released != i)
         {
@@ -700,7 +551,7 @@ int main(int argument_count,char **arguments)
     {
         fprintf(stderr,
             "usage: mesh_lane_ladder SOCKET hold\n"
-            "       mesh_lane_ladder SOCKET mesh RANK DEGREE ITERS ROWS LANE SHM\n"
+            "       mesh_lane_ladder SOCKET mesh RANK DEGREE ITERS ROWS LANE FIXTURE_PACK RANK_MAP\n"
             "       mesh_lane_ladder SOCKET evict LANES PACK\n");
         return 2;
     }
@@ -709,21 +560,20 @@ int main(int argument_count,char **arguments)
         return ladder_hold_lane(socket_path,0u);
     if (strcmp(arguments[2],"ephemeral") == 0 && argument_count == 3)
         return ladder_hold_lane(socket_path,1u);
-    if (strcmp(arguments[2],"mesh") == 0 && argument_count == 9)
+    if (strcmp(arguments[2],"mesh") == 0 && argument_count == 10)
     {
+        uint32_t degree = ladder_number(arguments[4],2u,16u);
         return ladder_mesh_run(socket_path,
-            (uint32_t)strtoul(arguments[3],0,10),
-            (uint32_t)strtoul(arguments[4],0,10),
-            (uint32_t)strtoul(arguments[5],0,10),
-            (uint32_t)strtoul(arguments[6],0,10),
-            (uint32_t)strtoul(arguments[7],0,10),
-            arguments[8]);
+            ladder_number(arguments[3],0u,degree - 1u),degree,
+            ladder_number(arguments[5],1u,1024u),
+            ladder_number(arguments[6],1u,512u),
+            ladder_number(arguments[7],0u,7u),arguments[8],arguments[9]);
     }
     if (strcmp(arguments[2],"evict") == 0 && argument_count == 5)
     {
         return ladder_evict_matrix(socket_path,
-            (uint32_t)strtoul(arguments[3],0,10),arguments[4]);
+            ladder_number(arguments[3],2u,8u),arguments[4]);
     }
-    fprintf(stderr,"usage: mesh_lane_ladder SOCKET hold | SOCKET mesh RANK DEGREE ITERS ROWS LANE SHM | SOCKET evict LANES PACK\n");
+    fprintf(stderr,"usage: mesh_lane_ladder SOCKET hold | SOCKET mesh RANK DEGREE ITERS ROWS LANE FIXTURE_PACK RANK_MAP | SOCKET evict LANES PACK\n");
     return 2;
 }

@@ -1,323 +1,197 @@
 #!/usr/bin/env python3
-"""Mesh lane ladder receipt: prove multi-driver concurrency and lane-priority
-eviction against a node-private weightd.
-
-Spawns a private weightd (own socket, no mesh identity so the fleet mesh is
-never touched), then runs the concurrency ladder: N concurrent driver
-processes each acquire a lane (held connection), run TP-N allreduce rounds
-through the shared region, and report per-op latency and checksums. Modes:
-  lanes    : N held-lane drivers (the architecture contract)
-  ephemeral: drivers that close the lane connection after acquire (pre-fix
-             module behavior; expected to collide on lane 0)
-  evict    : lane-priority eviction matrix (EVICT_DENIED below priority,
-            ok above, leases really released)
-
-usage: tools/mesh_lane_ladder_receipt.py --repo DIR --phase {baseline,after}
-            [--ladder 1,2,4,8] [--iters 200] [--rows 128]
-            [--keep-daemon] [--timeouts 240]
-Fails on daemon death, daemon error lines, or any phase result that
-contradicts --phase expectations. Prints a JSON receipt.
-"""
 import argparse
-import datetime
 import json
-import os
 import pathlib
+import queue
+import re
+import shlex
 import subprocess
-import sys
+import threading
 import time
 
-ERROR_PATTERN = ("ERRSITE", "IO_ERROR", "FAILED", "failure",
-    "MESH-SPIN-TIMEOUT", "MESH-CANCEL-ABORT", "MESH-REGISTER-FAIL",
-    "checksum-failed", "round-failed", "submit failed", "create failed")
+
+def validate_profile(profile):
+    if set(profile) != {"source_commit", "binary_sha256", "binary", "socket", "pack", "hosts", "lanes"}:
+        raise ValueError("profile requires source_commit, binary_sha256, binary, socket, pack, hosts, lanes")
+    for field, length in (("source_commit", 40), ("binary_sha256", 64)):
+        if re.fullmatch(r"[0-9a-f]{%d}" % length, profile[field]) is None:
+            raise ValueError(f"invalid {field}")
+    for field in ("binary", "socket", "pack"):
+        if not isinstance(profile[field], str) or not profile[field].startswith("/"):
+            raise ValueError(f"{field} must be an absolute remote path")
+    hosts = profile["hosts"]
+    if not isinstance(hosts, list) or len(hosts) != 16 or len(set(hosts)) != 16:
+        raise ValueError("hosts must contain sixteen distinct physical-rank SSH names")
+    if any(not isinstance(host, str) or re.fullmatch(r"[A-Za-z0-9_.@-]+", host) is None or host.startswith("-") for host in hosts):
+        raise ValueError("invalid SSH host")
+    lanes = profile["lanes"]
+    if not isinstance(lanes, list) or not 1 <= len(lanes) <= 8:
+        raise ValueError("one to eight lanes required")
+    seen = set()
+    for lane in lanes:
+        if set(lane) != {"lane", "physical_ranks", "rows"}:
+            raise ValueError("lane requires lane, physical_ranks, rows")
+        number, ranks, rows = lane["lane"], lane["physical_ranks"], lane["rows"]
+        if type(number) is not int or not 0 <= number < 8 or number in seen:
+            raise ValueError("lane IDs must be distinct and in 0..7")
+        seen.add(number)
+        if type(rows) is not int or not 1 <= rows <= 512:
+            raise ValueError("rows must be in 1..512")
+        if not isinstance(ranks, list) or not 2 <= len(ranks) <= 16 or any(type(rank) is not int or not 0 <= rank < 16 for rank in ranks) or len(set(ranks)) != len(ranks):
+            raise ValueError("each topology requires two to sixteen distinct physical ranks")
+    return profile
 
 
-def wait_socket(path, process, timeout=30.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"daemon exited rc={process.returncode} "
-                "before socket")
-        if path.exists():
-            return
-        time.sleep(0.05)
-    raise RuntimeError("daemon socket never appeared")
+def fields(line, prefix):
+    if not line.startswith(prefix + " "):
+        return None
+    values = {}
+    for token in line.split()[1:]:
+        key, value = token.split("=", 1)
+        if key in values:
+            raise ValueError(f"duplicate output field: {key}")
+        values[key] = value
+    return values
 
 
-def run_driver(args, socket_path, shm_path, mode, rank, degree):
-    command = [str(args.repo / "build" / "mesh_lane_ladder"), str(socket_path),
-        "mesh", str(rank), str(degree), str(args.iters), str(args.rows),
-        mode, shm_path]
-    environment = dict(os.environ)
-    environment["SPARK_WEIGHTD_SOCKET"] = str(socket_path)
-    started = time.monotonic()
-    completed = subprocess.run(command, capture_output=True,
-        timeout=args.timeouts, env=environment)
-    return {
-        "rank": rank,
-        "degree": degree,
-        "mode": mode,
-        "rc": completed.returncode,
-        "seconds": round(time.monotonic() - started, 3),
-        "stdout": completed.stdout.decode(errors="replace"),
-        "stderr": completed.stderr.decode(errors="replace")[-2000:],
-    }
-
-
-def parse_summaries(driver):
-    summaries = []
-    for line in driver["stdout"].splitlines():
-        if line.startswith("SUMMARY "):
-            fields = dict(token.split("=", 1) for token in line.split()[1:])
-            summaries.append({
-                "rank": int(fields["rank"]),
-                "lane": int(fields["lane"]),
-                "rounds": int(fields["rounds"]),
-                "bad": int(fields["bad"]),
-                "p50_us": float(fields["p50_us"]),
-                "p99_us": float(fields["p99_us"]),
-                "max_us": float(fields["max_us"]),
-            })
-        elif line.startswith("LADDER lane_acquire=FAILED"):
-            driver["lane_acquire_failed"] = line.strip()
-    return summaries
-
-
-def run_lane_phase(args, socket_path, shm_path, degree, ephemeral):
-    shm_path = f"{shm_path}.{degree}.{'eph' if ephemeral else 'held'}"
-    for stale in [shm_path]:
-        try:
-            os.unlink(stale)
-        except OSError:
-            pass
-    holders = []
-    ranks = []
-    for job in range(degree):
-        mode = "ephemeral" if ephemeral else "hold"
-        process = subprocess.Popen(
-            [str(args.repo / "build" / "mesh_lane_ladder"),
-             str(socket_path), mode],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ, "SPARK_WEIGHTD_SOCKET": str(socket_path)})
-        line = process.stdout.readline().decode(errors="replace").strip()
-        lane = None
-        if line.startswith("LADDER-INIT lane="):
-            lane = int(line.split("lane=")[1].split()[0])
-        else:
-            process.kill()
-        holders.append({"job": job, "process": process, "lane": lane,
-            "init": line})
-    for job_index, holder in enumerate(holders):
-        if holder["lane"] is None:
+def accept_event(record, line, iters, binary_sha256):
+    if line.startswith("LADDER-FAIL "):
+        raise ValueError(line.strip())
+    digest = re.fullmatch(r"([0-9a-f]{64})  .+\n?", line)
+    if digest:
+        if record.get("binary_sha256") is not None or digest[1] != binary_sha256:
+            raise ValueError("duplicate or mismatched binary hash")
+        record["binary_sha256"] = digest[1]
+        return
+    for kind in ("LADDER-READY", "ROUND", "LADDER-DONE", "SUMMARY"):
+        value = fields(line, kind)
+        if value is None:
             continue
-        for rank in range(degree):
-            ranks.append(subprocess.Popen(
-                [str(args.repo / "build" / "mesh_lane_ladder"),
-                 str(socket_path), "mesh", str(rank), str(degree),
-                 str(args.iters), str(args.rows), str(holder["lane"]),
-                 shm_path],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env={**os.environ, "SPARK_WEIGHTD_SOCKET": str(socket_path)}))
-    drivers = []
-    for rank_index, rank_process in enumerate(ranks):
-        stdout, stderr = rank_process.communicate(timeout=args.timeouts)
-        drivers.append({
-            "rank": rank_index,
-            "degree": degree,
-            "mode": "ephemeral" if ephemeral else "held",
-            "rc": rank_process.returncode,
-            "stdout": stdout.decode(errors="replace"),
-            "stderr": stderr.decode(errors="replace")[-2000:],
-        })
-    for holder in holders:
-        process = holder["process"]
-        if process.poll() is None:
-            process.terminate()
-        try:
-            rest_stdout, rest_stderr = process.communicate(
-                timeout=args.timeouts)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            rest_stdout, rest_stderr = process.communicate()
-        holder["rc"] = process.returncode
-    phase = {
-        "phase": f"lanes-{degree}-{'ephemeral' if ephemeral else 'held'}",
-        "holders": [{k: h[k] for k in ("job", "lane", "init", "rc")}
-            for h in holders],
-        "drivers": drivers,
-        "summaries": [],
-        "distinct_lanes": len({h["lane"] for h in holders
-            if h["lane"] is not None}),
-    }
-    for driver in drivers:
-        phase["summaries"].extend(parse_summaries(driver))
-    phase["all_ok"] = all(d["rc"] == 0 for d in drivers) if drivers else False
-    phase["any_checksum_bad"] = any(s["bad"] != 0
-        for s in phase["summaries"])
+        if int(value["lane"]) != record["lane"] or int(value["rank"]) != record["rank"]:
+            raise ValueError("output lane/rank differs from launched identity")
+        if kind == "LADDER-READY":
+            if record.get("ready") is not None or record.get("binary_sha256") != binary_sha256:
+                raise ValueError("duplicate readiness or missing binary provenance")
+            if int(value["degree"]) != len(record["physical_ranks"]) or int(value["physical"]) != record["physical_ranks"][record["rank"]] or int(value["rows"]) != record["rows"] or value["map"] != ",".join(map(str, record["physical_ranks"])) or value["transport"] != "rdma":
+                raise ValueError("readiness topology differs from profile")
+            record["ready"] = value
+        elif kind == "ROUND":
+            ordinal, operation = int(value["ordinal"]), int(value["operation"])
+            key = f"{ordinal}:{operation}"
+            if not record.get("released") or not 0 <= ordinal <= iters or operation not in (0, 1, 2) or key in record["rounds"] or value["status"] != "ok" or int(value["graph"]) != int(ordinal > 0):
+                raise ValueError("invalid, duplicate or unreleased numerical round")
+            record["rounds"][key] = value
+        elif kind == "LADDER-DONE":
+            if record.get("done") is not None or len(record["rounds"]) != 3 * (iters + 1) or int(value["rounds"]) != len(record["rounds"]) or int(value["callbacks"]) != 3:
+                raise ValueError("incomplete numerical rounds or callback count")
+            record["done"] = value
+        else:
+            if not record.get("cleanup_released") or record.get("summary") is not None or int(value["rounds"]) != 3 * (iters + 1) or int(value["ok"]) != int(value["rounds"]) or int(value["bad"]) != 0 or int(value["callbacks"]) != 3 or value["transport"] != "rdma":
+                raise ValueError("invalid or premature cleanup summary")
+            record["summary"] = value
+        return
+
+
+def run(profile, output, iters, timeout):
+    output.mkdir(parents=True, exist_ok=False)
+    events = queue.Queue()
+    records, processes, readers = [], [], []
+    started = time.monotonic()
+    deadline = started + timeout
+    receipt = {"profile": profile, "iters": iters, "qualification": "real common CUDA collectives and daemon/NIC routing; no model inference", "records": records, "pass": False}
+
+    def reader(index, process):
+        with (output / f"lane{records[index]['lane']}-rank{records[index]['rank']}.log").open("w") as log:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                events.put((index, line))
+        events.put((index, None))
+
+    def wait_for(key):
+        while not all(record.get(key) for record in records):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"timeout waiting for {key}")
+            index, line = events.get(timeout=remaining)
+            if line is None:
+                records[index]["eof"] = True
+                if key != "eof":
+                    raise RuntimeError(f"rank exited before {key}: lane={records[index]['lane']} rank={records[index]['rank']}")
+            else:
+                accept_event(records[index], line, iters, profile["binary_sha256"])
+
     try:
-        os.unlink(shm_path)
-    except OSError:
-        pass
-    return phase
-
-
-def run_evict_phase(args, socket_path, pack_path, lanes):
-    command = [str(args.repo / "build" / "mesh_lane_ladder"),
-        str(socket_path), "evict", str(lanes), str(pack_path)]
-    environment = dict(os.environ)
-    environment["SPARK_WEIGHTD_SOCKET"] = str(socket_path)
-    completed = subprocess.run(command, capture_output=True,
-        timeout=args.timeouts, env=environment)
-    output = completed.stdout.decode(errors="replace")
-    tests = [line for line in output.splitlines()
-        if line.startswith("EVICT-TEST ")]
-    passed = completed.returncode == 0 and "EVICT-MATRIX PASS" in output
-    return {
-        "phase": f"evict-matrix-{lanes}",
-        "rc": completed.returncode,
-        "pass": passed,
-        "tests": tests,
-        "stdout_tail": output[-1500:],
-        "stderr_tail": completed.stderr.decode(errors="replace")[-1500:],
-    }
-
-
-def daemon_error_lines(log_path):
-    if not log_path.exists():
-        return []
-    return [line[:220] for line in
-        log_path.read_text(errors="replace").splitlines()
-        if any(pattern in line for pattern in ERROR_PATTERN)]
+        for lane in profile["lanes"]:
+            for rank, physical in enumerate(lane["physical_ranks"]):
+                arguments = [profile["binary"], profile["socket"], "mesh", str(rank), str(len(lane["physical_ranks"])), str(iters), str(lane["rows"]), str(lane["lane"]), profile["pack"], ",".join(map(str, lane["physical_ranks"]))]
+                remote = shlex.join(["sha256sum", "--", profile["binary"]]) + " && exec " + shlex.join(["env", "SPARK_TP_WAIT_MODE=hardware", *arguments])
+                command = ["ssh", "-T", "-oBatchMode=yes", "-oConnectTimeout=10", profile["hosts"][physical], remote]
+                records.append({**lane, "rank": rank, "host": profile["hosts"][physical], "command": command, "rounds": {}})
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                processes.append(process)
+                thread = threading.Thread(target=reader, args=(len(records) - 1, process), daemon=True)
+                readers.append(thread)
+                thread.start()
+        wait_for("ready")
+        receipt["all_ready_seconds"] = time.monotonic() - started
+        for record, process in zip(records, processes):
+            record["released"] = True
+            process.stdin.write("G")
+            process.stdin.flush()
+        wait_for("done")
+        receipt["all_done_seconds"] = time.monotonic() - started
+        for record, process in zip(records, processes):
+            record["cleanup_released"] = True
+            process.stdin.write("R")
+            process.stdin.flush()
+        wait_for("eof")
+        for record, process in zip(records, processes):
+            record["returncode"] = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            if record["returncode"] != 0 or not record.get("summary"):
+                raise RuntimeError("rank failed or omitted terminal cleanup summary")
+        receipt["pass"] = True
+    except Exception as error:
+        receipt["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for record, process in zip(records, processes):
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            record["returncode"] = process.returncode
+        for thread in readers:
+            thread.join(timeout=1)
+        for process in processes:
+            process.stdin.close()
+            process.stdout.close()
+        receipt["seconds"] = time.monotonic() - started
+        (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    return receipt
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True, type=pathlib.Path)
-    parser.add_argument("--phase", required=True, choices=["baseline", "after"])
-    parser.add_argument("--ladder", default="1,2,4,8")
-    parser.add_argument("--iters", type=int, default=200)
-    parser.add_argument("--rows", type=int, default=128)
-    parser.add_argument("--evict-lanes", type=int, default=8)
-    parser.add_argument("--timeouts", type=int, default=240)
-    parser.add_argument("--keep-daemon", action="store_true")
-    parser.add_argument("--socket-dir", type=pathlib.Path, default=None)
+    parser = argparse.ArgumentParser(description="Numerically qualify concurrent lane topologies against already running private fleet mesh daemons.")
+    parser.add_argument("--profile", required=True, type=pathlib.Path)
+    parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--iters", type=int, default=16)
+    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
-    args.ladder = [int(x) for x in args.ladder.split(",")]
-
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    work_dir = args.socket_dir or (args.repo / "runs" /
-        f"mesh-lane-ladder-{args.phase}-{stamp}")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    socket_path = work_dir / "ladder.sock"
-    shm_path = f"/dev/shm/mesh-ladder-{args.phase}-{os.getpid()}.shm"
-    pack_path = work_dir / "fixture.pack"
-    daemon_log = work_dir / "weightd.log"
-
-    daemon = subprocess.Popen(
-        [str(args.repo / "build" / "sparkpipe_weightd"),
-         "--socket", str(socket_path), "--device-bytes-max",
-         str(8 * 1024 * 1024 * 1024)],
-        stdout=open(daemon_log, "w"), stderr=subprocess.STDOUT)
-    receipt = {"phase": args.phase, "started": stamp, "work_dir": str(work_dir),
-        "ladder": args.ladder, "iters": args.iters, "rows": args.rows,
-        "phases": [], "daemon_alive": False, "daemon_errors": []}
-    try:
-        wait_socket(socket_path, daemon)
-        prepare = subprocess.run(
-            [str(args.repo / "build" / "weightd_lazy_consumer"),
-             "prepare", str(pack_path)], capture_output=True, timeout=60)
-        if prepare.returncode != 0:
-            raise RuntimeError("fixture prepare failed: "
-                + prepare.stderr.decode(errors="replace")[-500:])
-        for degree in args.ladder:
-            receipt["phases"].append(run_lane_phase(args, socket_path,
-                shm_path, degree, False))
-        receipt["phases"].append(run_lane_phase(args, socket_path,
-            shm_path, 2, True))
-        receipt["phases"].append(run_evict_phase(args, socket_path,
-            pack_path, args.evict_lanes))
-        receipt["daemon_alive"] = daemon.poll() is None
-        receipt["daemon_errors"] = daemon_error_lines(daemon_log)
-    finally:
-        try:
-            os.unlink(shm_path)
-        except OSError:
-            pass
-        if not args.keep_daemon:
-            daemon.terminate()
-            try:
-                daemon.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                daemon.kill()
-    receipt["verdict"] = judge(receipt)
-    print(json.dumps(receipt, indent=2))
-    return 0 if receipt["verdict"]["pass"] else 1
-
-
-def judge(receipt):
-    baseline = receipt["phase"] == "baseline"
-    failures = []
-    for phase in receipt["phases"]:
-        name = phase["phase"]
-        if name.startswith("lanes-") and name.endswith("-held"):
-            degree = int(name.split("-")[1])
-            holder_lanes = sorted(h["lane"] for h in phase["holders"]
-                if h["lane"] is not None)
-            if baseline:
-                if degree <= 2:
-                    if not phase["all_ok"]:
-                        failures.append({"phase": name,
-                            "problem": "held-lane drivers failed"})
-                    if phase["distinct_lanes"] != degree:
-                        failures.append({"phase": name,
-                            "problem": f"distinct lanes "
-                            f"{phase['distinct_lanes']} != {degree}"})
-                    if phase["any_checksum_bad"]:
-                        failures.append({"phase": name,
-                            "problem": "checksum failures"})
-                else:
-                    holders_ok = [h for h in phase["holders"]
-                        if h["lane"] is not None]
-                    if len(holder_lanes) != 2 or any(h["lane"] >= 2
-                            for h in holders_ok):
-                        failures.append({"phase": name,
-                            "problem": f"baseline must assign exactly lanes "
-                            f"[0,1], got {holder_lanes}"})
-                    if not any(h["rc"] == 3 for h in phase["holders"]):
-                        failures.append({"phase": name,
-                            "problem": "baseline must fail closed (rc=3) "
-                            "beyond two lanes"})
-            else:
-                if len(holder_lanes) != degree:
-                    failures.append({"phase": name,
-                        "problem": f"holder lanes {holder_lanes} "
-                        f"!= {degree} jobs"})
-                if not phase["all_ok"]:
-                    failures.append({"phase": name,
-                        "problem": "held-lane drivers failed"})
-                if phase["any_checksum_bad"]:
-                    failures.append({"phase": name,
-                        "problem": "checksum failures"})
-        elif name.endswith("-ephemeral"):
-            if phase["distinct_lanes"] != 1:
-                failures.append({"phase": name,
-                    "problem": "ephemeral holders must collapse to one lane"})
-        elif name.startswith("evict-matrix"):
-            if baseline and phase["pass"]:
-                failures.append({"phase": name,
-                    "problem": "eviction arbitration unexpectedly present "
-                    "on baseline"})
-            if not baseline and not phase["pass"]:
-                failures.append({"phase": name,
-                    "problem": "eviction arbitration failed"})
-    if not receipt["daemon_alive"]:
-        failures.append({"phase": "daemon", "problem": "daemon died"})
-    if receipt["daemon_errors"]:
-        failures.append({"phase": "daemon",
-            "problem": f"{len(receipt['daemon_errors'])} error lines",
-            "lines": receipt["daemon_errors"][:8]})
-    return {"pass": not failures, "failures": failures}
+    if not 1 <= args.iters <= 1024 or not 1 <= args.timeout <= 180:
+        parser.error("iters must be 1..1024 and timeout 1..180")
+    profile = validate_profile(json.loads(args.profile.read_text()))
+    if args.validate_only:
+        print(json.dumps({"lanes": len(profile["lanes"]), "processes": sum(len(lane["physical_ranks"]) for lane in profile["lanes"]), "validated_profile": True}))
+        return 0
+    receipt = run(profile, args.output, args.iters, args.timeout)
+    print(json.dumps({"pass": receipt["pass"], "receipt": str(args.output / "receipt.json"), "error": receipt.get("error")}))
+    return 0 if receipt["pass"] else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

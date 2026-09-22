@@ -8,7 +8,7 @@
         "architecture": "gemma4_resident_decode_stage",
         "purpose": "resident decode-stage firmware for Gemma-4-26B-A4B: 5:1 sliding to full attention with per-head q/k norms and k_eq_v on full layers, hybrid dense-MLP + routed-MoE block (128 experts, top-8, per-expert scales), BF16 spine, layer scalars, partial rotary on full layers",
         "provenance": {
-            "status": "in bring-up; ACC-2 checkpoint-faithful packs (rank0 stage2 FULL 134/134, rank3 66/134), first serving arm is this lane",
+            "status": "GPU receipt restored: full retained-receipt validator PASS at merged main e32242e0 (queue job gemma4-26b-gate-1, spark0, attempt 08c26abc, -O3 publish-style): chain_sliding_attention_dataflow 0.00175/0.999998, chain_determinism bit_exact=1, PASS sites=28, module artifact 9d2316cea021030981a2743d3759d4650b8eab8325b4cf0f23d88eb8e31fe65f. Both arms of the #1105 fix (validator mirror rows, weight uploads, sliding row-stride split, determinism gain staging) are receipt-backed.",
             "disclosed_source": [
                 "google/gemma-4-26b-a4b-it warm snapshot, contract source_revision 4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
             ]

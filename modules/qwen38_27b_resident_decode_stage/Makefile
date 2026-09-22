@@ -7,8 +7,17 @@ MODULE_HOST_SOURCE := $(CURDIR)/source/spark_qwen38_27b_resident_decode_stage_mo
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_qwen38_27b_resident_decode_stage_cuda.cu
 # model-families/common/src was deleted with the library rewrite; the KV
 # client and store implementations now live under cache/store (same ABI).
+# The weightd client sources ride the link unit (the driver .so must be
+# self-contained: tp_device_collective references SparkWeightdClient*),
+# same shape as the glm5_next/dsv4/gemma4 modules.
+include $(dir $(lastword $(MAKEFILE_LIST)))../../runtime/weightd_sources.mk
 MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
+	$(REPOSITORY_ROOT)/runtime/stagepack_format.c \
+	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
+	$(REPOSITORY_ROOT)/src/spark_status.c \
+	$(REPOSITORY_ROOT)/src/spark_sha256.c \
+	$(REPOSITORY_ROOT)/src/spark_ck128.c \
 	$(REPOSITORY_ROOT)/cache/store/stage_kv_client.c \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \

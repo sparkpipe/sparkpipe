@@ -14,7 +14,7 @@ extern "C" {
 #endif
 
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION UINT32_C(0x00000002)
@@ -123,6 +123,43 @@ typedef struct SparkGlm5NextResidentDecodeStageBatchView
 	const uint64_t *row_sequence_ids;
 } SparkGlm5NextResidentDecodeStageBatchView;
 
+#define SPARK_GLM5_NEXT_STATE_CAPTURE_ABI_VERSION 1u
+
+typedef struct SparkGlm5NextStateCaptureLane
+{
+	uint64_t sequence_id;
+	uint64_t next_position;
+	uint64_t payload_offset;
+	uint64_t payload_bytes;
+	uint32_t resident_slot;
+	uint32_t page_count;
+	float output_score;
+	uint32_t reserved0;
+} SparkGlm5NextStateCaptureLane;
+
+typedef struct SparkGlm5NextStateCapture
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t lane_capacity;
+	uint32_t pages_per_lane_capacity;
+	uint64_t payload_capacity;
+	SparkGlm5NextStateCaptureLane *lanes;
+	uint32_t *logical_pages;
+	uint32_t *physical_pages;
+	uint8_t *payload;
+	uint64_t payload_bytes;
+	uint64_t key_page_bytes;
+	uint64_t index_page_bytes;
+	uint64_t recurrent_bytes;
+	uint64_t hidden_bytes;
+	uint64_t backing_write_count;
+	uint64_t backing_read_count;
+	uint64_t prefix_hit_count;
+	uint32_t key_layer_count;
+	uint32_t index_layer_count;
+} SparkGlm5NextStateCapture;
+
 typedef struct SparkGlm5NextResidentDecodeStageFrameContext
 {
 	uint32_t abi_version;
@@ -138,6 +175,7 @@ typedef struct SparkGlm5NextResidentDecodeStageFrameContext
 	uint64_t sideband_input_bytes;
 	void *sideband_output;
 	uint64_t sideband_output_bytes;
+	SparkGlm5NextStateCapture *state_capture;
 } SparkGlm5NextResidentDecodeStageFrameContext;
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageSpanIsValid(uint32_t stage_count,uint32_t stage_index,uint32_t first_layer,uint32_t layer_count)

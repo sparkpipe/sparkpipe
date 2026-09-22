@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 2u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -64,6 +64,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE_RESULT 28u
 #define SPARK_WEIGHTD_IPC_KIND_EVICT 29u
 #define SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT 30u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY 31u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT 32u
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 8u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
@@ -81,11 +83,11 @@ extern "C" {
 #define SPARK_WEIGHTD_MESH_BUFFER_BYTES \
     ((uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * \
      SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * SPARK_WEIGHTD_MESH_BANDS)
-#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 8192u
+#define SPARK_WEIGHTD_MESH_DOORBELL_BYTES 65536u
 #define SPARK_WEIGHTD_MESH_REGION_BYTES \
     (SPARK_WEIGHTD_MESH_BUFFER_BYTES + (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_BYTES)
 #define SPARK_WEIGHTD_MESH_DOORBELL_OFFSET SPARK_WEIGHTD_MESH_BUFFER_BYTES
-#define SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES 24u
+#define SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES 32u
 #define SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS \
     (SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND)
 #define SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE \
@@ -96,7 +98,7 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + \
      (((band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * \
          SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES))
-#define SPARK_WEIGHTD_MESH_SHIPPED_CELL_BYTES 4u
+#define SPARK_WEIGHTD_MESH_SHIPPED_CELL_BYTES 8u
 #define SPARK_WEIGHTD_MESH_SHIPPED_OFFSET \
     (SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + \
      (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS + \
@@ -106,7 +108,43 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_SHIPPED_OFFSET + \
      (((band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * \
          SPARK_WEIGHTD_MESH_SHIPPED_CELL_BYTES))
+#define SPARK_WEIGHTD_MESH_WAIT_VERSION 1u
+#define SPARK_WEIGHTD_MESH_WAIT_SHIPPED 1u
+#define SPARK_WEIGHTD_MESH_WAIT_PEERS 2u
+#define SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED UINT64_C(0xFFFFFFFFFE000000)
+#define SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES 128u
+#define SPARK_WEIGHTD_MESH_WAIT_OFFSET \
+    (SPARK_WEIGHTD_MESH_SHIPPED_OFFSET + \
+     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * \
+        SPARK_WEIGHTD_MESH_SHIPPED_CELL_BYTES)
+#define SPARK_WEIGHTD_MESH_WAIT_ENTRY(band,rank) \
+    (SPARK_WEIGHTD_MESH_WAIT_OFFSET + \
+     ((uint64_t)(band) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + (rank)) * \
+        SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES)
+
+typedef struct SparkWeightdMeshWaitRequest
+{
+    uint64_t request_id;
+    uint64_t kind;
+    uint64_t tag;
+    uint64_t peer_mask;
+    uint64_t cancel_expected;
+    uint64_t timeout_ns;
+    uint64_t version;
+    uint64_t upstream_error;
+    uint64_t ready;
+    uint64_t error;
+    uint64_t diag;
+    uint64_t reserved[5];
+} SparkWeightdMeshWaitRequest;
 #if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdMeshWaitRequest) == SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES &&
+    offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
+    "mesh wait request and ready occupy distinct cache lines");
+_Static_assert(SPARK_WEIGHTD_MESH_WAIT_OFFSET % SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 0u &&
+    SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+    (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES <=
+    SPARK_WEIGHTD_MESH_DOORBELL_BYTES,"mesh wait requests fit the doorbell page");
 _Static_assert(SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * \
     SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES <= SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
     "doorbell entries must fit the doorbell page");
@@ -302,9 +340,19 @@ typedef struct SparkWeightdIpcEpochExportResult
     uint32_t reserved;
 } SparkWeightdIpcEpochExportResult;
 
+typedef struct SparkWeightdMeshTopology
+{
+    uint32_t rank_count;
+    uint32_t local_rank;
+    uint32_t physical_ranks[16];
+} SparkWeightdMeshTopology;
+
 typedef struct SparkWeightdIpcLaneAcquire
 {
     SparkWeightdIpcHeader header;
+    uint32_t requested_lane;
+    uint32_t reserved;
+    SparkWeightdMeshTopology topology;
 } SparkWeightdIpcLaneAcquire;
 
 typedef struct SparkWeightdIpcLaneAcquireResult
@@ -334,6 +382,21 @@ typedef struct SparkWeightdIpcEvictResult
 
 #define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExport))
 #define SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEpochExportResult))
+
+typedef struct SparkWeightdIpcMeshActivity
+{
+    SparkWeightdIpcHeader header;
+    uint64_t generation;
+    uint32_t active;
+    uint32_t lane;
+} SparkWeightdIpcMeshActivity;
+
+typedef struct SparkWeightdIpcMeshActivityResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reserved0;
+} SparkWeightdIpcMeshActivityResult;
 
 typedef struct SparkWeightdIpcMeshWrite
 {
@@ -587,6 +650,9 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
 void SparkWeightdClientClose(SparkWeightdClient *client);
 uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client);
 
+SparkStatus SparkWeightdClientMeshActivity(SparkWeightdClient *client,
+    uint64_t generation, uint32_t active, uint64_t timeout_nanoseconds);
+
 SparkStatus SparkWeightdClientMeshWrite(SparkWeightdClient *client,
     uint32_t peer_rank,
     uint64_t source_offset,
@@ -664,9 +730,20 @@ SparkStatus SparkWeightdClientEpochExport(SparkWeightdClient *client,
     int *fd_out,
     uint64_t timeout_nanoseconds);
 
+SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
+    const SparkWeightdMeshTopology *topology);
+SparkStatus SparkWeightdMeshSetActivity(uint32_t lane,uint32_t active);
+
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
+    uint32_t requested_lane,
+    const SparkWeightdMeshTopology *topology,
     uint32_t *lane_out,
     uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientLaneBind(SparkWeightdClient *owner,
+    SparkWeightdClient *peer,uint32_t band,
+    const SparkWeightdMeshTopology *topology,uint32_t *lane_out);
+SparkStatus SparkWeightdClientLaneUnbind(SparkWeightdClient *owner,uint32_t band);
 
 SparkStatus SparkWeightdClientEvict(SparkWeightdClient *client,
     uint32_t target_lane,

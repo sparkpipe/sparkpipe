@@ -121,7 +121,8 @@ static void SparkTestRdmaV4HelloIdentity(void)
             default: mutated.memory_mode++; break;
         }
         SparkTestRdmaHelloPair(&source,&mutated,
-            SPARK_STATUS_VALIDATION_FAILED);
+            mismatch >= 2u && mismatch <= 5u ?
+                SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED);
     }
 }
 

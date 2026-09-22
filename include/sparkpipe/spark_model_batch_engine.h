@@ -134,6 +134,8 @@ SparkStatus SparkModelBatchEngineReopenAdmission(
 	SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineBeginShutdown(
 	SparkModelBatchEngine *engine);
+uint64_t SparkModelBatchEngineNextProgressNs(
+	const SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineGetPollDescriptors(
 	const SparkModelBatchEngine *engine,
 	SparkModelResidentClientPollDescriptor *descriptors,

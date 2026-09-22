@@ -49,7 +49,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES,
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN,
+	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN,
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -148,7 +148,7 @@ static SparkStatus TestModelServingValidateBoundaries(
 {
 	uint64_t required_bytes;
 	uint64_t input_sideband_bytes,output_sideband_bytes;
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 		return(submission->hidden_input_address == 0 && submission->boundary_sideband_input_address == 0 && submission->hidden_output_address == 0 && submission->boundary_sideband_output_address == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 	required_bytes = (uint64_t)submission->row_count * TestModelServingDescriptor.boundary_element_count * TestModelServingDescriptor.boundary_element_bytes;
 	input_sideband_bytes = state->stage_index != 0u ? (uint64_t)submission->row_count * TestModelServingDescriptor.boundary_sideband_bytes_per_sequence[state->stage_index - 1u] : 0u;
@@ -219,7 +219,7 @@ static void TestModelServingBuildCompletion(
 	completion->service_time_ns = (uint64_t)(state->stage_index + 1u) * 10u;
 	completion->device_memcpy_bytes = (uint64_t)(state->stage_index + 1u) * 100u;
 	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
-	if ( state->stage_index + 1u != TestModelServingDescriptor.stage_count || submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->model_extension_kind == 88u )
+	if ( state->stage_index + 1u != TestModelServingDescriptor.stage_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u || submission->model_extension_kind == 88u )
 		return;
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 	completion->tokens_per_sequence = submission->tokens_per_sequence;
@@ -285,7 +285,7 @@ static SparkStatus TestModelServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	}
 	state->submitted_count++;
-	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->hidden_output_address != 0 )
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && submission->hidden_output_address != 0 )
 	{
 		if ( submission->hidden_input_address != 0 )
 			memcpy(submission->hidden_output_address,submission->hidden_input_address,(size_t)submission->hidden_output_bytes);

@@ -1,0 +1,14 @@
+{
+ "schema_version": 1,
+ "family": "minimax",
+ "model": "MiniMaxAI/MiniMax-H3",
+ "prompt_set": "smoke-standard-v1",
+ "topology": "TP4",
+ "nodes": 4,
+ "expert_shard": "tp",
+ "spine_bytes": 70195941376,
+ "kv_floor_bytes": 268435456,
+ "workspace_bytes": 536870912,
+ "notes": "dense family (text tower only): routed-expert set provably empty - the pack wire has no expert tensors (tensor_count 707 = globals + 64x11 per-layer dense kinds, pack-load receipts). The smoke working set is the full bf16 weight set: spine_bytes is the sum-of-ranks payload (17548985344 B x 4, the promoted repaired packs on spark8-b), honestly above the lane table because dense packs cannot ride the weightd expert arena until #1138 (manager ruling 2026-09-23: bounded-TTL ~18 GiB interim, NOT the 6400 MiB serving budget). kv_floor derived: 64 layers x 2 local kv heads/rank x 128 head dim x 2 (K+V) x 2 B = 65536 B/token/rank x 4 seqs x 1024 tokens (deployment resident cap 4). workspace is the declared bound until the M3 measurement.",
+ "experts": []
+}

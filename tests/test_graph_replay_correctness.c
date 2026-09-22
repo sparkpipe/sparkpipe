@@ -108,12 +108,12 @@ static void *ShipEmulatorMain(void *argument)
             volatile uint64_t *entry = (volatile uint64_t *)
                 ((uint8_t *)g_mesh + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0,
                     rank));
-            volatile uint32_t *shipped = (volatile uint32_t *)
+            volatile uint64_t *shipped = (volatile uint64_t *)
                 ((uint8_t *)g_mesh + SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(0,
                     rank));
             if ( entry[0] != 0ull &&
-                 *shipped != (uint32_t)entry[0] )
-                *shipped = (uint32_t)entry[0];
+                 *shipped != entry[0] )
+                *shipped = entry[0];
         }
         usleep(50);
     }

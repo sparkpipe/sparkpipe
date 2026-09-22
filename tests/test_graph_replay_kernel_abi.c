@@ -73,7 +73,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "=== kernel ABI checks on %s ===\n\n", path);
 
     fprintf(stderr, "1. Mesh kernel build marker:\n");
-    check_marker(path, "SPARK-TP-MESH-KERNELS-V6-SEQRING-EPOCHMATCH-PREPAD");
+    check_marker(path, "SPARK-TP-MESH-KERNELS-V9-CANCEL-LATCHED-TREE");
 
     fprintf(stderr, "\n2. Graph capture marker:\n");
     check_marker(path, "GRAPH-CAPTURE-OK");

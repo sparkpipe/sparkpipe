@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,32 @@ GEMMA4_DEFINES = """#pragma once
 GEMMA4_MOE_DEFINES = GEMMA4_DEFINES + """#define SPARK_LLM_ROUTED_EXPERT_COUNT           4u
 #define SPARK_LLM_EXPERTS_PER_TOKEN             2u
 #define SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION 4u
+"""
+
+QWEN38_MAX_DEFINES = """#pragma once
+
+#define SPARK_LLM_FAMILY_TAG                    qwen38_max
+#define SPARK_LLM_HIDDEN_DIMENSION              16u
+#define SPARK_LLM_LAYER_COUNT                   4u
+#define SPARK_LLM_OUTPUT_VOCAB_COUNT            32u
+#define SPARK_LLM_RMS_NORM_EPSILON              1e-06f
+#define SPARK_LLM_END_OF_TEXT_TOKEN_ID          31u
+#define SPARK_LLM_ATTN_PERIOD                   4u
+#define SPARK_LLM_FULL_ATTENTION_PHASE          3u
+#define SPARK_LLM_ATTN_HEAD_COUNT               2u
+#define SPARK_LLM_KV_HEAD_COUNT                 1u
+#define SPARK_LLM_HEAD_DIMENSION                8u
+#define SPARK_LLM_ROPE_DIMENSION                2u
+#define SPARK_LLM_ROPE_THETA                    10000.0f
+#define SPARK_LLM_GDN_KEY_HEAD_COUNT            2u
+#define SPARK_LLM_GDN_VALUE_HEAD_COUNT          4u
+#define SPARK_LLM_GDN_CONV_KERNEL               4u
+#define SPARK_LLM_KDA_HEAD_KEY_DIMENSION        4u
+#define SPARK_LLM_KDA_HEAD_VALUE_DIMENSION      4u
+#define SPARK_LLM_ROUTED_EXPERT_COUNT           4u
+#define SPARK_LLM_EXPERTS_PER_TOKEN             2u
+#define SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION 16u
+#define SPARK_LLM_SHARED_EXPERT_COUNT           1u
 """
 
 LAGUNA_DEFINES = """#pragma once
@@ -326,19 +353,118 @@ def laguna_config():
     }
 
 
+def qwen38_max_config():
+    return {
+        "hidden_size": 16, "num_hidden_layers": 4, "vocab_size": 32,
+        "rms_norm_eps": 1e-6, "eos_token_id": 31,
+        "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 8,
+        "partial_rotary_factor": 0.25,
+        "rope_parameters": {"rope_theta": 10000.0},
+        "linear_num_key_heads": 2, "linear_num_value_heads": 4,
+        "linear_key_head_dim": 4, "linear_value_head_dim": 4,
+        "linear_conv_kernel_dim": 4, "full_attention_interval": 4,
+        "num_experts": 4,
+        "num_experts_per_tok": 2, "moe_intermediate_size": 16,
+        "shared_expert_intermediate_size": 16,
+        "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+    }
+
+
+def typed_u8(array, dtype):
+    return (array, dtype)
+
+
+def qwen38_max_tensors():
+    rng = np.random.default_rng(31)
+    t = {}
+    t["model.embed_tokens.weight"] = bf16("e", (32, 16), rng)
+    t["model.norm.weight"] = bf16("n", (16,), rng)
+    head = bf16("lm", (32, 16), rng, scale=0.5)
+    head[31] = np.zeros(16, dtype=np.uint16)
+    t["lm_head.weight"] = head
+    for layer in range(4):
+        p = f"model.layers.{layer}."
+        t[p + "input_layernorm.weight"] = bf16("il", (16,), rng)
+        t[p + "post_attention_layernorm.weight"] = bf16("pl", (16,), rng)
+        t[p + "mlp.gate.weight"] = bf16("gw", (4, 16), rng, scale=0.5)
+        t[p + "mlp.shared_expert_gate.weight"] = bf16("sg", (1, 16), rng)
+        t[p + "mlp.shared_expert.gate_proj.weight"] = bf16("g", (16, 16), rng)
+        t[p + "mlp.shared_expert.up_proj.weight"] = bf16("u", (16, 16), rng)
+        t[p + "mlp.shared_expert.down_proj.weight"] = bf16("dn", (16, 16), rng)
+        for e in range(4):
+            ep = p + f"mlp.experts.{e}."
+            for kind in ("gate_proj", "up_proj", "down_proj"):
+                t[ep + f"{kind}.weight"] = typed_u8(
+                    rng.integers(0, 256, (16, 8), dtype=np.uint8), "U8")
+                t[ep + f"{kind}.weight_scale"] = typed_u8(
+                    rng.integers(0, 64, (16, 1), dtype=np.uint8), "F8_E4M3")
+                t[ep + f"{kind}.weight_scale_2"] = (
+                    np.array(0.02, dtype=np.float32), "F32")
+        if layer < 3:
+            t[p + "linear_attn.in_proj_qkv.weight"] = bf16("qkv", (32, 16), rng)
+            t[p + "linear_attn.in_proj_a.weight"] = bf16("ia", (4, 16), rng)
+            t[p + "linear_attn.in_proj_b.weight"] = bf16("ib", (4, 16), rng)
+            t[p + "linear_attn.in_proj_z.weight"] = bf16("z", (16, 16), rng)
+            t[p + "linear_attn.out_proj.weight"] = bf16("op", (16, 16), rng)
+            t[p + "linear_attn.conv1d.weight"] = bf16("cv", (32, 1, 4), rng)
+            t[p + "linear_attn.A_log"] = bf16("al", (4,), rng, scale=0.01)
+            t[p + "linear_attn.dt_bias"] = bf16("db", (4,), rng, scale=0.01)
+            t[p + "linear_attn.norm.weight"] = bf16("nw", (4,), rng)
+        else:
+            t[p + "self_attn.q_proj.weight"] = bf16("q", (32, 16), rng)
+            t[p + "self_attn.k_proj.weight"] = bf16("k", (8, 16), rng)
+            t[p + "self_attn.v_proj.weight"] = bf16("v", (8, 16), rng)
+            t[p + "self_attn.q_norm.weight"] = bf16("qn", (8,), rng)
+            t[p + "self_attn.k_norm.weight"] = bf16("kn", (8,), rng)
+            t[p + "self_attn.o_proj.weight"] = bf16("op", (16, 16), rng)
+    return t
+
+
+def write_safetensors_typed(path, tensors):
+    header = {}
+    offset = 0
+    blobs = []
+    tags = {"BF16": ("BF16", 2), "F32": ("F32", 4), "U8": ("U8", 1),
+            "F8_E4M3": ("F8_E4M3", 1)}
+    for name in sorted(tensors):
+        value = tensors[name]
+        array, tag = value if isinstance(value, tuple) else (value, None)
+        if tag is None:
+            tag = "BF16" if array.dtype == np.uint16 else "F32"
+        dtype, itemsize = tags[tag]
+        raw = array.tobytes()
+        header[name] = {"dtype": dtype, "shape": list(array.shape),
+                        "data_offsets": [offset, offset + len(raw)]}
+        offset += len(raw)
+        blobs.append(raw)
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    pad = (8 - len(header_bytes) % 8) % 8
+    header_bytes += b" " * pad
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<Q", len(header_bytes)))
+        fh.write(header_bytes)
+        for raw in blobs:
+            fh.write(raw)
+
+
 FAMILIES = [
     ("ling", ling_tensors, ling_config(), LING_DEFINES, "ling"),
     ("gemma4", gemma4_tensors, gemma4_config(), GEMMA4_DEFINES, "gemma4"),
     ("gemma4_moe", gemma4_moe_tensors, gemma4_moe_config(), GEMMA4_MOE_DEFINES,
      "gemma4"),
     ("laguna", laguna_tensors, laguna_config(), LAGUNA_DEFINES, "laguna"),
+    ("qwen38_max", qwen38_max_tensors, qwen38_max_config(), QWEN38_MAX_DEFINES,
+     "qwen38_max"),
 ]
+
+TYPED_WRITERS = {"qwen38_max": write_safetensors_typed}
 
 
 def check_family(workspace, family, tensors, config, defines, engine):
     checkpoint = os.path.join(workspace, f"{family}_checkpoint")
     os.makedirs(checkpoint, exist_ok=True)
-    write_safetensors(os.path.join(checkpoint, "model.safetensors"), tensors)
+    (TYPED_WRITERS.get(family, write_safetensors))(
+        os.path.join(checkpoint, "model.safetensors"), tensors)
     write_json(os.path.join(checkpoint, "config.json"), config)
     header = os.path.join(workspace, f"{family}_defines.h")
     write_header(header, defines)
@@ -348,7 +474,8 @@ def check_family(workspace, family, tensors, config, defines, engine):
         "prompt_token_ids": {"ling": [3, 7, 11],
                              "gemma4": [5, 9, 13],
                              "gemma4_moe": [5, 9, 13],
-                             "laguna": [5, 9, 13]}[family],
+                             "laguna": [5, 9, 13],
+                             "qwen38_max": [5, 9, 13]}[family],
         "new_tokens": 2,
         "capture_layers": [0, config["num_hidden_layers"] - 1],
     }]})

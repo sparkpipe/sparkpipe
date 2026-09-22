@@ -62,6 +62,7 @@ void Glm5NextPoolScoreKernel(
     LmKvView index_cache,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ row_positions,
     const float *__restrict__ compress_ape_f32,
     uint32_t pools,
     float softmax_scale,
@@ -73,11 +74,17 @@ void Glm5NextPoolScoreKernel(
     uint32_t pool = blockIdx.x;
     uint32_t row = blockIdx.y;
     uint32_t sequence = sequence_of_row[row];
-    uint32_t context = context_length[sequence];
+    uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
     uint32_t first = pool * KPOOL;
     uint32_t index, slot_in_pool, head;
     if (pool >= pools)
         return;
+    if (first >= context)
+    {
+        if (threadIdx.x == 0u)
+            pool_scores[(uint64_t)row * pools + pool] = -INFINITY;
+        return;
+    }
 
     for (index = threadIdx.x; index < DIM; index += THREADS)
     {
@@ -153,6 +160,7 @@ void Glm5NextPoolExpandKernel(
     const uint32_t *__restrict__ selected_pools,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ row_positions,
     uint32_t *__restrict__ selected_positions,
     uint32_t rows)
 {
@@ -161,7 +169,7 @@ void Glm5NextPoolExpandKernel(
     if (row >= rows)
         return;
     uint32_t sequence = sequence_of_row[row];
-    uint32_t context = context_length[sequence];
+    uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
     uint32_t select = TOPK / KPOOL;
     for (index = threadIdx.x; index < WIDTH; index += THREADS)
     {
@@ -313,6 +321,7 @@ struct Glm5NextLayerBuffers
     uint32_t kda_state_slot_bytes;
     const uint32_t *kda_state_index;
     const uint32_t *sequence_row_begin;
+    const uint32_t *sequence_row_indices;
     uint16_t *kda_q_window;
     uint16_t *kda_k_window;
     uint16_t *kda_v_window;
@@ -576,6 +585,7 @@ static int32_t Glm5NextLayerIndexer(
         buffers->index_cache,
         buffers->sequence_of_row,
         buffers->context_length,
+        buffers->row_positions,
         (const float *)buffers->index_compress_ape,
         pools,
         GLM5_NEXT_DSA_INDEX_SCALE,
@@ -616,6 +626,7 @@ static int32_t Glm5NextLayerIndexer(
         buffers->selected_pools,
         buffers->sequence_of_row,
         buffers->context_length,
+        buffers->row_positions,
         buffers->selected_positions,
         rows);
     return cudaPeekAtLastError() == cudaSuccess
@@ -1367,7 +1378,8 @@ static int32_t Glm5NextLayerKda(
         buffers->q_bf16,
         rank_qk,
         sequences,
-        commit);
+        commit,
+        buffers->sequence_row_indices);
     LM_LAUNCH(
         (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
@@ -1383,7 +1395,8 @@ static int32_t Glm5NextLayerKda(
         buffers->kv_slot_bf16,
         rank_qk,
         sequences,
-        commit);
+        commit,
+        buffers->sequence_row_indices);
     LM_LAUNCH(
         (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
         dim3(sequences,(rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
@@ -1399,7 +1412,8 @@ static int32_t Glm5NextLayerKda(
         buffers->gate_up_bf16,
         rank_v,
         sequences,
-        commit);
+        commit,
+        buffers->sequence_row_indices);
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
@@ -1526,7 +1540,8 @@ static int32_t Glm5NextLayerKda(
         rank_heads,
         1u,
         sequences,
-        commit);
+        commit,
+        buffers->sequence_row_indices);
     status = Glm5NextKdaReplayRecord(buffers, rows, rank_heads, 1u, stream);
     if (status != LM_LAUNCH_OK)
         return status;
@@ -1682,6 +1697,7 @@ __global__ void Glm5NextHcSplitSinkhornKernel(
 }
 
 #define GLM5_NEXT_HC_MIX_TILE 4096u
+#define GLM5_NEXT_HC_MIX_BLOCKS 3u
 __global__ void Glm5NextHcMixKernel(
     const uint16_t *__restrict__ streams_bf16,
     const float *__restrict__ fn_f32,
@@ -1722,6 +1738,8 @@ __global__ void Glm5NextHcMixKernel(
         __syncthreads();
         for (mix = warp; mix < mix_rows; mix += warps)
         {
+            if (mix % GLM5_NEXT_HC_MIX_BLOCKS != blockIdx.y)
+                continue;
             accumulator = 0.0f;
             for (element = lane; element < tile_elements; element += LM_WARP_LANES)
                 accumulator += staged[element] *
@@ -1741,7 +1759,7 @@ __global__ void Glm5NextHcMixKernel(
             rsqrtf(total / (float)flat_dimension + rms_epsilon);
     __syncthreads();
     for (mix = warp; mix < mix_rows; mix += warps)
-        if (lane == 0u)
+        if (lane == 0u && mix % GLM5_NEXT_HC_MIX_BLOCKS == blockIdx.y)
             mixes_f32[((uint64_t)row * mix_rows) + mix] =
                 accum[mix / warps] * inverse_shared[0];
 }
@@ -1820,7 +1838,7 @@ static int32_t Glm5NextHcSite(
         return LM_LAUNCH_ERR_SHAPE;
     LM_LAUNCH(
         (Glm5NextHcMixKernel),
-        rows,
+        dim3(rows,GLM5_NEXT_HC_MIX_BLOCKS),
         GLM5_NEXT_LAYER_THREADS,
         GLM5_NEXT_HC_MIX_TILE * sizeof(float),
         stream,

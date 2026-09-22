@@ -1,0 +1,72 @@
+{
+  "source_commit": "012f16a4f25a89cf8ff1745b4bcdfed56b6bebcf",
+  "production_commit": "1a08cb81583c93e749707fff80504f0012f1097b",
+  "binary_sha256": "2e0ad3c13b6d6972c19ed155d6a3b50f1c3f6379ac312d84822bd8f35eb1e325",
+  "exit_code": 0,
+  "elapsed_seconds": 0.8900054830592126,
+  "pid": 3091170,
+  "process_still_exists": false,
+  "loading": "LAZY/LAZY",
+  "injection": false,
+  "numerical_cases": 9,
+  "rows": [
+    1,
+    3,
+    5
+  ],
+  "datasets": [
+    "signed",
+    "exponent-varied",
+    "cancellation"
+  ],
+  "oracle": "finite and bitwise equal to frozen unchanged pre-partition kernel",
+  "baseline_function_sha256": "c87f38f32596a7ba4142db26ea898173ed2d9884c4c0ed0561885ea1ba30fede",
+  "timings": [
+    {
+      "production": "0",
+      "rows": "1",
+      "distinct_weights": "1",
+      "launches": "90",
+      "warmups": "2",
+      "samples": "8",
+      "min_ms": "4.783264",
+      "median_ms": "4.785056",
+      "max_ms": "4.786624"
+    },
+    {
+      "production": "1",
+      "rows": "1",
+      "distinct_weights": "1",
+      "launches": "90",
+      "warmups": "2",
+      "samples": "8",
+      "min_ms": "1.905408",
+      "median_ms": "1.906800",
+      "max_ms": "1.907136"
+    },
+    {
+      "production": "0",
+      "rows": "1",
+      "distinct_weights": "90",
+      "launches": "90",
+      "warmups": "2",
+      "samples": "8",
+      "min_ms": "11.967904",
+      "median_ms": "11.975744",
+      "max_ms": "12.971328"
+    },
+    {
+      "production": "1",
+      "rows": "1",
+      "distinct_weights": "90",
+      "launches": "90",
+      "warmups": "2",
+      "samples": "8",
+      "min_ms": "4.361536",
+      "median_ms": "4.367024",
+      "max_ms": "4.375168"
+    }
+  ],
+  "remote_root": "spark0:/tmp/sparkpipe-hc-regression-012f16a4",
+  "existing_gpu_owners_unchanged": true
+}

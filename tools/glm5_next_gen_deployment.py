@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 HOSTS = [h for h in os.environ.get(
@@ -196,6 +197,13 @@ def resident_deployment() -> dict:
     }
 
 
+def render_stage(configuration: dict) -> str:
+    rendered = json.dumps(configuration, indent=1)
+    return re.sub(r"\[\n(?:\s+\d+,?\n)+\s*\]",
+                  lambda match: json.dumps(json.loads(match.group()), separators=(",", ":")),
+                  rendered) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
@@ -204,7 +212,7 @@ def main() -> int:
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            json.dumps(stage_config(rank), indent=1) + "\n")
+            render_stage(stage_config(rank)))
     (root / "model_resident.json").write_text(
         json.dumps(resident_deployment(), indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "

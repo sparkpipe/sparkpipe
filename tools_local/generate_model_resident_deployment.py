@@ -21,9 +21,8 @@ ROOT_KEYS = {
     "transport",
     "runtime_limits",
     "topology",
-    "tokenizer",
 }
-TOKENIZER_KEYS = {"path"}
+TOKENIZER_KEYS = {"path", "vocabulary_size", "sha256"}
 ADAPTER_KEYS = {"shared_object_path"}
 DRIVER_KEYS = {"shared_object_path", "program_name"}
 TRANSPORT_KEYS = {"shared_object_path", "mode", "control_port_base"}
@@ -233,7 +232,8 @@ def build_endpoint(template: dict[str, Any], host: str, rank: int,
 
 
 def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
-    exact_object(specification, ROOT_KEYS, "deployment specification")
+    exact_object(specification, ROOT_KEYS | (specification.keys() & {"tokenizer"}),
+                 "deployment specification")
     if specification["schema_version"] != 2:
         raise DeploymentError("schema_version must be 2")
     validate_common(specification)
@@ -330,13 +330,20 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
         "runtime_limits": copy.deepcopy(specification["runtime_limits"]),
         "nodes": nodes,
     }
-    tokenizer = specification.get("tokenizer")
-    if tokenizer is not None:
-        exact_object(tokenizer, TOKENIZER_KEYS, "tokenizer")
+    if "tokenizer" in specification:
+        tokenizer = exact_object(specification["tokenizer"], TOKENIZER_KEYS,
+                                 "tokenizer")
+        digest = text_value(tokenizer["sha256"], "tokenizer.sha256")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise DeploymentError("tokenizer.sha256 must be 64 lowercase hex digits")
         deployment["tokenizer"] = {
             "path": normalized_path(text_value(
-                tokenizer["path"], "tokenizer.path"), True,
+                tokenizer["path"], "tokenizer.path"), False,
                 "tokenizer.path"),
+            "vocabulary_size": integer_value(tokenizer["vocabulary_size"],
+                                             "tokenizer.vocabulary_size", 1,
+                                             4294967295),
+            "sha256": digest,
         }
     return deployment
 

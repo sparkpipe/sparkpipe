@@ -1320,9 +1320,23 @@ static void SparkQwen4FlashModuleSnapshotExtend(
 	snapshot->kv_token_capacity = (uint64_t)state->kv.block_count * SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
 }
 
-static void SparkQwen4FlashModuleStateTeardown(void *module_state)
+static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 {
 	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
+	if ( state->tp_collective_initialized != 0u )
+	{
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_collective_initialized = 0u;
+	}
+	if ( state->lazy_pack != 0 )
+	{
+		SparkStatus status = SparkWeightdLazyPackDestroy(state->lazy_pack);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		state->lazy_pack = 0;
+	}
 	SparkStageKvClientClose(&state->kv.client);
 	free(state->ple_prev_context_u32);
 	free(state->t1.stage_hidden);
@@ -1331,20 +1345,11 @@ static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 	free(state->t1.stage_score);
 	if ( state->t1.score_device != 0 )
 		cudaFree(state->t1.score_device);
-	if ( state->lazy_pack != 0 )
-	{
-		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
-			fprintf(stderr,"%s lazy pack teardown incomplete; retaining resources\n",SPARK_QWEN4_FLASH_MODULE_TAG);
-		else
-			state->lazy_pack = 0;
-	}
 	{
 		uint32_t slot_index;
 		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
 			free(state->slots[slot_index].ple_host_history_u32);
 	}
-	if ( state->tp_collective_initialized != 0u )
-		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	free(state->kv.logical_to_slot);
 	free(state->kv.slot_lane);
 	free(state->kv.slot_logical);
@@ -1359,6 +1364,7 @@ static void SparkQwen4FlashModuleStateTeardown(void *module_state)
 		cudaFree(state->kv.table_indices_device);
 	if ( state->kv.table_counts_device != 0 )
 		cudaFree(state->kv.table_counts_device);
+	return(SPARK_STATUS_OK);
 }
 
 static const SparkStageModuleLifecycleOps SparkQwen4FlashModuleLifecycle =

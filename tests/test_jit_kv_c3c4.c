@@ -133,7 +133,7 @@ static SparkStatus C34CancelRead(void *context,uint64_t ticket)
 typedef struct C34Backing
 {
 	uint32_t failures_left;
-	uint32_t gate_armed;
+	atomic_uint gate_armed;
 	uint32_t gate_skip_writes;
 	atomic_uint writes_entered;
 	atomic_uint writes_completed;
@@ -781,6 +781,9 @@ int main(void)
 			C34PlanesMatchGolden(&fixture,1u),
 			"the SAME offer completes bit-exact once the write lands");
 		C34CheckBudget(&fixture,"scenario 3 end");
+		expect(SparkKvPagerShutdown(&fixture.pager) == SPARK_STATUS_OK &&
+			fixture.pager.park_worker_active == 0u,
+			"worker drains before fixture storage leaves scope");
 	}
 
 	printf("\nscenario 4: C4 - an IO-class write DEGRADES (B1, async"
@@ -819,6 +822,9 @@ int main(void)
 			C34PlanesMatchGolden(&fixture,1u),
 			"the healthy park dispatches READY, bit-exact");
 		C34CheckBudget(&fixture,"scenario 4 end");
+		expect(SparkKvPagerShutdown(&fixture.pager) == SPARK_STATUS_OK &&
+			fixture.pager.park_worker_active == 0u,
+			"worker drains before fixture storage leaves scope");
 	}
 
 	printf("\nscenario 5: C4 - TERM mid-park leaves a consistent arena\n");

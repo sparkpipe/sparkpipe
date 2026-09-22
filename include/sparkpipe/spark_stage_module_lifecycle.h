@@ -29,7 +29,7 @@ typedef struct SparkStageModuleLifecycleOps
         const SparkFirmwareModuleConfiguration *configuration,
         const SparkFirmwareModuleHostServices *host_services);
     void (*state_report_ready)(void *state);
-    void (*state_destroy)(void *state);
+    SparkStatus (*state_destroy)(void *state);
     SparkStatus (*execute)(void *state, SparkModelDriverFrame *frame);
     SparkStatus (*admit)(void *state,
         const SparkModelDriverAdmissionRequest *request,
@@ -61,7 +61,7 @@ SparkStatus SparkStageModuleLifecycleSnapshot(
     SparkModelDriverRuntimeSnapshot *snapshot,
     const SparkStageModuleLifecycleOps *ops);
 
-void SparkStageModuleLifecycleDestroy(
+SparkStatus SparkStageModuleLifecycleDestroy(
     void *module_state,
     const SparkStageModuleLifecycleOps *ops);
 

@@ -1,0 +1,7835 @@
+{
+ "codec": "mxfp4",
+ "expert_shard": "tp",
+ "experts": [
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 276,
+   "layer": 1
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 500,
+   "layer": 1
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 532,
+   "layer": 1
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 721,
+   "layer": 1
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 43,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 188,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 251,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 255,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 477,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 508,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 760,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 793,
+   "layer": 2
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 65,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 144,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 155,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 183,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 269,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 273,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 391,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 417,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 422,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 426,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 477,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 515,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 592,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 657,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 830,
+   "layer": 3
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 34,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 137,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 241,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 251,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 448,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 520,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 546,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 556,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 589,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 745,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 807,
+   "layer": 4
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 27,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 63,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 116,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 181,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 397,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 417,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 426,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 452,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 746,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 767,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 849,
+   "layer": 5
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 221,
+   "layer": 6
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 709,
+   "layer": 6
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 6,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 37,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 71,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 113,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 164,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 282,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 334,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 665,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 840,
+   "layer": 7
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 127,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 383,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 396,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 441,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 452,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 636,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 683,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 770,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 881,
+   "layer": 8
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 45,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 108,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 125,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 136,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 302,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 376,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 400,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 450,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 458,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 520,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 523,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 534,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 619,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 726,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 829,
+   "layer": 9
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 21,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 164,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 283,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 316,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 486,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 492,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 538,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 577,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 600,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 632,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 770,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 863,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 879,
+   "layer": 10
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 106,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 154,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 255,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 257,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 274,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 365,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 391,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 420,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 438,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 503,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 531,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 661,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 777,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 791,
+   "layer": 11
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 165,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 177,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 279,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 332,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 369,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 371,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 410,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 599,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 608,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 710,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 718,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 758,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 805,
+   "layer": 12
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 5,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 64,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 326,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 404,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 523,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 552,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 628,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 759,
+   "layer": 13
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 65,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 112,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 356,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 499,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 527,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 579,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 601,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 613,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 620,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 652,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 718,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 879,
+   "layer": 14
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 28,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 129,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 139,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 175,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 274,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 362,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 421,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 452,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 470,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 549,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 623,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 637,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 718,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 776,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 884,
+   "layer": 15
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 5,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 22,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 27,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 37,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 40,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 98,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 124,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 271,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 433,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 608,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 612,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 750,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 777,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 869,
+   "layer": 16
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 5,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 40,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 235,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 274,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 293,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 343,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 383,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 423,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 443,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 471,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 554,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 562,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 707,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 865,
+   "layer": 17
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 76,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 313,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 327,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 339,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 405,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 419,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 455,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 498,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 522,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 562,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 600,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 628,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 840,
+   "layer": 18
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 89,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 104,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 250,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 292,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 343,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 438,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 502,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 604,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 630,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 651,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 743,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 783,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 792,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 794,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 872,
+   "layer": 19
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 2,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 55,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 68,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 131,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 193,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 300,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 415,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 419,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 701,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 863,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 868,
+   "layer": 20
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 133,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 230,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 531,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 555,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 590,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 619,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 714,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 783,
+   "layer": 21
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 10,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 82,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 93,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 131,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 181,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 266,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 284,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 314,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 414,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 465,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 497,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 528,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 673,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 708,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 761,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 772,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 796,
+   "layer": 22
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 75,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 120,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 179,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 205,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 228,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 248,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 249,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 294,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 393,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 428,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 500,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 615,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 646,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 697,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 712,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 808,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 814,
+   "layer": 23
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 3,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 6,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 136,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 172,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 318,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 521,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 620,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 652,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 665,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 715,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 776,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 871,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 892,
+   "layer": 24
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 104,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 440,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 572,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 614,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 671,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 709,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 722,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 792,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 857,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 860,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 881,
+   "layer": 25
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 77,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 89,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 94,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 175,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 181,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 197,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 202,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 384,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 389,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 504,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 531,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 534,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 694,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 721,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 767,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 776,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 852,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 870,
+   "layer": 26
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 30,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 115,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 192,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 413,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 542,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 639,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 654,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 673,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 725,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 772,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 862,
+   "layer": 27
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 41,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 132,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 442,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 461,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 517,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 546,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 585,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 695,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 810,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 838,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 872,
+   "layer": 28
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 1,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 97,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 129,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 180,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 200,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 226,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 326,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 436,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 751,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 806,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 810,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 833,
+   "layer": 29
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 173,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 190,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 229,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 303,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 345,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 441,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 456,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 546,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 583,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 614,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 685,
+   "layer": 30
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 38,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 126,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 275,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 387,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 412,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 490,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 495,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 496,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 497,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 766,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 832,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 841,
+   "layer": 31
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 10,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 107,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 276,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 322,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 514,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 581,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 702,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 717,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 748,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 754,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 782,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 881,
+   "layer": 32
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 317,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 500,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 505,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 532,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 645,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 732,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 809,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 857,
+   "layer": 33
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 22,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 38,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 145,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 243,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 279,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 610,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 666,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 679,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 720,
+   "layer": 34
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 65,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 79,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 480,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 629,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 712,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 824,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 830,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 840,
+   "layer": 35
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 9,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 82,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 161,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 299,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 336,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 384,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 444,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 459,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 516,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 553,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 677,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 732,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 747,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 782,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 799,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 843,
+   "layer": 36
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 54,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 78,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 135,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 237,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 276,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 299,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 320,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 555,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 556,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 580,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 601,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 622,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 793,
+   "layer": 37
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 6,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 94,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 106,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 119,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 231,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 286,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 370,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 396,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 406,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 416,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 449,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 529,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 537,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 665,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 685,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 717,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 792,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 894,
+   "layer": 38
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 168,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 194,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 269,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 419,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 436,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 450,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 509,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 588,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 644,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 765,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 833,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 860,
+   "layer": 39
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 14,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 90,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 115,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 155,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 240,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 326,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 337,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 462,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 592,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 669,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 704,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 719,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 736,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 766,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 818,
+   "layer": 40
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 136,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 137,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 211,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 258,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 300,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 430,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 448,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 451,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 477,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 486,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 599,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 680,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 692,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 694,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 800,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 823,
+   "layer": 41
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 38,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 61,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 71,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 161,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 175,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 259,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 296,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 335,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 365,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 411,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 434,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 437,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 495,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 497,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 586,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 639,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 647,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 42
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 0,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 47,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 119,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 175,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 208,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 218,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 339,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 367,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 420,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 453,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 460,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 502,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 532,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 737,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 810,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 871,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 872,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 876,
+   "layer": 43
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 7,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 61,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 101,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 229,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 240,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 276,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 280,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 336,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 571,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 686,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 740,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 746,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 805,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 819,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 840,
+   "layer": 44
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 76,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 185,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 239,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 318,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 388,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 415,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 608,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 630,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 632,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 685,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 727,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 755,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 808,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 822,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 859,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 891,
+   "layer": 45
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 91,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 108,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 127,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 129,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 189,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 261,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 264,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 299,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 331,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 346,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 407,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 429,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 533,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 551,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 690,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 761,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 778,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 839,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 877,
+   "layer": 46
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 2,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 56,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 87,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 122,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 222,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 378,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 462,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 496,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 588,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 624,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 792,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 851,
+   "layer": 47
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 221,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 259,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 265,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 343,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 381,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 494,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 500,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 508,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 533,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 546,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 553,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 634,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 675,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 719,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 747,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 757,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 799,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 840,
+   "layer": 48
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 35,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 112,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 224,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 367,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 414,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 417,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 434,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 468,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 487,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 494,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 542,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 623,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 775,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 798,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 825,
+   "layer": 49
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 86,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 108,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 142,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 196,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 216,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 302,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 391,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 421,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 485,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 611,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 685,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 702,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 715,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 760,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 818,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 846,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 865,
+   "layer": 50
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 58,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 94,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 113,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 124,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 197,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 297,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 312,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 343,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 469,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 533,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 699,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 712,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 722,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 743,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 772,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 806,
+   "layer": 51
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 75,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 99,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 114,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 176,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 233,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 254,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 273,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 334,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 365,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 404,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 419,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 566,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 600,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 643,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 692,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 697,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 718,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 823,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 890,
+   "layer": 52
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 78,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 119,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 227,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 253,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 284,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 309,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 317,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 341,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 393,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 451,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 455,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 536,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 560,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 632,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 633,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 667,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 708,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 734,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 759,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 764,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 788,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 844,
+   "layer": 53
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 29,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 75,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 96,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 157,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 168,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 292,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 300,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 342,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 403,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 484,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 499,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 512,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 562,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 681,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 721,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 800,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 847,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 849,
+   "layer": 54
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 39,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 67,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 74,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 108,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 275,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 304,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 404,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 469,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 477,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 625,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 694,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 760,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 795,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 846,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 852,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 887,
+   "layer": 55
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 26,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 55,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 204,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 217,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 399,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 519,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 617,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 624,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 627,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 669,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 670,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 690,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 829,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 856,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 889,
+   "layer": 56
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 180,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 233,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 271,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 272,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 369,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 383,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 396,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 407,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 496,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 528,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 629,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 635,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 644,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 706,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 819,
+   "layer": 57
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 9,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 31,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 92,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 258,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 289,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 326,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 401,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 410,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 420,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 437,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 498,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 557,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 627,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 650,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 670,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 776,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 817,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 862,
+   "layer": 58
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 33,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 55,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 71,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 107,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 247,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 264,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 299,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 339,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 389,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 445,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 461,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 465,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 542,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 605,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 778,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 821,
+   "layer": 59
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 75,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 95,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 136,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 201,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 347,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 496,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 513,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 628,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 762,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 781,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 783,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 877,
+   "layer": 60
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 17,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 304,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 346,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 391,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 394,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 446,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 493,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 496,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 514,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 540,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 629,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 731,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 825,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 879,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 884,
+   "layer": 61
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 44,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 77,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 183,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 277,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 510,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 576,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 620,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 741,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 762,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 852,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 858,
+   "layer": 62
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 3,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 50,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 89,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 95,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 109,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 187,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 195,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 293,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 315,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 398,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 421,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 476,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 517,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 570,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 630,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 658,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 885,
+   "layer": 63
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 16,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 66,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 85,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 130,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 164,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 282,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 413,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 745,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 746,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 797,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 851,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 871,
+   "layer": 64
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 6,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 88,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 174,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 212,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 219,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 368,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 497,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 537,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 729,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 866,
+   "layer": 65
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 99,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 101,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 169,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 280,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 338,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 470,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 503,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 727,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 747,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 810,
+   "layer": 66
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 8,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 20,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 31,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 67,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 113,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 128,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 387,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 398,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 498,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 586,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 642,
+   "layer": 67
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 20,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 162,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 216,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 535,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 635,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 763,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 857,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 860,
+   "layer": 68
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 264,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 355,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 384,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 431,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 532,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 597,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 803,
+   "layer": 69
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 67,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 79,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 93,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 127,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 215,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 217,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 298,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 346,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 405,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 417,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 525,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 544,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 590,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 700,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 767,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 784,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 849,
+   "layer": 70
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 76,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 317,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 323,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 382,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 464,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 524,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 535,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 550,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 565,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 574,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 607,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 703,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 775,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 856,
+   "layer": 71
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 182,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 238,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 257,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 313,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 463,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 543,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 697,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 778,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 800,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 879,
+   "layer": 72
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 162,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 301,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 352,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 359,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 409,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 421,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 422,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 478,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 505,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 657,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 766,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 799,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 802,
+   "layer": 73
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 178,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 203,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 281,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 359,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 474,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 527,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 542,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 564,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 638,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 698,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 858,
+   "layer": 74
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 35,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 38,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 56,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 64,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 116,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 180,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 200,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 204,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 270,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 347,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 365,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 377,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 382,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 522,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 586,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 596,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 606,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 656,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 717,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 845,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 876,
+   "layer": 75
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 26,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 63,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 172,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 248,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 418,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 447,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 484,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 538,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 693,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 701,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 782,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 830,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 894,
+   "layer": 76
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 16,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 102,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 112,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 233,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 242,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 264,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 308,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 309,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 311,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 373,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 579,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 614,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 679,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 813,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 837,
+   "layer": 77
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 56,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 94,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 125,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 143,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 233,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 289,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 313,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 328,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 497,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 578,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 585,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 773,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 783,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 886,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 895,
+   "layer": 78
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 35,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 135,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 195,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 271,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 364,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 418,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 523,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 554,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 587,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 590,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 654,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 669,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 688,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 696,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 711,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 729,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 810,
+   "layer": 79
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 126,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 155,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 194,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 247,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 313,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 373,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 390,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 504,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 575,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 589,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 764,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 804,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 839,
+   "layer": 80
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 104,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 180,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 214,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 299,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 323,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 366,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 395,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 493,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 505,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 536,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 561,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 584,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 648,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 666,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 711,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 725,
+   "layer": 81
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 2,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 41,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 106,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 235,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 293,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 331,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 493,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 505,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 579,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 622,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 691,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 727,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 742,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 831,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 885,
+   "layer": 82
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 14,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 56,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 108,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 127,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 361,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 415,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 425,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 507,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 508,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 648,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 768,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 797,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 827,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 856,
+   "layer": 83
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 27,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 29,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 80,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 97,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 109,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 135,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 223,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 238,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 369,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 428,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 437,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 521,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 550,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 566,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 653,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 715,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 753,
+   "layer": 84
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 35,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 78,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 121,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 125,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 175,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 182,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 188,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 259,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 347,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 395,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 431,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 478,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 518,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 575,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 620,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 635,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 678,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 710,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 793,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 837,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 893,
+   "layer": 85
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 45,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 107,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 152,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 196,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 197,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 240,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 298,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 335,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 358,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 373,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 374,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 430,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 476,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 479,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 495,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 500,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 528,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 572,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 584,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 618,
+   "layer": 86
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 12,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 58,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 65,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 88,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 131,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 246,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 254,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 280,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 314,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 322,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 455,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 687,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 692,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 724,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 733,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 751,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 787,
+   "layer": 87
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 10,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 49,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 75,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 282,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 290,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 314,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 315,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 324,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 521,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 595,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 770,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 782,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 791,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 830,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 853,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 871,
+   "layer": 88
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 0,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 31,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 272,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 362,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 396,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 431,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 455,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 494,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 569,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 582,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 600,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 681,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 756,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 785,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 838,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 862,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 863,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 864,
+   "layer": 89
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 12,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 41,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 80,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 86,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 137,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 183,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 193,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 213,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 318,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 329,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 347,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 351,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 357,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 612,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 632,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 641,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 734,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 751,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 764,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 811,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 824,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 826,
+   "layer": 90
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 0,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 12,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 168,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 212,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 241,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 269,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 346,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 398,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 700,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 746,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 843,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 857,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 863,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 890,
+   "layer": 91
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 74,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 109,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 192,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 295,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 369,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 392,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 576,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 625,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 639,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 687,
+   "layer": 92
+  },
+  {
+   "bytes": 17547264,
+   "codec": "mxfp4",
+   "expert": 845,
+   "layer": 92
+  }
+ ],
+ "family": "k3",
+ "kv_floor_bytes": 457998336,
+ "nodes": 16,
+ "prompt_set": "k3-t1-prompts-v1",
+ "provenance": {
+  "byte_bases": {
+   "chunk_union_factor": 4,
+   "full_model_expert_bytes": 17547264,
+   "per_rank_expert_span_bytes": {
+    "w1": 2924544,
+    "w2": 1462272
+   }
+  },
+  "census": {
+   "coverage_curve": [
+    {
+     "experts_gib_per_node": 7.405,
+     "min_positions": 2,
+     "pairs": 7250,
+     "selection_coverage": 0.7684
+    },
+    {
+     "experts_gib_per_node": 3.672,
+     "min_positions": 3,
+     "pairs": 3595,
+     "selection_coverage": 0.5319
+    },
+    {
+     "experts_gib_per_node": 2.191,
+     "min_positions": 4,
+     "pairs": 2145,
+     "selection_coverage": 0.3912
+    },
+    {
+     "experts_gib_per_node": 1.302,
+     "min_positions": 5,
+     "pairs": 1275,
+     "selection_coverage": 0.2786
+    },
+    {
+     "experts_gib_per_node": 0.8,
+     "min_positions": 6,
+     "pairs": 783,
+     "selection_coverage": 0.199
+    },
+    {
+     "experts_gib_per_node": 0.489,
+     "min_positions": 7,
+     "pairs": 479,
+     "selection_coverage": 0.14
+    }
+   ],
+   "head_pairs": 1275,
+   "head_selection_coverage": 0.2786296583850932,
+   "route_arrays": 1932,
+   "selections": 30912,
+   "touched_pairs": 14409
+  },
+  "cut_rule": "routed in >= 5 of 1932 positions",
+  "fixtures": [
+   {
+    "fixture": "capital_of_france.t1r",
+    "route_arrays": 828
+   },
+   {
+    "fixture": "count_up.t1r",
+    "route_arrays": 1104
+   }
+  ],
+  "kv_floor": {
+   "sequences": 1,
+   "tokens": 128
+  },
+  "llm_defines_sha256": "24c1a86fef79669514a0666324ab8d89ce8e4e58c0c7aab3c91084960ff0b2cc",
+  "prompts_sha256": "7d2644ce628f720b873c30c3e71fe6d72f527fb692aba90802c9a11b3548ec3a",
+  "ranks": [
+   {
+    "pack": "k3.stage0.rank00.pack",
+    "pack_bytes": 98766808320,
+    "pack_sha256": "908827dc1dbfe50b8c2d074d86c7e50bbb38723048770dadd10e602eb5ddca99",
+    "spine_bytes": 8362255616
+   },
+   {
+    "pack": "k3.stage0.rank01.pack",
+    "pack_bytes": 98766808320,
+    "pack_sha256": "c8fa00bee6d4cb229f78ad8c30de80b159e7753f293c6eef941cc130d866f4fe",
+    "spine_bytes": 8362255616
+   },
+   {
+    "pack": "k3.stage0.rank02.pack",
+    "pack_bytes": 98766808320,
+    "pack_sha256": "f210ff9bd3599408a797a89ec5b036b80412ee313da2eb95634a3c12fb1f1f15",
+    "spine_bytes": 8362255616
+   },
+   {
+    "pack": "k3.stage0.rank03.pack",
+    "pack_bytes": 98766808320,
+    "pack_sha256": "15b34e801afe787f9d572c0675dd724058f01bff76a376c53b5c8ee02eeff339",
+    "spine_bytes": 8362255616
+   },
+   {
+    "pack": "k3.stage1.rank00.pack",
+    "pack_bytes": 97652241664,
+    "pack_sha256": "923aae8ba99e1f228b9ef411878cfd49cef30ebf707f36bf7b33acbacec252d1",
+    "spine_bytes": 7247688960
+   },
+   {
+    "pack": "k3.stage1.rank01.pack",
+    "pack_bytes": 97652241664,
+    "pack_sha256": "06f66e0014b01c0bbb504ebe6a9107e35e09eaabd1df93889215c091715f8a36",
+    "spine_bytes": 7247688960
+   },
+   {
+    "pack": "k3.stage1.rank02.pack",
+    "pack_bytes": 97652241664,
+    "pack_sha256": "2b55aa215f509951887ed01f0c41a3100ef227688e22a132ba416869c2107ed9",
+    "spine_bytes": 7247688960
+   },
+   {
+    "pack": "k3.stage1.rank03.pack",
+    "pack_bytes": 97652241664,
+    "pack_sha256": "71fea3aea71422edf47ee5c7b2cb4f612ff96b0970bca25611a1828acaad4a3a",
+    "spine_bytes": 7247688960
+   },
+   {
+    "pack": "k3.stage2.rank00.pack",
+    "pack_bytes": 97592852864,
+    "pack_sha256": "24c370554e59be011f70d69eeadab0c9c3567524167185fee873618b22044f20",
+    "spine_bytes": 7188300160
+   },
+   {
+    "pack": "k3.stage2.rank01.pack",
+    "pack_bytes": 97592852864,
+    "pack_sha256": "561b3e24d1361ce42f68a8cad13996942214e5edbb5d68c14a22e326b6ec23bb",
+    "spine_bytes": 7188300160
+   },
+   {
+    "pack": "k3.stage2.rank02.pack",
+    "pack_bytes": 97592852864,
+    "pack_sha256": "8cb22a458150f717484640b59d33c3107e5339bf9f66ee926b520a96175bc040",
+    "spine_bytes": 7188300160
+   },
+   {
+    "pack": "k3.stage2.rank03.pack",
+    "pack_bytes": 97592852864,
+    "pack_sha256": "627b75747c220a5e32c0ec5712c80128b5d7076598008d6ed23226a4d13538a8",
+    "spine_bytes": 7188300160
+   },
+   {
+    "pack": "k3.stage3.rank00.pack",
+    "pack_bytes": 98119908864,
+    "pack_sha256": "23df8aa64e02cbc62fdf318bc0189cbef18192faaf55ce464b05e14f1bcfabf9",
+    "spine_bytes": 7716142592
+   },
+   {
+    "pack": "k3.stage3.rank01.pack",
+    "pack_bytes": 98119908864,
+    "pack_sha256": "d9deda6a8e6d70d41b2a726e4c9974bec284b6d98eff23b63f9064b5e11c9c82",
+    "spine_bytes": 7716142592
+   },
+   {
+    "pack": "k3.stage3.rank02.pack",
+    "pack_bytes": 98119908864,
+    "pack_sha256": "b1727beca178986073245cbae1782f6e1bbe0f860b0491510256761e43188ae4",
+    "spine_bytes": 7716142592
+   },
+   {
+    "pack": "k3.stage3.rank03.pack",
+    "pack_bytes": 98119908864,
+    "pack_sha256": "02882b942cfc9321ebdc0eebfe076dd11ec929b32300d857e066a618051ed348",
+    "spine_bytes": 7716142592
+   }
+  ],
+  "workspace_note": "placeholder; M3/M4 measured number replaces"
+ },
+ "schema_version": 1,
+ "spine_bytes": 122057549312,
+ "topology": "TP4xPP4",
+ "workspace_bytes": 268435456
+}

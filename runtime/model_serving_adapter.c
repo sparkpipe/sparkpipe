@@ -319,11 +319,16 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 			publish_identity_present |= submission->lanes[lane].cache_publish_identity.sha256[row];
 		if ( ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u) != (submission->lanes[lane].cache_prefix_token_count != 0u) || ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u) != (prefix_identity_present != 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( submission->lanes[lane].cache_prefix_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_prefix_token_count % cache_block_token_count != 0u || submission->lanes[lane].cache_prefix_token_count > submission->lanes[lane].sequence_position) )
+		if ( submission->lanes[lane].cache_prefix_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_prefix_token_count > submission->lanes[lane].sequence_position) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u) != (submission->lanes[lane].cache_publish_token_count != 0u) || ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u) != (publish_identity_present != 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( submission->lanes[lane].cache_publish_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_publish_token_count % cache_block_token_count != 0u || submission->lanes[lane].cache_publish_token_count <= submission->lanes[lane].cache_prefix_token_count || submission->lanes[lane].cache_publish_token_count > submission->lanes[lane].context_token_count) )
+		if ( submission->lanes[lane].cache_publish_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_publish_token_count <= submission->lanes[lane].cache_prefix_token_count || submission->lanes[lane].cache_publish_token_count > submission->lanes[lane].context_token_count) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
+			(submission->lanes[lane].flags != SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH ||
+			 submission->lanes[lane].cache_publish_token_count != submission->lanes[lane].context_token_count ||
+			 submission->lanes[lane].sequence_position != submission->lanes[lane].context_token_count) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		seen_slots[slot] = 1u;
 	}
@@ -432,11 +437,14 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
+	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
 		if ( submission->tokens_per_sequence != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -461,7 +469,7 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( (submission->hidden_input_address != 0) != (submission->hidden_input_bytes != 0u) || (submission->boundary_sideband_input_address != 0) != (submission->boundary_sideband_input_bytes != 0u) || (submission->hidden_output_address != 0) != (submission->hidden_output_bytes != 0u) || (submission->boundary_sideband_output_address != 0) != (submission->boundary_sideband_output_bytes != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
 		if ( submission->row_count != 0u || submission->token_count != 0u || submission->new_token_count != 0u || submission->hidden_input_address != 0 || submission->boundary_sideband_input_address != 0 || submission->hidden_output_address != 0 || submission->boundary_sideband_output_address != 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -489,7 +497,7 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
 		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
+	return(SparkModelServingAdapterValidateRows(submission,SparkModelServingWorkKindUsesRows(submission->work_kind),runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
 }
 
 SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
@@ -509,7 +517,7 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
 		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkModelServingAdapterValidateRows(submission,submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE,runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
+	return(SparkModelServingAdapterValidateRows(submission,SparkModelServingWorkKindUsesRows(submission->work_kind),runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
 }
 
 SparkStatus SparkModelServingAdapterPrepareSubmission(
@@ -649,13 +657,16 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	status = SparkModelServingAdapterValidateCompletionResidency(descriptor,expected_residency,completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( stage_index >= descriptor->stage_count || work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || work_kind > SPARK_MODEL_SERVING_WORK_KIND_RELEASE || active_sequence_count == 0u || active_sequence_count > descriptor->max_active_sequence_count || tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE || (work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && tokens_per_sequence == 0u) )
+	if ( stage_index >= descriptor->stage_count || work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || work_kind > SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH || active_sequence_count == 0u || active_sequence_count > descriptor->max_active_sequence_count || tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE || (SparkModelServingWorkKindUsesRows(work_kind) != 0u && tokens_per_sequence == 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	has_tokens = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) != 0u;
 	if ( completion->status != SPARK_STATUS_OK )
 		return(SPARK_STATUS_OK);
-	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		return(has_tokens == 0u && tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
+	if ( SparkModelServingWorkKindUsesRows(work_kind) == 0u )
+		return(has_tokens == 0u && tokens_per_sequence == 0u && completion->accepted_token_count == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 	final_stage = descriptor->stage_count - 1u;
 	parallel = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;

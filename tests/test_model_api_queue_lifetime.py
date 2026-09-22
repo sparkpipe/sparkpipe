@@ -127,6 +127,9 @@ int32_t main(int argc,char **argv)
 	fprintf(stderr,"api queue seed=%u rounds=32 width=7\n",seed);
 	alarm(30);
 	assert(pthread_mutex_init(&S.queue_mutex,0) == 0);
+	assert(pipe(S.wake_fds) == 0);
+	assert(fcntl(S.wake_fds[0],F_SETFL,O_NONBLOCK) == 0);
+	assert(fcntl(S.wake_fds[1],F_SETFL,O_NONBLOCK) == 0);
 	S.running = 1;
 	a = TestEnqueue(100001u);
 	b = TestEnqueue(100002u);
@@ -156,6 +159,18 @@ int32_t main(int argc,char **argv)
 		}
 	}
 	assert(S.served == 227u);
+	{
+		uint8_t bytes[1024] = {0};
+		while ( write(S.wake_fds[1],bytes,sizeof(bytes)) > 0 )
+			;
+		assert(errno == EAGAIN || errno == EWOULDBLOCK);
+		api_wake_worker();
+		api_drain_worker_wake();
+		assert(read(S.wake_fds[0],bytes,sizeof(bytes)) < 0 &&
+			(errno == EAGAIN || errno == EWOULDBLOCK));
+	}
+	assert(close(S.wake_fds[0]) == 0);
+	assert(close(S.wake_fds[1]) == 0);
 	assert(pthread_mutex_destroy(&S.queue_mutex) == 0);
 	for (index=0u; index<8u; index++)
 		assert(pthread_create(&loggers[index],0,TestConcurrentMeasurements,(void *)(uintptr_t)(700u + index)) == 0);
@@ -178,7 +193,10 @@ def main():
             "build/libsparkpipe_model_common.a", "build/libsparkpipe_core.a",
             "-ldl", "-lpthread", "-o", str(binary),
         ], cwd=ROOT, check=True)
-        result = subprocess.run([str(binary), *sys.argv[1:]], cwd=ROOT, check=True, timeout=40, capture_output=True, text=True)
+        result = subprocess.run([str(binary), *sys.argv[1:]], cwd=ROOT, timeout=40, capture_output=True, text=True)
+        if result.returncode:
+            sys.stderr.write(result.stderr)
+            result.check_returncode()
         records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
         assert len(records) == 227 + 8 * 128
         for record, token in zip(records[:3], (22, 11, 33)):

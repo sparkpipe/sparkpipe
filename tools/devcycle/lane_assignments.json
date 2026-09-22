@@ -1,0 +1,241 @@
+{
+ "schema_version": 1,
+ "comment": "Eight shared developer lanes on the 16-Spark fleet (PR #1082 baseline). One driver family per lane. Budgets are per node per lane; the eight lanes together must stay inside the verified envelope: 78336 MiB total reservation + 8192 MiB queue headroom per Spark. Ports: lane L owns control 23000+16L .. +15, collective 53000+16L .. +15 (u16-valid, clear of every fleet_registry block), transport 64000+16L .. +15. Exclusive reservations are MANAGER-AUTHORIZED ONLY (phase 2, critical benchmarks); routine work is smoke tests + small B* under shared lanes with same-conditions A/B discipline.",
+ "defaults": {
+  "total_mib_per_node": 9792,
+  "device_mib_per_node": 6400,
+  "queue_headroom_mib_per_node": 8192,
+  "branch_prefix": "lane/",
+  "worktree_root": "/Users/cem/sparkpipe-worktrees/"
+ },
+ "lanes": [
+  {
+   "lane": 0,
+   "driver": "glm5_next",
+   "families": [
+    "glm53flash",
+    "glm53full"
+   ],
+   "owner": "dev-lane0",
+   "branch": "lane/glm5-next-multidev",
+   "topology": "TP16",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23000,
+    "collective": 53000,
+    "transport": 64000
+   },
+   "status": "pattern-owner",
+   "charter": "The validated pattern (PR #1082 receipts). Extract the shared-socket family wrapper into a reusable template for the other 7 lanes; land the smoke-expert manifest convention + calculator review; drive cold-launch batch preload < 5 s TTFR.",
+   "measured_device_mib": 6419,
+   "measured_total_mib": 9629,
+   "arena_footprint_mib": 20874,
+   "source": "PR #1091"
+  },
+  {
+   "lane": 1,
+   "driver": "qwen38_27b",
+   "families": [
+    "qwen38_27b"
+   ],
+   "owner": "dev-lane1",
+   "branch": "lane/qwen38-27b-multidev",
+   "topology": "TP4",
+   "default_nodes": "spark0-spark3",
+   "ports": {
+    "control": 23016,
+    "collective": 53016,
+    "transport": 64016
+   },
+   "status": "cpu-validated",
+   "charter": "Both arms CPU-validated. Port the shared-socket wrapper, smoke-expert manifest, batch preload, then the smoke/small-B* hill-climb. nvfp4 smoke precedent: tools/qwen38_27b_nvfp4_smoke.cu.",
+   "arena_side_device_mib": 13273,
+   "lane_job_device_mib": 1638,
+   "arena_footprint_mib": 11254,
+   "source": "PR #1098"
+  },
+  {
+   "lane": 2,
+   "driver": "qwen38_max",
+   "families": [
+    "qwen38_max"
+   ],
+   "owner": "dev-lane2",
+   "branch": "lane/qwen38-max-multidev",
+   "topology": "TP16",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23032,
+    "collective": 53032,
+    "transport": 64032
+   },
+   "status": "cpu-validated",
+   "charter": "Blocked on #1072 merge (manager runs the merge gate). Experts manifest precedent: tools/qwen38max_experts_manifest.c. Then wrapper + manifest + preload + hill-climb.",
+   "arena_side_device_mib": 12797,
+   "arena_side_total_mib": 19196,
+   "lane_job_device_mib": 359,
+   "arena_footprint_mib": 11517,
+   "source": "PR #1085"
+  },
+  {
+   "lane": 3,
+   "driver": "k3",
+   "families": [
+    "k3"
+   ],
+   "owner": "dev-lane3",
+   "branch": "lane/k3-multidev",
+   "topology": "TP4xPP4",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23048,
+    "collective": 53048,
+    "transport": 64048
+   },
+   "status": "packs-deployed",
+   "charter": "mxfp4 packs deployed on all 16 ranks. Wrapper + manifest + preload + first shared-lane decode (the old exclusive-ring prerequisite is obsolete under multidev). Budget math: tools/k3_param_budget.py."
+  },
+  {
+   "lane": 4,
+   "driver": "dsv41_flash",
+   "families": [
+    "dsv41_flash"
+   ],
+   "owner": "dev-lane4",
+   "branch": "lane/dsv41-flash-multidev",
+   "topology": "TP4",
+   "default_nodes": "spark4-spark7",
+   "ports": {
+    "control": 23064,
+    "collective": 53064,
+    "transport": 64064
+   },
+   "status": "cpu-validated",
+   "charter": "Validated references on main. Wrapper + manifest + preload + hill-climb. The nvfp4 convention lands via #1076 (manager review) - do not block on it."
+  },
+  {
+   "lane": 5,
+   "driver": "dsv4_pro",
+   "families": [
+    "dsv4"
+   ],
+   "owner": "dev-lane5",
+   "branch": "lane/dsv4-pro-multidev",
+   "topology": "TP4xPP4",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23080,
+    "collective": 53080,
+    "transport": 64080
+   },
+   "status": "packs-verified",
+   "charter": "16 rank packs verified, single-spark val4 PASS. First TP4xPP4 end-to-end at small B* under shared lanes (no exclusive reservation), then the numerical gate, then hill-climb.",
+   "arena_footprint_mib": 1498,
+   "source": "PR #1092 (pending merge)"
+  },
+  {
+   "lane": 6,
+   "driver": "gemma4",
+   "families": [
+    "gemma4-31b",
+    "gemma4-26b"
+   ],
+   "owner": "dev-lane6",
+   "branch": "lane/gemma4-multidev",
+   "topology": "TP16",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23096,
+    "collective": 53200,
+    "transport": 64096
+   },
+   "status": "cpu-validated",
+   "charter": "Both sizes CPU-validated. Wrapper + manifest + preload + hill-climb. 26b tp16 topology emission is #1078 (manager review; currently red) - proceed with landed packs."
+  },
+  {
+   "lane": 7,
+   "driver": "mimo26",
+   "families": [
+    "mimo26-pro",
+    "mimo26-flash"
+   ],
+   "owner": "dev-lane7",
+   "branch": "lane/mimo26-multidev",
+   "topology": "TBD-by-census",
+   "default_nodes": "TBD-by-census",
+   "ports": {
+    "control": 23112,
+    "collective": 53112,
+    "transport": 64112
+   },
+   "status": "weights-arrived",
+   "charter": "Weights visible on /mnt/model-warm: mimo-v2.6-pro-rl, mimo-v2.6-flash-rl, mimo-v2.6-distill-qwen-9b (+ docs). Census -> family facts -> driver module -> stagepack -> CPU reference -> wrapper. Pattern precedent: model-families/mimo25 + the minimax packer (wave 2). Quality law applies: quantized experts + full-resolution spine, no requantization."
+  },
+  {
+   "lane": 8,
+   "driver": "laguna",
+   "families": [
+    "laguna"
+   ],
+   "owner": "dev-lane8",
+   "branch": "lane/laguna-tokens",
+   "topology": "TP8xPP2",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23128,
+    "collective": 53128,
+    "transport": 64128,
+    "session": 23680
+   },
+   "status": "packs-verified",
+   "charter": "laguna-s-2.1.bf16.tp8pp2 placed 16/16 (operator prep2/ACC-2, Sep 17; decimal-global-rank pack names on hex hosts - stage1.rank10.lgsp on sparka); v2 .experts sidecars generated per pack (M2 census: model-families/laguna/smoke_experts.json, both byte bases). M1+M2 (#1143) and M3 warm receipt (#1157) merged; three-number receipt banked fleet-wide (daemon-cold 835ms-1.5s, warm-daemon preload 18-20ms, steady 20-22ms). First resident attach (attach-011) waits on the 16-lane mesh bump + fleet restart wave (SPARK_WEIGHTD_MESH_MAX_LANES=8 rejects lane 8 today; deterministic lane pin rides the attach-fix series), then tools/laguna_multidev_decode.sh first tokens, then small-B*. Lane-job device budget = the 6400 MiB lane default until the first resident measurement (pack bytes ride the operator arena; weightd is exempt from admission double-counts).",
+   "source": "PR #1143 + #1157 (M1-M3); lane entry backfilled at the attach-fix series"
+  },
+  {
+   "lane": 9,
+   "driver": "ling",
+   "families": [
+    "ling",
+    "muse_glimmer",
+    "hy4"
+   ],
+   "owner": "dev-lane9",
+   "branch": "lane/ling-multidev",
+   "topology": "TP16",
+   "default_nodes": "spark0-sparkf",
+   "ports": {
+    "control": 23144,
+    "collective": 53144,
+    "transport": 64144,
+    "session": 23744
+   },
+   "status": "packs-verified",
+   "charter": "Three-family ROTATION on one lane (manager allocation 2026-09-22): ling first, then muse_glimmer, then hy4. ling census 2026-09-22: ling.bf16.tp16 + ling.fp8.tp16 placed 16/16 with valid v2 .experts + .sha256 sidecars (zero ceph, wrapper only symlinks); lingfin.bf16.tp16 placed 15/16 - spark7 lacks it, restorable from /mnt/model-warm/ling-3.0-flash-fin via one-time read (config-only delta from ling-3.0-flash per the rank0 emission receipt); muse.tp16.bf16 + hy4.fp8.tp16 + hy4.ud-iq1m.tp16 dirs present fleet-wide under legacy file naming (inventory at family rotation time). Sequence per family: wrapper from template -> smoke_experts.json (both bases, own chunk-union factor) -> attach + three-number receipt -> small-B* decode. The parked hy4 chat-template A/B (sinkprobe/fixtree) predates multidev - re-evaluate only if it blocks the M-numbers.",
+   "measured_device_mib": 6400,
+   "measured_total_mib": 9792,
+   "source": "manager allocation (session 2026-09-22) + lane-9 fleet census"
+  }
+ ],
+ "rotation_queue": [
+  {
+   "driver": "minimax",
+   "reason": "text-tower driver under review in #1080; diffusion stage design shared with qwen-image"
+  },
+  {
+   "driver": "qwen-image-2.1",
+   "reason": "diffusion resident stage design doc precedes the module (serves minimax-h3 video too)"
+  }
+ ],
+ "conventions": [
+  "Ceph law (operator directive 2026-09-22): every ceph read comes through one of the 16 per-node clients (one shared mount; client health varies per node). NVMe is the only serving source. Per family/topology: FIRST search the fleet NVMe inventory (the placed pack sets use their historical names \u2014 e.g. qwenmax.*, not new conventions; the operator's expectation is the map). If found: use it, zero ceph. If not found: the owning dev generates the stagepack via ONE-TIME ceph reads through the healthiest client, single large-scale reader fleet-wide, output lands on NVMe with receipts \u2014 and ceph is never read again for that artifact.",
+  "Review boundary (operator directive 2026-09-23): every change OUTSIDE the model driver itself (shared tools, runtime/, ring/, include/, cache/, queue tooling, templates, fleet unit files, registry, docs, this table) lands as a PR \u2014 never direct to fleet or main \u2014 with shared-infrastructure changes in clearly separable, dedicated PRs (not riders inside family-milestone PRs) so a returning reviewer can audit them standalone.",
+  "Queue truth is the CONTROLLER ledger only: every spark_queue.py call runs via ssh mac@mac-studio in /Users/mac/wk-sparkpipe-queue-main-20260922. A local worktree ledger is a dead state file that reports fiction (lane 3 incident).",
+  "Ledger regen law (three paid variants): regen LAST after all edits; git status --porcelain empty of untracked immediately before; verify_package_manifest against COMMITTED content before push.",
+  "Local-gate recipe (Actions-stall fallback): sync exact head to sparkb via the controller, CPU job ttl 15 mem 16384, sequence = generate_k3_contract --check, generate_dsv4_contracts --check, tests/test_must_work_targets.py, then NVCC=/usr/local/cuda/bin/nvcc CUDA_ARCH=sm_121a SPARK_CUDA_GATE_SCOPE=complete tools/cuda13_sm121a_compile_gate.sh with PATH=/usr/local/cuda/bin prefix (cuobjdump). Manager merges on green receipt + head verify.",
+  "Arena policy: pack/expert bytes ride the shared weightd arena (tracked 29,184 MiB/node, additional to lane budgets). Default posture: one attached pack per node; subset-attach families coexist while the declared per-node arena sum stays <= ~24 GiB. Never rely on eviction between GPU jobs.",
+  "Lane budget = resident side only (KV, workspace, activations, resident spine). Manifests present BOTH views: resident-inclusive and lane-job-only.",
+  "Preload model (operator directive 2026-09-22): expert tracing is one-time; the manifest IS the permanent working-set definition. New instances batch-preload the entire traced set at launch; the shared weightd daemon holds it resident for its lifetime so every subsequent instance launch reads from RAM. Only a weightd restart re-triggers the slow load. M3 receipts therefore report THREE numbers: (1) daemon cold-warm elapsed (once per daemon lifetime), (2) instance time_to_ready against a warm daemon (the <5 s target), (3) steady-state serve rate from RAM. The <5 s claim is number (2), never number (1).",
+  "Smoke sets are small by design: canonical prompt set preloads <= ~2 GiB/node; lazy attach covers strays; manifests record only what the canonical set touches.",
+  "Build jobs may exceed lane serving budgets with honest declared reservations + bounded TTL (nvcc -j4 RSS is real); serving jobs stay inside the lane table. Keep queue cmd files dollar-free (systemd expands $-syntax)."
+ ]
+}

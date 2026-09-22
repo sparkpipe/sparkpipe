@@ -365,7 +365,7 @@ static int smoke_dev(const char *socket,const char *pack_path,const char *name,
 		return -31;
 	if ( SparkWeightdClientConnect(socket,&client,&hello) != SPARK_STATUS_OK )
 		return -32;
-	if ( SparkWeightdClientLaneAcquire(client,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
+	if ( SparkWeightdClientLaneAcquire(client,SPARK_WEIGHTD_LANE_NONE,0,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
 	{
 		SparkWeightdClientClose(client);
 		return -33;
@@ -523,7 +523,7 @@ static int smoke_evictor(const char *socket,uint32_t acquire_lane,uint32_t hold_
 		return -44;
 	if ( acquire_lane != 0u )
 	{
-		if ( SparkWeightdClientLaneAcquire(client,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
+		if ( SparkWeightdClientLaneAcquire(client,SPARK_WEIGHTD_LANE_NONE,0,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
 		{
 			SparkWeightdClientClose(client);
 			return -45;
@@ -637,7 +637,7 @@ static int smoke_realws(const char *socket,const char *pack_path,const char *nam
 	}
 	{
 		uint32_t lane = 0xffffffffu;
-		if ( SparkWeightdClientLaneAcquire(client,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
+		if ( SparkWeightdClientLaneAcquire(client,SPARK_WEIGHTD_LANE_NONE,0,&lane,SMOKE_TIMEOUT) != SPARK_STATUS_OK )
 		{
 			SparkWeightdManifestDestroy(&manifest);
 			SparkWeightdClientClose(client);

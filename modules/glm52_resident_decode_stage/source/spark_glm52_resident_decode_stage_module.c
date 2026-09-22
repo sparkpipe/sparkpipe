@@ -1406,7 +1406,7 @@ static SparkStatus SparkGlm52LazyRecoverLease(SparkGlm52ModuleState *state,uint3
 	chain = __atomic_exchange_n(&state->lazy_retained[slot],0,__ATOMIC_ACQ_REL);
 	if ( chain == 0 )
 		return(SPARK_STATUS_NOT_FOUND);
-	if ( chain->expert_lease != 0u )
+	if ( chain->expert_lease != 0u || chain->retired_lease != 0u )
 		status = SparkGlm52LazyRelease(chain);
 	if ( status != SPARK_STATUS_OK )
 		__atomic_store_n(&state->lazy_retained[slot],chain,__ATOMIC_RELEASE);
@@ -1986,30 +1986,41 @@ static void SparkGlm52ModuleSnapshotExtend(
 	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
 }
 
-static void SparkGlm52ModuleStateTeardown(void *module_state)
+static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)
 {
 	SparkGlm52ModuleState *state;
 	uint32_t slot;
 	state = (SparkGlm52ModuleState *)module_state;
-	(void)cudaStreamSynchronize((cudaStream_t)state->execution_stream);
-	for (slot=0u; slot<state->pipeline_slot_count; slot++)
-	{
-		SparkGlm52TpChain *chain = 0;
-		(void)SparkGlm52LazyRecoverLease(state,slot,&chain);
-	}
+	if ( cudaStreamSynchronize((cudaStream_t)state->execution_stream) != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
 	if ( state->lazy_pack != 0 )
 	{
 		if ( state->lazy_pack->worker != 0 )
 		{
-			if ( SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlmStageLazyRetryRetained,state) == SPARK_STATUS_OK )
-				(void)SparkWeightdWorkerWaitIdle(state->lazy_pack->worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+			SparkStatus status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlmStageLazyRetryRetained,state);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkWeightdWorkerWaitIdle(state->lazy_pack->worker,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+			if ( status != SPARK_STATUS_OK )
+				return(status);
 		}
-		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
-			fprintf(stderr,"glm52 lazy pack teardown incomplete; retaining resources\n");
+	}
+	for (slot=0u; slot<state->pipeline_slot_count; slot++)
+		if ( __atomic_load_n(&state->lazy_retained[slot],__ATOMIC_ACQUIRE) != 0 )
+			return(SPARK_STATUS_BUSY);
+	if ( state->tp_device_collective_initialized != 0u )
+	{
+		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
+		if ( state->tp_device_collective.implementation != 0 )
+			return(SPARK_STATUS_BUSY);
+		state->tp_device_collective_initialized = 0u;
+	}
+	if ( state->lazy_pack != 0 )
+	{
+		SparkStatus status = SparkWeightdLazyPackDestroy(state->lazy_pack);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
 		state->lazy_pack = 0;
 	}
-	if ( state->tp_device_collective_initialized != 0u )
-		SparkTpDeviceCollectiveDestroy(&state->tp_device_collective);
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm52ReleaseSlotHost(state);
@@ -2025,6 +2036,7 @@ static void SparkGlm52ModuleStateTeardown(void *module_state)
 	free(state->kv_lane_mutable_page);
 	free(state->kv_lane_mutation_flags);
 	free(state->kv_lane_cache_lanes);
+	return(SPARK_STATUS_OK);
 }
 
 

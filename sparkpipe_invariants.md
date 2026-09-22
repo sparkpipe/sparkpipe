@@ -158,14 +158,15 @@ changes to common code. Track implementation evidence in
   reservation after authoritative process/cgroup and device-lifetime evidence,
   not merely after a client exits. Reconcile interrupted attempts without
   duplicate launches or killing unrelated developers' jobs.
-- **I33 — Deployment evidence has zero drift.** Use a reviewed PR, merge to main,
-  pull/sync the exact merged source on participating Sparks, rebuild/install,
-  restart the changed engine and then validate. Record source, artifact and
-  pack hashes. Dirty trees, copied driver hotpatches and unmerged binaries do
-  not qualify deployment behavior.
+- **I33 — Deployment evidence has zero drift.** Test PR builds before merge.
+  Sync an exact committed revision into a separate test root on participating
+  Sparks, rebuild coherently and record source, artifact, configuration and pack
+  hashes. Receipts identify the tested PR/commit and running binaries. Dirty
+  trees or copied driver hotpatches cannot stand in for that source. Production
+  rollout follows validation; merging is not a prerequisite for hardware tests.
 - **I34 — CI and Spark testing proceed independently.** Run focused checks and
-  review, let CI run, and perform merged-main Spark validation in parallel.
-  Do not serialize hardware testing behind CI completion. Retain and resolve
+  review, let CI run, and test pinned PR builds on Sparks in parallel. Do not
+  serialize hardware testing behind CI completion or merge. Retain and resolve
   failures from both; neither a CI pass nor a Spark pass cancels the other gate.
 
 ## 7. Topology and communication

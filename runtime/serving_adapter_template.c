@@ -67,7 +67,7 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	SparkTpDeviceCollectiveTopology *topology)
 {
 	int32_t element,token;
-	uint32_t count,index,mask;
+	uint32_t count,index,mask,previous_mask;
 	token = SparkServingAdapterTemplateJsonMember(document,object,"algorithms");
 	if ( token < 0 ||
 		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
@@ -77,6 +77,7 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 	for (index=0u; index<count; index++)
 	{
 		element = SparkJsonGetArrayElement(document,token,index);
+		previous_mask = mask;
 		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
 		else if ( SparkJsonStringEquals(document,element,
@@ -88,10 +89,12 @@ static SparkStatus SparkTpCollectiveLoadAlgorithms(
 			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 		else
 			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( mask == previous_mask )
+			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	if ( policy->algorithms == SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET )
 	{
-		if ( count != 3u || mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
+		if ( mask != SPARK_TP_DEVICE_COLLECTIVE_KNOWN_ALGORITHMS )
 			return(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	else if ( policy->algorithms == SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY )

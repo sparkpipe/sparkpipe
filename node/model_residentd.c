@@ -392,13 +392,17 @@ static SparkStatus SparkModelResidentdTransportContract(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( strcmp(mode,"host-rdma") == 0 )
 	{
-		*capabilities = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS;
+		/* required means REQUIRED (manager ruling, laguna's measured
+		 * diagnosis): the RECOMMENDED superset here demanded doorbells,
+		 * multi-lane and poll descriptors no honest host-rdma backend
+		 * implements, failing every module at load. */
+		*capabilities = SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
 		*module_id = SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID;
 		*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST;
 	}
 	else if ( strcmp(mode,"gpudirect-rdma") == 0 )
 	{
-		*capabilities = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS;
+		*capabilities = SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS;
 		*module_id = SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID;
 		*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_DEVICE;
 	}
@@ -702,7 +706,7 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 	const SparkModelServingLane *lane;
 	lane = &route->submission.lanes[lane_index];
 	slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) == 0u )
 	{
 		if ( slot->bound == 0u )
 			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
@@ -1099,7 +1103,7 @@ static void SparkModelResidentdCompletion(
 			if ( completed_time_ns >= route->adapter_submit_time_ns )
 				route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
 		}
-		route->state = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ?
+		route->state = SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ?
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT :
 			SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
@@ -1683,7 +1687,7 @@ static SparkStatus SparkModelResidentdBindRoute(
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
+	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
 	{
 		input_sideband_address = runtime->rank_plan.input_sideband_bytes_per_sequence != 0u ? SparkModelResidentdSidebandAddress(&slot->input,&runtime->rank_plan) : 0;
 		route->submission.hidden_input_address = slot->input.cuda_address;
@@ -1695,7 +1699,7 @@ static SparkStatus SparkModelResidentdBindRoute(
 	}
 	else
 		route->ready_state = SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER;
-	if ( route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u )
+	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u )
 	{
 		output_sideband_address = runtime->rank_plan.output_sideband_bytes_per_sequence != 0u ? SparkModelResidentdSidebandAddress(&slot->output,&runtime->rank_plan) : 0;
 		route->submission.hidden_output_address = slot->output.cuda_address;
@@ -2006,6 +2010,8 @@ static SparkStatus SparkModelResidentdValidateContinuationLease(
 	const SparkModelServingLane *lane;
 	SparkStatus status;
 	uint32_t lane_index;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( (runtime->adapter_library.adapter_interface.descriptor->
 		capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )

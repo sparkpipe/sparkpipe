@@ -1,20 +1,24 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_status.h"
+/* The weightd client entry points come from the extern "C" guarded
+ * header and the residentd-side static runtime archive. This TU compiles
+ * as C++: hand-declaring the prototypes (the old form here) mangles the
+ * references — the .so carried undefined _Z...SparkWeightdClient* symbols
+ * that no host could resolve, and residentd's RTLD_NOW transport load
+ * failed closed (first-launch find, same class as the k3 adapter
+ * mesh-kernel symbol). The hand-declared forms were also wrong: connect
+ * takes (path, SparkWeightdClient**, hello_out), there is no Disconnect
+ * (Close), and MeshBroadcast carries the seq_value/seq_remote_offset
+ * pair. */
+#include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-extern SparkStatus SparkWeightdClientConnect(const char *path,
-    void *client, uint64_t reserved);
-extern SparkStatus SparkWeightdClientDisconnect(void *client);
-extern SparkStatus SparkWeightdClientMeshBroadcast(void *client,
-    uint32_t peer_mask, uint64_t source_offset, uint64_t remote_offset,
-    uint32_t length, uint64_t timeout_nanoseconds);
-
 typedef struct SparkHiddenSparkHostRdmaState
 {
-    char client[4096];
+    SparkWeightdClient *client;
     void *mesh_buffer;
     uint32_t mesh_buffer_bytes;
 } SparkHiddenSparkHostRdmaState;
@@ -37,7 +41,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         char path[128];
         snprintf(path,sizeof(path),"%s",
             socket != 0 ? socket : "/tmp/spark_weightd.sock");
-        if ( SparkWeightdClientConnect(path,state->client,0) !=
+        if ( SparkWeightdClientConnect(path,&state->client,0) !=
                 SPARK_STATUS_OK )
         {
             free(state);
@@ -54,7 +58,7 @@ static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
         (SparkHiddenSparkHostRdmaState *)transport_state;
     if ( state == 0 )
         return;
-    (void)SparkWeightdClientDisconnect(state->client);
+    SparkWeightdClientClose(state->client);
     free(state);
 }
 
@@ -72,7 +76,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
         packet->hidden_dimension * packet->bytes_per_sequence;
     memcpy(state->mesh_buffer,packet->hidden_bf16,(size_t)bytes);
     return SparkWeightdClientMeshBroadcast(state->client,
-        0x7FFFu,0,0,(uint32_t)bytes,5000000000ull);
+        0x7FFFu,0,0,(uint32_t)bytes,0u,0u,5000000000ull);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
@@ -89,7 +93,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
         return SPARK_STATUS_INVALID_ARGUMENT;
     memcpy(state->mesh_buffer,local_buffer,(size_t)bytes);
     return SparkWeightdClientMeshBroadcast(state->client,
-        0x7FFFu,0,remote_offset,(uint32_t)bytes,5000000000ull);
+        0x7FFFu,0,remote_offset,(uint32_t)bytes,0u,0u,5000000000ull);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
@@ -225,6 +229,40 @@ static SparkStatus SparkHiddenSparkHostRdmaCancelPersistentSend(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
+    void *transport_state,
+    SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    uint32_t index;
+    SparkStatus status = SPARK_STATUS_OK;
+    for ( index = 0u; index < packet_count; ++index )
+    {
+        status = SparkHiddenSparkHostRdmaPostReceive(transport_state,
+            &packets[index]);
+        if ( status != SPARK_STATUS_OK )
+            return status;
+    }
+    return status;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaSendBatch(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packets,
+    uint32_t packet_count)
+{
+    uint32_t index;
+    SparkStatus status = SPARK_STATUS_OK;
+    for ( index = 0u; index < packet_count; ++index )
+    {
+        status = SparkHiddenSparkHostRdmaSend(transport_state,
+            &packets[index]);
+        if ( status != SPARK_STATUS_OK )
+            return status;
+    }
+    return status;
+}
+
 static SparkHiddenTransportInterface spark_hidden_spark_host_rdma_interface;
 
 extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
@@ -236,7 +274,20 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     spark_hidden_spark_host_rdma_interface.descriptor_bytes =
         sizeof(SparkHiddenTransportInterface);
     spark_hidden_spark_host_rdma_interface.capability_flags =
+#if SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS |
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
+#else
+        /* The honest contract (manager ruling on laguna's measurement):
+         * REQUIRED_SPARK_HOST_RDMA_CAPS is what this backend implements
+         * — synchronous singles plus batch loops over them. Poll
+         * descriptors, multi-lane and the remote-completion doorbell
+         * are NOT implemented here; declaring them to satisfy a
+         * mis-wired required mask would be a lie. The mask bug is fixed
+         * at the contract site instead (node/model_residentd.c). */
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS |
+        SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
+#endif
     spark_hidden_spark_host_rdma_interface.initialize =
         SparkHiddenSparkHostRdmaInitialize;
     spark_hidden_spark_host_rdma_interface.destroy =
@@ -251,6 +302,15 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaGetPollDescriptors;
     spark_hidden_spark_host_rdma_interface.post_receive =
         SparkHiddenSparkHostRdmaPostReceive;
+    /* batch forms: per-packet loops over the singles. The RECOMMENDED
+     * (== residentd's required) host-rdma cap set includes
+     * BATCHED_SUBMISSION, and the loader's RequiresBatchFunctions check
+     * fires on EITHER side declaring it — the module must provide them
+     * even to decline the cap. */
+    spark_hidden_spark_host_rdma_interface.post_receive_batch =
+        SparkHiddenSparkHostRdmaPostReceiveBatch;
+    spark_hidden_spark_host_rdma_interface.send_batch =
+        SparkHiddenSparkHostRdmaSendBatch;
     spark_hidden_spark_host_rdma_interface.set_fixed_local =
         SparkHiddenSparkHostRdmaSetFixedLocal;
     spark_hidden_spark_host_rdma_interface.set_fixed_remote =

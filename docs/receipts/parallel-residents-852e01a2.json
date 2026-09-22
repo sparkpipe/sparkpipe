@@ -1,0 +1,87 @@
+{
+  "source_commit": "852e01a2c9ee8b7b273370a793761dc70db5b005",
+  "bundle_sha256": "93a6ed6fdfe784cde67e28ebad78820142363083e25fb3852d2bbebb986775ff",
+  "oracle": "Exact outputs from isolated 1a08cb81 run; not independent model quality validation",
+  "mode": "GLM5.3 Flash FP8 TP16; hardware waits; full pinned pool; B1; context512; 128 pages; 2GiB backing per resident",
+  "campaigns": [
+    {
+      "residents_per_spark": 8,
+      "attempt": "7faa24b3c3734535812704dff1c5af52",
+      "verdict": "PASS",
+      "ranks": 16,
+      "output_tokens": 256,
+      "owned_processes_absent": 144,
+      "decode_tokens_per_second": [
+        1.6336449564030089,
+        1.6350176302213384,
+        1.6689792247389237,
+        1.6227722778683944,
+        1.6351580557620136,
+        1.630699817533761,
+        1.6356324054267506,
+        1.6377332437591978
+      ],
+      "ttft_seconds": [
+        106.51442688901443,
+        106.56071790796705,
+        106.98991949309129,
+        106.31374536908697,
+        106.54673767392524,
+        106.35426926799119,
+        106.33358998293988,
+        106.2017824340146
+      ],
+      "common_window": {
+        "start_seconds": 106.99201465805527,
+        "end_seconds": 125.1318845479982,
+        "tokens": 236,
+        "aggregate_tokens_per_second": 13.010016137483028
+      },
+      "gpu_peak_mib_per_spark": [
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0,
+        48346.0
+      ],
+      "budgets": {
+        "expert_pool_bytes": 25769803776,
+        "model_device_bytes": 4294967296,
+        "spine_bytes": 4294967296,
+        "weightd_device_bytes": 30064771072,
+        "weightd_overhead_bytes": 536870912
+      },
+      "queue_host_memory_mib": 16384,
+      "queue_device_memory_mib": 61952,
+      "rank_receipt_sha256": {
+        "spark0-gather": "70194f7a002701d7438f5635c4fca2b034ebcdd82b8ca220041f7183aa01fdfd",
+        "spark1-gather": "99b5cc44a03640caa7e4060cfbf61591be01fd25a864d9c4011286e79293bbe4",
+        "spark2-gather": "b34d7043e02efc24240c7999be0ac62d20461f86bddb9c8eac64ad1908c287bb",
+        "spark3-gather": "5a73c6a047bbfb1f3680fd79553a46ac56956002302cc4388aed53d3b776368b",
+        "spark4-gather": "4898551969ecf20199d1881670fe17c551088fc9e88e7514e57c03c78ccde064",
+        "spark5-gather": "2a939bd64a2901c1bca14a0947a40434dffa765a98cd416d6dc5df67d25d617f",
+        "spark6-gather": "88ddf1abdf6394e3f7d81ac0e47f2a5c6638b077e9c599ad51caec6046f3a0f4",
+        "spark7-gather": "3d59c7b41cd0f0764967e18197acee8119f0ba7236d9a3d00497001dc9b82369",
+        "spark8-gather": "51786bf51d34441d396d12eb8deeec62d0748a222d15b3170f91d4ed657f04a4",
+        "spark9-gather": "42ed097d2a86758725d8489564aff7ae462785e3e9bda0824c4fd09dee93360f",
+        "sparka-gather": "b6abe43c35028b6a2670d768e46b7d655977429127514db39921da20720241f5",
+        "sparkb-gather": "f0e0ba926121bda553261ee52b6bc740de12b59c4b77ea2447ecd7101626e407",
+        "sparkc-gather": "fcd94b37ebab7fc10ac88d899c003dd0314b32fef34154d0e72011fae753dffb",
+        "sparkd-gather": "aebf5077973123f1e622d7bbd061bcd2b91f8542c6e6beaa43e8fef68c9202fe",
+        "sparke-gather": "07758ddafc51a7a51c0ee2851e21f15037e1b9f1085221cafb04f2e5b8f96413",
+        "sparkf-gather": "318973b7620b90f6755e3320e5f599df47860ea3c9f0a5417911966409a8999b"
+      }
+    }
+  ]
+}

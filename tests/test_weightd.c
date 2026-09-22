@@ -1,6 +1,8 @@
 
 #include <assert.h>
+#include <dirent.h>
 #include <poll.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -108,6 +110,64 @@ static void SparkTestWritePack(const char *path, uint32_t seed,
     }
     assert(fclose(file) == 0);
     assert(SparkSha256File(path, hex) == SPARK_STATUS_OK);
+}
+
+/* Prong-1 trust chain (spine receipt): find the /tmp/spark-weightd-spine
+ * receipt bound to this pack's (size,mtime,ctime) - the same binding the
+ * client loader validates - and report its proof basis. The daemon's
+ * SHA-mode materialization must leave a proof-1 (DAEMON_SHA) receipt. */
+static int SparkTestFindSpineReceipt(const char *pack_path, uint64_t *proof)
+{
+    static const char directory_path[] = "/tmp/spark-weightd-spine";
+    DIR *directory = opendir(directory_path);
+    struct dirent *entry;
+    struct stat st;
+    int found = 0;
+    if (directory == 0 || stat(pack_path, &st) != 0)
+    {
+        if (directory != 0)
+            closedir(directory);
+        return 0;
+    }
+    while (found == 0 && (entry = readdir(directory)) != 0)
+    {
+        char path[512];
+        uint8_t raw[88];
+        FILE *receipt;
+        uint64_t magic, size, mtime_ns, ctime_ns, recorded;
+        if (entry->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "%s/%s", directory_path, entry->d_name);
+        receipt = fopen(path, "rb");
+        if (receipt == 0 || fread(raw, 1u, sizeof(raw), receipt) != sizeof(raw))
+        {
+            if (receipt != 0)
+                fclose(receipt);
+            continue;
+        }
+        fclose(receipt);
+        memcpy(&magic, raw, 8u);
+        memcpy(&size, raw + 8u, 8u);
+        memcpy(&mtime_ns, raw + 16u, 8u);
+        memcpy(&ctime_ns, raw + 24u, 8u);
+        memcpy(&recorded, raw + 80u, 8u);
+        if (magic != UINT64_C(0x5350494e45524531) ||
+            size != (uint64_t)st.st_size)
+            continue;
+#if defined(__APPLE__)
+        if (mtime_ns != ((uint64_t)st.st_mtimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtimespec.tv_nsec) ||
+            ctime_ns != ((uint64_t)st.st_ctimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctimespec.tv_nsec))
+            continue;
+#else
+        if (mtime_ns != ((uint64_t)st.st_mtim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtim.tv_nsec) ||
+            ctime_ns != ((uint64_t)st.st_ctim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctim.tv_nsec))
+            continue;
+#endif
+        *proof = recorded;
+        found = 1;
+    }
+    closedir(directory);
+    return found;
 }
 
 static void SparkTestMakeIdentity(SparkWeightdIdentity *identity,
@@ -604,10 +664,21 @@ static void SparkTestDaemonProcessTermPath(void)
     SparkWeightdClient *client = 0;
     char ready_line[256];
     int stdout_pipe[2];
+    int latch_socket;
+    struct sockaddr_in latch_address;
+    socklen_t latch_address_bytes = sizeof(latch_address);
     pid_t daemon_pid;
     int daemon_exit = -1;
     uint64_t waited_ms;
 
+    latch_socket = socket(AF_INET,SOCK_STREAM,0);
+    assert(latch_socket >= 0);
+    memset(&latch_address,0,sizeof(latch_address));
+    latch_address.sin_family = AF_INET;
+    latch_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(latch_socket,(struct sockaddr *)&latch_address,sizeof(latch_address)) == 0);
+    assert(getsockname(latch_socket,(struct sockaddr *)&latch_address,&latch_address_bytes) == 0);
+    assert(ntohs(latch_address.sin_port) != 0u);
     assert(pipe(stdout_pipe) == 0);
     (void)unlink(stderr_path);
     SparkTestWritePack(pack_path, 400u, SPARK_TEST_ARENA_BYTES, digest);
@@ -615,12 +686,16 @@ static void SparkTestDaemonProcessTermPath(void)
         0x991ull, digest, SPARK_TEST_ARENA_BYTES);
     SparkTestMakeRequest(&request, &identity, pack_path);
 
+    assert(close(latch_socket) == 0);
     daemon_pid = fork();
     assert(daemon_pid >= 0);
     if (daemon_pid == 0)
     {
         char ceiling_text[32];
-        setenv("SPARK_WEIGHTD_LATCH_PORT","0",1);
+        char latch_text[16];
+        snprintf(latch_text,sizeof(latch_text),"%u",(unsigned)ntohs(latch_address.sin_port));
+        setenv("SPARK_WEIGHTD_LATCH_PORT",latch_text,1);
+        setenv("SPARK_WEIGHTD_KV_RESERVE_BYTES","0",1);
         snprintf(ceiling_text, sizeof(ceiling_text), "%llu",
             (unsigned long long)(2ull * SPARK_TEST_ARENA_BYTES));
         (void)dup2(stdout_pipe[1], 1);
@@ -647,6 +722,14 @@ static void SparkTestDaemonProcessTermPath(void)
     assert(result.status == SPARK_STATUS_OK);
     assert(result.loaded_from_pack == 1u);
     assert(result.refcount == 1u);
+    {
+        /* Prong 1: SHA-mode materialization must leave the DAEMON_SHA
+         * spine receipt bound to this pack, so the module's first spine
+         * load copies spans without the redundant whole-pack hash. */
+        uint64_t proof = 99u;
+        assert(SparkTestFindSpineReceipt(pack_path, &proof) == 1);
+        assert(proof == UINT64_C(1));
+    }
 
     assert(kill(daemon_pid, SIGTERM) == 0);
     waited_ms = 0ull;

@@ -13,7 +13,8 @@ enum
 	MAP_ACQUIRED,
 	MAP_INFLIGHT,
 	MAP_RECORDED,
-	MAP_RETIRING
+	MAP_RETIRING,
+	MAP_LEASE_COUNT = 64
 };
 
 typedef struct SparkWeightdMapSlot
@@ -31,16 +32,16 @@ struct SparkWeightdMap
 	CUcontext context;
 	CUdeviceptr base;
 	uint64_t generation,span_bytes,chunk_bytes;
-	uint64_t validated_epoch;
 	void *epoch_device;
 	void *epoch_handle;
 	uint32_t chunk_count;
+	uint32_t pool_mapped;
 	int32_t device;
 	SparkStatus failure;
 	CUmemGenericAllocationHandle *handles;
 	uint64_t *owners;
 	uint8_t *mapped;
-	SparkWeightdMapSlot slots[SPARK_WEIGHTD_LEASE_COUNT_MAX];
+	SparkWeightdMapSlot slots[MAP_LEASE_COUNT];
 };
 
 static uint64_t map_now(void)
@@ -79,7 +80,7 @@ static SparkWeightdMapSlot *map_slot(SparkWeightdMap *map,uint64_t identifier)
 	uint32_t i;
 	if ( identifier == 0u )
 		return(0);
-	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
+	for (i=0u; i<MAP_LEASE_COUNT; i++)
 		if ( map->slots[i].state != MAP_EMPTY && map->slots[i].identifier == identifier )
 			return(&map->slots[i]);
 	return(0);
@@ -88,53 +89,67 @@ static SparkWeightdMapSlot *map_slot(SparkWeightdMap *map,uint64_t identifier)
 static SparkStatus map_free_initial(SparkWeightdMap *map)
 {
 	uint32_t i;
-	SparkStatus status = SPARK_STATUS_OK;
+	if ( map->epoch_device != 0 )
+	{
+		if ( cuMemUnmap(map->base + map->span_bytes,
+		    (size_t)map->chunk_bytes) != CUDA_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		map->epoch_device = 0;
+	}
+	if ( map->pool_mapped != 0u )
+	{
+		if ( cuMemUnmap(map->base,(size_t)map->span_bytes) != CUDA_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		map->pool_mapped = 0u;
+		memset(map->mapped,0,map->chunk_count * sizeof(*map->mapped));
+	}
+	for (i=0u; map->mapped != 0 && i<map->chunk_count; i++)
+		if ( map->mapped[i] != 0u )
+		{
+			if ( cuMemUnmap(map->base + i * map->chunk_bytes,
+			    (size_t)map->chunk_bytes) != CUDA_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			map->mapped[i] = 0u;
+		}
 	if ( map->epoch_handle != 0 )
 	{
-		(void)cuMemUnmap(map->base + map->span_bytes,
-		    (size_t)map->chunk_bytes);
-		(void)cuMemRelease((CUmemGenericAllocationHandle)
-		    map->epoch_handle);
-		map->epoch_device = 0;
+		if ( cuMemRelease((CUmemGenericAllocationHandle)map->epoch_handle) != CUDA_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		map->epoch_handle = 0;
+	}
+	for (i=0u; map->handles != 0 && i<map->chunk_count; i++)
+	{
+		uint32_t j;
+		CUmemGenericAllocationHandle handle = map->handles[i];
+		if ( handle == 0 )
+			continue;
+		if ( cuMemRelease(handle) != CUDA_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		for (j=i; j<map->chunk_count; j++)
+			if ( map->handles[j] == handle )
+				map->handles[j] = 0;
 	}
 	if ( map->base != 0u )
 	{
-		/* chunk and pool mappings persist across lease release by design;
-		 * teardown must unmap the whole span before freeing the VA. */
-		(void)cuMemUnmap(map->base,
-		    (size_t)(map->span_bytes + map->chunk_bytes));
-		status = cuMemAddressFree(map->base,
-		    (size_t)(map->span_bytes + map->chunk_bytes)) == CUDA_SUCCESS
-		    ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+		if ( cuMemAddressFree(map->base,
+		    (size_t)(map->span_bytes + map->chunk_bytes)) != CUDA_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		map->base = 0u;
 	}
-	/* imported chunk handles are phys references; release each distinct
-	 * one exactly once (the pool bulk-map points every chunk at the same
-	 * handle) */
-	for (i=0u; map->handles != 0 && i<map->chunk_count; i++)
-	{
-		uint32_t j,seen = 0u;
-		if ( map->handles[i] == 0 )
-			continue;
-		for (j=0u; j<i; j++)
-			if ( map->handles[j] == map->handles[i] )
-			{
-				seen = 1u;
-				break;
-			}
-		if ( seen == 0u )
-			(void)cuMemRelease((CUmemGenericAllocationHandle)map->handles[i]);
-	}
-	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
+	for (i=0u; i<MAP_LEASE_COUNT; i++)
 		if ( map->slots[i].event != 0 )
-			(void)cudaEventDestroy(map->slots[i].event);
+		{
+			if ( cudaEventDestroy(map->slots[i].event) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			map->slots[i].event = 0;
+		}
 	free(map->handles);
 	free(map->owners);
 	free(map->mapped);
 	if ( map->client_lock_initialized != 0u )
 		(void)pthread_mutex_destroy(&map->client_lock);
 	free(map);
-	return(status);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
@@ -144,11 +159,11 @@ static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
 	uint32_t i;
 	if ( cudaGetDevice(&map->device) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
-		if ( cudaEventCreateWithFlags(&map->slots[i].event,cudaEventDisableTiming) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cuCtxGetCurrent(&map->context) != CUDA_SUCCESS || map->context == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	for (i=0u; i<MAP_LEASE_COUNT; i++)
+		if ( cudaEventCreateWithFlags(&map->slots[i].event,cudaEventDisableTiming) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
 	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
@@ -178,7 +193,10 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 	if ( map == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( pthread_mutex_init(&map->client_lock,0) != 0 )
+	{
+		free(map);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	map->client_lock_initialized = 1u;
 	map->client = client;
 	map->generation = attached->arena_generation;
@@ -206,6 +224,7 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 			status = SPARK_STATUS_IO_ERROR;
 		else
 		{
+			map->epoch_device = (void *)(map->base + map->span_bytes);
 			memset(&access,0,sizeof(access));
 			access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
 			access.location.id = map->device;
@@ -213,26 +232,16 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 			if ( cuMemSetAccess(map->base + map->span_bytes,
 			        (size_t)map->chunk_bytes,&access,1u) != CUDA_SUCCESS )
 				status = SPARK_STATUS_IO_ERROR;
-			else
-				map->epoch_device =
-				    (void *)(map->base + map->span_bytes);
 		}
-		(void)close(epoch_fd);
-	}
-	if ( status != SPARK_STATUS_OK )
-	{
-		(void)map_free_initial(map);
-		SPARK_RETURN(status);
 	}
 	if ( status == SPARK_STATUS_OK && pool_fd >= 0 )
 	{
-		CUmemGenericAllocationHandle pool_handle = 0;
 		CUmemAccessDesc access;
-		if ( cuMemImportFromShareableHandle(&pool_handle,
+		if ( cuMemImportFromShareableHandle(&map->handles[0],
 		         (void *)(intptr_t)pool_fd,
 			         CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) !=
 			     CUDA_SUCCESS ||
-		     cuMemMap(map->base,(size_t)map->span_bytes,0u,pool_handle,0ull) !=
+		     cuMemMap(map->base,(size_t)map->span_bytes,0u,map->handles[0],0ull) !=
 		             CUDA_SUCCESS )
 		{
 			fprintf(stderr,"WD-MAP-POOL-IMPORT-FAIL chunk_count=%u span=%llu\n",
@@ -242,6 +251,12 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 		else
 		{
 			uint32_t i;
+			map->pool_mapped = 1u;
+			for ( i = 0u; i < map->chunk_count; i++ )
+			{
+				map->handles[i] = map->handles[0];
+				map->mapped[i] = 1u;
+			}
 			memset(&access,0,sizeof(access));
 			access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
 			access.location.id = map->device;
@@ -251,17 +266,20 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 				status = SPARK_STATUS_IO_ERROR;
 			else
 			{
-				for ( i = 0u; i < map->chunk_count; i++ )
-				{
-					map->handles[i] = pool_handle;
-					map->mapped[i] = 1u;
-				}
 				fprintf(stderr,
 				    "WD-MAP-POOL-BULK chunks=%u span=%llu — all chunks mapped in ONE import\n",
 				    map->chunk_count,(unsigned long long)map->span_bytes);
 			}
 		}
-		(void)close(pool_fd);
+	}
+	if ( epoch_fd >= 0 ) (void)close(epoch_fd);
+	if ( pool_fd >= 0 ) (void)close(pool_fd);
+	if ( status != SPARK_STATUS_OK )
+	{
+		map->failure = status;
+		if ( map_free_initial(map) != SPARK_STATUS_OK )
+			*out = map;
+		SPARK_RETURN(status);
 	}
 	*out = map;
 	return(SPARK_STATUS_OK);
@@ -280,17 +298,10 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map)
 	SparkStatus status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
+	for (i=0u; i<MAP_LEASE_COUNT; i++)
 		if ( map->slots[i].state != MAP_EMPTY )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	map->failure = SPARK_STATUS_IO_ERROR;
-	for (i=0u; i<SPARK_WEIGHTD_LEASE_COUNT_MAX; i++)
-		if ( map->slots[i].event != 0 )
-		{
-			if ( cudaEventDestroy(map->slots[i].event) != cudaSuccess )
-				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-			map->slots[i].event = 0;
-		}
 	status = map_free_initial(map);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -309,6 +320,21 @@ static SparkStatus map_drop_slot(SparkWeightdMap *map,uint32_t slot)
 		{
 			map->owners[i] &= ~bit;
 			continue;
+		}
+		if ( map->pool_mapped == 0u )
+		{
+			if ( map->mapped[i] != 0u )
+			{
+				if ( cuMemUnmap(map->base + i * map->chunk_bytes,(size_t)map->chunk_bytes) != CUDA_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+				map->mapped[i] = 0u;
+			}
+			if ( map->handles[i] != 0 )
+			{
+				if ( cuMemRelease(map->handles[i]) != CUDA_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+				map->handles[i] = 0;
+			}
 		}
 		map->owners[i] = 0u;
 	}
@@ -365,20 +391,15 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint
 
 static SparkStatus map_import_chunk(SparkWeightdMap *map,uint32_t slot,uint32_t chunk,int32_t fd)
 {
-	if ( map->mapped[chunk] != 0u )
-	{
-		(void)close(fd);
-		return(SPARK_STATUS_OK);
-	}
 	CUmemAccessDesc access;
 	uint64_t bit = (UINT64_C(1) << slot);
-	if ( map->owners[chunk] != 0u )
+	if ( map->mapped[chunk] != 0u )
 	{
-		if ( map->mapped[chunk] == 0u || map->handles[chunk] == 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		map->owners[chunk] |= bit;
 		return(SPARK_STATUS_OK);
 	}
+	if ( map->owners[chunk] != 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	map->owners[chunk] = bit;
 	if ( cuMemImportFromShareableHandle(&map->handles[chunk],(void *)(intptr_t)fd,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) != CUDA_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -483,10 +504,16 @@ SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpert
 	}
 	{
 		uint64_t exchange_start = map_now();
-	for (slot=0u; slot<SPARK_WEIGHTD_LEASE_COUNT_MAX; slot++)
+	for (slot=0u; slot<MAP_LEASE_COUNT; slot++)
+		if ( map->slots[slot].state == MAP_RETIRING )
+		{
+			(void)pthread_mutex_unlock(&map->client_lock);
+			SPARK_FAIL(SPARK_STATUS_BUSY);
+		}
+	for (slot=0u; slot<MAP_LEASE_COUNT; slot++)
 		if ( map->slots[slot].state == MAP_EMPTY )
 			break;
-	if ( slot == SPARK_WEIGHTD_LEASE_COUNT_MAX )
+	if ( slot == MAP_LEASE_COUNT )
 	{
 		(void)pthread_mutex_unlock(&map->client_lock);
 		SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -537,25 +564,6 @@ SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,voi
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	if ( slot->state != MAP_ACQUIRED )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
-	if ( map->epoch_device != 0 )
-	{
-		uint64_t current_epoch;
-		if ( cudaMemcpy(&current_epoch,map->epoch_device,
-		    sizeof(current_epoch),cudaMemcpyDeviceToHost) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		if ( current_epoch != map->validated_epoch )
-		{
-			uint32_t i;
-			map->validated_epoch = current_epoch;
-			for ( i = 0u; i < map->chunk_count; i++ )
-				map->mapped[i] = 0u;
-			fprintf(stderr,
-			    "WEIGHTD-MAP-EPOCH-MOVE epoch=%llu — all chunk mappings invalidated, next access re-imports\n",
-			    (unsigned long long)current_epoch);
-			slot->state = MAP_ACQUIRED;
-			SPARK_FAIL(SPARK_STATUS_BUSY);
-		}
-	}
 	slot->state = MAP_INFLIGHT;
 	*address = (void *)(uintptr_t)map->base;
 	return(SPARK_STATUS_OK);
@@ -586,5 +594,42 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 	if ( cudaEventRecord(slot->event,stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	slot->state = MAP_RECORDED;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdMapSpineCopy(const SparkWeightdMap *map,
+	const SparkWeightdManifest *manifest,void *destination,uint64_t capacity)
+{
+	uint32_t index;
+	if ( map == 0 || manifest == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( map->pool_mapped == 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( manifest->spine_allocation_bytes > capacity )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( manifest->spine_allocation_bytes != 0u &&
+		(destination == 0 || ((uintptr_t)destination & 255u) != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	/* Prong 2 (hill-climb): the pool import maps the daemon's WHOLE pack
+	 * image at map->base - the daemon-verified bytes at their file
+	 * offsets. Copy each compacted spine span device-to-device; the
+	 * caller quarantines the destination until success, so a faulting
+	 * copy followed by the file-path fallback rewrites the same bytes. */
+	for (index=0u; index<manifest->spine_count; index++)
+	{
+		const SparkWeightdSpan *span = &manifest->spine[index];
+		uint64_t span_offset = span->offset;
+		while ( span_offset < span->offset + span->bytes )
+		{
+			uint64_t remain = (span->offset + span->bytes) - span_offset;
+			size_t chunk = (size_t)(remain < UINT64_C(8388608) ? remain : UINT64_C(8388608));
+			CUdeviceptr source = map->base + span_offset;
+			CUdeviceptr target = (CUdeviceptr)(uintptr_t)destination +
+				span->compact_offset + (span_offset - span->offset);
+			if ( cuMemcpyDtoD(target,source,chunk) != CUDA_SUCCESS )
+				return(SPARK_STATUS_IO_ERROR);
+			span_offset += (uint64_t)chunk;
+		}
+	}
 	return(SPARK_STATUS_OK);
 }

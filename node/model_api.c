@@ -51,6 +51,7 @@ typedef struct ApiRequest
 	volatile int submitted;
 	volatile int inflight;
 	volatile int orphaned;
+	uint32_t cancel_pending;
 	volatile uint32_t status;
 	SparkModelBatchRequestHandle handle;
 	uint32_t *stop_tokens;
@@ -64,6 +65,7 @@ typedef struct ApiState
 {
 	SparkModelBatchEngine *engine;
 	pthread_mutex_t queue_mutex;
+	int wake_fds[2];
 	ApiRequest *queue_head;
 	ApiRequest *queue_tail;
 	volatile int running;
@@ -242,14 +244,65 @@ static void api_orphan_cancel_after_submit(ApiRequest *r)
 		(void)SparkModelBatchEngineCancel(S.engine, orphan_handle);
 }
 
+static void api_wake_worker(void)
+{
+	uint8_t value = 1u;
+	ssize_t written;
+	do
+		written = write(S.wake_fds[1],&value,sizeof(value));
+	while ( written < 0 && errno == EINTR );
+	if ( written != sizeof(value) && errno != EAGAIN && errno != EWOULDBLOCK )
+	{
+		api_logf("worker wake failed errno=%d",errno);
+		_exit(1);
+	}
+}
+
+static void api_drain_worker_wake(void)
+{
+	uint8_t values[64];
+	ssize_t received;
+	do
+		received = read(S.wake_fds[0],values,sizeof(values));
+	while ( received > 0 || (received < 0 && errno == EINTR) );
+}
+
+static void api_cancel_queued(void)
+{
+	ApiRequest *request;
+	SparkModelBatchRequestHandle handle;
+	for (;;)
+	{
+		pthread_mutex_lock(&S.queue_mutex);
+		for (request=S.queue_head; request!=0; request=request->next)
+			if ( request->cancel_pending != 0u && request->submitted != 0 )
+				break;
+		if ( request == 0 )
+		{
+			pthread_mutex_unlock(&S.queue_mutex);
+			break;
+		}
+		handle = request->handle;
+		request->cancel_pending = 0u;
+		request->inflight = 1;
+		pthread_mutex_unlock(&S.queue_mutex);
+		(void)SparkModelBatchEngineCancel(S.engine,handle);
+		pthread_mutex_lock(&S.queue_mutex);
+		request->inflight = 0;
+		pthread_mutex_unlock(&S.queue_mutex);
+	}
+}
+
 static void *api_worker(void *arg)
 {
 	SparkModelResidentClientPollDescriptor
 		fds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
-	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u];
 	(void)arg;
 	while (S.running)
 	{
+		api_drain_worker_wake();
+		api_cancel_queued();
 		{
 			ApiRequest *pending[API_MAX_INFLIGHT];
 			uint32_t pending_count = 0;
@@ -326,52 +379,61 @@ static void *api_worker(void *arg)
 				pthread_mutex_unlock(&S.queue_mutex);
 			}
 		}
-		if (S.queue_head != 0)
+		(void)SparkModelBatchEngineProgress(S.engine,4u);
 		{
-			(void)SparkModelBatchEngineProgress(S.engine, 4u);
+			uint32_t count,index;
+			uint64_t now_ms,deadline_ns,deadline_ms,save_ms;
+			int timeout_ms;
+			SparkStatus status;
+			now_ms = api_now_ms();
+			if ( now_ms - S.seq_saved_ms >= 60000u )
 			{
-				uint64_t now_ms = api_now_ms();
-				if ( now_ms - S.seq_saved_ms >= 60000u )
+				char seq_path[1024];
+				FILE *seq_out;
+				(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
+				seq_out = fopen(seq_path,"w");
+				if ( seq_out != 0 )
 				{
-					char seq_path[1024];
-					(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
-					FILE *seq_out = fopen(seq_path,"w");
-					if ( seq_out != 0 )
-					{
-						(void)fprintf(seq_out,"%llu\n",(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
-						(void)fclose(seq_out);
-						S.seq_saved_ms = now_ms;
-					}
+					(void)fprintf(seq_out,"%llu %llu\n",
+						(unsigned long long)SparkModelBatchEngineSessionFingerprint(S.engine),
+						(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
+					(void)fclose(seq_out);
 				}
+				S.seq_saved_ms = now_ms;
 			}
+			count = 0u;
+			status = SparkModelBatchEngineGetPollDescriptors(S.engine,fds,
+				SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&count);
+			if ( status != SPARK_STATUS_OK )
 			{
-				uint32_t n = 0;
-				if (SparkModelBatchEngineGetPollDescriptors(
-					S.engine, fds,
-					SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,
-					&n) == SPARK_STATUS_OK && n > 0)
-				{
-					uint32_t i;
-					for (i = 0; i < n; i++)
-					{
-						pfds[i].fd = fds[i].fd;
-						pfds[i].events = 0;
-						pfds[i].revents = 0;
-						if (fds[i].events & 1u)
-							pfds[i].events |= POLLIN;
-						if (fds[i].events & 2u)
-							pfds[i].events |= POLLOUT;
-					}
-					(void)poll(pfds, (nfds_t)n, 10);
-				}
-				else
-					usleep(1000);
+				api_logf("worker poll descriptors failed status=%u",(unsigned)status);
+				_exit(1);
 			}
-		}
-		else
-		{
-			(void)SparkModelBatchEngineProgress(S.engine, 4u);
-			usleep(5000);
+			for (index=0u; index<count; index++)
+			{
+				pfds[index].fd = fds[index].fd;
+				pfds[index].events = 0;
+				pfds[index].revents = 0;
+				if ( (fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_READ) != 0u )
+					pfds[index].events |= POLLIN;
+				if ( (fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE) != 0u )
+					pfds[index].events |= POLLOUT;
+			}
+			pfds[count].fd = S.wake_fds[0];
+			pfds[count].events = POLLIN;
+			pfds[count].revents = 0;
+			deadline_ns = SparkModelBatchEngineNextProgressNs(S.engine);
+			deadline_ms = deadline_ns / UINT64_C(1000000) + (deadline_ns % UINT64_C(1000000) != 0u);
+			save_ms = S.seq_saved_ms + 60000u;
+			if ( deadline_ms == 0u || save_ms < deadline_ms )
+				deadline_ms = save_ms;
+			now_ms = api_now_ms();
+			timeout_ms = deadline_ms <= now_ms ? 0 : (int)(deadline_ms - now_ms);
+			if ( poll(pfds,(nfds_t)count + 1u,timeout_ms) < 0 && errno != EINTR )
+			{
+				api_logf("worker poll failed errno=%d",errno);
+				_exit(1);
+			}
 		}
 	}
 	return 0;
@@ -803,6 +865,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		S.queue_head = req;
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
+	api_wake_worker();
 	while (!req->done && S.running)
 	{
 		{
@@ -830,17 +893,14 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	}
 	if (!req->done && S.running)
 	{
-		uint32_t cancel_submitted;
-		SparkModelBatchRequestHandle cancel_handle;
+		pthread_mutex_lock(&S.queue_mutex);
 		pthread_mutex_lock(&req->mutex);
-		cancel_submitted = req->submitted;
-		cancel_handle = cancel_submitted ? req->handle : 0;
-		req->orphaned = 1;
+		req->cancel_pending = 1u;
 		req->status = req->status == 0u ? SPARK_STATUS_IO_ERROR : req->status;
 		req->done = 1;
 		pthread_mutex_unlock(&req->mutex);
-		if (cancel_submitted && cancel_handle != 0)
-			(void)SparkModelBatchEngineCancel(S.engine, cancel_handle);
+		pthread_mutex_unlock(&S.queue_mutex);
+		api_wake_worker();
 	}
 	else if (!req->done)
 	{
@@ -969,10 +1029,11 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	}
 	api_log_request_measurements(req);
 	pthread_mutex_lock(&S.queue_mutex);
-	if (req->inflight)
+	if (req->inflight || req->cancel_pending)
 	{
 		req->orphaned = 1;
 		pthread_mutex_unlock(&S.queue_mutex);
+		api_wake_worker();
 		return;
 	}
 	api_queue_unlink(req);
@@ -1246,8 +1307,21 @@ int main(int argc, char **argv)
 	signal(SIGTERM, api_term_signal);
 	signal(SIGINT, api_term_signal);
 	pthread_mutex_init(&S.queue_mutex, 0);
+	if ( pipe(S.wake_fds) != 0 ||
+	     fcntl(S.wake_fds[0],F_SETFL,O_NONBLOCK) < 0 ||
+	     fcntl(S.wake_fds[1],F_SETFL,O_NONBLOCK) < 0 ||
+	     fcntl(S.wake_fds[0],F_SETFD,FD_CLOEXEC) < 0 ||
+	     fcntl(S.wake_fds[1],F_SETFD,FD_CLOEXEC) < 0 )
+	{
+		api_logf("worker wake pipe failed errno=%d",errno);
+		return 1;
+	}
 	S.running = 1;
-	pthread_create(&worker, 0, api_worker, 0);
+	if ( pthread_create(&worker,0,api_worker,0) != 0 )
+	{
+		api_logf("worker create failed");
+		return 1;
+	}
 	{
 		struct sockaddr_in addr;
 		int on = 1;

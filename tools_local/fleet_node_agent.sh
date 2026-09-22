@@ -307,7 +307,7 @@ install_core() {
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
-        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \
         --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
     sleep 1
@@ -331,7 +331,7 @@ ensure_weightd() {
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting"
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
-        --mesh-rank "$RANK" --mesh-interface "$MESH_INTERFACE" \
+        --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \
         --mesh-sgid-index "$MESH_SGID_INDEX" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
 }

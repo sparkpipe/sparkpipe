@@ -44,6 +44,9 @@ static uint64_t spark_stub_ibv_modify_failures;
 static uint64_t spark_stub_ibv_post_sends;
 static uint32_t spark_stub_ibv_fail_qpn;
 static uint64_t spark_stub_ibv_next_wr_id = 1ull;
+static SparkStubIbvPostedWork spark_stub_ibv_posted_work[16384];
+static uint32_t spark_stub_ibv_posted_work_count;
+static uint64_t spark_stub_ibv_fail_post_at;
 
 static void spark_stub_ibv_init_devices(void)
 {
@@ -285,6 +288,29 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
     return 0;
 }
 
+int ibv_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
+    int mask, struct ibv_qp_init_attr *initial)
+{
+    SparkStubIbvQp *stub;
+    (void)mask;
+    if ( qp == 0 || attributes == 0 || initial == 0 )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    stub = spark_stub_ibv_qp_from_pub(qp);
+    if ( stub->live == 0 )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(attributes,0,sizeof(*attributes));
+    memset(initial,0,sizeof(*initial));
+    attributes->qp_state = stub->state;
+    attributes->dest_qp_num = stub->remote_qpn;
+    return 0;
+}
+
 int ibv_req_notify_cq(struct ibv_cq *cq, int solicited_only)
 {
     (void)cq;
@@ -329,7 +355,8 @@ int ibv_poll_cq(struct ibv_cq *cq, int entries, struct ibv_wc *completions)
         completions[delivered].wr_id = slot->wr_id;
         completions[delivered].status = slot->status;
         completions[delivered].opcode = IBV_WC_SEND;
-        spark_stub_ibv_completion_head++;
+        spark_stub_ibv_completion_head = (spark_stub_ibv_completion_head + 1u) %
+            SPARK_STUB_IBV_COMPLETIONS_MAX;
         delivered++;
     }
     return delivered;
@@ -370,14 +397,62 @@ int ibv_post_recv(struct ibv_qp *qp, struct ibv_recv_wr *request,
 int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *request,
     struct ibv_send_wr **bad_request)
 {
-    (void)request;
-    (void)bad_request;
-    if (qp == 0)
+    SparkStubIbvPostedWork *work;
+    if ( qp == 0 || request == 0 || request->num_sge != 1 || request->sg_list == 0 )
     {
         errno = EINVAL;
         return -1;
     }
     spark_stub_ibv_post_sends++;
+    if ( spark_stub_ibv_post_sends == spark_stub_ibv_fail_post_at ||
+         spark_stub_ibv_posted_work_count >= 16384u )
+    {
+        if ( bad_request != 0 ) *bad_request = request;
+        errno = EIO;
+        return -1;
+    }
+    work = &spark_stub_ibv_posted_work[spark_stub_ibv_posted_work_count++];
+    work->wr_id = request->wr_id;
+    work->source = request->sg_list[0].addr;
+    work->remote = request->wr.rdma.remote_addr;
+    work->length = request->sg_list[0].length;
+    work->qp_number = qp->qp_num;
+    work->flags = request->send_flags;
+    return 0;
+}
+
+uint32_t spark_stub_ibv_posted_count(void)
+{
+    return spark_stub_ibv_posted_work_count;
+}
+
+int spark_stub_ibv_posted(uint32_t index, SparkStubIbvPostedWork *work)
+{
+    if ( index >= spark_stub_ibv_posted_work_count || work == 0 ) return -1;
+    *work = spark_stub_ibv_posted_work[index];
+    return 0;
+}
+
+int spark_stub_ibv_complete(uint64_t work_id, int status)
+{
+    uint32_t next = (spark_stub_ibv_completion_tail + 1u) % SPARK_STUB_IBV_COMPLETIONS_MAX;
+    if ( next == spark_stub_ibv_completion_head ) return -1;
+    spark_stub_ibv_completions[spark_stub_ibv_completion_tail].wr_id = work_id;
+    spark_stub_ibv_completions[spark_stub_ibv_completion_tail].status = status;
+    spark_stub_ibv_completion_tail = next;
+    return 0;
+}
+
+void spark_stub_ibv_fail_post_call(uint64_t call)
+{
+    spark_stub_ibv_fail_post_at = call;
+}
+
+struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
+    size_t length, uint64_t iova, int fd, int access)
+{
+    (void)pd; (void)offset; (void)length; (void)iova; (void)fd; (void)access;
+    errno = ENOTSUP;
     return 0;
 }
 
@@ -389,6 +464,8 @@ void spark_stub_ibv_reset(void)
     spark_stub_ibv_modify_failures = 0ull;
     spark_stub_ibv_post_sends = 0ull;
     spark_stub_ibv_fail_qpn = 0u;
+    spark_stub_ibv_fail_post_at = 0u;
+    spark_stub_ibv_posted_work_count = 0u;
 }
 
 uint64_t spark_stub_ibv_modify_qp_calls(void)

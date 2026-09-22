@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_kv_page_cache.h"
@@ -11,7 +12,7 @@
 #define SEQ_CAP 4u
 #define PAGE_CAP 4u
 #define ENTRY_CAP 8u
-#define CASE_COUNT 12u
+#define CASE_COUNT 13u
 
 static uint64_t initial_seed = 7u;
 static uint64_t fuzz_state;
@@ -176,6 +177,92 @@ static void MutateIdentity(FuzzHarness *h,uint32_t field)
     }
 }
 
+static void RunCowCase(void)
+{
+    FuzzHarness h;
+    SparkKvPageStore store;
+    SparkKvPageStoreConfiguration configuration = {0};
+    SparkModelDriverCacheLane original_lane;
+    SparkKvCacheBlockView original_view,mutable_view;
+    SparkModelDriverFrame frame;
+    uint32_t source,index,step,operation,prefix = 1u + (uint32_t)(FuzzRand() % 3u),allocated;
+    uint8_t staging[4],original[4];
+    char path[] = "/tmp/sparkpipe-kv-cow-fuzz-XXXXXX";
+    int descriptor = mkstemp(path);
+    CHECK(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
+    configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+    configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+    configuration.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+    configuration.logical_page_capacity = ENTRY_CAP;
+    configuration.transfer_capacity = 1u;
+    configuration.page_bytes = configuration.staging_bytes = sizeof(staging);
+    configuration.maximum_backing_bytes = ENTRY_CAP * sizeof(staging);
+    configuration.backing_path = path;
+    configuration.staging_address = staging;
+    CHECK(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+    HarnessInit(&h,1u,SEQ_CAP);
+    h.cache.page_store = &store;
+    original_lane = h.lanes[0];
+    original_lane.context_token_count = original_lane.publish_token_count = prefix;
+    original_lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
+    memset(&original_lane.publish_identity,31,sizeof(original_lane.publish_identity));
+    CHECK(SparkKvPageCacheBeginLane(&h.cache,&original_lane,&source) == SPARK_STATUS_OK);
+    CHECK(SparkKvCacheArenaResolveBlock(&h.arena,source,&original_view) == SPARK_STATUS_OK);
+    for (index=0u; index<sizeof(original); index++) original[index] = (uint8_t)FuzzRand();
+    memcpy((void *)original_view.key_device_address,original,sizeof(original));
+    CHECK(SparkKvPageCacheCompleteLane(&h.cache,&original_lane) == SPARK_STATUS_OK);
+    for (step=0u; step<8u; step++)
+    {
+        operation = step < 4u ? step : (uint32_t)(FuzzRand() % 4u);
+        h.lanes[0] = original_lane;
+        h.lanes[0].sequence_id = 200u + step;
+        h.lanes[0].resident_sequence_slot = 1u;
+        h.lanes[0].sequence_position = prefix;
+        h.lanes[0].context_token_count = h.lanes[0].publish_token_count = prefix + 1u;
+        h.lanes[0].prefix_token_count = prefix;
+        h.lanes[0].prefix_identity = original_lane.publish_identity;
+        h.lanes[0].flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+        memset(&h.lanes[0].publish_identity,(int)(41u + step),sizeof(h.lanes[0].publish_identity));
+        h.request.submission_id++;
+        h.request.transaction_id++;
+        CHECK(Admit(&h,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+        CHECK(h.owners[1].page_count == 1u);
+        CHECK(h.logical[PAGE_CAP] != source && h.blocks[source].residency_reference_count == 0u);
+        CHECK(SparkKvCacheArenaResolveBlock(&h.arena,h.logical[PAGE_CAP],&mutable_view) == SPARK_STATUS_OK);
+        CHECK(memcmp((void *)mutable_view.key_device_address,original,sizeof(original)) == 0);
+        if ( operation == 0u )
+            CHECK(Admit(&h,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+        else
+        {
+            CHECK(Admit(&h,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+            frame = Frame(&h);
+            CHECK(SparkKvLaneTransactionsClaim(&h.transactions,&frame) == SPARK_STATUS_OK);
+            ((uint8_t *)mutable_view.key_device_address)[prefix] ^= UINT8_C(0xff);
+            CHECK(SparkKvLaneTransactionsFinish(&h.transactions,(uint32_t[]){1u},1u,operation == 1u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK,operation == 3u ? 1u : 0u) == (operation == 1u ? SPARK_STATUS_IO_ERROR : operation == 3u ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_OK));
+            if ( operation == 2u )
+            {
+                CHECK(SparkKvPageCacheReleaseLane(&h.cache,1u,200u + step) == SPARK_STATUS_OK);
+                CHECK(SparkKvPageCacheEvictUnused(&h.cache) == SPARK_STATUS_OK);
+            }
+        }
+        CHECK(memcmp((void *)original_view.key_device_address,original,sizeof(original)) == 0);
+        CHECK(h.cache.live_sequence_count == 1u && h.sequences[0].sequence_id == 100u);
+        CHECK(h.entries[h.entry_map[source]].reference_count == 1u);
+        allocated = 0u;
+        for (index=0u; index<ENTRY_CAP; index++)
+        {
+            allocated += (h.blocks[index].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u;
+            CHECK(h.blocks[index].residency_reference_count == 0u);
+        }
+        CHECK(allocated == 1u && h.arena.resident_block_count == 1u);
+        CHECK(h.owners[1].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && h.sequences[1].sequence_id == 0u);
+    }
+    CHECK(SparkKvLaneTransactionsReset(&h.transactions) == SPARK_STATUS_OK);
+    Ledger(&h,0u,SPARK_KV_LANE_TRANSACTION_EMPTY,0u,0u);
+    SparkKvPageStoreDestroy(&store);
+    CHECK(unlink(path) == 0);
+}
+
 static void RunCase(uint32_t scenario,uint32_t count)
 {
     FuzzHarness h;
@@ -185,6 +272,7 @@ static void RunCase(uint32_t scenario,uint32_t count)
     uint32_t slots[SEQ_CAP] = {0u,1u,2u,3u},i;
     SparkStatus status;
     coverage[scenario]++;
+    if ( scenario == 12u ) { RunCowCase(); return; }
     if ( scenario < 2u && count < 2u ) count = 2u;
     HarnessInit(&h,count,scenario == 0u ? count - 1u : SEQ_CAP);
     if ( scenario == 0u )

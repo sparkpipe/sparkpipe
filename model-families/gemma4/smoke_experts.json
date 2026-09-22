@@ -1,0 +1,14 @@
+{
+ "schema_version": 1,
+ "family": "gemma4",
+ "model": "google/gemma-4-31B-it",
+ "prompt_set": "smoke-standard-v1",
+ "topology": "TP16",
+ "nodes": 16,
+ "expert_shard": "tp",
+ "spine_bytes": 62095255424,
+ "kv_floor_bytes": 1174405120,
+ "workspace_bytes": 536870912,
+ "notes": "dense family: routed-expert set provably empty (all 16 receipts expert_bytes=0); the smoke working set is the full-resolution bf16 spine (per-rank payload 3880953464 x 16, tp-sharded). kv_floor derived: 50 sliding layers x 1 head/rank x 256d + 10 full layers x 1 head/rank x 512d, K+V, bf16 = 71680 B/token/rank x 16 seqs x 1024 tokens. workspace is the declared bound until the M3 measurement.",
+ "experts": []
+}

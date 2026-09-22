@@ -105,6 +105,8 @@ SparkStatus SparkModelPipelineClientRecover(
 SparkStatus SparkModelPipelineClientProgress(
 	SparkModelPipelineClient *pipeline,
 	uint32_t maximum_message_count_per_rank);
+uint64_t SparkModelPipelineClientNextProgressNs(
+	const SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientGetPollDescriptors(
 	const SparkModelPipelineClient *pipeline,
 	SparkModelResidentClientPollDescriptor *descriptors,

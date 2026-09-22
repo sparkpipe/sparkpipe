@@ -1,0 +1,58 @@
+{
+  "lane": "dsv41_flash (lane 4)",
+  "session": "m3build4/m3build5 preload A/B",
+  "node": "spark7 rank3 cell (shared socket /run/sparkpipe-weightd-shared/weightd.sock, LANE=4)",
+  "pack": {
+    "file": "rank3.spstage",
+    "sha256": "26745868172b52c166f68166a8bb66caccf5552369bda6687369de3300ba37d0",
+    "file_bytes": 76180410880,
+    "spine_bytes": 3985846208,
+    "expert_bytes": 72194457600,
+    "entries": 1038,
+    "revision": "dba1be0a40aa45a94ad051997016db3960a90277"
+  },
+  "budgets": {
+    "expert_pool_bytes": 4365508608,
+    "expert_pool_math": "chunk law: rank3 108 pairs x 18,800,640 B raw x 2.15",
+    "spine_budget_bytes": 4294967296,
+    "spine_budget_note": "kind-map 3,985,846,208 + stated slack; exact-equality fails CAPACITY_EXCEEDED (lazy_spine_load aligns +255) - budgets are allocation + slack, never exact"
+  },
+  "method": "A/B same-conditions: --reclaim (resident=0 verified) + posix_fadvise DONTNEED scoped to pack+.experts before each leg; CUDA events + CLOCK_MONOTONIC around Initialize; exec is the fail-closed stub (status 19 expected, module_decode_implemented=false)",
+  "builds": {
+    "m3build4": "lane/dsv41-flash-m3-preload @ e69f5169 (warm identity via the since-retired SPARK_WEIGHTD_WARM_MODEL env override)",
+    "m3build5": "lane/dsv41-flash-m3-family2 @ 1050a21d + weightd_warm @ PR #1121 (--family dsv41_flash)"
+  },
+  "A_cold": {
+    "init_status": 0,
+    "init_wall_ms": 4523.114,
+    "init_device_ms": 0.001,
+    "exec_status": 19,
+    "spine_effective_mbps": 881
+  },
+  "B_preloaded": {
+    "warm": "weightd_warm --wset rank3.spstage.wset keys=108 one_shot_ms=2608",
+    "init_status": 0,
+    "init_wall_ms": 913.535,
+    "init_device_ms": 0.001,
+    "exec_status": 19
+  },
+  "B_prime_cache_evicted": {
+    "method": "posix_fadvise DONTNEED AFTER warm, BEFORE probe (arena kept, no reclaim)",
+    "init_status": 0,
+    "init_wall_ms": 3640.691,
+    "exec_status": 19
+  },
+  "B_family_mechanism_confirm": {
+    "method": "m3build5 leg re-run under --family dsv41_flash (dedicated shared-tooling PR #1121): reclaim + fadvise + warm + probe",
+    "warm_one_shot_ms": 2257,
+    "init_status": 0,
+    "init_wall_ms": 626.831,
+    "exec_status": 19,
+    "wset_regen": "byte-identical to the predecessor's rank3.spstage.wset (108 pairs, 864 B) under --emit-wset --wset-rank 3"
+  },
+  "verdict": "preload cuts attach init 4523 -> 914 ms (4.95x, confirmed 627 ms under the --family mechanism); both legs under the 5000 ms target at TP4 on spark7",
+  "smoke_relative": "M7 TP8 baseline (spark6 @52ae08d, r1 packs): rank0 init 34,540 ms, mean 40,895 ms, spine 71.3 MB/s - the span-wise pread+hash bottleneck does NOT reproduce on this cell (881 MB/s cold); hill-climb question parked, not spent",
+  "isolation": "B speedup is dominantly page cache (warm+hot 914 ms vs warm+evicted 3641 ms vs all-cold 4523 ms); arena reuse alone saves ~0.9 s; the module spine load re-reads the pack file (lazy_spine_load pread) instead of the materialized arena - reading the spine from the arena is the real hill-climb target",
+  "rank2": "parked on spark7 pending the operator spark6 disk ruling; not measured",
+  "fleet_laws_observed": "ceph zero-touch (NVMe packs only); sole-copy members untouched; explicit budgets with stated slack; queue untouched (cell-level measurement only)"
+}

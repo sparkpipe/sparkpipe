@@ -104,3 +104,21 @@ engram_probe: contract
 		../../src/spark_sha256.c \
 		../../src/spark_ck128.c \
 		-o $(BUILD_DIRECTORY)/dsv41_flash_engram_probe
+
+# Real-pack lazy-attach timing harness (the M7 lane tool, now in-tree):
+# links the built module archive (host + CUDA objects) against the runtime
+# and core libraries. TP-parameterized via TP_DEGREE (default 1; the lane-4
+# TP4 preload measurement passes TP_DEGREE=4; the M7 sessions were TP8).
+.PHONY: attach_probe
+attach_probe: contract $(MODULE_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a $(REPOSITORY_ROOT)/build/libsparkpipe_core.a
+	mkdir -p $(BUILD_DIRECTORY)
+	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \
+		-DDSV41_FLASH_PROBE_TP_DEGREE=$(TP_DEGREE) \
+		-I"$(CUDA_HOME)/include" \
+		tools/dsv41_flash_attach_probe.c \
+		$(MODULE_ARCHIVE) \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
+	-lcuda -lcudart -lstdc++ -lm -ldl -pthread \
+	-L"$(CUDA_HOME)/lib64" -L"$(CUDA_HOME)/targets/sbsa-linux/lib" \
+	-o $(BUILD_DIRECTORY)/dsv41_flash_attach_probe

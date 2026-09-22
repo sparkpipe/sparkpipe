@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -73,6 +75,37 @@ def main() -> int:
         "max_sequence_positions": 8192,
         "cuda_graph_count": 64,
     }
+    tokenizer = {
+        "path": "tokenizer/tokenizer.json",
+        "vocabulary_size": 129280,
+        "sha256": "0123456789abcdef" * 4,
+    }
+    with tempfile.TemporaryDirectory(prefix="deployment-generator-") as directory:
+        output = Path(directory) / "deployment.json"
+        for metadata in (None, tokenizer):
+            candidate = copy.deepcopy(specification)
+            if metadata is not None:
+                candidate["tokenizer"] = metadata
+            generated = module.build_deployment(candidate)
+            assert generated.get("tokenizer") == metadata
+            output.write_text(module.render_deployment(generated), encoding="utf-8")
+            parsed = subprocess.run(
+                [str(ROOT / "build/test_model_resident_deployment"), str(output)],
+                check=True, capture_output=True, text=True, cwd=ROOT, timeout=10)
+            assert parsed.stdout == ("none\n" if metadata is None else
+                f"{metadata['path']}\n{metadata['vocabulary_size']}\n{metadata['sha256']}\n")
+    for metadata in (None, {}, {"path": tokenizer["path"]},
+                     {**tokenizer, "path": "/tmp/tokenizer.json"},
+                     {**tokenizer, "path": "../tokenizer.json"},
+                     {**tokenizer, "vocabulary_size": 0},
+                     {**tokenizer, "vocabulary_size": True},
+                     {**tokenizer, "vocabulary_size": 4294967296},
+                     {**tokenizer, "sha256": "g" * 64},
+                     {**tokenizer, "sha256": "0" * 63},
+                     {**tokenizer, "extra": 1}):
+        invalid = copy.deepcopy(specification)
+        invalid["tokenizer"] = metadata
+        expect_failure(module, invalid, f"invalid tokenizer accepted: {metadata!r}")
     source = TOOL.read_text(encoding="utf-8").lower()
     for forbidden in ("glm", "dsv", "codec", "int8", "fp8", "mxfp4"):
         assert forbidden not in source

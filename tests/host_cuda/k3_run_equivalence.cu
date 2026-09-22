@@ -26,7 +26,9 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
  * rule's state slab is the one this harness's kernels need. */
 float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 
-#define LM_WARP_LANES 1u
+#include "inference/kernels/mma.cuh"
+#undef LM_WARP_LANES
+#define LM_WARP_LANES LM_HOST_WARP_LANES
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/linear_attn.cuh"
@@ -305,9 +307,64 @@ static int scenario_conv_run8(void)
 	}
 }
 
+static int scenario_indexed(uint32_t lanes)
+{
+	uint16_t q[K_ROWS*K_KEY_HEADS*K_KEY_DIM],k[K_ROWS*K_KEY_HEADS*K_KEY_DIM],v[K_ROWS*K_KEY_HEADS*K_VPK*K_VALUE_DIM];
+	uint16_t a[K_ROWS*K_KEY_HEADS*K_VALUE_DIM],b[K_ROWS*K_KEY_HEADS*K_VALUE_DIM];
+	uint16_t input[K_ROWS*K_CHANNELS],ca[K_ROWS*K_CHANNELS],cb[K_ROWS*K_CHANNELS];
+	uint16_t wa[K_SLOTS*K_CHANNELS*K_KERNEL] = {},wb[K_SLOTS*K_CHANNELS*K_KERNEL] = {};
+	float forget[K_ROWS*K_KEY_HEADS*K_KEY_DIM],beta[K_ROWS*K_KEY_HEADS],weights[K_CHANNELS*K_KERNEL];
+	uint8_t pa[K_SLOTS*K_SLOT_BYTES] = {},pb[K_SLOTS*K_SLOT_BYTES] = {};
+	uint32_t counts[5] = {4u,1u,3u,2u,2u},slots[5] = {7u,2u,4u,1u,6u},row_slots[K_ROWS],begin[6] = {},indices[K_ROWS];
+	uint32_t row=0u,lane,step,index=0u;
+	if (lanes == 1u) counts[0] = 12u;
+	if (lanes == 3u) { counts[0] = 5u; counts[1] = 1u; counts[2] = 6u; }
+	for (step=0u; step<K_ROWS; step++)
+		for (lane=0u; lane<lanes; lane++)
+			if (step < counts[lane]) row_slots[row++] = slots[lane];
+	if (row != K_ROWS) return 1;
+	for (lane=0u; lane<lanes; lane++)
+	{
+		for (row=0u; row<K_ROWS; row++)
+			if (row_slots[row] == slots[lane]) indices[index++] = row;
+		begin[lane + 1u] = index;
+	}
+	init_inputs(K_ROWS,q,k,v,forget,beta,input);
+	for (index=0u; index<K_CHANNELS*K_KERNEL; index++) weights[index] = lcg_float();
+	LM_LAUNCH((LmDeltaRuleKernel<K_THREADS,K_KEY_DIM,K_VALUE_DIM,KState>),
+		dim3(lanes,K_KEY_HEADS),K_THREADS,0,0,pa,(uint32_t)K_SLOT_BYTES,slots,begin,(const uint32_t *)0,
+		q,k,v,forget,beta,a,K_KEY_HEADS,K_VPK,lanes,0u,indices);
+	int failures = compare_pool(pa,pb,sizeof(pa),"indexed uncommitted state");
+	LM_LAUNCH((LmDeltaRuleKernel<K_THREADS,K_KEY_DIM,K_VALUE_DIM,KState>),
+		dim3(lanes,K_KEY_HEADS),K_THREADS,0,0,pa,(uint32_t)K_SLOT_BYTES,slots,begin,(const uint32_t *)0,
+		q,k,v,forget,beta,a,K_KEY_HEADS,K_VPK,lanes,1u,indices);
+	delta_sequential(pb,row_slots,q,k,v,forget,beta,b,K_ROWS);
+	uint32_t nonzero = 0u;
+	for (index=0u; index<K_ROWS*K_KEY_HEADS*K_VALUE_DIM; index++) nonzero += b[index] != 0u;
+	if (nonzero == 0u) failures++;
+	failures += compare_outputs(a,b,K_ROWS*K_KEY_HEADS*K_VALUE_DIM,"indexed delta outputs");
+	failures += compare_pool(pa,pb,sizeof(pa),"indexed delta state");
+	LM_LAUNCH((LmCausalConvKernel<K_THREADS,K_KERNEL,LM_CONV_SWISH,float>),
+		dim3(lanes,K_CHANNELS),K_THREADS,0,0,wa,slots,begin,(const uint32_t *)0,input,weights,ca,K_CHANNELS,lanes,0u,indices);
+	failures += compare_pool((const uint8_t *)wa,(const uint8_t *)wb,sizeof(wa),"indexed uncommitted window");
+	LM_LAUNCH((LmCausalConvKernel<K_THREADS,K_KERNEL,LM_CONV_SWISH,float>),
+		dim3(lanes,K_CHANNELS),K_THREADS,0,0,wa,slots,begin,(const uint32_t *)0,input,weights,ca,K_CHANNELS,lanes,1u,indices);
+	for (row=0u; row<K_ROWS; row++)
+		LM_LAUNCH((LmCausalConvKernel<K_THREADS,K_KERNEL,LM_CONV_SWISH,float>),
+			dim3(1u,K_CHANNELS),K_THREADS,0,0,wb,row_slots+row,(const uint32_t *)0,(const uint32_t *)0,
+			input+row*K_CHANNELS,weights,cb+row*K_CHANNELS,K_CHANNELS,1u,1u);
+	failures += compare_outputs(ca,cb,K_ROWS*K_CHANNELS,"indexed conv outputs");
+	failures += compare_pool((const uint8_t *)wa,(const uint8_t *)wb,sizeof(wa),"indexed conv windows");
+	printf("indexed B%u unequal round-major rows: %s\n",lanes,failures == 0 ? "PASS" : "FAIL");
+	return failures;
+}
+
 int main(void)
 {
 	int failures = 0;
+	failures += scenario_indexed(1u);
+	failures += scenario_indexed(3u);
+	failures += scenario_indexed(5u);
 	failures += scenario_delta_run8();
 	printf("S1 delta run-of-8 vs sequential: %s\n",
 		failures == 0 ? "PASS" : "FAIL");

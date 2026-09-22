@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "connect_timeout_ms": 120000,
+  "request_capacity": 1,
+  "max_context_tokens": 128,
+  "max_prefill_rows_per_submission": 1,
+  "maximum_messages_per_rank_per_progress": 8,
+  "maximum_new_submissions_per_progress": 1,
+  "stop_token_ids": [],
+  "requests": [
+    {
+      "request_id": 1,
+      "sequence_id": 1,
+      "priority": 0,
+      "output_token_budget": 4,
+      "prompt_token_ids": [1008, 10484, 318, 15383, 387]
+    }
+  ]
+}
