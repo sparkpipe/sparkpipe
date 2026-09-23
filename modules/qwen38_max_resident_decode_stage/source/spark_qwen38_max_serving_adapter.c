@@ -86,8 +86,9 @@
 #define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) != 0u && (tp_degree) <= 16u)
 #define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
-	SPARK_QWEN38_MAX_SERVING_STAGE_COUNT
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) (state)->stage_index
+	SparkQwen38MaxServingPpStageCount(state)
+#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
+	SparkQwen38MaxServingPpStageIndex(state,(state)->stage_index)
 #define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkQwen38MaxServingBindFamily(state)
 #define SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state) \
