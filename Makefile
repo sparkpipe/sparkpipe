@@ -1607,6 +1607,7 @@ build/mesh_register_attach_repro: tools/mesh_register_attach_repro.c model-famil
 test_station: build/test_tiktoken_compiled $(RUNTIME_LIBRARY)
 	python3 tests/test_spark_station.py
 	python3 tests/test_spark_tiktoken_compile.py
+	python3 tests/test_qwen27_mtp_workspace.py
 	python3 tests/test_tp_standalone_configuration.py
 	python3 tests/test_kv_failure_host.py
 	python3 tests/test_frame_error_host.py

@@ -922,6 +922,15 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state);
 	uint64_t attn_query_dim = (uint64_t)state->tp.attn_query_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
 	uint64_t attn_kv_dim = (uint64_t)state->tp.attn_kv_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
+	uint64_t qkv_dim = state->tp.gdn_conv_channels;
+	uint64_t gated_dim = state->tp.gdn_value_channels;
+	if ( state->mtp_armed != 0u )
+	{
+		if ( qkv_dim < 2u * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
+			qkv_dim = 2u * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+		if ( gated_dim < SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
+			gated_dim = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+	}
 	SparkStatus status = SparkQwen38_27bModuleAllocateSlotControl(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->hidden_bf16);
@@ -930,7 +939,7 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * qkv_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->conv_out_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -946,7 +955,7 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->core_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * gated_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODULE_FUSED_QUERY_COMPONENT_COUNT * attn_query_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
 	if ( status == SPARK_STATUS_OK )
