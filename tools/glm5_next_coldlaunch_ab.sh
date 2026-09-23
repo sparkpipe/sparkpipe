@@ -31,18 +31,8 @@ set -euo pipefail
 
 ARM="${ARM:-A}"
 HOST="$(hostname)"
-# prefer the fixed M3 release (mesh register-skip #1135 + instrument,
-# SOURCE_COMMIT-pinned; fetched per node by glm5_next_fixed_release_fetch.sh),
-# fall back to the operator's frozen shared-serving bundle
-if [ -z "${SPARK_EXEC_ROOT:-}" ]; then
-  if [ -f "/home/$HOST/glm-m3-fixed/glm53_release/SOURCE_COMMIT" ]; then
-    EXEC_ROOT="/home/$HOST/glm-m3-fixed/glm53_release"
-  else
-    EXEC_ROOT="/home/$HOST/sparkpipe/shared-serving-20260922"
-  fi
-else
-  EXEC_ROOT="$SPARK_EXEC_ROOT"
-fi
+EXEC_ROOT="${SPARK_EXEC_ROOT:?set SPARK_EXEC_ROOT to one verified release directory}"
+(cd "$EXEC_ROOT" && sha256sum --quiet --strict --check SHA256SUMS)
 FAMILY_ROOT="${SPARK_FAMILY_ROOT:-/home/$HOST/sparkdata/glm53flash.fp8.tp16}"
 SHARED_SOCKET="${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
 LANE=0
@@ -119,7 +109,7 @@ receipt_set chunk_basis "2 MiB ceil per expert span; GLM per-rank spans are all 
 receipt_set residentd_sha256 "$(sha_of "$EXEC_ROOT/bin/sparkpipe_model_residentd")"
 receipt_set weightd_warm_sha256 "$(sha_of "$EXEC_ROOT/bin/weightd_warm")"
 receipt_set model_batch_sha256 "$(sha_of "$EXEC_ROOT/bin/sparkpipe_model_batch")"
-receipt_set exec_bundle_source_commit "$(cat "$EXEC_ROOT/SOURCE_COMMIT" 2>/dev/null || echo unknown)"
+receipt_set exec_bundle_source_commit "$(cat "$EXEC_ROOT/SOURCE_COMMIT")"
 receipt_set wset_sha256 "$(sha_of "$WSET")"
 receipt_set daemon_census_before "$(census)"
 
@@ -220,9 +210,7 @@ if backend:
 for relative in sorted(assets):
     source = Path(exec_root) / relative
     if not source.is_file():
-        source = Path(family_root) / relative
-    if not source.is_file():
-        fail(f"runtime asset missing on the family root: {relative}")
+        fail(f"runtime asset missing in the selected release: {relative}")
     target = runtime / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.symlink_to(source.resolve())
