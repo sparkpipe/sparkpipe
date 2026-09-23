@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -118,6 +119,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint32_t active_stream_valid;
     void *active_stream;
     uint8_t *mesh_buffer;
+    void *owned_mesh_mapping;
     uint8_t *mesh_device;
     uint32_t hardware_wait;
     struct SparkTpDeviceCollectiveImplementation *registration_next;
@@ -2022,6 +2024,20 @@ static SparkStatus SparkTpDeviceCollectivePrepareHardware(
     return SPARK_STATUS_IO_ERROR;
 }
 
+SparkStatus SparkTpDeviceCollectiveAttachMesh(SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    SparkStatus status;
+    if (collective == 0 || collective->implementation == 0) return SPARK_STATUS_INVALID_ARGUMENT;
+    implementation = collective->implementation;
+    if (implementation->mesh_buffer != 0 || implementation->owned_mesh_mapping != 0)
+        return SPARK_STATUS_DUPLICATE;
+    status = SparkWeightdClientMeshMap(implementation->client,&implementation->owned_mesh_mapping,
+        implementation->round_timeout_ns);
+    if (status != SPARK_STATUS_OK) return status;
+    return SparkTpDeviceCollectivePrepareReceiveBf16(collective,implementation->owned_mesh_mapping,0u,0u,0u,0);
+}
+
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     SparkTpDeviceCollective *collective,
     void *receive_device,
@@ -2602,6 +2618,9 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
         (void)cudaFreeHost((void *)implementation->published_host_cell);
     pthread_cond_destroy(&implementation->completion_wake);
     pthread_mutex_destroy(&implementation->completion_lock);
+    if (implementation->owned_mesh_mapping != 0 &&
+        munmap(implementation->owned_mesh_mapping,SPARK_WEIGHTD_MESH_REGION_BYTES) != 0)
+        return;
     SparkWeightdClientClose(implementation->client);
     free(implementation);
     collective->implementation = 0;

@@ -236,6 +236,12 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		return status;
 	}
 	tp->initialized = 1u;
+	status = SparkTpDeviceCollectiveAttachMesh(&tp->collective);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkQwen38_27bTpDestroy(tp);
+		return status;
+	}
 	tp->next_ordinal = 0u;
 	fprintf(stderr, "%s ready degree=%u rank=%u\n",
 		SPARK_QWEN38_27B_TP_TAG, degree, rank);

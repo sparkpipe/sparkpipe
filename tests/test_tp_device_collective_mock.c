@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <errno.h>
+#include <sys/mman.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,6 +69,20 @@ void SparkWeightdClientClose(SparkWeightdClient *client)
         mock_lane_mask[state[4]] &= ~(UINT64_C(1) << state[2]);
     mock_clients_live--;
 	free(client);
+}
+
+static SparkStatus mock_mesh_map_status = SPARK_STATUS_OK;
+static void *mock_owned_mapping;
+
+SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,void **mapping,uint64_t timeout)
+{
+    (void)client; (void)timeout;
+    *mapping = 0;
+    if (mock_mesh_map_status != SPARK_STATUS_OK) return mock_mesh_map_status;
+    *mapping = mmap(0,SPARK_WEIGHTD_MESH_REGION_BYTES,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS,-1,0);
+    assert(*mapping != MAP_FAILED);
+    mock_owned_mapping = *mapping;
+    return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
@@ -391,6 +407,24 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     SparkTpDeviceCollectiveDestroy(&collective);
 }
 
+static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
+{
+    SparkTpDeviceCollective collective = {0};
+    uint32_t before = mock_clients_live;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"dense collective create");
+    mock_mesh_map_status = SPARK_STATUS_BUSY;
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_BUSY,"unwired mesh fails explicitly");
+    mock_mesh_map_status = SPARK_STATUS_OK;
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_OK,"dense collective maps mesh without a weight pack");
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_DUPLICATE,"duplicate mapping is rejected");
+    CHECK(SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK,"fresh dense mesh can start a chain");
+    CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends");
+    SparkTpDeviceCollectiveDestroy(&collective);
+    CHECK(collective.implementation == 0 && mock_clients_live == before,"mapping owner and lane released");
+    errno = 0;
+    CHECK(msync(mock_owned_mapping,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM,"owned mesh mapping unmapped after destroy");
+}
+
 static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
     SparkTpDeviceCollective first = {0},second = {0},rejected = {0};
@@ -416,7 +450,9 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         rejected.implementation == 0 && mock_clients_live == live,
         "reservation rejection rolls back common create client");
     mock_lane_status = SPARK_STATUS_OK;
-    CHECK(setenv("SPARK_WEIGHTD_LANE","8",1) == 0 &&
+    char invalid_lane[16];
+    snprintf(invalid_lane,sizeof(invalid_lane),"%u",SPARK_WEIGHTD_MESH_MAX_LANES);
+    CHECK(setenv("SPARK_WEIGHTD_LANE",invalid_lane,1) == 0 &&
         SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
         rejected.implementation == 0 && mock_clients_live == live,
         "malformed common lane config fails without leaked client");
@@ -582,6 +618,7 @@ int main(void)
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
+	TestOwnedMesh(config);
 	free(mesh_buffer);
 
 	fprintf(stderr,"%s: %u checks, %u failures (publish=%u combine=%u)\n",

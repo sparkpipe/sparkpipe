@@ -160,6 +160,75 @@ static void check_mesh_mapping(uint32_t raw_offset,uint32_t failure,uint64_t adv
     assert(close(source) == 0 && close(pool) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
 }
 
+static void check_mesh_only_dispatch(void)
+{
+    SparkWeightdServer *server = calloc(1u,sizeof(*server));
+    SparkWeightdConnection connection = {0};
+    SparkWeightdIpcHeader request;
+    SparkWeightdIpcMeshMapResult response;
+    assert(server != 0);
+    SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_MESH_MAP,1u);
+    assert(SparkWeightdServerDispatch(server,&connection,(uint8_t *)&request,(uint8_t *)&response) == sizeof(response));
+    assert(response.status == SPARK_STATUS_INVALID_ARGUMENT && connection.response_fd_count == 0u);
+    connection.lane_mask = 1u;
+    assert(SparkWeightdServerDispatch(server,&connection,(uint8_t *)&request,(uint8_t *)&response) == sizeof(response));
+    assert(response.status == SPARK_STATUS_BUSY && connection.response_fd_count == 0u && server->arena_count == 0u);
+    free(server);
+}
+
+static void check_mesh_only_map(uint32_t descriptors,uint32_t wire_status,uint32_t corrupt)
+{
+    SparkWeightdClient client = {0};
+    SparkWeightdIpcMeshMapResult response = {0};
+    union { struct cmsghdr align; unsigned char bytes[CMSG_SPACE(2u * sizeof(int))]; } control = {0};
+    struct msghdr message = {0};
+    struct iovec vector = {&response,sizeof(response)};
+    char path[] = "/tmp/spark-mesh-only-XXXXXX";
+    int sockets[2],source = mkstemp(path),fds[2];
+    uint32_t before;
+    void *mapping = 0;
+    unsigned char value = 91u,observed = 0u;
+    SparkStatus status,expected;
+    assert(source >= 0 && unlink(path) == 0);
+    assert(ftruncate(source,SPARK_WEIGHTD_MESH_REGION_BYTES) == 0);
+    assert(pwrite(source,&value,1u,SPARK_WEIGHTD_MESH_REGION_BYTES - 1u) == 1);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    client.fd = sockets[0];
+    SparkWeightdBuildHeader((uint8_t *)&response,SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT,corrupt == 1u ? 2u : 1u);
+    response.status = wire_status;
+    response.bytes = corrupt == 2u ? 4096u : SPARK_WEIGHTD_MESH_REGION_BYTES;
+    response.reserved = corrupt == 3u ? 1u : 0u;
+    message.msg_iov = &vector; message.msg_iovlen = 1u;
+    if (descriptors != 0u)
+    {
+        struct cmsghdr *header;
+        message.msg_control = control.bytes;
+        message.msg_controllen = CMSG_SPACE(descriptors * sizeof(int));
+        header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET; header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(descriptors * sizeof(int));
+        fds[0] = source; fds[1] = source;
+        memcpy(CMSG_DATA(header),fds,descriptors * sizeof(int));
+    }
+    before = fd_count();
+    assert(sendmsg(sockets[1],&message,0) == (ssize_t)sizeof(response));
+    status = SparkWeightdClientMeshMap(&client,&mapping,UINT64_C(1000000000));
+    expected = descriptors != (wire_status == SPARK_STATUS_OK ? 1u : 0u) || corrupt != 0u ?
+        SPARK_STATUS_SCHEMA_ERROR : (SparkStatus)wire_status;
+    assert(status == expected);
+    if (status == SPARK_STATUS_OK)
+    {
+        assert((uintptr_t)mapping % SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES == 0u);
+        assert(((unsigned char *)mapping)[SPARK_WEIGHTD_MESH_REGION_BYTES - 1u] == value);
+        ((unsigned char *)mapping)[0] = value;
+        assert(pread(source,&observed,1u,0) == 1 && observed == value);
+        assert(munmap(mapping,SPARK_WEIGHTD_MESH_REGION_BYTES) == 0);
+    }
+    else assert(mapping == 0);
+    assert(fd_count() == before);
+    assert(close(source) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
+}
+
 static void check_mesh_mapping_offsets(void)
 {
     uint32_t page = (uint32_t)sysconf(_SC_PAGESIZE),cases = 0u;
@@ -526,6 +595,13 @@ static void check_cold_control_progress(void)
 
 int main(void)
 {
+    check_mesh_only_dispatch();
+    check_mesh_only_map(1u,SPARK_STATUS_OK,0u);
+    check_mesh_only_map(0u,SPARK_STATUS_BUSY,0u);
+    check_mesh_only_map(0u,SPARK_STATUS_OK,0u);
+    check_mesh_only_map(2u,SPARK_STATUS_OK,0u);
+    check_mesh_only_map(1u,SPARK_STATUS_BUSY,0u);
+    for (uint32_t corrupt=1u; corrupt<=3u; corrupt++) check_mesh_only_map(1u,SPARK_STATUS_OK,corrupt);
 	check_mesh_mapping_offsets();
 	check_frame(2u,2u,SPARK_STATUS_OK);
 	check_frame(64u,64u,SPARK_STATUS_OK);

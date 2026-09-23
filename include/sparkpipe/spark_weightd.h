@@ -66,6 +66,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT 30u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY 31u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT 32u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_MAP 33u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT 34u
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
@@ -207,6 +209,14 @@ typedef struct SparkWeightdIpcHeader
     uint32_t body_bytes;
     uint64_t request_id;
 } SparkWeightdIpcHeader;
+
+typedef struct SparkWeightdIpcMeshMapResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reserved;
+    uint64_t bytes;
+} SparkWeightdIpcMeshMapResult;
 
 typedef struct SparkWeightdIpcHello
 {
@@ -733,6 +743,9 @@ SparkStatus SparkWeightdClientEpochExport(SparkWeightdClient *client,
 SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     const SparkWeightdMeshTopology *topology);
 SparkStatus SparkWeightdMeshSetActivity(uint32_t lane,uint32_t active);
+
+SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,
+    void **mapping,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
     uint32_t requested_lane,

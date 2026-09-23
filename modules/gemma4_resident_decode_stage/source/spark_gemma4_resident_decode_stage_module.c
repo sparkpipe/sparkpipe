@@ -541,6 +541,9 @@ static SparkStatus SparkGemma4ModuleInitializeTpCollective(SparkGemma4ModuleStat
 		return(status);
 	}
 	state->tp_collective_initialized = 1u;
+	status = SparkTpDeviceCollectiveAttachMesh(&state->tp_device_collective);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_GEMMA4_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
 	return(SPARK_STATUS_OK);
 }

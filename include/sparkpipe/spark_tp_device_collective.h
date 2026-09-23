@@ -461,6 +461,8 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     uint32_t step_index,
     void *cuda_stream);
 
+SparkStatus SparkTpDeviceCollectiveAttachMesh(SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     SparkTpDeviceCollective *collective,
     void *receive_device,
