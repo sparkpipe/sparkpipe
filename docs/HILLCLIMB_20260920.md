@@ -2643,3 +2643,34 @@ build (their call — it's their service), or (b) confirm the lane
 configure contract the running daemon expects. Everything else is
 READY: recipe + env + warm + reclaim + private runtimes proven this
 tick; engines start the moment lanes grant.
+
+## 09-24 14:00 TICK 2 — the QUEUE is the admission mechanism; dispatcher revived; first submission mis-wrapped
+
+DISCOVERIES THIS TICK:
+1. The lane-19 mystery DEEPENED usefully: lane acquire fails 19 even
+   against a FRESH m3-fixed test daemon (latch 61901, private socket)
+   with AND without topology — so it is NOT daemon age/state; the
+   daemons grant lanes only through QUEUE-ADMITTED jobs (the queue's
+   dispatcher injects the admission env: ATTEMPT, RUNTIME_ROOT, RANK,
+   PORTS + whatever bind makes lanes grant). Direct launches outside
+   the queue cannot get lanes — by design (astra's shared-lane
+   governance).
+2. The queue tool: ~/sparkpipe/tools/spark_queue.py (add/list/done/
+   dispatch/doctor). THE DISPATCHER DAEMON WAS NOT RUNNING (doctor
+   FAIL) — revived per the doctor's own recipe (nohup loop, 5s).
+   Cleaned a STALE RUNNING ENTRY from 2026-08-30 (qwen38flash-
+   shamatch2 held spark4 for 3.5 weeks; process long dead; done'd).
+3. First queue submission (glm-hill-clb, 16 nodes, coldlaunch arm B)
+   dispatched + reaped exit 1 in 25s: the dispatcher's run-family
+   template AUTO-SELECTED THE WRONG FAMILY (qwen38max wrapper ran:
+   qwenmax pack/pool lines in the log) + a "set: usage" shell error —
+   my inline --cmd got wrapped/eval'd badly. NEXT: --cmd-file with a
+   clean script that cd's into the glm-m3-final checkout and execs the
+   coldlaunch (no family template), ttl ≤15min (queue cap).
+4. FLEET FLAG read (lane/glm53 splitbrain note): the dispatcher reads
+   spark0's runs/queue.jsonl; tasks added from /Users/mac/sparkpipe are
+   dead-lettered — enqueue ONLY via spark0 (as done).
+
+STATE: queue empty; dispatcher alive (5s loop); test weightd on spark1
+(/tmp/test-wd.sock, latch 61901) still up for experiments; engines
+down; shared daemons untouched.
