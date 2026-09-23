@@ -176,7 +176,9 @@ static SparkStatus SparkGemma4ModuleConfigure(SparkGemma4ModuleState *state)
 #endif
 		state->sliding_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT,state->tp_degree);
 		state->full_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT,state->tp_degree);
-		state->tp_standalone = getenv("SPARK_GEMMA4_TP_STANDALONE") != 0 ? 1u : 0u;
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
 		state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
 		state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
 		state->tp_collective_identifier = 0u;

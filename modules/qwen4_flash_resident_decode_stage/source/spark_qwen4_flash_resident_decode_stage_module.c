@@ -250,7 +250,9 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( (SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		state->tp_standalone = getenv("SPARK_QWEN4_FLASH_TP_STANDALONE") != 0 ? 1u : 0u;
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
 		state->tp_vocab_rows = SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
 		state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
 		state->tp_collective_identifier = 0u;
