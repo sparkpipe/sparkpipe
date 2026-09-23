@@ -2906,3 +2906,18 @@ THE FIX (operational, next tick): sequence = cell brings 16/16 ready →
 ONLY THEN start the API (one_api) → canary. Never let the API churn
 against booting engines. Re-enqueue the cell (it expires at TTL;
 engines survive it detached), wait for ready, then API, then measure.
+
+## 09-25 00:30 TICK 12 — cell2: the terminal class reproduced INSIDE the queue; the mesh-relay timing is the remaining variable
+
+CELL2 (API down, zombies cleared): engines reached ready (3 ready lines
+on spark1) then hit the SAME "terminal status=4 weightd-lane-and-lazy"
+AND the daemons died mid-cell ("stopped arenas=1" — AFTER a successful
+attach+warm; supervisor rc=0 loop every 2s; mesh wired only at +723s =
+12min — the relay raced the staggered starts). The k3 sweeper is NOT
+the actor (my cell held all 16). OPEN: what terminates a daemon that
+holds an arena, mid-cell, queue-admitted — the remaining suspects are
+the TTL reaper killing the process GROUP (setsid children survive
+TTL?? — the engines survived cell1; the DAEMON died), or an external
+hygiene loop. NEXT: one instrumented cell with the supervisor logging
+PPID+signal (trap in sup.sh), stagger ≥ the 12min wire time, API only
+after 16/16 ready.
