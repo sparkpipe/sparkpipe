@@ -2886,3 +2886,23 @@ queue behind k3's live cell — fair sharing, exactly the design.
 NEXT TICK: when glm-hill-cell1 dispatches (after k3's current cell):
 verify 16/16 ready → canary from rtx5090 → THE FIRST tok/s RECEIPT →
 the ladder. (The cell auto-terminates at TTL; re-enqueue per window.)
+
+## 09-24 23:30 TICK 11 — THE CELL WORKED: 16/16 engines ready; serve-time terminal under API churn
+
+THE MILESTONE: glm-hill-cell1 (TTL-killed 124 at 14:26 — the script,
+not the stack) BOOTED ALL 16 ENGINES TO READY — the full choreography
+(staggered daemons → rank0 relay → wiring wait → staggered warm →
+engines → readiness) WORKS. 16/16 procs, ready lines on every rank.
+
+THE SERVE-TIME FAILURE: the API (started before the cell fired)
+hammered 115+ connect attempts during the ~15min bring-up; by the time
+engines were ready, rank0's log shows 971 "peer eof" + "GLM engine
+terminal status=4 source=weightd-lane-and-lazy; full engine restart
+required" — ALL 16 engines quiesced-zombie (procs alive, not serving;
+port 19560 refused). The terminal rule (PR #1081 strict ownership)
+retired the engines when their lane/lazy path errored amid the churn.
+
+THE FIX (operational, next tick): sequence = cell brings 16/16 ready →
+ONLY THEN start the API (one_api) → canary. Never let the API churn
+against booting engines. Re-enqueue the cell (it expires at TTL;
+engines survive it detached), wait for ready, then API, then measure.
