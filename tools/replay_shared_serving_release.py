@@ -76,29 +76,78 @@ print(json.dumps(dict(host=host,source=sha,bundle_sha256=bundle_sha)),flush=True
 '''
 
 
+def collect(cli, job, output):
+    status = json.loads(subprocess.check_output(cli + ['status', '--id', job], text=True))
+    if status['state'] != 'finished':
+        raise ValueError('replay is not finished: ' + status['state'])
+    if status['nodes'] != ['spark' + format(rank, 'x') for rank in range(16)]:
+        raise ValueError('replay requires the complete ordered TP16 fleet')
+    attempt = status['attempt']
+    probe = "import json,pathlib; p=pathlib.Path('/tmp/sparkqueue-" + attempt + "/receipt.json'); r=json.loads(p.read_text()); print(json.dumps(dict(receipt=r,owned_pids_absent=all(not pathlib.Path('/proc',str(pid)).exists() for pid in r.get('owned_pids',[])))))"
+
+    def read(host):
+        result = json.loads(subprocess.check_output(['ssh', host, 'python3 -c ' + shlex.quote(probe)], text=True))
+        (output / (host + '-receipt.json')).write_text(json.dumps(result, indent=2) + '\n')
+        return result
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        records = list(pool.map(read, status['nodes']))
+    receipts = [r['receipt'] for r in records]
+    if status['exit'] != 0 or any(r['status'] != 'PASS' for r in receipts):
+        raise ValueError('replay failed; retained rank receipts in ' + str(output))
+    first = receipts[0]
+    timings = first['timing']
+    count = len(timings)
+    if count not in (2, 3, 4, 8) or first['reference_sha256'] != digest(output / f'inference-inputs/common/reference-{count}.json'):
+        raise ValueError('receipt reference differs from the staged release reference')
+    for rank, record in enumerate(records):
+        receipt = record['receipt']
+        if (receipt['rank'] != rank or receipt['attempt'] != attempt or receipt['source_commit'] != SOURCE
+                or receipt['tokens'] != count * 32 or len(receipt['owned_pids']) != count + 1
+                or not record['owned_pids_absent'] or any(receipt[k] != first[k] for k in ('spec_sha256', 'reference_sha256'))):
+            raise ValueError('rank identity, token or process cleanup check failed: ' + str(rank))
+    start = max(t['started_seconds'] + t['sequences'][0]['arrival_seconds'][0] for t in timings)
+    end = min(t['started_seconds'] + t['sequences'][0]['arrival_seconds'][-1] for t in timings)
+    if end <= start or any(not t['valid'] or t['verified_tokens'] != 32 for t in timings):
+        raise ValueError('decode timing or token verification failed')
+    tokens = sum(start < t['started_seconds'] + a <= end for t in timings for a in t['sequences'][0]['arrival_seconds'])
+    summary = dict(status='PASS', source_commit=SOURCE, attempt=attempt, ranks=len(records), replicas=count,
+                   verified_tokens=count * 32, owned_pids_absent=len(records) * (count + 1),
+                   aggregate_decode_tokens_per_second=tokens / (end - start),
+                   per_instance_decode_tokens_per_second=[t['decode_tokens_per_second'] for t in timings])
+    (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+    print(json.dumps(summary, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--assets', type=Path, required=True)
+    parser.add_argument('--assets', type=Path)
     parser.add_argument('--id', required=True)
+    parser.add_argument('--collect', action='store_true')
     parser.add_argument('--replicas', type=int, choices=(2, 3, 4, 8), default=8)
-    parser.add_argument('--host-memory-mib', type=int, required=True)
+    parser.add_argument('--host-memory-mib', type=int)
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT / 'tools'))
     import spark_queue as queue
     queue.valid_name(args.id)
+    output = queue.STATE / ('replay-' + args.id)
+    cli = [sys.executable, str(ROOT / 'tools/spark_queue.py')]
+    if args.collect:
+        collect(cli, args.id, output)
+        return
+    if args.assets is None or args.host_memory_mib is None:
+        parser.error('staging requires --assets and --host-memory-mib')
     device = 28 * 1024 + 512 + args.replicas * 4096
     total = device + args.host_memory_mib
     if args.host_memory_mib < 64 or total + queue.HOST_HEADROOM_MIB > queue.NODE_MEMORY_MIB_MAX:
         parser.error('host plus device reservation and fleet headroom exceed the node budget')
     hosts = ['spark' + format(rank, 'x') for rank in range(16)]
     remote = '/tmp/sparkpipe-replay-' + args.id
-    output = queue.STATE / ('replay-' + args.id)
     inputs = prepare(args.assets.resolve(), output, remote, args.replicas)
     wset = ROOT / 'model-families/glm5_next/glm53flash.fp8.tp16.smoke.wset'
     if digest(wset) != WSET:
         parser.error('qualified input working set checksum differs')
     run([str(ROOT / 'tools/sparkpipe_github_pat.sh'), 'git', 'fetch', '--depth=1', 'origin', SOURCE], cwd=ROOT)
-    cli = [sys.executable, str(ROOT / 'tools/spark_queue.py')]
     run(cli + ['sync', '--id', args.id, '--nodes', ','.join(hosts), '--ref', SOURCE])
 
     def stage(host):
@@ -117,7 +166,7 @@ def main():
                '--resources', 'gpu-shared', '--memory-mib', str(total), '--device-memory-mib', str(device),
                '--ports', f'20000:{20000 + args.replicas * 1000 - 1}', '--ttl-min', '15', '--cmd-file', str(command)])
     print('Submitted exact release replay; inspect: ' + shlex.join(cli + ['status', '--id', args.id]))
-    print('Queue success alone is insufficient: collect receipt.json from all 16 attempt directories and verify PASS, tokens, and owned PID absence.')
+    print('Verify tokens, cleanup and throughput: ' + shlex.join([sys.executable, __file__, '--id', args.id, '--collect']))
 
 
 if __name__ == '__main__':

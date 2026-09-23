@@ -1,5 +1,5 @@
 {
-  "file_count": 3419,
+  "file_count": 3421,
   "files": [
     {
       "path": ".dsv4pro_binary_cache/spark3/bin/sparkpipe_model_batch",
@@ -1518,8 +1518,8 @@
     },
     {
       "path": "docs/MULTIDEV_QUICKSTART.md",
-      "sha256": "deb088701f3a0e1af9b30c5bbae70e06afd164ea114d2314f11023ee0496d836",
-      "size_bytes": 4774
+      "sha256": "db7effb2c775905ef8693f2ceea7ec2139012add447b4a04390dc4f65e779fd0",
+      "size_bytes": 5114
     },
     {
       "path": "docs/MULTI_DEV_SMOKE.md",
@@ -1585,6 +1585,11 @@
       "path": "docs/SERVING_FUZZ_COVERAGE.md",
       "sha256": "a40e971b6030ee3978be708db760d1d5f366f93453509e5b4be04118dd5023c8",
       "size_bytes": 21219
+    },
+    {
+      "path": "docs/SERVING_RELEASE_RECOVERY_20260924.md",
+      "sha256": "90b31b206213f75544a3acd19c99ff5a3dff283013e6a0b5923f37261280d770",
+      "size_bytes": 7939
     },
     {
       "path": "docs/SPARKDEV_HANDOFF_GLM53FLASH.md",
@@ -6218,8 +6223,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "cd672b5f7aaa2e106831f8a51f3a1669d639dfdc6d97fd316f2033b151cbd2d4",
-      "size_bytes": 124653
+      "sha256": "1ab349a78722c16b64d6d8c8a30ea78b0acb3ffb4d39fbdb4d169472068fce12",
+      "size_bytes": 125153
     },
     {
       "path": "node/weightd.c",
@@ -9618,8 +9623,8 @@
     },
     {
       "path": "tests/test_inference_smoke.py",
-      "sha256": "099f3715d6aa9f0301897359449afe43acb287370b7ffec877bc7db28dfa2ce0",
-      "size_bytes": 23968
+      "sha256": "2fdfe48d7db03b85bcf634be546e8291b3afc4fa47b0a51c6b42e68267d90ce3",
+      "size_bytes": 24861
     },
     {
       "path": "tests/test_jit_kv_c3c4.c",
@@ -10083,8 +10088,8 @@
     },
     {
       "path": "tests/test_model_resident_session.c",
-      "sha256": "43e0fa484adf9a5ec1be4d091d3a5e6ee0ef6b37170ef4755c113cd859405b0c",
-      "size_bytes": 9877
+      "sha256": "880cc8f480a7eff748fb20fdaacce5379b8601e7171130e51960d9ac9bab72cc",
+      "size_bytes": 11464
     },
     {
       "path": "tests/test_model_runtime.c",
@@ -11273,8 +11278,8 @@
     },
     {
       "path": "tools/devcycle/sparkpipe-weightd-shared.service",
-      "sha256": "47dd35b353b79f1cc93fd244a40b6795b7b9c222c069ad5f3aaa085c66ed7ab5",
-      "size_bytes": 1002
+      "sha256": "b07c56eb9b6e5a8e4b522d2d44605d25a408a1e700d6f8774c668362dd92b63a",
+      "size_bytes": 1130
     },
     {
       "path": "tools/devcycle/sparkpipe_fleet_root.pub",
@@ -11348,8 +11353,8 @@
     },
     {
       "path": "tools/devcycle/weightd_shared_deploy.sh",
-      "sha256": "3c62a6e47bcaa680eee1ddbd774a31ea039da7dff42ceefd44104b8c78af45de",
-      "size_bytes": 950
+      "sha256": "1ed1ea5cf093105ea21670b8365d61af7773f19c7b19abda4983f649b5d5481f",
+      "size_bytes": 1534
     },
     {
       "path": "tools/dist_experts.sh",
@@ -11883,8 +11888,8 @@
     },
     {
       "path": "tools/glm5_next_coldlaunch_ab.sh",
-      "sha256": "8abecb4cb6dfbd5e7aba62d32dfdbf5a15c6a43119fe4f00bd05053ddf7d0983",
-      "size_bytes": 16680
+      "sha256": "c8397bf9030d8011f5038cef4b8adb4c1c385e8aec24a2faf8d88f6be4e50a88",
+      "size_bytes": 16247
     },
     {
       "path": "tools/glm5_next_compsec17.py",
@@ -12353,8 +12358,8 @@
     },
     {
       "path": "tools/inference_smoke.py",
-      "sha256": "19599d13003ba434db51fbf1e0fe3a41861547ec06085c84660d7884be27383a",
-      "size_bytes": 28420
+      "sha256": "2d4e7e4a03888d00e947a93ac492775c7343556bbf49d98dd3c934e95ad48695",
+      "size_bytes": 28917
     },
     {
       "path": "tools/install_cuda13_compile_only_debian13.sh",
@@ -13340,6 +13345,11 @@
       "path": "tools/rename_stagepacks.sh",
       "sha256": "71691bc7ef6bd703b3ad1ac6edcff241b02c96cedc249ce425013e98b6651ec9",
       "size_bytes": 2196
+    },
+    {
+      "path": "tools/replay_shared_serving_release.py",
+      "sha256": "3f6a868d3c2eb89bf48a2dd57c2873ff6fe9768c8a45ec9cb66fa3454a1e341a",
+      "size_bytes": 9919
     },
     {
       "path": "tools/roofline_estimator.py",
@@ -17100,5 +17110,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80815252
+  "total_bytes": 80837206
 }

@@ -24,6 +24,7 @@ per resident. Device reservation was 61,952 MiB per Spark. A successful run mean
 | `6d897973702e44f486423f1398595b31` | 32 GiB | Host budget only | Spark4 resident 1 failed the same CUDA call below the new memory limit |
 | `a40c4f0eb26841539d85f34baef88f27` | 32 GiB | Explicit cache flush on Spark4 only | PASS, 13.096 aggregate tokens/s |
 | `06c8acb613b4465e91f9866b5f377ebe` | 32 GiB | Ordinary restart, no cache flush | PASS, 13.331 aggregate tokens/s |
+| `03fc17ccfea44b60bd020f287d32c378` | 32 GiB | New replay CLI, fresh staging from published archives, no cache flush | PASS, 12.594 aggregate tokens/s |
 
 The first failing call was `cudaStreamCreateWithFlags` in resident startup, before
 model execution. The kernel logged `NV_ERR_NO_MEMORY` from graphics-context
@@ -64,13 +65,17 @@ python3 tools/replay_shared_serving_release.py \
   --assets /absolute/path/to/release-assets \
   --id release-replay-unique-id --replicas 8 --host-memory-mib 32768
 python3 tools/spark_queue.py status --id release-replay-unique-id
+python3 tools/replay_shared_serving_release.py --id release-replay-unique-id --collect
 ```
 
 The command verifies both archives, fetches and syncs exact release source,
 stages immutable binaries and the original working-set input, reserves memory
 and ports, and submits the existing `inference_smoke.py` worker. It uses the same
 reference tokens; it does not regenerate expected outputs from the tested run.
-Each invocation needs a new ID. It neither retries failures nor flushes caches.
+Each staging invocation needs a new ID. It neither retries failures nor flushes caches.
+After completion, `--collect` checks all rank receipts, token counts, matching
+identities and process absence, saves the receipts and prints aggregate and
+per-instance throughput. It fails if the run has not finished or any check fails.
 For the returned attempt ID, retain `/tmp/sparkqueue-ATTEMPT/receipt.json` and
 logs on all 16 hosts. Check PASS, `tokens=256`, and absence of every `owned_pids`
 entry. Only the coordinator receipt has token timing. Aggregate throughput counts
@@ -99,3 +104,26 @@ The shared daemon also had a 90 GiB device cap while the controller reserved
 28.5 GiB for it. Keep the actual cap plus overhead, finite host bound and queue
 reservation consistent. Verify `SHA256SUMS` before starting services and do not
 copy new executables over a directory advertising an older release.
+
+Current main `8608966a` initialized residents with 16-lane capacity, but the smoke
+verifier hardcoded capacity 8 and failed before inference. The verifier now checks
+one explicit assignment, the requested rank/lane, and that the lane is in range.
+It accepts the released 8-lane and current 16-lane meshes without duplicating a
+capacity constant. Wrong, missing, duplicate and out-of-range assignments still fail.
+
+The GLM cold-launch wrapper now requires `SPARK_EXEC_ROOT` and verifies that
+release's `SHA256SUMS`. It cannot select a different release or fill missing
+libraries from the model directory. The shared service verifies its manifest
+before every start; the baseline deploy helper verifies the published archive
+and refuses to overwrite an active service or a modified installed release.
+Its 28 GiB device cap leaves the declared 512 MiB overhead inside a 28.5 GiB
+queue reservation.
+
+The coherent `04c7cb89e77e0e1e332a59c4c8e66605f7265012` build (current main
+plus startup diagnostics and the corrected verifier) passed attempt
+`e3e084ee3b9a49e498aeffe7391db8bf`: 16 ranks, 256 matching tokens, 144 PIDs gone.
+Its common overlapping decode interval was only 4.749 seconds, with 57 tokens
+and 12.003 aggregate tokens/s. Per-instance averages varied from 1.54 to 2.42
+tokens/s because their decode intervals differed. This qualifies the bounded
+workload's correctness and completion; it does not establish a performance
+improvement over the original release.
