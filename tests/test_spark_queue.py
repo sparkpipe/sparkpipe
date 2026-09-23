@@ -109,6 +109,29 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(git(repository, "rev-parse", "HEAD"), base)
         self.assertEqual((repository / "marker").read_text(), "controller-dirty")
 
+    def test_unified_memory_reserves_growth_without_counting_live_cuda_twice(self):
+        owner = dict(id="persistent:spark0:system:weightd.service", nodes=["spark0"],
+                     unit="weightd.service", scope="system", memory_mib=80000, device_memory_mib=78000)
+        unit = self.unit("weightd", 2000)
+        unit["MemoryNonreclaimable"] = 128 * self.q.MIB
+        report = dict(total_mib=122566, available_mib=30000, gpu_names=["NVIDIA GB10"],
+                      units={"system:weightd.service": unit},
+                      gpu_processes=[dict(pid=7, control_group=unit["ControlGroup"], used_mib=70000)], ports=[])
+        job = dict(nodes=["spark0"], memory_mib=8192, device_memory_mib=4096)
+        self.assertIsNone(self.q.shared_admission(job, [owner], {"spark0": report}))
+        report["available_mib"] = 25000
+        self.assertIn("insufficient memory", self.q.shared_admission(job, [owner], {"spark0": report}))
+        report["available_mib"] = 114374
+        job["memory_mib"] = 40000
+        self.assertIn("insufficient memory", self.q.shared_admission(job, [owner], {"spark0": report}))
+        job["memory_mib"] = 8192
+        report["gpu_processes"][0]["used_mib"] = 78001
+        self.assertIn("exceeds declared device budget", self.q.shared_admission(job, [owner], {"spark0": report}))
+        report["gpu_processes"][0]["used_mib"] = 70000
+        unit["MemoryNonreclaimable"] = 70000 * self.q.MIB
+        report["available_mib"] = 25000
+        self.assertIn("insufficient memory", self.q.shared_admission(job, [owner], {"spark0": report}))
+
     def test_rdma_registration_uses_declared_finite_memory_budget(self):
         job = {"id": "rdma", "attempt": "test", "nodes": ["spark0"],
                "deadline": time.time() + 60, "cmd": "true", "memory_mib": 1536}

@@ -360,6 +360,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             cuda_stub_mesh_hardware_calls == calls + 1u,
             "native round loop reaches hardware without a legacy BF16 callback");
     }
+    cuda_stub_mesh_hardware_launch_result = 0;
+    CHECK(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) == SPARK_STATUS_IO_ERROR,
+        "completed launch with missing rounds is terminal, not retryable pressure");
+    ((SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control)->error_word = 123u;
+    CHECK(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) == SPARK_STATUS_IO_ERROR,
+        "failed device round is terminal, not retryable pressure");
+    ((SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control)->error_word = 0u;
     CHECK(cuda_stub_mesh_publish_calls == old_publish,"failed hardware launch never selects spin path");
     CHECK(cuda_stub_mesh_hardware_control != 0,"native dispatch provides a control record");
     if (cuda_stub_mesh_hardware_control != 0)

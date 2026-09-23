@@ -149,8 +149,8 @@ BUDGET_LINE="$(python3 "$CHECKOUT/tools/qwen38max_multidev_lane.py" \
   --budgets "$CHECKOUT/model-families/qwen38_max/smoke_experts.json" \
   --rank "$NODE_RANK" \
   --pack "$PACK")"
-POOL_BYTES="${BUDGET_LINE%% *}"
-SPINE_BYTES="${BUDGET_LINE##* }"
+POOL_BYTES="${QMAX_EXPERT_POOL_BYTES:-${BUDGET_LINE%% *}}"
+SPINE_BYTES="${QMAX_SPINE_BUDGET_BYTES:-${BUDGET_LINE##* }}"
 export SPARK_WEIGHTD_SOCKET="$WEIGHTD_SOCKET"
 export SPARK_WEIGHTD_ATTACH=1
 export SPARK_WEIGHTD_PACK_SHA256="$PACK_SHA"

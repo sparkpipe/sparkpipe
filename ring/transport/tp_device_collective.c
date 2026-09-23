@@ -935,7 +935,15 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     implementation->round_seq = implementation->round_control_host.seq;
     if ( implementation->round_control_host.error_word != 0u ||
          implementation->round_control_host.rounds_done != rounds )
-        return SPARK_STATUS_BUSY;
+    {
+        fprintf(stderr,"MESH-DEVICE-ROUND-FAILED rank=%u band=%u operation=%u rows=%u seq=%llu error=%llu diag=%llu done=%llu expected=%u\n",
+            implementation->tp_rank,band,operation,submission->logical_sequence_count,
+            (unsigned long long)implementation->round_control_host.seq,
+            (unsigned long long)implementation->round_control_host.error_word,
+            (unsigned long long)implementation->round_control_host.diag_word,
+            (unsigned long long)implementation->round_control_host.rounds_done,rounds);
+        return SPARK_STATUS_IO_ERROR;
+    }
     return SPARK_STATUS_OK;
 }
 
