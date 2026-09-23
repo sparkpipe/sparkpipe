@@ -101,7 +101,7 @@ def deployed_pack(rank: int) -> str:
 def stage_config(rank: int) -> dict:
     """The adapter's EXACT member set - no additions (load error)."""
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "stage_pack_path": "packs/qwenmax.nvfp4.tp16.rank%x.sp" % rank,
         "max_sequence_positions": 4096,
