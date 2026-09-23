@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 ARM="$1"; TP="$2"; RANK="$3"
 case "$ARM" in
   pro) CKPT=/mnt/model-warm/mimo-v2.6-pro-rl; SET=mimo26pro.mxfp4.tp8 ;;

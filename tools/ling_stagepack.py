@@ -792,7 +792,92 @@ def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes],
         raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
 
 
-def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes) -> int:
+def plan_region(item: PlanItem) -> Tuple[int, int]:
+    entry = item.entry
+    if entry.scale_bytes:
+        return entry.payload_offset, entry.scale_offset + entry.scale_bytes
+    return entry.payload_offset, entry.payload_offset + entry.payload_bytes
+
+
+def write_regions(out, packer: Packer, skip: int,
+                  journal: Optional[Any]) -> None:
+    for index, item in enumerate(packer.plan):
+        entry = item.entry
+        if index < skip:
+            continue
+        sink = None
+        if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
+            sink = SlabDigestSink(entry.payload_bytes // EXPERTS)
+        emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
+                    item.produce_payload(), sink)
+        if sink is not None:
+            if len(sink.digests) != EXPERTS:
+                raise PackFailure(f"{entry.kind}: slab digests "
+                                  f"{len(sink.digests)} != {EXPERTS}")
+            item.expert_digests = sink.digests
+        if entry.scale_bytes:
+            if item.produce_scale is None:
+                raise PackFailure(f"{entry.kind}: scale segment has no producer")
+            scale_sink = None
+            if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
+                scale_sink = SlabDigestSink(entry.scale_bytes // EXPERTS)
+            emit_region(out, entry.scale_offset, entry.scale_bytes,
+                        item.produce_scale(), scale_sink)
+            if scale_sink is not None:
+                if len(scale_sink.digests) != EXPERTS:
+                    raise PackFailure(f"{entry.kind}: scale slab digests "
+                                      f"{len(scale_sink.digests)} != {EXPERTS}")
+                item.expert_scale_digests = scale_sink.digests
+        if journal is not None:
+            out.flush()
+            begin, end = plan_region(item)
+            out.seek(begin)
+            digest = ck128(out.read(end - begin))
+            journal.write(json.dumps({
+                "index": index, "kind": entry.kind,
+                "begin": begin, "end": end, "ck128": digest.hex(),
+                "payload_bytes": entry.payload_bytes,
+                "scale_bytes": entry.scale_bytes,
+            }) + "\n")
+            journal.flush()
+            os.fsync(journal.fileno())
+
+
+def load_resume_prefix(journal_file: Path, partial: Path,
+                       packer: Packer) -> int:
+    records = []
+    for line in journal_file.read_text().splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            break
+    trusted = 0
+    for index, record in enumerate(records):
+        if record.get("index") != index:
+            break
+        item = packer.plan[index]
+        begin, end = plan_region(item)
+        if (record.get("kind") != item.entry.kind or record.get("begin") != begin
+                or record.get("end") != end
+                or record.get("payload_bytes") != item.entry.payload_bytes
+                or record.get("scale_bytes") != item.entry.scale_bytes):
+            raise PackFailure("resume journal disagrees with the plan; remove "
+                              f"the stale {journal_file.name} and partial")
+        if not partial.exists() or partial.stat().st_size < end:
+            break
+        with partial.open("rb") as handle:
+            handle.seek(begin)
+            if ck128(handle.read(end - begin)).hex() != record.get("ck128"):
+                break
+        trusted += 1
+    if trusted != len(records):
+        keep = "".join(json.dumps(record) + "\n" for record in records[:trusted])
+        journal_file.write_text(keep)
+    return trusted
+
+
+def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes,
+         resume: bool = False) -> int:
     if path.exists():
         raise PackFailure(f"output already exists; the two-pass proof requires a "
                           f"fresh artifact path: {path}")
@@ -809,6 +894,32 @@ def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes) -> int:
     header = assemble_header(packer.plan, packer.tp_degree, packer.tp_rank,
                              packer.expert_codec, directory_offset, file_bytes,
                              revision, contract_sha)
+    if resume:
+        partial = path.parent / (path.name + ".partial")
+        journal_file = path.parent / (path.name + ".journal.jsonl")
+        done = (load_resume_prefix(journal_file, partial, packer)
+                if journal_file.exists() else 0)
+        with partial.open("r+b" if partial.exists() else "w+b") as out:
+            out.write(header)
+            out.seek(directory_offset)
+            for item in packer.plan:
+                out.write(serialize_entry(item.entry))
+            journal = journal_file.open("a", encoding="utf-8")
+            try:
+                write_regions(out, packer, done, journal)
+                out.flush()
+                os.fsync(out.fileno())
+            finally:
+                journal.close()
+        os.link(partial, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        partial.unlink()
+        journal_file.unlink()
+        return file_bytes
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial",
                                      dir=path.parent)
     os.close(fd)
@@ -818,31 +929,7 @@ def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes) -> int:
             out.seek(directory_offset)
             for item in packer.plan:
                 out.write(serialize_entry(item.entry))
-            for item in packer.plan:
-                entry = item.entry
-                sink = None
-                if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
-                    sink = SlabDigestSink(entry.payload_bytes // EXPERTS)
-                emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
-                            item.produce_payload(), sink)
-                if sink is not None:
-                    if len(sink.digests) != EXPERTS:
-                        raise PackFailure(f"{entry.kind}: slab digests "
-                                          f"{len(sink.digests)} != {EXPERTS}")
-                    item.expert_digests = sink.digests
-                if entry.scale_bytes:
-                    if item.produce_scale is None:
-                        raise PackFailure(f"{entry.kind}: scale segment has no producer")
-                    scale_sink = None
-                    if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
-                        scale_sink = SlabDigestSink(entry.scale_bytes // EXPERTS)
-                    emit_region(out, entry.scale_offset, entry.scale_bytes,
-                                item.produce_scale(), scale_sink)
-                    if scale_sink is not None:
-                        if len(scale_sink.digests) != EXPERTS:
-                            raise PackFailure(f"{entry.kind}: scale slab digests "
-                                              f"{len(scale_sink.digests)} != {EXPERTS}")
-                        item.expert_scale_digests = scale_sink.digests
+            write_regions(out, packer, 0, None)
             out.flush()
             os.fsync(out.fileno())
         os.link(temporary, path)
@@ -946,6 +1033,9 @@ def main() -> int:
     parser.add_argument("--expert-codec", default="bf16", choices=["bf16", "fp8"])
     parser.add_argument("--model", default="ling", choices=["ling", "lingfin"])
     parser.add_argument("--dry-plan", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue an interrupted emit from the .partial "
+                             "+ .journal.jsonl sidecars in the output dir")
     args = parser.parse_args()
 
     family_dir = REPO_ROOT / "model-families" / "ling"
@@ -990,7 +1080,8 @@ def main() -> int:
         tp = args.tp_all or args.tp_degree
         arm = f"{args.model}.{args.expert_codec}.tp{tp}"
         path = out_dir / f"{arm}.rank{rank:x}.sp"
-        file_bytes = emit(packer, path, source_revision, contract_sha)
+        file_bytes = emit(packer, path, source_revision, contract_sha,
+                          args.resume)
         digest = hashlib.sha256()
         with path.open("rb") as file:
             for block in iter(lambda: file.read(8 * 1024 * 1024), b""):

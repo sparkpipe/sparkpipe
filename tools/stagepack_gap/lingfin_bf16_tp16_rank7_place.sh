@@ -10,5 +10,8 @@ rsync -av \
   "$DST/"
 rsync -av "$SRC/receipts/rank7.json" "$DST/receipts/"
 cd "$DST"
-sha256sum -c lingfin.bf16.tp16.rank7.sp.sha256
+want=$(cut -d' ' -f1 lingfin.bf16.tp16.rank7.sp.sha256)
+got=$(sha256sum lingfin.bf16.tp16.rank7.sp | cut -d' ' -f1)
+[ "$want" = "$got" ]
+printf '%s  %s\n' "$want" lingfin.bf16.tp16.rank7.sp > lingfin.bf16.tp16.rank7.sp.sha256
 chmod 664 lingfin.bf16.tp16.rank7.sp lingfin.bf16.tp16.rank7.sp.experts

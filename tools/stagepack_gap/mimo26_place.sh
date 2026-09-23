@@ -6,10 +6,17 @@ case "$ARM" in
   flash) SET=mimo26flash.mxfp4.tp4 ;;
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
-SRC="$SRC_HOST:sparkdata/$SET/$SRCSUB/rank$RANK"
+if [ "$SRCSUB" = "packs" ]; then
+  SRC="$SRC_HOST:sparkdata/$SET/packs"
+else
+  SRC="$SRC_HOST:sparkdata/$SET/$SRCSUB/rank$RANK"
+fi
 DST="$HOME/sparkdata/$SET/packs"
 mkdir -p "$DST"
-rsync -av "$SRC/rank$RANK.sp" "$SRC/rank$RANK.sp.receipt.json" "$SRC/rank$RANK.sp.sha256" "$DST/"
+rsync -a "$SRC/rank$RANK.sp" "$SRC/rank$RANK.sp.receipt.json" "$SRC/rank$RANK.sp.sha256" "$DST/"
 cd "$DST"
-sha256sum -c "rank$RANK.sp.sha256"
+want=$(cut -d' ' -f1 "rank$RANK.sp.sha256")
+got=$(sha256sum "rank$RANK.sp" | cut -d' ' -f1)
+[ "$want" = "$got" ]
+printf '%s  %s\n' "$want" "rank$RANK.sp" > "rank$RANK.sp.sha256"
 chmod 664 "rank$RANK.sp"
