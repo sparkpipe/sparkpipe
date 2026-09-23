@@ -8,7 +8,6 @@ case "$ARM" in
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
 ROOT="$HOME/sparkdata/$SET/emit/rank$RANK"
-rm -f "$ROOT/rank$RANK.sp"
 python3 tools/mimo26_stagepack.py \
   --arm "$ARM" --checkpoint "$CKPT" --tp "$TP" --rank "$RANK" \
-  --out "$ROOT/rank$RANK.sp" --stage-dir "$ROOT/stage" --assemble
+  --out "$ROOT/rank$RANK.sp" --stage-dir "$ROOT/stage" --verify

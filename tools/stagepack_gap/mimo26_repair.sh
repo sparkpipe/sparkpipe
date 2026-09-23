@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 ARM="$1"; TP="$2"; RANK="$3"
 case "$ARM" in
   pro) CKPT=/mnt/model-warm/mimo-v2.6-pro-rl; SET=mimo26pro.mxfp4.tp8 ;;
@@ -8,7 +7,6 @@ case "$ARM" in
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac
 ROOT="$HOME/sparkdata/$SET/emit/rank$RANK"
-rm -f "$ROOT/rank$RANK.sp"
-python3 tools/mimo26_stagepack.py \
+python3 tools/stagepack_gap/mimo26_reorder_planes.py \
   --arm "$ARM" --checkpoint "$CKPT" --tp "$TP" --rank "$RANK" \
-  --out "$ROOT/rank$RANK.sp" --stage-dir "$ROOT/stage" --assemble
+  --stage-dir "$ROOT/stage"
