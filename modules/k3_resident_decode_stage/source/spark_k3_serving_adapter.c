@@ -41,6 +41,10 @@ typedef struct SparkK3ServingState
 	char *pack_path;
 	uint32_t max_rows;
 	SparkTpDeviceCollectiveConfig device_config;
+	/* Second width-matched device collective (mesh band 1) for the fused
+	 * gate_up all-reduce - see the cold16 width contract note in the
+	 * runner. Derived from device_config, never read from JSON twice. */
+	SparkTpDeviceCollectiveConfig device_config_wide;
 	SparkTpDeviceCollectiveTopology device_topology;
 	SparkK3SpeculationKnobs speculation;
 	char device_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
@@ -219,7 +223,10 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.operation_kind =
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 			state->device_config.credit_count = 8u;
-			state->device_config.local_hidden_dimension = 3u * hidden;
+			/* Band-0 "hidden" collective: every ALL_REDUCE on it moves
+			 * rows x this width, so it must be exactly the hidden width
+			 * (the old 3x setting was the cold16 width-contract bug). */
+			state->device_config.local_hidden_dimension = hidden;
 			state->device_config.max_active_sequence_count =
 				state->runner_config.max_input_row_count;
 			int32_t hosts_token = SparkJsonFindObjectMember(&doc, dev, "peer_hosts");
@@ -333,6 +340,26 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			&state->device_config) != SPARK_STATUS_OK )
 			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
 		state->runner_config.device_collective = &state->device_config;
+		/* Band-1 "wide" collective for the fused gate_up reduce: same
+		 * topology and peers, its own width (rows x top_k x 2 x expert
+		 * intermediate per reduce), its own mesh band, control port and
+		 * collective identity. glm5_next established the derived-second-
+		 * config pattern; the widths are cross-checked fail-closed in
+		 * SparkK3StageRunnerInitialize. */
+		state->device_config_wide = state->device_config;
+		state->device_config_wide.local_hidden_dimension =
+			SPARK_K3_MODEL_MOE_TOP_K *
+			(SPARK_K3_MODEL_MOE_INTERMEDIATE_DIMENSION * 2u);
+		state->device_config_wide.mesh_band_index = 1u;
+		state->device_config_wide.control_port_base =
+			state->device_config.control_port_base - 1u;
+		state->device_config_wide.collective_identifier =
+			state->device_config.collective_identifier ^
+			0x0000800000000000ull;
+		(void)SparkTpDeviceCollectiveApplyTopology(&state->device_topology,
+			&state->device_config_wide);
+		state->runner_config.device_collective_wide =
+			&state->device_config_wide;
 	}
 	status = K3ServingLoadSpeculation(state, &doc, root);
 	if ( status != SPARK_STATUS_OK )

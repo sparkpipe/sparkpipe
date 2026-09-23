@@ -30,6 +30,18 @@ typedef struct SparkK3RunnerTpContext SparkK3RunnerTpContext;
 static_assert(K3_RUNNER_TP_CONTEXT_POOL_DEPTH >= 2u * K3_LAYERS,
 	"tp context pool must cover both per-layer collectives");
 
+/* Width contract (cold16): the shared device collective sizes EVERY
+ * ALL_REDUCE as active_sequence_count x the COLLECTIVE's
+ * local_hidden_dimension - never a per-submission element count - and
+ * submission.reserved0 must stay zero. k3 therefore rides TWO width-matched
+ * collectives: the hidden collective (band 0, width K3_HIDDEN) carries the
+ * in-place embedding reduce, the per-layer attention/hidden segment, the
+ * shared segment (a second stream-ordered op) and the width-independent
+ * ALL_REDUCE_MAX_U64 head argmax; the wide collective (band 1, width
+ * K3_TOP_K x 2 x K3_EXPERT_INTERMEDIATE) carries the fused gate_up reduce
+ * whose per-row extent is not an integer multiple of K3_HIDDEN. */
+#define K3_RUNNER_GATE_UP_WIDTH (K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u))
+
 typedef struct SparkK3RunnerTpContext
 {
 	SparkK3RunnerTpContext *pool_next;
@@ -191,6 +203,8 @@ typedef struct SparkK3RunnerState
 	int collective_created;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
+	SparkTpDeviceCollective device_collective_wide;
+	int device_collective_wide_created;
 	SparkWeightdLazyPack *lazy_pack;
 	uint64_t lease_identifier;
 	uint32_t lease_phase;
@@ -202,6 +216,7 @@ typedef struct SparkK3RunnerState
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
+	uint64_t tp_next_ordinal_wide;
 	SparkK3RunnerTpContext *tp_context_free_head;
 	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
 	uint32_t tp_context_overflow;
@@ -438,6 +453,9 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	uint32_t elements = rows * K3_HIDDEN;
 	if ( state->device_collective_created != 0 )
 	{
+		/* Hidden collective (band 0, width K3_HIDDEN): rows x K3_HIDDEN
+		 * elements in place; reserved0 must stay zero (the transport sizes
+		 * the reduce from the collective width, not the submission). */
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -448,7 +466,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 		submission.flags =
 			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 		submission.ordinal = state->tp_next_ordinal++;
-		submission.reserved0 = elements;
 		submission.local_device = device_values;
 		submission.full_device = (void *)device_values;
 		submission.cuda_stream = stream;
@@ -497,8 +514,10 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	{
 		const uint32_t gate_up_elements =
 			rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
-		if ( state->device_collective_created != 0 )
+		if ( state->device_collective_wide_created != 0 )
 		{
+			/* Wide collective (band 1, width K3_RUNNER_GATE_UP_WIDTH):
+			 * rows x 98304 elements exactly, ordinal chain of its own. */
 			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
 				256u, 0, stream>>>(
 				0, 0, 0, b->gate_up_bf16, state->fused_device,
@@ -525,14 +544,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			submission.logical_sequence_count = state->logical_sequence_count;
 			submission.flags =
 				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-			submission.ordinal = state->tp_next_ordinal++;
-			submission.reserved0 = gate_up_elements;
+			submission.ordinal = state->tp_next_ordinal_wide++;
 			submission.local_device = state->fused_device;
 			submission.full_device = state->fused_device;
 			submission.cuda_stream = stream;
 			submission.completion_function = K3RunnerTpCompletion;
 			submission.completion_context = completion_context;
-			SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+			SparkTpDeviceCollectiveEnqueue(&state->device_collective_wide,
 				&submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 			return;
@@ -554,38 +572,53 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 			state->fused_device,rows,phase,segments,0u);
-		SparkK3RunnerTpContext *completion_context =
-			K3RunnerTpContextAcquire(state);
-		if ( completion_context == 0 )
-			return;
-		completion_context->owner = state;
-		completion_context->fused = state->fused_device;
-		completion_context->buffers = b;
-		completion_context->stream = stream;
-		completion_context->rows = rows;
-		completion_context->boundary = boundary;
-		completion_context->segments = segments;
-		completion_context->phase = phase;
-		completion_context->gate_up_elements = 0u;
-		SparkTpDeviceCollectiveSubmission submission;
-		memset(&submission, 0, sizeof(submission));
-		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-		submission.descriptor_bytes = sizeof(submission);
-		submission.slot_index = 0u;
-		submission.active_sequence_count = rows;
-		submission.logical_sequence_count = state->logical_sequence_count;
-		submission.flags =
-			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-		submission.ordinal = state->tp_next_ordinal++;
-		submission.reserved0 = elements * segments;
-		submission.local_device = state->fused_device;
-		submission.full_device = state->fused_device;
-		submission.cuda_stream = stream;
-		submission.completion_function = K3RunnerTpCompletion;
-		submission.completion_context = completion_context;
-		SparkTpDeviceCollectiveEnqueue(&state->device_collective,
-			&submission,
-			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+		/* Hidden collective (band 0, width K3_HIDDEN): one stream-ordered
+		 * op per segment (attention/hidden at fused[0], shared at
+		 * fused[elements]) instead of one wide op - the collective's
+		 * width is the row extent, so a 2xhidden reduce cannot ride it.
+		 * Completions fire in ordinal order, reproducing the previous
+		 * single-completion PartialAdd sequence exactly. */
+		{
+			const uint32_t op_count =
+				(phase == 1u && segments == 2u) ? 2u : 1u;
+			for ( uint32_t op = 0u; op < op_count; ++op )
+			{
+				uint16_t *segment = state->fused_device +
+					(op == 0u ? 0u : elements);
+				SparkK3RunnerTpContext *completion_context =
+					K3RunnerTpContextAcquire(state);
+				if ( completion_context == 0 )
+					return;
+				completion_context->owner = state;
+				completion_context->fused = segment;
+				completion_context->buffers = b;
+				completion_context->stream = stream;
+				completion_context->rows = rows;
+				completion_context->boundary = (op == 0u) ? boundary : 0u;
+				completion_context->segments = 1u;
+				completion_context->phase = phase;
+				completion_context->gate_up_elements = 0u;
+				SparkTpDeviceCollectiveSubmission submission;
+				memset(&submission, 0, sizeof(submission));
+				submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+				submission.descriptor_bytes = sizeof(submission);
+				submission.slot_index = 0u;
+				submission.active_sequence_count = rows;
+				submission.logical_sequence_count =
+					state->logical_sequence_count;
+				submission.flags =
+					SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+				submission.ordinal = state->tp_next_ordinal++;
+				submission.local_device = segment;
+				submission.full_device = segment;
+				submission.cuda_stream = stream;
+				submission.completion_function = K3RunnerTpCompletion;
+				submission.completion_context = completion_context;
+				SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+					&submission,
+					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+			}
+		}
 		return;
 	}
 	if ( state->collective_created != 0 )
@@ -1071,6 +1104,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( configuration->device_collective != 0 )
 	{
+		/* Width contract (cold16): the hidden collective must be exactly
+		 * K3_HIDDEN wide - every ALL_REDUCE moves rows x this width from
+		 * the submitted device pointer, so a mismatch is memory corruption
+		 * or a silent wrong-extent reduce, not a slowdown. */
+		if ( configuration->device_collective->local_hidden_dimension !=
+			K3_HIDDEN )
+		{
+			fprintf(stderr, "sparkpipe_k3: device collective width %u != "
+				"K3_HIDDEN %u (cold16 width contract)\n",
+				configuration->device_collective->local_hidden_dimension,
+				K3_HIDDEN);
+			{ SparkK3StageRunnerDestroy(runner); return SPARK_STATUS_INVALID_ARGUMENT; }
+		}
 		state->fused_rows = configuration->max_input_row_count;
 		cudaMalloc(&state->fused_device,
 			(uint64_t)state->fused_rows * K3_TOP_K *
@@ -1094,6 +1140,41 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(
 				&state->device_collective,
+				(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
+				0u,0u,0u,0u);
+		if ( status != SPARK_STATUS_OK )
+			{ SparkK3StageRunnerDestroy(runner); return status; }
+	}
+	if ( configuration->device_collective_wide != 0 )
+	{
+		if ( configuration->device_collective_wide->local_hidden_dimension !=
+			K3_RUNNER_GATE_UP_WIDTH )
+		{
+			fprintf(stderr, "sparkpipe_k3: wide device collective width %u != "
+				"gate_up %u (cold16 width contract)\n",
+				configuration->device_collective_wide->local_hidden_dimension,
+				K3_RUNNER_GATE_UP_WIDTH);
+			{ SparkK3StageRunnerDestroy(runner); return SPARK_STATUS_INVALID_ARGUMENT; }
+		}
+		SparkTpDeviceCollectiveConfig wide_config =
+			*configuration->device_collective_wide;
+		if ( wide_config.backend_kind ==
+			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
+		{
+			wide_config.combine_bf16_function = K3RunnerCombineBf16;
+			wide_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
+			wide_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
+			wide_config.combine_context = state;
+		}
+		status = SparkTpDeviceCollectiveCreate(&wide_config,
+			&state->device_collective_wide);
+		if ( status != SPARK_STATUS_OK )
+			{ SparkK3StageRunnerDestroy(runner); return status; }
+		state->device_collective_wide_created = 1;
+		if ( state->lazy_pack != 0 &&
+			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+			status = SparkTpDeviceCollectivePrepareReceiveBf16(
+				&state->device_collective_wide,
 				(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
 				0u,0u,0u,0u);
 		if ( status != SPARK_STATUS_OK )
@@ -1438,6 +1519,13 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		if ( state->device_collective.implementation != 0 )
 			return;
 		state->device_collective_created = 0;
+	}
+	if ( state->device_collective_wide_created != 0 )
+	{
+		SparkTpDeviceCollectiveDestroy(&state->device_collective_wide);
+		if ( state->device_collective_wide.implementation != 0 )
+			return;
+		state->device_collective_wide_created = 0;
 	}
 	if ( SparkK3RunnerReleaseLease(state) != SPARK_STATUS_OK )
 		return;
