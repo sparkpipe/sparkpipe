@@ -2756,3 +2756,25 @@ pinning (zombie contexts from the build era; nvidia-smi shows only the
 ceiling/pool on spark3 so the engine fits, (c) worst case: move the
 rank-3 engine to a reduced-spine config. THEN the canary — 15/16 has
 been ready since tick 3; TP16 needs all 16.
+
+## 09-24 17:45 TICK 5 — spark3 SOLVED (stale driver .so — not memory); 16/16 reached; spark0 daemon cycle noted
+
+THE REAL spark3 ROOT CAUSE (memory theory DIED): with the GPU
+essentially empty (both daemons at 170MB post astra-side shared-daemon
+restart), the engine attach STILL failed rc=4 — the kernel NVRM OOM was
+an old scar, not the live cause. THE STALE DRIVER: spark3's
+stages/stage_000/model_driver.so was 0d9b1fe7 (the pre-main-merge
+spinner-fix build) while every working node runs 2b2a1724 — the
+fleet-wide binary sync raced/failed on spark3 (my build host, target of
+many overlapping operations). New adapter + stale driver = attach
+protocol mismatch → io_error. Copied the hub driver → ENGINE UP
+FIRST TRY. Evidence law again: the artifact sha, not the theory.
+
+THE ROLLING SPARK0 DAEMON: spark0's my-daemon exited gracefully once
+("spark_weightd stopped arenas=1") dragging the engine with it —
+suspect the revived spark0 agent's ensure_weightd loop (the only node
+with a live agent). Restarted daemon+engine = engines=1. WATCH it.
+
+STATE AT CLOSE: 16/16 engines up simultaneously achieved this tick
+(briefly); the API is up (apis=1). NEXT TICK: confirm 16/16 holds →
+THE CANARY → the first tok/s receipt on the private mesh → the ladder.
