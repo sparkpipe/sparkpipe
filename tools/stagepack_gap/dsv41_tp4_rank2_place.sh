@@ -3,7 +3,7 @@ set -euo pipefail
 SRC="spark8:build-stagepack-gaps/dsv41flash.mxfp4.tp4"
 DST="$HOME/sparkdata/dsv41flash.mxfp4.tp4/packs"
 mkdir -p "$DST"
-rsync -a --partial --append-verify "$SRC/rank2.spstage" "$SRC/rank2.spstage.experts" \
+rsync -a --partial --append-verify --bwlimit="${RSYNC_BWLIMIT:-150000}" "$SRC/rank2.spstage" "$SRC/rank2.spstage.experts" \
   "$SRC/rank2.spstage.receipt.json" "$SRC/rank2.spstage.sha256" "$DST/"
 cd "$DST"
 want=$(cut -d' ' -f1 rank2.spstage.sha256)

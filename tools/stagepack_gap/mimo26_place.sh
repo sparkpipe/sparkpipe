@@ -13,7 +13,7 @@ else
 fi
 DST="$HOME/sparkdata/$SET/packs"
 mkdir -p "$DST"
-rsync -a --partial --append-verify "$SRC/rank$RANK.sp" "$SRC/rank$RANK.sp.receipt.json" "$SRC/rank$RANK.sp.sha256" "$DST/"
+rsync -a --partial --append-verify --bwlimit="${RSYNC_BWLIMIT:-150000}" "$SRC/rank$RANK.sp" "$SRC/rank$RANK.sp.receipt.json" "$SRC/rank$RANK.sp.sha256" "$DST/"
 cd "$DST"
 want=$(cut -d' ' -f1 "rank$RANK.sp.sha256")
 got=$(sha256sum "rank$RANK.sp" | cut -d' ' -f1)
