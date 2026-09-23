@@ -856,7 +856,6 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 {
 	uint64_t rows = state->max_active_sequence_count;
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
-	uint64_t local_hidden_bytes = rows * (SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION / state->tp_degree) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
 	   the fused per-row [K|V] layout cannot be head-normed, roped or stored by
@@ -911,15 +910,15 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,sliding_query_bytes,&slot->attn_head_output_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,local_hidden_bytes,&slot->attn_output_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->attn_output_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,local_hidden_bytes,&slot->delta_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,mlp_gate_up_bytes,&slot->mlp_gate_up_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,local_hidden_bytes,&slot->mlp_down_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->mlp_down_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,local_hidden_bytes,&slot->branch_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->branch_bf16);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
 		if ( status == SPARK_STATUS_OK )

@@ -67,6 +67,8 @@ def profile(family, version):
         raise ValueError(f"unknown family {family}")
     for field in ("max_inflight_submissions", "max_active_sequences", "max_input_rows", "resident_sequence_capacity"):
         deployment["runtime_limits"][field] = 1
+    if family == "qwen27":
+        deployment["runtime_limits"]["max_input_rows"] = 9
     for field in ("kv_logical_page_capacity", "kv_physical_page_capacity"):
         deployment["runtime_limits"][field] = 128
     for r, (host, node, config) in enumerate(zip(nodes, deployment["nodes"], configs)):
