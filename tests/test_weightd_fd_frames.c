@@ -166,8 +166,12 @@ static void check_mesh_only_dispatch(void)
     SparkWeightdConnection connection = {0};
     SparkWeightdIpcHeader request;
     SparkWeightdIpcMeshMapResult response;
+    SparkWeightdIpcHelloAck hello;
     assert(server != 0);
-    SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_MESH_MAP,1u);
+    SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_HELLO,1u);
+    assert(SparkWeightdServerDispatch(server,&connection,(uint8_t *)&request,(uint8_t *)&hello) == sizeof(hello));
+    assert(hello.status == SPARK_STATUS_OK);
+    SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_MESH_MAP,2u);
     assert(SparkWeightdServerDispatch(server,&connection,(uint8_t *)&request,(uint8_t *)&response) == sizeof(response));
     assert(response.status == SPARK_STATUS_INVALID_ARGUMENT && connection.response_fd_count == 0u);
     connection.lane_mask = 1u;
