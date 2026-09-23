@@ -2921,3 +2921,29 @@ TTL?? — the engines survived cell1; the DAEMON died), or an external
 hygiene loop. NEXT: one instrumented cell with the supervisor logging
 PPID+signal (trap in sup.sh), stagger ≥ the 12min wire time, API only
 after 16/16 ready.
+
+## 09-23 hill-m: measurement cell era (manual-invocation contract)
+- chunked --wset LANDED (tools/weightd_warm.c): tapes >512 keys replay in 512-key
+  chunk leases; first fleet use = FULL pool tape 12,096 keys/node in 23-34s
+  (vs hours layer-by-layer). Deployed ~/wdcore/ww 16/16 (persistent home path —
+  a /tmp cleaner deleted sparkb's daemon binary mid-era).
+- THE OLD KILLER NAMED (three parts): (1) queue TTL deadline-kill — any task
+  older than ttl_minutes gets kill_remote_task(force) SIGKILL + pattern sweep
+  (results.jsonl exit 124 x3); (2) `exit N` inside a queue cmd skips the
+  wrapper's exit-file echo (bash -c 'cmd; echo $? > exit') → zombie "running"
+  task until deadline; (3) my socket-wait broke after the FIRST host (break
+  inside the per-host loop). Fixes: main()-wrapped scripts (no exit), loop
+  fixed, binary precheck, ttl per task (chain a/b/c/d).
+- Mesh+wired 16/16 proven TWICE more; transient cuda_storage status=17 on
+  spark4+7 first boot (plain relaunch boots ready — NOT the context-refusal
+  class).
+- Batch client: the DEPLOYED ~/sparkdata bin/sparkpipe_model_batch rejects BOTH
+  my batch.json and astra's Sep-22 perf batch.json (SCHEMA_ERROR 6, schema
+  generation drift — this binary was never exercised). Client built from the
+  verified tree parses the batch (requests=4; staged ~/wdcore/model_batch
+  spark0). c2 hung on a stalled ssh in the engine-TERM sweep; c3 deadline-killed
+  at 11min because engine relaunch took ~12min. Fleet left CLEAN (0 residentd
+  by exe, queue empty, daemons down).
+- NEXT: one task ttl 15 = engines on fresh mesh + VERIFIED batch binary
+  (~/wdcore/model_batch) 4x128 tokens + --profile-stages → first MEASURED
+  tok/s. Then the ladder (attribution → multi-row → one-launch → push-cells).
