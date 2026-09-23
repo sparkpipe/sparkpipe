@@ -2842,3 +2842,25 @@ had already survived one attach cycle.
 NEXT TICK: warm the fleet SEQUENTIALLY (or small batches) on the
 clean daemons → engines → canary → the first tok/s. (spark1 is already
 warm under the supervisor; the recipe is proven single-node.)
+
+## 09-24 21:30 TICK 9 — supervisor mesh hardened; 12/16 stable; a ~60s SIGTERM sweeper on 4 nodes
+
+INFRA LANDED: per-node supervisor ~/wdcore/sup.sh (cores + private
+latch 61912 + auto-restart; the old supervisors died from a cmdline-
+pattern miss — "bash ./sup.sh" not "wdcore/sup.sh"; duplicates from
+repeated starts deduped to one). Record relay re-run; hex names.
+
+STATE: 12/16 daemons WIRED (peers=15) and STABLE. FOUR NODES —
+spark0, spark8, spark9, sparka — get their daemon SIGTERMed on a ~60s
+cadence (ready → stopped arenas=0 rc=0, every minute, restart loop).
+The agents are dead (killed tick 7); the queue is empty; source
+UNIDENTIFIED — suspects: a systemd unit (sparkqueue leftovers?), astra
+tooling on those nodes, or the shared-serving stack's own hygiene
+loop. NOTE: these 4 nodes are exactly the k3-campaign-era hosts with
+per-node sparkqueue systemd units.
+
+NEXT TICK: (a) name the sweeper (auditctl or a ptrace-attached
+catcher on one victim; or check what else runs on 8 vs a stable node),
+(b) dodge it (run those daemons under different argv/cwd) OR wait it
+out, (c) stagger-warm in 2 batches of 8 (the parallel-attach crash
+suspect stands), engines, canary, first tok/s.
