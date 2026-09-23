@@ -2728,3 +2728,31 @@ NEXT TICK: (a) fix spark3 (compare its daemon lineage; worst case
 re-run its daemon + engine fresh), (b) API on rtx5090 already revived
 (apis=1) → CANARY → THE FIRST TOK/S MEASUREMENT on the private mesh,
 (c) then the ladder: attribution → multi-row → one-launch → push-cells.
+
+## 09-24 16:30 TICK 4 — spark3's holdout ROOT-CAINED: GPU NVRM out-of-memory (kernel-logged)
+
+THE CHASE (this tick, stepwise):
+- ck128 exonerated (stamp verified "already stamped rank=3").
+- My earlier daemon "restart" never happened (pgrep matched a bash
+  wrapper; the true pid survived) — killed by REAL pid, daemon fresh,
+  mesh rewired peers=15 in seconds (records persisted).
+- The engine's attach DOES reach the fresh daemon (a second
+  "lazy-attach" line per attempt) and the daemon keeps serving expert
+  acquires fine through the same socket (warm: 42 layers WARM) — the
+  attach fails on the ALLOCATION path.
+- THE KERNEL NAMES IT: NVRM Out of memory (NV_ERR_NO_MEMORY at
+  memdescAllocInternal) at exactly the engine-attempt times (08:16 ×44,
+  09:47). spark3's GPU cannot fit: shared daemon arena (20.8GB) + my
+  daemon pool (21.7GB) + engine spine/KV/context. Other nodes hold the
+  same daemon pair PLUS engines — spark3 carries extra remnant pinning
+  (it is also my build host; 08:16 was the build era).
+- ALSO FOUND: weightd_warm --wset caps at 512 keys (LEASE_GROUPS_MAX)
+  — spark3's recorded wset holds 12096 keys (the full-pool pin tape
+  from the M3 era) → "invalid wset" — the smoke set (336) is fine.
+
+NEXT TICK (spark3, pick one): (a) find and clear the remnant GPU
+pinning (zombie contexts from the build era; nvidia-smi shows only the
+2 daemons — the remnant may be kernel-level), (b) drop MY daemon's
+ceiling/pool on spark3 so the engine fits, (c) worst case: move the
+rank-3 engine to a reduced-spine config. THEN the canary — 15/16 has
+been ready since tick 3; TP16 needs all 16.
