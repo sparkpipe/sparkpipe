@@ -1300,6 +1300,9 @@ build/test_speculation_policy_pin: tests/test_speculation_policy_pin.c $(CORE_LI
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_tiktoken_compiled: tests/test_tiktoken_compiled.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_tokenizer_sidecar: tests/test_tokenizer_sidecar.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
