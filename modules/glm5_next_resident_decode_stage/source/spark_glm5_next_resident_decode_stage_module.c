@@ -649,7 +649,14 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 		for ( attach_attempt = 1u; attach_attempt <= 600u; attach_attempt++ )
 		{
 			status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
-			if ( status == SPARK_STATUS_OK || state->lazy_pack != 0 )
+			if ( status == SPARK_STATUS_OK && state->lazy_pack != 0 &&
+			     state->lazy_pack->attached.mesh_send_buffer_addr == 0u )
+			{
+				if ( attach_attempt == 1u || (attach_attempt % 10u) == 0u )
+					fprintf(stderr,"LAZY-ATTACH-MESH-PENDING n=%u\n",attach_attempt);
+				status = SPARK_STATUS_BUSY;
+			}
+			if ( status == SPARK_STATUS_OK || (state->lazy_pack != 0 && status != SPARK_STATUS_BUSY) )
 				break;
 			if ( attach_attempt == 1u || (attach_attempt % 10u) == 0u )
 				fprintf(stderr,
