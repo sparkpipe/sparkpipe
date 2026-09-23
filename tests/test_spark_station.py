@@ -99,6 +99,25 @@ class StationTests(unittest.TestCase):
             with self.assertRaisesRegex(station.StationError,'stop all'):station.mesh(fixture(),exchange=True)
             ssh.assert_not_called()
 
+    def test_recovery_does_not_touch_active_jobs(self):
+        s=fixture();s['core_release']={}
+        with patch.object(station,'queue',return_value='{"active":["build"],"persistent":[]}'),patch.object(station,'stop') as stop:
+            with self.assertRaisesRegex(station.StationError,'active queue jobs'):station.recover_core(s)
+            stop.assert_not_called()
+
+    def test_recovery_verifies_then_stops_models_before_daemons(self):
+        s=fixture();s['core_release']=dict(root='/core/{host}',manifest_sha256={h:'digest' for h in s['weightd']})
+        events=[]
+        def ssh(host,args):events.append((args[3],host));return ''
+        def queue(s,*args):
+            events.append(('queue',args[0]))
+            return '{"active":[],"persistent":[]}'
+        with patch.object(station,'verify_manifest',side_effect=lambda *a:events.append(('verify',a[0]))),patch.object(station,'stop',side_effect=lambda *a:events.append(('model-stop',a[1]))),patch.object(station,'ssh',side_effect=ssh),patch.object(station,'queue',side_effect=queue),patch.object(station,'tracked',return_value=set()),patch.object(station,'mesh',side_effect=lambda *a,**k:events.append(('mesh',True))):
+            station.recover_core(s)
+        model=events.index(('model-stop','one'))
+        self.assertTrue(all(events.index(('verify',host))<model<events.index(('stop',host))<events.index(('start',host)) for host in s['weightd']))
+        self.assertEqual(events[-1],('mesh',True))
+
     def test_stop_only_untracks_its_own_units(self):
         s=fixture()
         with patch.object(station,'systemctl') as ctl,patch.object(station,'tracked',return_value={'persistent:spark0:system:sparkpipe-one.service','persistent:spark0:system:sparkpipe-other.service'}),patch.object(station,'queue') as queue:

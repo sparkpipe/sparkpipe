@@ -183,6 +183,41 @@ def stop(station, family):
         raise StationError("stop incomplete; reservations retained: " + "; ".join(errors))
 
 
+def verify_manifest(host, root, expected):
+    manifest = ssh(host, ["cat", root + "/SHA256SUMS"])
+    if hashlib.sha256(manifest.encode()).hexdigest() != expected:
+        raise StationError(f"{host}: release manifest changed")
+    ssh(host, ["sh", "-c", "cd " + shlex.quote(root) + " && sha256sum --strict --quiet --check SHA256SUMS"])
+
+
+def recover_core(station):
+    release = station["core_release"]
+    owners = json.loads(queue(station, "doctor"))
+    if owners["active"]:
+        raise StationError("active queue jobs must finish before core recovery")
+    allowed = {model["resident_unit"] for model in station["models"].values()} | {"sparkpipe-weightd-shared.service"}
+    if any(owner["unit"] not in allowed for owner in owners["persistent"]):
+        raise StationError("another persistent service must be coordinated before core recovery")
+    hosts = sorted(station["weightd"])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda host: verify_manifest(host, release["root"].format(host=host), release["manifest_sha256"][host]), hosts))
+    for family in station["models"]:
+        stop(station, family)
+    unit = "sparkpipe-weightd-shared.service"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda host: ssh(host, ["sudo", "-n", "systemctl", "stop", unit]), hosts))
+    known = tracked(station)
+    for host in hosts:
+        owner = f"persistent:{host}:system:{unit}"
+        if owner in known:
+            queue(station, "untrack", "--id", owner)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda host: ssh(host, ["sudo", "-n", "systemctl", "start", unit]), hosts))
+    for host in hosts:
+        queue(station, "track", "--node", host, "--unit", unit, "--scope", "system", "--device-memory-mib", str(station["weightd"][host]["device_mib"]), "--ports", "61900:61900")
+    mesh(station, exchange=True)
+
+
 def start(station, family):
     model = station["models"][family]
     if "release" not in model:
@@ -190,10 +225,7 @@ def start(station, family):
     release = model["release"]
     def verify(host):
         root = release["api_root"] if host == station["api_host"] else release["resident_root"].format(host=host)
-        manifest = ssh(host, ["cat", root + "/SHA256SUMS"])
-        if hashlib.sha256(manifest.encode()).hexdigest() != release["manifest_sha256"][host]:
-            raise StationError(f"{family} on {host}: release manifest changed")
-        ssh(host, ["sh", "-c", "cd " + shlex.quote(root) + " && sha256sum --strict --quiet --check SHA256SUMS"])
+        verify_manifest(host, root, release["manifest_sha256"][host])
         state = systemctl(station, model, host, "show", "-p", "ActiveState", "--value").strip()
         if state not in ("inactive", "failed"):
             raise StationError(f"{family} on {host}: {state}; stop this family before starting a release")
@@ -245,6 +277,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("plan")
     commands.add_parser("mesh-exchange")
+    commands.add_parser("recover-core")
     for name in ("status", "start", "stop", "smoke"):
         command = commands.add_parser(name)
         command.add_argument("family")
@@ -266,6 +299,8 @@ def main():
     else:
         if str(Path.home()) != station["controller_home"] or os.environ.get("SPARK_QUEUE_STATE"):
             raise StationError("run lifecycle commands on the controller with its default queue ledger")
+        if hashlib.sha256(Path(station["queue_script"]).read_bytes()).hexdigest() != station["queue_sha256"]:
+            raise StationError("pinned controller queue changed; no station changes made")
         with (Path.home() / ".sparkpipe/queue/.dispatcher-v2.lock").open("a") as lock:
             deadline = time.monotonic() + 60
             while True:
@@ -276,11 +311,13 @@ def main():
                     if time.monotonic() >= deadline:
                         raise StationError("controller dispatcher is busy; no station changes made")
                     time.sleep(.2)
-            if args.command == "mesh-exchange":
+            if args.command == "recover-core":
+                recover_core(station)
+            elif args.command == "mesh-exchange":
                 mesh(station, exchange=True)
             else:
                 {"start": start, "stop": stop}[args.command](station, args.family)
-        result = {"mesh": "ready"} if args.command == "mesh-exchange" else inspect(station, args.family)
+        result = {"mesh": "ready", "models": "stopped; start families explicitly"} if args.command == "recover-core" else {"mesh": "ready"} if args.command == "mesh-exchange" else inspect(station, args.family)
     print(json.dumps(result, indent=2))
 
 

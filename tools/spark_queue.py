@@ -592,7 +592,7 @@ def cmd_sync(args):
     nodes = args.nodes.split(",")
     if len(set(nodes)) != len(nodes) or any(not re.fullmatch(r"spark[0-9a-f]", n) for n in nodes):
         raise SystemExit("invalid nodes")
-    root = Path(__file__).resolve().parents[1]
+    root = Path(args.repo).resolve() if getattr(args, "repo", None) else Path(__file__).resolve().parents[1]
     def git(*argv):
         return subprocess.check_output(["git", "-C", str(root), *argv], text=True).strip()
     sha = git("rev-parse", "--verify", "--end-of-options", args.ref + "^{commit}")
@@ -699,6 +699,7 @@ def main():
     a.add_argument("--ports", action="append", default=[])
     a.set_defaults(fn=cmd_preflight)
     a = sub.add_parser("sync")
+    a.add_argument("--repo", type=Path, help="source checkout when using a pinned controller queue")
     a.add_argument("--id", required=True)
     a.add_argument("--nodes", required=True)
     a.add_argument("--ref", default="HEAD", help="Local commit or branch to test; defaults to committed HEAD")

@@ -46,7 +46,7 @@ class QueueTests(unittest.TestCase):
             return self.q.subprocess.CompletedProcess(command, 0)
         output = io.StringIO()
         with patch.object(self.q, "__file__", str(repository / "tools/spark_queue.py")), patch.object(self.q.subprocess, "run", side_effect=transfer), patch.object(self.q, "ssh", return_value=(0, "")) as remote, contextlib.redirect_stdout(output):
-            self.q.cmd_sync(argparse.Namespace(id="pr-test", nodes="spark0", ref=source_ref))
+            self.q.cmd_sync(argparse.Namespace(id="pr-test", nodes="spark0", ref=source_ref, repo=repository))
         receipt = json.loads(output.getvalue())
         self.assertEqual(receipt["git_commit"], expected)
         self.assertEqual(receipt["source_ref"], source_ref)
