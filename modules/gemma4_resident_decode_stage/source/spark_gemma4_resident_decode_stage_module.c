@@ -111,7 +111,6 @@ typedef struct SparkGemma4ModuleState
 	atomic_ullong tokens_emitted;
 	void *sliding_kv_pool_bf16;
 	void *full_kv_pool_bf16;
-	void *kv_access_error;
 	uint64_t sliding_kv_pool_bytes;
 	uint64_t full_kv_pool_bytes;
 	uint32_t sliding_kv_heads_per_rank;
@@ -850,8 +849,6 @@ static SparkStatus SparkGemma4ModuleAllocatePools(SparkGemma4ModuleState *state)
 	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->sliding_kv_pool_bytes,&state->sliding_kv_pool_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->full_kv_pool_bytes,&state->full_kv_pool_bf16);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),&state->kv_access_error);
 	return(status);
 }
 
@@ -1128,9 +1125,9 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->full_key_bf16,slot->row_positions_u32,rows,kv_per_rank,&state->full_rope);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchKvStoreFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->full_key_bf16,slot->full_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows);
+			error = SparkGemma4LaunchKvStoreFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_key_bf16,slot->full_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchAttentionDecodeFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->full_query_bf16,slot->row_sequences_u32,slot->context_lengths,query_heads,slot->attn_head_output_bf16,rows);
+			error = SparkGemma4LaunchAttentionDecodeFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_query_bf16,slot->row_sequences_u32,slot->context_lengths,query_heads,slot->attn_head_output_bf16,rows);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
 	}
@@ -1163,9 +1160,9 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchSlidingWindowPositions(stream,slot->row_sequences_u32,slot->context_lengths,slot->row_positions_u32,rows,slot->window_positions_u32);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->sliding_kv_bf16,slot->sliding_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
+			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_kv_bf16,slot->sliding_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,state->kv_access_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
+			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
 	}
@@ -1398,6 +1395,15 @@ static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, Spar
 	}
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->argmax_token_ids,rows);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error == cudaSuccess && slot->host_frame_error[0] != 0u )
+	{
+		fprintf(stderr,"%s frame_error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n",SPARK_GEMMA4_MODULE_TAG,slot->host_frame_error[0],slot->host_frame_error[1],slot->host_frame_error[2],slot->host_frame_error[3],slot->host_frame_error[4],slot->host_frame_error[5]);
+		return(cudaErrorInvalidValue);
+	}
 	if ( error == cudaSuccess && frame->buffer_count >= 2u && frame->buffers[1].address != 0 )
 		error = cudaMemcpyAsync(frame->buffers[1].address,slot->argmax_token_ids + first_row,copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
