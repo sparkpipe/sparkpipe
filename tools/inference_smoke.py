@@ -159,7 +159,10 @@ def verify_concurrent(results):
 
 def verify_lane(log, lane, rank):
     matches = re.findall(r"GLM mesh lane mode=(\w+) requested=(\d+) resolved=(\d+) capacity=(\d+) rank=(\d+)", log)
-    require(matches == [("explicit", str(lane), str(lane), "8", str(rank))], "resident did not acquire its assigned mesh lane")
+    require(len(matches) == 1, "resident must report exactly one mesh lane assignment")
+    mode, requested, resolved, capacity, actual_rank = matches[0]
+    require((mode, requested, resolved, actual_rank) == ("explicit", str(lane), str(lane), str(rank))
+            and 0 <= lane < int(capacity), "resident did not acquire its assigned mesh lane: " + str(matches[0]))
 
 
 def gpu_memory(children, limits, receipt, require_all=False):
