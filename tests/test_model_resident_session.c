@@ -1,9 +1,22 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <cuda_runtime_api.h>
+
+static uint32_t TestStreamCalls;
+static uint32_t TestStreamFailure;
+static cudaError_t TestCreateStream(cudaStream_t *stream,unsigned int flags)
+{
+	TestStreamCalls++;
+	if ( TestStreamCalls == TestStreamFailure )
+		return(cudaErrorMemoryAllocation);
+	return(cudaStreamCreateWithFlags(stream,flags));
+}
 
 #define main SparkModelResidentdProgramMain
+#define cudaStreamCreateWithFlags TestCreateStream
 #include "../node/model_residentd.c"
+#undef cudaStreamCreateWithFlags
 #undef main
 
 typedef struct TestSession
@@ -234,8 +247,41 @@ static void TestTcpOptions(void)
 	close(fd);
 }
 
+static void TestCudaStartupFailureNamesStream(void)
+{
+	for (uint32_t failing=1u; failing<=2u; failing++)
+	{
+		SparkModelResidentdRuntime runtime;
+		FILE *log = tmpfile();
+		int saved = dup(STDERR_FILENO);
+		char text[1024] = {0};
+		assert(log != 0 && saved >= 0);
+		memset(&runtime,0,sizeof(runtime));
+		runtime.rank_plan.rank_index = 4u;
+		runtime.rank_plan.stage_index = 4u;
+		TestStreamCalls = 0u;
+		TestStreamFailure = failing;
+		assert(dup2(fileno(log),STDERR_FILENO) >= 0);
+		assert(SparkModelResidentdAllocateCuda(&runtime,SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST) == SPARK_STATUS_INTERNAL_ERROR);
+		fflush(stderr);
+		assert(dup2(saved,STDERR_FILENO) >= 0);
+		close(saved);
+		rewind(log);
+		assert(fread(text,1,sizeof(text)-1u,log) > 0u);
+		fclose(log);
+		assert(strstr(text,failing == 1u ? "stream=execution" : "stream=transport") != 0);
+		assert(strstr(text,"rank=4 stage=4 cuda_error=2 detail=") != 0);
+		assert(TestStreamCalls == failing);
+		assert(runtime.transport_stream == 0);
+		if ( runtime.execution_stream != 0 )
+			assert(cudaStreamDestroy(runtime.execution_stream) == cudaSuccess);
+	}
+	TestStreamFailure = 0u;
+}
+
 int main(void)
 {
+	TestCudaStartupFailureNamesStream();
 	TestPartialReplyIsNotReplayed();
 	TestResetWaitsForOwnedRoute();
 	TestFatalProgressExits();

@@ -98,3 +98,9 @@ There is no qualified one-command setup for eight different model families.
 and start a private weightd. Other families need validated shared-socket wrappers.
 The older synthetic/SSH `multi_dev_orchestrate.py` is not the queue workflow.
 See [parallel driver debugging](PARALLEL_DRIVER_DEBUG.md) for provenance/receipts.
+
+For the exact released GLM benchmark, binary verification, startup failure
+signatures and the supported replay command, see
+[release recovery](SERVING_RELEASE_RECOVERY_20260924.md). The replay needs an
+operator maintenance window because it starts private daemons; ordinary model
+development attaches to the tracked shared services above.

@@ -143,6 +143,15 @@ class SmokeReceipts(unittest.TestCase):
                     child.kill()
                     child.wait()
 
+    def test_shutdown_preserves_first_failure_and_records_exited_owner(self):
+        child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"], start_new_session=True)
+        child.wait()
+        receipt = {"status": "FAIL", "error": "residentd-6.log: CUDA context allocation failed"}
+        smoke.stop_owned([child], receipt)
+        self.assertEqual(receipt["error"], "residentd-6.log: CUDA context allocation failed")
+        self.assertEqual(receipt["status"], "FAIL")
+        self.assertEqual(receipt["shutdown_errors"], [f"owned daemon pid={child.pid}: exited before shutdown: 3"])
+
 
 class SmokePreparation(unittest.TestCase):
     def setUp(self):

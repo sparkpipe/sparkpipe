@@ -291,9 +291,15 @@ def remote_bytes(host, path):
 
 
 def stop_owned(children, receipt, timeout=10):
+    def fail(child, reason):
+        message = f"owned daemon pid={child.pid}: {reason}"
+        receipt["status"] = "FAIL"
+        receipt.setdefault("error", message)
+        receipt.setdefault("shutdown_errors", []).append(message)
+
     for child in reversed(children):
         if child.poll() is not None:
-            receipt.update(status="FAIL", error="owned daemon exited before shutdown: " + str(child.returncode))
+            fail(child, "exited before shutdown: " + str(child.returncode))
         try:
             os.killpg(child.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -302,17 +308,17 @@ def stop_owned(children, receipt, timeout=10):
             try:
                 child.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                receipt.update(status="FAIL", error="owned daemon did not drain within shutdown deadline")
+                fail(child, "did not drain within shutdown deadline")
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
             if child.returncode != 0:
-                receipt.update(status="FAIL", error="owned daemon shutdown failed: " + str(child.returncode))
+                fail(child, "shutdown failed: " + str(child.returncode))
         try:
             os.killpg(child.pid, 0)
         except ProcessLookupError:
             pass
         else:
-            receipt.update(status="FAIL", error="owned process group outlived daemon")
+            fail(child, "process group outlived daemon")
             try:
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -351,6 +357,8 @@ def run(spec):
         logs.append(log)
         child = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env | (extra or {}), start_new_session=True)
         children.append(child)
+        receipt["owned_pids"] = [child.pid for child in children]
+        receipt.setdefault("daemon_logs", {})[str(child.pid)] = name + ".log"
         return child
 
     next_sample = 0.0
@@ -358,7 +366,9 @@ def run(spec):
     def wait(check):
         nonlocal next_sample
         while time.monotonic() < deadline:
-            require(all(child.poll() is None for child in children), "owned daemon exited; inspect job logs")
+            for child in children:
+                require(child.poll() is None,
+                        f"{receipt['daemon_logs'][str(child.pid)]} pid={child.pid} exited={child.returncode}")
             if len(plans) > 1 and time.monotonic() >= next_sample:
                 gpu_memory(children, limits, receipt)
                 next_sample = time.monotonic() + 1
@@ -403,7 +413,6 @@ def run(spec):
             wait(lambda: f"model_residentd ready rank={rank} " in (root / (name + ".log")).read_text(errors="replace"))
             if plan["lane"] is not None:
                 verify_lane((root / (name + ".log")).read_text(errors="replace"), plan["lane"], rank)
-        receipt["owned_pids"] = [child.pid for child in children]
         if len(plans) > 1:
             gpu_memory(children, limits, receipt, require_all=True)
         atomic_json(root / "ready.json", {"attempt": receipt["attempt"], "rank": rank, "reference_sha256": receipt["reference_sha256"], "spec_sha256": receipt["spec_sha256"]})
