@@ -318,6 +318,23 @@ int main(void)
 	assert(library.adapter_interface.submit(adapter_state,&submission) ==
 		SPARK_STATUS_OK);
 	assert(test_state.completion_count == 2u);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	submission.row_count = submission.token_count = submission.new_token_count = submission.tokens_per_sequence = 0u;
+	submission.token_ids = submission.row_lane_indices = 0;
+	submission.row_positions = submission.row_sequence_ids = 0;
+	lanes[0].flags = lanes[1].flags = 0u;
+	for (uint32_t repeat = 0u; repeat < 2u; repeat++)
+	{
+		assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_OK);
+		assert(library.adapter_interface.prefetch(adapter_state,&submission,1u) == SPARK_STATUS_OK);
+		assert(library.adapter_interface.resolve_prefetch(adapter_state,&submission,SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
+		assert(library.adapter_interface.submit(adapter_state,&submission) == SPARK_STATUS_OK);
+		assert(test_state.completion_count == 3u + repeat);
+		assert(test_state.completion.status == SPARK_STATUS_OK);
+		assert(test_state.completion.token_count == 0u && test_state.completion.tokens_per_sequence == 0u);
+		assert(test_state.completion.completion_flags == 0u && test_state.completion.accepted_token_count == 0u);
+		assert(memcmp(&test_state.completion.residency,&submission.residency,sizeof(submission.residency)) == 0);
+	}
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);
