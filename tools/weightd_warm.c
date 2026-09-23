@@ -33,40 +33,56 @@ static int parse_positive(const char *text,uint64_t maximum,uint64_t *value)
     return errno == 0 && *end == '\0' && *value != 0u && *value <= maximum;
 }
 
-static int read_wset(const char *path,const SparkWeightdManifest *manifest,
-    SparkWeightdExpertKey *keys,uint32_t *count)
+static SparkWeightdExpertKey *read_wset(const char *path,
+    const SparkWeightdManifest *manifest,uint32_t *count)
 {
     struct stat info;
     FILE *file = fopen(path,"rb");
-    uint32_t pair[2],index;
-    int valid = 0;
+    SparkWeightdExpertKey *keys;
+    uint32_t pair[2],index,seen,pairs;
     *count = 0u;
     if ( file == 0 )
         return 0;
     if ( fstat(fileno(file),&info) != 0 || !S_ISREG(info.st_mode) ||
          info.st_size <= 0 || (uint64_t)info.st_size % sizeof(pair) != 0u ||
-         (uint64_t)info.st_size > SPARK_WEIGHTD_LEASE_GROUPS_MAX * sizeof(pair) )
-        goto done;
-    for (uint64_t offset=0u; offset<(uint64_t)info.st_size; offset+=sizeof(pair))
+         (uint64_t)info.st_size > UINT64_C(1048576) * sizeof(pair) )
+    {
+        fclose(file);
+        return 0;
+    }
+    pairs = (uint32_t)((uint64_t)info.st_size / sizeof(pair));
+    keys = (SparkWeightdExpertKey *)calloc(pairs,sizeof(*keys));
+    if ( keys == 0 )
+    {
+        fclose(file);
+        return 0;
+    }
+    for (index=0u; index<pairs; index++)
     {
         if ( fread(pair,1u,sizeof(pair),file) != sizeof(pair) ||
              SparkWeightdManifestFind(manifest,pair[0],pair[1]) == 0 )
-            goto done;
-        for (index=0u; index<*count; index++)
-            if ( keys[index].layer == pair[0] && keys[index].expert == pair[1] )
-                break;
-        if ( index == *count )
         {
-            keys[index].layer = pair[0];
-            keys[index].expert = pair[1];
+            free(keys);
+            fclose(file);
+            return 0;
+        }
+        for (seen=0u; seen<*count; seen++)
+            if ( keys[seen].layer == pair[0] && keys[seen].expert == pair[1] )
+                break;
+        if ( seen == *count )
+        {
+            keys[*count].layer = pair[0];
+            keys[*count].expert = pair[1];
             (*count)++;
         }
     }
-    valid = fgetc(file) == EOF && !ferror(file) && *count != 0u;
-done:
-    if ( fclose(file) != 0 )
-        valid = 0;
-    return valid;
+    if ( fgetc(file) != EOF || ferror(file) || *count == 0u )
+    {
+        free(keys);
+        keys = 0;
+    }
+    fclose(file);
+    return keys;
 }
 
 static int warm_keys(SparkWeightdClient *client,uint64_t generation,
@@ -336,14 +352,21 @@ int main(int argument_count,char **arguments)
                     manifest.groups[index].layer,manifest.groups[index].expert);
                 goto done;
             }
-    keys = calloc(SPARK_WEIGHTD_LEASE_GROUPS_MAX,sizeof(*keys));
-    if ( keys == 0 )
-        goto done;
-    if ( wset_path != 0 && !read_wset(wset_path,&manifest,keys,&count) )
+    if ( wset_path != 0 )
     {
-        fprintf(stderr,"weightd_warm: invalid wset %s; require 1..%u complete manifest key pairs\n",
-            wset_path,SPARK_WEIGHTD_LEASE_GROUPS_MAX);
-        goto done;
+        keys = read_wset(wset_path,&manifest,&count);
+        if ( keys == 0 )
+        {
+            fprintf(stderr,"weightd_warm: invalid wset %s; require complete manifest key pairs\n",
+                wset_path);
+            goto done;
+        }
+    }
+    else
+    {
+        keys = calloc(SPARK_WEIGHTD_LEASE_GROUPS_MAX,sizeof(*keys));
+        if ( keys == 0 )
+            goto done;
     }
     status = SparkWeightdClientConnect(arguments[1],&client,0);
     if ( status == SPARK_STATUS_OK )
@@ -357,10 +380,20 @@ int main(int argument_count,char **arguments)
     {
         struct timespec began,ended;
         uint64_t elapsed;
+        uint32_t chunk,warmed = 0u;
         (void)clock_gettime(CLOCK_MONOTONIC,&began);
         fprintf(stderr,"weightd_warm: WSET-ONE-SHOT file=%s keys=%u\n",wset_path,count);
-        if ( !warm_keys(client,attached.arena_generation,keys,count,seconds * UINT64_C(1000000000)) )
-            goto done;
+        for (first=0u; first<count; first+=SPARK_WEIGHTD_LEASE_GROUPS_MAX)
+        {
+            chunk = count - first;
+            if ( chunk > SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+                chunk = SPARK_WEIGHTD_LEASE_GROUPS_MAX;
+            if ( !warm_keys(client,attached.arena_generation,&keys[first],chunk,
+                seconds * UINT64_C(1000000000)) )
+                goto done;
+            warmed += chunk;
+            fprintf(stderr,"weightd_warm: WSET-CHUNK warmed=%u/%u\n",warmed,count);
+        }
         (void)clock_gettime(CLOCK_MONOTONIC,&ended);
         elapsed = (uint64_t)(ended.tv_sec - began.tv_sec) * UINT64_C(1000000000) +
             (uint64_t)ended.tv_nsec - (uint64_t)began.tv_nsec;

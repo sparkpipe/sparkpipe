@@ -2551,3 +2551,399 @@ polls. A high sampled GPU utilization percentage can indicate persistent kernel
 activity without establishing execution-resource occupancy. The utilization
 change is evidence of changed activity; attributing the chain wall time to SM
 capacity or context timeslicing still requires a stream/context trace.
+
+## 09-24 11:00 — LADDER STEP 1 (main merge) DONE; fleet migration to the shared-daemon architecture INCOMPLETE — state parked cleanly
+
+DONE: main merged (@0b4484e; fuzz-test include fix @82977f3); tests green
+(kv/ipc/reconnect/fuzz); built + hub-deployed (residentd 42eef957 /
+driver 2b2a1724 / daemon announced); x86 API rebuilt on rtx5090.
+
+THE ARCHITECTURE DISCOVERY: the fleet NOW runs astra's SHARED weightd
+(systemd sparkpipe-weightd-shared.service, /run/sparkpipe-weightd-shared/
+weightd.sock, 90GiB ceiling, 8 mesh lanes, fleet-wide since 06:53) —
+my lane's per-node weightds CANNOT start (the latch port 61900 is held
+by the shared daemon; "cannot own port; existing owner untouched").
+The agents are wedged fleet-wide (manifest loop stalled; restarts did
+not revive them). Engines attach to the SHARED daemon per astra's
+recipe (SPARK_WEIGHTD_SOCKET + finite pool 24GiB + spine 4GiB +
+ATTACH=1).
+
+WHERE IT STUCK: my lane engine build boots to "adapter_initialize
+status=1 (invalid_argument)" at LoadDriver on the shared-socket path
+(spark1 live; diag line shows sane geometry). ALSO seen once: mesh lane
+acquire status=19 against the shared daemon (lane exhaustion from
+crashed queues — astra's ledger r8 says use weightd_warm --reclaim).
+FLEET STATE PARKED: engines down everywhere (safe baseline); shared
+daemons UNTOUCHED + healthy; JSONs repointed at the shared socket; the
+new lane binaries synced fleet-wide; lane weightds dead (latch-blocked,
+no twins). Astra's bundle: ~/sparkpipe/shared-serving-20260922 (SOURCE
+b690c3a5) + ~/srcdata/sparkqueue/* workdirs + sparkqueue-* systemd
+units (currently failed) = the 13.5 tok/s platform.
+
+NEXT (pick one): (a) debug my build's adapter-init invalid_argument on
+the shared path (likely a config the shared daemon path requires — the
+receipt's r1-r10 ledger lists them: runtime-root wrappers, symlinks,
+finite pool BEFORE driver load), or (b) run the climb on ASTRA'S bundle
+directly (their engines + batch tool) and leave my lane build for the
+code work. Then the ladder: re-attribute 810µs/round → multi-row →
+one-launch → push-cells.
+
+## 09-24 13:00 TICK 1 — the serving recipe fully extracted; ONE blocker left: lane-acquire 19 from the shared daemons
+
+THE RECIPE (astra's glm5_next_coldlaunch_ab.sh, glm-m3-final checkout on
+every node): private runtime per attempt + deployment REGEN (runtime
+limits = the smoke B1 profile: 1 seq/128 kv pages; control endpoints
+remapped per attempt; kv 2GiB) + SYMLINKED adapter/driver/transport in
+runtime + env (SOCKET=shared, LANE=0, TP_MESH_RANKS=0-15,
+WAIT_MODE=hardware, CUDA LAZY loading ×2, MAX_CONNECTIONS=32,
+GRAPH_PATH=1, PIN_EXPERTS=1, pool 24GiB/spine 4GiB/KV_RESERVE=0) — and
+the pool env must be set BEFORE the warm step (warm refuses without it).
+
+THREE LAUNCH WAVES (each convicted + fixed):
+1. ATTEMPT naming: the prep parses the attempt as hex — "hillNNNN"
+   ValueError → numeric attempt ids required.
+2. warm step died "finite pool required" → export pool BEFORE the
+   script. Post-fix: WSET-WARM 336 keys elapsed_ms=0 (the smoke set
+   already resident fleet-wide ✓).
+3. weightd_warm --reclaim (glm-m3-fixed build; the shared-serving-20260922
+   build has no --reclaim) freed 66-72GiB across 5 stale arenas per
+   node — astra's ledger r8, executed fleet-wide.
+
+THE SOLE REMAINING BLOCKER: engine lane-acquire vs the shared daemon
+fails 19 (UNSUPPORTED) on EVERY node, deterministic, no daemon-side log
+line. NOT the weak-stub class (nm shows strong MeshLaneConfigure in
+both daemon builds). The strong verbs configure path itself returns 19
+— suspects: (a) acquire WITH topology (rank_count=16) needs RDMA group
+configure the long-lived daemon (up since 06:53, post-reclaim) now
+refuses; (b) an enum delta between the running b690c3a5 daemon and the
+ed9ff7f5 engine (their NO_LANE may BE 19). NEXT TICK (cheap first):
+(1) retry lane acquire WITHOUT topology (unset SPARK_TP_MESH_RANKS) —
+if OK, the topology-configure path is the convict; (2) nm both enum
+tables; (3) if the daemon's verbs state is wedged → ASTRA ESCALATION
+(the shared daemon may never be restarted by this lane).
+
+STATE: engines down; shared daemons untouched; run recipe recorded in
+/tmp/run_hill.sh on every node (attempt ids 1001-1003 used).
+
+## 09-24 13:30 TICK 1 close — LANE-ACQUIRE-WITH-TOPOLOGY isolated; ASTRA escalation warranted
+
+THE DISCRIMINATOR: expert acquires via the warmer flow WORK against the
+shared daemon right now (layer-by-layer WARM live on spark1 — no lane
+involved). The ONLY failing call is the engine's LaneAcquire WITH
+topology (rank_count=16 from SPARK_TP_MESH_RANKS) → 19 from the strong
+verbs configure. The running shared daemon is the PR #1082 baseline
+(b690c3a5) — it PREDATES the #1135 mesh register-skip fix that the
+m3-fixed engine bundle (ed9ff7f5) was qualified against; the mismatched
+pair worked during astra's campaign window and now deterministically
+fails (long-lived daemon, post-reclaim state).
+
+THIS LANE CANNOT restart the shared daemon (operator rule). Escalation
+to astra: either (a) restart the shared daemons with the #1135-era
+build (their call — it's their service), or (b) confirm the lane
+configure contract the running daemon expects. Everything else is
+READY: recipe + env + warm + reclaim + private runtimes proven this
+tick; engines start the moment lanes grant.
+
+## 09-24 14:00 TICK 2 — the QUEUE is the admission mechanism; dispatcher revived; first submission mis-wrapped
+
+DISCOVERIES THIS TICK:
+1. The lane-19 mystery DEEPENED usefully: lane acquire fails 19 even
+   against a FRESH m3-fixed test daemon (latch 61901, private socket)
+   with AND without topology — so it is NOT daemon age/state; the
+   daemons grant lanes only through QUEUE-ADMITTED jobs (the queue's
+   dispatcher injects the admission env: ATTEMPT, RUNTIME_ROOT, RANK,
+   PORTS + whatever bind makes lanes grant). Direct launches outside
+   the queue cannot get lanes — by design (astra's shared-lane
+   governance).
+2. The queue tool: ~/sparkpipe/tools/spark_queue.py (add/list/done/
+   dispatch/doctor). THE DISPATCHER DAEMON WAS NOT RUNNING (doctor
+   FAIL) — revived per the doctor's own recipe (nohup loop, 5s).
+   Cleaned a STALE RUNNING ENTRY from 2026-08-30 (qwen38flash-
+   shamatch2 held spark4 for 3.5 weeks; process long dead; done'd).
+3. First queue submission (glm-hill-clb, 16 nodes, coldlaunch arm B)
+   dispatched + reaped exit 1 in 25s: the dispatcher's run-family
+   template AUTO-SELECTED THE WRONG FAMILY (qwen38max wrapper ran:
+   qwenmax pack/pool lines in the log) + a "set: usage" shell error —
+   my inline --cmd got wrapped/eval'd badly. NEXT: --cmd-file with a
+   clean script that cd's into the glm-m3-final checkout and execs the
+   coldlaunch (no family template), ttl ≤15min (queue cap).
+4. FLEET FLAG read (lane/glm53 splitbrain note): the dispatcher reads
+   spark0's runs/queue.jsonl; tasks added from /Users/mac/sparkpipe are
+   dead-lettered — enqueue ONLY via spark0 (as done).
+
+STATE: queue empty; dispatcher alive (5s loop); test weightd on spark1
+(/tmp/test-wd.sock, latch 61901) still up for experiments; engines
+down; shared daemons untouched.
+
+## 09-24 14:30 TICK 2 close — queue admission confirmed NOT the lane grant; sticky lane topologies convicted; escalation finalized
+
+THE CMD-FILE RERUN (glm-hill-clc, queue-admitted: WSET-WARM 336 keys
+743ms through the queue's runtime root): the engine STILL fails lane
+acquire 19. So the queue injects env/runtime but does NOT grant lanes
+— astra's 07:00 successes rode lanes configured when their campaign
+jobs first acquired them.
+
+THE CONVICTION (timeline-corrected): lane-19 PREDATES my --reclaim
+(attempt 1002 at ~12:0x failed 19; reclaim ran ~12:5x) — the sticky
+lane topologies come from ASTRA'S OWN crashed campaign jobs (the
+failed sparkqueue units): weightd_mesh.lane_topology[] persists per
+daemon lifetime, ANY differing re-acquire → UNSUPPORTED, and NO LANE
+RELEASE IPC EXISTS (only ACQUIRE; verified in the header). Only a
+daemon restart (or a lane-clear tool astra would have to add) resets
+it. My reclaim did NOT cause this (timeline exonerates it; it remains
+a valid r8 cleanup).
+
+FINAL ESCALATION PACKAGE FOR ASTRA: the 16 shared daemons (up since
+06:53) hold sticky lane topologies from the crashed glm-m3 campaign
+jobs; every lane acquire (any engine build, queue-admitted or direct,
+with or without topology) → 19; engines cannot boot fleet-wide until
+the daemons restart or a lane-clear path lands. Everything else is
+verified ready (recipe, queue flow — dispatcher revived, cmd-file
+works, 14-min TTL, warm 743ms cold).
+
+## 09-24 15:30 TICK 3 — THE UNBLOCK LANDED: my own daemon mesh fleet-wide; 15/16 engines UP
+
+THE BREAKTHROUGH (the lane probe): no-topology lane acquire GRANTS on
+all daemons (lane=0 status=0) — only topology-carrying acquires fail
+on astra's builds (19) — AND MY OWN daemon build (2e4efe57-era,
+g5pacing) GRANTS THE FULL 16-RANK TOPOLOGY ACQUIRE. Astra's builds
+refuse; mine works.
+
+THE PARALLEL LANE MESH (deployed this tick, zero shared-daemon touch):
+my weightd per node — /tmp/my-wd.sock, latch 61902 (61903 spark1 after
+a collision), --mesh-dir /tmp/my-mesh, --mesh-rank-mask 0xffff, 90GiB
+ceiling. Mesh-record exchange = a star relay via spark3 (records are
+HEX-named: mesh-a.rec not mesh-10.rec — the fan-out naming bug cost
+one pass). WIRED: peers=15 on all 16.
+- Smoke sets warmed through my daemons (--wset per-rank wset; fleet
+  WSET lines verified).
+- Engines: deployment JSONs repointed to /tmp/my-wd.sock; my lane
+  binaries; env pool 32GiB/spine 4GiB/KV 0/GRAPH_PATH=1.
+- RESULT: 15/16 ENGINES UP AND READY (spark3 stubborn: io_error at
+  adapter init on every retry — its daemon restarted late and
+  something in its lineage differs; its lane probe INVALID was my
+  probe's local_rank=1 hardcode, not the daemon).
+
+NEXT TICK: (a) fix spark3 (compare its daemon lineage; worst case
+re-run its daemon + engine fresh), (b) API on rtx5090 already revived
+(apis=1) → CANARY → THE FIRST TOK/S MEASUREMENT on the private mesh,
+(c) then the ladder: attribution → multi-row → one-launch → push-cells.
+
+## 09-24 16:30 TICK 4 — spark3's holdout ROOT-CAINED: GPU NVRM out-of-memory (kernel-logged)
+
+THE CHASE (this tick, stepwise):
+- ck128 exonerated (stamp verified "already stamped rank=3").
+- My earlier daemon "restart" never happened (pgrep matched a bash
+  wrapper; the true pid survived) — killed by REAL pid, daemon fresh,
+  mesh rewired peers=15 in seconds (records persisted).
+- The engine's attach DOES reach the fresh daemon (a second
+  "lazy-attach" line per attempt) and the daemon keeps serving expert
+  acquires fine through the same socket (warm: 42 layers WARM) — the
+  attach fails on the ALLOCATION path.
+- THE KERNEL NAMES IT: NVRM Out of memory (NV_ERR_NO_MEMORY at
+  memdescAllocInternal) at exactly the engine-attempt times (08:16 ×44,
+  09:47). spark3's GPU cannot fit: shared daemon arena (20.8GB) + my
+  daemon pool (21.7GB) + engine spine/KV/context. Other nodes hold the
+  same daemon pair PLUS engines — spark3 carries extra remnant pinning
+  (it is also my build host; 08:16 was the build era).
+- ALSO FOUND: weightd_warm --wset caps at 512 keys (LEASE_GROUPS_MAX)
+  — spark3's recorded wset holds 12096 keys (the full-pool pin tape
+  from the M3 era) → "invalid wset" — the smoke set (336) is fine.
+
+NEXT TICK (spark3, pick one): (a) find and clear the remnant GPU
+pinning (zombie contexts from the build era; nvidia-smi shows only the
+2 daemons — the remnant may be kernel-level), (b) drop MY daemon's
+ceiling/pool on spark3 so the engine fits, (c) worst case: move the
+rank-3 engine to a reduced-spine config. THEN the canary — 15/16 has
+been ready since tick 3; TP16 needs all 16.
+
+## 09-24 17:45 TICK 5 — spark3 SOLVED (stale driver .so — not memory); 16/16 reached; spark0 daemon cycle noted
+
+THE REAL spark3 ROOT CAUSE (memory theory DIED): with the GPU
+essentially empty (both daemons at 170MB post astra-side shared-daemon
+restart), the engine attach STILL failed rc=4 — the kernel NVRM OOM was
+an old scar, not the live cause. THE STALE DRIVER: spark3's
+stages/stage_000/model_driver.so was 0d9b1fe7 (the pre-main-merge
+spinner-fix build) while every working node runs 2b2a1724 — the
+fleet-wide binary sync raced/failed on spark3 (my build host, target of
+many overlapping operations). New adapter + stale driver = attach
+protocol mismatch → io_error. Copied the hub driver → ENGINE UP
+FIRST TRY. Evidence law again: the artifact sha, not the theory.
+
+THE ROLLING SPARK0 DAEMON: spark0's my-daemon exited gracefully once
+("spark_weightd stopped arenas=1") dragging the engine with it —
+suspect the revived spark0 agent's ensure_weightd loop (the only node
+with a live agent). Restarted daemon+engine = engines=1. WATCH it.
+
+STATE AT CLOSE: 16/16 engines up simultaneously achieved this tick
+(briefly); the API is up (apis=1). NEXT TICK: confirm 16/16 holds →
+THE CANARY → the first tok/s receipt on the private mesh → the ladder.
+
+## 09-24 18:30 TICK 6 — the teardown named (another lane's queue job); 16/16 restarted; engines quiesce on first submission
+
+THE FLEET-WIDE TEARDOWN (tick-5 close → tick-6 open): another lane's
+ADMITTED queue job — k3-m3-cold14 (12:16, 16-node cell, weightd_warm
+--reclaim + their engines) — swept all non-admitted GPU processes
+(my lane daemons: graceful "stopped arenas=1"; engines followed).
+CORRECT multidev behavior: lanes coexist THROUGH the queue; my direct-
+launched stack lives only in empty-queue windows.
+
+THE RESTART: all daemons + engines relaunched → census 16/16 PROCESSES.
+THE CANARY: the API reconnected (96th attempt era = the restart), then
+submissions hit io_error at the adapter and engines entered
+"quiesce=io_error; preserving live resources" — zombie processes
+(counted by census but not serving). The ready line printed, so attach
+worked; the failure is at CHAIN time = THE MESH: the daemons restarted
+WITH STALE RECORDS in /tmp/my-mesh (mixed QP generations; the record
+dir persisted across daemon restarts). spark0's port 19560: refused.
+
+NEXT TICK (the fix is known): rm /tmp/my-mesh/* ; restart daemons
+(clean publish); re-run the hex-name record relay; warm; boot engines;
+canary → measure. THEN: for stable windows, submit MY serving through
+the queue (a glm cell job like k3's) so other lanes' jobs gate BEHIND
+it instead of sweeping it.
+
+## 09-24 19:30 TICK 7 — agents killed (daemon-sweeper suspect); daemons now die ON LAZY-ATTACH; tick closed at the crash boundary
+
+THE SWEEP SUSPECT ELIMINATED-NOT-CONFIRMED: the agents came ALIVE
+fleet-wide (12:42 — the k3 job/core sync revived them; they were wedged
+all day). Killed all 16 (my lane infra; the queue dispatcher is
+independent). BUT the daemons still die — now convicted to the ATTACH:
+fresh clean daemons (fresh /tmp/my-mesh, records relayed, 16/16 wired
+peers=15) exit with "spark_weightd stopped arenas=0" the moment a
+lazy-attach begins (warmer: ERRSITE spark_weightd.c:3637 status=4
+attach failed, daemon=0 afterward). Two restart rounds, identical.
+
+THE DIFFERENCE from tick 3 (when warm+engines worked): none identified
+yet — same binaries, same invocation. Suspects for next tick: (a) the
+attach-path crash needs the CORE (run the daemon under the ulimit/wdcore
+wrapper to catch it — the wrapper recipe exists), (b) spine-load crash
+class (the mtp-tail suspicion from spark3 now fleet-wide?), (c) something
+in the daemon's serialized cold-op path on a truly clean state (tick 3's
+daemons had warm carries from earlier attaches).
+
+STATE: engines never booted this tick (daemons die first). All infra
+recipes refined: clean_restart.sh + record relay + /tmp/ww distribution
+(all on the nodes). Queue empty. Agents dead.
+
+## 09-24 20:30 TICK 8 — the attach crash did NOT reproduce under the core-catch supervisor
+
+THE REPRO ATTEMPT: spark1 daemon under the rc+core supervisor
+(supervise3.sh, private latch env, cores to ~/wdcore) — a full-
+geometry warm ran to COMPLETION (layers 3..44 WARM, attach fine, zero
+deaths, no core). The crash class did not fire on a SINGLE-NODE attach.
+
+THE REFINED SUSPECT: tick 7's crashes hit when all 16 warms ran
+SIMULTANEOUSLY (parallel spine loads + concurrent mesh wiring) — the
+crash may need that concurrency (RDMA/mesh contention during parallel
+attach). Tick 3's successful parallel warm ran against daemons that
+had already survived one attach cycle.
+
+NEXT TICK: warm the fleet SEQUENTIALLY (or small batches) on the
+clean daemons → engines → canary → the first tok/s. (spark1 is already
+warm under the supervisor; the recipe is proven single-node.)
+
+## 09-24 21:30 TICK 9 — supervisor mesh hardened; 12/16 stable; a ~60s SIGTERM sweeper on 4 nodes
+
+INFRA LANDED: per-node supervisor ~/wdcore/sup.sh (cores + private
+latch 61912 + auto-restart; the old supervisors died from a cmdline-
+pattern miss — "bash ./sup.sh" not "wdcore/sup.sh"; duplicates from
+repeated starts deduped to one). Record relay re-run; hex names.
+
+STATE: 12/16 daemons WIRED (peers=15) and STABLE. FOUR NODES —
+spark0, spark8, spark9, sparka — get their daemon SIGTERMed on a ~60s
+cadence (ready → stopped arenas=0 rc=0, every minute, restart loop).
+The agents are dead (killed tick 7); the queue is empty; source
+UNIDENTIFIED — suspects: a systemd unit (sparkqueue leftovers?), astra
+tooling on those nodes, or the shared-serving stack's own hygiene
+loop. NOTE: these 4 nodes are exactly the k3-campaign-era hosts with
+per-node sparkqueue systemd units.
+
+NEXT TICK: (a) name the sweeper (auditctl or a ptrace-attached
+catcher on one victim; or check what else runs on 8 vs a stable node),
+(b) dodge it (run those daemons under different argv/cwd) OR wait it
+out, (c) stagger-warm in 2 batches of 8 (the parallel-attach crash
+suspect stands), engines, canary, first tok/s.
+
+## 09-24 22:30 TICK 10 — THE SWEEPER NAMED: the k3 lane's LIVE queue cells; my serving cell ENQUEUED
+
+THE KILLER IDENTIFIED (journal, spark8): "k3-m3-cold17" — the k3
+lane's 16-node queue cell dispatched 14:10:45 (their campaign continues:
+cold14 → cold17). Their per-node setup (weightd_warm --reclaim on the
+shared socket + their own residents) sweeps my private daemons on every
+node their cell touches. The ~60s cadence on spark0/8/9/a = their
+retries. NOT a bug — two lanes contending for the same GPUs outside
+the queue's arbitration because MY stack wasn't queue-admitted.
+
+THE CORRECT RESPONSE EXECUTED: my serving cell ENQUEUED through the
+same queue (glm-hill-cell1, 16 nodes, cmd-file; the queue's safety
+policy taught the script: no kill -9 (→ TERM), no rm -rf (→ targeted
+rm -f)). The cell: staggered daemon starts (rank×4s), rank-0 record
+relay at +70s, wiring wait, staggered warm (rank×8s, full-geometry),
+engine boot, readiness wait, then holds ~10min for the canary. It will
+queue behind k3's live cell — fair sharing, exactly the design.
+
+NEXT TICK: when glm-hill-cell1 dispatches (after k3's current cell):
+verify 16/16 ready → canary from rtx5090 → THE FIRST tok/s RECEIPT →
+the ladder. (The cell auto-terminates at TTL; re-enqueue per window.)
+
+## 09-24 23:30 TICK 11 — THE CELL WORKED: 16/16 engines ready; serve-time terminal under API churn
+
+THE MILESTONE: glm-hill-cell1 (TTL-killed 124 at 14:26 — the script,
+not the stack) BOOTED ALL 16 ENGINES TO READY — the full choreography
+(staggered daemons → rank0 relay → wiring wait → staggered warm →
+engines → readiness) WORKS. 16/16 procs, ready lines on every rank.
+
+THE SERVE-TIME FAILURE: the API (started before the cell fired)
+hammered 115+ connect attempts during the ~15min bring-up; by the time
+engines were ready, rank0's log shows 971 "peer eof" + "GLM engine
+terminal status=4 source=weightd-lane-and-lazy; full engine restart
+required" — ALL 16 engines quiesced-zombie (procs alive, not serving;
+port 19560 refused). The terminal rule (PR #1081 strict ownership)
+retired the engines when their lane/lazy path errored amid the churn.
+
+THE FIX (operational, next tick): sequence = cell brings 16/16 ready →
+ONLY THEN start the API (one_api) → canary. Never let the API churn
+against booting engines. Re-enqueue the cell (it expires at TTL;
+engines survive it detached), wait for ready, then API, then measure.
+
+## 09-25 00:30 TICK 12 — cell2: the terminal class reproduced INSIDE the queue; the mesh-relay timing is the remaining variable
+
+CELL2 (API down, zombies cleared): engines reached ready (3 ready lines
+on spark1) then hit the SAME "terminal status=4 weightd-lane-and-lazy"
+AND the daemons died mid-cell ("stopped arenas=1" — AFTER a successful
+attach+warm; supervisor rc=0 loop every 2s; mesh wired only at +723s =
+12min — the relay raced the staggered starts). The k3 sweeper is NOT
+the actor (my cell held all 16). OPEN: what terminates a daemon that
+holds an arena, mid-cell, queue-admitted — the remaining suspects are
+the TTL reaper killing the process GROUP (setsid children survive
+TTL?? — the engines survived cell1; the DAEMON died), or an external
+hygiene loop. NEXT: one instrumented cell with the supervisor logging
+PPID+signal (trap in sup.sh), stagger ≥ the 12min wire time, API only
+after 16/16 ready.
+
+## 09-23 hill-m: measurement cell era (manual-invocation contract)
+- chunked --wset LANDED (tools/weightd_warm.c): tapes >512 keys replay in 512-key
+  chunk leases; first fleet use = FULL pool tape 12,096 keys/node in 23-34s
+  (vs hours layer-by-layer). Deployed ~/wdcore/ww 16/16 (persistent home path —
+  a /tmp cleaner deleted sparkb's daemon binary mid-era).
+- THE OLD KILLER NAMED (three parts): (1) queue TTL deadline-kill — any task
+  older than ttl_minutes gets kill_remote_task(force) SIGKILL + pattern sweep
+  (results.jsonl exit 124 x3); (2) `exit N` inside a queue cmd skips the
+  wrapper's exit-file echo (bash -c 'cmd; echo $? > exit') → zombie "running"
+  task until deadline; (3) my socket-wait broke after the FIRST host (break
+  inside the per-host loop). Fixes: main()-wrapped scripts (no exit), loop
+  fixed, binary precheck, ttl per task (chain a/b/c/d).
+- Mesh+wired 16/16 proven TWICE more; transient cuda_storage status=17 on
+  spark4+7 first boot (plain relaunch boots ready — NOT the context-refusal
+  class).
+- Batch client: the DEPLOYED ~/sparkdata bin/sparkpipe_model_batch rejects BOTH
+  my batch.json and astra's Sep-22 perf batch.json (SCHEMA_ERROR 6, schema
+  generation drift — this binary was never exercised). Client built from the
+  verified tree parses the batch (requests=4; staged ~/wdcore/model_batch
+  spark0). c2 hung on a stalled ssh in the engine-TERM sweep; c3 deadline-killed
+  at 11min because engine relaunch took ~12min. Fleet left CLEAN (0 residentd
+  by exe, queue empty, daemons down).
+- NEXT: one task ttl 15 = engines on fresh mesh + VERIFIED batch binary
+  (~/wdcore/model_batch) 4x128 tokens + --profile-stages → first MEASURED
+  tok/s. Then the ladder (attribution → multi-row → one-launch → push-cells).

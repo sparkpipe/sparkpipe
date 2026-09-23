@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <sys/mman.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -2055,7 +2056,6 @@ static int FuzzCudaHostAlloc(void **pointer,size_t bytes,unsigned int flags)
 #define cudaMemcpy FuzzCudaMemcpy
 #define cudaHostAlloc FuzzCudaHostAlloc
 #include "../ring/transport/tp_device_collective.c"
-#include <sys/mman.h>
 #undef calloc
 #undef cudaMalloc
 #undef cudaFree
