@@ -1633,7 +1633,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     {
         int32_t pack_fd = open(request->pack_path,O_RDONLY);
         status = pack_fd < 0 ? SPARK_STATUS_IO_ERROR : SparkWeightdPremapPool(server,arena);
-        if (status == SPARK_STATUS_OK)
+        if (status == SPARK_STATUS_OK && arena->pool_export_handle != 0)
             status = SparkWeightdPreloadSpine(server,arena,pack_fd);
         if (pack_fd >= 0)
             (void)close(pack_fd);
