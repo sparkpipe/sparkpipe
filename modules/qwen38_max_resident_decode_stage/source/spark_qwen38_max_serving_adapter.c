@@ -349,6 +349,13 @@ static SparkStatus SparkQwen38MaxServingBindFamily(
 	SparkQwen38MaxServingState *state)
 {
 	SparkStatus status;
+	/* The MTP provider descriptor requires a nonzero draft budget
+	   (SparkSpeculationProviderValidate rejects default 0); this family
+	   compiles MTP_LAYER_COUNT=0 today, so the provider and seam bind
+	   only when the MTP head exists - attach-j died at adapter_initialize
+	   binding a zero-draft provider. Unbind tolerates the null seam. */
+	if ( SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT == 0 )
+		return(SPARK_STATUS_OK);
 	status = SparkQwen38MaxServingBindMtpProvider(state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
