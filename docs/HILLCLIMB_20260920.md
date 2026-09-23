@@ -2551,3 +2551,39 @@ polls. A high sampled GPU utilization percentage can indicate persistent kernel
 activity without establishing execution-resource occupancy. The utilization
 change is evidence of changed activity; attributing the chain wall time to SM
 capacity or context timeslicing still requires a stream/context trace.
+
+## 09-24 11:00 — LADDER STEP 1 (main merge) DONE; fleet migration to the shared-daemon architecture INCOMPLETE — state parked cleanly
+
+DONE: main merged (@0b4484e; fuzz-test include fix @82977f3); tests green
+(kv/ipc/reconnect/fuzz); built + hub-deployed (residentd 42eef957 /
+driver 2b2a1724 / daemon announced); x86 API rebuilt on rtx5090.
+
+THE ARCHITECTURE DISCOVERY: the fleet NOW runs astra's SHARED weightd
+(systemd sparkpipe-weightd-shared.service, /run/sparkpipe-weightd-shared/
+weightd.sock, 90GiB ceiling, 8 mesh lanes, fleet-wide since 06:53) —
+my lane's per-node weightds CANNOT start (the latch port 61900 is held
+by the shared daemon; "cannot own port; existing owner untouched").
+The agents are wedged fleet-wide (manifest loop stalled; restarts did
+not revive them). Engines attach to the SHARED daemon per astra's
+recipe (SPARK_WEIGHTD_SOCKET + finite pool 24GiB + spine 4GiB +
+ATTACH=1).
+
+WHERE IT STUCK: my lane engine build boots to "adapter_initialize
+status=1 (invalid_argument)" at LoadDriver on the shared-socket path
+(spark1 live; diag line shows sane geometry). ALSO seen once: mesh lane
+acquire status=19 against the shared daemon (lane exhaustion from
+crashed queues — astra's ledger r8 says use weightd_warm --reclaim).
+FLEET STATE PARKED: engines down everywhere (safe baseline); shared
+daemons UNTOUCHED + healthy; JSONs repointed at the shared socket; the
+new lane binaries synced fleet-wide; lane weightds dead (latch-blocked,
+no twins). Astra's bundle: ~/sparkpipe/shared-serving-20260922 (SOURCE
+b690c3a5) + ~/srcdata/sparkqueue/* workdirs + sparkqueue-* systemd
+units (currently failed) = the 13.5 tok/s platform.
+
+NEXT (pick one): (a) debug my build's adapter-init invalid_argument on
+the shared path (likely a config the shared daemon path requires — the
+receipt's r1-r10 ledger lists them: runtime-root wrappers, symlinks,
+finite pool BEFORE driver load), or (b) run the climb on ASTRA'S bundle
+directly (their engines + batch tool) and leave my lane build for the
+code work. Then the ladder: re-attribute 810µs/round → multi-row →
+one-launch → push-cells.
