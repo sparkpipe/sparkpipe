@@ -12,7 +12,6 @@ import shlex
 import subprocess
 import sys
 import time
-import urllib.request
 
 
 class StationError(Exception):
@@ -22,7 +21,14 @@ class StationError(Exception):
 def run(argv, **kwargs):
     result = subprocess.run(argv, text=True, capture_output=True, timeout=kwargs.pop("timeout", 90), **kwargs)
     if result.returncode:
-        raise StationError(f"{argv[0]} failed ({result.returncode}): {(result.stderr or result.stdout).strip()[-3000:]}")
+        detail = (result.stderr or result.stdout).strip()
+        try:
+            report = json.loads(result.stdout)
+            if report.get("errors"):
+                detail = json.dumps(report["errors"])
+        except (ValueError, AttributeError):
+            pass
+        raise StationError(f"{argv[0]} failed ({result.returncode}): {detail[-3000:]}")
     return result.stdout
 
 
@@ -225,12 +231,12 @@ def start(station, family):
 
 def smoke(station, family):
     model = station["models"][family]
-    script = "import json,time,urllib.request; results=[]\n"
+    script = "import json,time,urllib.request,urllib.error; results=[]\n"
     script += "payload=" + repr(dict(model=model.get("model_id", family), prompt="Hello", max_tokens=2, temperature=0)) + "\n"
-    script += "for iteration in range(2):\n start=time.monotonic()\n request=urllib.request.Request('http://127.0.0.1:" + str(model["api_port"]) + "/v1/completions',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})\n with urllib.request.urlopen(request,timeout=150) as response: data=json.load(response)\n assert data.get('status')==0 and len(data.get('tokens',[]))==2, data\n results.append(dict(seconds=time.monotonic()-start,response=data))\n"
+    script += "for iteration in range(2):\n start=time.monotonic()\n request=urllib.request.Request('http://127.0.0.1:" + str(model["api_port"]) + "/v1/completions',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})\n try:\n  with urllib.request.urlopen(request,timeout=150) as response: data=json.load(response)\n except urllib.error.HTTPError as error: raise RuntimeError(str(error.code)+' '+error.read().decode()) from None\n print(json.dumps(dict(iteration=iteration,seconds=time.monotonic()-start,response=data)),flush=True)\n assert data.get('status')==0 and len(data.get('tokens',[]))==2, data\n results.append(dict(seconds=time.monotonic()-start,response=data))\n"
     script += "assert results[0]['response']['tokens']==results[1]['response']['tokens'], 'repeat prompt changed tokens'\nprint(json.dumps(results))\n"
     output = run(["ssh", "-o", "BatchMode=yes", station["api_user"] + "@" + station["api_host"], shlex.join(["python3", "-c", script])], timeout=330)
-    return {"family": family, "qualification": "two repeated two-token HTTP requests; no numerical oracle", "results": json.loads(output)}
+    return {"family": family, "qualification": "two repeated two-token HTTP requests; no numerical oracle", "results": json.loads(output.splitlines()[-1])}
 
 
 def main():

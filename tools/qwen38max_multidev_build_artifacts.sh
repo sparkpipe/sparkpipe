@@ -167,7 +167,7 @@ make -C "$CHECKOUT/modules/qwen38_max_resident_decode_stage" -j1 \
   STAGE_PACK_PATH="$PACK" \
   STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=92 \
   MTP_LAYER_COUNT=0 MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 \
-  ALLOW_UNQUALIFIED_EXECUTION=1 \
+  ALLOW_UNQUALIFIED_EXECUTION=1 TP_STANDALONE=1 \
   publish
 "$CHECKOUT/build/sparkpipe_model_compile" \
   --model "$CHECKOUT/examples/model_descriptions/qwen38_max_resident_decode_stage_firmware.json" \

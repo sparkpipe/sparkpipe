@@ -1602,3 +1602,11 @@ build/mesh_register_attach_repro: tools/mesh_register_attach_repro.c model-famil
 
 build/mesh_register_attach_repro: tools/mesh_register_attach_repro.c model-families/dsv4/src/spark_dsv4_parallel_shape.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
+
+.PHONY: test_station
+test_station: build/test_tiktoken_compiled $(RUNTIME_LIBRARY)
+	python3 tests/test_spark_station.py
+	python3 tests/test_spark_tiktoken_compile.py
+	python3 tests/test_tp_standalone_configuration.py
+	python3 tests/test_kv_failure_host.py
+	python3 tests/test_frame_error_host.py

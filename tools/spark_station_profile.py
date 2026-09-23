@@ -36,6 +36,8 @@ def profile(family, version):
         deployment = qmax.resident_deployment(root, SOCKET, 2 * GIB, 128)
         configs = [qmax.stage_config(r) for r in range(16)]
         packs = [f"/home/{h}/sparkdata/qwenmax.nvfp4.tp16/packs/qwenmax.nvfp4.tp16.rank{r:x}.sp" for r, h in enumerate(nodes)]
+        for r in range(16):
+            envs[r] = {"SPARK_QWEN38_MAX_STAGE_TP_DEGREE": "16", "SPARK_QWEN38_MAX_STAGE_TP_RANK": str(r), "SPARK_QWEN38_MAX_STAGE_TP_BACKEND_PATH": "lib/hidden_transport.so", "SPARK_QWEN38_MAX_STAGE_TP_IDENTIFIER": str(0x2000000000001), "SPARK_QWEN38_MAX_STAGE_TP_PORT_BASE": "64032", "SPARK_QWEN38_MAX_STAGE_TP_HOSTS": ",".join(f"10.10.200.{n}" for n in range(16)), "SPARK_QWEN38_MAX_STAGE_TP_LOCAL_HOST": f"10.10.200.{r}", "SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS": "30000", "SPARK_QWEN38_MAX_STAGE_TP_SESSION_PORTS": ",".join(str(0 if a == b else 24576 + 16*a+b) for a in range(16) for b in range(16))}
         deployment["eos_token_ids"] = [248046, 248044]
     elif family == "k3":
         deployment = k3.resident_deployment(root, SOCKET, 2 * GIB)
