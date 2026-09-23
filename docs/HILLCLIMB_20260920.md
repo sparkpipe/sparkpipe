@@ -2825,3 +2825,20 @@ daemons had warm carries from earlier attaches).
 STATE: engines never booted this tick (daemons die first). All infra
 recipes refined: clean_restart.sh + record relay + /tmp/ww distribution
 (all on the nodes). Queue empty. Agents dead.
+
+## 09-24 20:30 TICK 8 — the attach crash did NOT reproduce under the core-catch supervisor
+
+THE REPRO ATTEMPT: spark1 daemon under the rc+core supervisor
+(supervise3.sh, private latch env, cores to ~/wdcore) — a full-
+geometry warm ran to COMPLETION (layers 3..44 WARM, attach fine, zero
+deaths, no core). The crash class did not fire on a SINGLE-NODE attach.
+
+THE REFINED SUSPECT: tick 7's crashes hit when all 16 warms ran
+SIMULTANEOUSLY (parallel spine loads + concurrent mesh wiring) — the
+crash may need that concurrency (RDMA/mesh contention during parallel
+attach). Tick 3's successful parallel warm ran against daemons that
+had already survived one attach cycle.
+
+NEXT TICK: warm the fleet SEQUENTIALLY (or small batches) on the
+clean daemons → engines → canary → the first tok/s. (spark1 is already
+warm under the supervisor; the recipe is proven single-node.)
