@@ -2778,3 +2778,27 @@ with a live agent). Restarted daemon+engine = engines=1. WATCH it.
 STATE AT CLOSE: 16/16 engines up simultaneously achieved this tick
 (briefly); the API is up (apis=1). NEXT TICK: confirm 16/16 holds →
 THE CANARY → the first tok/s receipt on the private mesh → the ladder.
+
+## 09-24 18:30 TICK 6 — the teardown named (another lane's queue job); 16/16 restarted; engines quiesce on first submission
+
+THE FLEET-WIDE TEARDOWN (tick-5 close → tick-6 open): another lane's
+ADMITTED queue job — k3-m3-cold14 (12:16, 16-node cell, weightd_warm
+--reclaim + their engines) — swept all non-admitted GPU processes
+(my lane daemons: graceful "stopped arenas=1"; engines followed).
+CORRECT multidev behavior: lanes coexist THROUGH the queue; my direct-
+launched stack lives only in empty-queue windows.
+
+THE RESTART: all daemons + engines relaunched → census 16/16 PROCESSES.
+THE CANARY: the API reconnected (96th attempt era = the restart), then
+submissions hit io_error at the adapter and engines entered
+"quiesce=io_error; preserving live resources" — zombie processes
+(counted by census but not serving). The ready line printed, so attach
+worked; the failure is at CHAIN time = THE MESH: the daemons restarted
+WITH STALE RECORDS in /tmp/my-mesh (mixed QP generations; the record
+dir persisted across daemon restarts). spark0's port 19560: refused.
+
+NEXT TICK (the fix is known): rm /tmp/my-mesh/* ; restart daemons
+(clean publish); re-run the hex-name record relay; warm; boot engines;
+canary → measure. THEN: for stable windows, submit MY serving through
+the queue (a glm cell job like k3's) so other lanes' jobs gate BEHIND
+it instead of sweeping it.
