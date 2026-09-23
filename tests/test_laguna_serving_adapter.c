@@ -285,7 +285,12 @@ int main(void)
 		/* route-bound form: exactly the stage's own boundary side wired
 		   (the attach-011d first-decode abort rejected this form at
 		   submission validation with CAPACITY_EXCEEDED - both pipeline
-		   stages must now accept and execute it) */
+		   stages must now accept and execute it). The frame contract
+		   follows the route plan: a shipping stage carries the
+		   HIDDEN_OUTPUT flag and NO token buffer (no ids materialize
+		   off the final stage); the consuming stage carries
+		   HIDDEN_INPUT plus the WRITE buffer and emits the stage
+		   receipt token. */
 		TestLagunaServingApplyBoundaries(&submission,stage_rank,hidden_input,
 			hidden_output,boundary_bytes);
 		assert(library.adapter_interface.validate_submission(adapter_state,&submission) ==
@@ -300,8 +305,13 @@ int main(void)
 			SPARK_STATUS_OK);
 		assert(test_state.completion_count == 1u);
 		assert(test_state.completion.token_count == 1u);
-		assert(test_state.completion.token_ids[0] == (stage_rank / 8u == 0u ?
-			TEST_LAGUNA_STAGE0_TOKEN : TEST_LAGUNA_STAGE1_TOKEN));
+		if ( stage_rank / 8u != 0u )
+			assert(test_state.completion.token_ids[0] == TEST_LAGUNA_STAGE1_TOKEN);
+		/* the shipping stage completes WITHOUT a token buffer: the
+		   driver fixture rejects any WRITE buffer on a hidden_output
+		   frame, so no fresh ids materialize - the stale pending-slot
+		   value from the raw submit above is a don't-care, exactly as
+		   in production where only the final stage writes ids */
 		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 			SPARK_STATUS_OK);
 		assert(snapshot.submitted_count == 2u);

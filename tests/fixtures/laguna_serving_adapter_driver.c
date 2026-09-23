@@ -139,27 +139,40 @@ static SparkStatus TestLagunaServingDriverSubmit(
 	rows = context->batch->row_count;
 	if ( rows == 0u || rows != frame->new_token_count || frame->active_slot_count != context->batch->active_sequence_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->buffer_count != 1u || frame->buffers == 0 || frame->buffers[0].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[0].address == 0 || frame->buffers[0].bytes < (uint64_t)rows * sizeof(uint32_t) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
 	/* Two legitimate frame forms: the raw wire form (no hidden side
-	   bound yet) and the route-bound form (exactly one side, pointer
-	   paired with bytes). Both sides wired, or a bare pointer, is a
-	   broken pipeline. */
+	   bound yet, token buffer present) and the route-bound form. A
+	   bound frame ships hidden_output WITHOUT a token buffer (the final
+	   stage alone materializes tokens - the module's ValidateFrame
+	   rejects a WRITE buffer on a shipping stage); a consuming frame
+	   carries hidden_input plus the WRITE buffer. */
 	if ( (context->hidden_input_bytes == 0u) != (context->hidden_input_bf16 == 0) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->hidden_output_bytes == 0u) != (context->hidden_output_bf16 == 0) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( context->hidden_input_bytes != 0u && context->hidden_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( context->hidden_input_bytes != 0u )
-		token = TEST_LAGUNA_STAGE1_TOKEN;
-	else if ( context->hidden_output_bytes != 0u )
-		token = TEST_LAGUNA_STAGE0_TOKEN;
+	if ( (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT) != 0u != (context->hidden_input_bytes != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT) != 0u != (context->hidden_output_bytes != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->buffer_count == 0u )
+	{
+		if ( frame->buffers != 0 || context->hidden_output_bytes == 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		token = 0u;
+	}
+	else if ( frame->buffer_count == 1u && frame->buffers != 0 && frame->buffers[0].flags == SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE && frame->buffers[0].address != 0 && frame->buffers[0].bytes >= (uint64_t)rows * sizeof(uint32_t) && context->hidden_output_bytes == 0u )
+	{
+		if ( context->hidden_input_bytes != 0u )
+			token = TEST_LAGUNA_STAGE1_TOKEN;
+		else
+			token = TEST_LAGUNA_RAW_TOKEN;
+		tokens = (uint32_t *)frame->buffers[0].address;
+		for (row=0u; row<rows; row++)
+			tokens[row] = token + row;
+	}
 	else
-		token = TEST_LAGUNA_RAW_TOKEN;
-	tokens = (uint32_t *)frame->buffers[0].address;
-	for (row=0u; row<rows; row++)
-		tokens[row] = token + row;
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	driver->submitted_count++;
 	driver->completed_count++;
 	memset(&completion,0,sizeof(completion));

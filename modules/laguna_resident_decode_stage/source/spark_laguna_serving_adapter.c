@@ -708,16 +708,32 @@ static void SparkLagunaServingBuildFrame(
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
+	/* The module's ValidateFrame derives the expected flag set from the
+	   stage plan (owns_embedding/owns_final_head): a frame consuming a
+	   route-bound hidden input carries FRAME_FLAG_HIDDEN_INPUT, a frame
+	   shipping one carries FRAME_FLAG_HIDDEN_OUTPUT, and only the final
+	   stage (no hidden output to ship) materializes token ids. Derive
+	   the flags and the token buffer from the SAME bound fields so the
+	   frame the adapter builds matches the plan the route filled -
+	   011f died at ValidateFrame (schema_error): the flags were always
+	   zero and the WRITE buffer rode every stage. */
 	context->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
+	if ( submission->hidden_input_address != 0 )
+		context->flags |= SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT;
+	if ( submission->hidden_output_address != 0 )
+		context->flags |= SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT;
 	context->batch = batch;
 	context->hidden_input_bf16 = submission->hidden_input_address;
 	context->hidden_input_bytes = submission->hidden_input_bytes;
 	context->hidden_output_bf16 = submission->hidden_output_address;
 	context->hidden_output_bytes = submission->hidden_output_bytes;
 	memset(buffer,0,sizeof(*buffer));
-	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
-	buffer->address = pending->output_token_ids;
-	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
+	if ( submission->hidden_output_address == 0 )
+	{
+		buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
+		buffer->address = pending->output_token_ids;
+		buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
+	}
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
@@ -731,8 +747,8 @@ static void SparkLagunaServingBuildFrame(
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
-	frame->buffers = buffer;
-	frame->buffer_count = 1u;
+	frame->buffers = buffer->flags != 0u ? buffer : 0;
+	frame->buffer_count = buffer->flags != 0u ? 1u : 0u;
 	frame->residency = submission->residency;
 	frame->user_context = context;
 	frame->completion_function = SparkLagunaServingDriverCompletion;
