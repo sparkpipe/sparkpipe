@@ -30,15 +30,15 @@
 #   3. Runtime lib/stages artifacts resolve against the verified firmware
 #      root (tools/module_build_release.sh output: SOURCE_COMMIT + SHA256SUMS
 #      + bin/ + lib/ + stages/), the qwen38_27b lane pattern.
-#   4. IN-JOB DECODE CELL (the gemma4 T1 launch precedent): rank 0 runs the
-#      release-built sparkpipe_model_api from the same firmware root against
-#      this attempt's private deployment, drives the canonical T1 fixture
-#      (qualification/t1_reference/minimax/prompts.json) at B1 and prints
-#      DECODE-REQ receipt lines, then tears down and exits; peer ranks drain
-#      on the API health UP->DOWN transition and exit 0. The whole
-#      serve+decode cell lives inside one queue job and its TTL (the
-#      --after dependency sequences job COMPLETION, not readiness, so a
-#      cross-job handshake cannot express "decode starts when serve is up").
+#   4. IN-JOB DECODE CELL (the k3 M3 cell precedent): rank 0 drives the
+#      release-built sparkpipe_model_batch from the same firmware root with
+#      the canonical T1 fixture (qualification/t1_reference/minimax/
+#      prompts.json) at B1 and prints DECODE-BATCH receipts, then tears down
+#      and exits; peer ranks drain on the coordinator control-listener
+#      transition and exit 0. The whole serve+decode cell lives inside one
+#      queue job and its TTL (the --after dependency sequences job
+#      COMPLETION, not readiness, so a cross-job handshake cannot express
+#      "decode starts when serve is up").
 #
 # Laws inherited from the template (each paid for with an incident):
 #   - Fail closed: missing/malformed pack identity (.sha256), unreserved
@@ -311,26 +311,17 @@ if [ "$WEIGHTD_MODE" = "private" ]; then
   trap 'kill -TERM "$WEIGHTD_PID" 2>/dev/null || true' EXIT
 fi
 
-decode_cell_cleanup() {
-  kill -TERM "$API_PID" "$RESIDENTD_PID" 2>/dev/null || true
-  if [ "$WEIGHTD_MODE" = "private" ]; then
-    kill -TERM "$WEIGHTD_PID" 2>/dev/null || true
-  fi
-}
-
 # ------------------------ IN-JOB DECODE CELL (rank 0) ------------------------
-# The gemma4 T1 launch precedent (tools/gemma4_t1_launch.sh): the coordinator
-# rank runs the release-built sparkpipe_model_api from the same verified
-# firmware root against this attempt's private deployment and drives the
-# canonical T1 fixture at B1, all inside this job's cgroup and TTL. The API
-# needs the adapter descriptor, so the firmware adapter .so must dlopen in a
-# non-residentd process (self-contained since the -lcudart adapter link).
-# Peer ranks drain on the API health transition instead of idling to the
-# TTL deadline (the residentd never exits on client disconnect).
+# The k3 M3 cell precedent (tools/devcycle/batches/k3_t1_*_b1.json driven
+# through the release-built sparkpipe_model_batch): the coordinator rank runs
+# the batch binary from the same verified firmware root against this attempt's
+# private deployment with the canonical T1 fixture at B1, all inside this
+# job's cgroup and TTL. The qwen38-lineage adapter accepts the batch-tool
+# submission shape; the model_api /v1/completions prefill shape is rejected
+# (model_extension_bytes, serve-run13 evidence). Peer ranks drain on the
+# rank-0 control listener transition instead of idling to the TTL deadline
+# (the residentd never exits on client disconnect).
 
-API_PORT=$((SESSION_BASE + 62))
-reserved_ok "$API_PORT" || exit 2
-API_HOST="${HOSTS[0]}"
 RESIDENTD_LOG="$ROOT/residentd_rank$RANK.log"
 
 "$EXEC_PREFIX/bin/sparkpipe_model_residentd" \
@@ -356,10 +347,15 @@ residentd_wait_ready() {
   return 1
 }
 
+control_port_up() {
+  (exec 3<>"/dev/tcp/${HOSTS[0]}/$((CONTROL_BASE))") 2>/dev/null && { exec 3>&- 3<&-; return 0; }
+  return 1
+}
+
 if [ "$RANK" -ne 0 ]; then
   UP_SEEN=""
   for _ in $(seq 1 $((RESIDENTD_READY_TIMEOUT_S / 5))); do
-    if curl -sf --max-time 3 "http://$API_HOST:$API_PORT/health" >/dev/null 2>&1; then
+    if control_port_up; then
       UP_SEEN=1
       break
     fi
@@ -372,7 +368,7 @@ if [ "$RANK" -ne 0 ]; then
   done
   if [ -n "$UP_SEEN" ]; then
     for _ in $(seq 1 60); do
-      curl -sf --max-time 3 "http://$API_HOST:$API_PORT/health" >/dev/null 2>&1 || break
+      control_port_up || break
       sleep 5
     done
     kill -TERM "$RESIDENTD_PID" 2>/dev/null || true
@@ -381,54 +377,50 @@ if [ "$RANK" -ne 0 ]; then
     exit 0
   fi
   kill -TERM "$RESIDENTD_PID" 2>/dev/null || true
-  echo "minimax wrapper: peer rank $RANK never saw the decode cell health endpoint" >&2
+  echo "minimax wrapper: peer rank $RANK never saw the coordinator control listener" >&2
   exit 1
 fi
 
 residentd_wait_ready || { kill -TERM "$RESIDENTD_PID" 2>/dev/null || true; exit 2; }
 
-export SPARK_MODEL_API_CONNECT_DEADLINE_MS="${MINIMAX_API_CONNECT_DEADLINE_MS:-480000}"
-"$EXEC_PREFIX/bin/sparkpipe_model_api" \
-  --deployment "$ROOT/deployment.json" \
-  --runtime-root "$ROOT" \
-  --port "$API_PORT" >"$ROOT/api.log" 2>&1 &
-API_PID=$!
-trap decode_cell_cleanup EXIT
-
-HEALTHY=""
-for _ in $(seq 1 240); do
-  if curl -sf --max-time 5 "http://127.0.0.1:$API_PORT/health" >"$ROOT/health.json" 2>/dev/null; then
-    HEALTHY=1
-    break
-  fi
-  kill -0 "$API_PID" 2>/dev/null || { tail -5 "$ROOT/api.log" >&2; exit 1; }
-  sleep 5
-done
-[ -n "$HEALTHY" ] || { tail -5 "$ROOT/api.log" >&2; echo "minimax wrapper: api not healthy in 20 min" >&2; exit 1; }
-echo "DECODE-API health=$(cat "$ROOT/health.json")"
-
-python3 - "$REPO" > "$ROOT/t1-ids.$$" <<'PYIDS'
+python3 - "$REPO" "$ROOT" > "$ROOT/t1-batch.json" <<'PYBATCH'
 import json, sys
 prompts = json.load(open(sys.argv[1] + "/qualification/t1_reference/minimax/prompts.json"))["prompts"]
-for prompt in prompts:
-    print(prompt["name"] + "\t" + ",".join(str(t) for t in prompt["prompt_token_ids"]) + "\t" + str(prompt["new_tokens"]))
-PYIDS
-DECODE_RC=0
-while IFS=$'\t' read -r name ids new_tokens; do
-  [ -n "$name" ] || continue
-  began=$(date +%s%N)
-  body="$(curl -sf --max-time 120 -X POST "http://127.0.0.1:$API_PORT/v1/completions" \
-    -H 'Content-Type: application/json' \
-    -d "{\"prompt_token_ids\": [$ids], \"max_tokens\": $new_tokens}")" || {
-    echo "DECODE-REQ name=$name status=ERROR" >&2; DECODE_RC=1; continue; }
-  ended=$(date +%s%N)
-  echo "DECODE-REQ name=$name wall_ms=$(( (ended - began) / 1000000 )) body=${body:0:400}"
-done < "$ROOT/t1-ids.$$"
-rm -f "$ROOT/t1-ids.$$"
+requests = []
+for index, prompt in enumerate(prompts, 1):
+    requests.append({
+        "request_id": index,
+        "sequence_id": index,
+        "priority": 0,
+        "output_token_budget": prompt["new_tokens"],
+        "prompt_token_ids": prompt["prompt_token_ids"],
+    })
+batch = {
+    "schema_version": 1,
+    "connect_timeout_ms": 480000,
+    "request_capacity": len(requests),
+    "max_context_tokens": 128,
+    "max_prefill_rows_per_submission": 1,
+    "maximum_messages_per_rank_per_progress": 8,
+    "maximum_new_submissions_per_progress": 1,
+    "stop_token_ids": [],
+    "requests": requests,
+}
+open(sys.argv[2] + "/t1-batch.json", "w").write(json.dumps(batch, indent=1) + "\n")
+PYBATCH
 
-kill -TERM "$API_PID" 2>/dev/null || true
-wait "$API_PID" 2>/dev/null || true
+BATCH_LOG="$ROOT/batch.log"
+set +e
+"$EXEC_PREFIX/bin/sparkpipe_model_batch" \
+  --deployment "$ROOT/deployment.json" \
+  --runtime-root "$ROOT" \
+  --batch "$ROOT/t1-batch.json" >"$BATCH_LOG" 2>&1
+BATCH_RC=$?
+set -e
+sed 's/^/DECODE-BATCH /' "$BATCH_LOG"
+echo "DECODE-BATCH-RC rc=$BATCH_RC"
+
 kill -TERM "$RESIDENTD_PID" 2>/dev/null || true
 wait "$RESIDENTD_PID" 2>/dev/null || true
-echo "DECODE-DONE lane=$LANE attempt=$ATTEMPT api_port=$API_PORT mesh_lane=$MESH_LANE_ID"
-exit "$DECODE_RC"
+echo "DECODE-DONE lane=$LANE attempt=$ATTEMPT mesh_lane=$MESH_LANE_ID"
+exit "$BATCH_RC"

@@ -11258,8 +11258,8 @@
     },
     {
       "path": "tools/devcycle/run-minimax-family-job.sh",
-      "sha256": "7a5677eed79c881fe5e8f40d0510b4649bc1423b4148232dec4f1d657833a305",
-      "size_bytes": 19882
+      "sha256": "c10c5f8cf4a116a51dbcbf934e2ec927b1bbc3ca431b772f3178bcd7646a4094",
+      "size_bytes": 19137
     },
     {
       "path": "tools/devcycle/show_node_context.py",
@@ -17100,5 +17100,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80805633
+  "total_bytes": 80804888
 }
