@@ -662,6 +662,10 @@ int main(void)
 	}
 	else
 	{
+		char *coordinator_root = deployment.nodes[0].runtime_root;
+		deployment.nodes[0].runtime_root = "/remote-resident-only/runtime";
+		TestScenarioHappyPath(&deployment,runtime_root);
+		deployment.nodes[0].runtime_root = coordinator_root;
 		TestScenarioEventDeadlines(&deployment,runtime_root);
 		TestScenarioHappyPath(&deployment,runtime_root);
 		TestScenarioRankDiesMidDecode(&deployment,runtime_root);

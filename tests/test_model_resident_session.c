@@ -157,6 +157,53 @@ static void TestPartialReplyIsNotReplayed(void)
 	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
 }
 
+static void TestCompetingClientPreservesOwner(void)
+{
+	TestSession test;
+	SparkModelResidentIpcHello hello;
+	SparkModelResidentIpcHelloAck ack;
+	int owner[2],candidate[2];
+	uint8_t byte = 0;
+	TestInitialize(&test);
+	assert(socketpair(AF_UNIX,SOCK_STREAM,0,owner) == 0);
+	assert(socketpair(AF_UNIX,SOCK_STREAM,0,candidate) == 0);
+	assert(SparkModelResidentdSetNonblocking(candidate[0]) == 0);
+	test.runtime.client.fd = owner[0];
+	test.runtime.candidate_fd = candidate[0];
+	test.runtime.routes = &test.route;
+	test.runtime.route_capacity = 1u;
+	test.route.active = 1u;
+	test.route.client_generation = 7u;
+	test.slot.lease.lease_client_generation = 7u;
+	assert(SparkModelResidentdQueueRawLocked(&test.runtime,&byte,1u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcInitializeHello(&hello,1u,0u,0u,101u,
+		&test.descriptor) == SPARK_STATUS_OK);
+	assert(SparkModelResidentdAdoptCandidate(&test.runtime,&hello) == SPARK_STATUS_BUSY);
+	assert(read(candidate[1],&ack,sizeof(ack)) == sizeof(ack));
+	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),1u,0u,0u,
+		101u,&test.descriptor,&test.runtime.runtime_limits) == SPARK_STATUS_OK);
+	assert(ack.status == SPARK_STATUS_BUSY);
+	assert(read(candidate[1],&byte,1u) == 0);
+	assert(test.runtime.client.fd == owner[0]);
+	assert(test.runtime.client.generation == 7u && test.runtime.client.session_epoch == 100u);
+	assert(test.runtime.client.hello_complete == 1u && test.runtime.client.pending_client_reset == 0u);
+	assert(test.runtime.client.output_count == 1u && test.runtime.client.last_message_id == 42u);
+	assert(test.route.active == 1u && test.route.abandoned == 0u);
+	assert(test.slot.lease.lease_client_generation == 7u && test.reset_calls == 0u);
+	assert(SparkModelResidentdWriteClient(&test.runtime) == SPARK_STATUS_OK);
+	assert(read(owner[1],&byte,1u) == 1 && byte == 0u);
+	close(candidate[1]);
+	close(owner[1]);
+	SparkModelResidentdDetachClient(&test.runtime);
+	test.route.active = 0u;
+	int replacement = TestAdopt(&test);
+	assert(SparkModelResidentdProgressReset(&test.runtime) == SPARK_STATUS_OK);
+	TestReadHello(&test,replacement);
+	close(replacement);
+	SparkModelResidentdCloseClient(&test.runtime);
+	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
+}
+
 static void TestResetWaitsForOwnedRoute(void)
 {
 	TestSession test;
@@ -282,6 +329,7 @@ static void TestCudaStartupFailureNamesStream(void)
 int main(void)
 {
 	TestCudaStartupFailureNamesStream();
+	TestCompetingClientPreservesOwner();
 	TestPartialReplyIsNotReplayed();
 	TestResetWaitsForOwnedRoute();
 	TestFatalProgressExits();

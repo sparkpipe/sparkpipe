@@ -127,3 +127,33 @@ and 12.003 aggregate tokens/s. Per-instance averages varied from 1.54 to 2.42
 tokens/s because their decode intervals differed. This qualifies the bounded
 workload's correctness and completion; it does not establish a performance
 improvement over the original release.
+
+
+## Competing APIs and local adapter paths
+
+The recovery also found an unmanaged second API on Spark0, PID 1082929,
+using the old model directory, eight prefill rows and MTP. Packet capture showed
+its local 504-byte HELLO immediately making the resident close the RTX API's
+connection. The old API repeated this about every 6.4 seconds. Each takeover
+invalidated resident leases and restarted the active request. The RTX request
+timed out after 180 seconds. Stopping that exact duplicate and restarting the
+RTX API, without changing resident binaries, let three consecutive requests
+finish with all 32 tokens matching the saved reference.
+
+A resident now rejects a competing HELLO with BUSY while its current client is
+connected. It preserves the owner's socket, generation, leases, routes and
+pending replies. Reconnection remains possible after the old connection closes;
+TCP keepalive already bounds dead-peer detection. Stop the owning API explicitly
+before transferring its resident group. Multiple developers need separate
+resident groups and control ports, sharing the budgeted weight daemon. They
+must not run multiple APIs against the same resident group. A health check must
+use the owning API's HTTP endpoint, not take over its resident protocol session.
+The regression test fails on the previous code, checks that the owner still
+receives its queued reply after a competing handshake, and checks reconnection
+after owner disconnect.
+
+The batch engine also ignored its explicit local runtime root in favor of the
+remote coordinator's path. An API on RTX therefore tried to load its adapter
+from `/home/spark0/...`, even with the correct `--runtime-root`. The engine now
+uses the supplied API-local root. A regression runs the complete mocked batch
+engine with different local and remote roots; it fails before the fix.

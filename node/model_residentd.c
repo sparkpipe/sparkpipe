@@ -1783,6 +1783,23 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 		close(fd);
 		SPARK_RETURN(status);
 	}
+	if ( runtime->client.fd >= 0 )
+	{
+		SparkModelResidentIpcHelloAck ack;
+		fprintf(stderr,"model_residentd client_rejected status=BUSY rank=%u owner_session=%llu candidate_session=%llu; stop the owning API before reconnecting\n",
+			runtime->rank_plan.rank_index,
+			(unsigned long long)runtime->client.session_epoch,
+			(unsigned long long)hello->session_epoch);
+		status = SparkModelResidentIpcInitializeHelloAck(&ack,
+			hello->header.message_id,SPARK_STATUS_BUSY,
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
+			runtime->client.generation,hello->session_epoch,
+			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+		if ( status == SPARK_STATUS_OK && SparkModelResidentSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
+			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
+		close(fd);
+		return(SPARK_STATUS_BUSY);
+	}
 	SparkModelResidentdCloseClient(runtime);
 	if ( atomic_load(&runtime->failed_status) != SPARK_STATUS_OK )
 	{

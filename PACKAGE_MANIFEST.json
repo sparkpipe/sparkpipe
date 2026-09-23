@@ -1588,8 +1588,8 @@
     },
     {
       "path": "docs/SERVING_RELEASE_RECOVERY_20260924.md",
-      "sha256": "90b31b206213f75544a3acd19c99ff5a3dff283013e6a0b5923f37261280d770",
-      "size_bytes": 7939
+      "sha256": "a70f5f1d8c4e1bbe42e2b7fdfc379673ff3ee849d788cc1b27b16220ff91e334",
+      "size_bytes": 9770
     },
     {
       "path": "docs/SPARKDEV_HANDOFF_GLM53FLASH.md",
@@ -6223,8 +6223,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "1ab349a78722c16b64d6d8c8a30ea78b0acb3ffb4d39fbdb4d169472068fce12",
-      "size_bytes": 125153
+      "sha256": "f1bfb750b58ad68f8a874f6444f881b080540caddf8a4c556506253167bb607a",
+      "size_bytes": 126071
     },
     {
       "path": "node/weightd.c",
@@ -8078,8 +8078,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "6625aee05c8f1fd1400730209a51054909e68468d84bd8132adf341b57e802bd",
-      "size_bytes": 100177
+      "sha256": "034a7877f37f840636cc8452b1feb2484919c3ada8f319117706c62805ef5909",
+      "size_bytes": 99960
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -10033,8 +10033,8 @@
     },
     {
       "path": "tests/test_model_batch_engine_mock.c",
-      "sha256": "861ec53f361463c4579db560aab1774947d5fc9b8a85863dbab911999cb13541",
-      "size_bytes": 28728
+      "sha256": "244647402098db290937ccc24e094f0397289422132730e8c511b72076077808",
+      "size_bytes": 28965
     },
     {
       "path": "tests/test_model_description.c",
@@ -10088,8 +10088,8 @@
     },
     {
       "path": "tests/test_model_resident_session.c",
-      "sha256": "880cc8f480a7eff748fb20fdaacce5379b8601e7171130e51960d9ac9bab72cc",
-      "size_bytes": 11464
+      "sha256": "c40727e1d4d041b5e187e228c269219f336858c12291d2e803207b2e132d37a7",
+      "size_bytes": 13728
     },
     {
       "path": "tests/test_model_runtime.c",
@@ -17110,5 +17110,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80837206
+  "total_bytes": 80842239
 }
