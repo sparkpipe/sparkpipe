@@ -2587,3 +2587,40 @@ finite pool BEFORE driver load), or (b) run the climb on ASTRA'S bundle
 directly (their engines + batch tool) and leave my lane build for the
 code work. Then the ladder: re-attribute 810µs/round → multi-row →
 one-launch → push-cells.
+
+## 09-24 13:00 TICK 1 — the serving recipe fully extracted; ONE blocker left: lane-acquire 19 from the shared daemons
+
+THE RECIPE (astra's glm5_next_coldlaunch_ab.sh, glm-m3-final checkout on
+every node): private runtime per attempt + deployment REGEN (runtime
+limits = the smoke B1 profile: 1 seq/128 kv pages; control endpoints
+remapped per attempt; kv 2GiB) + SYMLINKED adapter/driver/transport in
+runtime + env (SOCKET=shared, LANE=0, TP_MESH_RANKS=0-15,
+WAIT_MODE=hardware, CUDA LAZY loading ×2, MAX_CONNECTIONS=32,
+GRAPH_PATH=1, PIN_EXPERTS=1, pool 24GiB/spine 4GiB/KV_RESERVE=0) — and
+the pool env must be set BEFORE the warm step (warm refuses without it).
+
+THREE LAUNCH WAVES (each convicted + fixed):
+1. ATTEMPT naming: the prep parses the attempt as hex — "hillNNNN"
+   ValueError → numeric attempt ids required.
+2. warm step died "finite pool required" → export pool BEFORE the
+   script. Post-fix: WSET-WARM 336 keys elapsed_ms=0 (the smoke set
+   already resident fleet-wide ✓).
+3. weightd_warm --reclaim (glm-m3-fixed build; the shared-serving-20260922
+   build has no --reclaim) freed 66-72GiB across 5 stale arenas per
+   node — astra's ledger r8, executed fleet-wide.
+
+THE SOLE REMAINING BLOCKER: engine lane-acquire vs the shared daemon
+fails 19 (UNSUPPORTED) on EVERY node, deterministic, no daemon-side log
+line. NOT the weak-stub class (nm shows strong MeshLaneConfigure in
+both daemon builds). The strong verbs configure path itself returns 19
+— suspects: (a) acquire WITH topology (rank_count=16) needs RDMA group
+configure the long-lived daemon (up since 06:53, post-reclaim) now
+refuses; (b) an enum delta between the running b690c3a5 daemon and the
+ed9ff7f5 engine (their NO_LANE may BE 19). NEXT TICK (cheap first):
+(1) retry lane acquire WITHOUT topology (unset SPARK_TP_MESH_RANKS) —
+if OK, the topology-configure path is the convict; (2) nm both enum
+tables; (3) if the daemon's verbs state is wedged → ASTRA ESCALATION
+(the shared daemon may never be restarted by this lane).
+
+STATE: engines down; shared daemons untouched; run recipe recorded in
+/tmp/run_hill.sh on every node (attempt ids 1001-1003 used).
