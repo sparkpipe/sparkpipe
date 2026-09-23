@@ -36,17 +36,17 @@ duplicates, 48G, reclaim candidate); dsv41flash mxfp4.tp8pp2.
 
 | # | Set | Missing | Size/node | Source (warm) | Notes |
 |---|-----|---------|-----------|---------------|-------|
-| 1 | dsv41flash.mxfp4.tp8 | spark6 rank pack (15/16) | 37G | none needed | r2 regen already staged ALL 8 ranks on spark6 `packs-r2/` (292G, rank6 has receipt+sha, stage.log 8/8 OK); fan-out was interrupted. Place rank6 -> `packs/`, then staging-clean decision. Also fixes the spark6 disk alert. |
-| 2 | lingfin.bf16.tp16 | rank7 on spark7 (15/16) | 15.7G | ling-3.0-flash-fin (245G) ✓ | spark7 ceph client degraded -> build via spark8 client, rsync to spark7. |
-| 3 | qwen27b.fp8.tp4pp4 | spark7 (15/16) | 1.7G | qwen3.8-27b-fp8 (29G) ✓ | twin qwen38_27b.tp4pp4 is 16/16; verify sha-equality first (may be a copy, not a regen). |
-| 4 | dsv41flash.mxfp4.tp4 | rank2 on spark6 (3/4 ranks: 0@spark4, 1@spark5, 3@spark7) | 71G | deepseek-v4.1-flash (476G) ✓ | lane was actively building (rank0 placed Sep 23 00:15); confirm not mid-flight before building rank2. |
+| 1 | dsv41flash.mxfp4.tp8 | ~~spark6 rank pack~~ CLOSED 2026-09-23 | 37G | none needed | rank6 placed in spark6 `packs/` (sha 58a93a87…, receipt OK); `packs-r2` 292G cleaned; spark6 back to 395G free (engram-r2 25G remains, dsv41-lane scratch). 16/16. |
+| 2 | lingfin.bf16.tp16 | rank7 on spark7 (15/16) | 15.7G | ling-3.0-flash-fin (245G) ✓ | build on spark8 TTL-killed at 10.16/15.7G (single-stream, no resume). `ling_stagepack.py --resume` landed (journal + partial, ck128 per region); build resubmits as ttl-split resume rounds on spark8, then rsync to spark7. |
+| 3 | qwen27b.fp8.tp4pp4 | ~~spark7 (15/16)~~ CLOSED 2026-09-23 | 1.7G | qwen3.8-27b-fp8 (29G) ✓ | rank07 built on spark8, placed on spark7 `packs/` (sha dc02eff9…, verify OK); identical bytes to the qwen38_27b.tp4pp4 twin — no regen needed. 16/16. |
+| 4 | dsv41flash.mxfp4.tp4 | rank2 on spark6 (3/4 ranks placed: 0@spark4, 1@spark5, 3@spark7) | 71G | deepseek-v4.1-flash (476G) ✓ | lane idle (no active build, no emit staging left). Manager green-lit rank2: build on spark8 via headers/plan/copy windows (provenance extracted from placed rank1 header: revision dba1be0a…, contract 44fcba0b…, config 8be45ce0…, recipe d58a0258…), verify + experts manifest + receipt, rsync to spark6. |
 
 ### P1 — interrupted generations (journals/staging present)
 
 | # | Set | Missing | Size/rank | Source | Notes |
 |---|-----|---------|-----------|--------|-------|
-| 5 | mimo26pro.mxfp4.tp8 | ranks 4-7 (+ all second replicas; 4/16 node-slots placed: rank0-3 on spark0-3) | 67G | mimo-v2.6-pro-rl (535G) ✓ | emit staging: spark7 271G (ranks 0-6 partial), spark4 39G, spark5 38G; `journal.jsonl` resumable; packs/ dirs empty on 4-7. |
-| 6 | mimo26flash.mxfp4.tp4 | ALL ranks (0/16 slots) | ~35-40G est | mimo-v2.6-flash-rl (166G) ✓ | emit staging only: spark7 emit/rank3 (12G partial). |
+| 5 | mimo26pro.mxfp4.tp8 | ranks 4-7 (+ all second replicas; 4/16 node-slots placed: rank0-3 on spark0-3) | 67G | mimo-v2.6-pro-rl (535G) ✓ | 2026-09-22 round failed: emit died Errno 24 (systemd soft fd limit; the packer holds one fd per output plane), replica places used the wrong source layout. Fixed (fd raise + flat `packs/` source) — chain resubmitted 2026-09-23: emits rank4-7 on spark8 (healthy ceph reader, single-reader serial), assemble, place r4-7 -> spark4-7, all 8 second replicas -> spark8-f. |
+| 6 | mimo26flash.mxfp4.tp4 | ALL ranks (0/16 slots) | ~35-40G est | mimo-v2.6-flash-rl (166G) ✓ | 2026-09-22 round never started (chained behind the pro emit failure). Resubmitted behind the pro chain: emit r0-3 on spark8, place primaries on spark0-3, 12 replicas on spark4-f. spark7 flash emit partial (12G, rank3) is dead scratch once the spark8 chain lands. |
 | 7 | qwen27b.fp8.tp4 | 8/16 nodes (present: 0,1,2,3,9,a,b,e) | 9.9G | qwen3.8-27b-fp8 (29G) ✓ | legacy qwen27b.tp4 (same fp8 set, pre-rename) is 16/16 — likely copy/rename (verify sha per rank), not regen. |
 
 ### P2 — missing ARMS (tool-supported, warm source ready, zero packs)
@@ -77,34 +77,32 @@ duplicates, 48G, reclaim candidate); dsv41flash mxfp4.tp8pp2.
   freshly sha'd Sep 23 03:31. Coordinate with the minimax lane; do not
   collide. (spark8 holds 4 ranks / 82G — 3 are staging extras.)
 
-## Fleet health / constraints (2026-09-22)
+## Fleet health / constraints (2026-09-23 update)
 
-- **spark6: 151G free (<200G threshold)** — 96% full. Cause: dsv41 tp8
-  `packs-r2` 292G + `engram-r2` 25G staging. Closing gap #1 (place rank6,
-  then clean r2 after distribution) restores ~292G. No other node below
-  200G (next-lowest free: spark0 595G).
-- Staging/internediate debris (cleanup candidates, bytes logged, per pack
-  rules "delete your scratch when packs are deployed"): spark7 mimo26pro
-  emit 271G + mimo26flash emit 12G, spark4 39G, spark5 38G, sparkc muse
-  staging ~54G, sparkd gemma4_26b staging 48G, spark8 minimax extras ~65G.
-  Owners: the respective interrupted generations (mine to finish or
-  coordinate).
-- Ceph/warm: 38T free of 59T. spark8 client HEALTHY (verified read).
-  spark1/spark3 clients dead, spark7 degraded (per operator brief);
-  laguna tool additionally warns: never run from sparke (stale negative
-  cache). One-time generation reads per the ceph law are sanctioned; single
-  reader, spark8 preferred.
-- Queue (controller mac-studio, wk-sparkpipe-queue-main-20260922): active
-  now — `minimax-l10-serve-run7` (gpu-shared, spark8-b), `gate-1169c-run`
-  (spark0); queued fleet-wide gpu-shared builds: k3-m3-cold12,
-  ling9-m3-build-r14, qmax-m3-build-r23p6, qmax-m3-attach-r13,
-  gemma4-fleet-build-13. My jobs: kind=run, --resources cpu, explicit
-  --memory-mib (packers are slab-streaming, ≤1G; MemoryMax wrap ~1.5G),
-  ttl-safe split rounds (≤15-min deadline; per-rank/per-stage/per-window
-  chunks with resumable journals).
+- **spark6: 395G free** — gap #1 closed (rank6 placed, packs-r2 292G cleaned).
+  Only engram-r2 25G staging remains (dsv41 lane scratch). No node below
+  200G free; spark7 1.1T free, spark8 1.1T free at chain start.
+- Staging/intermediate debris remaining: spark7 mimo26pro emit 268G
+  (rank0-3 full, superseded — their packs are placed) + 8G rank4-6 partials
+  + mimo26flash 12G; sparkc muse staging ~54G, sparkd gemma4_26b 48G,
+  spark8 minimax extras ~65G. The spark7 mimo staging is deleted once the
+  spark8 re-emit chain lands (scratch law).
+- Ceph/warm: reads for all gap generation go through spark8's client
+  (healthy), single-reader, serialized as queue `--after` chains. spark1/3
+  clients dead, spark7 degraded — spark7 only receives rsyncs.
+- Queue (controller mac-studio, wk-sparkpipe-queue-main-20260922): 2026-09-23
+  lane jobs are kind=run, cpu, --memory-mib 1024 (MemoryMax wrap), ttl 14m,
+  chained emit -> assemble -> place -> replica per rank (ids g5p-*, g6f-*).
+  A 2026-09-22 round failed on the fd limit + wrong replica source layout
+  (root causes fixed in tools/stagepack_gap/*, PR #1179).
 
 ## Generation inventory (running log)
 
 | When (UTC) | Gap | Action | Result |
 |---|---|---|---|
 | 2026-09-22 | — | census (this doc) | see above |
+| 2026-09-22 | #1 | place dsv41 tp8 rank6 spark6 + clean packs-r2 | rank6 sha 58a93a87… OK; 292G freed; 16/16 |
+| 2026-09-22 | #3 | build qwen27b fp8 tp4pp4 rank07 (spark8) + place spark7 | sha dc02eff9… verify OK on spark7; 16/16 |
+| 2026-09-22 | #2 | lingfin rank7 build round 1 (spark8) | TTL kill at 10.16/15.7G; superseded by --resume rounds |
+| 2026-09-22 | #5/#6 | first pro/flash chain round | failed: Errno 24 fd limit (emit), flat-layout source bug (replicas), cleaned checkout (cd fail); all dependency-cascaded |
+| 2026-09-23 | #5/#6 | runner fixes (fd, layout, sha check) + resubmit g5p-*/g6f-* chains on spark8 reader | in flight |
