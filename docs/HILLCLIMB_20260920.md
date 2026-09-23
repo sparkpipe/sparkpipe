@@ -2674,3 +2674,29 @@ DISCOVERIES THIS TICK:
 STATE: queue empty; dispatcher alive (5s loop); test weightd on spark1
 (/tmp/test-wd.sock, latch 61901) still up for experiments; engines
 down; shared daemons untouched.
+
+## 09-24 14:30 TICK 2 close — queue admission confirmed NOT the lane grant; sticky lane topologies convicted; escalation finalized
+
+THE CMD-FILE RERUN (glm-hill-clc, queue-admitted: WSET-WARM 336 keys
+743ms through the queue's runtime root): the engine STILL fails lane
+acquire 19. So the queue injects env/runtime but does NOT grant lanes
+— astra's 07:00 successes rode lanes configured when their campaign
+jobs first acquired them.
+
+THE CONVICTION (timeline-corrected): lane-19 PREDATES my --reclaim
+(attempt 1002 at ~12:0x failed 19; reclaim ran ~12:5x) — the sticky
+lane topologies come from ASTRA'S OWN crashed campaign jobs (the
+failed sparkqueue units): weightd_mesh.lane_topology[] persists per
+daemon lifetime, ANY differing re-acquire → UNSUPPORTED, and NO LANE
+RELEASE IPC EXISTS (only ACQUIRE; verified in the header). Only a
+daemon restart (or a lane-clear tool astra would have to add) resets
+it. My reclaim did NOT cause this (timeline exonerates it; it remains
+a valid r8 cleanup).
+
+FINAL ESCALATION PACKAGE FOR ASTRA: the 16 shared daemons (up since
+06:53) hold sticky lane topologies from the crashed glm-m3 campaign
+jobs; every lane acquire (any engine build, queue-admitted or direct,
+with or without topology) → 19; engines cannot boot fleet-wide until
+the daemons restart or a lane-clear path lands. Everything else is
+verified ready (recipe, queue flow — dispatcher revived, cmd-file
+works, 14-min TTL, warm 743ms cold).
