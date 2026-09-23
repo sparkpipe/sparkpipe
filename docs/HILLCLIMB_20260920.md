@@ -2700,3 +2700,31 @@ with or without topology) → 19; engines cannot boot fleet-wide until
 the daemons restart or a lane-clear path lands. Everything else is
 verified ready (recipe, queue flow — dispatcher revived, cmd-file
 works, 14-min TTL, warm 743ms cold).
+
+## 09-24 15:30 TICK 3 — THE UNBLOCK LANDED: my own daemon mesh fleet-wide; 15/16 engines UP
+
+THE BREAKTHROUGH (the lane probe): no-topology lane acquire GRANTS on
+all daemons (lane=0 status=0) — only topology-carrying acquires fail
+on astra's builds (19) — AND MY OWN daemon build (2e4efe57-era,
+g5pacing) GRANTS THE FULL 16-RANK TOPOLOGY ACQUIRE. Astra's builds
+refuse; mine works.
+
+THE PARALLEL LANE MESH (deployed this tick, zero shared-daemon touch):
+my weightd per node — /tmp/my-wd.sock, latch 61902 (61903 spark1 after
+a collision), --mesh-dir /tmp/my-mesh, --mesh-rank-mask 0xffff, 90GiB
+ceiling. Mesh-record exchange = a star relay via spark3 (records are
+HEX-named: mesh-a.rec not mesh-10.rec — the fan-out naming bug cost
+one pass). WIRED: peers=15 on all 16.
+- Smoke sets warmed through my daemons (--wset per-rank wset; fleet
+  WSET lines verified).
+- Engines: deployment JSONs repointed to /tmp/my-wd.sock; my lane
+  binaries; env pool 32GiB/spine 4GiB/KV 0/GRAPH_PATH=1.
+- RESULT: 15/16 ENGINES UP AND READY (spark3 stubborn: io_error at
+  adapter init on every retry — its daemon restarted late and
+  something in its lineage differs; its lane probe INVALID was my
+  probe's local_rank=1 hardcode, not the daemon).
+
+NEXT TICK: (a) fix spark3 (compare its daemon lineage; worst case
+re-run its daemon + engine fresh), (b) API on rtx5090 already revived
+(apis=1) → CANARY → THE FIRST TOK/S MEASUREMENT on the private mesh,
+(c) then the ladder: attribution → multi-row → one-launch → push-cells.
