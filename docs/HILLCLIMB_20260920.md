@@ -2802,3 +2802,26 @@ NEXT TICK (the fix is known): rm /tmp/my-mesh/* ; restart daemons
 canary → measure. THEN: for stable windows, submit MY serving through
 the queue (a glm cell job like k3's) so other lanes' jobs gate BEHIND
 it instead of sweeping it.
+
+## 09-24 19:30 TICK 7 — agents killed (daemon-sweeper suspect); daemons now die ON LAZY-ATTACH; tick closed at the crash boundary
+
+THE SWEEP SUSPECT ELIMINATED-NOT-CONFIRMED: the agents came ALIVE
+fleet-wide (12:42 — the k3 job/core sync revived them; they were wedged
+all day). Killed all 16 (my lane infra; the queue dispatcher is
+independent). BUT the daemons still die — now convicted to the ATTACH:
+fresh clean daemons (fresh /tmp/my-mesh, records relayed, 16/16 wired
+peers=15) exit with "spark_weightd stopped arenas=0" the moment a
+lazy-attach begins (warmer: ERRSITE spark_weightd.c:3637 status=4
+attach failed, daemon=0 afterward). Two restart rounds, identical.
+
+THE DIFFERENCE from tick 3 (when warm+engines worked): none identified
+yet — same binaries, same invocation. Suspects for next tick: (a) the
+attach-path crash needs the CORE (run the daemon under the ulimit/wdcore
+wrapper to catch it — the wrapper recipe exists), (b) spine-load crash
+class (the mtp-tail suspicion from spark3 now fleet-wide?), (c) something
+in the daemon's serialized cold-op path on a truly clean state (tick 3's
+daemons had warm carries from earlier attaches).
+
+STATE: engines never booted this tick (daemons die first). All infra
+recipes refined: clean_restart.sh + record relay + /tmp/ww distribution
+(all on the nodes). Queue empty. Agents dead.
