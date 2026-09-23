@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-_TOOLS = Path(__file__).resolve().parents[1] / "tools"
+_TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_TOOLS))
 import mimo26_stagepack as m  # noqa: E402
 
