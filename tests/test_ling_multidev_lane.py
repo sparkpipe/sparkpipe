@@ -221,6 +221,55 @@ def main() -> int:
     check(lane.MESH_RANKS == ",".join(str(i) for i in range(16)), failures,
           "identity mesh permutation")
 
+    # Manifest-derived spine budget: replicates build_spine exactly
+    # (gap compaction with offset-derived 256-byte alignment), so the
+    # lazy attach's (allocation + 255) check can never be surprised by a
+    # MiB-rounded estimate (the 625,519,384 vs 625,575,424 incident).
+    def synthetic_pack(directory, name, pack_bytes, ranges):
+        base = Path(directory) / name
+        with open(base, "wb") as handle:
+            handle.truncate(pack_bytes)
+        with open(str(base) + ".experts", "wb") as handle:
+            handle.write(struct.pack("<IIII", 0x58504557, 2, len(ranges), 0))
+            for layer, expert, offset, size in ranges:
+                handle.write(struct.pack("<IIIIQQ", layer, expert, 1, 0,
+                                         offset, size))
+                handle.write(b"\0" * 16)
+        return str(base)
+
+    with tempfile.TemporaryDirectory() as spine_tmp:
+        aligned = synthetic_pack(spine_tmp, "aligned.sp", 4096,
+                                 [(0, 0, 512, 1024), (1, 0, 2048, 512)])
+        check(lane.manifest_spine_allocation(aligned) == 2560, failures,
+              "aligned gaps: spine allocation 512+512+1536")
+        check(lane.spine_budget(aligned) ==
+              2560 + lane.SPINE_BUDGET_MARGIN_BYTES, failures,
+              "spine budget = allocation + margin")
+        padded = synthetic_pack(spine_tmp, "padded.sp", 512,
+                                [(0, 0, 100, 100), (1, 0, 300, 100)])
+        check(lane.manifest_spine_allocation(padded) == 512, failures,
+              "offset-derived alignment: 100+100pad+100+100pad+112")
+        for broken in (
+                synthetic_pack(spine_tmp, "zero.sp", 512, [(0, 0, 100, 0)]),
+                synthetic_pack(spine_tmp, "outside.sp", 512,
+                               [(0, 0, 400, 200)])):
+            try:
+                lane.manifest_spine_allocation(broken)
+                check(False, failures, f"must fail closed: {broken}")
+            except (SystemExit, OSError, struct.error):
+                check(True, failures, "")
+        truncated = Path(spine_tmp) / "truncated.sp"
+        with truncated.open("wb") as handle:
+            handle.truncate(512)
+        with open(str(truncated) + ".experts", "wb") as handle:
+            handle.write(struct.pack("<IIII", 0x58504557, 2, 1, 0))
+        try:
+            lane.manifest_spine_allocation(str(truncated))
+            check(False, failures, "must fail closed: truncated records")
+        except (SystemExit, OSError, struct.error):
+            check(True, failures, "")
+
+
     # Generator CLI: --check reproduces byte for byte; bad inputs fail closed.
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "gen"

@@ -110,6 +110,9 @@ def main():
     print(f"smoke experts     : {len(experts)} experts, {expert_bytes/MIB:.1f} MiB full model")
     print(f"per-node experts  : {per_node_experts/MIB:.1f} MiB")
     print(f"per-node spine    : {spine/MIB:.1f} MiB (full-resolution, quality law)")
+    print(f"per-node spine    : {spine} bytes exact (budgets consume BYTES, "
+          f"never the MiB display; the lazy attach checks the pack "
+          f"manifest allocation against the byte budget)")
     print(f"per-node raw      : {per_node_raw/MIB:.1f} MiB -> x{MARGIN} margin")
     print(f"DEVICE_MIB        : {device_mib}")
     print(f"TOTAL_MIB         : {total_mib}")

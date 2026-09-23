@@ -74,6 +74,7 @@ import argparse
 import json
 import os
 import re
+import struct
 import sys
 
 LANE = 9
@@ -255,6 +256,61 @@ def budgets(source: str) -> int:
     return 0
 
 
+MANIFEST_MAGIC = 0x58504557
+MANIFEST_VERSION = 2
+MANIFEST_RECORD_BYTES = 48
+SPINE_BUDGET_MARGIN_BYTES = 4 * 1024 * 1024
+
+
+def manifest_spine_allocation(pack_base: str) -> int:
+    """Replicate the weightd manifest builder's spine allocation exactly.
+
+    runtime/spark_weightd_manifest.c build_spine: the spine spans are the
+    byte gaps between the routed-expert ranges of <pack_base>.experts
+    (header magic/version/count, then 48-byte offset-sorted records),
+    compacted with 256-byte alignment derived from the file offsets. The
+    lazy attach checks (allocation + 255) against the spine budget, so
+    the budget must come from THIS value, never from a MiB-rounded
+    estimate.
+    """
+    experts = pack_base + ".experts"
+    with open(experts, "rb") as handle:
+        head = handle.read(16)
+        if len(head) != 16:
+            raise SystemExit(f"manifest header short: {experts}")
+        magic, version, count, _reserved = struct.unpack("<IIII", head)
+        if magic != MANIFEST_MAGIC or version != MANIFEST_VERSION or count == 0:
+            raise SystemExit(f"manifest is not v2-with-records: {experts}")
+        ranges = []
+        for _ in range(count):
+            record = handle.read(MANIFEST_RECORD_BYTES)
+            if len(record) != MANIFEST_RECORD_BYTES:
+                raise SystemExit(f"manifest record short: {experts}")
+            offset, size = struct.unpack("<QQ", record[16:32])
+            if size == 0:
+                raise SystemExit(f"manifest zero-byte range: {experts}")
+            ranges.append((offset, offset + size))
+    pack_bytes = os.path.getsize(pack_base)
+    for start, end in ranges:
+        if start >= pack_bytes or end > pack_bytes:
+            raise SystemExit(f"manifest range outside the pack: {experts}")
+    ranges.sort()
+    cursor = 0
+    allocation = 0
+    for index in range(count + 1):
+        end = ranges[index][0] if index < count else pack_bytes
+        if end > cursor:
+            padding = (cursor - allocation) & 255
+            allocation += padding + (end - cursor)
+        if index < count:
+            cursor = ranges[index][1]
+    return allocation
+
+
+def spine_budget(pack_base: str) -> int:
+    return manifest_spine_allocation(pack_base) + SPINE_BUDGET_MARGIN_BYTES
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runtime-root",
@@ -270,7 +326,14 @@ def main() -> int:
                         help="write the smoke-expert .wset and exit")
     parser.add_argument("--budgets", metavar="MANIFEST",
                         help="print 'expert_pool_bytes spine_bytes' "
-                             "(per-node, tp-sharded) and exit")
+                             "estimated from the smoke manifest (advisory; "
+                             "the spine budget must come from "
+                             "--spine-budget)")
+    parser.add_argument("--spine-budget", metavar="PACK_BASE",
+                        help="print the spine budget derived from the "
+                             "placed pack's .experts manifest (the exact "
+                             "allocation the lazy attach checks, plus a "
+                             "4 MiB margin) and exit")
     parser.add_argument("--wset-source", default=os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "model-families", "ling", "smoke_experts.json"))
@@ -281,6 +344,9 @@ def main() -> int:
 
     if arguments.budgets:
         return budgets(arguments.budgets)
+    if arguments.spine_budget:
+        print(spine_budget(arguments.spine_budget))
+        return 0
     if arguments.emit_wset:
         return emit_wset(arguments.wset_source, arguments.emit_wset)
 

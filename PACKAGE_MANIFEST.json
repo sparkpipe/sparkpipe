@@ -5818,8 +5818,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
-      "sha256": "af9402196ce1cd3312eecf29cea00126ac58b5cdb3596a9d679a7534598d9db3",
-      "size_bytes": 96801
+      "sha256": "cd7402eb096773313e917a5f9aeda548a862c83614b60254502933d2e1d7c97b",
+      "size_bytes": 96911
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
@@ -5878,8 +5878,8 @@
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c",
-      "sha256": "3e992f6e5531ca557995a6fd00033044cae589efa3668892756e0d16bfaab265",
-      "size_bytes": 81814
+      "sha256": "b736a84729a3f6687f78666d3029719e323152d48d8f76e3eabe002bdc055670",
+      "size_bytes": 82170
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c",
@@ -9903,8 +9903,8 @@
     },
     {
       "path": "tests/test_ling_multidev_lane.py",
-      "sha256": "614a7d02a1a27a046483de17201b2434f45180ad7ff3c6e89b6d68b985921154",
-      "size_bytes": 18122
+      "sha256": "2fb3e3ff78c9f4b618e7712a5091ad8cbe6fd72227e548f261dc2f4db6778b50",
+      "size_bytes": 20681
     },
     {
       "path": "tests/test_ling_serving_adapter.c",
@@ -11188,8 +11188,8 @@
     },
     {
       "path": "tools/devcycle/lane_budget_calc.py",
-      "sha256": "1d8237db634477bd3a3488b1b0b51b0d55fd8a868800cc411479894fef75e45a",
-      "size_bytes": 4697
+      "sha256": "b9c2e3d3039d76ad82c8565a3ddc1a44134ddb362c4561490e5fe7a68bd11038",
+      "size_bytes": 4903
     },
     {
       "path": "tools/devcycle/ling_decode_receipt.sh",
@@ -12638,13 +12638,13 @@
     },
     {
       "path": "tools/ling_multidev_lane.py",
-      "sha256": "146166fdf4f9b2850d39d91b0d935bd3fc0a77ffc313c750fbb38445d09797a4",
-      "size_bytes": 15020
+      "sha256": "41e8e7d335e086e161d815c16682f8c879515c81d0d9f9d83be2dc6199451fda",
+      "size_bytes": 17856
     },
     {
       "path": "tools/ling_multidev_run_family.sh",
-      "sha256": "a7fb709b04e7806f65b026d3dfb0e3fb0f2a67d8d2215702f9c58eab94dc64f9",
-      "size_bytes": 14861
+      "sha256": "9df320fc1897349007f2f7104c76e5e29fe3f0be6a17e2be69d6b5af35bc587e",
+      "size_bytes": 15808
     },
     {
       "path": "tools/ling_smoke_experts.py",
@@ -17100,5 +17100,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80806056
+  "total_bytes": 80813070
 }

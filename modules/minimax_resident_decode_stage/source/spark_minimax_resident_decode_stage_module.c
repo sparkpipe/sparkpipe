@@ -1299,12 +1299,19 @@ static SparkStatus SparkMinimaxModuleReset(
 	for (lane=0u; lane<state->max_active_sequence_count; lane++)
 		retained += state->lane_block_counts[lane];
 	if ( retained != 0u || state->free_block_count != state->kv_block_count )
+	{
+		SparkStageModuleIndexSetRelease(state->slot_states,state->pipeline_slot_count,slots,state->pipeline_slot_count);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	if ( cudaMemcpy(state->device_block_counts,state->lane_block_counts,
 		(size_t)((uint64_t)state->max_active_sequence_count * sizeof(uint32_t)),
 		cudaMemcpyHostToDevice) != cudaSuccess )
+	{
+		SparkStageModuleIndexSetRelease(state->slot_states,state->pipeline_slot_count,slots,state->pipeline_slot_count);
 		return(SparkStageModuleCudaStatus(SPARK_MINIMAX_MODULE_TAG,cudaGetLastError(),"reset_block_counts_upload"));
+	}
 	state->reset_generation = request->control_generation;
+	SparkStageModuleIndexSetRelease(state->slot_states,state->pipeline_slot_count,slots,state->pipeline_slot_count);
 	return(SPARK_STATUS_OK);
 }
 

@@ -1496,6 +1496,7 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->wave_rows;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = device_bf16;
@@ -1530,6 +1531,7 @@ static SparkStatus SparkLingModuleReduceHeadMax(SparkLingTpChain *chain)
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
 	submission.active_sequence_count = chain->wave_rows;
+	submission.logical_sequence_count = chain->wave_rows;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
 	submission.local_device = chain->slot->head_maxloc_u64;

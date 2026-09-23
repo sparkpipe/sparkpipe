@@ -31,7 +31,12 @@
 #   LING_EXPERT_POOL_BYTES     bounded routed-expert pool (calculator:
 #                              tools/devcycle/lane_budget_calc.py against
 #                              model-families/ling/smoke_experts.json)
-#   LING_SPINE_BUDGET_BYTES    bounded full-resolution spine budget
+#   LING_SPINE_BUDGET_BYTES    bounded full-resolution spine budget;
+#                              optional - when unset it is derived from
+#                              the placed pack's .experts manifest (the
+#                              exact allocation the lazy attach checks,
+#                              plus margin), and when set it must cover
+#                              that manifest-derived floor
 # Optional environment
 #   LING_EXPERT_CODEC          placed arm: bf16 (default) | fp8
 #   LING_WEIGHTD_SOCKET        shared weightd socket path (supervised
@@ -137,7 +142,9 @@ for value in LING_EXPERT_POOL_BYTES LING_SPINE_BUDGET_BYTES LING_KV_BACKING_BYTE
   # shellcheck disable=SC2154  # assigned by the eval above
   case "$text" in
     '')
-      [ "$value" = "LING_KV_BACKING_BYTES" ] || fail "$value is required"
+      case "$value" in
+        LING_EXPERT_POOL_BYTES) fail "$value is required" ;;
+      esac
       ;;
     *[!0-9]*) fail "$value must be a positive decimal byte count" ;;
     *) [ "$text" -gt 0 ] || fail "$value must be positive" ;;
@@ -155,6 +162,19 @@ CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 DEPLOYED_PACK="/home/$HOST/sparkdata/$ARM/packs/$ARM.rank$(printf '%x' "$RANK").sp"
 [ -f "$DEPLOYED_PACK" ] || fail "deployed rank pack missing: $DEPLOYED_PACK \
 (operator-placed set; grep the fleet pack inventory before any warm read)"
+
+MANIFEST_SPINE="$(python3 "$CHECKOUT/tools/ling_multidev_lane.py" \
+  --spine-budget "$DEPLOYED_PACK")" ||
+  fail "cannot derive the spine budget from $DEPLOYED_PACK.experts"
+if [ -n "${LING_SPINE_BUDGET_BYTES:-}" ]; then
+  [ "$LING_SPINE_BUDGET_BYTES" -ge "$MANIFEST_SPINE" ] ||
+    fail "LING_SPINE_BUDGET_BYTES=$LING_SPINE_BUDGET_BYTES is below the \
+manifest-derived floor $MANIFEST_SPINE (allocation + margin); the lazy \
+attach checks (allocation + 255) and fails with capacity_exceeded"
+else
+  LING_SPINE_BUDGET_BYTES="$MANIFEST_SPINE"
+fi
+export LING_SPINE_BUDGET_BYTES
 
 # --------------------------- PRIVATE RUNTIME PREP ----------------------------
 
