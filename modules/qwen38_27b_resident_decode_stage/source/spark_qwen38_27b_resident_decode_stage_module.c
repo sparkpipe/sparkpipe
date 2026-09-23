@@ -450,20 +450,7 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	} while (0)
 #define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen38_27bStagePackCompareGeometry((header),(expected)) != 0 || (header)->directory_offset != SPARK_QWEN38_27B_STAGEPACK_HEADER_BYTES)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) fprintf(stderr,"%s pack_geometry_mismatch field=%s\n",SPARK_QWEN38_27B_MODULE_TAG,SparkQwen38_27bStagePackCompareGeometry((header),(expected)) != 0 ? SparkQwen38_27bStagePackGeometryFieldName(SparkQwen38_27bStagePackCompareGeometry((header),(expected))) : "directory_offset")
-#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status_var) \
-	do { \
-		if ( (status_var) == SPARK_STATUS_OK ) \
-		{ \
-			size_t device_free = 0u,device_total = 0u; \
-			if ( cudaMemGetInfo(&device_free,&device_total) == cudaSuccess && (uint64_t)device_free < (header)->file_bytes ) \
-			{ \
-				fprintf(stderr,"%s pack_device_memory_insufficient free=%llu pack=%llu (another instance holding the GPU?)\n", \
-					SPARK_QWEN38_27B_MODULE_TAG,(unsigned long long)device_free,(unsigned long long)(header)->file_bytes); \
-				fclose(file); \
-				return(SPARK_STATUS_CAPACITY_EXCEEDED); \
-			} \
-		} \
-	} while (0)
+#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 
 #include "sparkpipe/spark_pack_load_common.h"
 
