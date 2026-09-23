@@ -1404,6 +1404,8 @@ static void SparkQwen38_27bServingBuildSpeculativeFrame(
 	SparkModelDriverFrame *frame)
 {
 	uint32_t out_index;
+	memset(decode_batch,0,sizeof(*decode_batch));
+	memset(prefill_view,0,sizeof(*prefill_view));
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
