@@ -134,8 +134,67 @@ def main() -> int:
     assert packer.do_assemble(args) == 0
     args.assemble, args.verify = False, True
     assert packer.do_verify(args) == 0
+
+    resume = tmp / "verify-resume"
+    args = fixture.Args(checkpoint=str(checkpoint), tp=2, rank=0,
+                        out=str(resume / "rank0.sp"),
+                        stage_dir=str(resume / "stage"))
+    args.emit = True
+    assert packer.do_emit(args) == 0
+    args.emit, args.assemble = False, True
+    assert packer.do_assemble(args) == 0
+    original_sink = packer._CompareSink
+
+    class FailingSink(original_sink):
+        seen = 0
+
+        def write(self, chunk):
+            if FailingSink.seen > 8:
+                raise RuntimeError("simulated kill mid-verify")
+            FailingSink.seen += original_sink.write(self, chunk)
+            return len(chunk)
+
+    args.assemble, args.verify = False, True
+    packer._CompareSink = FailingSink
+    try:
+        packer.do_verify(args)
+        raise AssertionError("interrupted verify unexpectedly succeeded")
+    except RuntimeError:
+        pass
+    packer._CompareSink = original_sink
+    journal = Path(str(args.out) + ".verify.jsonl")
+    assert journal.exists(), "verify journal missing after the kill"
+    assert packer.do_verify(args) == 0
+    assert not journal.exists(), "verify journal survived completion"
+
+    stale = tmp / "verify-stale"
+    args = fixture.Args(checkpoint=str(checkpoint), tp=2, rank=0,
+                        out=str(stale / "rank0.sp"),
+                        stage_dir=str(stale / "stage"))
+    args.emit = True
+    assert packer.do_emit(args) == 0
+    args.emit, args.assemble = False, True
+    assert packer.do_assemble(args) == 0
+    args.assemble, args.verify = False, True
+    packpath = stale / "rank0.sp"
+    FailingSink.seen = 0
+    packer._CompareSink = FailingSink
+    try:
+        packer.do_verify(args)
+    except RuntimeError:
+        pass
+    packer._CompareSink = original_sink
+    blob = bytearray(packpath.read_bytes())
+    blob[-1] ^= 0xFF
+    packpath.write_bytes(bytes(blob))
+    try:
+        packer.do_verify(args)
+        raise AssertionError("corrupted pack with a fresh journal verified")
+    except packer.PackFailure:
+        pass
     print(f"emit-order: record-major clean, file-major permuted {fixed} planes, "
-          f"repair restored verify ({skipped} already ordered)")
+          f"repair restored verify ({skipped} already ordered); "
+          "verify resume + stale-journal rejection close")
     return 0
 
 
