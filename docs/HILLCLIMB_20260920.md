@@ -2864,3 +2864,25 @@ catcher on one victim; or check what else runs on 8 vs a stable node),
 (b) dodge it (run those daemons under different argv/cwd) OR wait it
 out, (c) stagger-warm in 2 batches of 8 (the parallel-attach crash
 suspect stands), engines, canary, first tok/s.
+
+## 09-24 22:30 TICK 10 — THE SWEEPER NAMED: the k3 lane's LIVE queue cells; my serving cell ENQUEUED
+
+THE KILLER IDENTIFIED (journal, spark8): "k3-m3-cold17" — the k3
+lane's 16-node queue cell dispatched 14:10:45 (their campaign continues:
+cold14 → cold17). Their per-node setup (weightd_warm --reclaim on the
+shared socket + their own residents) sweeps my private daemons on every
+node their cell touches. The ~60s cadence on spark0/8/9/a = their
+retries. NOT a bug — two lanes contending for the same GPUs outside
+the queue's arbitration because MY stack wasn't queue-admitted.
+
+THE CORRECT RESPONSE EXECUTED: my serving cell ENQUEUED through the
+same queue (glm-hill-cell1, 16 nodes, cmd-file; the queue's safety
+policy taught the script: no kill -9 (→ TERM), no rm -rf (→ targeted
+rm -f)). The cell: staggered daemon starts (rank×4s), rank-0 record
+relay at +70s, wiring wait, staggered warm (rank×8s, full-geometry),
+engine boot, readiness wait, then holds ~10min for the canary. It will
+queue behind k3's live cell — fair sharing, exactly the design.
+
+NEXT TICK: when glm-hill-cell1 dispatches (after k3's current cell):
+verify 16/16 ready → canary from rtx5090 → THE FIRST tok/s RECEIPT →
+the ladder. (The cell auto-terminates at TTL; re-enqueue per window.)
