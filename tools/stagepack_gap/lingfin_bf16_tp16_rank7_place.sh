@@ -3,7 +3,7 @@ set -euo pipefail
 SRC="spark8:build-stagepack-gaps/lingfin.bf16.tp16"
 DST="$HOME/sparkdata/lingfin.bf16.tp16/packs"
 mkdir -p "$DST/receipts"
-rsync -av \
+rsync -a --partial --append-verify \
   "$SRC/lingfin.bf16.tp16.rank7.sp" \
   "$SRC/lingfin.bf16.tp16.rank7.sp.sha256" \
   "$SRC/lingfin.bf16.tp16.rank7.sp.experts" \
