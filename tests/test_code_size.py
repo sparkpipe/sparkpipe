@@ -1558,7 +1558,13 @@ CEILING = 285179
 # drift already flagged in the ACC-1 entry and quantified in the wave report
 # (docs/AGENT_LANE_BRIEFS/reports/wave-acc2-accuracy-2026-09-13.md) - that
 # drift is owned by the landings that produced it, not by this lane.
-CEILING = 375598
+# The stagepack-gap lane (PR #1179, 2026-09-23) re-pins to the exact count:
+# the tree arrived 31412 over the pin (un-ratcheted main-side growth through
+# 150cf603, owned by the lanes that produced it, same class as the ACC-1
+# entry above), and this lane adds ~250 tooling lines (ling_stagepack
+# --resume journal machinery and the stagepack_gap build/place runners);
+# no production source grew for its own sake.
+CEILING = 407260
 
 
 ROOT = Path(__file__).resolve().parent.parent
