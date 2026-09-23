@@ -2624,3 +2624,22 @@ tables; (3) if the daemon's verbs state is wedged → ASTRA ESCALATION
 
 STATE: engines down; shared daemons untouched; run recipe recorded in
 /tmp/run_hill.sh on every node (attempt ids 1001-1003 used).
+
+## 09-24 13:30 TICK 1 close — LANE-ACQUIRE-WITH-TOPOLOGY isolated; ASTRA escalation warranted
+
+THE DISCRIMINATOR: expert acquires via the warmer flow WORK against the
+shared daemon right now (layer-by-layer WARM live on spark1 — no lane
+involved). The ONLY failing call is the engine's LaneAcquire WITH
+topology (rank_count=16 from SPARK_TP_MESH_RANKS) → 19 from the strong
+verbs configure. The running shared daemon is the PR #1082 baseline
+(b690c3a5) — it PREDATES the #1135 mesh register-skip fix that the
+m3-fixed engine bundle (ed9ff7f5) was qualified against; the mismatched
+pair worked during astra's campaign window and now deterministically
+fails (long-lived daemon, post-reclaim state).
+
+THIS LANE CANNOT restart the shared daemon (operator rule). Escalation
+to astra: either (a) restart the shared daemons with the #1135-era
+build (their call — it's their service), or (b) confirm the lane
+configure contract the running daemon expects. Everything else is
+READY: recipe + env + warm + reclaim + private runtimes proven this
+tick; engines start the moment lanes grant.
