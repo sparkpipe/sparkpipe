@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include "sparkpipe/spark_error_site.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_speculation_seam.h"
+#include "sparkpipe/spark_weightd.h"
 
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
@@ -41,9 +43,11 @@ typedef struct SparkK3ServingState
 	char *pack_path;
 	uint32_t max_rows;
 	SparkTpDeviceCollectiveConfig device_config;
-	/* Second width-matched device collective (mesh band 1) for the fused
-	 * gate_up all-reduce - see the cold16 width contract note in the
-	 * runner. Derived from device_config, never read from JSON twice. */
+	/* Shared mesh-lane owner: ONE connection acquires the lane, then BOTH
+	 * width-matched collectives LaneBind to it (band 0 / band 1). A lane
+	 * has a single owner connection on the daemon, so two independent
+	 * acquires of the same lane are NO_LANE (the cold19 finding). */
+	SparkWeightdClient *lane_client;
 	SparkTpDeviceCollectiveConfig device_config_wide;
 	SparkTpDeviceCollectiveTopology device_topology;
 	SparkK3SpeculationKnobs speculation;
@@ -339,13 +343,61 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		if ( SparkTpDeviceCollectiveApplyTopology(&state->device_topology,
 			&state->device_config) != SPARK_STATUS_OK )
 			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+		/* One shared lane owner for BOTH collectives (glm5_next pattern):
+		 * acquire the mesh lane once here, then each collective binds to
+		 * its own band of that lane at create. Two independent acquires
+		 * of the same lane are NO_LANE on the daemon (cold19). */
+		{
+			const char *socket = getenv("SPARK_WEIGHTD_SOCKET");
+			const char *lane_text = getenv("SPARK_WEIGHTD_LANE");
+			SparkWeightdMeshTopology mesh_topology;
+			uint32_t requested_lane = SPARK_WEIGHTD_LANE_NONE;
+			uint32_t resolved_lane;
+			char *end = 0;
+			unsigned long value;
+			if ( socket == 0 || socket[0] == '\0' )
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_UNSUPPORTED; }
+			if ( lane_text != 0 && lane_text[0] != '\0' )
+			{
+				errno = 0;
+				value = strtoul(lane_text,&end,10);
+				if ( lane_text[0] < '0' || lane_text[0] > '9' || end == lane_text ||
+					*end != '\0' || errno != 0 ||
+					value >= SPARK_WEIGHTD_MESH_MAX_LANES )
+					{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_INVALID_ARGUMENT; }
+				requested_lane = (uint32_t)value;
+			}
+			if ( SparkTpDeviceCollectiveMeshTopology(state->runner_config.tp_rank,
+				state->runner_config.tp_degree,&mesh_topology) != SPARK_STATUS_OK )
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+			if ( SparkWeightdClientConnect(socket,&state->lane_client,0) !=
+				SPARK_STATUS_OK )
+			{
+				state->lane_client = 0;
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_IO_ERROR; }
+			}
+			if ( SparkWeightdClientLaneAcquire(state->lane_client,requested_lane,
+				&mesh_topology,&resolved_lane,
+				(uint64_t)state->device_config.connect_timeout_milli * 1000000ull) !=
+				SPARK_STATUS_OK )
+			{
+				fprintf(stderr,"sparkpipe_k3: mesh lane acquire failed "
+					"requested=%u status=cold19-shared-lane\n",requested_lane);
+				(void)SparkWeightdClientClose(state->lane_client);
+				state->lane_client = 0;
+				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_NO_LANE; }
+			}
+			fprintf(stderr,"sparkpipe_k3: mesh lane acquired requested=%u "
+				"resolved=%u shared-owner\n",requested_lane,resolved_lane);
+			state->device_config.mesh_lane_client = state->lane_client;
+		}
 		state->runner_config.device_collective = &state->device_config;
 		/* Band-1 "wide" collective for the fused gate_up reduce: same
-		 * topology and peers, its own width (rows x top_k x 2 x expert
-		 * intermediate per reduce), its own mesh band, control port and
-		 * collective identity. glm5_next established the derived-second-
-		 * config pattern; the widths are cross-checked fail-closed in
-		 * SparkK3StageRunnerInitialize. */
+		 * topology and shared lane owner, its own width (rows x top_k x 2
+		 * x expert intermediate per reduce), its own mesh band, control
+		 * port and collective identity. glm5_next established the
+		 * derived-second-config pattern; the widths are cross-checked
+		 * fail-closed in SparkK3StageRunnerInitialize. */
 		state->device_config_wide = state->device_config;
 		state->device_config_wide.local_hidden_dimension =
 			SPARK_K3_MODEL_MOE_TOP_K *
@@ -517,6 +569,11 @@ static void K3ServingDestroy(void *adapter_state)
 	if ( state == 0 )
 		return;
 	SparkK3StageRunnerDestroy(&state->runner);
+	if ( state->lane_client != 0 )
+	{
+		(void)SparkWeightdClientClose(state->lane_client);
+		state->lane_client = 0;
+	}
 	SparkMemoryBufferFree(&state->positions_host);
 	SparkMemoryBufferFree(&state->context_host);
 	SparkMemoryBufferFree(&state->state_host);

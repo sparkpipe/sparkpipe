@@ -5648,8 +5648,8 @@
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c",
-      "sha256": "acb5c4c9fa6c351e8bb4687fc57cd3b8dddc8ca4288aa856b7468a778828453a",
-      "size_bytes": 33234
+      "sha256": "38d70e0c4fe793054cf4744b6c08c15b7d29a3356172bd6685e988000a552e05",
+      "size_bytes": 35676
     },
     {
       "path": "modules/kv_mooncake/Makefile",
@@ -17070,5 +17070,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80755058
+  "total_bytes": 80757500
 }
