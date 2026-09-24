@@ -137,20 +137,6 @@ static inline uint32_t SparkLagunaStagePackTpShardsRows(uint32_t tensor_kind)
     }
 }
 
-static inline uint32_t SparkLagunaStagePackTpShardsCols(uint32_t tensor_kind)
-{
-    switch ( tensor_kind )
-    {
-    case SPARK_LAGUNA_STAGEPACK_TENSOR_ATTN_OUTPUT:
-    case SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_DOWN:
-    case SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN:
-    case SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_DOWN:
-        return(1u);
-    default:
-        return(0u);
-    }
-}
-
 typedef struct SparkLagunaStagePackShapeSpec
 {
     uint32_t payload_type;
@@ -214,6 +200,8 @@ static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,ui
 }
 
 #include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
+
+#include "sparkpipe/family/stagepack/spark_stagepack_tp_shards_cols_glm52.h"
 
 static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkLagunaStagePackTensorShape *shape)
 {

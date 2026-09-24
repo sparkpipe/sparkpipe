@@ -149,12 +149,6 @@ static inline uint32_t SparkDsv41FlashStagePackKindIsCompressor(uint32_t tensor_
 		tensor_kind <= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_NORM ? 1u : 0u);
 }
 
-static inline uint32_t SparkDsv41FlashStagePackKindIsHc(uint32_t tensor_kind)
-{
-	return(tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_ATTN_FN &&
-		tensor_kind <= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_FFN_SCALE ? 1u : 0u);
-}
-
 static inline uint32_t SparkDsv41FlashStagePackKindIsRouted(uint32_t tensor_kind)
 {
 	return(tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_ROUTER &&
@@ -364,3 +358,5 @@ static inline uint32_t SparkDsv41FlashStagePackTpShardsRows(uint32_t tensor_kind
 		return(0u);
 	}
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_kind_is_hc.h"

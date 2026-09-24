@@ -162,12 +162,6 @@ static inline uint32_t SparkGlm5NextStagePackKindIsMla(uint32_t tensor_kind)
            tensor_kind <= SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_OUTPUT ? 1u : 0u);
 }
 
-static inline uint32_t SparkGlm5NextStagePackKindIsHc(uint32_t tensor_kind)
-{
-    return(tensor_kind >= SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_ATTN_FN &&
-           tensor_kind <= SPARK_GLM5_NEXT_STAGEPACK_TENSOR_HC_FFN_SCALE ? 1u : 0u);
-}
-
 static inline uint32_t SparkGlm5NextStagePackTpShardsRows(uint32_t tensor_kind)
 {
     switch ( tensor_kind )
@@ -305,6 +299,8 @@ static const SparkGlm5NextStagePackShapeSpec SPARK_GLM5_NEXT_STAGEPACK_SHAPE_TAB
 #include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
 
 #include "sparkpipe/family/stagepack/spark_stagepack_glm5_next_ling.h"
+
+#include "sparkpipe/family/stagepack/spark_stagepack_kind_is_hc.h"
 
 static inline int32_t SparkGlm5NextStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {

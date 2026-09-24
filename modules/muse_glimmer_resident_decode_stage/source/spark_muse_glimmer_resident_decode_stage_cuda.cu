@@ -81,14 +81,7 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchEmbeddingGather(cudaStream_t stream
 	return(cudaGetLastError());
 }
 
-static __device__ __forceinline__ uint32_t SparkMuseGlimmerOrderedHeadScore(float score)
-{
-	uint32_t bits;
-	if ( isnan(score) )
-		return(0u);
-	bits = __float_as_uint(score);
-	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ? UINT32_MAX : UINT32_C(0x80000000)));
-}
+#include "sparkpipe/family/cuda/spark_cuda_ordered_head_score.cuh"
 
 static __global__ void SparkMuseGlimmerHeadArgmaxPackKernel(const float *scores_f32, uint32_t *local_token_ids, uint64_t *maxloc, uint32_t row_count, uint32_t candidate_count, uint32_t rank_offset)
 {

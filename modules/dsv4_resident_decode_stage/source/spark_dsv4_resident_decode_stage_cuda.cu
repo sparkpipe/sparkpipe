@@ -51,17 +51,7 @@ static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::k
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 expert width must contain complete expert codec scale groups");
 
-static __device__ __forceinline__ uint32_t SparkDsv4OrderedHeadScore(float score)
-{
-	uint32_t bits;
-	if ( isnan(score) )
-		return(0u);
-	if ( score == 0.0f )
-		score = 0.0f;
-	bits = __float_as_uint(score);
-	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ?
-		UINT32_MAX : UINT32_C(0x80000000)));
-}
+#include "sparkpipe/family/cuda/spark_cuda_ordered_head_score.cuh"
 
 static __global__ void SparkDsv4HeadMaxlocPackKernel(
 	const float *scores,
