@@ -51,7 +51,17 @@ static_assert(SPARK_DSV4_MODEL_HIDDEN_DIMENSION % SparkDsv4ExpertWeightFormat::k
 static_assert(SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SparkDsv4ExpertWeightFormat::kScaleGroup == 0u,
 	"DSV4 expert width must contain complete expert codec scale groups");
 
-#include "sparkpipe/family/cuda/spark_cuda_ordered_head_score.cuh"
+static __device__ __forceinline__ uint32_t SparkDsv4OrderedHeadScore(float score)
+{
+	uint32_t bits;
+	if ( isnan(score) )
+		return(0u);
+	if ( score == 0.0f )
+		score = 0.0f;
+	bits = __float_as_uint(score);
+	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ?
+		UINT32_MAX : UINT32_C(0x80000000)));
+}
 
 static __global__ void SparkDsv4HeadMaxlocPackKernel(
 	const float *scores,
@@ -2495,7 +2505,16 @@ extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const 
 	return(cudaGetLastError());
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
+static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
+	const uint64_t *maxloc,
+	uint32_t *token_ids,
+	uint32_t row_count)
+{
+	uint32_t row;
+	row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < row_count )
+		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
+}
 
 extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
 {

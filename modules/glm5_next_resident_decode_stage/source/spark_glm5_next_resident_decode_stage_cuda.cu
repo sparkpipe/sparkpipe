@@ -457,7 +457,17 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
+static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
+	const uint64_t *maxloc,
+	uint32_t *token_ids,
+	uint32_t row_count)
+{
+	uint32_t row;
+	row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < row_count )
+		token_ids[row] = maxloc[row] == UINT64_MAX ? UINT32_MAX :
+			UINT32_MAX - (uint32_t)maxloc[row];
+}
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 

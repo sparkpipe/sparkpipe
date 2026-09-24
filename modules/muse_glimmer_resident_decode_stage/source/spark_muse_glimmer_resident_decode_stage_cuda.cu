@@ -81,7 +81,14 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchEmbeddingGather(cudaStream_t stream
 	return(cudaGetLastError());
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_ordered_head_score.cuh"
+static __device__ __forceinline__ uint32_t SparkMuseGlimmerOrderedHeadScore(float score)
+{
+	uint32_t bits;
+	if ( isnan(score) )
+		return(0u);
+	bits = __float_as_uint(score);
+	return(bits ^ ((bits & UINT32_C(0x80000000)) != 0u ? UINT32_MAX : UINT32_C(0x80000000)));
+}
 
 static __global__ void SparkMuseGlimmerHeadArgmaxPackKernel(const float *scores_f32, uint32_t *local_token_ids, uint64_t *maxloc, uint32_t row_count, uint32_t candidate_count, uint32_t rank_offset)
 {
@@ -129,7 +136,12 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchHeadArgmaxPack(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
+static __global__ void SparkMuseGlimmerHeadMaxlocUnpackKernel(const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
+{
+	uint32_t row = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( row < row_count )
+		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
+}
 
 extern "C" cudaError_t SparkMuseGlimmerLaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
 {

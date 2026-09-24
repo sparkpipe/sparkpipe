@@ -328,4 +328,45 @@ extern "C" cudaError_t SparkGemma4ConfigureCudaKernels(void)
 		(int)(widest * sizeof(float))));
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_keys.cuh"
+extern "C" cudaError_t SparkGemma4LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
+{
+	size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
+	SparkLmFusedResidualRmsNormKernel<<<row_count,SPARK_LM_CTA_THREADS,shared_memory_bytes,stream>>>(hidden_bf16,delta_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
+	return(cudaGetLastError());
+}
+
+static __device__ __forceinline__ uint32_t SparkGemma4HeadOrderKey(float score)
+{
+	uint32_t bits = __float_as_uint(score);
+	return((bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u);
+}
+
+static __global__ void SparkGemma4HeadMaxLocPackKernel(const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
+{
+	uint32_t row = blockIdx.x;
+	uint32_t token;
+	if ( row >= row_count )
+		return;
+	token = token_ids_u32[row];
+	keys_u64[row] = ((uint64_t)SparkGemma4HeadOrderKey(scores_f32[row]) << 32u) | (uint64_t)(SPARK_GEMMA4_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID - token);
+}
+
+extern "C" cudaError_t SparkGemma4LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
+{
+	SparkGemma4HeadMaxLocPackKernel<<<row_count,1u,0,stream>>>(scores_f32,token_ids_u32,keys_u64,row_count);
+	return(cudaGetLastError());
+}
+
+static __global__ void SparkGemma4HeadMaxLocUnpackKernel(const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count)
+{
+	uint32_t row = blockIdx.x;
+	if ( row >= row_count )
+		return;
+	token_ids_u32[row] = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID - (uint32_t)keys_u64[row];
+}
+
+extern "C" cudaError_t SparkGemma4LaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count)
+{
+	SparkGemma4HeadMaxLocUnpackKernel<<<row_count,1u,0,stream>>>(keys_u64,token_ids_u32,row_count);
+	return(cudaGetLastError());
+}
