@@ -8,6 +8,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from family_source import read_source
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NEUTRAL_FILES = (
@@ -611,11 +613,11 @@ def main() -> int:
         description["stages"][0]["programs"][0]["max_inflight"] == 13,
         "DSV4 driver capacity disagrees with its PP13 serving adapter",
     )
-    adapter = (
+    adapter = read_source(
         ROOT
         / "modules/dsv4_resident_decode_stage/source/"
         "spark_dsv4_serving_adapter.c"
-    ).read_text(encoding="utf-8")
+    )
     model_header = (
         ROOT
         / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
