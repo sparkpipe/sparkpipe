@@ -169,7 +169,8 @@ Live multi-family staging found additional concrete defects:
   Lanes 8–15 could post transfers but never consume their completion. Decode
   now preserves all nine bits; all 512 identities are exercised by the test.
 - Qwen MTP scratch was sized for TP shards although MTP writes full hidden
-  vectors. Gemma had the same error in four residual buffers. Real allocation
+  vectors. Gemma had the same error in four residual buffers; its shared attention output
+  was also too small for the wider full-attention heads. Real allocation
   tests fail before each fix and pass afterward.
 - Hybrid completion validation accepted token outputs only from the last rank,
   rejecting other ranks in the final TP group. Every rank of TP2/4/8/16 groups

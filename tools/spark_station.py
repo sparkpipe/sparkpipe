@@ -21,7 +21,7 @@ class StationError(Exception):
 def run(argv, **kwargs):
     result = subprocess.run(argv, text=True, capture_output=True, timeout=kwargs.pop("timeout", 90), **kwargs)
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
+        detail = (result.stdout + result.stderr).strip()
         try:
             report = json.loads(result.stdout)
             if report.get("errors"):
