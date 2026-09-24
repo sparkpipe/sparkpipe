@@ -26,6 +26,11 @@
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "spark_laguna_resident_decode_stage_internal.h"
 #include "spark_laguna_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef LAGUNA_EXPERT_WEIGHT_CODEC
 #error "LAGUNA_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -162,7 +167,6 @@ struct SparkLagunaModuleState
 	atomic_ullong nccl_next_ordinal;
 };
 
-
 static SparkStatus SparkLagunaModuleConfigure(
 	SparkLagunaModuleState *state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -206,40 +210,6 @@ static SparkStatus SparkLagunaModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-static uint32_t SparkLagunaPackRangesOverlap(const SparkLagunaPackRange *left,const SparkLagunaPackRange *right)
-{
-	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
-}
-
-static SparkStatus SparkLagunaPackValidateRanges(
-	const SparkLagunaStagePackEntry *entries,
-	uint32_t entry_count)
-{
-	SparkLagunaPackRange left[2],right[2];
-	uint32_t left_index,right_index,left_part,right_part;
-	for (left_index=0u; left_index<entry_count; left_index++)
-	{
-		left[0].offset = entries[left_index].payload_offset;
-		left[0].bytes = entries[left_index].payload_bytes;
-		left[1].offset = entries[left_index].scale_offset;
-		left[1].bytes = entries[left_index].scale_bytes;
-		for (right_index=left_index + 1u; right_index<entry_count; right_index++)
-		{
-			right[0].offset = entries[right_index].payload_offset;
-			right[0].bytes = entries[right_index].payload_bytes;
-			right[1].offset = entries[right_index].scale_offset;
-			right[1].bytes = entries[right_index].scale_bytes;
-			for (left_part=0u; left_part<2u; left_part++)
-				for (right_part=0u; right_part<2u; right_part++)
-					if ( SparkLagunaPackRangesOverlap(&left[left_part],&right[right_part]) != 0u )
-						SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		if ( SparkLagunaPackRangesOverlap(&left[0],&left[1]) != 0u )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkLagunaModuleBindLayerWeights(
 	SparkLagunaLayerWeights *weights,
 	const SparkLagunaStagePackEntry *entry,
@@ -274,34 +244,34 @@ typedef struct SparkLagunaManifestContext
 	uint32_t count;
 } SparkLagunaManifestContext;
 
-static SparkStatus SparkLagunaManifestPlane(const SparkWeightdManifest *manifest,const SparkLagunaStagePackEntry *entry,uint32_t plane)
-{
-	const SparkWeightdRangeGroup *group;
-	const SparkWeightdRange *range;
-	uint64_t offset,bytes,per;
-	uint32_t expert,index,kind;
-	offset = plane == 0u ? entry->payload_offset : entry->scale_offset;
-	bytes = plane == 0u ? entry->payload_bytes : entry->scale_bytes;
-	if ( entry->group_count == 0u || bytes == 0u || bytes % entry->group_count != 0u )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	per = (bytes / entry->group_count);
-	kind = ((entry->tensor_kind * 2u) + plane);
-	for (expert=0u; expert<entry->group_count; expert++)
-	{
-		group = SparkWeightdManifestFind(manifest,entry->layer_index,expert);
-		if ( group == 0 )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		for (index=0u; index<group->range_count; index++)
-		{
-			range = &manifest->ranges[group->first_range + index];
-			if ( range->kind == kind )
-				break;
-		}
-		if ( index == group->range_count || range->offset != (offset + ((uint64_t)expert * per)) || range->bytes != per )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
+static SparkStatus SparkLagunaAllocateBytes(
+	SparkLagunaModuleState *state,
+	uint64_t count,
+	uint64_t width,
+	uint64_t element_bytes,
+	void **pointer);
+static SparkStatus SparkLagunaInitializeState(
+	const SparkFirmwareModuleConfiguration *configuration,
+	const SparkFirmwareModuleHostServices *host_services,
+	SparkLagunaModuleState **state_out);
+
+static int SparkLagunaT1Enabled(void);
+
+static void CUDART_CB SparkLagunaCompleteAsync(void *context);
+static SparkStatus SparkLagunaAllocateBytes(
+	SparkLagunaModuleState *state,
+	uint64_t count,
+	uint64_t width,
+	uint64_t element_bytes,
+	void **pointer);
+
+#include "sparkpipe/family/module/spark_module_glm5_next_lineage.h"
+
+#include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
+
+#include "sparkpipe/family/module/spark_module_initialize_laguna.h"
+
+#include "sparkpipe/family/module/spark_module_validate_frame_buffers.h"
 
 static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
 {
@@ -538,12 +508,6 @@ static uint64_t SparkLagunaModuleExpectedGlobalBits(const SparkLagunaModuleState
 	return(bits);
 }
 
-static uint64_t SparkLagunaModuleExpectedMtpBits(const SparkLagunaModuleState *state)
-{
-	(void)state;
-	return(0u);
-}
-
 static uint64_t SparkLagunaModuleExpectedLayerBits(
 	const SparkLagunaModuleState *state,
 	uint32_t layer)
@@ -638,29 +602,6 @@ static SparkStatus SparkLagunaPackLoad(
 	return(status);
 }
 
-static SparkStatus SparkLagunaAllocateBytes(
-	SparkLagunaModuleState *state,
-	uint64_t count,
-	uint64_t width,
-	uint64_t element_bytes,
-	void **pointer)
-{
-	uint64_t bytes;
-	if ( state == 0 || pointer == 0 || count == 0u || width == 0u || element_bytes == 0u || count > UINT64_MAX / width || count * width > UINT64_MAX / element_bytes )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	bytes = count * width * element_bytes;
-	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
-}
-
-static SparkStatus SparkLagunaAllocateRows(
-	SparkLagunaModuleState *state,
-	uint64_t rows,
-	uint64_t columns,
-	void **pointer)
-{
-	return(SparkLagunaAllocateBytes(state,rows,columns,sizeof(uint16_t),pointer));
-}
-
 static SparkStatus SparkLagunaAllocateSlotHost(SparkLagunaExecutionSlot *slot)
 {
 	uint32_t *cursor;
@@ -706,21 +647,6 @@ static void SparkLagunaReleaseSlotHost(SparkLagunaModuleState *state)
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
 	}
-}
-
-static SparkStatus SparkLagunaAllocateSlotMetadata(
-	SparkLagunaModuleState *state,
-	SparkLagunaExecutionSlot *slot)
-{
-	SparkStatus status;
-	status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->context_lengths);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_tile_prefix);
-	if ( status == SPARK_STATUS_OK ) status = SparkLagunaAllocateBytes(state,1u,sizeof(uint32_t) * 6u,1u,&slot->kv_access_error);
-	return(status);
 }
 
 static SparkStatus SparkLagunaAllocateSlotHidden(
@@ -787,7 +713,6 @@ static SparkStatus SparkLagunaAllocateSlots(SparkLagunaModuleState *state)
 	return(status);
 }
 
-
 static SparkStatus SparkLagunaBuildPageTable(SparkLagunaModuleState *state)
 {
 	uint64_t entries;
@@ -809,27 +734,6 @@ static SparkStatus SparkLagunaBuildPageTable(SparkLagunaModuleState *state)
 		status = SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"page_table");
 	}
 	return(status);
-}
-
-static SparkStatus SparkLagunaDevicePageCopy(
-	void *context,
-	uint32_t direction,
-	uintptr_t device_address,
-	void *host_address,
-	uint64_t bytes)
-{
-	SparkLagunaModuleState *state;
-	cudaError_t error;
-	state = (SparkLagunaModuleState *)context;
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"kv_page_copy"));
 }
 
 static SparkStatus SparkLagunaPageCopy(
@@ -878,7 +782,6 @@ static SparkStatus SparkLagunaBackingCapacity(SparkLagunaModuleState *state,uint
 	}
 	return(SPARK_STATUS_OK);
 }
-
 
 static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 {
@@ -1065,11 +968,6 @@ static SparkStatus SparkLagunaValidateRoundMajor(
 	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
 }
 
-static uint32_t SparkLagunaPrefixRestorePending(const SparkKvLaneTransaction *owner)
-{
-	return(owner != 0 && (owner->mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u && (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && owner->lane.sequence_position != 0u);
-}
-
 static SparkStatus SparkLagunaLoadSequenceContinuity(const SparkLagunaModuleState *state,const SparkLagunaResidentDecodeStageBatchView *batch,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	const SparkKvLaneTransaction *owner;
@@ -1157,22 +1055,6 @@ static SparkStatus SparkLagunaPrepareClaimedContinuity(void *prepare_context)
 	status = SparkLagunaValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions);
 	(void)pthread_mutex_unlock(&context->state->kv_mutex);
 	return(status);
-}
-
-static SparkStatus SparkLagunaValidateFrameBuffers(
-	const SparkLagunaModuleState *state,
-	const SparkModelDriverFrame *frame,
-	uint32_t row_count)
-{
-	const SparkModelDriverBuffer *buffer;
-	if ( state->owns_final_head == 0u )
-		return(frame->buffer_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->buffer_count != 1u || frame->buffers == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	buffer = &frame->buffers[0];
-	if ( buffer->flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || buffer->address == 0 || buffer->bytes < (uint64_t)row_count * sizeof(uint32_t) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkLagunaValidateFrame(
@@ -1264,18 +1146,6 @@ static int SparkLagunaT1Enabled(void)
 		t1_probed = 1u;
 	}
 	return(t1_enabled);
-}
-static void SparkLagunaT1Wave(const SparkLagunaCudaWave *wave)
-{
-	uint32_t i;
-	if ( SparkLagunaT1Enabled() == 0 || wave == 0 || wave->tp_rank != 0u ||
-	    wave->host_resident_slots == 0 || wave->host_token_ids == 0 ||
-	    wave->host_positions == 0 )
-		return;
-	fprintf(stderr,"LAG-T1 wave seq%u rows=%u",wave->host_resident_slots[0],wave->row_count);
-	for ( i = 0u; i < wave->row_count; i++ )
-		fprintf(stderr," pos%u=%u",wave->host_positions[i],wave->host_token_ids[i]);
-	fputc('\n',stderr);
 }
 static void SparkLagunaT1Streams(const SparkLagunaTpChain *chain,uint32_t layer,uint32_t from_head)
 {
@@ -1617,10 +1487,6 @@ static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
 	return(status);
 }
 
-
-
-
-
 static void SparkLagunaTpChainFail(SparkLagunaTpChain *chain,SparkStatus status)
 {
 	SparkLagunaModuleState *state;
@@ -1898,68 +1764,6 @@ static void SparkLagunaTpChainAdvance(void *chain_context,SparkStatus status)
 	}
 }
 
-static SparkStatus SparkLagunaStageHostBatch(
-	const SparkLagunaModuleState *state,
-	SparkLagunaExecutionSlot *slot,
-	const SparkLagunaResidentDecodeStageBatchView *batch)
-{
-	uint32_t row;
-	if ( state == 0 || slot == 0 || batch == 0 || batch->row_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for (row=0u; row<batch->row_count; row++)
-	{
-		if ( batch->row_positions[row] >= UINT32_MAX )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		slot->host_resident_slots[row] = batch->row_resident_slots[row];
-		slot->host_positions[row] = (uint32_t)batch->row_positions[row];
-		if ( state->owns_embedding != 0u )
-			slot->host_token_ids[row] = batch->token_ids[row];
-	}
-	memset(slot->host_kv_access_error,0,SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t));
-	return(SPARK_STATUS_OK);
-}
-
-static void SparkLagunaPrepareAsyncCompletion(
-	SparkLagunaModuleState *state,
-	SparkModelDriverFrame *frame,
-	const SparkLagunaResidentDecodeStageBatchView *batch,
-	const uint8_t *lane_bound,
-	const uint64_t *lane_sequence_ids,
-	const uint64_t *lane_next_positions,
-	uint32_t slot_index)
-{
-	SparkLagunaAsyncCompletion *async;
-	uint32_t lane;
-	async = &state->completions[slot_index];
-	memset(async,0,sizeof(*async));
-	async->state = state;
-	async->completion_function = frame->completion_function;
-	async->completion_context = frame->completion_context;
-	async->slot_index = slot_index;
-	async->lane_count = batch->active_sequence_count;
-	async->row_count = batch->row_count;
-	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
-	{
-		async->lane_indices[lane] = batch->row_resident_slots[lane];
-		async->lane_bound[lane] = lane_bound[lane];
-		async->lane_sequence_ids[lane] = lane_sequence_ids[lane];
-		async->lane_next_positions[lane] = lane_next_positions[lane];
-	}
-	async->completion.request_id = frame->request_id;
-	async->completion.sequence_id = frame->sequence_id;
-	async->completion.sequence_position = frame->sequence_position;
-	async->completion.program_id = frame->program_id;
-	async->completion.driver_dispatch_slot = frame->driver_dispatch_slot;
-	async->completion.accepted_token_count = frame->new_token_count;
-	async->completion.tokens_per_sequence = frame->tokens_per_sequence;
-	async->completion.status = SPARK_STATUS_OK;
-	async->completion.residency = frame->residency;
-	async->completion.host_staging_bytes = (uint64_t)batch->row_count * sizeof(uint32_t) * (3u + state->owns_final_head);
-	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
-}
-
-
 static SparkStatus SparkLagunaFinishCacheLanes(SparkLagunaAsyncCompletion *async)
 {
 	SparkLagunaModuleState *state = async->state;
@@ -2037,20 +1841,6 @@ static void CUDART_CB SparkLagunaCompleteAsync(void *context)
 		fprintf(stderr,"GLM completion handoff failed: status %d; retaining lane and slot ownership\n",(int32_t)status);
 }
 
-static SparkStatus SparkLagunaEnqueueAsyncCompletion(
-	SparkLagunaModuleState *state,
-	SparkLagunaExecutionSlot *slot,
-	uint32_t slot_index)
-{
-	cudaStream_t stream;
-	cudaError_t error;
-	stream = (cudaStream_t)slot->stream;
-	error = cudaMemcpyAsync(slot->host_kv_access_error,slot->kv_access_error,SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-	if ( error == cudaSuccess )
-		error = cudaLaunchHostFunc(stream,SparkLagunaCompleteAsync,&state->completions[slot_index]);
-	return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"async_completion"));
-}
-
 static SparkStatus SparkLagunaClaimCacheFrame(SparkLagunaModuleState *state,const SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageBatchView *batch,const uint64_t *next_positions)
 {
 	uint32_t lane;
@@ -2068,28 +1858,6 @@ static SparkStatus SparkLagunaClaimCacheFrame(SparkLagunaModuleState *state,cons
 	(void)pthread_mutex_unlock(&state->kv_mutex);
 	return(status);
 }
-
-static SparkStatus SparkLagunaUploadPageTables(SparkLagunaModuleState *state,const SparkLagunaAsyncCompletion *async,void *stream)
-{
-	uint32_t lane,resident;
-	uint64_t offset,bytes;
-	cudaError_t error;
-	for (lane=0u; lane<async->lane_count; lane++)
-	{
-		resident = async->lane_indices[lane];
-		offset = ((uint64_t)resident * state->pages_per_sequence);
-		bytes = ((uint64_t)state->kv_lane_transactions[resident].page_count * sizeof(uint32_t));
-		if ( memcmp(state->page_table_shadow + offset,state->kv_lane_physical_pages + offset,bytes) == 0 )
-			continue;
-		error = cudaMemcpyAsync(state->page_table + offset,state->kv_lane_physical_pages + offset,bytes,cudaMemcpyHostToDevice,(cudaStream_t)stream);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"page_table_update"));
-		memcpy(state->page_table_shadow + offset,state->kv_lane_physical_pages + offset,bytes);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-
 
 static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageFrameContext *context,uint32_t slot_index)
 {
@@ -2409,7 +2177,6 @@ void SparkLagunaResidentDecodeStageDestroy(void *module_state)
 	free(state);
 }
 
-
 static SparkStatus SparkLagunaInitializeState(
 	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -2479,20 +2246,4 @@ static SparkStatus SparkLagunaInitializeState(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkLagunaResidentDecodeStageInitialize(
-	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
-{
-	SparkLagunaModuleState *state;
-	SparkStatus status;
-	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	state = 0;
-	status = SparkLagunaInitializeState(configuration,host_services,&state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	*module_state = state;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_expected_mtp_bits.h"
