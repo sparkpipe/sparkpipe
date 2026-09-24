@@ -158,24 +158,6 @@ __global__ static void SparkGlm52EmbeddingKernel(
 	residual[destination] = 0u;
 }
 
-__global__ static void SparkGlm52WaveMetadataKernel(
-	const uint32_t *resident_slots,
-	const uint32_t *positions,
-	uint32_t *context_lengths,
-	uint32_t *dense_row_offset,
-	uint32_t row_count)
-{
-	uint32_t row;
-	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row < row_count )
-		context_lengths[resident_slots[row]] = positions[row] + 1u;
-	if ( row == 0u )
-	{
-		dense_row_offset[0] = 0u;
-		dense_row_offset[1] = row_count;
-	}
-}
-
 static __device__ __forceinline__ float2 SparkGlm52LoadBf16Pair(const void *base,uint64_t element)
 {
 	uint32_t packed = ((const uint32_t *)base)[element];
@@ -195,6 +177,8 @@ static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64
 #include "sparkpipe/family/glm/spark_glm_head_maxloc.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_unpack.cuh"
+
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_parallel.cuh"
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 {
@@ -449,13 +433,6 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 	else
 		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * GLM_DSA_SELECTED * sizeof(uint32_t),stream);
 	return(SparkGlm52CudaStatus(error));
-}
-
-static int32_t SparkGlm52ValidateWaveShape(const SparkGlm52CudaWave *wave)
-{
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LM_LAUNCH_OK);
 }
 
 extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)

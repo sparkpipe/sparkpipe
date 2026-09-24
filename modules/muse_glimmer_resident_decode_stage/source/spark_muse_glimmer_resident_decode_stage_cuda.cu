@@ -12,7 +12,11 @@
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/gqa.cuh"
 #include "inference/kernels/formats/fp8.cuh"
+#define SPARK_FAMILY_CAMEL MuseGlimmer
+#define SPARK_FAMILY_UPPER MUSE_GLIMMER
+#define SPARK_FAMILY_LOWER muse_glimmer
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_MUSE_GLIMMER_CUDA_THREADS 256u
 #define SPARK_MUSE_GLIMMER_CUDA_HEAD_NORM_THREADS 512u
@@ -38,7 +42,6 @@ static_assert(SPARK_MUSE_GLIMMER_MODEL_MLP_LOCAL_INTERMEDIATE(16u) == 1248u,
 static_assert(SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_FULL_ATTENTION(3u) && !SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_FULL_ATTENTION(2u),
 	"period 4 with full attention in phase 3");
 
-
 static __global__ void SparkMuseGlimmerEmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_per_rank, uint32_t rank_offset)
 {
 	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
@@ -52,19 +55,6 @@ static __global__ void SparkMuseGlimmerEmbeddingGatherKernel(const uint32_t *tok
 	SparkLmFloatToBf16(hidden_bf16,index,token >= rank_offset && token < rank_offset + vocab_per_rank
 		? SparkLmBf16ToFloat(embedding_bf16,source)
 		: 0.0f);
-}
-
-static __global__ void SparkMuseGlimmerResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
-	float2 hidden_pair,delta_pair;
-	if ( pair >= pair_count )
-		return;
-	hidden_pair = SparkLmLoadBf16Pair(hidden_bf16,pair);
-	delta_pair = SparkLmLoadBf16Pair(delta_bf16,pair);
-	SparkLmStoreBf16Pair(hidden_bf16,pair,hidden_pair.x + delta_pair.x,hidden_pair.y + delta_pair.y);
-	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
-		SparkLmFloatToBf16(hidden_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmBf16ToFloat(hidden_bf16,((uint64_t)row_count * dimension) - 1u) + SparkLmBf16ToFloat(delta_bf16,((uint64_t)row_count * dimension) - 1u));
 }
 
 static __global__ void SparkMuseGlimmerTpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
@@ -140,18 +130,13 @@ static __global__ void SparkMuseGlimmerHeadArgmaxPackKernel(const float *scores_
 		(UINT32_MAX - (best_candidate[winner] + rank_offset));
 }
 
-static __global__ void SparkMuseGlimmerHeadMaxlocUnpackKernel(const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
-{
-	uint32_t row = (blockIdx.x * blockDim.x) + threadIdx.x;
-	if ( row < row_count )
-		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
-}
-
 extern "C" cudaError_t SparkMuseGlimmerLaunchHeadArgmaxPack(cudaStream_t stream, const float *scores_f32, uint32_t *local_token_ids, uint64_t *maxloc, uint32_t row_count, uint32_t candidate_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	SparkMuseGlimmerHeadArgmaxPackKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(scores_f32,local_token_ids,maxloc,row_count,candidate_count,(tp_rank * (SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT / tp_degree)));
 	return(cudaGetLastError());
 }
+
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
 
 extern "C" cudaError_t SparkMuseGlimmerLaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
 {
@@ -307,15 +292,4 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, v
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkMuseGlimmerLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
-	SparkMuseGlimmerResidualAddKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,row_count,dimension);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkMuseGlimmerLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
-{
-	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION,candidate_count);
-	return(cudaGetLastError());
-}
+#include "sparkpipe/family/cuda/spark_cuda_residual_add.cuh"

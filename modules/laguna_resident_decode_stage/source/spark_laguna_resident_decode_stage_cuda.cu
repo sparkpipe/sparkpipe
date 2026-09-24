@@ -73,29 +73,6 @@ __global__ static void SparkLagunaEmbeddingKernel(
 	hidden[((uint64_t)row * LAGUNA_HIDDEN) + element] = value;
 }
 
-__global__ static void SparkLagunaWaveMetadataKernel(
-	const uint32_t *resident_slots,
-	const uint32_t *positions,
-	uint32_t *context_lengths,
-	uint32_t *dense_row_offset,
-	uint32_t row_count)
-{
-	uint32_t row;
-	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
-	{
-		for ( row = 0u; row < row_count; ++row )
-		{
-			uint32_t slot = resident_slots[row];
-			uint32_t len = positions[row] + 1u;
-			if ( len > context_lengths[slot] )
-				context_lengths[slot] = len;
-		}
-		dense_row_offset[0] = 0u;
-		dense_row_offset[1] = row_count;
-	}
-}
-
 #include "sparkpipe/family/glm/spark_glm_head_maxloc.cuh"
 
 extern "C" cudaError_t SparkLagunaLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset)
@@ -129,6 +106,13 @@ extern "C" cudaError_t SparkLagunaLaunchDirectSum(cudaStream_t stream,void *dest
 	error = cudaPeekAtLastError();
 	return(error);
 }
+
+static void SparkLagunaBindLayer(
+	const SparkLagunaCudaWave *wave,
+	uint32_t local_layer,
+	LagunaLayerBuffers *buffers);
+
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_serial.cuh"
 
 static int32_t SparkLagunaStageWaveMetadata(const SparkLagunaCudaWave *wave)
 {
@@ -298,15 +282,6 @@ static int32_t SparkLagunaRunLayerMlpRoute(const SparkLagunaCudaWave *wave,uint3
 	return(LM_LAUNCH_OK);
 }
 
-static int32_t SparkLagunaRunLayerMlpExperts(const SparkLagunaCudaWave *wave,uint32_t local_layer)
-{
-	LagunaLayerBuffers buffers;
-	if ( (wave->first_layer_index + local_layer) < LAGUNA_FIRST_ROUTED_LAYER )
-		return(LM_LAUNCH_OK);
-	SparkLagunaBindLayer(wave,local_layer,&buffers);
-	return(LagunaLayerMoeExperts<LAGUNA_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * LAGUNA_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
-}
-
 static int32_t SparkLagunaRunHead(const SparkLagunaCudaWave *wave)
 {
 	SparkLagunaExecutionSlot *slot;
@@ -359,13 +334,6 @@ extern "C" int32_t SparkLagunaLaunchCudaLayerMlpRoute(const SparkLagunaCudaWave 
 		return(LM_LAUNCH_ERR_LAUNCH);
 	wave->slot->route_recorded = 1u;
 	return(LM_LAUNCH_OK);
-}
-
-extern "C" cudaError_t SparkLagunaPollCudaLayerMlpRoute(const SparkLagunaCudaWave *wave)
-{
-	if ( wave == 0 || wave->slot == 0 || wave->slot->route_ready_event == 0 || wave->slot->route_recorded == 0u )
-		return(cudaErrorInvalidValue);
-	return(cudaEventQuery((cudaEvent_t)wave->slot->route_ready_event));
 }
 
 extern "C" int32_t SparkLagunaLaunchCudaLayerAttentionPost(const SparkLagunaCudaWave *wave,uint32_t local_layer)

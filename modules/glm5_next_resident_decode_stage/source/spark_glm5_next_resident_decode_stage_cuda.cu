@@ -68,39 +68,6 @@ __global__ static void SparkGlm5NextEmbeddingKernel(
 	for ( stream = 0u; stream < GLM5_NEXT_HC; ++stream )
 		streams[((row * (uint64_t)GLM5_NEXT_HC + stream) * GLM5_NEXT_HIDDEN) + element] = value;
 }
-__global__ static void SparkGlm5NextWaveMetadataKernel(
-	const uint32_t *resident_slots,
-	const uint32_t *positions,
-	uint32_t *context_lengths,
-	uint32_t *dense_row_offset,
-	uint32_t row_count)
-{
-	uint32_t row;
-	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
-	{
-		for ( row = 0u; row < row_count; ++row )
-		{
-			uint32_t slot = resident_slots[row];
-			uint32_t len = positions[row] + 1u;
-			if ( len > context_lengths[slot] )
-				context_lengths[slot] = len;
-		}
-		dense_row_offset[0] = 0u;
-		dense_row_offset[1] = row_count;
-	}
-}
-static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
-	const uint64_t *maxloc,
-	uint32_t *token_ids,
-	uint32_t row_count)
-{
-	uint32_t row;
-	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row < row_count )
-		token_ids[row] = maxloc[row] == UINT64_MAX ? UINT32_MAX :
-			UINT32_MAX - (uint32_t)maxloc[row];
-}
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc.cuh"
 
@@ -140,6 +107,13 @@ extern "C" cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,
 }
 
 #include "sparkpipe/family/glm/spark_glm_kda_reset.cuh"
+
+static void SparkGlm5NextBindLayer(
+	const SparkGlm5NextCudaWave *wave,
+	uint32_t local_layer,
+	Glm5NextLayerBuffers *buffers);
+
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_serial.cuh"
 
 static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 {
@@ -458,14 +432,6 @@ static int32_t SparkGlm5NextRunLayerMlpRoute(const SparkGlm5NextCudaWave *wave,u
 		return(status);
 	return(LM_LAUNCH_OK);
 }
-static int32_t SparkGlm5NextRunLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
-{
-	Glm5NextLayerBuffers buffers;
-	if ( (wave->first_layer_index + local_layer) < GLM5_NEXT_FIRST_ROUTED_LAYER )
-		return(LM_LAUNCH_OK);
-	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
-	return(Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,wave->row_count,wave->row_count * GLM5_NEXT_TOP_K,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
-}
 static int32_t SparkGlm5NextRunLayerHcPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	Glm5NextLayerBuffers buffers;
@@ -490,6 +456,8 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
+
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 
@@ -571,12 +539,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaW
 		return(LM_LAUNCH_ERR_LAUNCH);
 	wave->slot->route_recorded = 1u;
 	return(LM_LAUNCH_OK);
-}
-extern "C" cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave)
-{
-	if ( wave == 0 || wave->slot == 0 || wave->slot->route_ready_event == 0 || wave->slot->route_recorded == 0u )
-		return(cudaErrorInvalidValue);
-	return(cudaEventQuery((cudaEvent_t)wave->slot->route_ready_event));
 }
 static int32_t SparkGlm5NextMtpReduceRows(const SparkGlm5NextMtpDraftOps *ops,uint16_t *rows_bf16)
 {

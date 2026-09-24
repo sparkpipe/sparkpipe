@@ -13,6 +13,11 @@
 #include <cooperative_groups.h>
 #include <math.h>
 #include <stdio.h>
+#define SPARK_FAMILY_CAMEL Dsv4
+#define SPARK_FAMILY_UPPER DSV4
+#define SPARK_FAMILY_LOWER dsv4
+
+#include "sparkpipe/family/spark_family.h"
 
 #if SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= 256u
 #define SPARK_DSV4_ROUTER_SORT_CAPACITY 256u
@@ -69,17 +74,6 @@ static __global__ void SparkDsv4HeadMaxlocPackKernel(
 	if ( row < row_count )
 		maxloc[row] = ((uint64_t)SparkDsv4OrderedHeadScore(scores[row]) << 32u) |
 			(UINT32_MAX - token_ids[row]);
-}
-
-static __global__ void SparkDsv4HeadMaxlocUnpackKernel(
-	const uint64_t *maxloc,
-	uint32_t *token_ids,
-	uint32_t row_count)
-{
-	uint32_t row;
-	row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row < row_count )
-		token_ids[row] = UINT32_MAX - (uint32_t)maxloc[row];
 }
 
 static __global__ void SparkDsv4ResidentTokenFeedbackKernel(
@@ -149,7 +143,6 @@ static cudaError_t SparkDsv4RequireNativeDecodeShape(uint32_t rows)
 		return(cudaErrorInvalidValue);
 	return(SparkDsv4RequireNativeSm121());
 }
-
 
 static __device__ __forceinline__ float SparkDsv4EncodeE2m1(float value)
 {
@@ -1232,22 +1225,6 @@ static __device__ __forceinline__ void SparkDsv4GateScoreExpert(
 	accumulator = SparkLmWarpReduceSum(accumulator);
 	if ( lane == 0u )
 		scores_f32[expert] = sqrtf(SparkLmSoftplus(accumulator));
-}
-
-static __global__ void SparkDsv4GateScoresKernel(const void *weight_bf16, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
-{
-	extern __shared__ float gate_shared[];
-	uint32_t row = blockIdx.x,warp_count = blockDim.x / SPARK_LM_WARP_LANES;
-	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t expert = blockIdx.y * warp_count + warp,element;
-	if ( row >= row_count )
-		return;
-	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
-		gate_shared[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
-	__syncthreads();
-	SparkDsv4GateScoreExpert(gate_shared,weight_bf16,
-		scores_f32 + (uint64_t)row * expert_count,input_dimension,expert_count,
-		expert,lane);
 }
 
 static __global__ void SparkDsv4GateSelectKernel(
@@ -2489,18 +2466,6 @@ extern "C" cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const
 
 static_assert(SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP == SPARK_LM_HEAD_SCREEN_CAP,"screen cap must match the shared kernels");
 
-extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(stream,head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension));
-}
-
-extern "C" cudaError_t SparkDsv4LaunchHeadCertifiedFp8Quantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, float *shadow_scale_f32, float *cert_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,
-		shadow_payload,shadow_scale_f32,cert_norm_f32,candidate_count,
-		hidden_dimension));
-}
-
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
 	cudaError_t status = SparkDsv4RequireNativeDecodeShape(row_count);
@@ -2539,6 +2504,8 @@ extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const 
 		stream>>>(scores,token_ids,maxloc,row_count);
 	return(cudaGetLastError());
 }
+
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_unpack.cuh"
 
 extern "C" cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count)
 {
@@ -3078,6 +3045,8 @@ extern "C" cudaError_t SparkDsv4LaunchBuildAttentionIndices(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
+#include "sparkpipe/family/cuda/spark_cuda_gate_scores.cuh"
+
 static cudaError_t SparkDsv4LaunchGateScoresSequence(cudaStream_t stream,
 	const SparkDsv4LinearView *gate,const void *input_bf16,float *scores_f32,
 	uint32_t row_count)
@@ -3551,3 +3520,5 @@ extern "C" cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const vo
 #include "spark_dsv4_dspark_kernels.cuh"
 #include "spark_dsv4_dspark_pro_kernels.cuh"
 #include "spark_dsv4_dspark_pro_chain.cuh"
+
+#include "sparkpipe/family/cuda/spark_cuda_head_quantize.cuh"

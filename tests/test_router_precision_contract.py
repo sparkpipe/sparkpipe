@@ -3,6 +3,8 @@ import re
 import sys
 from pathlib import Path
 
+from family_source import read_source
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -28,11 +30,11 @@ def main():
             failures.append(f"{model} router is not FP32")
         if re.search(r"output_bf16\s*=\s*\w+->router_logits\s*;", source):
             failures.append(f"{model} router still writes BF16")
-    dsv4 = (
+    dsv4 = read_source(
         ROOT
         / "modules/dsv4_resident_decode_stage/source/"
         "spark_dsv4_resident_decode_stage_cuda.cu"
-    ).read_text()
+    )
     if not re.search(
         r"SparkDsv4GateScoresKernel\([^)]*float \*scores_f32",dsv4,re.S
     ):

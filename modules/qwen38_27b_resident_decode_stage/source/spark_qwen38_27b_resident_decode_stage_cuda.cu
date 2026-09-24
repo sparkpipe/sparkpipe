@@ -8,7 +8,11 @@
 #include "spark_qwen38_27b_dspark_cuda.cuh"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_native_ws.cuh"
+#define SPARK_FAMILY_CAMEL Qwen38_27b
+#define SPARK_FAMILY_UPPER QWEN38_27B
+#define SPARK_FAMILY_LOWER qwen38_27b
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_27B_CUDA_DK SPARK_QWEN38_27B_MODEL_GDN_HEAD_KEY_DIMENSION
 #define SPARK_QWEN38_27B_CUDA_DV SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION
@@ -70,7 +74,6 @@ static __host__ __device__ __forceinline__ uint32_t SparkQwen38_27bTpDim(uint32_
 	return(spark_qwen38_27b_tp_host_dim[index]);
 #endif
 }
-
 
 static __host__ __device__ __forceinline__ uint32_t SparkQwen38_27bTpConvChannel(uint32_t channel)
 {
@@ -439,10 +442,6 @@ static __device__ __forceinline__ uint64_t SparkQwen38_27bAttnTokenBase(const ui
 	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
 	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * 2u * SparkQwen38_27bTpDim(SPARK_QWEN38_27B_TPD_ATTN_KV_HEADS) * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION) + ((uint64_t)kv_head * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION));
 }
-
-
-
-
 
 static __global__ void SparkQwen38_27bAttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
 {
@@ -922,7 +921,6 @@ static __global__ void SparkQwen38_27bChunkTransformKernel(const void *conv_out_
 	views.kg[vec_base + ((uint64_t)row * SPARK_QWEN38_27B_CUDA_DK) + column] = accumulator;
 }
 
-
 static __global__ void SparkQwen38_27bChunkQkDecayKernel(SparkQwen38_27bChunkWorkspaceView views, uint32_t token_count)
 {
     extern __shared__ float qk_shared[];
@@ -1143,19 +1141,6 @@ static __global__ void SparkQwen38_27bChunkConvKernel(const void *qkv_bf16, cons
 	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[2]);
 }
 
-static __global__ void SparkQwen38_27bResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
-	float2 hidden_pair,delta_pair;
-	if ( pair >= pair_count )
-		return;
-	hidden_pair = SparkLmLoadBf16Pair(hidden_bf16,pair);
-	delta_pair = SparkLmLoadBf16Pair(delta_bf16,pair);
-	SparkLmStoreBf16Pair(hidden_bf16,pair,hidden_pair.x + delta_pair.x,hidden_pair.y + delta_pair.y);
-	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
-		SparkLmFloatToBf16(hidden_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmBf16ToFloat(hidden_bf16,((uint64_t)row_count * dimension) - 1u) + SparkLmBf16ToFloat(delta_bf16,((uint64_t)row_count * dimension) - 1u));
-}
-
 static __global__ void SparkQwen38_27bSwiGluKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
 	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
@@ -1201,14 +1186,6 @@ extern "C" cudaError_t SparkQwen38_27bConfigureCudaKernels(void)
         (const void *)SparkLmLinearKernel<32u,SPARK_ACTIVATION_CODEC_NONE,SPARK_LM_CTA_WARPS>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         (int)(SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION * sizeof(float)));
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
-{
-    size_t shared_memory_bytes = (size_t)dimension * sizeof(float);
-
-    SparkLmFusedResidualRmsNormKernel<<<row_count, SPARK_LM_CTA_THREADS, shared_memory_bytes, stream>>>(hidden_bf16, delta_bf16, gain_bf16, output_bf16, row_count, dimension, epsilon);
-    return cudaGetLastError();
 }
 
 extern "C" cudaError_t SparkQwen38_27bLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
@@ -1458,7 +1435,6 @@ static __global__ void __launch_bounds__(1024u, 1u) SparkQwen38_27bSmallBatchTil
 	}
 }
 
-
 extern "C" cudaError_t SparkQwen38_27bLaunchSmallBatchLinearRans(cudaStream_t stream, const void *weight_rans, uint64_t payload_bytes, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t blocks = (output_dimension + SPARK_QWEN38_27B_SMALL_BATCH_TILE_N - 1u) / SPARK_QWEN38_27B_SMALL_BATCH_TILE_N;
@@ -1482,7 +1458,6 @@ extern "C" cudaError_t SparkQwen38_27bLaunchSmallBatchLinearRans(cudaStream_t st
 	}
 	return cudaSuccess;
 }
-
 
 static __global__ void SparkQwen38_27bSmallBatchLean1Kernel(const void *weight_bf16, const void *input_bf16, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -1924,13 +1899,6 @@ extern "C" cudaError_t SparkQwen38_27bLaunchEmbeddingGather(cudaStream_t stream,
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkQwen38_27bLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
-	SparkQwen38_27bResidualAddKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,row_count,dimension);
-	return(cudaGetLastError());
-}
-
 extern "C" cudaError_t SparkQwen38_27bLaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
 	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
@@ -1940,34 +1908,9 @@ extern "C" cudaError_t SparkQwen38_27bLaunchSwiGlu(cudaStream_t stream, const vo
 
 static_assert(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP == SPARK_LM_HEAD_SCREEN_CAP,"screen cap must match the shared kernels");
 
-extern "C" cudaError_t SparkQwen38_27bLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(stream,head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension));
-}
-
 extern "C" cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
 {
 	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION));
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
-{
-	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION,candidate_count);
-	return(cudaGetLastError());
-}
-
-static __device__ __forceinline__ uint32_t SparkQwen38_27bHeadOrderKey(float score)
-{
-	uint32_t bits = __float_as_uint(score);
-	return((bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u);
-}
-
-static __global__ void SparkQwen38_27bHeadMaxLocPackKernel(const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
-{
-	uint32_t row = blockIdx.x;
-	if ( row >= row_count )
-		return;
-	keys_u64[row] = ((uint64_t)SparkQwen38_27bHeadOrderKey(scores_f32[row]) << 32u) | (uint64_t)token_ids_u32[row];
 }
 
 extern "C" cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmaxScore(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *scratch_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, float *output_scores, uint32_t candidate_offset, uint32_t row_count, uint32_t candidate_count)
@@ -1975,34 +1918,9 @@ extern "C" cudaError_t SparkQwen38_27bLaunchHeadScreenedArgmaxScore(cudaStream_t
 	return(SparkLmHostLaunchHeadScreenedArgmaxWithScore(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,scratch_bf16,candidate_ids,candidate_counts,output_token_ids,output_scores,candidate_offset,row_count,candidate_count,SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION));
 }
 
-extern "C" cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8Quantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, float *shadow_scale_f32, float *cert_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchHeadCertifiedFp8Quantize(stream,head_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,candidate_count,hidden_dimension));
-}
-
 extern "C" cudaError_t SparkQwen38_27bLaunchHeadCertifiedFp8B1Sharded(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const float *shadow_scale_f32, const float *cert_norm_f32, void *scratch, uint32_t *candidate_ids, uint32_t *candidate_count, uint32_t *output_token_id, float *output_score, uint32_t candidate_offset, uint32_t row_count, uint32_t vocabulary_count, uint32_t hidden_dimension)
 {
 	return(SparkLmHostLaunchHeadCertifiedFp8B1WithScore(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,scratch,candidate_ids,candidate_count,output_token_id,output_score,candidate_offset,row_count,vocabulary_count,hidden_dimension));
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count)
-{
-	SparkQwen38_27bHeadMaxLocPackKernel<<<row_count,1u,0,stream>>>(scores_f32,token_ids_u32,keys_u64,row_count);
-	return(cudaGetLastError());
-}
-
-static __global__ void SparkQwen38_27bHeadMaxLocUnpackKernel(const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count)
-{
-	uint32_t row = blockIdx.x;
-	if ( row >= row_count )
-		return;
-	token_ids_u32[row] = (uint32_t)keys_u64[row];
-}
-
-extern "C" cudaError_t SparkQwen38_27bLaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count)
-{
-	SparkQwen38_27bHeadMaxLocUnpackKernel<<<row_count,1u,0,stream>>>(keys_u64,token_ids_u32,row_count);
-	return(cudaGetLastError());
 }
 
 static __global__ void SparkQwen38_27bAccumAddKernel(void *destination, const void *source, uint32_t element_count)
@@ -2090,7 +2008,6 @@ extern "C" cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uin
 	return(cudaGetLastError());
 }
 
-
 extern "C" cudaError_t SparkQwen38_27bLaunchDsparkTapStore(cudaStream_t stream, const void *hidden_bf16, const uint64_t *row_positions, void *taps_bf16, uint32_t rows, uint32_t tap_index, uint32_t hidden_dim, uint32_t tap_layers)
 {
 	dim3 grid(rows, (hidden_dim + 255u) / 256u);
@@ -2153,3 +2070,9 @@ extern "C" cudaError_t SparkQwen38_27bLaunchDsparkSelect(cudaStream_t stream,
 		vocab, hidden_dim, rank, top_k);
 	return(cudaGetLastError());
 }
+
+#include "sparkpipe/family/cuda/spark_cuda_head_quantize.cuh"
+
+#include "sparkpipe/family/cuda/spark_cuda_residual_add.cuh"
+
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_qwen.cuh"

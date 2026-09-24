@@ -4,6 +4,8 @@ import re
 import subprocess
 import tempfile
 
+from family_source import read_source
+
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / 'modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c'
 CUDA = ROOT / 'modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu'
@@ -167,8 +169,8 @@ def run(source, compiler, suffix, options):
 
 def main():
     mesh = MESH.read_text()
-    cuda = CUDA.read_text()
-    module = MODULE.read_text()
+    cuda = read_source(CUDA)
+    module = read_source(MODULE)
     cancelled = re.search(r'(?m)^#define SPARK_TP_MESH_ERROR_CANCELLED .*$', mesh).group()
     kernels = [function(mesh, name) for name in ['SparkGlm5NextMeshWaitKernel', 'SparkGlm5NextMeshGuardKernel']]
     kernels.append(function(cuda, 'SparkGlm5NextHeadMaxlocUnpackKernel'))
