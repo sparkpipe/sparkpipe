@@ -54,8 +54,11 @@ EXCLUDED_FILE_SUFFIXES = {
 # filesystem (Git-independent by design) will otherwise pick up whatever
 # credentials a developer's checkout happens to hold. This exact case was
 # caught by the verify gate after a local .env landed in SHA256SUMS.
+# api_submission.seq is model_api runtime state; tests that use the checkout
+# as the runtime root leave it behind.
 EXCLUDED_FILE_NAMES = {
     ".env",
+    "api_submission.seq",
 }
 QUALIFICATION_EVIDENCE_SUFFIXES = {
     ".log",
