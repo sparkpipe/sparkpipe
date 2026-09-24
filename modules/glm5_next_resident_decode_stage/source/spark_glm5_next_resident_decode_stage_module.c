@@ -617,6 +617,11 @@ static SparkStatus SparkGlm5NextExpertPoolBudget(uint64_t *bytes)
 	return(SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_GLM5_NEXT_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX - 1u,1u,bytes));
 }
 
+static uint32_t SparkGlm5NextMeshAddressPending(const SparkGlm5NextModuleState *state)
+{
+	return state->tp_degree > 1u && state->tp_collective_disabled == 0u && state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr == 0u ? 1u : 0u;
+}
+
 static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const char *path,uint64_t bytes,const SparkGlm5NextStagePackEntry *entries,uint32_t count)
 {
 	SparkWeightdLazyAttachRequest request;
@@ -649,6 +654,16 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 		for ( attach_attempt = 1u; attach_attempt <= 600u; attach_attempt++ )
 		{
 			status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
+			if ( status == SPARK_STATUS_OK && SparkGlm5NextMeshAddressPending(state) != 0u )
+			{
+				if ( attach_attempt == 1u || (attach_attempt % 10u) == 0u )
+					fprintf(stderr,"LAZY-ATTACH-MESH-PENDING n=%u\n",attach_attempt);
+				status = SparkWeightdLazyPackDestroy(state->lazy_pack);
+				state->lazy_pack = 0;
+				if ( status != SPARK_STATUS_OK )
+					SPARK_RETURN(status);
+				status = SPARK_STATUS_BUSY;
+			}
 			if ( status == SPARK_STATUS_OK || state->lazy_pack != 0 )
 				break;
 			if ( attach_attempt == 1u || (attach_attempt % 10u) == 0u )
