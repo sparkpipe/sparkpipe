@@ -7928,8 +7928,8 @@
     },
     {
       "path": "runtime/spark_weightd_spine.c",
-      "sha256": "d1e8320b3bcdadbbddba815b5e6d20d309807aa697d7c6da4e9952dad9d75a81",
-      "size_bytes": 10095
+      "sha256": "c090ec1f5181afd8ec842f09986e8827126d789bf5b209b00d0034875c23cd74",
+      "size_bytes": 10371
     },
     {
       "path": "runtime/spark_weightd_worker.c",
@@ -14980,5 +14980,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73616953
+  "total_bytes": 73617229
 }
