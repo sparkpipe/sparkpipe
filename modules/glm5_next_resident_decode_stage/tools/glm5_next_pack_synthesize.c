@@ -2,7 +2,11 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "spark_glm5_next_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Glm5Next
+#define SPARK_FAMILY_UPPER GLM5_NEXT
+#define SPARK_FAMILY_LOWER glm5_next
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM5_NEXT_SYNTHESIZE_MAX_TENSORS 2048u
 #define SPARK_GLM5_NEXT_SYNTHESIZE_CHUNK_BYTES (8u * 1024u * 1024u)
@@ -35,93 +39,9 @@ typedef struct SparkGlm5NextSynthesizeContext
 
 #include "sparkpipe/spark_pack_synthesize_common.h"
 
-static int32_t SparkGlm5NextSynthesizeAppend(SparkGlm5NextSynthesizeContext *context, uint32_t tensor_kind, uint32_t layer_index)
-{
-	SparkGlm5NextStagePackTensorShape shape;
-	SparkGlm5NextStagePackEntry *entry;
-	if ( context->entry_count >= SPARK_GLM5_NEXT_SYNTHESIZE_MAX_TENSORS )
-		return(-1);
-	if ( SparkGlm5NextStagePackExpectedShape(tensor_kind,layer_index,context->expert_codec,context->tp_degree,&shape) != 0 )
-		return(-2);
-	entry = &context->entries[context->entry_count];
-	memset(entry,0,sizeof(*entry));
-	entry->tensor_kind = tensor_kind;
-	entry->layer_index = layer_index;
-	entry->payload_type = shape.payload_type;
-	entry->weight_codec = shape.weight_codec;
-	entry->scale_encoding = shape.scale_encoding;
-	entry->group_count = shape.group_count;
-	entry->rows = shape.rows;
-	entry->columns = shape.columns;
-	entry->payload_bytes = SparkGlm5NextStagePackExpectedPayloadBytes(&shape);
-	entry->scale_bytes = SparkGlm5NextStagePackExpectedScaleBytes(&shape);
-	entry->payload_offset = SparkSynthAlign(context->payload_cursor);
-	entry->scale_offset = entry->scale_bytes != 0u ? SparkSynthAlign(entry->payload_offset + entry->payload_bytes) : 0u;
-	context->payload_cursor = entry->scale_bytes != 0u ? (entry->scale_offset + entry->scale_bytes) : (entry->payload_offset + entry->payload_bytes);
-	if ( entry->payload_bytes == 0u )
-		return(-3);
-	context->entry_count++;
-	return(0);
-}
+#include "sparkpipe/family/synth/spark_synth_glm.h"
 
-static int32_t SparkGlm5NextSynthesizeAppendLayer(SparkGlm5NextSynthesizeContext *context, uint32_t layer_index)
-{
-	uint32_t kind;
-	for (kind = SPARK_GLM5_NEXT_STAGEPACK_TENSOR_ATTN_NORM;
-	     kind < SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KIND_COUNT; kind++)
-	{
-		int32_t appended = SparkGlm5NextSynthesizeAppend(context,kind,layer_index);
-		if ( appended == -1 || appended == -3 )
-			return(-(int32_t)kind);
-	}
-	return(0);
-}
-
-static int32_t SparkGlm5NextSynthesizeBuild(SparkGlm5NextSynthesizeContext *context)
-{
-	uint32_t layer;
-	uint32_t last = context->first_layer_index + context->layer_count;
-	for (layer = context->first_layer_index; layer < last; layer++)
-		if ( SparkGlm5NextSynthesizeAppendLayer(context,layer) < 0 )
-			return(-1);
-	if ( context->include_mtp != 0u && last == SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX )
-		if ( SparkGlm5NextSynthesizeAppendLayer(context,SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX) < 0 )
-			return(-2);
-	if ( context->owns_embedding != 0u )
-		if ( SparkGlm5NextSynthesizeAppend(context,SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EMBEDDING,SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER) < 0 )
-			return(-3);
-	if ( context->owns_head != 0u )
-	{
-		if ( SparkGlm5NextSynthesizeAppend(context,SPARK_GLM5_NEXT_STAGEPACK_TENSOR_FINAL_NORM,SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER) < 0 )
-			return(-4);
-		if ( SparkGlm5NextSynthesizeAppend(context,SPARK_GLM5_NEXT_STAGEPACK_TENSOR_LM_HEAD,SPARK_GLM5_NEXT_STAGEPACK_GLOBAL_LAYER) < 0 )
-			return(-5);
-	}
-	return(0);
-}
-
-static void SparkGlm5NextSynthesizeHexParse(const char *text, uint8_t *out, uint32_t bytes)
-{
-	uint32_t index;
-	for (index = 0; index < bytes; index++)
-		out[index] = 0u;
-	if ( text == 0 )
-		return;
-	for (index = 0; index < bytes * 2u; index++)
-	{
-		char c = text[index];
-		uint8_t value;
-		if ( c >= '0' && c <= '9' )
-			value = (uint8_t)(c - '0');
-		else if ( c >= 'a' && c <= 'f' )
-			value = (uint8_t)(c - 'a' + 10);
-		else if ( c >= 'A' && c <= 'F' )
-			value = (uint8_t)(c - 'A' + 10);
-		else
-			break;
-		out[index / 2u] = (uint8_t)((out[index / 2u] << 4) | value);
-	}
-}
+#include "sparkpipe/family/synth/spark_synth_glm5_next_ling.h"
 
 int main(int argc, char **argv)
 {
