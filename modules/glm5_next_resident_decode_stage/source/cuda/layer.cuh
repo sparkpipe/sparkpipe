@@ -1797,7 +1797,7 @@ static int32_t Glm5NextHcPost(
     }
     LM_LAUNCH(
         (LmHcPostBf16Kernel),
-        rows,
+        dim3(rows, GLM5_NEXT_HIDDEN / GLM5_NEXT_LAYER_THREADS),
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,

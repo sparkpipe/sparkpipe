@@ -14,7 +14,7 @@ __global__ void LmHcPostBf16Kernel(const uint16_t *out_bf16,const uint16_t *snap
 	for (index=threadIdx.x; index<(hc * hc); index+=blockDim.x)
 		comb[index] = LmBf16ToFloat(LmFloatToBf16(comb_f32[((uint64_t)row * hc * hc) + index]));
 	__syncthreads();
-	for (element=threadIdx.x; element<width; element+=blockDim.x)
+	for (element=(blockIdx.y * blockDim.x) + threadIdx.x; element<width; element+=blockDim.x * gridDim.y)
 	{
 		out = LmBf16ToFloat(out_bf16[((uint64_t)row * width) + element]);
 		for (source=0u; source<hc; source++)
