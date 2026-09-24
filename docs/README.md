@@ -21,6 +21,8 @@ selected system, not the sequence of experiments that produced it.
 - [`CODEX_RUNBOOK.md`](archive/CODEX_RUNBOOK.md): clean-main release and qualification
   workflow.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): immutable model artifact naming.
+- [`FAMILY_TEMPLATES.md`](FAMILY_TEMPLATES.md): code shared across forked model
+  families, and the rule for sharing it.
 - [`GLM52_B12X_PACK_WORKER_PROTOCOL.md`](archive/GLM52_B12X_PACK_WORKER_PROTOCOL.md):
   GLM pack worker protocol.
 - [`GLM52_B12X_RESIDENT_MOE_PACK.md`](archive/GLM52_B12X_RESIDENT_MOE_PACK.md): GLM
