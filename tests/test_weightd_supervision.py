@@ -126,10 +126,16 @@ int main(void) {
         self.assertIn("WSET-ONE-SHOT", result.stderr)
         self.assertIn("WSET-WARM keys=2", result.stderr)
 
+    def test_wset_larger_than_one_lease_keeps_first_occurrences(self):
+        extra = self.wset(struct.pack("<2I", 4, 0) + struct.pack("<2I", 3, 2)*513)
+        result = self.warm(extra=extra)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["ACQUIRE 4 2", "RELEASE 17", "CLOSED"])
+        self.assertIn("WSET-WARM keys=2", result.stderr)
+
     def test_wset_rejects_invalid_files_before_connecting(self):
         for data in (b"", b"x", bytes(4), struct.pack("<2I", 3, 2)+b"x",
-                     struct.pack("<2I", 3, 99), struct.pack("<2I", 40, 0),
-                     struct.pack("<2I", 3, 2)*513):
+                     struct.pack("<2I", 3, 99), struct.pack("<2I", 40, 0)):
             with self.subTest(data=data[:16], size=len(data)):
                 result = self.warm(extra=self.wset(data))
                 self.assertNotEqual(result.returncode, 0)
