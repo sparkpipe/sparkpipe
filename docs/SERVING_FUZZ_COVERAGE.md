@@ -203,22 +203,28 @@ model parity, complete GLM cache restoration or the outer driver unload contract
 The generated public void destructor still discards a module's retained-cleanup
 status; that ownership boundary remains a concrete item for the deeper review.
 
-## HC output-partition GPU regression
+## HC site and skinny GEMV GPU regressions
 
-`make build/test_glm5_next_hc_mix` compiles the actual full GLM CUDA translation
-unit. `make test-glm-hc-mix` explicitly runs its bounded GPU test; the binary
-requires `--run` and has a 60-second process alarm. It is a separate GPU target,
-not part of the historical 163-pass host campaign.
+`make test-glm-hc-mix` runs the fused HC site kernel (`Glm5NextHcSiteKernel`:
+mix, Sinkhorn and pre-reduce in one eight-CTA cluster launch). Mixes are
+checked against an f64 host reference, bounded by 1e-5 of the L1 magnitude
+of the dot product, because the split over eight CTAs reassociates the sum.
+Sinkhorn, pre-reduce, collapsed and snapshot outputs must be bitwise equal to
+the frozen pre-fusion kernels fed the fused kernel's own mixes. It also times
+90 B1 sites against the frozen three-kernel sequence, with one reused weight
+matrix and with 90 distinct matrices.
 
-At `012f16a4f25a89cf8ff1745b4bcdfed56b6bebcf`, all nine finite/bitwise cases
-passed on Spark0: B1/B3/B5 with signed, exponent-varied and cancellation inputs,
-compared with the frozen unchanged kernel. Captured 90-call timing covers both
-one reused weight matrix and 90 distinct matrices. This proves the tested
-partition's arithmetic preservation and bounded kernel improvement, not model
-quality, distributed cache reuse or fleet throughput. Source/binary/process
-provenance and the exact timings are retained in the
-[HC receipt](receipts/glm5-next-hc-mix-012f16a4.json) and
-[performance report](TP16_HARDWARE_PROFILE_20260922.md).
+`make test-skinny-gemv` checks the decode GEMV (`inference/kernels/skinny.cuh`)
+against f64 references for every GLM 5.3 Flash TP16 dense BF16 projection
+shape (rows 1-4) and for the routed FP8 W1/W2 experts, including two routes
+sharing one expert. It confirms the fallback cases (more than four rows or
+routed tokens, misaligned weights) and prints effective GB/s for the skinny
+kernel and the tensor-core GEMM on each shape.
+
+Both are GPU targets outside the host campaign. The pre-fusion HC receipt at
+`012f16a4f25a89cf8ff1745b4bcdfed56b6bebcf` is retained in
+[the HC receipt](receipts/glm5-next-hc-mix-012f16a4.json) and
+[the performance report](TP16_HARDWARE_PROFILE_20260922.md).
 
 ## Shared serving release host campaign
 
