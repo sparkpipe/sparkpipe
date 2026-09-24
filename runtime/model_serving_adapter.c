@@ -672,7 +672,8 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u ? 1u : 0u;
 	hybrid = (descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ? 1u : 0u;
-	if ( stage_index != final_stage && (parallel == 0u || hybrid != 0u) )
+	if ( stage_index != final_stage && (parallel == 0u ||
+		(hybrid != 0u && stage_index < descriptor->stage_count - descriptor->parallel_group_size)) )
 		return(has_tokens == 0u && completion->tokens_per_sequence == 0u ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 	if ( stage_index != final_stage && has_tokens == 0u &&
 		completion->tokens_per_sequence == 0u )

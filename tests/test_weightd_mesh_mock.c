@@ -306,6 +306,7 @@ static void test_complete_range(uint32_t first, uint32_t last)
         SparkStubIbvPostedWork work;
         CHECK(spark_stub_ibv_posted(i,&work) == 0,"posted WR has a reproducible completion identity");
         CHECK(spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,"completion queue has declared capacity");
+        if ((i - first + 1u) % 64u == 0u) SparkWeightdMeshDrainCq();
     }
     SparkWeightdMeshDrainCq();
 }
@@ -543,6 +544,41 @@ static uint64_t test_wait_publish(SparkWeightdMeshWaitRequest *request,
     return id;
 }
 
+static void test_all_transfer_identities(void)
+{
+    uint32_t index;
+    for (index=0u; index<SPARK_WEIGHTD_MESH_BANDS * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
+    {
+        SparkWeightdMeshTransfer saved = weightd_mesh.transfers[index];
+        uint32_t band = index / SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+        uint32_t rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+        uint64_t previous = weightd_mesh.doorbell_posted[index];
+        uint64_t shipped = test_shipped(band,rank);
+        uint32_t first = spark_stub_ibv_posted_count();
+        uint32_t pending = weightd_mesh.send_pending[0];
+        assert(saved.pending == 0u);
+        memset(&weightd_mesh.transfers[index],0,sizeof(saved));
+        weightd_mesh.transfers[index].generation = ++SparkWeightdMeshNextTransferGeneration;
+        weightd_mesh.transfers[index].seq = previous + 1u;
+        CHECK(SparkWeightdMeshPostTransfer(index,0u,2u,0u,64u) == SPARK_STATUS_OK,
+            "every lane, band and rank posts a distinct completion identity");
+        CHECK(SparkWeightdMeshPostTransfer(index,0u,3u,64u,8u) == SPARK_STATUS_OK,
+            "every completion identity owns its tail write");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        CHECK(weightd_mesh.transfers[index].pending == 0u &&
+            weightd_mesh.doorbell_posted[index] == previous + 1u &&
+            test_shipped(band,rank) == previous + 1u,
+            "terminal completions acknowledge the exact lane, band and rank");
+        CHECK(weightd_mesh.send_pending[0] == pending,
+            "every completion identity returns exactly its own send credits");
+        weightd_mesh.transfers[index] = saved;
+        weightd_mesh.doorbell_posted[index] = previous;
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+            SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)) = shipped;
+        weightd_mesh.send_pending[0] = pending;
+    }
+}
+
 static void test_mesh_hardware_wait(void)
 {
     const uint32_t band = 2u,rank = 0u;
@@ -558,8 +594,8 @@ static void test_mesh_hardware_wait(void)
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
     CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 8u &&
-        SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 11264u &&
-        (uint8_t *)test_wait_request(15u,15u) + sizeof(*request) <=
+        SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
+        (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_REGION_BYTES &&
         sizeof(*request) == 128u && offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
         "ABI8 gate geometry has separate producer and terminal cache lines within registered region");
@@ -1292,6 +1328,7 @@ int main(void)
             CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,
                 "identity topology is explicitly configured for lifetime fixtures");
     }
+    test_all_transfer_identities();
     test_slot_lifetimes(local_rank);
     test_mesh_topology();
 

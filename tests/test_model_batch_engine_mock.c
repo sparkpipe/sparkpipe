@@ -543,6 +543,40 @@ static void TestScenarioRankBusyBackpressure(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioDriverIoError(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 ) return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,500u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		uint64_t id=MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(id != 0u,"driver IO fixture reached committed work");
+		CHECK(MockResidentClientDeliverEvent(rank,id,MOCK_EVENT_COMPLETION,
+			rank == 1u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK,1u) != 0u,
+			"deliver real completion status from each rank");
+	}
+	TestDrive(engine,200u);
+	CHECK(state.error_events[1] == 1u && state.completed_events[1] == 0u && state.token_events[1] == 0u,
+		"a driver IO error terminates the request instead of resubmitting inference");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"failed driver request releases its request slot");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioEosEarlyStop(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -676,6 +710,7 @@ int main(void)
 		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
+		TestScenarioDriverIoError(&deployment,runtime_root);
 		TestScenarioEosEarlyStop(&deployment,runtime_root);
 		TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	}

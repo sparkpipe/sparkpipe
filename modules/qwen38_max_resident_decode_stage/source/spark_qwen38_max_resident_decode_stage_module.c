@@ -174,6 +174,7 @@ typedef struct SparkQwen38MaxModuleState
 	uint32_t stage_count;
 	uint32_t stage_index;
 	uint32_t allow_unqualified_execution;
+	uint32_t tp_standalone;
 	uint32_t first_layer_index;
 	uint32_t layer_count;
 	uint32_t owns_embedding;
@@ -218,6 +219,9 @@ typedef struct SparkQwen38MaxModuleState
 static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *state)
 {
 	SparkStatus status;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	{
 		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_DEGREE",1u,SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
 		if ( status == SPARK_STATUS_OK )
@@ -860,14 +864,9 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
-	/* The unqualified module tier (publish validation, single node) runs
-	   the serving shard geometry WITHOUT the inter-node mesh: the
-	   collective stays closed and the hidden allreduce short-circuits to
-	   the local partial. Values stay finite and deterministic; the
-	   qualified serving path (residentd) always builds the real mesh. */
-	if ( state->allow_unqualified_execution != 0u )
+	if ( state->tp_standalone != 0u )
 	{
-		fprintf(stderr,"%s tp_collective_skipped (unqualified module tier) degree=%u rank=%u\n",
+		fprintf(stderr,"%s tp_collective_skipped standalone=1 degree=%u rank=%u\n",
 			SPARK_QWEN38_MAX_MODULE_TAG,state->tp_degree,state->tp_rank);
 		return(SPARK_STATUS_OK);
 	}
@@ -937,10 +936,7 @@ static SparkStatus SparkQwen38MaxModuleTpAllReduceHidden(SparkQwen38MaxModuleSta
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
-	/* Unqualified module tier: the collective never opened (see
-	   SparkQwen38MaxModuleInitializeTpCollective) - the local partial IS
-	   the whole for this tier's finite/deterministic checks. */
-	if ( state->allow_unqualified_execution != 0u )
+	if ( state->tp_standalone != 0u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

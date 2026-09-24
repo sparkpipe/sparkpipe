@@ -99,7 +99,6 @@ static __host__ __forceinline__ int32_t LmKvViewInitialize(
 		|| sequence_count == 0u || pool_page_count == 0u
 		|| access_error == 0 )
 		return(-1);
-	LmKvAccessErrorReset(access_error);
 	return(0);
 }
 

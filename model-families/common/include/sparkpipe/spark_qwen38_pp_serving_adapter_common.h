@@ -201,6 +201,8 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
 	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_STATUS_OK);
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
@@ -496,7 +498,7 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(
 	completion.accepted_token_count = (uint32_t)(pending->accepted_token_count > UINT32_MAX ? UINT32_MAX : pending->accepted_token_count);
 	completion.queue_delay_ns = pending->queue_delay_ns;
 	completion.service_time_ns = pending->service_time_ns;
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && status == SPARK_STATUS_OK )
+	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && status == SPARK_STATUS_OK && pending->common.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->common.active_sequence_count;
@@ -524,6 +526,14 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
 	pending = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReservePending)(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		for (uint32_t lane=0u; lane<submission->active_sequence_count; lane++)
+			SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReleaseLane)(state,submission->lanes[lane].resident_sequence_slot);
+		pending->residency = submission->residency;
+		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(state,pending,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
 	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverSubmission)(state,submission);
 	if ( status == SPARK_STATUS_OK )
 		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingUploadBlockTable)(state,submission);

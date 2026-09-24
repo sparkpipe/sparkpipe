@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <errno.h>
+#include <sys/mman.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,6 +69,20 @@ void SparkWeightdClientClose(SparkWeightdClient *client)
         mock_lane_mask[state[4]] &= ~(UINT64_C(1) << state[2]);
     mock_clients_live--;
 	free(client);
+}
+
+static SparkStatus mock_mesh_map_status = SPARK_STATUS_OK;
+static void *mock_owned_mapping;
+
+SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,void **mapping,uint64_t timeout)
+{
+    (void)client; (void)timeout;
+    *mapping = 0;
+    if (mock_mesh_map_status != SPARK_STATUS_OK) return mock_mesh_map_status;
+    *mapping = mmap(0,SPARK_WEIGHTD_MESH_REGION_BYTES,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS,-1,0);
+    assert(*mapping != MAP_FAILED);
+    mock_owned_mapping = *mapping;
+    return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
@@ -195,6 +211,64 @@ static void *PeerWaitMain(void *data)
 	args->status = SparkTpDeviceCollectiveChainKey(args->collective,args->request_id);
 	args->waited_ns = TestNowNs() - start;
 	return(0);
+}
+
+typedef struct TestEpochPublish
+{
+    volatile uint64_t *cell;
+    uint64_t epoch;
+} TestEpochPublish;
+
+static void *TestPublishNewEpoch(void *context)
+{
+    TestEpochPublish *publish = context;
+    usleep(100000);
+    __atomic_store_n(publish->cell,publish->epoch,__ATOMIC_RELEASE);
+    return 0;
+}
+
+static void TestRestartEpoch(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.tp_rank = 1u;
+    config.operation_timeout_milli = 1000u;
+    mock_server = 1u;
+    for (uint32_t delayed = 0u; delayed < 2u; delayed++)
+    {
+        SparkTpDeviceCollective collective = {0};
+        SparkTpDeviceCollectiveSubmission submission = {0};
+        uint16_t values[128] = {0};
+        pthread_t thread;
+        memset(mesh,0,SPARK_WEIGHTD_MESH_REGION_BYTES);
+        volatile uint64_t *cell = (volatile uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+        cell[0] = 1024u;
+        cell[1] = 0x10u;
+        cell[2] = 2u;
+        *(uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0u,1u)) = 1268u;
+        CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"restart peer create");
+        CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,1u,64u,0u,0) == SPARK_STATUS_OK,"restart maps old epoch before all-rank ready");
+        TestEpochPublish publish = {cell,2048u};
+        if (delayed) pthread_create(&thread,0,TestPublishNewEpoch,&publish);
+        else cell[0] = 2048u;
+        submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+        submission.descriptor_bytes = sizeof(submission);
+        submission.active_sequence_count = submission.logical_sequence_count = 1u;
+        submission.local_device = submission.full_device = values;
+        submission.cuda_stream = (void *)1;
+        submission.completion_function = TestComplete;
+        cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
+        uint64_t start = TestNowNs();
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_IO_ERROR,"restart reaches test hardware launch");
+        uint64_t elapsed = TestNowNs() - start;
+        CHECK(!delayed || elapsed >= 50000000u,"restart waits for the new root epoch rather than using the stale nonzero cell");
+        if (delayed) pthread_join(thread,0);
+        SparkTpMeshRoundControl *control = cuda_stub_mesh_hardware_control;
+        CHECK(control != 0 && control->seq >= 2048u,"restart dispatch uses current epoch for either rank order");
+        SparkTpDeviceCollectiveDestroy(&collective);
+    }
+    mock_server = 0u;
+    cuda_stub_mesh_hardware_launch_result = 0;
+    unsetenv("SPARK_TP_WAIT_MODE");
 }
 
 static void TestTopologySlice(void)
@@ -344,6 +418,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             cuda_stub_mesh_hardware_calls == calls + 1u,
             "native round loop reaches hardware without a legacy BF16 callback");
     }
+    cuda_stub_mesh_hardware_launch_result = 0;
+    CHECK(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) == SPARK_STATUS_IO_ERROR,
+        "completed launch with missing rounds is terminal, not retryable pressure");
+    ((SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control)->error_word = 123u;
+    CHECK(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) == SPARK_STATUS_IO_ERROR,
+        "failed device round is terminal, not retryable pressure");
+    ((SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control)->error_word = 0u;
     CHECK(cuda_stub_mesh_publish_calls == old_publish,"failed hardware launch never selects spin path");
     CHECK(cuda_stub_mesh_hardware_control != 0,"native dispatch provides a control record");
     if (cuda_stub_mesh_hardware_control != 0)
@@ -391,6 +472,24 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     SparkTpDeviceCollectiveDestroy(&collective);
 }
 
+static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
+{
+    SparkTpDeviceCollective collective = {0};
+    uint32_t before = mock_clients_live;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"dense collective create");
+    mock_mesh_map_status = SPARK_STATUS_BUSY;
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_BUSY,"unwired mesh fails explicitly");
+    mock_mesh_map_status = SPARK_STATUS_OK;
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_OK,"dense collective maps mesh without a weight pack");
+    CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_DUPLICATE,"duplicate mapping is rejected");
+    CHECK(SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK,"fresh dense mesh can start a chain");
+    CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends");
+    SparkTpDeviceCollectiveDestroy(&collective);
+    CHECK(collective.implementation == 0 && mock_clients_live == before,"mapping owner and lane released");
+    errno = 0;
+    CHECK(msync(mock_owned_mapping,(size_t)sysconf(_SC_PAGESIZE),MS_SYNC) == -1 && errno == ENOMEM,"owned mesh mapping unmapped after destroy");
+}
+
 static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
     SparkTpDeviceCollective first = {0},second = {0},rejected = {0};
@@ -416,7 +515,9 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         rejected.implementation == 0 && mock_clients_live == live,
         "reservation rejection rolls back common create client");
     mock_lane_status = SPARK_STATUS_OK;
-    CHECK(setenv("SPARK_WEIGHTD_LANE","8",1) == 0 &&
+    char invalid_lane[16];
+    snprintf(invalid_lane,sizeof(invalid_lane),"%u",SPARK_WEIGHTD_MESH_MAX_LANES);
+    CHECK(setenv("SPARK_WEIGHTD_LANE",invalid_lane,1) == 0 &&
         SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
         rejected.implementation == 0 && mock_clients_live == live,
         "malformed common lane config fails without leaked client");
@@ -582,6 +683,8 @@ int main(void)
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
+	TestOwnedMesh(config);
+	TestRestartEpoch(config,mesh_buffer);
 	free(mesh_buffer);
 
 	fprintf(stderr,"%s: %u checks, %u failures (publish=%u combine=%u)\n",

@@ -196,8 +196,7 @@ def shared_admission(job, held, observations):
                 return node + ": persistent unit identity changed: " + owner["id"]
             if group in owned_groups:
                 return node + ": duplicate control group ownership: " + group
-            owned_groups[group] = [owner.get("device_memory_mib", 0), 0, owner["id"]]
-            unused += max(0, budget - current // MIB)
+            owned_groups[group] = [owner.get("device_memory_mib", 0), 0, owner["id"], budget, current // MIB]
         for process in report.get("gpu_processes", []):
             group = process["control_group"]
             matches = [parent for parent in owned_groups if group == parent or group.startswith(parent + "/")]
@@ -207,9 +206,10 @@ def shared_admission(job, held, observations):
             if not isinstance(used, int) or used < 0:
                 return node + ": GPU process memory is unavailable: " + str(process["pid"])
             owned_groups[matches[0]][1] += used
-        for device_budget, used, identity in owned_groups.values():
+        for device_budget, used, identity, owner_budget, host_used in owned_groups.values():
             if used > device_budget:
                 return node + ": observed CUDA memory exceeds declared device budget: " + identity
+            unused += max(0, owner_budget - max(host_used, used))
         budget = job["memory_mib"]
         capacity = min(NODE_MEMORY_MIB_MAX, report["total_mib"] - HOST_HEADROOM_MIB)
         if reserved + budget > capacity or unused + budget > report["available_mib"] - HOST_HEADROOM_MIB:
@@ -592,7 +592,7 @@ def cmd_sync(args):
     nodes = args.nodes.split(",")
     if len(set(nodes)) != len(nodes) or any(not re.fullmatch(r"spark[0-9a-f]", n) for n in nodes):
         raise SystemExit("invalid nodes")
-    root = Path(__file__).resolve().parents[1]
+    root = Path(args.repo).resolve() if getattr(args, "repo", None) else Path(__file__).resolve().parents[1]
     def git(*argv):
         return subprocess.check_output(["git", "-C", str(root), *argv], text=True).strip()
     sha = git("rev-parse", "--verify", "--end-of-options", args.ref + "^{commit}")
@@ -699,6 +699,7 @@ def main():
     a.add_argument("--ports", action="append", default=[])
     a.set_defaults(fn=cmd_preflight)
     a = sub.add_parser("sync")
+    a.add_argument("--repo", type=Path, help="source checkout when using a pinned controller queue")
     a.add_argument("--id", required=True)
     a.add_argument("--nodes", required=True)
     a.add_argument("--ref", default="HEAD", help="Local commit or branch to test; defaults to committed HEAD")

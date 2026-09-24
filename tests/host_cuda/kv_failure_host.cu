@@ -68,6 +68,15 @@ int main(void)
             &error) == 0,
         "canonical KV view construction validates all ownership fields");
 
+    error.error_code = LM_KV_ACCESS_ERROR_PAGE_UNMAPPED;
+    Expect(LmKvViewInitialize(&view,pool,page_table,1u,1u,1u,&error) == 0 &&
+        error.error_code == LM_KV_ACCESS_ERROR_PAGE_UNMAPPED,
+        "constructing a view preserves the first frame failure");
+    Expect(LmKvViewInitialize(&view,pool,page_table,1u,1u,1u,
+        (LmKvAccessError *)(uintptr_t)1u) == 0,
+        "constructing a host view never dereferences a device error pointer");
+    view.access_error = &error;
+
     page_table[0] = LM_KV_PAGE_UNMAPPED;
     LmKvAccessErrorReset(&error);
     LM_HOST_LAUNCH(

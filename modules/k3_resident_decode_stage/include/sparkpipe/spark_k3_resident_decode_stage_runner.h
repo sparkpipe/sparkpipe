@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 1u
+#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 2u
 #define SPARK_K3_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkK3StageRunnerConfiguration))
 #define SPARK_K3_STAGE_RUNNER_DISPATCH_BYTES \
@@ -44,6 +44,13 @@ typedef struct SparkK3StageRunnerConfiguration
     void *execution_stream;
     const SparkTpCollectiveConfig *tp_collective;
     const SparkTpDeviceCollectiveConfig *device_collective;
+    /* Second per-width device collective (mesh band 1) for the fused
+     * gate_up all-reduce: local_hidden_dimension must equal
+     * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2). The shared transport sizes
+     * every ALL_REDUCE as rows x local_hidden_dimension of the COLLECTIVE,
+     * never of the submission (the cold16 width-contract finding), so the
+     * two k3 widths ride two collectives. May be null (TP1 / host path). */
+    const SparkTpDeviceCollectiveConfig *device_collective_wide;
     void (*layer_collective_override)(void *context, void *stream,
         uint32_t layer, uint32_t phase);
     void *layer_collective_context;

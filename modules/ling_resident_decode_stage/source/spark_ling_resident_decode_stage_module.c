@@ -23,7 +23,6 @@
 #include "spark_ling_stagepack_format.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
-#include "sparkpipe/spark_weightd_lazy_pack.h"
 
 #ifndef LING_EXPERT_WEIGHT_CODEC
 #error "LING_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -145,7 +144,6 @@ struct SparkLingModuleState
 	atomic_ullong host_callback_completion_count;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_device_collective_initialized;
-	SparkWeightdLazyPack *lazy_pack;
 	atomic_ullong tp_next_ordinal;
 };
 
@@ -1381,40 +1379,6 @@ static SparkStatus SparkLingModuleCombineDirectBf16(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingModuleMeshAttach(
-	SparkLingModuleState *state,
-	const SparkLingResidentDecodeStageNodeContext *context)
-{
-	SparkWeightdLazyAttachRequest request;
-	struct stat info;
-	const char *digest;
-	uint64_t spine_budget;
-	SparkStatus status;
-	status = SparkWeightdAttachRequested();
-	if ( status != SPARK_STATUS_OK )
-		return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_UNSUPPORTED : status);
-	memset(&request,0,sizeof(request));
-	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	if ( digest == 0 || strlen(digest) != 64u || strlen(context->stage_pack_path) >= sizeof(request.pack_path) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memcpy(request.identity.pack_sha256,digest,strlen(digest) + 1u);
-	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_LING_MODULE_TAG);
-	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	if ( stat(context->stage_pack_path,&info) != 0 || info.st_size <= 0 )
-		return(SPARK_STATUS_IO_ERROR);
-	request.identity.arena_bytes = (uint64_t)info.st_size;
-	request.identity.topology = state->tp_degree;
-	memcpy(request.pack_path,context->stage_pack_path,strlen(context->stage_pack_path) + 1u);
-	status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_LING_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,UINT64_C(4294967296),&request.expert_pool_bytes);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	status = SparkStageModuleEnvironmentUnsigned64OrDefault(SPARK_LING_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,UINT64_C(8589934592),&spine_budget);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&state->lazy_pack));
-}
-
 static SparkStatus SparkLingModuleInitializeTpCollective(
 	SparkLingModuleState *state,
 	const SparkLingResidentDecodeStageNodeContext *context)
@@ -1455,20 +1419,7 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	state->tp_device_collective_initialized = 1u;
-	status = SparkLingModuleMeshAttach(state,context);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( state->lazy_pack != 0 &&
-	    state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
-	{
-		status = SparkTpDeviceCollectivePrepareReceiveBf16(
-		    &state->tp_device_collective,
-		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
-		    0u,0u,0u,0u);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-	}
-	return(SPARK_STATUS_OK);
+	return(SparkTpDeviceCollectiveAttachMesh(&state->tp_device_collective));
 }
 
 SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkLingModuleTpCompletion,SparkLingTpChain,SparkLingTpChainAdvance)
@@ -2020,12 +1971,6 @@ void SparkLingResidentDecodeStageDestroy(void *module_state)
 		if ( state->tp_device_collective.implementation != 0 )
 			return;
 		state->tp_device_collective_initialized = 0u;
-	}
-	if ( state->lazy_pack != 0 )
-	{
-		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
-			return;
-		state->lazy_pack = 0;
 	}
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);

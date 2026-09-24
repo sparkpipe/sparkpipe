@@ -178,7 +178,9 @@ static SparkStatus SparkMinimaxModuleConfigure(SparkMinimaxModuleState *state)
 		(SPARK_MINIMAX_RESIDENT_DECODE_STAGE_KV_HEAD_COUNT % state->tp_degree) != 0u ||
 		(SPARK_MINIMAX_RESIDENT_DECODE_STAGE_FFN_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->tp_standalone = getenv("SPARK_MINIMAX_TP_STANDALONE") != 0 ? 1u : 0u;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MINIMAX_MODULE_TAG,"SPARK_MINIMAX_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	state->local_query_head_count = SPARK_LLM_LOCAL_QUERY_HEAD_COUNT(state->tp_degree);
 	state->local_kv_head_count = SPARK_LLM_LOCAL_KV_HEAD_COUNT(state->tp_degree);
 	state->local_kv_dimension = SPARK_LLM_LOCAL_KV_DIMENSION(state->tp_degree);
@@ -745,6 +747,9 @@ static SparkStatus SparkMinimaxModuleInitializeTpCollective(SparkMinimaxModuleSt
 		SPARK_RETURN(status);
 	}
 	state->tp_collective_initialized = 1u;
+	status = SparkTpDeviceCollectiveAttachMesh(&state->tp_device_collective);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_MINIMAX_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
 	return(SPARK_STATUS_OK);
 }

@@ -12,8 +12,8 @@
 #ifndef GEMMA4_MODEL_REVISION
 #error "GEMMA4_MODEL_REVISION must match the adapter build"
 #endif
-#ifndef GEMMA4_CONTRACT_SHA256
-#error "GEMMA4_CONTRACT_SHA256 must match the adapter build"
+#ifndef GEMMA4_MODEL_DESCRIPTION_SHA256
+#error "GEMMA4_MODEL_DESCRIPTION_SHA256 must match the adapter build"
 #endif
 
 #define TEST_GEMMA4_DRIVER_CAPTURE_ROWS 16u
@@ -61,7 +61,7 @@ static const SparkModelDriverDescriptor TestGemma4ServingDriverDescriptor =
 	.model_revision = GEMMA4_MODEL_REVISION,
 	.stage_name = "gemma4_resident_decode_stage",
 	.target = SPARK_GEMMA4_MODEL_MODULE_TARGET,
-	.model_description_sha256 = GEMMA4_CONTRACT_SHA256,
+	.model_description_sha256 = GEMMA4_MODEL_DESCRIPTION_SHA256,
 	.compiled_program_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	.program_count = 1u,
 	.module_instance_count = 1u,

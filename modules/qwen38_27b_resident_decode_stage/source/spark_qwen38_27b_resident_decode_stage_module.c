@@ -450,20 +450,7 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	} while (0)
 #define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkQwen38_27bStagePackCompareGeometry((header),(expected)) != 0 || (header)->directory_offset != SPARK_QWEN38_27B_STAGEPACK_HEADER_BYTES)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) fprintf(stderr,"%s pack_geometry_mismatch field=%s\n",SPARK_QWEN38_27B_MODULE_TAG,SparkQwen38_27bStagePackCompareGeometry((header),(expected)) != 0 ? SparkQwen38_27bStagePackGeometryFieldName(SparkQwen38_27bStagePackCompareGeometry((header),(expected))) : "directory_offset")
-#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status_var) \
-	do { \
-		if ( (status_var) == SPARK_STATUS_OK ) \
-		{ \
-			size_t device_free = 0u,device_total = 0u; \
-			if ( cudaMemGetInfo(&device_free,&device_total) == cudaSuccess && (uint64_t)device_free < (header)->file_bytes ) \
-			{ \
-				fprintf(stderr,"%s pack_device_memory_insufficient free=%llu pack=%llu (another instance holding the GPU?)\n", \
-					SPARK_QWEN38_27B_MODULE_TAG,(unsigned long long)device_free,(unsigned long long)(header)->file_bytes); \
-				fclose(file); \
-				return(SPARK_STATUS_CAPACITY_EXCEEDED); \
-			} \
-		} \
-	} while (0)
+#define SPARK_PACK_LOAD_PREFLIGHT(state,file,header,status) do {} while (0)
 
 #include "sparkpipe/spark_pack_load_common.h"
 
@@ -935,6 +922,15 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state);
 	uint64_t attn_query_dim = (uint64_t)state->tp.attn_query_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
 	uint64_t attn_kv_dim = (uint64_t)state->tp.attn_kv_heads * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION;
+	uint64_t qkv_dim = state->tp.gdn_conv_channels;
+	uint64_t gated_dim = state->tp.gdn_value_channels;
+	if ( state->mtp_armed != 0u )
+	{
+		if ( qkv_dim < 2u * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
+			qkv_dim = 2u * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+		if ( gated_dim < SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION )
+			gated_dim = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+	}
 	SparkStatus status = SparkQwen38_27bModuleAllocateSlotControl(state,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->hidden_bf16);
@@ -943,7 +939,7 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * qkv_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->qkv_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_conv_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->conv_out_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -959,7 +955,7 @@ static SparkStatus SparkQwen38_27bModuleAllocateSlot(SparkQwen38_27bModuleState 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->core_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * state->tp.gdn_value_channels * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * gated_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->gated_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_27B_MODULE_FUSED_QUERY_COMPONENT_COUNT * attn_query_dim * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES,&slot->q_fused_bf16);
 	if ( status == SPARK_STATUS_OK )

@@ -791,6 +791,36 @@ static void TestCompletionValidation(void)
 
 }
 
+static void TestHybridCompletionGroups(void)
+{
+    SparkModelServingAdapterDescriptor descriptor;
+    SparkModelServingCompletion completion = {0};
+    SparkModelDriverResidencyToken residency = {0};
+    completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+    completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+    completion.submission_id = completion.control_generation = completion.transaction_id = 1u;
+    completion.dispatch_generation = completion.request_generation = completion.step_generation = 1u;
+    for (uint32_t group = 2u; group <= 16u; group *= 2u)
+    {
+        TestBuildDescriptor(&descriptor);
+        descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP;
+        descriptor.stage_count = 16u;
+        descriptor.layer_count = 16u / group;
+        descriptor.parallel_group_size = group;
+        for (uint32_t rank = 0u; rank < 16u; rank++) descriptor.stage_layer_counts[rank] = 1u;
+        for (uint32_t rank = 0u; rank < 16u; rank++)
+        {
+            completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+            completion.tokens_per_sequence = completion.token_count = 1u;
+            SparkStatus expected = rank >= 16u - group ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
+            assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,rank,SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,1u,&residency,&completion) == expected);
+            completion.completion_flags = completion.tokens_per_sequence = completion.token_count = 0u;
+            expected = rank == 15u ? SPARK_STATUS_SCHEMA_ERROR : SPARK_STATUS_OK;
+            assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,rank,SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,1u,&residency,&completion) == expected);
+        }
+    }
+}
+
 static void TestDynamicLoader(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
@@ -817,6 +847,7 @@ int main(void)
 	TestEmitRowSelection();
 	TestMaximumRoundMajorRowLayout();
 	TestCompletionValidation();
+	TestHybridCompletionGroups();
 	TestDynamicLoader();
 	return(0);
 }

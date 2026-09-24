@@ -37,10 +37,14 @@ transport 64048-64063; every number below stays inside those blocks):
                                       not collide with another lane; if
                                       such a path ever binds them the
                                       per-host table must be re-planned.
-  transport control     64048          TOPOLOGY ONLY (deployment schema
-                        (base)         requires it; the host-rdma backend
-                                      connects through the weightd socket
-                                      and opens no TCP listener).
+  transport control     64062          TOPOLOGY ONLY (deployment schema
+                        (wide base)    requires it; the band-1 "wide" device
+                        ..64063 (base) collective for the fused gate_up
+                                      reduce derives 64062, the hidden
+                                      collective carries 64063; the
+                                      host-rdma backend connects through the
+                                      weightd socket and opens no TCP
+                                      listener on either).
 
 The k3 stage runner is fail-closed lazy: it requires the weightd socket,
 SPARK_WEIGHTD_PACK_SHA256 (set by model_residentd from the single

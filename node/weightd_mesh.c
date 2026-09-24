@@ -966,7 +966,7 @@ static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success)
         }
         return;
     }
-    index = (uint32_t)((work_id >> 6u) & 255u);
+    index = (uint32_t)((work_id >> 6u) & 511u);
     bit = (uint32_t)(work_id & 63u);
     transfer = &weightd_mesh.transfers[index];
     if ( transfer->generation !=
