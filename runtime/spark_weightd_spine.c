@@ -269,6 +269,11 @@ SparkStatus SparkWeightdSpineReceiptRecordDaemon(int32_t fd,const char *expected
 	memcpy(receipt.sha,sha_digest,32u);
 	receipt.proof = SPINE_RECEIPT_PROOF_DAEMON_SHA;
 	spine_receipt_path(receipt_path,sizeof(receipt_path),fd,expected);
+	/* The daemon can materialize an arena before any client-side
+	 * spine_stream has created the receipt directory; without this
+	 * the best-effort write fails on a fresh host and every spine
+	 * fast-path receipt is silently lost. */
+	mkdir("/tmp/spark-weightd-spine",0755);
 	receipt_fd = open(receipt_path,O_WRONLY | O_CREAT | O_TRUNC,0644);
 	if ( receipt_fd < 0 )
 		return(SPARK_STATUS_IO_ERROR);

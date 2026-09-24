@@ -5,7 +5,11 @@
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
+#define SPARK_FAMILY_CAMEL Qwen38_27b
+#define SPARK_FAMILY_UPPER QWEN38_27B
+#define SPARK_FAMILY_LOWER qwen38_27b
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_27B_STAGEPACK_MAGIC 0x50533651u
 #define SPARK_QWEN38_27B_STAGEPACK_FORMAT_VERSION 3u
@@ -114,10 +118,7 @@ _Static_assert(SPARK_QWEN38_27B_MODEL_GDN_QK_DIMENSION == 2048u && SPARK_QWEN38_
 _Static_assert(SPARK_QWEN38_27B_MODEL_ATTN_QUERY_DIMENSION == 6144u && SPARK_QWEN38_27B_MODEL_ATTN_KV_DIMENSION == 1024u,"qwen38_27b attention projection widths per config");
 _Static_assert((SPARK_QWEN38_27B_MODEL_GDN_CHUNK_TOKENS % 16u) == 0u,"qwen38_27b chunk must tile for wmma");
 
-static inline uint32_t SparkQwen38_27bStagePackFullAttentionLayersBelow(uint32_t layer_count)
-{
-	return(layer_count / SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_full_attention_layers_below.h"
 
 static inline uint32_t SparkQwen38_27bStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {

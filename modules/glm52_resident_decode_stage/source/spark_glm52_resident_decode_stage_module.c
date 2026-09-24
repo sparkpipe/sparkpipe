@@ -24,6 +24,11 @@
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Glm52
+#define SPARK_FAMILY_UPPER GLM52
+#define SPARK_FAMILY_LOWER glm52
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef GLM_EXPERT_WEIGHT_CODEC
 #error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -322,7 +327,6 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	return(SPARK_STATUS_OK);
 }
 
-
 static SparkStatus SparkGlm52PackValidateHeader(
 	const SparkGlm52ModuleState *state,
 	const SparkGlm52StagePackHeader *header,
@@ -422,7 +426,6 @@ static SparkStatus SparkGlm52PackValidateEntryGeometry(
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
-
 
 static void SparkGlm52PackMarkSeen(
 	SparkGlm52ModuleState *state,
@@ -610,8 +613,6 @@ static SparkStatus SparkGlm52PackLoadEntry(
 	SPARK_RETURN(status);
 }
 
-
-
 static SparkStatus SparkGlm52PackValidateInventory(const SparkGlm52ModuleState *state)
 {
 	uint32_t local;
@@ -664,8 +665,6 @@ static SparkStatus SparkGlm52PackLoad(
 		status = SPARK_STATUS_IO_ERROR;
 	SPARK_RETURN(status);
 }
-
-
 
 static SparkStatus SparkGlm52AllocateSlotHost(SparkGlm52ExecutionSlot *slot)
 {
@@ -798,8 +797,6 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	}
 	SPARK_RETURN(status);
 }
-
-
 
 static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
 {
@@ -1032,8 +1029,6 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	return(SPARK_STATUS_OK);
 }
 
-
-
 static SparkStatus SparkGlm52ValidateSequenceContinuity(
 	const SparkGlm52ModuleState *state,
 	const SparkGlm52ResidentDecodeStageBatchView *batch,
@@ -1090,33 +1085,8 @@ typedef struct SparkGlm52ClaimedContinuityContext
 	uint64_t *next_positions;
 } SparkGlm52ClaimedContinuityContext;
 
-static SparkStatus SparkGlm52PrepareClaimedContinuity(void *prepare_context)
-{
-	SparkGlm52ClaimedContinuityContext *context;
-	context = (SparkGlm52ClaimedContinuityContext *)prepare_context;
-	return(SparkGlm52ValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions));
-}
-
-static SparkStatus SparkGlm52ValidateFrameBuffers(
-	const SparkGlm52ModuleState *state,
-	const SparkModelDriverFrame *frame,
-	uint32_t row_count)
-{
-	const SparkModelDriverBuffer *buffer;
-	if ( state->owns_final_head == 0u )
-		return(frame->buffer_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->buffer_count != 1u || frame->buffers == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	buffer = &frame->buffers[0];
-	if ( buffer->flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || buffer->address == 0 || buffer->bytes < (uint64_t)row_count * sizeof(uint32_t) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SPARK_STATUS_OK);
-}
-
-
 #define SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
-
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm52CompleteAsync(void *context);
@@ -1187,8 +1157,6 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->attention_split_partial_blocks = SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
 		state->execution_row_capacity,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree);
 }
-
-
 
 static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	SparkGlm52ModuleState *state,
@@ -1414,7 +1382,6 @@ static SparkStatus SparkGlm52LazyRecoverLease(SparkGlm52ModuleState *state,uint3
 		*out = chain;
 	return(status);
 }
-
 
 static SparkStatus SparkGlm52LazyExperts(SparkGlm52TpChain *chain)
 {
@@ -1785,8 +1752,6 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 	}
 }
 
-
-
 static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 {
 	SparkGlm52AsyncCompletion *async;
@@ -1830,16 +1795,7 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
 
-
-static void SparkGlm52InvalidateClaimedLanes(
-	SparkGlm52ModuleState *state,
-	const uint32_t *lane_indices,
-	uint32_t lane_count)
-{
-	uint32_t lane;
-	for (lane=0u; lane<lane_count; lane++)
-		atomic_store_explicit(&state->lane_bound[lane_indices[lane]],0u,memory_order_release);
-}
+#include "sparkpipe/family/module/spark_module_prepare_claimed_continuity.h"
 
 static SparkStatus SparkGlm52ExecuteBatch(
 	SparkGlm52ModuleState *state,
@@ -2039,7 +1995,6 @@ static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)
 	return(SPARK_STATUS_OK);
 }
 
-
 static SparkStatus SparkGlm52ModulePrepare(
 	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -2078,22 +2033,7 @@ static SparkStatus SparkGlm52ModulePrepare(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkGlm52ModuleDescribe(
-	void *module_state,
-	SparkStageModuleLifecycle *lifecycle)
-{
-	SparkGlm52ModuleState *state;
-	state = (SparkGlm52ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_GLM52_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkGlm52ModuleLifecycle =
 {
@@ -2111,3 +2051,5 @@ static const SparkStageModuleLifecycleOps SparkGlm52ModuleLifecycle =
 SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
 	SparkGlm52ResidentDecodeStage,
 	&SparkGlm52ModuleLifecycle)
+
+#include "sparkpipe/family/module/spark_module_validate_frame_buffers.h"

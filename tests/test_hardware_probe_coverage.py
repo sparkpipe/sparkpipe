@@ -96,8 +96,8 @@ def validate_workloads() -> None:
     require(isinstance(workloads, dict) and isinstance(must_work, dict), "invalid model contracts")
     models_raw = workloads.get("models")
     targets_raw = must_work.get("targets")
-    require(isinstance(models_raw, list) and len(models_raw) == 5, "workload profile must contain five models")
-    require(isinstance(targets_raw, list) and len(targets_raw) == 5, "must-work contract must contain five models")
+    require(isinstance(models_raw, list) and len(models_raw) >= 5, "workload profile must contain every must-work model")
+    require(isinstance(targets_raw, list) and len(targets_raw) == len(models_raw), "must-work contract and workload profile must list the same models")
     models = {str(model["family"]): model for model in models_raw}
     targets = {str(target["model_family"]): target for target in targets_raw}
     require(set(models) == set(targets), f"workload/must-work families differ: {set(models)} vs {set(targets)}")

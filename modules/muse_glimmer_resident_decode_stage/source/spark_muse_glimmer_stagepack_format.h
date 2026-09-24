@@ -5,7 +5,11 @@
 #include "sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
+#define SPARK_FAMILY_CAMEL MuseGlimmer
+#define SPARK_FAMILY_UPPER MUSE_GLIMMER
+#define SPARK_FAMILY_LOWER muse_glimmer
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_MUSE_GLIMMER_STAGEPACK_MAGIC 0x47534D55u
 #define SPARK_MUSE_GLIMMER_STAGEPACK_FORMAT_VERSION 1u
@@ -100,15 +104,7 @@ _Static_assert(SPARK_MUSE_GLIMMER_MODEL_MLP_LOCAL_INTERMEDIATE(16u) == 1248u,"tp
 _Static_assert(SPARK_MUSE_GLIMMER_MODEL_VOCAB_LOCAL_ROWS(16u) == 12628u,"tp16 vocab rows per the staged target");
 _Static_assert(SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * 2u * SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(16u) * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES == 512u,"the tp16 kv slot is 512 bytes");
 
-static inline uint32_t SparkMuseGlimmerStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
-{
-	uint32_t tensors = layer_count * 8u;
-	if ( first_layer_index == 0u )
-		tensors += 1u;
-	if ( first_layer_index + layer_count == SPARK_MUSE_GLIMMER_MODEL_LAYER_COUNT )
-		tensors += 2u;
-	return(tensors);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_tensor_count.h"
 
 static inline void SparkMuseGlimmerStagePackExpectedGeometry(SparkMuseGlimmerStagePackHeader *header, uint32_t first_layer_index, uint32_t layer_count)
 {
@@ -143,12 +139,6 @@ static inline void SparkMuseGlimmerStagePackExpectedGeometry(SparkMuseGlimmerSta
 }
 
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkMuseGlimmerStagePackHeader);
-static inline int32_t SparkMuseGlimmerStagePackHeaderMatches(const SparkMuseGlimmerStagePackHeader *file_header, const SparkMuseGlimmerStagePackHeader *expected)
-{
-	return(SparkStagePackHeaderMatches(
-		(const SparkStagePackHeaderCommon *)file_header,
-		(const SparkStagePackHeaderCommon *)expected));
-}
 
 typedef SparkStagePackTensorShape SparkMuseGlimmerStagePackTensorShape;
 
@@ -220,3 +210,5 @@ static inline uint64_t SparkMuseGlimmerStagePackScaleBytes(uint32_t weight_forma
 	(void)columns;
 	return(0u);
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_header_matches.h"

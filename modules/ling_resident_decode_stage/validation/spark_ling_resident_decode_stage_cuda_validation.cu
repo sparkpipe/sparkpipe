@@ -9,7 +9,11 @@
 #include "sparkpipe/spark_ling_model.h"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
 #include "spark_ling_resident_decode_stage_internal.h"
+#define SPARK_FAMILY_CAMEL Ling
+#define SPARK_FAMILY_UPPER LING
+#define SPARK_FAMILY_LOWER ling
 
+#include "sparkpipe/family/spark_family.h"
 
 extern "C" int32_t SparkLingConfigureCudaModule(uint32_t *multiprocessor_count);
 extern "C" int32_t SparkLingLaunchCudaWaveBegin(const SparkLingCudaWave *wave);
@@ -71,54 +75,15 @@ extern "C" int32_t SparkLingLaunchCudaWaveHead(const SparkLingCudaWave *wave);
 
 static uint32_t SparkLingValRandomState;
 
-static uint32_t SparkLingValNext(void)
-{
-	uint32_t value = SparkLingValRandomState;
-	value ^= value << 13;
-	value ^= value >> 17;
-	value ^= value << 5;
-	SparkLingValRandomState = value;
-	return(value);
-}
+static float SparkLingValSigmoid(float value);
 
-static uint16_t SparkLingValBf16(float value)
-{
-	uint32_t bits;
-	memcpy(&bits,&value,sizeof(bits));
-	uint32_t lsb = (bits >> 16) & 1u;
-	uint32_t rounded = (bits + 0x7fffu + lsb) >> 16;
-	return((uint16_t)(rounded & 0xffffu));
-}
+static uint32_t SparkLingValCodecStoredBits(uint32_t codec);
 
-static float SparkLingValFromBf16(uint16_t value)
-{
-	uint32_t bits = ((uint32_t)value) << 16;
-	float out;
-	memcpy(&out,&bits,sizeof(out));
-	return(out);
-}
+#include "sparkpipe/family/validation/spark_val_glm.h"
 
-static void SparkLingValFill(uint16_t *packed,float *exact,uint64_t count,float scale)
-{
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		float value = (((float)(int32_t)(SparkLingValNext() & 0xffffu) -
-			32768.0f) / 32768.0f) * scale;
-		exact[index] = value;
-		packed[index] = SparkLingValBf16(value);
-	}
-}
+#include "sparkpipe/family/validation/spark_val_glm5_next_ling.h"
 
-static void SparkLingValFillNorm(uint16_t *packed,float *exact,uint64_t count)
-{
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		exact[index] = 1.0f;
-		packed[index] = SparkLingValBf16(1.0f);
-	}
-}
+#include "sparkpipe/family/validation/spark_val_from_bf16.h"
 
 static void SparkLingValBf16Array(float *values,uint64_t count)
 {
@@ -215,40 +180,10 @@ static uint32_t SparkLingValCodecSigned(uint32_t codec)
 		codec == SPARK_LING_VAL_CODEC_INT8 ? 1u : 0u);
 }
 
-static float SparkLingValE4m3Decode(uint8_t code)
-{
-	int32_t sign = (code & 0x80u) != 0u ? -1 : 1;
-	uint32_t exponent = (code >> 3) & 0xfu;
-	uint32_t mantissa = code & 7u;
-	float value;
-	if ( exponent == 0u )
-		return((float)sign * ((float)mantissa * (1.0f / 512.0f)));
-	if ( exponent == 15u && mantissa == 7u )
-		return((float)sign * NAN);
-	value = (1.0f + ((float)mantissa) * 0.125f) *
-		(float)(1u << (int32_t)(exponent - 7u < 31u ? exponent - 7u : 0u));
-	if ( exponent < 7u )
-		value = (1.0f + ((float)mantissa) * 0.125f) /
-			(float)(1u << (7u - exponent));
-	return((float)sign * value);
-}
-
-static float SparkLingValE2m1Decode(uint8_t nibble)
-{
-	static const float magnitudes[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	float magnitude = magnitudes[nibble & 7u];
-	return((nibble & 8u) != 0u ? -magnitude : magnitude);
-}
-
 static uint64_t SparkLingValScaleGroupsPerRow(uint32_t codec,uint32_t columns)
 {
 	uint32_t group = SparkLingValCodecScaleGroup(codec);
 	return(group == 0u ? 0u : ((uint64_t)columns + group - 1u) / group);
-}
-
-static uint64_t SparkLingValPayloadRowBytes(uint32_t codec,uint32_t columns)
-{
-	return(((uint64_t)columns * SparkLingValCodecStoredBits(codec) + 7u) / 8u);
 }
 
 static uint64_t SparkLingValPayloadExpertBytes(uint32_t codec,uint32_t rows,uint32_t columns)
@@ -309,27 +244,6 @@ static float SparkLingValExpertWeight(
 	uint64_t flat_row = (((uint64_t)expert * rows) + row);
 	uint8_t code = SparkLingValPayloadCode(payload,codec,flat_row,column,columns);
 	return(SparkLingValCodeValue(code,codec) * scale);
-}
-
-static float SparkLingValSigmoid(float value)
-{
-	return(1.0f / (1.0f + expf(-value)));
-}
-
-static float SparkLingValBoundedDecay(float logit,float bias,float head_log_scale,float lower_bound)
-{
-	return(expf(lower_bound * SparkLingValSigmoid(expf(head_log_scale) * (logit + bias))));
-}
-
-static void SparkLingValRmsNorm(float *row,const float *weight,uint32_t dimension,float epsilon)
-{
-	float sum = 0.0f;
-	uint32_t index;
-	for (index = 0u; index < dimension; index++)
-		sum += row[index] * row[index];
-	float inverse = 1.0f / sqrtf(sum / (float)dimension + epsilon);
-	for (index = 0u; index < dimension; index++)
-		row[index] = row[index] * inverse * weight[index];
 }
 
 static void SparkLingValL2PerHead(float *row,uint32_t heads,uint32_t head_dim,float epsilon)
@@ -1409,29 +1323,6 @@ static int SparkLingValAllocMatrix(SparkLingValMatrix *matrix,uint32_t rows,uint
 	for (uint64_t i = 0u; i < count; i++)
 		matrix->host[i] = SparkLingValFromBf16(packed[i]);
 	free(packed);
-	return(0);
-}
-
-static void *SparkLingValAllocZeroed(uint64_t bytes)
-{
-	void *pointer;
-	if ( cudaMalloc(&pointer,bytes != 0u ? bytes : 16u) != cudaSuccess )
-		return(0);
-	if ( cudaMemset(pointer,0,bytes != 0u ? bytes : 16u) != cudaSuccess )
-	{
-		cudaFree(pointer);
-		return(0);
-	}
-	return(pointer);
-}
-
-static int SparkLingValSelftestAssert(int condition,const char *what)
-{
-	if (!condition)
-	{
-		printf("FAIL selftest: %s\n",what);
-		return(1);
-	}
 	return(0);
 }
 

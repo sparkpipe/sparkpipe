@@ -13,12 +13,50 @@
 # hygiene lane's 248; the growth is the qwen4_flash lane's validation
 # module (+31) and its geometry/stagepack tooling literals (+2, plus
 # allowlist spreads into glm5_next tools).
+# Re-pinned 2026-09-24 to the tree as merged at 68e80c07 plus the cleanup
+# branch: the gate had not run in CI and 185 new sites had accumulated.
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_SEQUENCE_STATE_DESCRIPTOR_BYTES is not derived from its wire type
+1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES is not derived from its wire type
+2 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
+1 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 154880 is outside the model contract
+1 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
+1 model-families/glm5_next/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
+1 model-families/glm5_next/include/sparkpipe/llm_defines.h: GLM model literal 154880 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 12288 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 154880 is outside the model contract
+1 model-families/hy4/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
+1 model-families/laguna/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
+1 model-families/ling/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
+1 model-families/mimo26/include/sparkpipe/spark_mimo26_model.h: GLM model literal 12288 is outside the model contract
+1 model-families/mimo26/include/sparkpipe/spark_mimo26_pro_model.h: GLM model literal 6144 is outside the model contract
+2 model-families/qwen4_flash/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
+19 modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_engram_access.c: memcpy uses a direct size/count literal
+1 modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_resident_decode_stage_module.c: memcpy uses a direct size/count literal
+1 modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_attach_probe.c: memset uses a raw byte-width multiplier
+11 modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_engram_probe.c: memcpy uses a direct size/count literal
+5 modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c: memcpy uses a direct size/count literal
+1 modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
+19 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: SparkGemma4ValCopyDown uses a raw byte-width multiplier
+28 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: SparkGemma4ValCopyUp uses a raw byte-width multiplier
+33 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
+55 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
+12 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: memcpy uses a raw byte-width multiplier
+1 modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 13 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: SparkGlm52ValAllocZeroed uses a raw byte-width multiplier
 9 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
+1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c: memcpy uses a direct size/count literal
+1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_tap_ring.c: malloc uses a raw byte-width multiplier
 29 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: SparkGlm5NextValAllocZeroed uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
+1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu: SparkGlm5NextMtpParityAlloc uses a raw byte-width multiplier
+1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: fread uses a direct size/count literal
+1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: memcpy uses a direct size/count literal
+3 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: strncmp uses a direct size/count literal
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu: cudaMalloc uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a direct size/count literal
 13 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a raw byte-width multiplier
@@ -26,9 +64,28 @@
 18 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpyAsync uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemset uses a raw byte-width multiplier
+1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: malloc uses a raw byte-width multiplier
+1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memcpy uses a direct size/count literal
 2 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
 4 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
+1 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: malloc uses a raw byte-width multiplier
+1 modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c: memcpy uses a direct size/count literal
+33 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: L7Alloc uses a raw byte-width multiplier
+5 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: cudaMemcpy uses a raw byte-width multiplier
+1 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: cudaMemset uses a raw byte-width multiplier
+2 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: fread uses a direct size/count literal
+7 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: malloc uses a raw byte-width multiplier
+5 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: memcpy uses a direct size/count literal
+1 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: memset uses a direct size/count literal
+1 modules/laguna_resident_decode_stage/validation/laguna_layer7_reference.py: GLM model literal 12288 is outside the model contract
+1 modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c: malloc uses a raw byte-width multiplier
+42 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: SparkLingValAllocZeroed uses a raw byte-width multiplier
+5 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
+3 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
+3 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
+18 modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu: cudaMallocManaged uses a raw byte-width multiplier
+1 modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu: cudaMemsetAsync uses a raw byte-width multiplier
 8 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
 3 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpy uses a raw byte-width multiplier
 7 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpyAsync uses a raw byte-width multiplier
@@ -36,29 +93,129 @@
 1 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c: memcmp uses a direct size/count literal
 2 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c: memcpy uses a direct size/count literal
 1 modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
+1 modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 2 modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu: calloc uses a raw byte-width multiplier
 4 modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu: memcpy uses a direct size/count literal
 1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
-2 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_stagepack_format.h: GLM model literal 6144 is outside the model contract
+1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 18 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
 11 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
+4 node/weightd_mesh.c: memcpy uses a direct size/count literal
+1 node/weightd_spawn.c: fread uses a direct size/count literal
 1 qualification/dsv4/performance/tp4_b1_20260814/indexer_post_fusion_probe_da7f/probe.cu: GLM model literal 12288 is outside the model contract
+2 ring/transport/fixed_ring.c: memcpy uses a direct size/count literal
+1 runtime/spark_weightd.c: fread uses a direct size/count literal
+1 runtime/spark_weightd.c: memcpy uses a direct size/count literal
+1 runtime/spark_weightd.c: typed byte array extent is a raw numeric width
+1 runtime/spark_weightd_manifest.c: memcpy uses a direct size/count literal
+4 runtime/spark_weightd_spine.c: memcpy uses a direct size/count literal
+4 src/spark_ck128.c: memcpy uses a direct size/count literal
+1 tools/dev/ling_gemm_repro.cu: GLM model literal 12288 is outside the model contract
+2 tools/dev/ling_gemm_repro.cu: GLM model literal 6144 is outside the model contract
+3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
+3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
+1 tools/dsv41_flash_engram_shard.py: GLM model literal 6144 is outside the model contract
+5 tools/dsv4_pro_experts_manifest.c: memcpy uses a direct size/count literal
+1 tools/dsv4_tp16_stagepack.py: GLM model literal 6144 is outside the model contract
 1 tools/gen_geometry_header.py: GLM model literal 12288 is outside the model contract
 1 tools/gen_geometry_header.py: GLM model literal 576 is outside the model contract
+1 tools/generate_hy4_contracts.py: GLM model literal 6144 is outside the model contract
+5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
 1 tools/glm52_resident_stagepack.py: GLM model literal 6144 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 12288 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 154880 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 6144 is outside the model contract
 1 tools/glm53_contract_freeze.py: GLM model literal 576 is outside the model contract
+5 tools/glm5_next_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm5_next_gen_name_map.py: GLM model literal 12288 is outside the model contract
 1 tools/glm5_next_gen_name_map.py: GLM model literal 576 is outside the model contract
 1 tools/glm5_next_resident_stagepack.py: GLM model literal 12288 is outside the model contract
 1 tools/glm5_next_resident_stagepack.py: GLM model literal 154880 is outside the model contract
+1 tools/hy4_attach_harness.c: memcpy uses a direct size/count literal
+6 tools/hy4_dequant/hy4_generate.c: fread uses a direct size/count literal
+7 tools/hy4_dequant/hy4_generate.c: fwrite uses a direct size/count literal
+6 tools/hy4_dequant/hy4_generate.c: malloc uses a raw byte-width multiplier
+1 tools/hy4_dequant/hy4_generate.c: memcpy uses a raw byte-width multiplier
+8 tools/hy4_dequant/hy4_indexer_forward.c: malloc uses a raw byte-width multiplier
+1 tools/hy4_dequant/hy4_iq_dequant_ref.c: malloc uses a raw byte-width multiplier
+3 tools/hy4_dequant/hy4_iq_dequant_vendor.h: memcpy uses a direct size/count literal
+2 tools/hy4_dequant/hy4_layer_forward.c: malloc uses a direct size/count literal
+27 tools/hy4_dequant/hy4_layer_forward.c: malloc uses a raw byte-width multiplier
+3 tools/hy4_dequant/hy4_layer_forward.c: memcpy uses a raw byte-width multiplier
+5 tools/hy4_dequant/hy4_moe_forward.c: fwrite uses a direct size/count literal
+7 tools/hy4_dequant/hy4_moe_forward.c: malloc uses a raw byte-width multiplier
+9 tools/hy4_dequant/hy4_rank_loader.c: fread uses a direct size/count literal
+1 tools/hy4_dequant/hy4_rank_loader.c: memcmp uses a direct size/count literal
+8 tools/hy4_dequant/hy4_stack_forward.c: malloc uses a raw byte-width multiplier
+2 tools/hy4_dequant/hy4_stack_forward.c: memcpy uses a raw byte-width multiplier
+2 tools/hy4_experts_manifest.c: fwrite uses a direct size/count literal
+3 tools/hy4_experts_manifest.c: memcpy uses a direct size/count literal
+1 tools/hy4_experts_manifest_v2.c: fread uses a direct size/count literal
+9 tools/hy4_experts_manifest_v2.c: memcpy uses a direct size/count literal
+1 tools/hy4_fp8_scale_contract.py: GLM model literal 6144 is outside the model contract
+2 tools/hy4_gpu/experts_ck128_check.c: fread uses a direct size/count literal
+2 tools/hy4_gpu/experts_ck128_check.c: memcmp uses a direct size/count literal
+6 tools/hy4_gpu/experts_ck128_check.c: memcpy uses a direct size/count literal
+1 tools/hy4_gpu/hy4_attn_test.cu: cudaMalloc uses a direct size/count literal
+21 tools/hy4_gpu/hy4_attn_test.cu: cudaMalloc uses a raw byte-width multiplier
+13 tools/hy4_gpu/hy4_attn_test.cu: cudaMemcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_attn_test.cu: memcpy uses a direct size/count literal
+3 tools/hy4_gpu/hy4_attn_test.cu: memcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_dequant_test.cu: cudaMalloc uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_dequant_test.cu: cudaMemcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_dequant_test.cu: memcmp uses a direct size/count literal
+5 tools/hy4_gpu/hy4_forward_test.cu: cudaMalloc uses a direct size/count literal
+66 tools/hy4_gpu/hy4_forward_test.cu: cudaMalloc uses a raw byte-width multiplier
+11 tools/hy4_gpu/hy4_forward_test.cu: cudaMemcpy uses a direct size/count literal
+22 tools/hy4_gpu/hy4_forward_test.cu: cudaMemcpy uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_forward_test.cu: cudaMemset uses a raw byte-width multiplier
+5 tools/hy4_gpu/hy4_forward_test.cu: fread uses a direct size/count literal
+6 tools/hy4_gpu/hy4_forward_test.cu: fwrite uses a direct size/count literal
+3 tools/hy4_gpu/hy4_forward_test.cu: memcpy uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_fp8_rung.cu: cudaMalloc uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_fp8_rung.cu: cudaMemcpy uses a raw byte-width multiplier
+5 tools/hy4_gpu/hy4_hc_test.cu: cudaMalloc uses a direct size/count literal
+12 tools/hy4_gpu/hy4_hc_test.cu: cudaMalloc uses a raw byte-width multiplier
+4 tools/hy4_gpu/hy4_hc_test.cu: cudaMemcpy uses a direct size/count literal
+9 tools/hy4_gpu/hy4_hc_test.cu: cudaMemcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_hc_test.cu: fread uses a direct size/count literal
+1 tools/hy4_gpu/hy4_hc_test.cu: memcpy uses a raw byte-width multiplier
+4 tools/hy4_gpu/hy4_layer_test.cu: cudaMalloc uses a direct size/count literal
+51 tools/hy4_gpu/hy4_layer_test.cu: cudaMalloc uses a raw byte-width multiplier
+10 tools/hy4_gpu/hy4_layer_test.cu: cudaMemcpy uses a direct size/count literal
+15 tools/hy4_gpu/hy4_layer_test.cu: cudaMemcpy uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_layer_test.cu: cudaMemset uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_layer_test.cu: fread uses a direct size/count literal
+3 tools/hy4_gpu/hy4_layer_test.cu: memcpy uses a raw byte-width multiplier
+10 tools/hy4_gpu/hy4_moe_test.cu: cudaMalloc uses a raw byte-width multiplier
+11 tools/hy4_gpu/hy4_moe_test.cu: cudaMemcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_moe_test.cu: cudaMemset uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_moe_test.cu: memcpy uses a raw byte-width multiplier
+1 tools/hy4_gpu/hy4_qchain_test.cu: cudaMalloc uses a direct size/count literal
+9 tools/hy4_gpu/hy4_qchain_test.cu: cudaMalloc uses a raw byte-width multiplier
+11 tools/hy4_gpu/hy4_qchain_test.cu: cudaMemcpy uses a raw byte-width multiplier
+2 tools/hy4_gpu/hy4_qchain_test.cu: memcpy uses a raw byte-width multiplier
+1 tools/hy4_wo_fleet_apply.c: memcpy uses a direct size/count literal
 1 tools/k3_tp4pp4_perf_estimate.py: GLM model literal 576 is outside the model contract
+1 tools/laguna_gen_name_map.py: GLM model literal 12288 is outside the model contract
+1 tools/laguna_gen_name_map.py: GLM model literal 576 is outside the model contract
+1 tools/laguna_stagepack.py: GLM model literal 12288 is outside the model contract
+1 tools/lazy_attach_harness.c: memcpy uses a direct size/count literal
+4 tools/ling_gen_deployment.py: GLM model literal 12288 is outside the model contract
+1 tools/ling_stagepack.py: GLM model literal 6144 is outside the model contract
+2 tools/ling_verify_pack.py: GLM model literal 6144 is outside the model contract
+1 tools/mb_doorbell.cu: cudaHostAlloc uses a raw byte-width multiplier
+1 tools/mb_doorbell.cu: cudaMemcpy uses a raw byte-width multiplier
+1 tools/mb_doorbell.cu: malloc uses a raw byte-width multiplier
+2 tools/mesh_lane_ladder.cu: memcpy uses a direct size/count literal
+1 tools/mesh_register_attach_repro.c: memcpy uses a direct size/count literal
+1 tools/mesh_register_repro.c: memset uses a direct size/count literal
+1 tools/mimo26_stagepack.py: GLM model literal 6144 is outside the model contract
+9 tools/multi_dev_smoke.c: memcpy uses a direct size/count literal
 4 tools/qwen36_dflash2_conv_parity.cu: cudaMalloc uses a raw byte-width multiplier
 4 tools/qwen36_dflash2_conv_parity.cu: cudaMemcpy uses a raw byte-width multiplier
 4 tools/qwen36_dflash2_conv_parity.cu: fwrite uses a direct size/count literal
@@ -79,12 +236,41 @@
 3 tools/qwen36_stagepack_rans.c: malloc uses a raw byte-width multiplier
 3 tools/qwen36_stagepack_rans.c: memcpy uses a direct size/count literal
 2 tools/qwen36_stagepack_rans.c: memcpy uses a raw byte-width multiplier
+5 tools/qwen38_27b_experts_manifest.c: memcpy uses a direct size/count literal
+2 tools/qwen38_27b_nvfp4_smoke.cu: cudaMalloc uses a raw byte-width multiplier
+5 tools/qwen38_27b_nvfp4_smoke.cu: cudaMemcpy uses a raw byte-width multiplier
+4 tools/qwen38_27b_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier
+13 tools/qwen38_27b_nvfp4_smoke.cu: memcpy uses a direct size/count literal
+1 tools/qwen38_27b_nvfp4_smoke.cu: memcpy uses a raw byte-width multiplier
+1 tools/qwen38_27b_nvfp4_smoke.cu: wire header uses a numeric field offset
 1 tools/qwen38_27b_stagepack.py: scalar element width is assigned as a byte literal
 1 tools/qwen38_tp4_collective_bench.c: cudaMalloc uses a raw byte-width multiplier
 1 tools/qwen38_tp4_nccl_bench.c: cudaMalloc uses a raw byte-width multiplier
+7 tools/qwen38max_experts_manifest.c: memcpy uses a direct size/count literal
+10 tools/qwen4_flash_nvfp4_smoke.cu: cudaMalloc uses a raw byte-width multiplier
+8 tools/qwen4_flash_nvfp4_smoke.cu: cudaMemcpy uses a raw byte-width multiplier
+3 tools/qwen4_flash_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier
+16 tools/qwen4_flash_nvfp4_smoke.cu: memcpy uses a direct size/count literal
+1 tools/qwen4_flash_nvfp4_smoke.cu: wire header uses a numeric field offset
+1 tools/qwen4_flash_pack_stamp_check.py: GLM model literal 6144 is outside the model contract
 1 tools/qwen4_flash_stagepack.py: GLM model literal 12288 is outside the model contract
 5 tools/qwen4_flash_stagepack.py: GLM model literal 6144 is outside the model contract
+4 tools/slot_bench.cu: cudaMalloc uses a raw byte-width multiplier
+1 tools/slot_bench.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/spark_kv_backing_test.c: fwrite uses a direct size/count literal
+1 tools/t1_reference_glm53full.py: GLM model literal 12288 is outside the model contract
+1 tools/t1_reference_glm53full.py: GLM model literal 6144 is outside the model contract
+1 tools/t1_reference_glm53full.py: GLM model scalar is assigned from a raw literal
+1 tools/t1_reference_k3.py: copyto uses a raw byte-width multiplier
+1 tools/t1_reference_qwen4_flash.py: GLM model literal 6144 is outside the model contract
+7 tools/tp_mesh_hardware_probe.cu: memcpy uses a direct size/count literal
+7 tools/tp_mesh_hardware_probe.cu: memcpy uses a raw byte-width multiplier
+2 tools/tp_stream_memop_probe.cu: memcpy uses a direct size/count literal
+8 tools/weightd_expert_segments.c: memcpy uses a direct size/count literal
+5 tools/weightd_lazy_consumer.c: memcpy uses a direct size/count literal
+1 tools/weightd_route_probe.c: malloc uses a raw byte-width multiplier
+4 tools/weightd_warm.c: fread uses a direct size/count literal
+1 tools/weightd_warm.c: memcpy uses a direct size/count literal
 11 validation/spark_gemma4_reference.c: gemma4_oracle_alloc uses a raw byte-width multiplier
 4 validation/spark_gemma4_reference.c: memcpy uses a direct size/count literal
 5 validation/spark_gemma4_reference.c: memcpy uses a raw byte-width multiplier

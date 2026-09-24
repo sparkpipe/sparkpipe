@@ -21,12 +21,15 @@
 #include "spark_qwen38_27b_stagepack_format.h"
 #include "spark_qwen38_27b_dspark_format.h"
 #include "spark_qwen38_27b_tp.h"
+#define SPARK_FAMILY_CAMEL Qwen38_27b
+#define SPARK_FAMILY_UPPER QWEN38_27B
+#define SPARK_FAMILY_LOWER qwen38_27b
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_27B_MODULE_PROFILE_LOG_PERIOD 64u
 #define SPARK_QWEN38_27B_MODULE_TAG "qwen38_27b_stage"
 #define SPARK_QWEN38_27B_MODULE_FUSED_QUERY_COMPONENT_COUNT 2u
-
 
 static inline float SparkQwen38_27bModuleBf16ToFloat(uint16_t h)
 {
@@ -504,33 +507,6 @@ static SparkStatus SparkQwen38_27bModuleBindMtp(SparkQwen38_27bModuleState *stat
 	}
 }
 
-static SparkStatus SparkQwen38_27bModuleBindGlobal(SparkQwen38_27bModuleState *state, const SparkQwen38_27bStagePackEntry *entry, void *payload)
-{
-	switch ( entry->tensor_kind )
-	{
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_EMBEDDING:
-		if ( state->owns_embedding == 0u && state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-		state->token_embedding_bf16 = payload;
-		return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_FINAL_NORM:
-		if ( state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-		state->final_norm_weight_bf16 = payload;
-		return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_LM_HEAD:
-		if ( state->owns_final_head == 0u )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-		state->lm_head_weight_bf16 = payload;
-		return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_QWEN38_27B_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
-	default:
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	}
-}
-
 static SparkStatus SparkQwen38_27bModuleBindLayer(SparkQwen38_27bModuleState *state, const SparkQwen38_27bStagePackEntry *entry, void *payload, void *scale)
 {
 	uint32_t layer = entry->layer_index;
@@ -559,16 +535,6 @@ static SparkStatus SparkQwen38_27bModuleBindLayer(SparkQwen38_27bModuleState *st
 	default:
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
-}
-
-static uint32_t SparkQwen38_27bModuleExpectedGlobalBits(const SparkQwen38_27bModuleState *state)
-{
-	uint32_t bits = 0u;
-	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
-		bits |= 1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		bits |= (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_QWEN38_27B_STAGEPACK_TENSOR_LM_HEAD);
-	return(bits);
 }
 
 static uint32_t SparkQwen38_27bModuleExpectedMtpBits(const SparkQwen38_27bModuleState *state)
@@ -2113,8 +2079,6 @@ static void SparkQwen38_27bModuleInvalidateLaneSequenceContinuity(
     }
 }
 
-
-
 static void SparkQwen38_27bModuleDflashSelCheck(
 	SparkQwen38_27bModuleState *state,
 	SparkQwen38_27bModuleSlot *slot,
@@ -3109,16 +3073,6 @@ static SparkStatus SparkQwen38_27bModuleAdmit(
     return status;
 }
 
-static void SparkQwen38_27bModuleSnapshotExtend(
-    void *module_state,
-    SparkModelDriverRuntimeSnapshot *snapshot)
-{
-    SparkQwen38_27bModuleState *state;
-
-    state = (SparkQwen38_27bModuleState *)module_state;
-    snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-}
-
 static SparkStatus SparkQwen38_27bModuleStateTeardown(void *module_state)
 {
     SparkQwen38_27bModuleState *state;
@@ -3151,42 +3105,6 @@ static SparkStatus SparkQwen38_27bModuleStateTeardown(void *module_state)
         free(state->dspark_weights.selector_hidden_proj_host);
     SparkStageKvClientClose(&state->kv_client);
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bModuleInitializeGate(void)
-{
-    uint32_t allow_unqualified_execution;
-
-    allow_unqualified_execution = 0u;
-    if (SparkStageModuleEnvironmentUnsigned(
-            SPARK_QWEN38_27B_MODULE_TAG,
-            "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
-            1u,
-            1u,
-            &allow_unqualified_execution) != SPARK_STATUS_OK ||
-        allow_unqualified_execution != 1u)
-    {
-        SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
-    }
-    return SPARK_STATUS_OK;
-}
-
-static void SparkQwen38_27bModuleDescribe(
-    void *module_state,
-    SparkStageModuleLifecycle *lifecycle)
-{
-    SparkQwen38_27bModuleState *state;
-
-    state = (SparkQwen38_27bModuleState *)module_state;
-    lifecycle->module_tag = SPARK_QWEN38_27B_MODULE_TAG;
-    lifecycle->ledger = &state->ledger;
-    lifecycle->slot_states = state->slot_states;
-    lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-    lifecycle->submitted_count = &state->submitted_count;
-    lifecycle->completed_count = &state->completed_count;
-    lifecycle->rejected_count = &state->rejected_count;
-    lifecycle->failed_count = &state->failed_count;
-    lifecycle->tokens_emitted = &state->tokens_emitted;
 }
 
 static SparkStatus SparkQwen38_27bModulePrepare(
@@ -3304,6 +3222,12 @@ static void SparkQwen38_27bModuleReportReady(void *module_state)
             (1024.0 * 1024.0 * 1024.0));
 }
 
+#include "sparkpipe/family/module/spark_module_snapshot_extend.h"
+
+#include "sparkpipe/family/module/spark_module_describe.h"
+
+#include "sparkpipe/family/module/spark_module_initialize_gate.h"
+
 static const SparkStageModuleLifecycleOps SparkQwen38_27bModuleLifecycle =
 {
     sizeof(SparkQwen38_27bModuleState),
@@ -3320,3 +3244,7 @@ static const SparkStageModuleLifecycleOps SparkQwen38_27bModuleLifecycle =
 SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
     SparkQwen38_27bResidentDecodeStage,
     &SparkQwen38_27bModuleLifecycle)
+
+#include "sparkpipe/family/module/spark_module_bind_global.h"
+
+#include "sparkpipe/family/module/spark_module_expected_global_bits.h"

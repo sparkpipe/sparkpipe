@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_dsv41_flash_model.h"
 #include "sparkpipe/spark_weight_codec.h"
+#define SPARK_FAMILY_CAMEL Dsv41Flash
+#define SPARK_FAMILY_UPPER DSV41_FLASH
+#define SPARK_FAMILY_LOWER dsv41_flash
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_DSV41_FLASH_STAGEPACK_MAGIC UINT32_C(0x31413444)
 #define SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION 1u
@@ -132,11 +137,6 @@ typedef struct SparkDsv41FlashStagePackLayerMaskContext
 	uint32_t tp_degree;
 } SparkDsv41FlashStagePackLayerMaskContext;
 
-static inline uint32_t SparkDsv41FlashStagePackKindIsGlobal(uint32_t tensor_kind)
-{
-	return(tensor_kind <= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD ? 1u : 0u);
-}
-
 static inline uint32_t SparkDsv41FlashStagePackKindIsIndexer(uint32_t tensor_kind)
 {
 	return(tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_Q_B &&
@@ -147,12 +147,6 @@ static inline uint32_t SparkDsv41FlashStagePackKindIsCompressor(uint32_t tensor_
 {
 	return(tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_WKV &&
 		tensor_kind <= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_COMPRESSOR_NORM ? 1u : 0u);
-}
-
-static inline uint32_t SparkDsv41FlashStagePackKindIsHc(uint32_t tensor_kind)
-{
-	return(tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_ATTN_FN &&
-		tensor_kind <= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_HC_FFN_SCALE ? 1u : 0u);
 }
 
 static inline uint32_t SparkDsv41FlashStagePackKindIsRouted(uint32_t tensor_kind)
@@ -185,26 +179,6 @@ static inline uint32_t SparkDsv41FlashStagePackKindUsesCompressGateLayer(uint32_
 	return(layer_index == 2u || layer_index == 8u || layer_index == 14u ? 1u : 0u);
 }
 
-static inline void SparkDsv41FlashStagePackShapeBf16(SparkDsv41FlashStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-	shape->payload_type = SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_BF16;
-	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
-	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-	shape->group_count = groups;
-	shape->rows = rows;
-	shape->columns = columns;
-}
-
-static inline void SparkDsv41FlashStagePackShapeF32(SparkDsv41FlashStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-	shape->payload_type = SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_F32;
-	shape->weight_codec = SPARK_WEIGHT_CODEC_NONE;
-	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-	shape->group_count = groups;
-	shape->rows = rows;
-	shape->columns = columns;
-}
-
 static inline void SparkDsv41FlashStagePackShapeFp8(SparkDsv41FlashStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
 {
 	shape->payload_type = SPARK_DSV41_FLASH_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
@@ -224,6 +198,10 @@ static inline void SparkDsv41FlashStagePackShapeMxfp4(SparkDsv41FlashStagePackTe
 	shape->rows = rows;
 	shape->columns = columns;
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
+
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_f32.h"
 
 static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kind,uint32_t expert_weight_codec,uint32_t tp_degree,SparkDsv41FlashStagePackTensorShape *shape)
 {
@@ -380,3 +358,5 @@ static inline uint32_t SparkDsv41FlashStagePackTpShardsRows(uint32_t tensor_kind
 		return(0u);
 	}
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_kind_is_hc.h"

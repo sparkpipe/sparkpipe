@@ -1,5 +1,3 @@
-#ifndef SPARK_LLM_KEY_SPACE_H
-#define SPARK_LLM_KEY_SPACE_H
 #pragma once
 
 #include <stdint.h>
@@ -175,4 +173,3 @@
 #define SPARK_LLM_ADAPTER_DESCRIPTOR            "spark.qwen38_max.serving-adapter.tp16.nvfp4.v1"
 #define SPARK_LLM_MODEL_SOURCE_URI              "Qwen/Qwen3.8-2.4T-A95B"
 #define SPARK_LLM_MODEL_REVISION                "nvfp4-radixark-bf16-spine"
-#endif

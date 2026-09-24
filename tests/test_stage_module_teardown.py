@@ -326,13 +326,15 @@ def k3_harness():
             depth += (text[end] == '{') - (text[end] == '}')
             end += 1
         return text[begin:end]
-    functions = '\n'.join(block(source, marker) for marker in (
+    stray = source[source.index('#define K3_STRAY_BIT_INDEX('):source.index('static void SparkK3RunnerStrayAccount(')]
+    functions = stray + '\n'.join(block(source, marker) for marker in (
+        'static void SparkK3RunnerStrayAccount(',
         'static SparkStatus SparkK3RunnerReleaseLease(',
         'static int32_t SparkK3RunnerLazyAcquire(',
         'static void SparkK3RunnerLazyRelease('))
     state = source[source.index('enum\n{\n\tSPARK_K3_LEASE_ACQUIRED'):source.index('typedef struct SparkK3RunnerState\n{')]
     for name, text, fields in (
-        ('SparkK3RunnerState', source, ('lazy_pack', 'lease_identifier', 'lease_phase', 'lease_address', 'group_offset_host', 'layer_w1_offset', 'layer_w2_offset', 'rows', 'stream')),
+        ('SparkK3RunnerState', source, ('lazy_pack', 'lease_identifier', 'lease_phase', 'lease_address', 'group_offset_host', 'layer_w1_offset', 'layer_w2_offset', 'rows', 'stream', 'stray_head_bits', 'stray_seen_bits', 'stray_selections', 'stray_count')),
         ('K3LayerBuffers', (ROOT / 'inference/llms/kimi_k3/layer.cuh').read_text(), ('expert_w1_weight', 'expert_w2_weight', 'group_row_offset'))):
         body = block(text, 'struct ' + name + '\n{')
         declarations = []

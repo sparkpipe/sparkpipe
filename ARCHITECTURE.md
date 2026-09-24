@@ -110,7 +110,7 @@ registration, connection setup, CPU payload copy, device-wide synchronization,
 or CPU-dispatched chunk transition.
 
 The complete collective contract is in
-[`docs/PAIRED_DUAL_LINK_ALLREDUCE.md`](docs/PAIRED_DUAL_LINK_ALLREDUCE.md).
+[`docs/PAIRED_DUAL_LINK_ALLREDUCE.md`](docs/archive/PAIRED_DUAL_LINK_ALLREDUCE.md).
 
 ## Resident model topology
 

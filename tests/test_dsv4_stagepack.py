@@ -144,7 +144,9 @@ def main() -> int:
         assert result["first_layer"] == 41
         assert result["layer_count"] == 2
         # Header field 15 carries the packed draft-layer count.
-        assert pack.HEADER_STRUCT.unpack(path.read_bytes()[:pack.HEADER_STRUCT.size])[15] == 3
+        with path.open("rb") as file:
+            header_bytes = file.read(pack.HEADER_STRUCT.size)
+        assert pack.HEADER_STRUCT.unpack(header_bytes)[15] == 3
         assert result["expert_weight_codec_id"] == pack.CODEC_IDS["mxfp4_e2m1"]
         assert pack.main(["--verify-pack", str(path)]) == 0
         with path.open("r+b") as file:

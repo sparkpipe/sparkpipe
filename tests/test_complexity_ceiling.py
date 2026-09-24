@@ -87,6 +87,21 @@ Ledger (exact counts, newest last):
   by the collective tier) - flat, status-returning branches in an
   nvcc-gated file. Mean 7.87 -> 7.88 (+~3 decision points over 3088
   functions); max CCN unchanged at 75.
+- 2026-09-24 sanity landing: this gate had not run in CI, and the tree
+  had drifted to max 91. SparkWeightdServerDispatch (91) is now a HELLO
+  gate plus a switch over one handler per IPC kind, and
+  SparkTpDeviceCollectiveRunRound (87) is an orchestrator over admit,
+  captured/spin publish, peer wait and combine helpers (both covered by
+  the weightd and collective host tests). The remaining max is
+  SparkQwen38_27bServingSubmitSpeculativeDecode at 88: its three
+  env-selected DFlash2 fold/replay modes have no host test, so it is
+  pinned here until a harness exists to decompose it safely.
+- 2026-09-24 family templates: copies shared across forked families now
+  live once in include/sparkpipe/family, which the scan now covers. Total
+  production decision points fall from 30971 to 30016 and validation from
+  5258 to 4900. The removed copies were mostly small, so the means rise:
+  production 7.73 -> 7.99 (4005 -> 3758 functions) and validation
+  9.00 -> 9.88 (584 -> 496 functions). The max is unchanged.
 """
 import pathlib
 import sys
@@ -96,20 +111,20 @@ from complexity_report import scan, scope_rows  # noqa: E402
 
 # The committed production max-CCN ceiling. MOVES DOWN with every
 # shrinking landing; moves up ONLY with a ledger entry above.
-CEILING = 75
+CEILING = 88
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
 # Activation pass: glm52 B1 head dispatch gains the certified-vs-full
 # branch (flat, status-returning, nvcc-gated); max CCN unchanged.
-MEAN_CEILING_X100 = 789
+MEAN_CEILING_X100 = 800
 
 # The validation harnesses (control-vs-candidate CUDA units, never merged
 # into production) carry their OWN budget. It does not gate the production
 # metric; it exists so harness complexity is at least VISIBLE and bounded.
 # At landing: max 90 (SparkGlm52ValFixtureSetup), mean 8.98.
 VALIDATION_MAX_BUDGET = 90
-VALIDATION_MEAN_CEILING_X100 = 950
+VALIDATION_MEAN_CEILING_X100 = 988
 
 
 def main() -> int:

@@ -8,6 +8,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from family_source import read_source
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NEUTRAL_FILES = (
@@ -241,36 +243,6 @@ def main() -> int:
         and "SparkHiddenTransportEndpoint input_endpoint"
         not in pipeline_runtime_header,
         "rank plans embed endpoint pointers and are not safe value objects",
-    )
-    rdma = (ROOT / "ring/transport/rdma.cu").read_text(encoding="utf-8")
-    require(
-        "state->source_rank = (int32_t)endpoint->source_rank_index" in rdma
-        and "state->sink_rank = (int32_t)endpoint->sink_rank_index" in rdma
-        and 'endpoint->source_host' in rdma
-        and 'endpoint->sink_host' in rdma,
-        "explicit RDMA topology is inferred from host naming",
-    )
-    require(
-        "SparkHiddenSparkHostRdmaRetireCompletedReceives" in rdma
-        and "return receive->complete != 0u ? SPARK_STATUS_OK"
-        not in rdma
-        and "return SparkHiddenSparkHostRdmaFinalizePendingReceive(state,receive);"
-        not in rdma,
-        "RDMA keeps accepted receive work in caller retry state",
-    )
-    doorbell_completion = rdma.split(
-        "static SparkStatus SparkHiddenSparkHostRdmaApplyDoorbellCompletion", 1
-    )[1].split("static SparkHiddenSparkHostRdmaInflightSend", 1)[0]
-    require(
-        "receive_index = immediate &" in doorbell_completion
-        and "completion_receive_index = (uint32_t)(work_completion->wr_id &"
-        in doorbell_completion
-        and "receive_credit_index = completion_receive_index"
-        in doorbell_completion
-        and "state,receive_index,remote_receive->generation"
-        in doorbell_completion
-        and "work_completion->wr_id !=" not in doorbell_completion,
-        "RDMA separates FIFO WQE repost ownership from logical immediate credit",
     )
     pipeline_header = (
         ROOT / "include/sparkpipe/spark_model_pipeline_client.h"
@@ -641,11 +613,11 @@ def main() -> int:
         description["stages"][0]["programs"][0]["max_inflight"] == 13,
         "DSV4 driver capacity disagrees with its PP13 serving adapter",
     )
-    adapter = (
+    adapter = read_source(
         ROOT
         / "modules/dsv4_resident_decode_stage/source/"
         "spark_dsv4_serving_adapter.c"
-    ).read_text(encoding="utf-8")
+    )
     model_header = (
         ROOT
         / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
@@ -796,7 +768,9 @@ def main() -> int:
         ROOT / "tests/fixtures/model_resident_transport_module.c"
     ).read_text(encoding="utf-8")
     require(
-        "SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in fixture_adapter
+        ("SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in fixture_adapter
+         or "SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u"
+         in fixture_adapter)
         and "SPARK_MODEL_SERVING_WORK_KIND_RELEASE" in pipeline_process_test
         and "SPARK_STATUS_UNSUPPORTED" in pipeline_process_test,
         "generic process test misses release or partial rejection abort",

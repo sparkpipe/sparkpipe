@@ -26,6 +26,11 @@
 #include "sparkpipe/spark_qwen4_flash_work_control.h"
 #include "common/common_kv_frame.h"
 #include "common/common_stagepack_format_ext.h"
+#define SPARK_FAMILY_CAMEL Qwen4Flash
+#define SPARK_FAMILY_UPPER QWEN4_FLASH
+#define SPARK_FAMILY_LOWER qwen4_flash
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN4_FLASH_MODULE_TAG "qwen4_flash_stage"
 
@@ -749,35 +754,7 @@ extern cudaError_t SparkQwen4FlashConfigureCudaKernels(void);
 static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 static SparkStatus SparkQwen4FlashModuleAllocateSlotHostMirrors(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 
-
-static SparkStatus SparkQwen4FlashModuleKvFrameBuildRestoreBatch(const LmKvFramePlanConfig *configuration, const LmKvFramePendingLane *pending_lanes, uint32_t pending_lane_count, const uint32_t *packet_lane_counts, uint32_t packet_count, void *block_staging, uint32_t block_staging_record_capacity, void *gdn_staging, uint32_t gdn_staging_record_capacity, SparkKvStoreBlock *blocks, uint32_t block_capacity, uint32_t *block_count, uint32_t *lanes_built)
-{
-	_Static_assert(sizeof(LmKvFramePlanConfig) == sizeof(SparkQwen4FlashWorkControlKvPlanConfig), "kv plan layout");
-	_Static_assert(sizeof(LmKvFramePendingLane) == sizeof(SparkQwen4FlashWorkControlPendingLane), "kv pending lane layout");
-	return(SparkQwen4FlashWorkControlBuildRestoreBatch((const SparkQwen4FlashWorkControlKvPlanConfig *)configuration,(const SparkQwen4FlashWorkControlPendingLane *)pending_lanes,pending_lane_count,packet_lane_counts,packet_count,block_staging,block_staging_record_capacity,gdn_staging,gdn_staging_record_capacity,blocks,block_capacity,block_count,lanes_built));
-}
-
-static SparkStatus SparkQwen4FlashModuleKvFrameBuildEvictBatch(const LmKvFramePlanConfig *configuration, uint64_t sequence_id, const uint32_t *resident_blocks, uint32_t resident_block_count, uint32_t include_gdn_state, const void *block_staging, const void *gdn_staging, SparkKvStoreBlock *blocks, uint32_t block_capacity, uint32_t *block_count)
-{
-	return(SparkQwen4FlashWorkControlBuildEvictBatch((const SparkQwen4FlashWorkControlKvPlanConfig *)configuration,sequence_id,resident_blocks,resident_block_count,include_gdn_state,block_staging,gdn_staging,blocks,block_capacity,block_count));
-}
-
-static SparkStatus SparkQwen4FlashModuleKvFrameSubmit(SparkStageKvClient *client, LmKvFrameBatchState *batch_state, uint32_t operation, const SparkKvStoreBlock *blocks, uint32_t block_count, uint32_t priority)
-{
-	_Static_assert(sizeof(LmKvFrameBatchState) == sizeof(SparkQwen4FlashWorkControlKvBatchState), "kv batch state layout");
-	return(SparkQwen4FlashWorkControlSubmit(client,(SparkQwen4FlashWorkControlKvBatchState *)batch_state,operation,blocks,block_count,priority));
-}
-
-static SparkStatus SparkQwen4FlashModuleKvFrameProgress(SparkStageKvClient *client, LmKvFrameWorkState *work)
-{
-	_Static_assert(sizeof(LmKvFrameWorkState) == sizeof(SparkQwen4FlashWorkControlKvState), "kv work state layout");
-	return(SparkQwen4FlashWorkControlProgress(client,(SparkQwen4FlashWorkControlKvState *)work));
-}
-
-static SparkStatus SparkQwen4FlashModuleKvFrameAcknowledge(LmKvFrameBatchState *batch_state)
-{
-	return(SparkQwen4FlashWorkControlAcknowledge((SparkQwen4FlashWorkControlKvBatchState *)batch_state));
-}
+#include "sparkpipe/family/module/spark_module_report_ready.h"
 
 static const LmKvFrameOps SparkQwen4FlashModuleKvFrameOps =
 {
@@ -788,43 +765,6 @@ static const LmKvFrameOps SparkQwen4FlashModuleKvFrameOps =
 	SparkQwen4FlashModuleKvFrameProgress,
 	SparkQwen4FlashModuleKvFrameAcknowledge
 };
-
-static SparkStatus SparkQwen4FlashModuleKvPrepareFrame(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkQwen4FlashResidentDecodeStageFrameContext *context, SparkQwen4FlashKvBlockTableView *table, uint32_t rows)
-{
-	LmKvFrameSlot frame_slot;
-	LmKvFrameTable frame_table;
-	SparkStatus status;
-	if ( context == 0 || context->decode_batch == 0 || table == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	frame_slot.cuda_stream = slot->cuda_stream;
-	frame_slot.host_row_lane_indices = slot->host_row_lane_indices;
-	frame_slot.host_row_positions = slot->host_row_positions;
-	frame_slot.host_context_lengths = slot->host_context_lengths;
-	frame_slot.host_slot_mapping = slot->host_slot_mapping;
-	frame_slot.slot_mapping = slot->slot_mapping;
-	frame_table.lane_count = table->lane_count;
-	frame_table.lane_stride = table->lane_stride;
-	frame_table.host_physical_block_indices = table->host_physical_block_indices;
-	frame_table.host_lane_physical_block_counts = table->host_lane_physical_block_counts;
-	frame_table.physical_block_indices = table->physical_block_indices;
-	frame_table.lane_physical_block_counts = table->lane_physical_block_counts;
-	status = LmKvFramePrepareFrame(&state->kv,&frame_slot,context->decode_batch->row_sequence_ids,&frame_table,rows);
-	table->physical_block_indices = frame_table.physical_block_indices;
-	table->lane_physical_block_counts = frame_table.lane_physical_block_counts;
-	return(status);
-}
-
-static void SparkQwen4FlashModuleKvMarkWritten(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint32_t rows)
-{
-	LmKvFrameSlot frame_slot;
-	frame_slot.cuda_stream = slot->cuda_stream;
-	frame_slot.host_row_lane_indices = slot->host_row_lane_indices;
-	frame_slot.host_row_positions = slot->host_row_positions;
-	frame_slot.host_context_lengths = slot->host_context_lengths;
-	frame_slot.host_slot_mapping = slot->host_slot_mapping;
-	frame_slot.slot_mapping = slot->slot_mapping;
-	LmKvFrameMarkWritten(&state->kv,&frame_slot,rows);
-}
 
 static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
@@ -904,10 +844,6 @@ static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *s
 	return(SPARK_STATUS_OK);
 }
 
-
-
-
-
 extern cudaError_t SparkQwen4FlashLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen4FlashLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension, uint32_t vocab_base, uint32_t vocab_rows);
 extern cudaError_t SparkQwen4FlashLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
@@ -930,18 +866,9 @@ extern cudaError_t SparkQwen4FlashLaunchPleGate(cudaStream_t stream, const void 
 extern cudaError_t SparkQwen4FlashLaunchPleConvUpdate(cudaStream_t stream, const void *input_bf16, const SparkQwen4FlashPleWeights *ple, void *output_bf16, void *tail_bf16, const uint32_t *row_lane_indices, const uint32_t *state_cold_by_row, uint32_t row_count, uint64_t tail_lane_stride);
 extern cudaError_t SparkQwen4FlashLaunchPleConvChunk(cudaStream_t stream, const void *input_bf16, const SparkQwen4FlashPleWeights *ple, void *output_bf16, void *tail_bf16, uint32_t token_count);
 
+#include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
 
-static SparkStatus SparkQwen4FlashModuleTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchTpCombineAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension),"tp_combine"));
-}
-
-static SparkStatus SparkQwen4FlashModuleTpCombineU64Max(void *combine_context, uint64_t *destination_device, const uint64_t *source_device, uint32_t element_count, void *cuda_stream)
-{
-	(void)combine_context;
-	return(SparkStageModuleCudaStatus(SPARK_QWEN4_FLASH_MODULE_TAG,SparkQwen4FlashLaunchTpCombineU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count),"tp_combine_u64_max"));
-}
+#include "sparkpipe/family/module/spark_module_tp_combine_bf16.h"
 
 static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashModuleState *state)
 {
@@ -1071,88 +998,7 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkQwen4FlashModuleTpSubmitOrdered(SparkQwen4FlashModuleState *state, void *device_buffer, uint32_t count, SparkQwen4FlashModuleSlot *slot, uint32_t u64_max)
-{
-	SparkTpDeviceCollectiveSubmission submission;
-	struct timespec pause;
-	uint32_t polls,flag;
-	SparkStatus status;
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	if ( state->tp_collective_initialized == 0u )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	atomic_store_explicit(&state->tp_completion_flag,0u,memory_order_relaxed);
-	memset(&submission,0,sizeof(submission));
-	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	submission.descriptor_bytes = sizeof(submission);
-	submission.slot_index = 0u;
-	submission.active_sequence_count = count;
-	submission.logical_sequence_count = slot->logical_sequence_count;
-	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
-	submission.local_device = device_buffer;
-	submission.full_device = device_buffer;
-	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkStageModuleTpCompletionFlag;
-	submission.completion_context = &state->tp_completion_flag;
-	status = u64_max != 0u
-		? SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission)
-		: SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	pause.tv_sec = 0u;
-	pause.tv_nsec = 100000;
-	for (polls = 0u; polls < 100000u; polls++)
-	{
-		flag = atomic_load_explicit(&state->tp_completion_flag,memory_order_acquire);
-		if ( flag == 1u )
-			return(SPARK_STATUS_OK);
-		if ( flag == 2u )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		nanosleep(&pause,0);
-	}
-	fprintf(stderr,"%s tp_all_reduce_stall\n",SPARK_QWEN4_FLASH_MODULE_TAG);
-	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-}
-
-static SparkStatus SparkQwen4FlashModuleTpAllReduceHidden(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, void *device_bf16, uint32_t rows)
-{
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	return(SparkQwen4FlashModuleTpSubmitOrdered(state,device_bf16,rows,slot,0u));
-}
-
-static SparkStatus SparkQwen4FlashModuleTpReduceU64Max(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, uint64_t *device_u64, uint32_t count)
-{
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	return(SparkQwen4FlashModuleTpSubmitOrdered(state,device_u64,count,slot,1u));
-}
-
 static SparkStatus SparkQwen4FlashModuleExecuteFrame(void *module_state, SparkModelDriverFrame *frame);
-
-static SparkStatus SparkQwen4FlashModuleInitializeGate(void)
-{
-	uint32_t allow_unqualified_execution;
-	allow_unqualified_execution = 0u;
-	if ( SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
-		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
-	return(SPARK_STATUS_OK);
-}
-
-static void SparkQwen4FlashModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
-{
-	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
-	lifecycle->module_tag = SPARK_QWEN4_FLASH_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
 
 static SparkStatus SparkQwen4FlashModulePrepare(
 	void *module_state,
@@ -1234,27 +1080,6 @@ static SparkStatus SparkQwen4FlashModulePrepare(
 	SPARK_RETURN(status);
 }
 
-static void SparkQwen4FlashModuleReportReady(void *module_state)
-{
-	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)module_state;
-	fprintf(stderr,"%s initialize ok slice=%u+%u gdn=%u attn=%u owns_embedding=%u owns_head=%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->first_layer_index,state->layer_count,state->gdn_layer_count,state->attn_layer_count,state->owns_embedding,state->owns_final_head);
-}
-
-
-
-static void SparkQwen4FlashAdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	SparkQwen4FlashModuleState *state = (SparkQwen4FlashModuleState *)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) *
-			 (uint64_t)(state->owns_embedding + state->owns_final_head + 3u) +
-		 sizeof(uint64_t));
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 static SparkStatus SparkQwen4FlashAdmissionKvPredicate(
 	void *context,
 	const SparkModelDriverAdmissionRequest *request,
@@ -1279,6 +1104,8 @@ static SparkStatus SparkQwen4FlashAdmissionKvPredicate(
 	}
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_admission_cost.h"
 
 static SparkStatus SparkQwen4FlashModuleAdmit(
 	void *module_state,
@@ -1369,6 +1196,10 @@ static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 	return(SPARK_STATUS_OK);
 }
 
+#include "sparkpipe/family/module/spark_module_describe.h"
+
+#include "sparkpipe/family/module/spark_module_initialize_gate.h"
+
 static const SparkStageModuleLifecycleOps SparkQwen4FlashModuleLifecycle =
 {
 	sizeof(SparkQwen4FlashModuleState),
@@ -1386,11 +1217,8 @@ SPARK_STAGE_MODULE_LIFECYCLE_ENTRY_POINTS(
 	SparkQwen4FlashResidentDecodeStage,
 	&SparkQwen4FlashModuleLifecycle)
 
-
 #define SPARK_QWEN4_FLASH_MODULE_STAGED_ROW_CAPACITY \
 	(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
-
-
 
 extern cudaError_t SparkQwen4FlashLaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count);
 extern cudaError_t SparkQwen4FlashLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
@@ -1729,6 +1557,8 @@ static uint32_t SparkQwen4FlashModuleRouteGroupBase(SparkQwen4FlashModuleState *
 	return(0u);
 }
 
+#include "sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h"
+
 static SparkStatus SparkQwen4FlashModuleRunMoe(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, const SparkQwen4FlashMoeWeights *weights, uint32_t layer, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -2008,7 +1838,6 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 		status = SparkQwen4FlashModuleT1DumpLayer(state,slot,layer);
 	SPARK_RETURN(status);
 }
-
 
 #define SPARK_QWEN4_FLASH_MODULE_HOST_ROW_CAPACITY \
 	(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT + SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS)
@@ -2381,6 +2210,8 @@ static SparkStatus SparkQwen4FlashModuleRunMtpDraftChain(SparkQwen4FlashModuleSt
 	SPARK_RETURN(status);
 }
 #endif
+
+#include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 
 static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen4FlashResidentDecodeStageFrameContext *context, uint32_t rows)
 {

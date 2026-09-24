@@ -23,6 +23,11 @@
 #include "spark_ling_stagepack_format.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#define SPARK_FAMILY_CAMEL Ling
+#define SPARK_FAMILY_UPPER LING
+#define SPARK_FAMILY_LOWER ling
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef LING_EXPERT_WEIGHT_CODEC
 #error "LING_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -147,7 +152,6 @@ struct SparkLingModuleState
 	atomic_ullong tp_next_ordinal;
 };
 
-
 static SparkStatus SparkLingPackFileSize(FILE *file,uint64_t *bytes)
 {
 	off_t end;
@@ -216,10 +220,15 @@ typedef struct SparkLingPackRange
 	uint64_t bytes;
 } SparkLingPackRange;
 
-static uint32_t SparkLingPackRangesOverlap(const SparkLingPackRange *left,const SparkLingPackRange *right)
-{
-	return(left->bytes != 0u && right->bytes != 0u && left->offset < right->offset + right->bytes && right->offset < left->offset + left->bytes ? 1u : 0u);
-}
+static SparkStatus SparkLingAllocateBytes(
+	SparkLingModuleState *state,
+	uint64_t count,
+	uint64_t width,
+	uint64_t element_bytes,
+	void **pointer);
+static void CUDART_CB SparkLingCompleteAsync(void *context);
+
+#include "sparkpipe/family/module/spark_module_glm5_next_lineage.h"
 
 static SparkStatus SparkLingPackValidateRanges(
 	const SparkLingStagePackEntry *entries,
@@ -412,17 +421,6 @@ static uint64_t SparkLingModuleExpectedLayerBits(
 	return(mask);
 }
 
-static uint64_t SparkLingModuleExpectedGlobalBits(const SparkLingModuleState *state)
-{
-	uint64_t mask;
-	mask = 0u;
-	if ( state->owns_embedding != 0u )
-		mask |= UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		mask |= (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM) | (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_LM_HEAD);
-	return(mask);
-}
-
 static uint64_t SparkLingModuleExpectedMtpBits(const SparkLingModuleState *state)
 {
 	return(state->pack_has_mtp != 0u ?
@@ -486,15 +484,6 @@ static SparkStatus SparkLingAllocateBytes(
 	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
 }
 
-static SparkStatus SparkLingAllocateRows(
-	SparkLingModuleState *state,
-	uint64_t rows,
-	uint64_t columns,
-	void **pointer)
-{
-	return(SparkLingAllocateBytes(state,rows,columns,sizeof(uint16_t),pointer));
-}
-
 static SparkStatus SparkLingAllocateSlotHost(SparkLingExecutionSlot *slot)
 {
 	uint32_t *cursor;
@@ -533,21 +522,6 @@ static void SparkLingReleaseSlotHost(SparkLingModuleState *state)
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
 	}
-}
-
-static SparkStatus SparkLingAllocateSlotMetadata(
-	SparkLingModuleState *state,
-	SparkLingExecutionSlot *slot)
-{
-	SparkStatus status;
-	status = SparkLingAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->context_lengths);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_tile_prefix);
-	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,1u,sizeof(uint32_t) * 6u,1u,&slot->kv_access_error);
-	return(status);
 }
 
 static SparkStatus SparkLingAllocateSlotHidden(
@@ -625,6 +599,13 @@ static SparkStatus SparkLingAllocateSlotHead(
 	if ( status == SPARK_STATUS_OK ) status = SparkLingAllocateBytes(state,rows,1u,sizeof(uint64_t),(void **)&slot->head_maxloc_u64);
 	return(status);
 }
+
+static SparkStatus SparkLingInitializeState(
+	const SparkFirmwareModuleConfiguration *configuration,
+	const SparkFirmwareModuleHostServices *host_services,
+	SparkLingModuleState **state_out);
+
+#include "sparkpipe/family/module/spark_module_initialize_laguna.h"
 
 static SparkStatus SparkLingAllocateSlots(SparkLingModuleState *state)
 {
@@ -1053,13 +1034,6 @@ typedef struct SparkLingClaimedContinuityContext
 	uint64_t *next_positions;
 } SparkLingClaimedContinuityContext;
 
-static SparkStatus SparkLingPrepareClaimedContinuity(void *prepare_context)
-{
-	SparkLingClaimedContinuityContext *context;
-	context = (SparkLingClaimedContinuityContext *)prepare_context;
-	return(SparkLingValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions));
-}
-
 static SparkStatus SparkLingValidateFrameBuffers(
 	const SparkLingModuleState *state,
 	const SparkModelDriverFrame *frame,
@@ -1215,14 +1189,6 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 		state->execution_row_capacity,SPARK_LING_MODEL_HEAD_COUNT / state->tp_degree);
 }
 
-static int SparkLingT1Enabled(void)
-{
-	static int t1_enabled = -1;
-	if ( t1_enabled < 0 )
-		t1_enabled = getenv("SPARK_LING_T1") != 0 ? 1 : 0;
-	return(t1_enabled);
-}
-
 static float SparkLingT1Bf16Float(uint16_t word)
 {
 	uint32_t bits = (uint32_t)word << 16;
@@ -1237,6 +1203,8 @@ static uint16_t SparkLingT1Bf16Round(float value)
 	memcpy(&bits,&value,sizeof(bits));
 	return((uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16));
 }
+
+#include "sparkpipe/family/module/spark_module_t1_enabled.h"
 
 static void SparkLingT1Wave(const SparkLingCudaWave *wave)
 {
@@ -1671,46 +1639,6 @@ static SparkStatus SparkLingStageHostBatch(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkLingPrepareAsyncCompletion(
-	SparkLingModuleState *state,
-	SparkModelDriverFrame *frame,
-	const SparkLingResidentDecodeStageBatchView *batch,
-	const uint8_t *lane_bound,
-	const uint64_t *lane_sequence_ids,
-	const uint64_t *lane_next_positions,
-	uint32_t slot_index)
-{
-	SparkLingAsyncCompletion *async;
-	uint32_t lane;
-	async = &state->completions[slot_index];
-	memset(async,0,sizeof(*async));
-	async->state = state;
-	async->completion_function = frame->completion_function;
-	async->completion_context = frame->completion_context;
-	async->slot_index = slot_index;
-	async->lane_count = batch->active_sequence_count;
-	async->row_count = batch->row_count;
-	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
-	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
-	{
-		async->lane_indices[lane] = batch->row_resident_slots[lane];
-		async->lane_bound[lane] = lane_bound[lane];
-		async->lane_sequence_ids[lane] = lane_sequence_ids[lane];
-		async->lane_next_positions[lane] = lane_next_positions[lane];
-	}
-	async->completion.request_id = frame->request_id;
-	async->completion.sequence_id = frame->sequence_id;
-	async->completion.sequence_position = frame->sequence_position;
-	async->completion.program_id = frame->program_id;
-	async->completion.driver_dispatch_slot = frame->driver_dispatch_slot;
-	async->completion.accepted_token_count = frame->new_token_count;
-	async->completion.tokens_per_sequence = frame->tokens_per_sequence;
-	async->completion.status = SPARK_STATUS_OK;
-	async->completion.residency = frame->residency;
-	async->completion.host_staging_bytes = (uint64_t)batch->row_count * sizeof(uint32_t) * (3u + state->owns_final_head);
-	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
-}
-
 static void CUDART_CB SparkLingCompleteAsync(void *context)
 {
 	SparkLingAsyncCompletion *async;
@@ -1776,29 +1704,7 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
 
-static SparkStatus SparkLingEnqueueAsyncCompletion(
-	SparkLingModuleState *state,
-	SparkLingExecutionSlot *slot,
-	uint32_t slot_index)
-{
-	cudaStream_t stream;
-	cudaError_t error;
-	stream = (cudaStream_t)slot->stream;
-	error = cudaMemcpyAsync(slot->host_kv_access_error,slot->kv_access_error,SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-	if ( error == cudaSuccess )
-		error = cudaLaunchHostFunc(stream,SparkLingCompleteAsync,&state->completions[slot_index]);
-	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"async_completion"));
-}
-
-static void SparkLingInvalidateClaimedLanes(
-	SparkLingModuleState *state,
-	const uint32_t *lane_indices,
-	uint32_t lane_count)
-{
-	uint32_t lane;
-	for (lane=0u; lane<lane_count; lane++)
-		atomic_store_explicit(&state->lane_bound[lane_indices[lane]],0u,memory_order_release);
-}
+#include "sparkpipe/family/module/spark_module_prepare_claimed_continuity.h"
 
 static SparkStatus SparkLingExecuteBatch(
 	SparkLingModuleState *state,
@@ -2041,20 +1947,4 @@ static SparkStatus SparkLingInitializeState(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkLingResidentDecodeStageInitialize(
-	const SparkFirmwareModuleConfiguration *configuration,
-	const SparkFirmwareModuleHostServices *host_services,
-	void **module_state)
-{
-	SparkLingModuleState *state;
-	SparkStatus status;
-	status = SparkFirmwareModuleValidateInitialization(configuration,host_services,module_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	state = 0;
-	status = SparkLingInitializeState(configuration,host_services,&state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	*module_state = state;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_expected_global_bits_glm.h"

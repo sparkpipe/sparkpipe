@@ -19,6 +19,7 @@
 #define SPARK_KV_PAGE_STORE_PAGE_INVALID 0u
 #define SPARK_KV_PAGE_STORE_PAGE_VALID 1u
 #define SPARK_KV_PAGE_STORE_PAGE_RESERVED 2u
+#define SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED 3u
 #define SPARK_KV_PAGE_STORE_READ_ARENA 1u
 #define SPARK_KV_PAGE_STORE_READ_BUFFER 2u
 
@@ -398,6 +399,17 @@ static SparkStatus SparkKvPageStoreReleaseBackingSlotLocked(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkKvPageStoreForgetWriteFailureLocked(
+	SparkKvPageStore *store,
+	uint32_t logical_page_index)
+{
+	if ( store->valid_pages[logical_page_index] !=
+		SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED )
+		return;
+	store->valid_pages[logical_page_index] = SPARK_KV_PAGE_STORE_PAGE_INVALID;
+	store->generations[logical_page_index] = 0u;
+}
+
 static uint32_t SparkKvPageStoreFindFreeBackingSlotLocked(
 	const SparkKvPageStoreWorker *worker)
 {
@@ -431,6 +443,9 @@ static void SparkKvPageStoreRecordJob(
 	{
 		(void)SparkKvPageStoreReleaseBackingSlotLocked(worker,
 			job->logical_page_index,job->backing_slot_index);
+		store->valid_pages[job->logical_page_index] =
+			SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED;
+		store->generations[job->logical_page_index] = job->generation;
 	}
 	else if ( status == SPARK_STATUS_OK )
 	{
@@ -716,9 +731,24 @@ SparkStatus SparkKvPageStoreWriteback(
 		status = job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE ?
 			job->terminal_status : SPARK_STATUS_BUSY;
 		if ( job->state == SPARK_KV_PAGE_STORE_JOB_COMPLETE )
+		{
 			memset(job,0,sizeof(*job));
+			SparkKvPageStoreForgetWriteFailureLocked(store,logical_page_index);
+		}
 		(void)pthread_mutex_unlock(&worker->mutex);
 		SPARK_RETURN(status);
+	}
+	if ( store->valid_pages[logical_page_index] ==
+		SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED )
+	{
+		status = store->generations[logical_page_index] == generation ?
+			SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+		SparkKvPageStoreForgetWriteFailureLocked(store,logical_page_index);
+		if ( status != SPARK_STATUS_OK )
+		{
+			(void)pthread_mutex_unlock(&worker->mutex);
+			SPARK_FAIL(status);
+		}
 	}
 	if ( store->valid_pages[logical_page_index] ==
 		SPARK_KV_PAGE_STORE_PAGE_VALID )
@@ -984,7 +1014,9 @@ static SparkStatus SparkKvPageStoreCanInvalidateLocked(SparkKvPageStoreWorker *w
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	if ( store->valid_pages[logical_page_index] ==
-		SPARK_KV_PAGE_STORE_PAGE_INVALID )
+		SPARK_KV_PAGE_STORE_PAGE_INVALID ||
+		store->valid_pages[logical_page_index] ==
+		SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED )
 		return(worker->backing_slots_by_logical_page[logical_page_index] ==
 			SPARK_KV_CACHE_NO_BLOCK ? SPARK_STATUS_OK :
 			SPARK_STATUS_INTERNAL_ERROR);
@@ -1001,6 +1033,7 @@ static SparkStatus SparkKvPageStoreCanInvalidateLocked(SparkKvPageStoreWorker *w
 
 static SparkStatus SparkKvPageStoreInvalidateLocked(SparkKvPageStoreWorker *worker,uint32_t logical_page_index)
 {
+	SparkKvPageStoreForgetWriteFailureLocked(worker->store,logical_page_index);
 	if ( worker->store->valid_pages[logical_page_index] == SPARK_KV_PAGE_STORE_PAGE_INVALID )
 		return(SPARK_STATUS_OK);
 	return(SparkKvPageStoreReleaseBackingSlotLocked(worker,logical_page_index,worker->backing_slots_by_logical_page[logical_page_index]));

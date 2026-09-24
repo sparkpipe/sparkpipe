@@ -13,6 +13,11 @@
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 
 #include "spark_dsv41_flash_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Dsv41Flash
+#define SPARK_FAMILY_UPPER DSV41_FLASH
+#define SPARK_FAMILY_LOWER dsv41_flash
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_DSV41_FLASH_MODULE_TAG "dsv41_flash_stage"
 
@@ -54,18 +59,6 @@ typedef struct SparkDsv41FlashModuleState
 	uint64_t *layer_seen_bits;
 	uint64_t global_seen_bits;
 } SparkDsv41FlashModuleState;
-
-static SparkStatus SparkDsv41FlashPackFileSize(FILE *file,uint64_t *bytes)
-{
-	off_t end;
-	if ( file == 0 || bytes == 0 || fseeko(file,0,SEEK_END) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	end = ftello(file);
-	if ( end < 0 || fseeko(file,0,SEEK_SET) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	*bytes = (uint64_t)end;
-	return(SPARK_STATUS_OK);
-}
 
 static void SparkDsv41FlashMarkSeen(
 	SparkDsv41FlashModuleState *state,
@@ -294,6 +287,8 @@ static SparkStatus SparkDsv41FlashLazyOpen(
 	}
 	SPARK_RETURN(status);
 }
+
+#include "sparkpipe/family/module/spark_module_pack_file_size.h"
 
 static SparkStatus SparkDsv41FlashPackLoad(
 	SparkDsv41FlashModuleState *state,

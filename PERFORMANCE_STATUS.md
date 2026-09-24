@@ -591,10 +591,14 @@ path). All runs emit the identical token stream.
 | A: single-stream decode (B8 class, batched prefill) | 128 | 18.73 s | 6.83 tok/s |
 | B: 8-sequence aggregate (B8 class) | 256 | 5.89 s | 43.46 tok/s |
 
-The single-stream path is bandwidth-bound: per token it reads ~15.7 GB of FP8
-expert weights plus ~6 GB of BF16 spine at the 273 GB/s LPDDR5x limit (~80 ms
-hard floor), plus ~31 ms of TP collectives (158 reduces/token, median 912 us)
-and ~25 ms of kernel launch + compute overhead. The B8 class amortizes the same
+The ~15.7 GB of FP8 expert weights plus ~6 GB of BF16 spine is the whole
+model's per-token read. Under TP8 each rank reads about an eighth of it
+(~2.7 GB) at the same time, so the per-token bandwidth floor is ~10 ms at
+273 GB/s per Spark, not the ~80 ms this entry originally stated (derived
+2026-09-24, not measured). The ~80 ms of kernel time therefore corresponds to
+roughly 34 GB/s per rank, and 6.91 tok/s is about 7% of the bandwidth
+roofline. The remaining time is ~31 ms of TP collectives (158 reduces/token)
+and ~25 ms of launch and compute overhead. The B8 class amortizes the same
 weight bytes across eight rows, which is what lifts the aggregate to 43.46
 tok/s. Next: reduce-path and launch-overhead squeezes toward the single-stream
 ceiling, and dspark speculative decode (draft weights must be trained first;

@@ -1,5 +1,0 @@
-attach: path=/home/spark4/sparkdata/hy4.fp8.tp16/packs/rank-04/model-fp8-tp16-rank-04.safetensors arena=56131321268 experts=236560 socket=/tmp/spark_weightd.sock sha=69c353639744f90a90a019625fa0a82c9334a8cb73ad5d30e7e0bddb7b37cf36
-attach: CreateChecked status=0 (ok)
-STUB-BOUNDARY initialize status=0 OK
-STUB-BOUNDARY execute status=19 (unsupported)
-STUB-BOUNDARY destroy done

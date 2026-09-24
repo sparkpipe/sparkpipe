@@ -1,5 +1,0 @@
-attach: path=/home/spark5/sparkdata/hy4.fp8.tp16/packs/rank-05/model-fp8-tp16-rank-05.safetensors arena=56131321268 experts=236560 socket=/tmp/spark_weightd.sock sha=b1259b51b8650941177d6e8a4f1a0fb56a7623f1e08acc50039eb5349c1ef275
-ERRSITE runtime/spark_weightd_lazy_pack.c:62 status=2
-ERRSITE runtime/spark_weightd_lazy_pack.c:89 status=2
-ERRSITE runtime/spark_weightd_lazy_pack.c:165 status=2
-attach: CreateChecked status=2 (capacity_exceeded)

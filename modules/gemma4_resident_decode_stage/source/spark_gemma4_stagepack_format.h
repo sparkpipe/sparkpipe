@@ -7,7 +7,11 @@
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_status.h"
+#define SPARK_FAMILY_CAMEL Gemma4
+#define SPARK_FAMILY_UPPER GEMMA4
+#define SPARK_FAMILY_LOWER gemma4
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GEMMA4_STAGEPACK_MAGIC 0x50534734u
 #define SPARK_GEMMA4_STAGEPACK_FORMAT_VERSION 1u
@@ -202,13 +206,6 @@ static inline void SparkGemma4StagePackExpectedGeometry(SparkGemma4StagePackHead
 	header->reserved_zero = 0u;
 	header->directory_offset = 0u;
 	header->file_bytes = 0u;
-}
-
-static inline int32_t SparkGemma4StagePackHeaderMatches(const SparkGemma4StagePackHeader *file_header, const SparkGemma4StagePackHeader *expected)
-{
-	return(SparkStagePackHeaderMatches(
-		(const SparkStagePackHeaderCommon *)file_header,
-		(const SparkStagePackHeaderCommon *)expected));
 }
 
 typedef SparkStagePackTensorShape SparkGemma4StagePackTensorShape;
@@ -481,3 +478,5 @@ static inline uint64_t SparkGemma4StagePackScaleBytes(uint32_t weight_format, ui
 	return(0u);
 #endif
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_header_matches.h"

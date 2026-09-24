@@ -1,9 +1,0 @@
-{
- "spark4": {
-  "acquired_at": "2026-08-30T06:16:59",
-  "holder": "task:qwen38flash-shamatch2",
-  "id": "qwen38flash-shamatch2",
-  "pid": null,
-  "ttl_minutes": 45.0
- }
-}

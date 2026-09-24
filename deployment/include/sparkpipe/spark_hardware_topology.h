@@ -1,7 +1,6 @@
 #ifndef SPARKPIPE_SPARK_HARDWARE_TOPOLOGY_H
 #define SPARKPIPE_SPARK_HARDWARE_TOPOLOGY_H
 
-
 #include <stdint.h>
 
 #ifdef __cplusplus

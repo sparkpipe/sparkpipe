@@ -1155,6 +1155,19 @@ int main(int argc, char **argv)
 	}
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
+	cfg.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
+	{
+		const char *budget_env = getenv("SPARK_BATCH_INFLIGHT_BUDGET_NS");
+		if ( budget_env != 0 && budget_env[0] != '\0' )
+		{
+			cfg.inflight_budget_ns = strtoull(budget_env,0,10);
+			if ( cfg.inflight_budget_ns < SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS )
+			{
+				fprintf(stderr,"model_api: SPARK_BATCH_INFLIGHT_BUDGET_NS=%s is below the %llu ns minimum\n",budget_env,(unsigned long long)SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS);
+				return 1;
+			}
+		}
+	}
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
 	EngineStopTokenCount = dep.eos_token_count;

@@ -18,6 +18,11 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_muse_glimmer_work_control.h"
 #include "spark_muse_glimmer_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL MuseGlimmer
+#define SPARK_FAMILY_UPPER MUSE_GLIMMER
+#define SPARK_FAMILY_LOWER muse_glimmer
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_MUSE_GLIMMER_MODULE_TAG "muse_stage"
 
@@ -340,16 +345,6 @@ static SparkStatus SparkMuseGlimmerModuleBindLayer(SparkMuseGlimmerModuleState *
 	}
 }
 
-static uint32_t SparkMuseGlimmerModuleExpectedGlobalBits(const SparkMuseGlimmerModuleState *state)
-{
-	uint32_t bits = 0u;
-	if ( state->owns_embedding != 0u || state->owns_final_head != 0u )
-		bits |= 1u << SPARK_MUSE_GLIMMER_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		bits |= (1u << SPARK_MUSE_GLIMMER_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_MUSE_GLIMMER_STAGEPACK_TENSOR_LM_HEAD);
-	return(bits);
-}
-
 static uint32_t SparkMuseGlimmerModuleExpectedLayerBits(const SparkMuseGlimmerModuleState *state, uint32_t layer)
 {
 	(void)state;
@@ -406,6 +401,8 @@ static SparkStatus SparkMuseGlimmerModuleLoadEntry(SparkMuseGlimmerModuleState *
 		return(status);
 	return(is_global != 0u ? SparkMuseGlimmerModuleBindGlobal(state,entry,payload) : SparkMuseGlimmerModuleBindLayer(state,entry,payload,0));
 }
+
+#include "sparkpipe/family/module/spark_module_expected_global_bits.h"
 
 static SparkStatus SparkMuseGlimmerModuleVerifyCoverage(SparkMuseGlimmerModuleState *state)
 {
@@ -467,7 +464,6 @@ static SparkStatus SparkMuseGlimmerModuleLoadPack(SparkMuseGlimmerModuleState *s
 static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleState *state);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlot(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlotHostMirrors(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
-
 
 static SparkStatus SparkMuseGlimmerModuleOpenKvTier(SparkMuseGlimmerModuleState *state, const SparkFirmwareModuleHostServices *host_services)
 {
@@ -879,12 +875,7 @@ extern cudaError_t SparkMuseGlimmerLaunchHeadShadowQuantize(cudaStream_t stream,
 extern cudaError_t SparkMuseGlimmerLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 
-
-static SparkStatus SparkMuseGlimmerModuleTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,SparkMuseGlimmerLaunchTpCombineAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension),"tp_combine"));
-}
+#include "sparkpipe/family/module/spark_module_tp_combine_bf16.h"
 
 static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmerModuleState *state)
 {
@@ -1036,20 +1027,6 @@ static SparkStatus SparkMuseGlimmerModuleInitializeGate(void)
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkMuseGlimmerModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
-{
-	SparkMuseGlimmerModuleState *state = (SparkMuseGlimmerModuleState *)module_state;
-	lifecycle->module_tag = SPARK_MUSE_GLIMMER_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 static SparkStatus SparkMuseGlimmerModulePrepare(
 	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -1142,6 +1119,8 @@ static SparkStatus SparkMuseGlimmerModuleAdmit(
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
+#include "sparkpipe/family/module/spark_module_describe.h"
+
 static const SparkStageModuleLifecycleOps SparkMuseGlimmerModuleLifecycle =
 {
 	sizeof(SparkMuseGlimmerModuleState),
@@ -1155,29 +1134,6 @@ static const SparkStageModuleLifecycleOps SparkMuseGlimmerModuleLifecycle =
 	0
 };
 
-SparkStatus SparkMuseGlimmerResidentDecodeStageInitialize(
-    const SparkFirmwareModuleConfiguration *configuration,
-    const SparkFirmwareModuleHostServices *host_services,
-    void **module_state)
-{
-	return(SparkStageModuleLifecycleInitialize(configuration,host_services,module_state,&SparkMuseGlimmerModuleLifecycle));
-}
-
-SparkStatus SparkMuseGlimmerResidentDecodeStageAdmit(
-    void *module_state,
-    const SparkModelDriverAdmissionRequest *request,
-    SparkModelDriverAdmissionDecision *decision)
-{
-	return(SparkStageModuleLifecycleAdmit(module_state,request,decision,&SparkMuseGlimmerModuleLifecycle));
-}
-
-SparkStatus SparkMuseGlimmerResidentDecodeStageExecute(
-    void *module_state,
-    SparkModelDriverFrame *frame)
-{
-	return(SparkStageModuleLifecycleExecute(module_state,frame,&SparkMuseGlimmerModuleLifecycle));
-}
-
 SparkStatus SparkMuseGlimmerResidentDecodeStageSnapshot(
     void *module_state,
     uint32_t program_id,
@@ -1189,16 +1145,8 @@ SparkStatus SparkMuseGlimmerResidentDecodeStageSnapshot(
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
-void SparkMuseGlimmerResidentDecodeStageDestroy(void *module_state)
-{
-	SparkStageModuleLifecycleDestroy(module_state,&SparkMuseGlimmerModuleLifecycle);
-}
-
-
 #define SPARK_MUSE_GLIMMER_MODULE_STAGED_ROW_CAPACITY \
 	SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT
-
-
 
 extern cudaError_t SparkMuseGlimmerLaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t tp_degree, uint32_t tp_rank);
 extern cudaError_t SparkMuseGlimmerLaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
@@ -1525,20 +1473,7 @@ static SparkStatus SparkMuseGlimmerModuleConsumeHiddenInput(SparkMuseGlimmerModu
 	return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"hidden_input"));
 }
 
-static SparkStatus SparkMuseGlimmerModuleEmitHiddenOutput(SparkMuseGlimmerModuleSlot *slot, SparkMuseGlimmerResidentDecodeStageFrameContext *context, uint32_t rows)
-{
-	SparkHiddenTransportPacket *packet = &context->hidden_output_packet;
-	memset(packet,0,sizeof(*packet));
-	packet->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-	packet->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_PACKET_BYTES;
-	packet->flags = SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 | SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
-	packet->active_sequence_count = rows;
-	packet->hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
-	packet->bytes_per_sequence = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES;
-	packet->hidden_bf16 = slot->hidden_bf16;
-	packet->cuda_stream = slot->cuda_stream;
-	return(context->hidden_output_send_function(context->hidden_output_transport_session,packet));
-}
+#include "sparkpipe/family/module/spark_module_lifecycle_entry.h"
 
 static SparkStatus SparkMuseGlimmerModuleRunDecode(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, SparkModelDriverFrame *frame, SparkMuseGlimmerResidentDecodeStageFrameContext *context, uint32_t rows)
 {

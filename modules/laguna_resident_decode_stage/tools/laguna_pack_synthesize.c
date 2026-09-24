@@ -3,7 +3,11 @@
 
 #include "spark_laguna_stagepack_format.h"
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_LAGUNA_SYNTHESIZE_MAX_TENSORS 2048u
 #define SPARK_LAGUNA_SYNTHESIZE_CHUNK_BYTES (8u * 1024u * 1024u)
@@ -36,34 +40,7 @@ typedef struct SparkLagunaSynthesizeContext
 
 #include "sparkpipe/spark_pack_synthesize_common.h"
 
-static int32_t SparkLagunaSynthesizeAppend(SparkLagunaSynthesizeContext *context, uint32_t tensor_kind, uint32_t layer_index)
-{
-	SparkLagunaStagePackTensorShape shape;
-	SparkLagunaStagePackEntry *entry;
-	if ( context->entry_count >= SPARK_LAGUNA_SYNTHESIZE_MAX_TENSORS )
-		return(-1);
-	if ( SparkLagunaStagePackExpectedShape(tensor_kind,layer_index,context->expert_codec,context->tp_degree,&shape) != 0 )
-		return(-2);
-	entry = &context->entries[context->entry_count];
-	memset(entry,0,sizeof(*entry));
-	entry->tensor_kind = tensor_kind;
-	entry->layer_index = layer_index;
-	entry->payload_type = shape.payload_type;
-	entry->weight_codec = shape.weight_codec;
-	entry->scale_encoding = shape.scale_encoding;
-	entry->group_count = shape.group_count;
-	entry->rows = shape.rows;
-	entry->columns = shape.columns;
-	entry->payload_bytes = SparkLagunaStagePackExpectedPayloadBytes(&shape);
-	entry->scale_bytes = SparkLagunaStagePackExpectedScaleBytes(&shape);
-	entry->payload_offset = SparkSynthAlign(context->payload_cursor);
-	entry->scale_offset = entry->scale_bytes != 0u ? SparkSynthAlign(entry->payload_offset + entry->payload_bytes) : 0u;
-	context->payload_cursor = entry->scale_bytes != 0u ? (entry->scale_offset + entry->scale_bytes) : (entry->payload_offset + entry->payload_bytes);
-	if ( entry->payload_bytes == 0u )
-		return(-3);
-	context->entry_count++;
-	return(0);
-}
+#include "sparkpipe/family/synth/spark_synth_glm.h"
 
 static int32_t SparkLagunaSynthesizeAppendLayer(SparkLagunaSynthesizeContext *context, uint32_t layer_index)
 {
@@ -120,29 +97,6 @@ static int32_t SparkLagunaSynthesizeBuild(SparkLagunaSynthesizeContext *context)
 		if ( SparkLagunaSynthesizeAppendDFlash(context) < 0 )
 			return(-6);
 	return(0);
-}
-
-static void SparkLagunaSynthesizeHexParse(const char *text, uint8_t *out, uint32_t bytes)
-{
-	uint32_t index;
-	for (index = 0; index < bytes; index++)
-		out[index] = 0u;
-	if ( text == 0 )
-		return;
-	for (index = 0; index < bytes * 2u; index++)
-	{
-		char c = text[index];
-		uint8_t value;
-		if ( c >= '0' && c <= '9' )
-			value = (uint8_t)(c - '0');
-		else if ( c >= 'a' && c <= 'f' )
-			value = (uint8_t)(c - 'a' + 10);
-		else if ( c >= 'A' && c <= 'F' )
-			value = (uint8_t)(c - 'A' + 10);
-		else
-			break;
-		out[index / 2u] = (uint8_t)((out[index / 2u] << 4) | value);
-	}
 }
 
 int main(int argc, char **argv)

@@ -238,7 +238,7 @@ int main(void)
 		char deploy_path[512];
 		char runtime_root[256];
 		assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
-		(void)snprintf(deploy_path,sizeof(deploy_path),"%s/mock-pipeline-deployment.json",runtime_root);
+		(void)snprintf(deploy_path,sizeof(deploy_path),"%s/build/mock-pipeline-deployment.json",runtime_root);
 		TestBuildDeployment(&deployment, deploy_path, runtime_root);
 		memset(&configuration,0,sizeof(configuration));
 		configuration.abi_version = SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION;

@@ -1,5 +1,0 @@
-SMOKE REALWS {"op":"realws-init","dev":"rd-dsv4flash1","pid":3706373,"pack":"/home/spark9/sparkdata/dsv4flash.tp16/packs/dsv4flash.tp16.rank8.spstage","pack_bytes":22106506272,"manifest_spine_bytes":12908397600,"manifest_expert_bytes":9198108672,"layers":43,"groups":11008,"max_experts_per_layer":256}
-SMOKE REALWS {"op":"realws-lane","dev":"rd-dsv4flash1","lane":0}
-SMOKE REALWS {"op":"realws-attach","dev":"rd-dsv4flash1","resident_bytes":824180736,"expert_count":11008,"arena_count":1,"chunk_bytes":2097152,"loaded_from_pack":0}
-SMOKE REALWS {"op":"realws-batch","dev":"rd-dsv4flash1","batch":0,"keys":344,"resident_bytes":824180736,"pull_ms":0.1,"gib_per_s":5284.60}
-SMOKE REALWS {"op":"realws-working-set","dev":"rd-dsv4flash1","lease_resident_bytes":824180736,"lease_batches":1,"ws_pct_of_pack":3.73,"spine_bytes":12908397600,"expert_bytes_total":9198108672}

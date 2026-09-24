@@ -31,7 +31,11 @@
 #include "spark_dsv4_stagepack_format.h"
 
 #include "inference/kernels/graph.cuh"
+#define SPARK_FAMILY_CAMEL Dsv4
+#define SPARK_FAMILY_UPPER DSV4
+#define SPARK_FAMILY_LOWER dsv4
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_DSV4_MODULE_TAG "dsv4_stage"
 #define SPARK_DSV4_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
@@ -507,22 +511,6 @@ extern cudaError_t SparkDsv4LaunchHcPreReduce(
 extern cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
 extern cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const void *streams_bf16, const float *mixes_f32, float scale, const float *base_f32, float epsilon, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
 
-static SparkStatus SparkDsv4ModuleCombineBf16(
-	void *combine_context,
-	void *destination_device,
-	const void *source_device,
-	uint32_t active_sequence_count,
-	uint32_t hidden_dimension,
-	void *cuda_stream)
-{
-	cudaError_t error;
-	(void)combine_context;
-	error = SparkDsv4LaunchAccumAdd((cudaStream_t)cuda_stream,
-		destination_device,source_device,active_sequence_count,hidden_dimension);
-	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
-		"tp_all_reduce_sum"));
-}
-
 static SparkStatus SparkDsv4ModuleCombineRelayBf16(
 	void *combine_context,
 	void *destination_device,
@@ -559,20 +547,7 @@ static SparkStatus SparkDsv4ModuleCombineTp4Bf16(
 		"tp_all_reduce_sum_tp4_tree"));
 }
 
-static SparkStatus SparkDsv4ModuleCombineU64Max(
-	void *combine_context,
-	uint64_t *destination_device,
-	const uint64_t *source_device,
-	uint32_t element_count,
-	void *cuda_stream)
-{
-	cudaError_t error;
-	(void)combine_context;
-	error = SparkDsv4LaunchAccumU64Max((cudaStream_t)cuda_stream,
-		destination_device,source_device,element_count);
-	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,
-		"tp_all_reduce_max_u64"));
-}
+#include "sparkpipe/family/module/spark_module_combine.h"
 
 static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	SparkDsv4ModuleState *state,
@@ -753,7 +728,6 @@ static uint32_t SparkDsv4ModuleDsparkContextEnabled(
 	return(context != 0 &&
 		(context->flags & SPARK_DSV4_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_DSPARK) != 0u) ? 1u : 0u;
 }
-
 
 static uint32_t SparkDsv4ModuleContextSliceIsValid(
 	const SparkDsv4ResidentDecodeStageNodeContext *context)
@@ -1449,7 +1423,6 @@ static SparkStatus SparkDsv4ModuleUploadFreqs(SparkDsv4ModuleState *state)
 		error = cudaStreamSynchronize(stream);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"freq_upload"));
 }
-
 
 static SparkStatus SparkDsv4ModuleValidateHashTables(SparkDsv4ModuleState *state)
 {
@@ -6085,24 +6058,6 @@ static SparkStatus SparkDsv4ModuleStateTeardown(void *module_state)
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkDsv4ModuleDescribe(
-	void *module_state,
-	SparkStageModuleLifecycle *lifecycle)
-{
-	SparkDsv4ModuleState *state;
-
-	state = (SparkDsv4ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_DSV4_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 static SparkStatus SparkDsv4ModulePrepare(
 	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -6182,6 +6137,8 @@ static void SparkDsv4ModuleReportReady(void *module_state)
 		(1024.0 * 1024.0 * 1024.0),(double)state->ledger.device_bytes_resident /
 		(1024.0 * 1024.0 * 1024.0));
 }
+
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkDsv4ModuleLifecycle =
 {

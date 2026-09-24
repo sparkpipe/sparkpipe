@@ -151,9 +151,9 @@ static SparkStatus TestLagunaServingDriverSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( context->hidden_input_bytes != 0u && context->hidden_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT) != 0u != (context->hidden_input_bytes != 0u) )
+	if ( ((context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT) != 0u) != (context->hidden_input_bytes != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT) != 0u != (context->hidden_output_bytes != 0u) )
+	if ( ((context->flags & SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT) != 0u) != (context->hidden_output_bytes != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffer_count == 0u )
 	{

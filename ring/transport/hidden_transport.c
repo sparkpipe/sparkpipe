@@ -1489,13 +1489,6 @@ void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         validated_latency_ns,
         route_name,
         SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
-        /* the endpoint's capability field is a REQUIRED mask the module
-         * must cover at open (the (interface & effective) != effective
-         * check); the validators beside us already pass REQUIRED_*.
-         * Stamping RECOMMENDED here demanded doorbells/multi-lane/poll
-         * descriptors of every honest module — same wiring mistake as
-         * the residentd contract site, one layer deeper (ruling fix b).
-         */
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS);
 }
 

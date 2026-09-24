@@ -1,6 +1,0 @@
-SMOKE-FAIL mode=realws rc=2
-usage: /home/spark9/smokemd-mds/bin/multi_dev_smoke makepack PACK LAYERS EXPERTS KINDS RANGE_BYTES SPINE_GAP SEED
-       /home/spark9/smokemd-mds/bin/multi_dev_smoke dev SOCKET PACK NAME ROUNDS KEYS POOL_BYTES PINS HOLD_SECONDS
-       /home/spark9/smokemd-mds/bin/multi_dev_smoke bandwidth MB ITERS
-       /home/spark9/smokemd-mds/bin/multi_dev_smoke evictor SOCKET ACQUIRE_LANE(0|1) HOLD_SECONDS TARGETS
-       /home/spark9/smokemd-mds/bin/multi_dev_smoke realws SOCKET PACK NAME TOPK POOL_BYTES SHA256_OR_DASH

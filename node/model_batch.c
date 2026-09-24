@@ -796,6 +796,7 @@ int main(int argc,char **argv)
 	{
 		file.engine.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 		file.engine.descriptor_bytes = SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES;
+		file.engine.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 		file.engine.deployment = &deployment;
 		file.engine.runtime_root = runtime_root;
 		file.engine.event_function = SparkModelBatchWriteEvent;

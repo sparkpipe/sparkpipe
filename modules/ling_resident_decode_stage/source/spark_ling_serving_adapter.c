@@ -14,6 +14,11 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
+#define SPARK_FAMILY_CAMEL Ling
+#define SPARK_FAMILY_UPPER LING
+#define SPARK_FAMILY_LOWER ling
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef LING_EXPERT_WEIGHT_CODEC
 #error "LING_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -252,39 +257,6 @@ static SparkStatus SparkLingServingLoadConfiguration(
 	return(status);
 }
 
-static SparkStatus SparkLingServingValidateRowOrder(
-	const SparkLingServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint8_t seen[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t last_position[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,wave,maximum;
-	uint32_t counts[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	for (row=0u; row<submission->row_count; row++)
-	{
-		lane = submission->row_lane_indices[row];
-		if ( lane >= submission->active_sequence_count || submission->row_positions[row] >= state->node_context.max_sequence_positions )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( seen[lane] != 0u && submission->row_positions[row] != last_position[lane] + 1u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		seen[lane] = 1u;
-		last_position[lane] = submission->row_positions[row];
-		counts[lane]++;
-	}
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		return(submission->row_count == submission->active_sequence_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	maximum = 0u;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<submission->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= submission->row_count || submission->row_lane_indices[row++] != lane) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 static SparkLingServingPending *SparkLingServingReservePending(
 	SparkLingServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -321,17 +293,6 @@ static SparkLingServingPending *SparkLingServingReservePending(
 		}
 	}
 	return(0);
-}
-
-static void SparkLingServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkLingServingState *state;
-	(void)driver_completion;
-	state = (SparkLingServingState *)completion_context;
-	if ( state != 0 )
-		state->orphan_completion_count++;
 }
 
 static void SparkLingServingDriverCompletion(
@@ -386,14 +347,6 @@ static void SparkLingServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static void SparkLingServingDriverWake(void *wake_context)
-{
-	SparkLingServingState *state;
-	state = (SparkLingServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
 static uint32_t SparkLingServingAvailableSubmissionCount(
 	const SparkLingServingState *state)
 {
@@ -404,26 +357,8 @@ static uint32_t SparkLingServingAvailableSubmissionCount(
 	return(available);
 }
 
-static void SparkLingServingDestroy(void *adapter_state)
-{
-	SparkLingServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 )
-		return;
-	if ( SparkLingServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return;
-	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
-	{
-		memset(&snapshot,0,sizeof(snapshot));
-		if ( state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot) != SPARK_STATUS_OK || snapshot.active_submission_count != 0u )
-			return;
-	}
-	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
-		state->driver.interface->destroy(state->driver_instance);
-	SparkUnloadModelDriver(&state->driver);
-	free(state);
-}
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+#include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
 static SparkStatus SparkLingServingLoadDriver(
 	SparkLingServingState *state,
@@ -485,6 +420,8 @@ static SparkStatus SparkLingServingValidateConfiguration(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/serving/spark_serving_destroy_laguna.h"
 
 static SparkStatus SparkLingServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -559,19 +496,6 @@ static SparkStatus SparkLingServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingServingValidateBoundaries(
-	const SparkLingServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint64_t boundary_bytes;
-	boundary_bytes = (uint64_t)submission->row_count * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	(void)boundary_bytes;
-	(void)state;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkLingServingSubmissionStale(
 	const SparkLingServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -582,6 +506,8 @@ static uint32_t SparkLingServingSubmissionStale(
 		atomic_load_explicit(&state->reset_generation,memory_order_acquire) ?
 		1u : 0u);
 }
+
+#include "sparkpipe/family/serving/spark_serving_validate_row_order.h"
 
 static SparkStatus SparkLingServingValidateSubmission(
 	void *adapter_state,
@@ -610,50 +536,7 @@ static SparkStatus SparkLingServingValidateSubmission(
 
 static _Thread_local SparkModelDriverCacheLane SparkLingServingCacheScratch[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 
-static SparkServingCacheAdmission SparkLingServingCacheContext(
-	SparkLingServingState *state,SparkModelDriverCacheLane *lanes)
-{
-	SparkServingCacheAdmission cache;
-	cache.program_id = state->program->program_id;
-	cache.lane_capacity = SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	cache.lanes = lanes;
-	cache.driver = state->driver.interface;
-	cache.driver_instance = state->driver_instance;
-	cache.validate = SparkLingServingValidateSubmission;
-	cache.adapter_state = state;
-	return(cache);
-}
-
-static SparkStatus SparkLingServingPrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submissions,uint32_t count)
-{
-	SparkLingServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,count,
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkLingServingResolvePrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkLingServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 ||
-		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
-		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
+#include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 static void SparkLingServingBuildFrame(
 	const SparkLingServingState *state,
@@ -752,14 +635,6 @@ static SparkStatus SparkLingServingSubmit(
 	return(status);
 }
 
-static SparkStatus SparkLingServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 static SparkStatus SparkLingServingQuiesce(
 	void *adapter_state,
 	uint64_t deadline_time_ns)
@@ -780,35 +655,7 @@ static SparkStatus SparkLingServingQuiesce(
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
-static SparkStatus SparkLingServingResetControl(void *adapter_state,
-	uint64_t control_generation)
-{
-	SparkLingServingState *state;
-	SparkModelDriverAdmissionRequest request = {0};
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 || control_generation == 0u ||
-		control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkLingServingQuiesce(state,UINT64_MAX);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	request.descriptor_bytes = (uint32_t)sizeof(request);
-	request.program_id = state->program->program_id;
-	request.control_generation = control_generation;
-	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
-	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
-		status = SPARK_STATUS_VALIDATION_FAILED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
-		state->quiescing = 0u;
-	}
-	return(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset_control.h"
 
 static SparkStatus SparkLingServingReset(void *adapter_state,
 	uint64_t control_generation)
@@ -861,6 +708,10 @@ static SparkStatus SparkLingServingSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
+
+#include "sparkpipe/family/serving/spark_serving_progress.h"
+
 static const SparkModelServingAdapterInterface SparkLingServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -878,8 +729,4 @@ static const SparkModelServingAdapterInterface SparkLingServingInterface =
 	.reset = SparkLingServingReset
 };
 
-__attribute__((visibility("default")))
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return(&SparkLingServingInterface);
-}
+#include "sparkpipe/family/serving/spark_serving_get_interface.h"

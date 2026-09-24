@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_ling_model.h"
 #include "sparkpipe/spark_weight_codec.h"
+#define SPARK_FAMILY_CAMEL Ling
+#define SPARK_FAMILY_UPPER LING
+#define SPARK_FAMILY_LOWER ling
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_LING_STAGEPACK_MAGIC UINT32_C(0x33474E4C)
 #define SPARK_LING_STAGEPACK_FORMAT_VERSION 1u
@@ -121,71 +126,16 @@ typedef struct SparkLingStagePackTensorShape
 #define SPARK_LING_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkLingStagePackHeader))
 #define SPARK_LING_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkLingStagePackEntry))
 
-static inline uint32_t SparkLingStagePackLayerIsDense(uint32_t layer_index)
-{
-    return(layer_index < SPARK_LING_MODEL_FIRST_ROUTED_LAYER ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackLayerIsKda(uint32_t layer_index)
-{
-    return(layer_index < SPARK_LING_MODEL_LAYER_COUNT &&
-        SPARK_LING_MODEL_LAYER_IS_KDA(layer_index) ? 1u : 0u);
-}
-
 static inline uint32_t SparkLingStagePackLayerIsMla(uint32_t layer_index)
 {
     return(layer_index < SPARK_LING_MODEL_LAYER_COUNT &&
         SPARK_LING_MODEL_LAYER_IS_MLA(layer_index) ? 1u : 0u);
 }
 
-static inline uint32_t SparkLingStagePackLayerIsMtp(uint32_t layer_index)
-{
-    return(layer_index == SPARK_LING_MODEL_MTP_LAYER_INDEX ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackKindIsGlobal(uint32_t tensor_kind)
-{
-    return(tensor_kind <= SPARK_LING_STAGEPACK_TENSOR_LM_HEAD ? 1u : 0u);
-}
-
 static inline uint32_t SparkLingStagePackKindIsMla(uint32_t tensor_kind)
 {
     return(tensor_kind >= SPARK_LING_STAGEPACK_TENSOR_Q &&
            tensor_kind <= SPARK_LING_STAGEPACK_TENSOR_ATTN_OUTPUT ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackKindIsKda(uint32_t tensor_kind)
-{
-    return(tensor_kind >= SPARK_LING_STAGEPACK_TENSOR_KDA_QKV_BETA &&
-           tensor_kind <= SPARK_LING_STAGEPACK_TENSOR_KDA_OUT ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackKindIsMtp(uint32_t tensor_kind)
-{
-    return(tensor_kind >= SPARK_LING_STAGEPACK_TENSOR_MTP_EH_PROJ &&
-           tensor_kind <= SPARK_LING_STAGEPACK_TENSOR_MTP_SHARED_NORM ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackKindIsDense(uint32_t tensor_kind)
-{
-    return(tensor_kind == SPARK_LING_STAGEPACK_TENSOR_DENSE_GATE_UP ||
-           tensor_kind == SPARK_LING_STAGEPACK_TENSOR_DENSE_DOWN ? 1u : 0u);
-}
-
-static inline uint32_t SparkLingStagePackKindIsRouted(uint32_t tensor_kind)
-{
-    return(tensor_kind >= SPARK_LING_STAGEPACK_TENSOR_ROUTER &&
-           tensor_kind <= SPARK_LING_STAGEPACK_TENSOR_SHARED_DOWN ? 1u : 0u);
-}
-
-static inline void SparkLingStagePackShapeBf16(SparkLingStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-    shape->payload_type = SPARK_LING_STAGEPACK_PAYLOAD_BF16;
-    shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
-    shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-    shape->group_count = groups;
-    shape->rows = rows;
-    shape->columns = columns;
 }
 
 static inline uint32_t SparkLingStagePackTpShardsRows(uint32_t tensor_kind)
@@ -209,33 +159,6 @@ static inline uint32_t SparkLingStagePackTpShardsRows(uint32_t tensor_kind)
     default:
         return(0u);
     }
-}
-
-static inline uint32_t SparkLingStagePackTpShardsCols(uint32_t tensor_kind)
-{
-    switch ( tensor_kind )
-    {
-    case SPARK_LING_STAGEPACK_TENSOR_ATTN_OUTPUT:
-    case SPARK_LING_STAGEPACK_TENSOR_KDA_OUT:
-    case SPARK_LING_STAGEPACK_TENSOR_DENSE_DOWN:
-    case SPARK_LING_STAGEPACK_TENSOR_EXPERT_DOWN:
-    case SPARK_LING_STAGEPACK_TENSOR_SHARED_DOWN:
-    case SPARK_LING_STAGEPACK_TENSOR_KDA_DECAY_BIAS:
-    case SPARK_LING_STAGEPACK_TENSOR_KDA_HEAD_LOG_SCALE:
-        return(1u);
-    default:
-        return(0u);
-    }
-}
-
-static inline uint32_t SparkLingStagePackHeaderTpDegree(const SparkLingStagePackHeader *header)
-{
-    return(header != 0 ? header->reserved0 : 0u);
-}
-
-static inline uint32_t SparkLingStagePackHeaderTpRank(const SparkLingStagePackHeader *header)
-{
-    return(header != 0 ? header->reserved1 : 0u);
 }
 
 typedef struct SparkLingStagePackShapeSpec
@@ -320,6 +243,10 @@ static const SparkLingStagePackShapeSpec SPARK_LING_STAGEPACK_SHAPE_TABLE[SPARK_
         {SPARK_LING_STAGEPACK_PAYLOAD_BF16, SPARK_WEIGHT_CODEC_BF16, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, 1u, SPARK_LING_MODEL_HIDDEN_DIMENSION, 0u},
 };
 
+#include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
+
+#include "sparkpipe/family/stagepack/spark_stagepack_glm5_next_ling.h"
+
 static inline int32_t SparkLingStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {
     uint32_t mtp_layer = SPARK_LING_MODEL_MTP_LAYER_INDEX;
@@ -339,6 +266,8 @@ static inline int32_t SparkLingStagePackCheckLayerKind(uint32_t layer_index,uint
         return(-4);
     return(0);
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
 
 static inline int32_t SparkLingStagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkLingStagePackTensorShape *shape)
 {
@@ -401,22 +330,4 @@ static inline int32_t SparkLingStagePackExpectedShape(uint32_t tensor_kind,uint3
         shape->columns /= tp_degree;
     }
     return(0);
-}
-
-static inline uint64_t SparkLingStagePackExpectedPayloadBytes(const SparkLingStagePackTensorShape *shape)
-{
-    uint64_t elements;
-    if ( shape == 0 || shape->group_count == 0u || shape->rows == 0u || shape->columns == 0u || shape->group_count > UINT64_MAX / shape->rows || (uint64_t)shape->group_count * shape->rows > UINT64_MAX / shape->columns )
-        return(0u);
-    elements = (uint64_t)shape->group_count * shape->rows * shape->columns;
-    if ( shape->payload_type == SPARK_LING_STAGEPACK_PAYLOAD_BF16 )
-        return(elements > UINT64_MAX / 2u ? 0u : elements * 2u);
-    if ( shape->payload_type == SPARK_LING_STAGEPACK_PAYLOAD_F32 || shape->payload_type == SPARK_LING_STAGEPACK_PAYLOAD_U32 )
-        return(elements > UINT64_MAX / 4u ? 0u : elements * 4u);
-    return(shape->payload_type == SPARK_LING_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
-}
-
-static inline uint64_t SparkLingStagePackExpectedScaleBytes(const SparkLingStagePackTensorShape *shape)
-{
-    return(shape != 0 && shape->payload_type == SPARK_LING_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
 }

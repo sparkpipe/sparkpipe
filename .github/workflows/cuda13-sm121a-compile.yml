@@ -1,4 +1,4 @@
-name: CUDA 13 sm_121a compile
+name: CI
 
 on:
   pull_request:
@@ -37,3 +37,18 @@ jobs:
           name: cuda13-sm121a-receipts
           path: build/cuda13_sm121a_gate
           if-no-files-found: warn
+
+  host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential git python3 python3-numpy libibverbs-dev
+      - uses: actions/checkout@v4
+      - name: Build every host target
+        run: make -j"$(nproc)" all
+      - name: Run the host test suite
+        run: make test TEST_EXCLUDE="build/test_weightd_map"

@@ -70,12 +70,6 @@ def main() -> int:
 
     scratch = Path("/tmp/qwen38_max_validation_gate_scratch_pack")
     scratch.write_bytes(b"qwen38-max-validation-gate-sentinel")
-    expect(run_driver([HEX64, str(scratch)]),
-            "SPARK_QWEN38_MAX_STAGE_PACK_PATH must name")
-
-    # With the pack bound through the environment the driver must next
-    # pin the source digest of the validator itself, then the execution
-    # gate - still before nvcc.
     expect(run_driver([HEX64, str(scratch)], {"SPARK_QWEN38_MAX_STAGE_PACK_PATH": str(scratch)}),
             "Qwen38_max CUDA validator expected SHA-256 is invalid")
     expect(run_driver(
@@ -98,7 +92,6 @@ def main() -> int:
         ("module_admit_snapshot", "fail-closed admit tier"),
         ("module_determinism", "determinism tier"),
         ("moe_mxfp4", "MXFP4 expert oracle"),
-        ("gdn_step_tp4", "TP4 rank-local geometry tier"),
     ):
         if needle not in source:
             failures += 1

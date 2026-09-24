@@ -17,6 +17,11 @@
 #include "modules/laguna_resident_decode_stage/source/cuda/api.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/config.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/layer.cuh"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
+
+#include "sparkpipe/family/spark_family.h"
 
 #define LAGUNA_UNITY_TILE_N 128u
 #define LAGUNA_UNITY_TILE_K 64u
@@ -41,80 +46,6 @@ static_assert(
     LmTileKIsSwizzleable(LAGUNA_UNITY_TILE_K, LmBf16Format::kStoredBits),
     "laguna BF16 activation tile must be TMA-swizzleable");
 
-extern "C" uint32_t LagunaExpertWeightCodec(void)
-{
-    return LAGUNA_EXPERT_WEIGHT_CODEC;
-}
-
-extern "C" int32_t LagunaGemmBf16(
-    LmGemmArguments *arguments,
-    const void *activation_bf16,
-    const void *weight_bf16,
-    uint32_t packed_rows,
-    uint32_t tokens,
-    uint32_t group_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t multiprocessors,
-    bool grouped,
-    void *stream_handle)
-{
-    return LmGemmLaunch<
-        LmBf16Format,
-        LAGUNA_UNITY_TILE_N,
-        LAGUNA_UNITY_TILE_K,
-        LAGUNA_UNITY_STAGES,
-        LAGUNA_UNITY_WARPS>(
-            arguments,
-            activation_bf16,
-            weight_bf16,
-            packed_rows,
-            tokens,
-            grouped ? LAGUNA_TOP_K : 1u,
-            group_count,
-            input_dimension,
-            output_dimension,
-            multiprocessors,
-            grouped,
-            (cudaStream_t)stream_handle);
-}
-
-extern "C" int32_t LagunaGemmExpertWeightBf16Activation(
-    LmGemmArguments *arguments,
-    const void *activation_bf16,
-    const void *weight_payload,
-    uint32_t packed_rows,
-    uint32_t tokens,
-    uint32_t group_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t multiprocessors,
-    bool grouped,
-    void *stream_handle)
-{
-    if (!grouped)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-    return LmGemmWeightOnlyLaunch<
-        LagunaExpertWeightFormat,
-        LAGUNA_UNITY_TILE_N,
-        LAGUNA_UNITY_STAGES,
-        LAGUNA_UNITY_WARPS>(
-            arguments,
-            activation_bf16,
-            weight_payload,
-            packed_rows,
-            tokens,
-            LAGUNA_TOP_K,
-            group_count,
-            input_dimension,
-            output_dimension,
-            multiprocessors,
-            grouped,
-            (cudaStream_t)stream_handle);
-}
-
 extern "C" int32_t LagunaLayerAttentionBf16(
     const LagunaLayerBuffers *buffers,
     uint32_t rows,
@@ -126,34 +57,6 @@ extern "C" int32_t LagunaLayerAttentionBf16(
         buffers,
         rows,
         context,
-        multiprocessors,
-        stream);
-}
-
-extern "C" int32_t LagunaLayerDenseMlpBf16(
-    const LagunaLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    return LagunaLayerDenseMlp(
-        buffers,
-        rows,
-        multiprocessors,
-        stream);
-}
-
-extern "C" int32_t LagunaLayerMoeExpertWeightBf16Activation(
-    const LagunaLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    return LagunaLayerMoe<LAGUNA_EXPERT_WEIGHT_CODEC>(
-        buffers,
-        rows,
-        packed_rows,
         multiprocessors,
         stream);
 }
@@ -171,30 +74,6 @@ extern "C" int32_t LagunaHeadFullVocab(
         head_weight_bf16,
         0,
         LAGUNA_VOCAB,
-        rows,
-        stream);
-}
-
-extern "C" int32_t LagunaHeadRestricted(
-    const LagunaLayerBuffers *buffers,
-    const void *norm_weight_bf16,
-    const void *head_weight_bf16,
-    const uint32_t *token_ids,
-    uint32_t token_count,
-    uint32_t rows,
-    cudaStream_t stream)
-{
-    if (token_ids == 0 || token_count == 0u ||
-        token_count > LAGUNA_RESTRICTED_VOCAB)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-    return LagunaHead(
-        buffers,
-        norm_weight_bf16,
-        head_weight_bf16,
-        token_ids,
-        token_count,
         rows,
         stream);
 }
@@ -262,3 +141,7 @@ extern "C" int32_t LagunaLayerAttentionBf16Graphed(
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
 }
+
+#include "sparkpipe/family/glm/spark_glm_unity_gemm.cuh"
+
+#include "sparkpipe/family/glm/spark_glm_unity_head_restricted.cuh"

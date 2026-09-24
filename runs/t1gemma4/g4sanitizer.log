@@ -1,8 +1,0 @@
-========= COMPUTE-SANITIZER
-chain_dbg first_mismatch index=0 (row=0 head=0 elem=0) actual=0.00325012 expected=-0.0869141
-gemma4_validation failure=chain_sliding_attention_dataflow detail=relative_l2
-double free or corruption (out)
-========= Error: process didn't terminate successfully
-========= Target application returned an error
-========= ERROR SUMMARY: 0 errors
-SANITIZER-EXIT-6

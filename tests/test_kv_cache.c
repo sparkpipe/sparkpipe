@@ -323,6 +323,59 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 	assert(unlink(path) == 0);
 }
 
+static void SparkTestKvPageStoreRetiredWriteFailureReachesEvictor(void)
+{
+	SparkTestKvFixture fixture;
+	SparkKvPageStoreConfiguration configuration;
+	SparkKvPageStore store;
+	char path[] = "/tmp/sparkpipe-kv-retired-failure-XXXXXX";
+	uint8_t staging[SPARK_TEST_BLOCK_BYTES];
+	uintptr_t page0,page1;
+	struct rlimit old_limit,full_limit;
+	void *old_handler;
+	int32_t descriptor;
+	descriptor = mkstemp(path);
+	assert(descriptor >= 0);
+	assert(close(descriptor) == 0);
+	assert(unlink(path) == 0);
+	old_handler = signal(SIGXFSZ,SIG_IGN);
+	assert(old_handler != SIG_ERR);
+	assert(getrlimit(RLIMIT_FSIZE,&old_limit) == 0);
+	full_limit.rlim_cur = SPARK_TEST_BLOCK_BYTES;
+	full_limit.rlim_max = old_limit.rlim_max;
+	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
+	SparkTestKvInitialize(&fixture);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	configuration.logical_page_capacity = SPARK_TEST_LOGICAL_BLOCK_COUNT;
+	configuration.transfer_capacity = SPARK_TEST_RESIDENT_SLOT_COUNT;
+	configuration.page_bytes = SPARK_TEST_BLOCK_BYTES;
+	configuration.maximum_backing_bytes = 2u * SPARK_TEST_BLOCK_BYTES;
+	configuration.backing_path = path;
+	configuration.staging_address = staging;
+	configuration.staging_bytes = sizeof(staging);
+	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+	page0 = (uintptr_t)fixture.device;
+	page1 = (uintptr_t)(fixture.device + SPARK_TEST_BLOCK_BYTES);
+	assert(SparkKvPageStoreWriteback(&store,0u,0u,1u,page0,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_BUSY);
+	assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+	assert(SparkKvPageStoreWriteback(&store,0u,0u,1u,page0,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_OK);
+	assert(SparkKvPageStoreWriteback(&store,1u,1u,1u,page1,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_BUSY);
+	assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+	assert(SparkKvPageStoreProgress(&store,&fixture.arena,SPARK_TEST_RESIDENT_SLOT_COUNT) == SPARK_STATUS_IO_ERROR);
+	assert(SparkKvPageStoreWriteback(&store,1u,1u,1u,page1,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_IO_ERROR);
+	assert(SparkKvPageStoreWriteback(&store,1u,1u,1u,page1,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_BUSY);
+	assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+	assert(SparkKvPageStoreWriteback(&store,1u,1u,1u,page1,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_IO_ERROR);
+	assert(store.write_count == 1u && store.backing_page_count == 1u);
+	assert(setrlimit(RLIMIT_FSIZE,&old_limit) == 0);
+	(void)signal(SIGXFSZ,old_handler);
+	SparkKvPageStoreDestroy(&store);
+	assert(unlink(path) == 0);
+}
+
 static void SparkTestKvLogicalBlockFreeListReusesReleasedHead(void)
 {
 	SparkTestKvFixture fixture;
@@ -2031,6 +2084,7 @@ int main(void)
 	SparkTestKvEvictionIoErrorDegradesInsteadOfWedging();
 	SparkTestKvEvictionInternalErrorStaysLoud();
 	SparkTestKvPageStoreFullDiskDegradesAndServingContinues();
+	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();
 	SparkTestKvUnassignedResidentCapacityOwnership();

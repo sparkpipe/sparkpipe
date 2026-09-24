@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_weight_codec.h"
+#define SPARK_FAMILY_CAMEL Glm52
+#define SPARK_FAMILY_UPPER GLM52
+#define SPARK_FAMILY_LOWER glm52
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM52_STAGEPACK_MAGIC UINT32_C(0x32534c47)
 #define SPARK_GLM52_STAGEPACK_FORMAT_VERSION 3u
@@ -113,44 +118,14 @@ typedef struct SparkGlm52StagePackTensorShape
 #define SPARK_GLM52_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkGlm52StagePackHeader))
 #define SPARK_GLM52_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkGlm52StagePackEntry))
 
-static inline uint32_t SparkGlm52StagePackLayerIsDense(uint32_t layer_index)
-{
-	return(layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER ? 1u : 0u);
-}
-
 static inline uint32_t SparkGlm52StagePackLayerHasFullIndexer(uint32_t layer_index)
 {
 	return(layer_index < 3u || (layer_index >= 6u && ((layer_index - 6u) % SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT) == 0u) ? 1u : 0u);
 }
 
-static inline uint32_t SparkGlm52StagePackKindIsGlobal(uint32_t tensor_kind)
-{
-	return(tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_LM_HEAD ? 1u : 0u);
-}
-
 static inline uint32_t SparkGlm52StagePackKindIsIndexer(uint32_t tensor_kind)
 {
 	return(tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q && tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_INDEX_NORM_BIAS ? 1u : 0u);
-}
-
-static inline uint32_t SparkGlm52StagePackKindIsDense(uint32_t tensor_kind)
-{
-	return(tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP || tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN ? 1u : 0u);
-}
-
-static inline uint32_t SparkGlm52StagePackKindIsRouted(uint32_t tensor_kind)
-{
-	return(tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_ROUTER && tensor_kind <= SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN ? 1u : 0u);
-}
-
-static inline void SparkGlm52StagePackShapeBf16(SparkGlm52StagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-	shape->payload_type = SPARK_GLM52_STAGEPACK_PAYLOAD_BF16;
-	shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
-	shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-	shape->group_count = groups;
-	shape->rows = rows;
-	shape->columns = columns;
 }
 
 static inline uint32_t SparkGlm52StagePackTpShardsRows(uint32_t tensor_kind)
@@ -169,29 +144,11 @@ static inline uint32_t SparkGlm52StagePackTpShardsRows(uint32_t tensor_kind)
 	}
 }
 
-static inline uint32_t SparkGlm52StagePackTpShardsCols(uint32_t tensor_kind)
-{
-	switch ( tensor_kind )
-	{
-	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT:
-	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN:
-	case SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN:
-	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN:
-		return(1u);
-	default:
-		return(0u);
-	}
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
 
-static inline uint32_t SparkGlm52StagePackHeaderTpDegree(const SparkGlm52StagePackHeader *header)
-{
-	return(header != 0 ? header->reserved0 : 0u);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
 
-static inline uint32_t SparkGlm52StagePackHeaderTpRank(const SparkGlm52StagePackHeader *header)
-{
-	return(header != 0 ? header->reserved1 : 0u);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_tp_shards_cols.h"
 
 static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
 {
@@ -265,22 +222,4 @@ static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint
 		shape->columns /= tp_degree;
 	}
 	return(0);
-}
-
-static inline uint64_t SparkGlm52StagePackExpectedPayloadBytes(const SparkGlm52StagePackTensorShape *shape)
-{
-	uint64_t elements;
-	if ( shape == 0 || shape->group_count == 0u || shape->rows == 0u || shape->columns == 0u || shape->group_count > UINT64_MAX / shape->rows || (uint64_t)shape->group_count * shape->rows > UINT64_MAX / shape->columns )
-		return(0u);
-	elements = (uint64_t)shape->group_count * shape->rows * shape->columns;
-	if ( shape->payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_BF16 )
-		return(elements > UINT64_MAX / 2u ? 0u : elements * 2u);
-	if ( shape->payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_F32 || shape->payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_U32 )
-		return(elements > UINT64_MAX / 4u ? 0u : elements * 4u);
-	return(shape->payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
-}
-
-static inline uint64_t SparkGlm52StagePackExpectedScaleBytes(const SparkGlm52StagePackTensorShape *shape)
-{
-	return(shape != 0 && shape->payload_type == SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
 }

@@ -20,6 +20,11 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "spark_gemma4_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Gemma4
+#define SPARK_FAMILY_UPPER GEMMA4
+#define SPARK_FAMILY_LOWER gemma4
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GEMMA4_MODULE_TAG "gemma4_stage"
 
@@ -438,12 +443,6 @@ static uint64_t SparkGemma4ModuleExpectedGlobalBits(const SparkGemma4ModuleState
 	return(bits);
 }
 
-static uint64_t SparkGemma4ModuleExpectedMtpBits(const SparkGemma4ModuleState *state)
-{
-	(void)state;
-	return(0ull);
-}
-
 static uint64_t SparkGemma4ModuleExpectedLayerBits(const SparkGemma4ModuleState *state, uint32_t layer)
 {
 	uint64_t bits = (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_INPUT_NORM) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_ATTENTION_NORM) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_PRE_FEEDFORWARD_NORM) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_POST_FEEDFORWARD_NORM) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_GATE_UP) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_MLP_DOWN) | (1ull << SPARK_GEMMA4_STAGEPACK_TENSOR_LAYER_SCALAR);
@@ -591,21 +590,6 @@ static SparkStatus SparkGemma4ModuleTpSubmitOrdered(SparkGemma4ModuleState *stat
 	return(SPARK_STATUS_IO_ERROR);
 }
 
-static SparkStatus SparkGemma4ModuleTpAllReduceHidden(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, void *device_bf16, uint32_t rows)
-{
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	return(SparkGemma4ModuleTpSubmitOrdered(state,device_bf16,rows,slot,0u));
-}
-
-static SparkStatus SparkGemma4ModuleTpReduceU64Max(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint64_t *device_u64, uint32_t count)
-{
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	return(SparkGemma4ModuleTpSubmitOrdered(state,device_u64,count,slot,1u));
-}
-
-
 static SparkStatus SparkGemma4ModuleInitializeGate(void)
 {
 	uint32_t allow_unqualified_execution;
@@ -613,20 +597,6 @@ static SparkStatus SparkGemma4ModuleInitializeGate(void)
 	if ( SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
 		return(SPARK_STATUS_MODULE_NOT_VALIDATED);
 	return(SPARK_STATUS_OK);
-}
-
-static void SparkGemma4ModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
-{
-	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_GEMMA4_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
 }
 
 extern cudaError_t SparkGemma4ConfigureCudaKernels(void);
@@ -714,19 +684,6 @@ static void SparkGemma4ModuleReportReady(void *module_state)
 	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head);
 }
 
-static void SparkGemma4AdmissionCost(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)context;
-	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) *
-			 (uint64_t)(state->owns_embedding + state->owns_final_head + 3u) +
-		 sizeof(uint64_t));
-	decision->device_memcpy_bytes = decision->host_staging_bytes;
-}
-
 static SparkStatus SparkGemma4AdmissionKvPredicate(
 	void *context,
 	const SparkModelDriverAdmissionRequest *request,
@@ -751,6 +708,8 @@ static SparkStatus SparkGemma4AdmissionKvPredicate(
 	}
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_admission_cost.h"
 
 static SparkStatus SparkGemma4ModuleAdmit(
 	void *module_state,
@@ -785,14 +744,6 @@ static SparkStatus SparkGemma4ModuleAdmit(
 	return(status);
 }
 
-static void SparkGemma4ModuleSnapshotExtend(
-	void *module_state,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-}
-
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
@@ -816,6 +767,10 @@ static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
 	}
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_snapshot_extend.h"
+
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkGemma4ModuleLifecycle =
 {
@@ -975,13 +930,7 @@ static SparkStatus SparkGemma4ModuleAllocateSlotHostMirrors(SparkGemma4ModuleSta
 	return(SPARK_STATUS_OK);
 }
 
-static int SparkGemma4T1Enabled(void)
-{
-	static int t1_enabled = -1;
-	if ( t1_enabled < 0 )
-		t1_enabled = getenv("SPARK_GEMMA4_T1") != 0 ? 1 : 0;
-	return(t1_enabled);
-}
+#include "sparkpipe/family/module/spark_module_t1_enabled.h"
 
 static int SparkGemma4T1Rank(SparkGemma4ModuleState *state)
 {
@@ -1092,6 +1041,8 @@ static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSl
 			slot->host_row_positions_u32[first_row + i],tokens_host[i],
 			((const uint32_t *)scores_host)[i]);
 }
+
+#include "sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h"
 
 static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkGemma4ResidentDecodeStageFrameContext *context, uint32_t layer, uint32_t rows, uint32_t is_full)
 {
@@ -1596,3 +1547,5 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 		atomic_fetch_add_explicit(&state->tokens_emitted,(unsigned long long)rows,memory_order_relaxed);
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_expected_mtp_bits.h"

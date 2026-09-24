@@ -6,7 +6,11 @@
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
+#define SPARK_FAMILY_CAMEL Qwen38Max
+#define SPARK_FAMILY_UPPER QWEN38_MAX
+#define SPARK_FAMILY_LOWER qwen38_max
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_MAX_STAGEPACK_MAGIC 0x50533851u
 #define SPARK_QWEN38_MAX_STAGEPACK_FORMAT_VERSION 1u
@@ -160,10 +164,7 @@ _Static_assert(SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE == 32u,"qwen38 mxfp4 grou
 _Static_assert((SPARK_QWEN38_MAX_MODEL_EXPERT_INTERMEDIATE_DIMENSION % SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) == 0u,"qwen38 expert intermediate must tile for mxfp4 groups");
 _Static_assert((SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION % SPARK_QWEN38_MAX_MODEL_MXFP4_GROUP_SIZE) == 0u,"qwen38 hidden must tile for mxfp4 groups");
 
-static inline uint32_t SparkQwen38MaxStagePackFullAttentionLayersBelow(uint32_t layer_count)
-{
-	return(layer_count / SPARK_QWEN38_MAX_MODEL_ATTENTION_PERIOD);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_full_attention_layers_below.h"
 
 static inline uint32_t SparkQwen38MaxStagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {

@@ -1,4 +1,0 @@
-SMOKE REALWS {"op":"realws-init","dev":"rd-qwen3flash1","pid":3707043,"pack":"/home/spark9/sparkdata/qwen3flash.fp8.tp8/packs/qwenflash.tp8.fp8.rank01.spstage","pack_bytes":30518612480,"manifest_spine_bytes":15415431680,"manifest_expert_bytes":15103180800,"layers":48,"groups":3072,"max_experts_per_layer":64}
-SMOKE REALWS {"op":"realws-lane","dev":"rd-qwen3flash1","lane":0}
-SMOKE REALWS {"op":"realws-attach","dev":"rd-qwen3flash1","resident_bytes":0,"expert_count":3072,"arena_count":1,"chunk_bytes":2097152,"loaded_from_pack":1}
-SMOKE-FAIL mode=realws rc=1

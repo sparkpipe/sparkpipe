@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCAN_ROOTS = ("modules", "runtime", "node", "cache", "ring")
+SCAN_ROOTS = ("modules", "runtime", "node", "cache", "ring", "include/sparkpipe/family")
 EXTENSIONS = {".c", ".h", ".cu", ".cuh"}
 WINDOW_LINES = 8          # seed window; a run must still exceed --min-lines
 MAX_SEED_GAP = 6          # max line drift between consecutive seeds of a run
@@ -110,6 +110,14 @@ def _net(line: str, open_ch: str, close_ch: str) -> int:
     return line.count(open_ch) - line.count(close_ch)
 
 
+def signature_name(line: str) -> str | None:
+    family = re.search(r"\b(SPARK_FAMILY(?:_CAT)?\([^()]*\))\s*\(", line)
+    if family:
+        return family.group(1)
+    words = WORD_RE.findall(line.split("(")[0])
+    return words[-1] if words else None
+
+
 def extract_functions(path: Path) -> list[Function]:
     lines = strip_code(path.read_text(encoding="utf-8", errors="surrogateescape"))
     functions = []
@@ -142,8 +150,7 @@ def extract_functions(path: Path) -> list[Function]:
             pending.append(line)
             depth += _net(line, "{", "}")
             if depth <= 0:
-                words = WORD_RE.findall(pending[0].split("(")[0]) if pending else []
-                name = words[-1] if words else None
+                name = signature_name(pending[0]) if pending else None
                 if name and name not in NON_FUNCTION_NAMES:
                     norm = [normalize_line(code) for code in pending[1:]]
                     functions.append(Function(path, name, start_line, index, norm))
@@ -161,8 +168,7 @@ def extract_functions(path: Path) -> list[Function]:
             depth = _net(stripped, "{", "}")
             if depth <= 0:
                 # one-line body on the signature line
-                words = WORD_RE.findall(pending[0].split("(")[0]) if pending else []
-                name = words[-1] if words else None
+                name = signature_name(pending[0]) if pending else None
                 if name and name not in NON_FUNCTION_NAMES:
                     norm = [normalize_line(code) for code in pending[1:]]
                     functions.append(Function(path, name, start_line, index, norm))
