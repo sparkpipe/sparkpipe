@@ -11,6 +11,11 @@
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_speculation_seam.h"
+#define SPARK_FAMILY_CAMEL Glm5Next
+#define SPARK_FAMILY_UPPER GLM5_NEXT
+#define SPARK_FAMILY_LOWER glm5_next
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -755,98 +760,6 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm5NextServingValidateRowOrder(
-	const SparkGlm5NextServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint8_t seen[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t last_position[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,wave,maximum;
-	uint32_t counts[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	for (row=0u; row<submission->row_count; row++)
-	{
-		lane = submission->row_lane_indices[row];
-		if ( lane >= submission->active_sequence_count || submission->row_positions[row] >= state->node_context.max_sequence_positions )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( seen[lane] != 0u && submission->row_positions[row] != last_position[lane] + 1u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		seen[lane] = 1u;
-		last_position[lane] = submission->row_positions[row];
-		counts[lane]++;
-	}
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		return(submission->row_count == submission->active_sequence_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	maximum = 0u;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<submission->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= submission->row_count || submission->row_lane_indices[row++] != lane) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
-static SparkGlm5NextServingPending *SparkGlm5NextServingReservePending(
-	SparkGlm5NextServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	SparkGlm5NextServingPending *pending;
-	uint32_t index,lane,row,expected;
-	if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
-		return(0);
-	for (index=0u; index<state->pipeline_slot_count; index++)
-	{
-		pending = &state->pending[index];
-		expected = 0u;
-		if ( atomic_compare_exchange_strong_explicit(&pending->active,&expected,1u,memory_order_acquire,memory_order_relaxed) != 0 )
-		{
-			if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
-			{
-				atomic_store_explicit(&pending->active,0u,memory_order_release);
-				return(0);
-			}
-			pending->owner = state;
-			pending->row_count = submission->row_count;
-			pending->lane_count = submission->lane_count;
-			pending->active_sequence_count = submission->active_sequence_count;
-			pending->work_kind = submission->work_kind;
-			pending->submission_id = submission->submission_id;
-			pending->request_id = submission->request_id;
-			pending->sequence_id = submission->sequence_id;
-			pending->sequence_position = submission->sequence_position;
-			pending->control_generation = submission->control_generation;
-			pending->transaction_id = submission->transaction_id;
-			pending->dispatch_generation = submission->dispatch_generation;
-			pending->request_generation = submission->request_generation;
-			pending->step_generation = submission->step_generation;
-			for (row=0u; row<submission->row_count; row++)
-			{
-				lane = submission->row_lane_indices[row];
-				pending->last_row_by_lane[lane] = row;
-				pending->resident_slots[row] = submission->lanes[lane].resident_sequence_slot;
-				pending->input_token_ids[row] = submission->token_ids[row];
-				pending->row_positions[row] = submission->row_positions[row];
-				pending->row_sequence_ids[row] = submission->row_sequence_ids[row];
-			}
-			return(pending);
-		}
-	}
-	return(0);
-}
-
-static void SparkGlm5NextServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkGlm5NextServingState *state;
-	(void)driver_completion;
-	state = (SparkGlm5NextServingState *)completion_context;
-	if ( state != 0 )
-		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
-}
-
 static void SparkGlm5NextServingDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -937,23 +850,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static void SparkGlm5NextServingDriverWake(void *wake_context)
-{
-	SparkGlm5NextServingState *state;
-	state = (SparkGlm5NextServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
-static uint32_t SparkGlm5NextServingAvailableSubmissionCount(
-	const SparkGlm5NextServingState *state)
-{
-	uint32_t available,index;
-	available = 0u;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += atomic_load_explicit(&state->pending[index].active,memory_order_acquire) == 0u ? 1u : 0u;
-	return(available);
-}
+#include "sparkpipe/family/serving/spark_serving_reserve_pending.h"
 
 static void SparkGlm5NextServingDestroy(void *adapter_state)
 {
@@ -977,6 +874,8 @@ static void SparkGlm5NextServingDestroy(void *adapter_state)
 	free(state->bridge_host);
 	free(state);
 }
+
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
 
 static SparkStatus SparkGlm5NextServingLoadDriver(
 	SparkGlm5NextServingState *state,
@@ -1022,21 +921,7 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
 }
 
-static SparkStatus SparkGlm5NextServingValidateConfiguration(
-	const SparkModelServingAdapterConfiguration *configuration)
-{
-	SparkStatus status;
-	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkGlm5NextServingDescriptor,&configuration->runtime_limits);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	if ( configuration->stage_index >= SPARK_GLM5_NEXT_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_GLM5_NEXT_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_validate_configuration.h"
 
 static SparkStatus SparkGlm5NextServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -1122,18 +1007,7 @@ static SparkStatus SparkGlm5NextServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm5NextServingValidateBoundaries(
-	const SparkGlm5NextServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint64_t boundary_bytes;
-	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	(void)boundary_bytes;
-	(void)state;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_validate_row_order.h"
 
 static SparkStatus SparkGlm5NextServingValidateSubmission(
 	void *adapter_state,
@@ -1164,18 +1038,7 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 	SPARK_RETURN(status);
 }
 
-static SparkServingCacheAdmission SparkGlm5NextServingCacheContext(SparkGlm5NextServingState *state,SparkModelDriverCacheLane *lanes)
-{
-	SparkServingCacheAdmission cache;
-	cache.program_id = state->program->program_id;
-	cache.lane_capacity = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	cache.lanes = lanes;
-	cache.driver = state->driver.interface;
-	cache.driver_instance = state->driver_instance;
-	cache.validate = SparkGlm5NextServingValidateSubmission;
-	cache.adapter_state = state;
-	return(cache);
-}
+#include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 static SparkStatus SparkGlm5NextServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
 {
@@ -1332,26 +1195,6 @@ static SparkStatus SparkGlm5NextServingProgress(
 		state->program->program_id,&snapshot));
 }
 
-static SparkStatus SparkGlm5NextServingQuiesce(
-	void *adapter_state,
-	uint64_t deadline_time_ns)
-{
-	SparkGlm5NextServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	state = (SparkGlm5NextServingState *)adapter_state;
-	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->quiescing = 1u;
-	if ( SparkGlm5NextServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
-}
-
 static SparkStatus SparkGlm5NextServingSnapshot(
 	void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
@@ -1385,6 +1228,8 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/serving/spark_serving_quiesce.h"
 
 static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t control_generation)
 {
@@ -1444,8 +1289,4 @@ static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 	.reset = SparkGlm5NextServingReset
 };
 
-__attribute__((visibility("default")))
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return(&SparkGlm5NextServingInterface);
-}
+#include "sparkpipe/family/serving/spark_serving_get_interface.h"

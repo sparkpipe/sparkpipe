@@ -14,6 +14,11 @@
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_speculation_seam.h"
+#define SPARK_FAMILY_CAMEL Glm52
+#define SPARK_FAMILY_UPPER GLM52
+#define SPARK_FAMILY_LOWER glm52
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef GLM_EXPERT_WEIGHT_CODEC
 #error "GLM_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -380,39 +385,6 @@ static SparkStatus SparkGlm52ServingInitializeSpeculationSeam(
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm52ServingValidateRowOrder(
-	const SparkGlm52ServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint8_t seen[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t last_position[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint32_t lane,row,wave,maximum;
-	uint32_t counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	for (row=0u; row<submission->row_count; row++)
-	{
-		lane = submission->row_lane_indices[row];
-		if ( lane >= submission->active_sequence_count || submission->row_positions[row] >= state->node_context.max_sequence_positions )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( seen[lane] != 0u && submission->row_positions[row] != last_position[lane] + 1u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		seen[lane] = 1u;
-		last_position[lane] = submission->row_positions[row];
-		counts[lane]++;
-	}
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		return(submission->row_count == submission->active_sequence_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-	maximum = 0u;
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] > maximum )
-			maximum = counts[lane];
-	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<submission->active_sequence_count; lane++)
-			if ( counts[lane] > wave && (row >= submission->row_count || submission->row_lane_indices[row++] != lane) )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 	SparkGlm52ServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -434,17 +406,6 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 		pending->resident_slots[row] =
 			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
 	return(pending);
-}
-
-static void SparkGlm52ServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkGlm52ServingState *state;
-	(void)driver_completion;
-	state = (SparkGlm52ServingState *)completion_context;
-	if ( state != 0 )
-		state->orphan_completion_count++;
 }
 
 static void SparkGlm52ServingDriverCompletion(
@@ -495,14 +456,6 @@ static void SparkGlm52ServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static void SparkGlm52ServingDriverWake(void *wake_context)
-{
-	SparkGlm52ServingState *state;
-	state = (SparkGlm52ServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
 static uint32_t SparkGlm52ServingAvailableSubmissionCount(
 	const SparkGlm52ServingState *state)
 {
@@ -535,16 +488,9 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 	free(state);
 }
 
-static SparkStatus SparkGlm52ServingAcceptsProgram(
-	const SparkModelDriverProgramDescriptor *program,
-	void *accept_context)
-{
-	SparkGlm52ServingState *state;
-	state = (SparkGlm52ServingState *)accept_context;
-	if ( SparkModelDriverProgramSupportsRuntimeLimits(program,SPARK_GLM52_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+
+#include "sparkpipe/family/serving/spark_serving_accepts_program.h"
 
 static SparkStatus SparkGlm52ServingLoadDriver(
 	SparkGlm52ServingState *state,
@@ -662,18 +608,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm52ServingValidateBoundaries(
-	const SparkGlm52ServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	uint64_t boundary_bytes;
-	boundary_bytes = (uint64_t)submission->row_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	(void)boundary_bytes;
-	(void)state;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_validate_row_order.h"
 
 static SparkStatus SparkGlm52ServingValidateSubmission(
 	void *adapter_state,
@@ -772,18 +707,7 @@ static SparkStatus SparkGlm52ServingAdmit(
 		state->driver.interface,state->driver_instance,&request,frame,&decision));
 }
 
-static SparkServingCacheAdmission SparkGlm52ServingCacheContext(SparkGlm52ServingState *state,SparkModelDriverCacheLane *lanes)
-{
-	SparkServingCacheAdmission cache;
-	cache.program_id = state->program->program_id;
-	cache.lane_capacity = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	cache.lanes = lanes;
-	cache.driver = state->driver.interface;
-	cache.driver_instance = state->driver_instance;
-	cache.validate = SparkGlm52ServingValidateSubmission;
-	cache.adapter_state = state;
-	return(cache);
-}
+#include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 static SparkStatus SparkGlm52ServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t submission_count)
 {
@@ -868,26 +792,6 @@ static SparkStatus SparkGlm52ServingProgress(
 	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static SparkStatus SparkGlm52ServingQuiesce(
-	void *adapter_state,
-	uint64_t deadline_time_ns)
-{
-	SparkGlm52ServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	state = (SparkGlm52ServingState *)adapter_state;
-	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->quiescing = 1u;
-	if ( SparkGlm52ServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
-}
-
 static SparkStatus SparkGlm52ServingSnapshot(
 	void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
@@ -922,33 +826,9 @@ static SparkStatus SparkGlm52ServingSnapshot(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm52ServingResetControl(void *adapter_state,uint64_t control_generation)
-{
-	SparkGlm52ServingState *state;
-	SparkModelDriverAdmissionRequest request = {0};
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	state = (SparkGlm52ServingState *)adapter_state;
-	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkGlm52ServingQuiesce(state,UINT64_MAX);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.control_generation = control_generation;
-	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
-	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
-		status = SPARK_STATUS_VALIDATION_FAILED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
-		state->quiescing = 0u;
-	}
-	return(status);
-}
+#include "sparkpipe/family/serving/spark_serving_quiesce.h"
+
+#include "sparkpipe/family/serving/spark_serving_reset_control.h"
 
 static SparkStatus SparkGlm52ServingReset(void *adapter_state,uint64_t control_generation)
 {

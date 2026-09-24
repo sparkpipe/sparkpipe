@@ -19,6 +19,11 @@
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_speculation_seam.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#define SPARK_FAMILY_CAMEL Dsv4
+#define SPARK_FAMILY_UPPER DSV4
+#define SPARK_FAMILY_LOWER dsv4
+
+#include "sparkpipe/family/spark_family.h"
 
 #if SPARK_DSV4_SERVING_TOPOLOGY == 404
 #if defined(SPARK_DSV4_PRO_BUILD)
@@ -273,7 +278,7 @@ static const char *const SparkDsv4ServingConfigurationMembersTpBridge[] =
 
 typedef struct SparkDsv4ServingPending
 {
-	struct SparkDsv4ServingAdapterState *owner;
+	struct SparkDsv4ServingState *owner;
 	SparkServingAdapterPendingCommon common;
 	uint32_t emit_count;
 	uint32_t cache_lane_count;
@@ -285,7 +290,7 @@ typedef struct SparkDsv4ServingPending
 	SparkModelDriverCacheLane cache_lanes[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkDsv4ServingPending;
 
-typedef struct SparkDsv4ServingAdapterState
+typedef struct SparkDsv4ServingState
 {
 	SparkMemoryBuffer allocation;
 	SparkLoadedModelDriver driver;
@@ -322,7 +327,7 @@ typedef struct SparkDsv4ServingAdapterState
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint64_t orphan_completion_count;
 	SparkDsv4ServingPending pending[SPARK_DSV4_SERVING_PIPELINE_SLOT_COUNT_MAX];
-} SparkDsv4ServingAdapterState;
+} SparkDsv4ServingState;
 
 static uint32_t SparkDsv4ServingPpStageIndex(uint32_t world_rank)
 {
@@ -390,7 +395,7 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
 	const char *runtime_root,
-	SparkDsv4ServingAdapterState *state)
+	SparkDsv4ServingState *state)
 {
 	SparkTpCollectiveAdapterConfig config;
 	SparkStatus status;
@@ -415,7 +420,7 @@ static SparkStatus SparkDsv4ServingLoadTpCollective(
 static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 	const SparkJsonDocument *document,
 	int32_t root,
-	const SparkDsv4ServingAdapterState *state,
+	const SparkDsv4ServingState *state,
 	uint32_t *cuda_graph_count)
 {
 	int32_t element,token;
@@ -455,7 +460,7 @@ static SparkStatus SparkDsv4ServingLoadTpGraphCounts(
 static SparkStatus SparkDsv4ServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	uint32_t *max_sequence_positions,
 	uint32_t *cuda_graph_count)
 {
@@ -557,17 +562,8 @@ static SparkStatus SparkDsv4ServingLoadConfiguration(
 	SPARK_RETURN(status);
 }
 
-static uint32_t SparkDsv4ServingFirstLayer(uint32_t stage_index)
-{
-	uint32_t index,first_layer;
-	first_layer = 0u;
-	for (index=0u; index<stage_index; index++)
-		first_layer += SparkDsv4ServingDescriptor.stage_layer_counts[index];
-	return(first_layer);
-}
-
 static SparkStatus SparkDsv4ServingValidateRowOrder(
-	const SparkDsv4ServingAdapterState *state,
+	const SparkDsv4ServingState *state,
 	const SparkModelServingSubmission *submission)
 {
 	SparkRowLayoutDenseLaneContext dense;
@@ -597,7 +593,7 @@ static SparkStatus SparkDsv4ServingValidateRowOrder(
 }
 
 static SparkStatus SparkDsv4ServingReservePending(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingSubmission *submission,
 	SparkDsv4ServingPending **pending_out)
 {
@@ -634,22 +630,11 @@ static SparkStatus SparkDsv4ServingReservePending(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkDsv4ServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkDsv4ServingAdapterState *state;
-	(void)driver_completion;
-	state = (SparkDsv4ServingAdapterState *)completion_context;
-	if ( state != 0 )
-		state->orphan_completion_count++;
-}
-
 static void SparkDsv4ServingDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkDsv4ServingPending *pending;
 	SparkModelServingCompletion completion;
 	uint32_t matches;
@@ -710,20 +695,12 @@ static void SparkDsv4ServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static void SparkDsv4ServingDriverWake(void *wake_context)
-{
-	SparkDsv4ServingAdapterState *state;
-	state = (SparkDsv4ServingAdapterState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
 static void SparkDsv4ServingDestroy(void *adapter_state)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkModelDriverRuntimeSnapshot snapshot;
 	uint32_t index;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	state = (SparkDsv4ServingState *)adapter_state;
 	if ( state == 0 )
 		return;
 	for (index=0u; index<state->pipeline_slot_count; index++)
@@ -743,19 +720,12 @@ static void SparkDsv4ServingDestroy(void *adapter_state)
 	SparkMemoryBufferFree(&state->allocation);
 }
 
-static SparkStatus SparkDsv4ServingAcceptsProgram(
-	const SparkModelDriverProgramDescriptor *program,
-	void *accept_context)
-{
-	SparkDsv4ServingAdapterState *state;
-	state = (SparkDsv4ServingAdapterState *)accept_context;
-	if ( SparkModelDriverProgramSupportsRuntimeLimits(program,SPARK_DSV4_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+
+#include "sparkpipe/family/serving/spark_serving_accepts_program.h"
 
 static SparkStatus SparkDsv4ServingLoadDriver(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	SparkServingAdapterDriverRequest request;
@@ -779,7 +749,7 @@ static SparkStatus SparkDsv4ServingLoadDriver(
 }
 
 static SparkStatus SparkDsv4ServingInitializeRunner(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	SparkDsv4StageRunnerConfiguration runner_configuration;
@@ -821,24 +791,8 @@ static SparkStatus SparkDsv4ServingInitializeRunner(
 	return(SparkDsv4StageRunnerInitialize(&state->runner,&runner_configuration));
 }
 
-static SparkStatus SparkDsv4ServingValidateConfiguration(
-	const SparkModelServingAdapterConfiguration *configuration)
-{
-	SparkStatus status;
-	if ( configuration == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkDsv4ServingDescriptor,&configuration->runtime_limits);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	if ( configuration->stage_index >= SPARK_DSV4_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_DSV4_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
-
 static void SparkDsv4ServingInitializeState(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	state->stage_index = configuration->stage_index;
@@ -888,7 +842,7 @@ static void SparkDsv4ServingSpeculationModelContract(
 }
 
 static SparkStatus SparkDsv4ServingInitializeSpeculation(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	uint32_t max_sequence_positions)
 {
 	SparkSpeculationSeamConfiguration configuration;
@@ -941,8 +895,14 @@ static SparkStatus SparkDsv4ServingInitializeSpeculation(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkDsv4ServingValidateSubmissionBase(
+	SparkDsv4ServingState *state,
+	const SparkModelServingSubmission *submission);
+
+#include "sparkpipe/family/serving/spark_serving_first_layer.h"
+
 static SparkStatus SparkDsv4ServingInitializeNodeContext(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	uint32_t max_sequence_positions,
 	uint32_t cuda_graph_count)
 {
@@ -1029,11 +989,13 @@ static SparkStatus SparkDsv4ServingInitializeNodeContext(
 	return(SPARK_STATUS_OK);
 }
 
+#include "sparkpipe/family/serving/spark_serving_validate_configuration.h"
+
 static SparkStatus SparkDsv4ServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkMemoryBuffer state_buffer;
 	uint32_t max_sequence_positions,cuda_graph_count;
 	SparkStatus status;
@@ -1045,12 +1007,12 @@ static SparkStatus SparkDsv4ServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = SparkMemoryBufferAllocate(&state_buffer,
-		SPARK_MEMORY_SPACE_HOST_COHERENT,sizeof(SparkDsv4ServingAdapterState));
+		SPARK_MEMORY_SPACE_HOST_COHERENT,sizeof(SparkDsv4ServingState));
 	if ( status == SPARK_STATUS_OK )
-		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingAdapterState));
+		memset(state_buffer.pointer,0,sizeof(SparkDsv4ServingState));
 	if ( status != SPARK_STATUS_OK )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state = (SparkDsv4ServingAdapterState *)state_buffer.pointer;
+	state = (SparkDsv4ServingState *)state_buffer.pointer;
 	state->allocation = state_buffer;
 	SparkDsv4ServingInitializeState(state,configuration);
 	status = SparkDsv4ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&cuda_graph_count);
@@ -1078,7 +1040,7 @@ static SparkStatus SparkDsv4ServingInitialize(
 }
 
 static SparkStatus SparkDsv4ServingValidateSubmissionBase(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingSubmission *submission)
 {
 	SparkStatus status;
@@ -1099,40 +1061,13 @@ static SparkStatus SparkDsv4ServingValidateSubmissionBase(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkDsv4ServingValidateSubmission(
-	void *adapter_state,
-	const SparkModelServingSubmission *submission)
-{
-	SparkDsv4ServingAdapterState *state;
-	uint32_t emit_count;
-	SparkStatus status;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
-	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		return(SPARK_STATUS_OK);
-	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
-}
-
-static SparkServingCacheAdmission SparkDsv4ServingCacheContext(SparkDsv4ServingAdapterState *state,SparkModelDriverCacheLane *lanes)
-{
-	SparkServingCacheAdmission cache;
-	cache.program_id = state->program->program_id;
-	cache.lane_capacity = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	cache.lanes = lanes;
-	cache.driver = state->driver.interface;
-	cache.driver_instance = state->driver_instance;
-	cache.validate = SparkDsv4ServingValidateSubmission;
-	cache.adapter_state = state;
-	return(cache);
-}
+#include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 static SparkStatus SparkDsv4ServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t submission_count)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkServingCacheAdmission cache;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	state = (SparkDsv4ServingState *)adapter_state;
 	if ( state == 0 || state->program == 0 || submissions == 0 || submission_count == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	cache = SparkDsv4ServingCacheContext(state,SparkDsv4ServingPrefetchLanes);
@@ -1141,10 +1076,10 @@ static SparkStatus SparkDsv4ServingPrefetch(void *adapter_state,const SparkModel
 
 static SparkStatus SparkDsv4ServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkServingCacheAdmission cache;
 	uint32_t flags;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	state = (SparkDsv4ServingState *)adapter_state;
 	if ( state == 0 || state->program == 0 || submission == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
@@ -1153,7 +1088,7 @@ static SparkStatus SparkDsv4ServingResolvePrefetch(void *adapter_state,const Spa
 }
 
 static SparkStatus SparkDsv4ServingSubmitRelease(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	const SparkModelServingSubmission *submission,
 	SparkDsv4ServingPending *pending)
 {
@@ -1195,11 +1130,11 @@ static SparkStatus SparkDsv4ServingSubmit(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkDsv4ServingPending *pending;
 	SparkDsv4StageRunnerDispatch dispatch;
 	SparkStatus status;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	state = (SparkDsv4ServingState *)adapter_state;
 	status = SparkDsv4ServingValidateSubmissionBase(state,submission);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1284,7 +1219,7 @@ static SparkStatus SparkDsv4ServingProgress(
 }
 
 static uint32_t SparkDsv4ServingAvailableSubmissionCount(
-	const SparkDsv4ServingAdapterState *state)
+	const SparkDsv4ServingState *state)
 {
 	uint32_t available,index;
 	available = 0u;
@@ -1293,28 +1228,10 @@ static uint32_t SparkDsv4ServingAvailableSubmissionCount(
 	return(available);
 }
 
-static SparkStatus SparkDsv4ServingQuiesce(
-	void *adapter_state,
-	uint64_t deadline_time_ns)
-{
-	SparkDsv4ServingAdapterState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkStatus status;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
-	if ( state == 0 || deadline_time_ns == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->quiescing = 1u;
-	if ( SparkDsv4ServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return(SPARK_STATUS_BUSY);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
-}
+#include "sparkpipe/family/serving/spark_serving_quiesce.h"
 
 static SparkStatus SparkDsv4ServingResetControl(
-	SparkDsv4ServingAdapterState *state,
+	SparkDsv4ServingState *state,
 	uint64_t control_generation)
 {
 	SparkModelDriverAdmissionRequest request = {0};
@@ -1345,7 +1262,7 @@ static SparkStatus SparkDsv4ServingReset(
 	void *adapter_state,
 	uint64_t control_generation)
 {
-	SparkDsv4ServingAdapterState *state = (SparkDsv4ServingAdapterState *)adapter_state;
+	SparkDsv4ServingState *state = (SparkDsv4ServingState *)adapter_state;
 	uint32_t expected = 0u;
 	SparkStatus status;
 	if ( state == 0 )
@@ -1361,11 +1278,11 @@ static SparkStatus SparkDsv4ServingSnapshot(
 	void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
 {
-	SparkDsv4ServingAdapterState *state;
+	SparkDsv4ServingState *state;
 	SparkModelDriverRuntimeSnapshot driver_snapshot;
 	uint32_t available;
 	SparkStatus status;
-	state = (SparkDsv4ServingAdapterState *)adapter_state;
+	state = (SparkDsv4ServingState *)adapter_state;
 	if ( state == 0 || snapshot == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
@@ -1408,8 +1325,4 @@ static const SparkModelServingAdapterInterface SparkDsv4ServingInterface =
 	.reset = SparkDsv4ServingReset
 };
 
-__attribute__((visibility("default")))
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return(&SparkDsv4ServingInterface);
-}
+#include "sparkpipe/family/serving/spark_serving_get_interface.h"

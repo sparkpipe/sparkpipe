@@ -11,6 +11,11 @@
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
+
+#include "sparkpipe/family/spark_family.h"
 
 #ifndef LAGUNA_EXPERT_WEIGHT_CODEC
 #error "LAGUNA_EXPERT_WEIGHT_CODEC must name the exact package expert codec"
@@ -51,7 +56,6 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL)
-
 
 static const char *const SparkLagunaServingConfigurationMembers[] =
 {
@@ -302,65 +306,6 @@ static SparkStatus SparkLagunaServingValidateRowOrder(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static SparkLagunaServingPending *SparkLagunaServingReservePending(
-	SparkLagunaServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	SparkLagunaServingPending *pending;
-	uint32_t index,lane,row,expected;
-	if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
-		return(0);
-	for (index=0u; index<state->pipeline_slot_count; index++)
-	{
-		pending = &state->pending[index];
-		expected = 0u;
-		if ( atomic_compare_exchange_strong_explicit(&pending->active,&expected,1u,memory_order_acquire,memory_order_relaxed) != 0 )
-		{
-			if ( atomic_load_explicit(&state->quiescing,memory_order_acquire) != 0u )
-			{
-				atomic_store_explicit(&pending->active,0u,memory_order_release);
-				return(0);
-			}
-			pending->owner = state;
-			pending->row_count = submission->row_count;
-			pending->lane_count = submission->lane_count;
-			pending->active_sequence_count = submission->active_sequence_count;
-			pending->work_kind = submission->work_kind;
-			pending->submission_id = submission->submission_id;
-			pending->request_id = submission->request_id;
-			pending->sequence_id = submission->sequence_id;
-			pending->sequence_position = submission->sequence_position;
-			pending->control_generation = submission->control_generation;
-			pending->transaction_id = submission->transaction_id;
-			pending->dispatch_generation = submission->dispatch_generation;
-			pending->request_generation = submission->request_generation;
-			pending->step_generation = submission->step_generation;
-			for (row=0u; row<submission->row_count; row++)
-			{
-				lane = submission->row_lane_indices[row];
-				pending->last_row_by_lane[lane] = row;
-				pending->resident_slots[row] = submission->lanes[lane].resident_sequence_slot;
-				pending->input_token_ids[row] = submission->token_ids[row];
-				pending->row_positions[row] = submission->row_positions[row];
-				pending->row_sequence_ids[row] = submission->row_sequence_ids[row];
-			}
-			return(pending);
-		}
-	}
-	return(0);
-}
-
-static void SparkLagunaServingOrphanDriverCompletion(
-	void *completion_context,
-	const SparkModelDriverCompletion *driver_completion)
-{
-	SparkLagunaServingState *state;
-	(void)driver_completion;
-	state = (SparkLagunaServingState *)completion_context;
-	if ( state != 0 )
-		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
-}
-
 static void SparkLagunaServingDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -428,23 +373,7 @@ static void SparkLagunaServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static void SparkLagunaServingDriverWake(void *wake_context)
-{
-	SparkLagunaServingState *state;
-	state = (SparkLagunaServingState *)wake_context;
-	if ( state != 0 && state->wake_function != 0 )
-		state->wake_function(state->wake_context);
-}
-
-static uint32_t SparkLagunaServingAvailableSubmissionCount(
-	const SparkLagunaServingState *state)
-{
-	uint32_t available,index;
-	available = 0u;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += atomic_load_explicit(&state->pending[index].active,memory_order_acquire) == 0u ? 1u : 0u;
-	return(available);
-}
+#include "sparkpipe/family/serving/spark_serving_reserve_pending.h"
 
 static void SparkLagunaServingDestroy(void *adapter_state)
 {
@@ -466,6 +395,8 @@ static void SparkLagunaServingDestroy(void *adapter_state)
 	SparkUnloadModelDriver(&state->driver);
 	free(state);
 }
+
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
 
 static SparkStatus SparkLagunaServingLoadDriver(
 	SparkLagunaServingState *state,
@@ -650,18 +581,7 @@ static SparkStatus SparkLagunaServingValidateSubmission(
 	return(status);
 }
 
-static SparkServingCacheAdmission SparkLagunaServingCacheContext(SparkLagunaServingState *state,SparkModelDriverCacheLane *lanes)
-{
-	SparkServingCacheAdmission cache;
-	cache.program_id = state->program->program_id;
-	cache.lane_capacity = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	cache.lanes = lanes;
-	cache.driver = state->driver.interface;
-	cache.driver_instance = state->driver_instance;
-	cache.validate = SparkLagunaServingValidateSubmission;
-	cache.adapter_state = state;
-	return(cache);
-}
+#include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 static SparkStatus SparkLagunaServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
 {
@@ -934,8 +854,4 @@ static const SparkModelServingAdapterInterface SparkLagunaServingInterface =
 	.reset = SparkLagunaServingReset
 };
 
-__attribute__((visibility("default")))
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return(&SparkLagunaServingInterface);
-}
+#include "sparkpipe/family/serving/spark_serving_get_interface.h"
