@@ -114,6 +114,7 @@ struct SparkModelBatchEngine
 	uint32_t request_capacity;
 	uint32_t resident_sequence_capacity;
 	uint32_t max_context_tokens;
+	uint64_t inflight_budget_ns;
 	uint32_t max_prefill_rows;
 	uint32_t max_active_sequence_count;
 	uint32_t scratch_row_capacity;
@@ -979,7 +980,7 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_BATCH_ENGINE_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	if ( configuration->flags != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->event_function == 0 )
+	if ( configuration->flags != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->inflight_budget_ns < SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->event_function == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (left=0u; left<configuration->stop_token_count; left++)
 		for (right=left + 1u; right<configuration->stop_token_count; right++)
@@ -1116,6 +1117,7 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->kv_logical_page_capacity = limits->kv_logical_page_capacity;
 	engine->kv_physical_page_capacity = limits->kv_physical_page_capacity;
 	engine->max_context_tokens = configuration->max_context_tokens;
+	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
 	engine->max_active_sequence_count = limits->max_active_sequence_count;
 	engine->scratch_row_capacity = engine->max_prefill_rows > engine->max_active_sequence_count ? engine->max_prefill_rows : engine->max_active_sequence_count;
@@ -2132,19 +2134,6 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	return(SparkModelBatchSchedulerChooseWorkKind(available_by_kind,minimum_by_kind,engine->admission_open,engine->inflight_submission_count,engine->submission_capacity,&engine->next_work_kind,engine->work_kind_bypass_counts));
 }
 
-static uint64_t SparkModelBatchInflightBudgetNs(void)
-{
-	const char *env = getenv("SPARK_BATCH_INFLIGHT_BUDGET_NS");
-	uint64_t value;
-	if ( env != 0 && env[0] != '\0' )
-	{
-		value = strtoull(env,0,10);
-		if ( value >= UINT64_C(1000000000) )
-			return(value);
-	}
-	return(UINT64_C(900) * UINT64_C(1000000000));
-}
-
 static void SparkModelBatchExpireStalledRequests(
 	SparkModelBatchEngine *engine)
 {
@@ -2165,7 +2154,7 @@ static void SparkModelBatchExpireStalledRequests(
 		if ( engine->requests[index].inflight_since_ns == 0ull )
 			engine->requests[index].inflight_since_ns = now;
 		else if ( now - engine->requests[index].inflight_since_ns >
-		          SparkModelBatchInflightBudgetNs() )
+		          engine->inflight_budget_ns )
 		{
 			fprintf(stderr,
 			    "batch request expired id=%llu state=%u\n",
@@ -2456,7 +2445,7 @@ uint64_t SparkModelBatchEngineNextProgressNs(
 	if ( engine->failed_status != SPARK_STATUS_OK )
 		return(0u);
 	deadline = engine->next_progress_ns;
-	budget = SparkModelBatchInflightBudgetNs();
+	budget = engine->inflight_budget_ns;
 	for (index=0u; index<engine->request_capacity; index++)
 	{
 		const SparkModelBatchRequestState *request = &engine->requests[index];

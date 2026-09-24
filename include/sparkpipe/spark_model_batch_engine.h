@@ -61,6 +61,7 @@ typedef struct SparkModelBatchEngineConfiguration
 	uint32_t maximum_messages_per_rank_per_progress;
 	uint32_t stop_token_count;
 	uint32_t stop_token_ids[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
+	uint64_t inflight_budget_ns;
 	const SparkModelResidentDeployment *deployment;
 	const char *runtime_root;
 	SparkModelBatchEventFunction event_function;
@@ -104,6 +105,8 @@ typedef struct SparkModelBatchEngineView
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
+#define SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS UINT64_C(900000000000)
+#define SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_EVENT_BYTES \
 	((uint32_t)sizeof(SparkModelBatchEvent))
 #define SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES \

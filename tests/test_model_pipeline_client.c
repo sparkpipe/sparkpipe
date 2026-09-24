@@ -893,6 +893,7 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	configuration.max_context_tokens = 16u;
 	configuration.max_prefill_rows_per_submission = max_prefill_rows;
 	configuration.maximum_messages_per_rank_per_progress = 8u;
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration.stop_token_count = stop_token_count;
 	configuration.stop_token_ids[0] = stop_token_id;
 	configuration.deployment = deployment;

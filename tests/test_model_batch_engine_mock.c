@@ -127,6 +127,7 @@ static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *de
 	configuration.max_context_tokens = 256u;
 	configuration.max_prefill_rows_per_submission = 4u;
 	configuration.maximum_messages_per_rank_per_progress = 8u;
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration.deployment = deployment;
 	configuration.runtime_root = runtime_root;
 	configuration.event_function = TestBatchEvent;
