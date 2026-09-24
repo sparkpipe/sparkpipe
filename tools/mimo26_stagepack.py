@@ -551,8 +551,9 @@ def stage_name(record: Record, plane: str) -> str:
     return f"r{layer}_{record.kind:02d}.{plane}"
 
 
-def emit_record(reader: SourceReader, record: Record, stage_dir: Path):
+def emit_record(reader: SourceReader, record: Record, stage_dir: Path) -> int:
     """Stage one record's payload/scale files; resume skips exact-size files."""
+    staged = 0
     payload_path = stage_dir / stage_name(record, "payload")
     scale_path = stage_dir / stage_name(record, "scale")
     if not (payload_path.exists() and payload_path.stat().st_size == record.payload_bytes):
@@ -561,6 +562,7 @@ def emit_record(reader: SourceReader, record: Record, stage_dir: Path):
                 reader.produce(span, record, out, payload=True)
             out.flush()
             os.fsync(out.fileno())
+        staged += record.payload_bytes
     if record.scale_bytes and not (scale_path.exists()
                                    and scale_path.stat().st_size == record.scale_bytes):
         with open(scale_path, "wb") as out:
@@ -568,6 +570,8 @@ def emit_record(reader: SourceReader, record: Record, stage_dir: Path):
                 reader.produce(span, record, out, payload=False)
             out.flush()
             os.fsync(out.fileno())
+        staged += record.scale_bytes
+    return staged
 
 
 def header_fields(arm: str, records: list, directory_offset: int,
@@ -724,7 +728,15 @@ def do_emit(args) -> int:
     stage_dir.mkdir(parents=True, exist_ok=True)
     reader = SourceReader(source)
     journal_path = stage_dir / "journal.jsonl"
-    done_bytes = emit_file_major(source, records, stage_dir, reader)
+    order = getattr(args, "emit_order", "record")
+    if order == "file":
+        done_bytes = emit_file_major(source, records, stage_dir, reader)
+        shape = "file-major"
+    else:
+        done_bytes = 0
+        for record in records:
+            done_bytes += emit_record(reader, record, stage_dir)
+        shape = "record-major"
     with open(journal_path, "a", encoding="utf-8") as journal:
         for index, record in enumerate(records):
             journal.write(json.dumps({
@@ -733,7 +745,8 @@ def do_emit(args) -> int:
                 "weight_format": record.weight_format,
                 "payload_bytes": record.payload_bytes,
                 "scale_bytes": record.scale_bytes}) + "\n")
-    print(f"emit: {len(records)} records, {done_bytes} new bytes staged under {stage_dir} (file-major)")
+    print(f"emit: {len(records)} records, {done_bytes} new bytes staged under "
+          f"{stage_dir} ({shape})")
     return 0
 
 
@@ -849,29 +862,60 @@ def do_verify(args) -> int:
                          record.columns, record.payload_bytes, record.scale_bytes)))
             if scale_bytes and scale_offset < payload_offset + payload_bytes:
                 raise PackFailure(f"entry {index} scale plane overlaps payload")
-        for index, (record, entry) in enumerate(zip(records, entries)):
-            _k, _l, _f, _r, _c, _res, payload_offset, _pb, scale_offset, _sb = entry
-            pack.seek(payload_offset)
-            sink = _CompareSink(pack, f"entry {index} ({record.name}) payload")
-            for span in record.spans:
-                reader.produce(span, record, sink, payload=True)
-            sink.expect(record.payload_bytes)
-            if record.scale_bytes:
-                pack.seek(scale_offset)
-                sink = _CompareSink(pack, f"entry {index} ({record.name}) scale")
+        receipt = json.loads(
+            pack_path.with_name(pack_path.name + ".receipt.json").read_text())
+        journal_path = pack_path.with_name(pack_path.name + ".verify.jsonl")
+        done = 0
+        if journal_path.exists():
+            lines = journal_path.read_text().splitlines()
+            try:
+                head = json.loads(lines[0]) if lines else None
+                entries_done = []
+                for line in lines[1:]:
+                    entries_done.append(json.loads(line))
+            except ValueError:
+                head, entries_done = None, []
+            if (head and head.get("pack") == pack_path.name
+                    and head.get("sha256") == receipt["sha256"]):
+                for position, mark in enumerate(entries_done):
+                    if mark.get("index") != position:
+                        break
+                    done += 1
+            else:
+                journal_path.unlink()
+        if done:
+            print(f"verify: resuming after {done} byte-exact entries")
+        with journal_path.open("a", encoding="utf-8") as journal:
+            if not done:
+                journal.write(json.dumps({
+                    "pack": pack_path.name, "sha256": receipt["sha256"]}) + "\n")
+            for index, (record, entry) in enumerate(zip(records, entries)):
+                if index < done:
+                    continue
+                _k, _l, _f, _r, _c, _res, payload_offset, _pb, scale_offset, _sb = entry
+                pack.seek(payload_offset)
+                sink = _CompareSink(pack, f"entry {index} ({record.name}) payload")
                 for span in record.spans:
-                    reader.produce(span, record, sink, payload=False)
-                sink.expect(record.scale_bytes)
-    receipt = json.loads(
-        pack_path.with_name(pack_path.name + ".receipt.json").read_text())
-    digest = sha256_file(pack_path)
-    if receipt["sha256"] != digest:
-        raise PackFailure("receipt sha256 mismatch")
-    if receipt["file_bytes"] != pack_path.stat().st_size:
-        raise PackFailure("receipt file_bytes mismatch")
-    print(f"verify: {pack_path} byte-exact against the checkpoint "
-          f"({len(records)} tensors, sha256 {digest[:16]}...)")
-    return 0
+                    reader.produce(span, record, sink, payload=True)
+                sink.expect(record.payload_bytes)
+                if record.scale_bytes:
+                    pack.seek(scale_offset)
+                    sink = _CompareSink(pack, f"entry {index} ({record.name}) scale")
+                    for span in record.spans:
+                        reader.produce(span, record, sink, payload=False)
+                    sink.expect(record.scale_bytes)
+                journal.write(json.dumps({"index": index}) + "\n")
+                journal.flush()
+                os.fsync(journal.fileno())
+        digest = sha256_file(pack_path)
+        if receipt["sha256"] != digest:
+            raise PackFailure("receipt sha256 mismatch")
+        if receipt["file_bytes"] != pack_path.stat().st_size:
+            raise PackFailure("receipt file_bytes mismatch")
+        journal_path.unlink()
+        print(f"verify: {pack_path} byte-exact against the checkpoint "
+              f"({len(records)} tensors, sha256 {digest[:16]}...)")
+        return 0
 
 
 class _CompareSink:
@@ -906,6 +950,11 @@ def main() -> int:
     ap.add_argument("--stage-dir")
     ap.add_argument("--layer-window", default=None,
                     help="FIRST:COUNT - emit globals plus this layer window only")
+    ap.add_argument("--emit-order", default="record", choices=("record", "file"),
+                    help="record: each plane written in plan span order (verify-"
+                         "clean); file: shard-sequential passes, multi-span "
+                         "planes land in shard-visit order and need "
+                         "mimo26_reorder_planes.py before --assemble")
     sub = ap.add_mutually_exclusive_group(required=True)
     sub.add_argument("--emit", action="store_true")
     sub.add_argument("--assemble", action="store_true")
