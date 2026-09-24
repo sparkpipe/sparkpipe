@@ -358,6 +358,7 @@ static uint32_t SparkLingServingAvailableSubmissionCount(
 }
 
 #include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+#include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
 static SparkStatus SparkLingServingLoadDriver(
 	SparkLingServingState *state,

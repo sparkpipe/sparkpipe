@@ -481,6 +481,7 @@ static void SparkGlm52ServingDestroy(void *adapter_state)
 }
 
 #include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+#include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
 #include "sparkpipe/family/serving/spark_serving_accepts_program.h"
 

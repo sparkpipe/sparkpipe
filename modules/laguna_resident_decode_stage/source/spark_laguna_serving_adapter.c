@@ -375,7 +375,8 @@ static void SparkLagunaServingDriverCompletion(
 
 #include "sparkpipe/family/serving/spark_serving_reserve_pending.h"
 
-#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
+#include "sparkpipe/family/serving/spark_serving_orphan_driver_completion_atomic.h"
+#include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
 static SparkStatus SparkLagunaServingLoadDriver(
 	SparkLagunaServingState *state,
