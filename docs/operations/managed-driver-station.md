@@ -54,10 +54,17 @@ results unsafe for this station.
 cd /Users/mac/.sparkpipe/station-20260924
 /opt/homebrew/bin/python3 spark_station.py --station station.json plan
 /opt/homebrew/bin/python3 spark_station.py --station station.json status all
-/opt/homebrew/bin/python3 spark_station.py --station station.json start qwen27
-/opt/homebrew/bin/python3 spark_station.py --station station.json smoke qwen27
-/opt/homebrew/bin/python3 spark_station.py --station station.json stop qwen27
+/opt/homebrew/bin/python3 spark_station.py --station station.json smoke gemma4
 ```
+
+The installed baseline leaves seven families running and Qwen Max stopped.
+Start by reading `status all` and the qualification matrix below. Gemma is the
+short request/restart smoke baseline; GLM has the independent token reference.
+Do not run known-failing GPU requests concurrently with another developer's
+qualification run: a crashed driver can still fault the shared mesh.
+
+To restart only your own family, use `stop FAMILY` followed by `start FAMILY`.
+`start` rejects an already-running family instead of silently restarting it.
 
 `start` verifies release hashes and the fresh mesh, admits the family through the
 queue, starts and tracks its residents, waits for **every rank** to initialize,
@@ -191,8 +198,8 @@ Live multi-family staging found additional concrete defects:
   the failed request thousands of times. Connected driver failures now terminate;
   actual disconnected-session recovery remains covered separately.
 
-GLM passed three exact 32-token reference requests with core `60ba45ce`:
-81.336, 21.562 and 18.863 seconds while other driver tests were running. These
+GLM passed three exact 32-token reference requests with core `60ba45ce`
+while Gemma was online: 13.417, 13.982 and 21.503 seconds. These
 are correctness checks with contention and cold-start effects, not a new
 throughput benchmark. The isolated single-resident performance regression is
 not yet resolved. This PR is not evidence for 13.5 tok/s from one resident.
@@ -207,13 +214,21 @@ reporting progress.
 | Family | Latest inference evidence | Remaining work |
 |---|---|---|
 | GLM Flash | Three exact 32-token reference requests pass | Isolated throughput regression; broader concurrent qualification |
-| Gemma 4 | Repeated two-token HTTP requests pass after `74a996d3`; no numerical oracle | Independent numerical oracle and broader cache/batch cases |
+| Gemma 4 | Four two-token HTTP requests return `[236773, 236814]`, two before and two after resident restart; no numerical oracle | Independent numerical oracle and broader cache/batch cases |
 | Qwen 27B | Prefill and MTP execute; HTTP ends with UNSUPPORTED | Speculation versus prefix publication contract (`model_batch_engine.c`); do not remove the guard |
 | Qwen Max | All 16 ranks initialize; first request returns UNSUPPORTED | `SparkQwen38MaxModuleAdmit` is an unimplemented stub |
 | Laguna | Collective passes; first routed-expert launch returns INTERNAL_ERROR | `SparkLagunaLazyExperts` / `SparkLagunaLaunchCudaLayerMlpExperts` |
 | Ling | First inference returns INTERNAL_ERROR | Locate the first failing CUDA layer launch |
 | Kimi K3 | First request stalls; lease release returns BUSY | Lease/GPU completion path; request was interrupted by coordinated recovery |
 | MiniMax | First inference returns IO_ERROR; CUDA 700 | Illegal access preceding `seed-round-tag`; no automatic request retry |
+
+Gemma qualification uses resident driver `fb079313` and adapter `74a996d3`
+(`rheadstation9`). The four requests took 0.300, 0.318, 0.309 and 0.226 seconds.
+GLM and the shared daemons stayed online during the Gemma restart. These four
+short requests demonstrate repeatability and restart behavior, not numerical
+model correctness or a throughput benchmark. Other installed driver versions
+have not yet been rebuilt with the collective epoch correction or qualified
+through the same restart test.
 
 The controller registry records installed component hashes and per-family
 qualification. Source and component commits can differ intentionally: an
@@ -223,3 +238,16 @@ registry's `core_commit` is the source base for new driver branches;
 Use the installed registry and receipts for provenance, not a branch name or
 an old launch directory. The station is a reproducible development environment;
 **eight-driver inference acceptance and crash isolation are still incomplete**.
+
+## Saved hardware receipts
+
+The 2026-09-24 00:23 UTC snapshot found all 16 shared daemons active, all ranks
+and workstation APIs active for seven families, and Qwen Max stopped. All seven
+API health responses reported `tokenizer: true`; an independent process audit
+found no `sparkpipe_model_api` on any Spark.
+
+On `mac-studio`, `/Users/mac/.sparkpipe/station-20260924/evidence/` contains the
+Gemma before/after-restart responses, GLM exact-reference script and results,
+final service/API snapshot, memory rejection, and red/green test logs.
+`SHA256SUMS` records these captured files. The controller registry is the
+installed deployment authority; the receipts are historical observations.
