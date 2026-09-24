@@ -1397,7 +1397,7 @@ build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c,$^)) $(LDFLAGS) -o $@
 
-build/test_weightd: tests/test_weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_weightd: tests/test_weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_weightd_attach: tests/test_weightd_attach.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
@@ -1451,10 +1451,13 @@ build/test_dsv4_paged_cache: tests/test_dsv4_paged_cache.c modules/dsv4_resident
 build/test_weight_codec: tests/test_weight_codec.c include/sparkpipe/spark_weight_codec.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-test: $(TEST_BINARIES)
+TEST_EXCLUDE ?=
+
+test: all $(TEST_BINARIES)
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
 		if [ ! -x "$$test_binary" ]; then echo "SKIP $$test_binary (host does not build it)"; continue; fi; \
+		case " $(TEST_EXCLUDE) " in *" $$test_binary "*) echo "SKIP $$test_binary (TEST_EXCLUDE)"; continue;; esac; \
 		echo "RUN $$test_binary"; \
 		./$$test_binary; \
 	done; \
@@ -1599,9 +1602,6 @@ publish:
 	bash tools/publish_local.sh "${FAMILY:?modules/ family}" "${CODEC:?codec}" "${ROOT:?release root name}"
 
 build/weightd_warm: tools/weightd_warm.c model-families/dsv4/src/spark_dsv4_parallel_shape.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
-
-build/mesh_register_attach_repro: tools/mesh_register_attach_repro.c model-families/dsv4/src/spark_dsv4_parallel_shape.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
 
 build/mesh_register_attach_repro: tools/mesh_register_attach_repro.c model-families/dsv4/src/spark_dsv4_parallel_shape.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
