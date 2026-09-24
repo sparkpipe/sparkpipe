@@ -9,7 +9,11 @@
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
+#define SPARK_FAMILY_CAMEL Glm52
+#define SPARK_FAMILY_UPPER GLM52
+#define SPARK_FAMILY_LOWER glm52
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM52_VALIDATION_TOKENS 4u
 #define SPARK_GLM52_VALIDATION_LANES 1u
@@ -56,30 +60,13 @@
 
 extern "C" int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
-
 static uint32_t SparkGlm52ValRandomState;
 
-static uint32_t SparkGlm52ValNext(void)
-{
-	SparkGlm52ValRandomState = SparkGlm52ValRandomState * 1664525u + 1013904223u;
-	return(SparkGlm52ValRandomState >> 8u);
-}
+#include "sparkpipe/family/validation/spark_val_rng.h"
 
-static uint16_t SparkGlm52ValBf16(float value)
-{
-	uint32_t bits;
-	memcpy(&bits,&value,sizeof(bits));
-	bits += 0x7fffu + ((bits >> 16u) & 1u);
-	return((uint16_t)(bits >> 16u));
-}
+#include "sparkpipe/family/validation/spark_val_bf16.h"
 
-static float SparkGlm52ValFromBf16(uint16_t value)
-{
-	uint32_t bits = (uint32_t)value << 16u;
-	float converted;
-	memcpy(&converted,&bits,sizeof(converted));
-	return(converted);
-}
+#include "sparkpipe/family/validation/spark_val_from_bf16.h"
 
 static void SparkGlm52ValFill(uint16_t *packed,float *exact,uint64_t count,float scale)
 {
@@ -101,12 +88,6 @@ static void SparkGlm52ValFillNorm(uint16_t *packed,float *exact,uint64_t count)
 	}
 }
 
-static int SparkGlm52ValFail(const char *check,const char *detail)
-{
-	fprintf(stderr,"glm52_validation failure=%s detail=%s\n",check,detail);
-	return(1);
-}
-
 typedef struct SparkGlm52ValMetrics
 {
 	double difference_l2;
@@ -117,39 +98,7 @@ typedef struct SparkGlm52ValMetrics
 	uint64_t count;
 } SparkGlm52ValMetrics;
 
-static void SparkGlm52ValMeasure(SparkGlm52ValMetrics *metrics,const float *actual,const float *reference,uint64_t count)
-{
-	uint64_t index;
-	double difference;
-	memset(metrics,0,sizeof(*metrics));
-	metrics->count = count;
-	for (index = 0u; index < count; index++)
-	{
-		difference = (double)actual[index] - (double)reference[index];
-		metrics->difference_l2 += difference * difference;
-		metrics->reference_l2 += (double)reference[index] * (double)reference[index];
-		metrics->actual_l2 += (double)actual[index] * (double)actual[index];
-		metrics->dot += (double)actual[index] * (double)reference[index];
-		if ( fabs(difference) > metrics->maximum_absolute )
-			metrics->maximum_absolute = fabs(difference);
-	}
-}
-
-static int SparkGlm52ValReport(const char *check,const SparkGlm52ValMetrics *metrics,double max_relative_l2,double minimum_cosine)
-{
-	double relative_l2 = metrics->reference_l2 > 0.0
-		? sqrt(metrics->difference_l2 / metrics->reference_l2) : INFINITY;
-	double cosine = metrics->actual_l2 > 0.0 && metrics->reference_l2 > 0.0
-		? metrics->dot / sqrt(metrics->actual_l2 * metrics->reference_l2) : 0.0;
-	printf("glm52_validation check=%s elements=%llu relative_l2=%.9g cosine=%.9g max_abs=%.9g\n",
-		check,(unsigned long long)metrics->count,relative_l2,cosine,metrics->maximum_absolute);
-	if ( isfinite(relative_l2) == 0 || relative_l2 > max_relative_l2 )
-		return(SparkGlm52ValFail(check,"relative_l2"));
-	if ( cosine < minimum_cosine )
-		return(SparkGlm52ValFail(check,"cosine"));
-	return(0);
-}
-
+#include "sparkpipe/family/validation/spark_val_fail.h"
 
 #define SPARK_GLM52_VAL_CODEC_BF16 1u
 #define SPARK_GLM52_VAL_CODEC_INT6 2u
@@ -203,12 +152,6 @@ static uint32_t SparkGlm52ValCodecScaleGroup(uint32_t codec)
 	return(128u);
 }
 
-static uint32_t SparkGlm52ValCodecUsesSignedIntGrid(uint32_t codec)
-{
-	return(codec == SPARK_GLM52_VAL_CODEC_INT6 || codec == SPARK_GLM52_VAL_CODEC_INT7 ||
-		codec == SPARK_GLM52_VAL_CODEC_INT8);
-}
-
 static float SparkGlm52ValE4m3Decode(uint8_t code)
 {
 	uint32_t sign = (uint32_t)(code >> 7u) & 1u;
@@ -240,13 +183,6 @@ static float SparkGlm52ValUe8m0Decode(uint8_t code)
 	if ( code == 0xffu )
 		return(NAN);
 	return(ldexpf(1.0f,(int32_t)code - 127));
-}
-
-static float SparkGlm52ValE2m1Decode(uint8_t nibble)
-{
-	static const float magnitudes[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	float value = magnitudes[nibble & 7u];
-	return((nibble & 8u) != 0u ? -value : value);
 }
 
 #ifdef SPARK_GLM52_VALIDATOR_ORACLE_SELFTEST
@@ -304,20 +240,7 @@ static uint64_t SparkGlm52ValScaleExpertOffset(uint32_t codec,uint32_t expert_co
 		(uint64_t)expert * SparkGlm52ValScaleBytesPerExpert(codec,rows,columns));
 }
 
-static uint64_t SparkGlm52ValPayloadRowBytes(uint32_t codec,uint32_t columns)
-{
-	return(((uint64_t)columns * SparkGlm52ValCodecStoredBits(codec) + 7u) / 8u);
-}
-
-static uint64_t SparkGlm52ValPayloadBytesPerExpert(uint32_t codec,uint32_t rows,uint32_t columns)
-{
-	return((uint64_t)rows * SparkGlm52ValPayloadRowBytes(codec,columns));
-}
-
-static uint64_t SparkGlm52ValPayloadExpertOffset(uint32_t codec,uint32_t expert,uint32_t rows,uint32_t columns)
-{
-	return((uint64_t)expert * SparkGlm52ValPayloadBytesPerExpert(codec,rows,columns));
-}
+#include "sparkpipe/family/validation/spark_val_glm.h"
 
 static int32_t SparkGlm52ValReadCode(const uint8_t *slab,uint32_t codec,uint32_t row,uint32_t columns,uint32_t column)
 {
@@ -347,6 +270,8 @@ static uint64_t SparkGlm52ValScaleIndex(uint32_t codec,uint32_t rows,uint32_t co
 	return((uint64_t)expert * ((uint64_t)rows * groups) + (uint64_t)row * groups +
 		(uint64_t)(column / SparkGlm52ValCodecScaleGroup(codec)));
 }
+
+#include "sparkpipe/family/validation/spark_val_glm52_glm5_next.h"
 
 static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *scales,uint32_t codec,uint32_t expert_count,
 	uint32_t expert,uint32_t row,uint32_t rows,uint32_t columns,uint32_t column)
@@ -382,7 +307,6 @@ static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *sc
 	return(SparkGlm52ValFromBf16(SparkGlm52ValBf16(raw * scale)));
 }
 
-
 static uint32_t SparkGlm52ValTopkKey(float value)
 {
 	uint32_t bits;
@@ -393,11 +317,6 @@ static uint32_t SparkGlm52ValTopkKey(float value)
 static uint32_t SparkGlm52ValTopkBucket(float value)
 {
 	return(SparkGlm52ValTopkKey(value) >> 24u);
-}
-
-static float SparkGlm52ValSigmoid(float value)
-{
-	return(1.0f / (1.0f + expf(-value)));
 }
 
 static void SparkGlm52ValReferenceTopk(const float *scores,const float *bias,uint32_t n,uint32_t k,
@@ -439,7 +358,6 @@ static void SparkGlm52ValReferenceTopk(const float *scores,const float *bias,uin
 			out_weights[slot] = (out_weights[slot] / total) * SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
 	}
 }
-
 
 typedef struct SparkGlm52ValDsaShape
 {
@@ -528,7 +446,6 @@ static int SparkGlm52ValShapeIndexCache(uint16_t *keys,uint32_t position_count,u
 	return(0);
 }
 
-
 typedef struct SparkGlm52ValMatrix
 {
 	uint16_t *device;
@@ -589,49 +506,6 @@ typedef struct SparkGlm52ValFixture
 	uint32_t split_threshold;
 	float *split_partials;
 } SparkGlm52ValFixture;
-
-static int SparkGlm52ValAllocMatrix(SparkGlm52ValMatrix *matrix,uint32_t rows,uint32_t columns,int mode,float scale)
-{
-	uint16_t *packed;
-	uint64_t count = (uint64_t)rows * columns;
-	matrix->rows = rows;
-	matrix->columns = columns;
-	matrix->host = (float *)malloc(count * sizeof(float));
-	packed = (uint16_t *)malloc(count * sizeof(uint16_t));
-	if ( matrix->host == 0 || packed == 0 )
-		return(SparkGlm52ValFail("fixture","host_alloc"));
-	if ( cudaMalloc((void **)&matrix->device,count * sizeof(uint16_t)) != cudaSuccess )
-		return(SparkGlm52ValFail("fixture","device_alloc"));
-	SparkGlm52ValRandomState += 101u;
-	if ( mode == 1 )
-		SparkGlm52ValFillNorm(packed,matrix->host,count);
-	else
-		SparkGlm52ValFill(packed,matrix->host,count,scale);
-	if ( cudaMemcpy(matrix->device,packed,count * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess )
-		return(SparkGlm52ValFail("fixture","weight_upload"));
-	free(packed);
-	return(0);
-}
-
-static void SparkGlm52ValFreeMatrix(SparkGlm52ValMatrix *matrix)
-{
-	free(matrix->host);
-	cudaFree(matrix->device);
-	memset(matrix,0,sizeof(*matrix));
-}
-
-static void *SparkGlm52ValAllocZeroed(uint64_t bytes)
-{
-	void *pointer;
-	if ( cudaMalloc(&pointer,bytes != 0u ? bytes : 16u) != cudaSuccess )
-		return(0);
-	if ( cudaMemset(pointer,0,bytes != 0u ? bytes : 16u) != cudaSuccess )
-	{
-		cudaFree(pointer);
-		return(0);
-	}
-	return(pointer);
-}
 
 static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t *scales,uint32_t rows,uint32_t columns)
 {
@@ -695,6 +569,8 @@ static void SparkGlm52ValFillExpertSlab(uint32_t codec,uint8_t *payload,uint8_t 
 			memcpy(scales + index * sizeof(float),&scale,sizeof(float));
 	}
 }
+
+#include "sparkpipe/family/validation/spark_val_matrix.h"
 
 static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 {
@@ -1089,7 +965,6 @@ static int SparkGlm52ValCheckAccessError(SparkGlm52ValFixture *fixture)
 	return(0);
 }
 
-
 #define SPARK_GLM52_VAL_CACHE_ENTRIES 8u
 
 typedef struct SparkGlm52ValCacheEntry
@@ -1443,6 +1318,7 @@ static void SparkGlm52ValOracleToken(SparkGlm52ValOracle *oracle,const SparkGlm5
 	SparkGlm52ValOracleDenseMlp(oracle,fixture);
 }
 
+#include "sparkpipe/family/validation/spark_val_measure.h"
 
 static int SparkGlm52ValCompareStreams(SparkGlm52ValFixture *fixture,SparkGlm52ValOracle *oracle,
 	const char *label,int *result)
@@ -2256,7 +2132,6 @@ int main(int argc,char **argv)
 }
 
 #else
-
 
 static int SparkGlm52ValSelftestCodecRoundTrip(void)
 {

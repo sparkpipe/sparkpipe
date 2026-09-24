@@ -10,7 +10,11 @@
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_gemma4_resident_decode_stage_firmware.h"
 #include "inference/kernels/kv.cuh"
+#define SPARK_FAMILY_CAMEL Gemma4
+#define SPARK_FAMILY_UPPER GEMMA4
+#define SPARK_FAMILY_LOWER gemma4
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GEMMA4_VAL_ROWS 4u
 #define SPARK_GEMMA4_VAL_SLIDING_CONTEXT 1030u
@@ -53,11 +57,7 @@ extern "C" cudaError_t SparkGemma4LaunchRouterTopk(cudaStream_t stream, const fl
 static uint32_t gemma4_val_sites;
 static uint32_t SparkGemma4ValRandomState;
 
-static uint32_t SparkGemma4ValNext(void)
-{
-	SparkGemma4ValRandomState = SparkGemma4ValRandomState * 1664525u + 1013904223u;
-	return(SparkGemma4ValRandomState >> 8u);
-}
+#include "sparkpipe/family/validation/spark_val_rng.h"
 
 static float SparkGemma4ValUniform(float scale)
 {
@@ -93,20 +93,6 @@ static void SparkGemma4ValFillBf16(uint16_t *packed, uint64_t count, float scale
 		packed[index] = SparkGemma4ValBf16(SparkGemma4ValUniform(scale));
 }
 
-static int SparkGemma4ValFail(const char *check, const char *detail)
-{
-	fprintf(stderr,"gemma4_validation failure=%s detail=%s\n",check,detail);
-	return(1);
-}
-
-static int SparkGemma4ValCuda(cudaError_t error, const char *check)
-{
-	if (error == cudaSuccess)
-		return(0);
-	fprintf(stderr,"gemma4_validation failure=%s cuda=%s\n",check,cudaGetErrorString(error));
-	return(1);
-}
-
 typedef struct SparkGemma4ValMetrics
 {
 	double difference_l2;
@@ -134,6 +120,8 @@ static void SparkGemma4ValMeasure(SparkGemma4ValMetrics *metrics, const float *a
 			metrics->maximum_absolute = fabs((double)actual[index] - (double)reference[index]);
 	}
 }
+
+#include "sparkpipe/family/validation/spark_val_fail.h"
 
 static int SparkGemma4ValReport(const char *check, const SparkGemma4ValMetrics *metrics, double max_relative_l2, double minimum_cosine)
 {
@@ -292,6 +280,8 @@ static int SparkGemma4ValCheckSelf(void)
 	gemma4_val_sites++;
 	return(0);
 }
+
+#include "sparkpipe/family/validation/spark_val_cuda.h"
 
 static int SparkGemma4ValCheckEmbedding(void)
 {

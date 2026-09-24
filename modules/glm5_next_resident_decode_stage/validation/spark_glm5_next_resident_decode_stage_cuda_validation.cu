@@ -11,7 +11,11 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
+#define SPARK_FAMILY_CAMEL Glm5Next
+#define SPARK_FAMILY_UPPER GLM5_NEXT
+#define SPARK_FAMILY_LOWER glm5_next
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM5_NEXT_VALIDATION_TOKENS 4u
 #define SPARK_GLM5_NEXT_VALIDATION_LANES 1u
@@ -65,55 +69,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 #define SPARK_GLM5_NEXT_VINDEX_WIDTH SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH
 
 static uint32_t SparkGlm5NextValRandomState;
-
-static uint32_t SparkGlm5NextValNext(void)
-{
-	uint32_t value = SparkGlm5NextValRandomState;
-	value ^= value << 13;
-	value ^= value >> 17;
-	value ^= value << 5;
-	SparkGlm5NextValRandomState = value;
-	return(value);
-}
-
-static uint16_t SparkGlm5NextValBf16(float value)
-{
-	uint32_t bits;
-	memcpy(&bits,&value,sizeof(bits));
-	uint32_t lsb = (bits >> 16) & 1u;
-	uint32_t rounded = (bits + 0x7fffu + lsb) >> 16;
-	return((uint16_t)(rounded & 0xffffu));
-}
-
-static float SparkGlm5NextValFromBf16(uint16_t value)
-{
-	uint32_t bits = ((uint32_t)value) << 16;
-	float out;
-	memcpy(&out,&bits,sizeof(out));
-	return(out);
-}
-
-static void SparkGlm5NextValFill(uint16_t *packed,float *exact,uint64_t count,float scale)
-{
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		float value = (((float)(int32_t)(SparkGlm5NextValNext() & 0xffffu) -
-			32768.0f) / 32768.0f) * scale;
-		exact[index] = value;
-		packed[index] = SparkGlm5NextValBf16(value);
-	}
-}
-
-static void SparkGlm5NextValFillNorm(uint16_t *packed,float *exact,uint64_t count)
-{
-	uint64_t index;
-	for (index = 0u; index < count; index++)
-	{
-		exact[index] = 1.0f;
-		packed[index] = SparkGlm5NextValBf16(1.0f);
-	}
-}
 
 static int SparkGlm5NextValFail(const char *check,const char *detail)
 {
@@ -174,37 +129,6 @@ static uint32_t SparkGlm5NextValCodecScaleGroup(uint32_t codec)
 		(codec == SPARK_GLM5_NEXT_VAL_CODEC_NVFP4 ? 16u : 128u));
 }
 
-static uint32_t SparkGlm5NextValCodecUsesSignedIntGrid(uint32_t codec)
-{
-	return(codec == SPARK_GLM5_NEXT_VAL_CODEC_INT6 || codec == SPARK_GLM5_NEXT_VAL_CODEC_INT7 ||
-		codec == SPARK_GLM5_NEXT_VAL_CODEC_INT8 ? 1u : 0u);
-}
-
-static float SparkGlm5NextValE4m3Decode(uint8_t code)
-{
-	int32_t sign = (code & 0x80u) != 0u ? -1 : 1;
-	uint32_t exponent = (code >> 3) & 0xfu;
-	uint32_t mantissa = code & 7u;
-	float value;
-	if ( exponent == 0u )
-		return((float)sign * ((float)mantissa * (1.0f / 512.0f)));
-	if ( exponent == 15u && mantissa == 7u )
-		return((float)sign * NAN);
-	value = (1.0f + ((float)mantissa) * 0.125f) *
-		(float)(1u << (int32_t)(exponent - 7u < 31u ? exponent - 7u : 0u));
-	if ( exponent < 7u )
-		value = (1.0f + ((float)mantissa) * 0.125f) /
-			(float)(1u << (7u - exponent));
-	return((float)sign * value);
-}
-
-static float SparkGlm5NextValE2m1Decode(uint8_t nibble)
-{
-	static const float magnitudes[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	float magnitude = magnitudes[nibble & 7u];
-	return((nibble & 8u) != 0u ? -magnitude : magnitude);
-}
-
 static int32_t SparkGlm5NextValCodecCodeMinimum(uint32_t codec)
 {
 	return(codec == SPARK_GLM5_NEXT_VAL_CODEC_INT6 ? -31 :
@@ -246,20 +170,7 @@ static uint64_t SparkGlm5NextValScaleExpertOffset(uint32_t codec,uint32_t expert
 		: (uint64_t)expert * per);
 }
 
-static uint64_t SparkGlm5NextValPayloadRowBytes(uint32_t codec,uint32_t columns)
-{
-	return(((uint64_t)columns * SparkGlm5NextValCodecStoredBits(codec) + 7u) / 8u);
-}
-
-static uint64_t SparkGlm5NextValPayloadBytesPerExpert(uint32_t codec,uint32_t rows,uint32_t columns)
-{
-	return((uint64_t)rows * SparkGlm5NextValPayloadRowBytes(codec,columns));
-}
-
-static uint64_t SparkGlm5NextValPayloadExpertOffset(uint32_t codec,uint32_t expert,uint32_t rows,uint32_t columns)
-{
-	return((uint64_t)expert * SparkGlm5NextValPayloadBytesPerExpert(codec,rows,columns));
-}
+#include "sparkpipe/family/validation/spark_val_glm.h"
 
 static uint8_t SparkGlm5NextValPayloadCode(const uint8_t *payload,uint32_t codec,uint32_t row,uint32_t column,uint32_t columns)
 {
@@ -268,29 +179,6 @@ static uint8_t SparkGlm5NextValPayloadCode(const uint8_t *payload,uint32_t codec
 	if ( SparkGlm5NextValCodecStoredBits(codec) == 8u )
 		return(row_base[column]);
 	return((row_base[column / 2u] >> ((column & 1u) * 4u)) & 0xfu);
-}
-
-
-
-static float SparkGlm5NextValSigmoid(float value)
-{
-	return(1.0f / (1.0f + expf(-value)));
-}
-
-static float SparkGlm5NextValBoundedDecay(float logit,float bias,float head_log_scale,float lower_bound)
-{
-	return(expf(lower_bound * SparkGlm5NextValSigmoid(expf(head_log_scale) * (logit + bias))));
-}
-
-static void SparkGlm5NextValRmsNorm(float *row,const float *weight,uint32_t dimension,float epsilon)
-{
-	float sum = 0.0f;
-	uint32_t index;
-	for (index = 0u; index < dimension; index++)
-		sum += row[index] * row[index];
-	float inverse = 1.0f / sqrtf(sum / (float)dimension + epsilon);
-	for (index = 0u; index < dimension; index++)
-		row[index] = row[index] * inverse * weight[index];
 }
 
 static void SparkGlm5NextValHcSite(const float *streams,const float *fn,const float *base,const float *scale,
@@ -388,6 +276,10 @@ static void SparkGlm5NextValHcPost(const float *out,const float *snapshot,const 
 			streams_out[((uint64_t)s * dimension) + j] = value;
 		}
 }
+
+#include "sparkpipe/family/validation/spark_val_glm5_next_ling.h"
+
+#include "sparkpipe/family/validation/spark_val_from_bf16.h"
 
 static void SparkGlm5NextValKdaToken(
 	const float *collapsed_in,
@@ -699,7 +591,6 @@ static void SparkGlm5NextValRouter(const float *router,const float *correction,c
 	}
 }
 
-
 typedef struct SparkGlm5NextValMatrix
 {
 	uint32_t rows;
@@ -708,58 +599,7 @@ typedef struct SparkGlm5NextValMatrix
 	void *device;
 } SparkGlm5NextValMatrix;
 
-static int SparkGlm5NextValAllocMatrix(SparkGlm5NextValMatrix *matrix,uint32_t rows,uint32_t columns,int mode,float scale)
-{
-	uint16_t *packed;
-	uint64_t count = (uint64_t)rows * columns;
-	matrix->rows = rows;
-	matrix->columns = columns;
-	matrix->host = (float *)malloc(count * sizeof(float));
-	packed = (uint16_t *)malloc(count * sizeof(uint16_t));
-	if (matrix->host == 0 || packed == 0)
-		return(SparkGlm5NextValFail("fixture","host_alloc"));
-	if (cudaMalloc((void **)&matrix->device,count * sizeof(uint16_t)) != cudaSuccess)
-		return(SparkGlm5NextValFail("fixture","device_alloc"));
-	SparkGlm5NextValRandomState += 101u;
-	if (mode == 1)
-		SparkGlm5NextValFillNorm(packed,matrix->host,count);
-	else
-		SparkGlm5NextValFill(packed,matrix->host,count,scale);
-	if (cudaMemcpy(matrix->device,packed,count * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess)
-		return(SparkGlm5NextValFail("fixture","weight_upload"));
-	free(packed);
-	return(0);
-}
-
-static void SparkGlm5NextValFreeMatrix(SparkGlm5NextValMatrix *matrix)
-{
-	free(matrix->host);
-	cudaFree(matrix->device);
-	memset(matrix,0,sizeof(*matrix));
-}
-
-static void *SparkGlm5NextValAllocZeroed(uint64_t bytes)
-{
-	void *pointer;
-	if ( cudaMalloc(&pointer,bytes != 0u ? bytes : 16u) != cudaSuccess )
-		return(0);
-	if ( cudaMemset(pointer,0,bytes != 0u ? bytes : 16u) != cudaSuccess )
-	{
-		cudaFree(pointer);
-		return(0);
-	}
-	return(pointer);
-}
-
-static int SparkGlm5NextValSelftestAssert(int condition,const char *what)
-{
-	if (!condition)
-	{
-		printf("FAIL selftest: %s\n",what);
-		return(1);
-	}
-	return(0);
-}
+#include "sparkpipe/family/validation/spark_val_glm52_glm5_next.h"
 
 static int SparkGlm5NextValOracleSelftest(void)
 {
@@ -1011,7 +851,6 @@ static int SparkGlm5NextValOracleSelftest(void)
 
 #ifndef SPARK_GLM5_NEXT_VALIDATOR_ORACLE_SELFTEST
 
-
 typedef struct SparkGlm5NextValFixture
 {
 	SparkGlm5NextLayerWeights weights;
@@ -1068,6 +907,8 @@ typedef struct SparkGlm5NextValFixture
 	uint32_t host_kda_ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE];
 	uint32_t *kv_access_error;
 } SparkGlm5NextValFixture;
+
+#include "sparkpipe/family/validation/spark_val_matrix.h"
 
 static int SparkGlm5NextValFixtureBuild(SparkGlm5NextValFixture *fixture)
 {
@@ -1630,7 +1471,6 @@ static int SparkGlm5NextValCheckDeterminism(SparkGlm5NextValFixture *fixture,int
 		return(identical ? 0 : 1);
 	}
 }
-
 
 typedef struct SparkGlm5NextValOracleWalk
 {

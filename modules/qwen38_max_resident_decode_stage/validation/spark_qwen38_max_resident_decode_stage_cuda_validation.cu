@@ -9,7 +9,11 @@
 #include "sparkpipe/spark_qwen38_max_model.h"
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#define SPARK_FAMILY_CAMEL Qwen38Max
+#define SPARK_FAMILY_UPPER QWEN38_MAX
+#define SPARK_FAMILY_LOWER qwen38_max
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_MAX_VALIDATION_ROWS 4u
 #define SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS 5u
@@ -64,14 +68,6 @@ static float SparkQwen38MaxValUniform(float scale)
 	return(((float)(SparkQwen38MaxValNext() & 0xffffu) / 65535.0f - 0.5f) * 2.0f * scale);
 }
 
-static uint16_t SparkQwen38MaxValBf16(float value)
-{
-	uint32_t bits;
-	memcpy(&bits,&value,sizeof(bits));
-	bits += 0x7fffu + ((bits >> 16) & 1u);
-	return((uint16_t)(bits >> 16));
-}
-
 static float SparkQwen38MaxValFromBf16(uint16_t value)
 {
 	float out = 0.0f;
@@ -79,6 +75,8 @@ static float SparkQwen38MaxValFromBf16(uint16_t value)
 	memcpy(&out,&bits,sizeof(out));
 	return(out);
 }
+
+#include "sparkpipe/family/validation/spark_val_bf16.h"
 
 static void SparkQwen38MaxValFillBf16(uint16_t *packed, float *exact, uint64_t count, float scale)
 {
@@ -156,22 +154,7 @@ static int SparkQwen38MaxValReport(const char *check, const SparkQwen38MaxValMet
 	return(0);
 }
 
-
-static float SparkQwen38MaxValSilu(float value)
-{
-	return(value / (1.0f + expf(-value)));
-}
-
-static void SparkQwen38MaxValL2Norm(const float *input, float *output, uint32_t dimension)
-{
-	uint32_t element;
-	float total = 0.0f;
-	for (element = 0u; element < dimension; element++)
-		total += input[element] * input[element];
-	total = 1.0f / sqrtf(total + 1e-6f);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * total;
-}
+#include "sparkpipe/family/validation/spark_val_qwen.h"
 
 static void SparkQwen38MaxValGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
 {
@@ -204,71 +187,6 @@ static void SparkQwen38MaxValGdnRecurrence(const float *q, const float *k, const
 			for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
 				kv_mem += state[(row * SPARK_QWEN38_MAX_VAL_DV) + column] * qn[row];
 			output[((uint64_t)token * SPARK_QWEN38_MAX_VAL_DV) + column] = kv_mem;
-		}
-	}
-}
-
-static void SparkQwen38MaxValRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
-{
-	uint32_t pair,half = rope_dim / 2u;
-	float frequency,angle,cosine,sine,low,high;
-	for (pair = 0u; pair < half; pair++)
-	{
-		frequency = powf(theta,-((float)(2u * pair) / (float)rope_dim));
-		angle = (float)position * frequency;
-		cosine = cosf(angle);
-		sine = sinf(angle);
-		low = vector[pair];
-		high = vector[pair + half];
-		vector[pair] = (low * cosine) - (high * sine);
-		vector[pair + half] = (high * cosine) + (low * sine);
-	}
-}
-
-static void SparkQwen38MaxValRmsNorm(const float *input, const float *weight, float *output, uint32_t dimension, float epsilon)
-{
-	uint32_t element;
-	float variance = 0.0f,inverse;
-	for (element = 0u; element < dimension; element++)
-		variance += input[element] * input[element];
-	inverse = 1.0f / sqrtf((variance / (float)dimension) + epsilon);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * inverse * weight[element];
-}
-
-static void SparkQwen38MaxValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
-{
-	float qh[SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS],probability;
-	float scale = 1.0f / sqrtf((float)SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION),maximum,total;
-	uint32_t head,element,token;
-	for (head = 0u; head < group; head++)
-	{
-		const float *fused = q_fused + ((uint64_t)head * 2u * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION);
-		SparkQwen38MaxValRmsNorm(fused,q_norm_weight,qh,SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION,epsilon);
-		SparkQwen38MaxValRope(qh,SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_DIMENSION,tokens - 1u,SPARK_QWEN38_MAX_MODEL_ATTN_ROPE_THETA);
-		maximum = -3.0e38f;
-		for (token = 0u; token < tokens; token++)
-		{
-			probability = 0.0f;
-			for (element = 0u; element < SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION; element++)
-				probability += qh[element] * k_cache[((uint64_t)token * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION) + element];
-			scores[token] = probability * scale;
-			if ( scores[token] > maximum )
-				maximum = scores[token];
-		}
-		total = 0.0f;
-		for (token = 0u; token < tokens; token++)
-		{
-			scores[token] = expf(scores[token] - maximum);
-			total += scores[token];
-		}
-		for (element = 0u; element < SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION; element++)
-		{
-			probability = 0.0f;
-			for (token = 0u; token < tokens; token++)
-				probability += (scores[token] / total) * v_cache[((uint64_t)token * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION) + element];
-			output[((uint64_t)head * SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION) + element] =
-				probability * (1.0f / (1.0f + expf(-fused[SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION + element])));
 		}
 	}
 }
@@ -339,7 +257,6 @@ static float SparkQwen38MaxValBf16Round(float value)
 {
 	return(SparkQwen38MaxValFromBf16(SparkQwen38MaxValBf16(value)));
 }
-
 
 typedef struct SparkQwen38MaxValDevice
 {
@@ -426,7 +343,6 @@ static int SparkQwen38MaxValDeviceSetup(SparkQwen38MaxValDevice *device)
 	device->attn_weights.key_norm_weight_bf16 = device->k_norm_weight;
 	return(0);
 }
-
 
 static int SparkQwen38MaxValCheckDecayBeta(SparkQwen38MaxValDevice *device)
 {
@@ -872,7 +788,6 @@ static int SparkQwen38MaxValCheckGdnChunk(SparkQwen38MaxValDevice *device)
 	return(SparkQwen38MaxValReport("gdn_chunk_state",&metrics,1e-3,0.999999));
 }
 
-
 typedef struct SparkQwen38MaxValCapture
 {
 	uint16_t hidden[SPARK_QWEN38_MAX_VALIDATION_KV_LANES * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION];
@@ -1037,15 +952,6 @@ static int SparkQwen38MaxValModuleExecute(SparkQwen38MaxValModule *module, uint3
 		fprintf(stderr,"qwen38_max_validation failure=module_execute rows=%u status=%d\n",rows,(int)status);
 		return(1);
 	}
-	return(0);
-}
-
-static int SparkQwen38MaxValCheckFinite(const char *check, const uint16_t *hidden, uint64_t rows)
-{
-	uint64_t index,count = rows * SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
-	for (index = 0u; index < count; index++)
-		if (isfinite(SparkQwen38MaxValFromBf16(hidden[index])) == 0)
-			return(SparkQwen38MaxValFail(check,"nonfinite"));
 	return(0);
 }
 

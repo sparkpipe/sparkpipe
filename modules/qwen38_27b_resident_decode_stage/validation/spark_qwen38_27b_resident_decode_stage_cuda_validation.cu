@@ -9,7 +9,11 @@
 #include "sparkpipe/spark_qwen38_27b_model.h"
 #include "sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#define SPARK_FAMILY_CAMEL Qwen38_27b
+#define SPARK_FAMILY_UPPER QWEN38_27B
+#define SPARK_FAMILY_LOWER qwen38_27b
 
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_QWEN38_27B_VALIDATION_ROWS 4u
 #define SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS 8u
@@ -36,11 +40,7 @@ extern "C" cudaError_t SparkQwen38_27bLaunchGdnChunk(cudaStream_t stream, const 
 
 static uint32_t SparkQwen38_27bValRandomState;
 
-static uint32_t SparkQwen38_27bValNext(void)
-{
-	SparkQwen38_27bValRandomState = SparkQwen38_27bValRandomState * 1664525u + 1013904223u;
-	return(SparkQwen38_27bValRandomState >> 8u);
-}
+#include "sparkpipe/family/validation/spark_val_rng.h"
 
 static float SparkQwen38_27bValUniform(float scale)
 {
@@ -55,13 +55,7 @@ static uint16_t SparkQwen38_27bValBf16(float value)
 	return((uint16_t)(bits >> 16u));
 }
 
-static float SparkQwen38_27bValFromBf16(uint16_t value)
-{
-	uint32_t bits = (uint32_t)value << 16u;
-	float converted;
-	memcpy(&converted,&bits,sizeof(converted));
-	return(converted);
-}
+#include "sparkpipe/family/validation/spark_val_from_bf16.h"
 
 static void SparkQwen38_27bValFillBf16(uint16_t *packed, float *exact, uint64_t count, float scale)
 {
@@ -74,20 +68,6 @@ static void SparkQwen38_27bValFillBf16(uint16_t *packed, float *exact, uint64_t 
 	}
 }
 
-static int SparkQwen38_27bValFail(const char *check, const char *detail)
-{
-	fprintf(stderr,"qwen38_27b_validation failure=%s detail=%s\n",check,detail);
-	return(1);
-}
-
-static int SparkQwen38_27bValCuda(cudaError_t error, const char *check)
-{
-	if (error == cudaSuccess)
-		return(0);
-	fprintf(stderr,"qwen38_27b_validation failure=%s cuda=%s\n",check,cudaGetErrorString(error));
-	return(1);
-}
-
 typedef struct SparkQwen38_27bValMetrics
 {
 	double difference_l2;
@@ -98,55 +78,9 @@ typedef struct SparkQwen38_27bValMetrics
 	uint64_t count;
 } SparkQwen38_27bValMetrics;
 
-static void SparkQwen38_27bValMeasure(SparkQwen38_27bValMetrics *metrics, const float *actual, const float *reference, uint64_t count)
-{
-	uint64_t index;
-	double difference;
-	memset(metrics,0,sizeof(*metrics));
-	metrics->count = count;
-	for (index = 0u; index < count; index++)
-	{
-		difference = (double)actual[index] - (double)reference[index];
-		metrics->difference_l2 += difference * difference;
-		metrics->reference_l2 += (double)reference[index] * (double)reference[index];
-		metrics->actual_l2 += (double)actual[index] * (double)actual[index];
-		metrics->dot += (double)actual[index] * (double)reference[index];
-		if (fabs((double)actual[index] - (double)reference[index]) > metrics->maximum_absolute)
-			metrics->maximum_absolute = fabs((double)actual[index] - (double)reference[index]);
-	}
-}
+#include "sparkpipe/family/validation/spark_val_fail.h"
 
-static int SparkQwen38_27bValReport(const char *check, const SparkQwen38_27bValMetrics *metrics, double max_relative_l2, double minimum_cosine)
-{
-	double relative_l2 = metrics->reference_l2 > 0.0
-		? sqrt(metrics->difference_l2 / metrics->reference_l2) : INFINITY;
-	double cosine = metrics->actual_l2 > 0.0 && metrics->reference_l2 > 0.0
-		? metrics->dot / sqrt(metrics->actual_l2 * metrics->reference_l2) : 0.0;
-	printf("qwen38_27b_validation check=%s elements=%llu relative_l2=%.9g cosine=%.9g max_abs=%.9g\n",
-		check,(unsigned long long)metrics->count,relative_l2,cosine,metrics->maximum_absolute);
-	if (isfinite(relative_l2) == 0 || relative_l2 > max_relative_l2)
-		return(SparkQwen38_27bValFail(check,"relative_l2"));
-	if (cosine < minimum_cosine)
-		return(SparkQwen38_27bValFail(check,"cosine"));
-	return(0);
-}
-
-
-static float SparkQwen38_27bValSilu(float value)
-{
-	return(value / (1.0f + expf(-value)));
-}
-
-static void SparkQwen38_27bValL2Norm(const float *input, float *output, uint32_t dimension)
-{
-	uint32_t element;
-	float total = 0.0f;
-	for (element = 0u; element < dimension; element++)
-		total += input[element] * input[element];
-	total = 1.0f / sqrtf(total + 1e-6f);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * total;
-}
+#include "sparkpipe/family/validation/spark_val_qwen.h"
 
 static void SparkQwen38_27bValGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
 {
@@ -183,72 +117,6 @@ static void SparkQwen38_27bValGdnRecurrence(const float *q, const float *k, cons
 	}
 }
 
-static void SparkQwen38_27bValRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
-{
-	uint32_t pair,half = rope_dim / 2u;
-	float frequency,angle,cosine,sine,low,high;
-	for (pair = 0u; pair < half; pair++)
-	{
-		frequency = powf(theta,-((float)(2u * pair) / (float)rope_dim));
-		angle = (float)position * frequency;
-		cosine = cosf(angle);
-		sine = sinf(angle);
-		low = vector[pair];
-		high = vector[pair + half];
-		vector[pair] = (low * cosine) - (high * sine);
-		vector[pair + half] = (high * cosine) + (low * sine);
-	}
-}
-
-static void SparkQwen38_27bValRmsNorm(const float *input, const float *weight, float *output, uint32_t dimension, float epsilon)
-{
-	uint32_t element;
-	float variance = 0.0f,inverse;
-	for (element = 0u; element < dimension; element++)
-		variance += input[element] * input[element];
-	inverse = 1.0f / sqrtf((variance / (float)dimension) + epsilon);
-	for (element = 0u; element < dimension; element++)
-		output[element] = input[element] * inverse * weight[element];
-}
-
-static void SparkQwen38_27bValAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t tokens, float epsilon)
-{
-	float qh[SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION],scores[SPARK_QWEN38_27B_VALIDATION_ATTN_TOKENS],probability;
-	float scale = 1.0f / sqrtf((float)SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION),maximum,total;
-	uint32_t head,element,token;
-	for (head = 0u; head < group; head++)
-	{
-		const float *fused = q_fused + ((uint64_t)head * 2u * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION);
-		SparkQwen38_27bValRmsNorm(fused,q_norm_weight,qh,SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION,epsilon);
-		SparkQwen38_27bValRope(qh,SPARK_QWEN38_27B_MODEL_ATTN_ROPE_DIMENSION,tokens - 1u,SPARK_QWEN38_27B_MODEL_ATTN_ROPE_THETA);
-		maximum = -3.0e38f;
-		for (token = 0u; token < tokens; token++)
-		{
-			probability = 0.0f;
-			for (element = 0u; element < SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION; element++)
-				probability += qh[element] * k_cache[((uint64_t)token * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION) + element];
-			scores[token] = probability * scale;
-			if (scores[token] > maximum)
-				maximum = scores[token];
-		}
-		total = 0.0f;
-		for (token = 0u; token < tokens; token++)
-		{
-			scores[token] = expf(scores[token] - maximum);
-			total += scores[token];
-		}
-		for (element = 0u; element < SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION; element++)
-		{
-			probability = 0.0f;
-			for (token = 0u; token < tokens; token++)
-				probability += (scores[token] / total) * v_cache[((uint64_t)token * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION) + element];
-			output[((uint64_t)head * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION) + element] =
-				probability * (1.0f / (1.0f + expf(-fused[SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION + element])));
-		}
-	}
-}
-
-
 typedef struct SparkQwen38_27bValDevice
 {
 	SparkQwen38_27bGdnLayerWeights gdn_weights;
@@ -280,6 +148,8 @@ typedef struct SparkQwen38_27bValDevice
 	float *chunk_w;
 	float *chunk_kg;
 } SparkQwen38_27bValDevice;
+
+#include "sparkpipe/family/validation/spark_val_cuda.h"
 
 static int SparkQwen38_27bValDeviceSetup(SparkQwen38_27bValDevice *device)
 {
@@ -335,6 +205,7 @@ static int SparkQwen38_27bValDeviceSetup(SparkQwen38_27bValDevice *device)
 	return(0);
 }
 
+#include "sparkpipe/family/validation/spark_val_measure.h"
 
 static int SparkQwen38_27bValCheckDecayBeta(SparkQwen38_27bValDevice *device)
 {
@@ -809,7 +680,6 @@ static int SparkQwen38_27bValCheckGdnChunk(SparkQwen38_27bValDevice *device)
 	return(SparkQwen38_27bValReport("gdn_chunk_state",&metrics,2e-2,0.999));
 }
 
-
 typedef struct SparkQwen38_27bValCapture
 {
 	uint16_t hidden[SPARK_QWEN38_27B_VALIDATION_PREFILL_TOKENS * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION];
@@ -850,63 +720,6 @@ typedef struct SparkQwen38_27bValModule
 	SparkModelDriverFrame frame;
 	SparkQwen38_27bValCapture capture;
 } SparkQwen38_27bValModule;
-
-static int SparkQwen38_27bValModuleInitialize(SparkQwen38_27bValModule *module)
-{
-	SparkFirmwareModuleConfiguration configuration;
-	SparkFirmwareModuleHostServices host_services;
-	SparkStatus status;
-	const char *stage_count_text;
-	uint32_t lane;
-	cudaError_t error;
-	memset(module,0,sizeof(*module));
-	stage_count_text = getenv("SPARK_QWEN38_27B_STAGE_COUNT");
-	module->head_stage = stage_count_text != 0 && strcmp(stage_count_text,"1") == 0 ? 1u : 0u;
-	for (lane = 0u; lane < SPARK_QWEN38_27B_VALIDATION_KV_LANES; lane++)
-	{
-		module->host_blocks[lane] = lane;
-		module->host_counts[lane] = 1u;
-	}
-	error = cudaMalloc((void **)&module->device_blocks,sizeof(module->host_blocks));
-	if (error == cudaSuccess) error = cudaMemcpy(module->device_blocks,module->host_blocks,sizeof(module->host_blocks),cudaMemcpyHostToDevice);
-	if (error == cudaSuccess) error = cudaMalloc((void **)&module->device_counts,sizeof(module->host_counts));
-	if (error == cudaSuccess) error = cudaMemcpy(module->device_counts,module->host_counts,sizeof(module->host_counts),cudaMemcpyHostToDevice);
-	if (SparkQwen38_27bValCuda(error,"module_table_alloc") != 0)
-		return(1);
-	module->table.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
-	module->table.descriptor_bytes = sizeof(module->table);
-	module->table.block_token_count = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	module->table.lane_count = SPARK_QWEN38_27B_VALIDATION_KV_LANES;
-	module->table.lane_stride = 1u;
-	module->table.lane_capacity = SPARK_QWEN38_27B_VALIDATION_KV_LANES;
-	module->table.physical_block_indices = module->device_blocks;
-	module->table.lane_physical_block_counts = module->device_counts;
-	module->table.host_physical_block_indices = module->host_blocks;
-	module->table.host_lane_physical_block_counts = module->host_counts;
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
-	configuration.descriptor_bytes = sizeof(configuration);
-	configuration.model_id = "Qwen/Qwen3.8-27B";
-	configuration.model_revision = "validation";
-	configuration.stage_name = "qwen38_27b_resident_decode_stage";
-	configuration.program_name = "resident_decode";
-	configuration.operation_name = "qwen38_27b_resident_decode_stage";
-	configuration.configuration_json = "{}";
-	configuration.configuration_json_bytes = 2u;
-	memset(&host_services,0,sizeof(host_services));
-	host_services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
-	host_services.descriptor_bytes = sizeof(host_services);
-	host_services.node_id = "spark-qwen38_27b-validator";
-	host_services.node_target = "cuda.sm121.qwen38_27b.resident_decode_stage.bf16";
-	host_services.execution_stream = (void *)cudaStreamPerThread;
-	status = SparkQwen38_27bResidentDecodeStageInitialize(&configuration,&host_services,&module->state);
-	if (status != SPARK_STATUS_OK)
-	{
-		fprintf(stderr,"qwen38_27b_validation failure=module_initialize status=%d\n",(int)status);
-		return(1);
-	}
-	return(0);
-}
 
 static int SparkQwen38_27bValModuleExecute(SparkQwen38_27bValModule *module, uint32_t prefill, uint32_t rows, uint32_t lane, uint32_t draft_count, const SparkQwen38_27bMtpDraftView *draft_view)
 {
@@ -980,15 +793,6 @@ static int SparkQwen38_27bValModuleExecute(SparkQwen38_27bValModule *module, uin
 	return(0);
 }
 
-static int SparkQwen38_27bValCheckFinite(const char *check, const uint16_t *hidden, uint64_t rows)
-{
-	uint64_t index,count = rows * SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	for (index = 0u; index < count; index++)
-		if (isfinite(SparkQwen38_27bValFromBf16(hidden[index])) == 0)
-			return(SparkQwen38_27bValFail(check,"nonfinite"));
-	return(0);
-}
-
 static int SparkQwen38_27bValCheckMtpDraft(SparkQwen38_27bValModule *module)
 {
 	SparkQwen38_27bMtpDraftView draft_view;
@@ -1015,6 +819,8 @@ static int SparkQwen38_27bValCheckMtpDraft(SparkQwen38_27bValModule *module)
 	printf("qwen38_27b_validation check=module_mtp_draft in_vocab=1 drafts=[%u,%u]\n",module->output_token_ids[1],module->output_token_ids[2]);
 	return(0);
 }
+
+#include "sparkpipe/family/validation/spark_val_module_initialize.h"
 
 static int SparkQwen38_27bValCheckModule(void)
 {
