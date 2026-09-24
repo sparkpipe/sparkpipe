@@ -1,5 +1,3 @@
-#ifndef SPARK_LLM_KEY_SPACE_H
-#define SPARK_LLM_KEY_SPACE_H
 #pragma once
 
 #include <stdint.h>
@@ -171,4 +169,3 @@
 #define SPARK_LLM_ADAPTER_DESCRIPTOR            "spark.glm52.serving-adapter.tp16.expert_fp8.v1"
 #define SPARK_LLM_MODEL_SOURCE_URI              "zai-org/GLM-5.3"
 #define SPARK_LLM_MODEL_REVISION                "935644c05e76fc198714f4cca449fd8b970ff6d7"
-#endif
