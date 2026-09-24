@@ -1105,7 +1105,7 @@ static SparkStatus SparkQwen4FlashAdmissionKvPredicate(
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_gemma4_qwen4_flash.h"
+#include "sparkpipe/family/module/spark_module_admission_cost.h"
 
 static SparkStatus SparkQwen4FlashModuleAdmit(
 	void *module_state,

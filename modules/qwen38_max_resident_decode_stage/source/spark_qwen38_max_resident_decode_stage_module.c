@@ -1424,7 +1424,7 @@ static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *
 	SPARK_RETURN(status);
 }
 
-#include "sparkpipe/family/module/spark_module_lifecycle_qwen38_max.h"
+#include "sparkpipe/family/module/spark_module_lifecycle_entry.h"
 
 #include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 

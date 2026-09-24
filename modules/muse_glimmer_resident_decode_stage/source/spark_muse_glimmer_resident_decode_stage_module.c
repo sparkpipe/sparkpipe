@@ -1473,7 +1473,7 @@ static SparkStatus SparkMuseGlimmerModuleConsumeHiddenInput(SparkMuseGlimmerModu
 	return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"hidden_input"));
 }
 
-#include "sparkpipe/family/module/spark_module_lifecycle_qwen38_max.h"
+#include "sparkpipe/family/module/spark_module_lifecycle_entry.h"
 
 static SparkStatus SparkMuseGlimmerModuleRunDecode(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, SparkModelDriverFrame *frame, SparkMuseGlimmerResidentDecodeStageFrameContext *context, uint32_t rows)
 {

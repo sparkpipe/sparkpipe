@@ -271,7 +271,7 @@ static uint64_t SparkGlm52ValScaleIndex(uint32_t codec,uint32_t rows,uint32_t co
 		(uint64_t)(column / SparkGlm52ValCodecScaleGroup(codec)));
 }
 
-#include "sparkpipe/family/validation/spark_val_glm52_glm5_next.h"
+#include "sparkpipe/family/validation/spark_val_codec_payload.h"
 
 static float SparkGlm52ValDequantWeight(const uint8_t *payload,const uint8_t *scales,uint32_t codec,uint32_t expert_count,
 	uint32_t expert,uint32_t row,uint32_t rows,uint32_t columns,uint32_t column)

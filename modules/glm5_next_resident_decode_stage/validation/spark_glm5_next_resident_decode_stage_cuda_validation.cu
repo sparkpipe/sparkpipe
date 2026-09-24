@@ -599,7 +599,7 @@ typedef struct SparkGlm5NextValMatrix
 	void *device;
 } SparkGlm5NextValMatrix;
 
-#include "sparkpipe/family/validation/spark_val_glm52_glm5_next.h"
+#include "sparkpipe/family/validation/spark_val_codec_payload.h"
 
 static int SparkGlm5NextValOracleSelftest(void)
 {

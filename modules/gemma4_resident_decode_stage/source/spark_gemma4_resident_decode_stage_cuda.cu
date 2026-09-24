@@ -328,4 +328,4 @@ extern "C" cudaError_t SparkGemma4ConfigureCudaKernels(void)
 		(int)(widest * sizeof(float))));
 }
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_qwen.cuh"
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_keys.cuh"

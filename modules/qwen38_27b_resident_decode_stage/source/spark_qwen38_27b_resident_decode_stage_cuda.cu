@@ -2075,4 +2075,4 @@ extern "C" cudaError_t SparkQwen38_27bLaunchDsparkSelect(cudaStream_t stream,
 
 #include "sparkpipe/family/cuda/spark_cuda_residual_add.cuh"
 
-#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_qwen.cuh"
+#include "sparkpipe/family/cuda/spark_cuda_head_maxloc_keys.cuh"

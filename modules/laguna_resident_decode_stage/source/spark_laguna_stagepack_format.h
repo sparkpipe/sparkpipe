@@ -201,7 +201,7 @@ static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,ui
 
 #include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
 
-#include "sparkpipe/family/stagepack/spark_stagepack_tp_shards_cols_glm52.h"
+#include "sparkpipe/family/stagepack/spark_stagepack_tp_shards_cols.h"
 
 static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkLagunaStagePackTensorShape *shape)
 {

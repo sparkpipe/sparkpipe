@@ -154,7 +154,7 @@ static int SparkQwen38MaxValReport(const char *check, const SparkQwen38MaxValMet
 	return(0);
 }
 
-#include "sparkpipe/family/validation/spark_val_qwen.h"
+#include "sparkpipe/family/validation/spark_val_gdn_attention.h"
 
 static void SparkQwen38MaxValGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
 {
