@@ -1,5 +1,0 @@
-attach: path=/home/sparke/sparkdata/hy4.fp8.tp16/packs/rank-14/model-fp8-tp16-rank-14.safetensors arena=56131321269 experts=236560 socket=/tmp/spark_weightd.sock sha=73a3735bb1c77d085f27f30ca48df0104b188d4f2da3b8217070d71b6068e7dc
-ERRSITE runtime/spark_weightd_spine.c:228 status=4
-ERRSITE runtime/spark_weightd_lazy_pack.c:89 status=4
-ERRSITE runtime/spark_weightd_lazy_pack.c:165 status=4
-attach: CreateChecked status=4 (io_error)
