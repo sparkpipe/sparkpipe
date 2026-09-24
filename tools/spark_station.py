@@ -113,7 +113,7 @@ def inspect(station, family):
             return host, {"error": str(error)}
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
         units = dict(pool.map(one, [station["api_host"], *model["nodes"]]))
-    return {"family": family, "endpoint": f"http://{station['api_host']}:{model['api_port']}", "units": units}
+    return {"family": family, "endpoint": f"http://{station['api_host']}:{model['api_port']}", "qualification": model.get("qualification", "not recorded"), "units": units}
 
 
 def queue(station, *args):
