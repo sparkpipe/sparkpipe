@@ -87,6 +87,15 @@ Ledger (exact counts, newest last):
   by the collective tier) - flat, status-returning branches in an
   nvcc-gated file. Mean 7.87 -> 7.88 (+~3 decision points over 3088
   functions); max CCN unchanged at 75.
+- 2026-09-24 sanity landing: this gate had not run in CI, and the tree
+  had drifted to max 91. SparkWeightdServerDispatch (91) is now a HELLO
+  gate plus a switch over one handler per IPC kind, and
+  SparkTpDeviceCollectiveRunRound (87) is an orchestrator over admit,
+  captured/spin publish, peer wait and combine helpers (both covered by
+  the weightd and collective host tests). The remaining max is
+  SparkQwen38_27bServingSubmitSpeculativeDecode at 88: its three
+  env-selected DFlash2 fold/replay modes have no host test, so it is
+  pinned here until a harness exists to decompose it safely.
 """
 import pathlib
 import sys
@@ -96,7 +105,7 @@ from complexity_report import scan, scope_rows  # noqa: E402
 
 # The committed production max-CCN ceiling. MOVES DOWN with every
 # shrinking landing; moves up ONLY with a ledger entry above.
-CEILING = 75
+CEILING = 88
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
