@@ -25,11 +25,11 @@ __global__ static void SPARK_FAMILY(WaveMetadataKernel)(
 
 static int32_t SPARK_FAMILY(RunLayerMlpExperts)(const SPARK_FAMILY(CudaWave) *wave,uint32_t local_layer)
 {
-	SPARK_FAMILY_CAT(,SPARK_FAMILY_CAMEL,LayerBuffers) buffers;
-	if ( (wave->first_layer_index + local_layer) < SPARK_FAMILY_CAT(,SPARK_FAMILY_UPPER,_FIRST_ROUTED_LAYER) )
+	SPARK_FAMILY_BARE(LayerBuffers) buffers;
+	if ( (wave->first_layer_index + local_layer) < SPARK_FAMILY_BARE_CONST(FIRST_ROUTED_LAYER) )
 		return(LM_LAUNCH_OK);
 	SPARK_FAMILY(BindLayer)(wave,local_layer,&buffers);
-	return(SPARK_FAMILY_CAT(,SPARK_FAMILY_CAMEL,LayerMoeExperts)<SPARK_FAMILY_CAT(,SPARK_FAMILY_UPPER,_EXPERT_WEIGHT_CODEC)>(&buffers,wave->row_count,wave->row_count * SPARK_FAMILY_CAT(,SPARK_FAMILY_UPPER,_TOP_K),wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	return(SPARK_FAMILY_BARE(LayerMoeExperts)<SPARK_FAMILY_BARE_CONST(EXPERT_WEIGHT_CODEC)>(&buffers,wave->row_count,wave->row_count * SPARK_FAMILY_BARE_CONST(TOP_K),wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
 }
 
 extern "C" cudaError_t SPARK_FAMILY(PollCudaLayerMlpRoute)(const SPARK_FAMILY(CudaWave) *wave)

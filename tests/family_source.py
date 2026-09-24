@@ -9,6 +9,8 @@ def expand(text, camel, upper, lower):
     forms = {"SPARK_FAMILY_CAMEL": camel, "SPARK_FAMILY_UPPER": upper, "SPARK_FAMILY_LOWER": lower}
     text = re.sub(r"SPARK_FAMILY_STRING\((SPARK_FAMILY_\w+)\)", lambda m: '"' + forms[m.group(1)] + '"', text)
     text = re.sub(r"SPARK_FAMILY_CONST\((\w+)\)", lambda m: "SPARK_" + upper + "_" + m.group(1), text)
+    text = re.sub(r"SPARK_FAMILY_BARE_CONST\((\w+)\)", lambda m: upper + "_" + m.group(1), text)
+    text = re.sub(r"SPARK_FAMILY_BARE\((\w+)\)", lambda m: camel + m.group(1), text)
     text = re.sub(r"SPARK_FAMILY\((\w+)\)", lambda m: "Spark" + camel + m.group(1), text)
     return re.sub(r"SPARK_FAMILY_CAT\((\w*),(SPARK_FAMILY_\w+),(\w*)\)", lambda m: m.group(1) + forms[m.group(2)] + m.group(3), text)
 
