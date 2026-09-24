@@ -1,5 +1,7 @@
 #pragma once
 
+#include "inference/kernels/skinny.cuh"
+
 static int32_t SPARK_FAMILY_BARE(LaunchBf16Linear)(
     const uint16_t *activation_bf16,
     const void *weight_bf16,
@@ -15,6 +17,7 @@ static int32_t SPARK_FAMILY_BARE(LaunchBf16Linear)(
     cudaStream_t stream)
 {
     LmGemmArguments gemm;
+    int32_t status;
 
     if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
         row_offset == 0 || tile_prefix == 0 || rows == 0u ||
@@ -24,6 +27,9 @@ static int32_t SPARK_FAMILY_BARE(LaunchBf16Linear)(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
+    status = LmSkinnyDense<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
+    if (status != LM_LAUNCH_ERR_SHAPE)
+        return status;
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmScaleTensorNone();

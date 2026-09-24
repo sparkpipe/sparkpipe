@@ -2036,13 +2036,15 @@ static int32_t Glm5NextLayerMoeRoute(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
+    status = LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM5_NEXT_HIDDEN, GLM5_NEXT_EXPERTS, 0u, 0u, stream);
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmScaleTensorNone();
     gemm.group_row_offset = buffers->dense_row_offset;
     gemm.group_tile_prefix = buffers->dense_tile_prefix;
     gemm.output_f32 = buffers->router_logits;
-    status = LmGemmLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmLaunch<
         LmBf16Format,
         GLM5_NEXT_LAYER_TILE_N,
         LmBf16Format::kTileK,
@@ -2146,13 +2148,15 @@ static int32_t Glm5NextLayerMoeExperts(
         GLM5_NEXT_EXPERTS,
         buffers->expert_w1_rows,
         GLM5_NEXT_HIDDEN);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
 	gemm.source_row_map = buffers->route_source_token;
 	gemm.source_row_count = rows;
     gemm.output_bf16 = buffers->gate_up_bf16;
-    status = LmGemmWeightOnlyIndirectLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmWeightOnlyIndirectLaunch<
         ExpertFormat,
         GLM5_NEXT_LAYER_TILE_N,
         GLM5_NEXT_LAYER_STAGES,
@@ -2191,11 +2195,13 @@ static int32_t Glm5NextLayerMoeExperts(
         GLM5_NEXT_EXPERTS,
         GLM5_NEXT_HIDDEN,
         buffers->expert_intermediate);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
     gemm.output_bf16 = buffers->expert_out_bf16;
-    status = LmGemmWeightOnlyLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmWeightOnlyLaunch<
         ExpertFormat,
         GLM5_NEXT_LAYER_TILE_N,
         GLM5_NEXT_LAYER_STAGES,
