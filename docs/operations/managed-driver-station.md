@@ -251,3 +251,8 @@ Gemma before/after-restart responses, GLM exact-reference script and results,
 final service/API snapshot, memory rejection, and red/green test logs.
 `SHA256SUMS` records these captured files. The controller registry is the
 installed deployment authority; the receipts are historical observations.
+
+After that snapshot, concurrent GLM/Gemma requests passed with all seven families
+resident: GLM matched all 32 reference tokens in 18.302 seconds; Gemma returned
+`[236773, 236814]` twice in 0.240 and 0.203 seconds. The five other APIs remained
+idle during this check. This qualifies that concurrent case only.
