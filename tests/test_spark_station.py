@@ -49,6 +49,9 @@ class StationTests(unittest.TestCase):
             git('add','.');git('commit','-qm','base');s=fixture();s['core_commit']=git('rev-parse','HEAD')
             (p/'modules/one/driver.c').write_text('candidate');git('commit','-qam','driver')
             self.assertEqual(station.check_driver(d,s,'one','HEAD')['changed'],['modules/one/driver.c'])
+            (p/'PACKAGE_MANIFEST.json').write_text('{}');(p/'SHA256SUMS').write_text('generated')
+            git('add','.');git('commit','-qm','generated source inventory')
+            self.assertEqual(set(station.check_driver(d,s,'one','HEAD')['changed']),{'modules/one/driver.c','PACKAGE_MANIFEST.json','SHA256SUMS'})
             (p/'core.c').write_text('changed');git('commit','-qam','core')
             with self.assertRaisesRegex(station.StationError,'core.c'):station.check_driver(d,s,'one','HEAD')
 

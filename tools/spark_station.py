@@ -91,7 +91,7 @@ def check_driver(repo, station, family, ref):
     run(["git", "-C", str(repo), "merge-base", "--is-ancestor", base, commit])
     paths = run(["git", "-C", str(repo), "diff", "--name-only", "--no-renames", base, commit]).splitlines()
     prefixes = station["models"][family]["driver_paths"]
-    denied = [p for p in paths if not any(p == prefix.rstrip("/") or prefix.endswith("/") and p.startswith(prefix) for prefix in prefixes)]
+    denied = [p for p in paths if p not in {"PACKAGE_MANIFEST.json", "SHA256SUMS"} and not any(p == prefix.rstrip("/") or prefix.endswith("/") and p.startswith(prefix) for prefix in prefixes)]
     if denied:
         raise StationError("driver update changes frozen/shared inputs: " + ", ".join(denied))
     return {"family": family, "driver_commit": commit, "core_commit": base, "changed": paths}

@@ -13,7 +13,7 @@ correctness are separate gates. Keep each driver's evidence explicit.
   registry. It names exact releases, manifest hashes, lanes, ports and budgets.
 - Core, daemon and transport changes require an operator release. A driver update
   must descend from the registry's `core_commit` and change only its recorded
-  `driver_paths`. Run `check-driver` before scheduling its build.
+  `driver_paths` plus the two generated source inventory files. Run `check-driver` before scheduling its build.
 
 | Family | Lane | Sparks | RTX5090 port |
 |---|---:|---|---:|
@@ -80,7 +80,18 @@ or clear the queue ledger. The API endpoint is the model selector for now.
 
 Create the driver branch from `core_commit` in the installed registry. Commit
 the driver change before syncing; uncommitted edits are not build inputs.
-For a candidate driver branch:
+Regenerate the source inventory in that checkout using Python 3.12 or newer,
+and include both generated files in the same commit:
+
+```sh
+python3 tools/generate_package_manifest.py
+python3 tools/generate_sha256sums.py
+python3 tools/verify_package_manifest.py
+```
+
+`check-driver` allows `PACKAGE_MANIFEST.json` and the source `SHA256SUMS` along
+with family files; CI verifies their content. This does not permit changes to
+shared source files or installed release manifests. For a candidate branch:
 
 ```sh
 /opt/homebrew/bin/python3 spark_station.py --station station.json check-driver \

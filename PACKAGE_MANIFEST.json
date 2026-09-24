@@ -2728,8 +2728,8 @@
     },
     {
       "path": "docs/operations/managed-driver-station.md",
-      "sha256": "c9bdb4f5664f7d4295ff9fa11ee1c9a392806ab362e08155399abf7768e47d81",
-      "size_bytes": 14751
+      "sha256": "13a732f5cf8e66932a57b46b68272fbfb2868c02cca6af30cb7b2c75e60b1693",
+      "size_bytes": 15263
     },
     {
       "path": "docs/receipts/cuda-stream-receipt-bd25d2c7.json",
@@ -10433,8 +10433,8 @@
     },
     {
       "path": "tests/test_spark_station.py",
-      "sha256": "3220dbbb35004f5498f2fe22f90024b433f812c11e03e5b3ec1609acf03ad480",
-      "size_bytes": 8481
+      "sha256": "3956d0b78be2d240b70bd88657f9458bb645cd521bf5c32a9756db2f64d9d205",
+      "size_bytes": 8802
     },
     {
       "path": "tests/test_spark_tiktoken_compile.py",
@@ -13458,8 +13458,8 @@
     },
     {
       "path": "tools/spark_station.py",
-      "sha256": "50bb2e99c228f3b9cac68c0b29f91453fcb953e9d230fe704c7887eced53d35b",
-      "size_bytes": 19599
+      "sha256": "4ad1a3a185dc38a2b72fe87213959e9b570303f754b16bf79e3e36697235479e",
+      "size_bytes": 19652
     },
     {
       "path": "tools/spark_station_profile.py",
@@ -17160,5 +17160,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 80945056
+  "total_bytes": 80945942
 }
