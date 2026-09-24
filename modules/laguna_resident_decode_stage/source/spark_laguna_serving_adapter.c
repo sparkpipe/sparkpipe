@@ -588,6 +588,8 @@ static SparkStatus SparkLagunaServingResolvePrefetch(void *adapter_state,const S
 	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
 
+#include "sparkpipe/family/serving/spark_serving_progress.h"
+
 static void SparkLagunaServingBuildFrame(
 	const SparkLagunaServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -713,14 +715,6 @@ static SparkStatus SparkLagunaServingSubmit(
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);
 	return(status);
-}
-
-static SparkStatus SparkLagunaServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static SparkStatus SparkLagunaServingQuiesce(

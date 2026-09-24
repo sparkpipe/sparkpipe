@@ -1954,22 +1954,6 @@ static SparkStatus SparkQwen38_27bServingResolvePrefetch(void *adapter_state,con
 
 #include "sparkpipe/family/serving/spark_serving_reset_control_typed.h"
 
-static SparkStatus SparkQwen38_27bServingReset(
-	void *adapter_state,
-	uint64_t control_generation)
-{
-	SparkQwen38_27bServingState *state = (SparkQwen38_27bServingState *)adapter_state;
-	uint32_t expected = 0u;
-	SparkStatus status;
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
-		return(SPARK_STATUS_BUSY);
-	status = SparkQwen38_27bServingResetControl(state,control_generation);
-	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	return(status);
-}
-
 static SparkStatus SparkQwen38_27bServingSubmit(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
@@ -2271,6 +2255,8 @@ static SparkStatus SparkQwen38_27bServingInitialize(
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/serving/spark_serving_reset.h"
 
 static const SparkModelServingAdapterInterface SparkQwen38_27bServingInterface =
 {

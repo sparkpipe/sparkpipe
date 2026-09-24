@@ -537,37 +537,6 @@ static _Thread_local SparkModelDriverCacheLane SparkLingServingCacheScratch[SPAR
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
-static SparkStatus SparkLingServingPrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submissions,uint32_t count)
-{
-	SparkLingServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,count,
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkLingServingResolvePrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkLingServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 ||
-		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
-		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
-
 static void SparkLingServingBuildFrame(
 	const SparkLingServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -665,14 +634,6 @@ static SparkStatus SparkLingServingSubmit(
 	return(status);
 }
 
-static SparkStatus SparkLingServingProgress(
-	void *adapter_state,
-	uint32_t maximum_step_count)
-{
-	(void)maximum_step_count;
-	return(adapter_state != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 static SparkStatus SparkLingServingQuiesce(
 	void *adapter_state,
 	uint64_t deadline_time_ns)
@@ -745,6 +706,10 @@ static SparkStatus SparkLingServingSnapshot(
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
+
+#include "sparkpipe/family/serving/spark_serving_progress.h"
 
 static const SparkModelServingAdapterInterface SparkLingServingInterface =
 {

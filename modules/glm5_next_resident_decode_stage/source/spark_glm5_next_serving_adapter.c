@@ -1040,30 +1040,6 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
-static SparkStatus SparkGlm5NextServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
-{
-	SparkGlm5NextServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkGlm5NextServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkGlm5NextServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkGlm5NextServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkGlm5NextServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkGlm5NextServingCacheContext(state,SparkGlm5NextServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
-
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1271,6 +1247,8 @@ static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t contro
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
 	SPARK_RETURN(status);
 }
+
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 {
