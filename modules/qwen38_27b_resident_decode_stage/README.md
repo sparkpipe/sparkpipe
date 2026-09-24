@@ -37,7 +37,7 @@ archives, compiles `validation/spark_qwen38_27b_resident_decode_stage_cuda_valid
 against the module archive and runs it on device. The validator is two
 tiers: per-kernel checks (decay/beta, conv update, one GDN decode step,
 gated norm, one paged full-attention decode, a two-chunk GDN walk) against
-the `spark_qwen38_27b_reference.c` formulas, then a module tier that loads the
+the `model-families/common/validation/spark_gdn_reference.c` formulas, then a module tier that loads the
 configured stage pack through Initialize/Execute and drives prefill-then-decode
 on two lanes with a capture transport, checking decode-vs-prefill agreement
 and fresh-instance determinism. It requires a mid-pipeline stage-0 slice

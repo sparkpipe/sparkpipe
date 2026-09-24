@@ -303,6 +303,7 @@ TEST_NAMES := \
     test_kv_store \
     test_serving_cache_admission \
     test_kda_reference \
+    test_gdn_reference \
     test_numerical_metrics \
     test_kv_cache \
     test_kv_page_layout \
@@ -792,6 +793,9 @@ build/test_kv_page_layout: tests/test_kv_page_layout.c include/sparkpipe/spark_k
 
 build/test_kda_reference: tests/test_kda_reference.c include/sparkpipe/spark_kda_reference.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+build/test_gdn_reference: model-families/common/validation/spark_gdn_reference.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@
 
 build/test_numerical_metrics: tests/test_numerical_metrics.c include/sparkpipe/spark_numerical_metrics.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@

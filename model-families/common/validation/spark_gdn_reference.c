@@ -5,7 +5,7 @@
 #include <string.h>
 
 
-static uint64_t SparkQwen38_27bRefNext(uint64_t *state)
+static uint64_t SparkGdnRefNext(uint64_t *state)
 {
 	uint64_t value = *state;
 	value ^= value >> 12;
@@ -15,29 +15,29 @@ static uint64_t SparkQwen38_27bRefNext(uint64_t *state)
 	return(value * 2685821657736338717ull);
 }
 
-static float SparkQwen38_27bRefUniform(uint64_t *state)
+static float SparkGdnRefUniform(uint64_t *state)
 {
-	return(((float)(SparkQwen38_27bRefNext(state) & 0xffffffu) / 8388608.0f) - 1.0f);
+	return(((float)(SparkGdnRefNext(state) & 0xffffffu) / 8388608.0f) - 1.0f);
 }
 
-static void SparkQwen38_27bRefFill(float *buffer, uint64_t count, uint64_t *state)
+static void SparkGdnRefFill(float *buffer, uint64_t count, uint64_t *state)
 {
 	uint64_t index;
 	for (index = 0; index < count; index++)
-		buffer[index] = SparkQwen38_27bRefUniform(state) * 0.5f;
+		buffer[index] = SparkGdnRefUniform(state) * 0.5f;
 }
 
-static float SparkQwen38_27bRefSilu(float value)
+static float SparkGdnRefSilu(float value)
 {
 	return(value / (1.0f + expf(-value)));
 }
 
-static float SparkQwen38_27bRefSigmoid(float value)
+static float SparkGdnRefSigmoid(float value)
 {
 	return(1.0f / (1.0f + expf(-value)));
 }
 
-static void SparkQwen38_27bRefL2Norm(const float *input, float *output, uint32_t dimension)
+static void SparkGdnRefL2Norm(const float *input, float *output, uint32_t dimension)
 {
 	uint32_t element;
 	float total = 0.0f;
@@ -48,15 +48,15 @@ static void SparkQwen38_27bRefL2Norm(const float *input, float *output, uint32_t
 		output[element] = input[element] * total;
 }
 
-static void SparkQwen38_27bRefGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
+static void SparkGdnRefGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
 {
 	float qn[256],kn[256],delta[256];
 	float scale = 1.0f / sqrtf((float)dk),decay,kv_mem;
 	uint32_t token,row,column;
 	for (token = 0; token < tokens; token++)
 	{
-		SparkQwen38_27bRefL2Norm(q + ((uint64_t)token * dk),qn,dk);
-		SparkQwen38_27bRefL2Norm(k + ((uint64_t)token * dk),kn,dk);
+		SparkGdnRefL2Norm(q + ((uint64_t)token * dk),qn,dk);
+		SparkGdnRefL2Norm(k + ((uint64_t)token * dk),kn,dk);
 		for (row = 0; row < dk; row++)
 			qn[row] *= scale;
 		decay = expf(g[token]);
@@ -83,7 +83,7 @@ static void SparkQwen38_27bRefGdnRecurrence(const float *q, const float *k, cons
 	}
 }
 
-static void SparkQwen38_27bRefConvChannel(const float *input, const float *weight, float *tail, float *output, uint32_t tokens)
+static void SparkGdnRefConvChannel(const float *input, const float *weight, float *tail, float *output, uint32_t tokens)
 {
 	float window[4];
 	uint32_t token,tap;
@@ -97,14 +97,14 @@ static void SparkQwen38_27bRefConvChannel(const float *input, const float *weigh
 		accumulator = 0.0f;
 		for (tap = 0; tap < 4u; tap++)
 			accumulator += (window[tap] * weight[tap]);
-		output[token] = SparkQwen38_27bRefSilu(accumulator);
+		output[token] = SparkGdnRefSilu(accumulator);
 	}
 	tail[0] = tokens >= 3u ? input[tokens - 3u] : (tokens == 2u ? tail[2] : (tokens == 1u ? tail[1] : tail[0]));
 	tail[1] = tokens >= 2u ? input[tokens - 2u] : (tokens == 1u ? tail[2] : tail[1]);
 	tail[2] = tokens >= 1u ? input[tokens - 1u] : tail[2];
 }
 
-static void SparkQwen38_27bRefGatedNorm(const float *input, const float *z, const float *weight, float *output, uint32_t dimension, float epsilon)
+static void SparkGdnRefGatedNorm(const float *input, const float *z, const float *weight, float *output, uint32_t dimension, float epsilon)
 {
 	float variance = 0.0f,inverse;
 	uint32_t element;
@@ -112,10 +112,10 @@ static void SparkQwen38_27bRefGatedNorm(const float *input, const float *z, cons
 		variance += (input[element] * input[element]);
 	inverse = 1.0f / sqrtf((variance / (float)dimension) + epsilon);
 	for (element = 0; element < dimension; element++)
-		output[element] = (input[element] * inverse) * weight[element] * SparkQwen38_27bRefSilu(z[element]);
+		output[element] = (input[element] * inverse) * weight[element] * SparkGdnRefSilu(z[element]);
 }
 
-static void SparkQwen38_27bRefRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
+static void SparkGdnRefRope(float *vector, uint32_t rope_dim, uint32_t position, float theta)
 {
 	uint32_t pair,half = rope_dim / 2u;
 	float frequency,angle,cosine,sine,low,high;
@@ -132,7 +132,7 @@ static void SparkQwen38_27bRefRope(float *vector, uint32_t rope_dim, uint32_t po
 	}
 }
 
-static void SparkQwen38_27bRefAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t head_dim, uint32_t rope_dim, uint32_t tokens, float epsilon)
+static void SparkGdnRefAttention(const float *q_fused, const float *k_cache, const float *v_cache, const float *q_norm_weight, float *output, uint32_t group, uint32_t head_dim, uint32_t rope_dim, uint32_t tokens, float epsilon)
 {
 	float qh[512],scores[128],probability;
 	float scale = 1.0f / sqrtf((float)head_dim),maximum,total,variance,inverse;
@@ -146,7 +146,7 @@ static void SparkQwen38_27bRefAttention(const float *q_fused, const float *k_cac
 		inverse = 1.0f / sqrtf((variance / (float)head_dim) + epsilon);
 		for (element = 0; element < head_dim; element++)
 			qh[element] = fused[element] * inverse * q_norm_weight[element];
-		SparkQwen38_27bRefRope(qh,rope_dim,tokens - 1u,10000000.0f);
+		SparkGdnRefRope(qh,rope_dim,tokens - 1u,10000000.0f);
 		maximum = -3.0e38f;
 		for (token = 0; token < tokens; token++)
 		{
@@ -168,84 +168,84 @@ static void SparkQwen38_27bRefAttention(const float *q_fused, const float *k_cac
 			probability = 0.0f;
 			for (token = 0; token < tokens; token++)
 				probability += ((scores[token] / total) * v_cache[((uint64_t)token * head_dim) + element]);
-			output[((uint64_t)head * head_dim) + element] = probability * SparkQwen38_27bRefSigmoid(fused[head_dim + element]);
+			output[((uint64_t)head * head_dim) + element] = probability * SparkGdnRefSigmoid(fused[head_dim + element]);
 		}
 	}
 }
 
-#define SPARK_QWEN38_27B_REF_CHUNK 64u
+#define SPARK_GDN_REF_CHUNK 64u
 
-static void SparkQwen38_27bRefChunkPrepare(const float *q, const float *k, const float *beta, const float *g, float *qn, float *kn, float *cum_g, float *decay, float *attn, uint32_t dk)
+static void SparkGdnRefChunkPrepare(const float *q, const float *k, const float *beta, const float *g, float *qn, float *kn, float *cum_g, float *decay, float *attn, uint32_t dk)
 {
 	uint32_t row,column,element;
 	float scale = 1.0f / sqrtf((float)dk),running = 0.0f,product;
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
 	{
-		SparkQwen38_27bRefL2Norm(q + ((uint64_t)row * dk),qn + ((uint64_t)row * dk),dk);
-		SparkQwen38_27bRefL2Norm(k + ((uint64_t)row * dk),kn + ((uint64_t)row * dk),dk);
+		SparkGdnRefL2Norm(q + ((uint64_t)row * dk),qn + ((uint64_t)row * dk),dk);
+		SparkGdnRefL2Norm(k + ((uint64_t)row * dk),kn + ((uint64_t)row * dk),dk);
 		for (element = 0; element < dk; element++)
 			qn[(row * dk) + element] *= scale;
 		running += g[row];
 		cum_g[row] = running;
 	}
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
-		for (column = 0; column < SPARK_QWEN38_27B_REF_CHUNK; column++)
-			decay[(row * SPARK_QWEN38_27B_REF_CHUNK) + column] = column <= row ? expf(cum_g[row] - cum_g[column]) : 0.0f;
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
-		for (column = 0; column < SPARK_QWEN38_27B_REF_CHUNK; column++)
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
+		for (column = 0; column < SPARK_GDN_REF_CHUNK; column++)
+			decay[(row * SPARK_GDN_REF_CHUNK) + column] = column <= row ? expf(cum_g[row] - cum_g[column]) : 0.0f;
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
+		for (column = 0; column < SPARK_GDN_REF_CHUNK; column++)
 		{
 			product = 0.0f;
 			for (element = 0; element < dk && column < row; element++)
 				product += (kn[(row * dk) + element] * beta[row] * kn[(column * dk) + element]);
-			attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + column] = column < row ? -(product * decay[(row * SPARK_QWEN38_27B_REF_CHUNK) + column]) : 0.0f;
+			attn[(row * SPARK_GDN_REF_CHUNK) + column] = column < row ? -(product * decay[(row * SPARK_GDN_REF_CHUNK) + column]) : 0.0f;
 		}
 }
 
-static void SparkQwen38_27bRefChunkForwardSubstitute(float *attn)
+static void SparkGdnRefChunkForwardSubstitute(float *attn)
 {
 	uint32_t row,column,element;
 	float accumulator;
-	for (row = 1; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+	for (row = 1; row < SPARK_GDN_REF_CHUNK; row++)
 		for (column = 0; column < row; column++)
 		{
-			accumulator = attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + column];
+			accumulator = attn[(row * SPARK_GDN_REF_CHUNK) + column];
 			for (element = 0; element < row; element++)
-				accumulator += (attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + element] * attn[(element * SPARK_QWEN38_27B_REF_CHUNK) + column]);
-			attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + column] = accumulator;
+				accumulator += (attn[(row * SPARK_GDN_REF_CHUNK) + element] * attn[(element * SPARK_GDN_REF_CHUNK) + column]);
+			attn[(row * SPARK_GDN_REF_CHUNK) + column] = accumulator;
 		}
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
-		attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + row] += 1.0f;
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
+		attn[(row * SPARK_GDN_REF_CHUNK) + row] += 1.0f;
 }
 
-static void SparkQwen38_27bRefChunkTransform(const float *attn, const float *kn, const float *v, const float *beta, const float *cum_g, float *w, float *kg, uint32_t dk, uint32_t dv)
+static void SparkGdnRefChunkTransform(const float *attn, const float *kn, const float *v, const float *beta, const float *cum_g, float *w, float *kg, uint32_t dk, uint32_t dv)
 {
 	uint32_t row,column,element;
 	float accumulator;
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
 	{
 		for (column = 0; column < dv; column++)
 		{
 			accumulator = 0.0f;
-			for (element = 0; element < SPARK_QWEN38_27B_REF_CHUNK; element++)
-				accumulator += (attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + element] * v[(element * dv) + column] * beta[element]);
+			for (element = 0; element < SPARK_GDN_REF_CHUNK; element++)
+				accumulator += (attn[(row * SPARK_GDN_REF_CHUNK) + element] * v[(element * dv) + column] * beta[element]);
 			w[(row * dv) + column] = accumulator;
 		}
 		for (column = 0; column < dk; column++)
 		{
 			accumulator = 0.0f;
-			for (element = 0; element < SPARK_QWEN38_27B_REF_CHUNK; element++)
-				accumulator += (attn[(row * SPARK_QWEN38_27B_REF_CHUNK) + element] * kn[(element * dk) + column] * beta[element] * expf(cum_g[element]));
+			for (element = 0; element < SPARK_GDN_REF_CHUNK; element++)
+				accumulator += (attn[(row * SPARK_GDN_REF_CHUNK) + element] * kn[(element * dk) + column] * beta[element] * expf(cum_g[element]));
 			kg[(row * dk) + column] = accumulator;
 		}
 	}
 }
 
-static void SparkQwen38_27bRefChunkStep(const float *qn, const float *kn, const float *w, const float *kg, const float *cum_g, const float *decay, float *state, float *output, uint32_t dk, uint32_t dv)
+static void SparkGdnRefChunkStep(const float *qn, const float *kn, const float *w, const float *kg, const float *cum_g, const float *decay, float *state, float *output, uint32_t dk, uint32_t dv)
 {
-	float v_new[SPARK_QWEN38_27B_REF_CHUNK * 256u],score;
+	float v_new[SPARK_GDN_REF_CHUNK * 256u],score;
 	uint32_t row,column,element;
-	float g_last = cum_g[SPARK_QWEN38_27B_REF_CHUNK - 1u],carry;
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+	float g_last = cum_g[SPARK_GDN_REF_CHUNK - 1u],carry;
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
 		for (column = 0; column < dv; column++)
 		{
 			score = 0.0f;
@@ -253,7 +253,7 @@ static void SparkQwen38_27bRefChunkStep(const float *qn, const float *kn, const 
 				score += (kg[(row * dk) + element] * state[(element * dv) + column]);
 			v_new[(row * dv) + column] = w[(row * dv) + column] - score;
 		}
-	for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+	for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
 		for (column = 0; column < dv; column++)
 		{
 			score = 0.0f;
@@ -265,7 +265,7 @@ static void SparkQwen38_27bRefChunkStep(const float *qn, const float *kn, const 
 				uint32_t inner;
 				for (inner = 0; inner < dk; inner++)
 					dot += (qn[(row * dk) + inner] * kn[(element * dk) + inner]);
-				score += (dot * decay[(row * SPARK_QWEN38_27B_REF_CHUNK) + element] * v_new[(element * dv) + column]);
+				score += (dot * decay[(row * SPARK_GDN_REF_CHUNK) + element] * v_new[(element * dv) + column]);
 			}
 			output[(row * dv) + column] = score;
 		}
@@ -273,48 +273,48 @@ static void SparkQwen38_27bRefChunkStep(const float *qn, const float *kn, const 
 		for (column = 0; column < dv; column++)
 		{
 			carry = state[(element * dv) + column] * expf(g_last);
-			for (row = 0; row < SPARK_QWEN38_27B_REF_CHUNK; row++)
+			for (row = 0; row < SPARK_GDN_REF_CHUNK; row++)
 				carry += (kn[(row * dk) + element] * expf(g_last - cum_g[row]) * v_new[(row * dv) + column]);
 			state[(element * dv) + column] = carry;
 		}
 }
 
-static void SparkQwen38_27bRefGdnChunk(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
+static void SparkGdnRefGdnChunk(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
 {
-	float qn[SPARK_QWEN38_27B_REF_CHUNK * 256u],kn[SPARK_QWEN38_27B_REF_CHUNK * 256u];
-	float cum_g[SPARK_QWEN38_27B_REF_CHUNK],decay[SPARK_QWEN38_27B_REF_CHUNK * SPARK_QWEN38_27B_REF_CHUNK],attn[SPARK_QWEN38_27B_REF_CHUNK * SPARK_QWEN38_27B_REF_CHUNK];
-	float w[SPARK_QWEN38_27B_REF_CHUNK * 256u],kg[SPARK_QWEN38_27B_REF_CHUNK * 256u];
+	float qn[SPARK_GDN_REF_CHUNK * 256u],kn[SPARK_GDN_REF_CHUNK * 256u];
+	float cum_g[SPARK_GDN_REF_CHUNK],decay[SPARK_GDN_REF_CHUNK * SPARK_GDN_REF_CHUNK],attn[SPARK_GDN_REF_CHUNK * SPARK_GDN_REF_CHUNK];
+	float w[SPARK_GDN_REF_CHUNK * 256u],kg[SPARK_GDN_REF_CHUNK * 256u];
 	uint32_t chunk,base;
-	for (chunk = 0; chunk < tokens / SPARK_QWEN38_27B_REF_CHUNK; chunk++)
+	for (chunk = 0; chunk < tokens / SPARK_GDN_REF_CHUNK; chunk++)
 	{
-		base = chunk * SPARK_QWEN38_27B_REF_CHUNK;
-		SparkQwen38_27bRefChunkPrepare(q + ((uint64_t)base * dk),k + ((uint64_t)base * dk),beta + base,g + base,qn,kn,cum_g,decay,attn,dk);
-		SparkQwen38_27bRefChunkForwardSubstitute(attn);
-		SparkQwen38_27bRefChunkTransform(attn,kn,v + ((uint64_t)base * dv),beta + base,cum_g,w,kg,dk,dv);
-		SparkQwen38_27bRefChunkStep(qn,kn,w,kg,cum_g,decay,state,output + ((uint64_t)base * dv),dk,dv);
+		base = chunk * SPARK_GDN_REF_CHUNK;
+		SparkGdnRefChunkPrepare(q + ((uint64_t)base * dk),k + ((uint64_t)base * dk),beta + base,g + base,qn,kn,cum_g,decay,attn,dk);
+		SparkGdnRefChunkForwardSubstitute(attn);
+		SparkGdnRefChunkTransform(attn,kn,v + ((uint64_t)base * dv),beta + base,cum_g,w,kg,dk,dv);
+		SparkGdnRefChunkStep(qn,kn,w,kg,cum_g,decay,state,output + ((uint64_t)base * dv),dk,dv);
 	}
 }
 
-static int32_t SparkQwen38_27bRefTestChunkAgainstRecurrence(void)
+static int32_t SparkGdnRefTestChunkAgainstRecurrence(void)
 {
 	float q[192u * 32u],k[192u * 32u],v[192u * 32u],g[192u],beta[192u];
 	float state_rec[32u * 32u],state_chunk[32u * 32u],out_rec[192u * 32u],out_chunk[192u * 32u];
 	uint64_t noise = 0xc4a1c4a1u;
 	float difference = 0.0f,state_difference = 0.0f,delta;
 	uint32_t index;
-	SparkQwen38_27bRefFill(q,192u * 32u,&noise);
-	SparkQwen38_27bRefFill(k,192u * 32u,&noise);
-	SparkQwen38_27bRefFill(v,192u * 32u,&noise);
+	SparkGdnRefFill(q,192u * 32u,&noise);
+	SparkGdnRefFill(k,192u * 32u,&noise);
+	SparkGdnRefFill(v,192u * 32u,&noise);
 	for (index = 0; index < 192u; index++)
 	{
-		g[index] = -0.05f - (0.4f * fabsf(SparkQwen38_27bRefUniform(&noise)));
-		beta[index] = 0.2f + (0.6f * fabsf(SparkQwen38_27bRefUniform(&noise)));
+		g[index] = -0.05f - (0.4f * fabsf(SparkGdnRefUniform(&noise)));
+		beta[index] = 0.2f + (0.6f * fabsf(SparkGdnRefUniform(&noise)));
 	}
 	memset(state_rec,0,sizeof(state_rec));
-	SparkQwen38_27bRefGdnRecurrence(q,k,v,g,beta,state_rec,out_rec,64u,32u,32u);
+	SparkGdnRefGdnRecurrence(q,k,v,g,beta,state_rec,out_rec,64u,32u,32u);
 	memcpy(state_chunk,state_rec,sizeof(state_rec));
-	SparkQwen38_27bRefGdnRecurrence(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_rec,out_rec + (64u * 32u),128u,32u,32u);
-	SparkQwen38_27bRefGdnChunk(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_chunk,out_chunk + (64u * 32u),128u,32u,32u);
+	SparkGdnRefGdnRecurrence(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_rec,out_rec + (64u * 32u),128u,32u,32u);
+	SparkGdnRefGdnChunk(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_chunk,out_chunk + (64u * 32u),128u,32u,32u);
 	for (index = 64u * 32u; index < 192u * 32u; index++)
 	{
 		delta = fabsf(out_rec[index] - out_chunk[index]);
@@ -331,26 +331,26 @@ static int32_t SparkQwen38_27bRefTestChunkAgainstRecurrence(void)
 	return((difference < 1e-4f && state_difference < 1e-4f) ? 0 : -1);
 }
 
-static int32_t SparkQwen38_27bRefTestCarry(void)
+static int32_t SparkGdnRefTestCarry(void)
 {
 	float q[128u * 32u],k[128u * 32u],v[128u * 32u],g[128u],beta[128u];
 	float state_one[32u * 32u],state_two[32u * 32u],out_one[128u * 32u],out_two[128u * 32u];
 	uint64_t noise = 0x51363636u;
 	float difference = 0.0f,delta;
 	uint32_t index;
-	SparkQwen38_27bRefFill(q,128u * 32u,&noise);
-	SparkQwen38_27bRefFill(k,128u * 32u,&noise);
-	SparkQwen38_27bRefFill(v,128u * 32u,&noise);
+	SparkGdnRefFill(q,128u * 32u,&noise);
+	SparkGdnRefFill(k,128u * 32u,&noise);
+	SparkGdnRefFill(v,128u * 32u,&noise);
 	for (index = 0; index < 128u; index++)
 	{
-		g[index] = -0.05f - (0.4f * fabsf(SparkQwen38_27bRefUniform(&noise)));
-		beta[index] = 0.2f + (0.6f * fabsf(SparkQwen38_27bRefUniform(&noise)));
+		g[index] = -0.05f - (0.4f * fabsf(SparkGdnRefUniform(&noise)));
+		beta[index] = 0.2f + (0.6f * fabsf(SparkGdnRefUniform(&noise)));
 	}
 	memset(state_one,0,sizeof(state_one));
 	memset(state_two,0,sizeof(state_two));
-	SparkQwen38_27bRefGdnRecurrence(q,k,v,g,beta,state_one,out_one,128u,32u,32u);
-	SparkQwen38_27bRefGdnRecurrence(q,k,v,g,beta,state_two,out_two,64u,32u,32u);
-	SparkQwen38_27bRefGdnRecurrence(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_two,out_two + (64u * 32u),64u,32u,32u);
+	SparkGdnRefGdnRecurrence(q,k,v,g,beta,state_one,out_one,128u,32u,32u);
+	SparkGdnRefGdnRecurrence(q,k,v,g,beta,state_two,out_two,64u,32u,32u);
+	SparkGdnRefGdnRecurrence(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_two,out_two + (64u * 32u),64u,32u,32u);
 	for (index = 0; index < 128u * 32u; index++)
 	{
 		delta = fabsf(out_one[index] - out_two[index]);
@@ -361,19 +361,19 @@ static int32_t SparkQwen38_27bRefTestCarry(void)
 	return(difference < 1e-6f ? 0 : -1);
 }
 
-static int32_t SparkQwen38_27bRefTestSaturatedDecay(void)
+static int32_t SparkGdnRefTestSaturatedDecay(void)
 {
 	float q[32u],k[32u],v[32u],qn[32u],kn[32u],state[32u * 32u],output[32u];
 	float g = -30.0f,beta = 0.7f,expected,alignment = 0.0f,difference = 0.0f,delta;
 	uint64_t noise = 0xbeef51u;
 	uint32_t index;
-	SparkQwen38_27bRefFill(q,32u,&noise);
-	SparkQwen38_27bRefFill(k,32u,&noise);
-	SparkQwen38_27bRefFill(v,32u,&noise);
-	SparkQwen38_27bRefFill(state,32u * 32u,&noise);
-	SparkQwen38_27bRefGdnRecurrence(q,k,v,&g,&beta,state,output,1u,32u,32u);
-	SparkQwen38_27bRefL2Norm(q,qn,32u);
-	SparkQwen38_27bRefL2Norm(k,kn,32u);
+	SparkGdnRefFill(q,32u,&noise);
+	SparkGdnRefFill(k,32u,&noise);
+	SparkGdnRefFill(v,32u,&noise);
+	SparkGdnRefFill(state,32u * 32u,&noise);
+	SparkGdnRefGdnRecurrence(q,k,v,&g,&beta,state,output,1u,32u,32u);
+	SparkGdnRefL2Norm(q,qn,32u);
+	SparkGdnRefL2Norm(k,kn,32u);
 	for (index = 0; index < 32u; index++)
 		alignment += (qn[index] * kn[index]);
 	alignment /= sqrtf(32.0f);
@@ -388,26 +388,26 @@ static int32_t SparkQwen38_27bRefTestSaturatedDecay(void)
 	return(difference < 1e-5f ? 0 : -1);
 }
 
-static int32_t SparkQwen38_27bRefTestConv(void)
+static int32_t SparkGdnRefTestConv(void)
 {
 	float weight[4] = {0.3f,-0.5f,0.8f,0.4f};
 	float input[24u],one_pass[24u],two_pass[24u],tail_one[3],tail_two[3];
 	uint64_t noise = 0xc0471u ^ 0x1234u;
 	float difference = 0.0f,delta,impulse_in[8u] = {1.0f,0,0,0,0,0,0,0},impulse_out[8u],tail_zero[3] = {0,0,0};
 	uint32_t index;
-	SparkQwen38_27bRefConvChannel(impulse_in,weight,tail_zero,impulse_out,8u);
+	SparkGdnRefConvChannel(impulse_in,weight,tail_zero,impulse_out,8u);
 	for (index = 0; index < 4u; index++)
 	{
-		delta = fabsf(impulse_out[index] - SparkQwen38_27bRefSilu(weight[3u - index]));
+		delta = fabsf(impulse_out[index] - SparkGdnRefSilu(weight[3u - index]));
 		if ( delta > difference )
 			difference = delta;
 	}
-	SparkQwen38_27bRefFill(input,24u,&noise);
+	SparkGdnRefFill(input,24u,&noise);
 	memset(tail_one,0,sizeof(tail_one));
 	memset(tail_two,0,sizeof(tail_two));
-	SparkQwen38_27bRefConvChannel(input,weight,tail_one,one_pass,24u);
-	SparkQwen38_27bRefConvChannel(input,weight,tail_two,two_pass,10u);
-	SparkQwen38_27bRefConvChannel(input + 10u,weight,tail_two,two_pass + 10u,14u);
+	SparkGdnRefConvChannel(input,weight,tail_one,one_pass,24u);
+	SparkGdnRefConvChannel(input,weight,tail_two,two_pass,10u);
+	SparkGdnRefConvChannel(input + 10u,weight,tail_two,two_pass + 10u,14u);
 	for (index = 0; index < 24u; index++)
 	{
 		delta = fabsf(one_pass[index] - two_pass[index]);
@@ -418,29 +418,29 @@ static int32_t SparkQwen38_27bRefTestConv(void)
 	return(difference < 1e-6f ? 0 : -1);
 }
 
-static int32_t SparkQwen38_27bRefTestGatedNorm(void)
+static int32_t SparkGdnRefTestGatedNorm(void)
 {
 	float input[128u],z[128u],weight[128u],output[128u];
 	uint64_t noise = 0x9a9a9au;
 	float variance = 0.0f,inverse,expected,difference = 0.0f,delta;
 	uint32_t index;
-	SparkQwen38_27bRefFill(input,128u,&noise);
-	SparkQwen38_27bRefFill(z,128u,&noise);
+	SparkGdnRefFill(input,128u,&noise);
+	SparkGdnRefFill(z,128u,&noise);
 	for (index = 0; index < 128u; index++)
-		weight[index] = 1.0f + (0.1f * SparkQwen38_27bRefUniform(&noise));
-	SparkQwen38_27bRefGatedNorm(input,z,weight,output,128u,1e-6f);
+		weight[index] = 1.0f + (0.1f * SparkGdnRefUniform(&noise));
+	SparkGdnRefGatedNorm(input,z,weight,output,128u,1e-6f);
 	for (index = 0; index < 128u; index++)
 		variance += (input[index] * input[index]);
 	inverse = 1.0f / sqrtf((variance / 128.0f) + 1e-6f);
 	for (index = 0; index < 128u; index++)
 	{
-		expected = input[index] * inverse * weight[index] * SparkQwen38_27bRefSilu(z[index]);
+		expected = input[index] * inverse * weight[index] * SparkGdnRefSilu(z[index]);
 		delta = fabsf(output[index] - expected);
 		if ( delta > difference )
 			difference = delta;
 	}
 	memset(z,0,sizeof(z));
-	SparkQwen38_27bRefGatedNorm(input,z,weight,output,128u,1e-6f);
+	SparkGdnRefGatedNorm(input,z,weight,output,128u,1e-6f);
 	for (index = 0; index < 128u; index++)
 		if ( fabsf(output[index]) > difference )
 			difference = fabsf(output[index]);
@@ -448,36 +448,36 @@ static int32_t SparkQwen38_27bRefTestGatedNorm(void)
 	return(difference < 1e-6f ? 0 : -1);
 }
 
-static int32_t SparkQwen38_27bRefTestAttention(void)
+static int32_t SparkGdnRefTestAttention(void)
 {
 	float q_fused[2u * 2u * 256u],k_cache[48u * 256u],v_cache[48u * 256u],q_norm[256u],output[2u * 256u];
 	float head[256u],rotated_q[256u],rotated_k[256u],dot_before,dot_after,difference = 0.0f,delta;
 	uint64_t noise = 0xa77e0u;
 	uint32_t index,token;
-	SparkQwen38_27bRefFill(q_fused,2u * 2u * 256u,&noise);
-	SparkQwen38_27bRefFill(k_cache,48u * 256u,&noise);
+	SparkGdnRefFill(q_fused,2u * 2u * 256u,&noise);
+	SparkGdnRefFill(k_cache,48u * 256u,&noise);
 	for (index = 0; index < 256u; index++)
 		q_norm[index] = 1.0f;
 	for (token = 0; token < 48u; token++)
 		for (index = 0; index < 256u; index++)
 			v_cache[(token * 256u) + index] = 0.25f;
-	SparkQwen38_27bRefAttention(q_fused,k_cache,v_cache,q_norm,output,2u,256u,64u,48u,1e-6f);
+	SparkGdnRefAttention(q_fused,k_cache,v_cache,q_norm,output,2u,256u,64u,48u,1e-6f);
 	for (index = 0; index < 2u * 256u; index++)
 	{
 		const float *fused = q_fused + (((index / 256u) * 2u * 256u) + 256u);
-		delta = fabsf(output[index] - (0.25f * SparkQwen38_27bRefSigmoid(fused[index % 256u])));
+		delta = fabsf(output[index] - (0.25f * SparkGdnRefSigmoid(fused[index % 256u])));
 		if ( delta > difference )
 			difference = delta;
 	}
-	SparkQwen38_27bRefFill(head,256u,&noise);
+	SparkGdnRefFill(head,256u,&noise);
 	memcpy(rotated_q,head,sizeof(head));
-	SparkQwen38_27bRefFill(head,256u,&noise);
+	SparkGdnRefFill(head,256u,&noise);
 	memcpy(rotated_k,head,sizeof(head));
 	dot_before = 0.0f;
 	for (index = 0; index < 64u; index++)
 		dot_before += (rotated_q[index] * rotated_k[index]);
-	SparkQwen38_27bRefRope(rotated_q,64u,17u,10000000.0f);
-	SparkQwen38_27bRefRope(rotated_k,64u,17u,10000000.0f);
+	SparkGdnRefRope(rotated_q,64u,17u,10000000.0f);
+	SparkGdnRefRope(rotated_k,64u,17u,10000000.0f);
 	dot_after = 0.0f;
 	for (index = 0; index < 64u; index++)
 		dot_after += (rotated_q[index] * rotated_k[index]);
@@ -490,17 +490,17 @@ static int32_t SparkQwen38_27bRefTestAttention(void)
 
 int main(void)
 {
-	if ( SparkQwen38_27bRefTestCarry() != 0 )
+	if ( SparkGdnRefTestCarry() != 0 )
 		return(1);
-	if ( SparkQwen38_27bRefTestChunkAgainstRecurrence() != 0 )
+	if ( SparkGdnRefTestChunkAgainstRecurrence() != 0 )
 		return(6);
-	if ( SparkQwen38_27bRefTestSaturatedDecay() != 0 )
+	if ( SparkGdnRefTestSaturatedDecay() != 0 )
 		return(2);
-	if ( SparkQwen38_27bRefTestConv() != 0 )
+	if ( SparkGdnRefTestConv() != 0 )
 		return(3);
-	if ( SparkQwen38_27bRefTestGatedNorm() != 0 )
+	if ( SparkGdnRefTestGatedNorm() != 0 )
 		return(4);
-	if ( SparkQwen38_27bRefTestAttention() != 0 )
+	if ( SparkGdnRefTestAttention() != 0 )
 		return(5);
 	printf("PASS all cpu oracles agree\n");
 	return(0);

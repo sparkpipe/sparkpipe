@@ -57,7 +57,7 @@ TP_DEGREE ?= 1
 TP_RANK ?= 0
 TP_STANDALONE ?= 0
 override QWEN38_27B_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
-override QWEN38_27B_CPU_ORACLE_SHA256 := $(shell sha256sum validation/spark_qwen38_27b_reference.c | awk '{print $$1}')
+override QWEN38_27B_CPU_ORACLE_SHA256 := $(shell sha256sum ../../model-families/common/validation/spark_gdn_reference.c | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \
 	SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
