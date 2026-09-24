@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -150,6 +151,13 @@ SparkStatus SparkWeightdClientLaneUnbind(SparkWeightdClient *owner,uint32_t band
     assert(band < 2u && (mesh->bands & (1u << band)) != 0u);
     mesh->bands &= ~(1u << band);
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,void **mapping,uint64_t timeout)
+{
+    (void)client; (void)timeout;
+    *mapping = 0;
+    return SPARK_STATUS_UNSUPPORTED;
 }
 
 uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client)
@@ -1662,7 +1670,7 @@ static void FuzzTreeCases(void)
     for ( rank = 0u; rank < count; rank++ ) if ( rank != count - 1u ) peers[n++] = rank;
     CHECK(FuzzRunSet(FuzzRoundMain,1800003u,peers,n,"tree-missing",0u,-1),"missing tree peer terminates bounded");
     for ( rank = 0u; rank < n; rank++ )
-        CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_BUSY,"missing tree contribution cannot complete successfully");
+        CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_IO_ERROR,"missing tree contribution is terminal, never success");
     CHECK(FuzzRunSet(FuzzChainMain,1800004u,run,count,"tree-loop-chain",0u,-1),"tree round-loop generation aligns");
     CHECK(FuzzLaunchRounds(1800005u,3u,1u,"tree-loop"),"tree round-loop completes");
     for ( rank = 0u; rank < count; rank++ )
@@ -1677,7 +1685,7 @@ static void FuzzTreeCases(void)
     FuzzCancelAll();
     CHECK(FuzzJoinRounds("tree-cancel",2u),"cancelled tree terminates bounded");
     for ( rank = 0u; rank < count; rank++ )
-        CHECK(g_tasks[rank].status == SPARK_STATUS_BUSY,"cancelled tree never reports success");
+        CHECK(g_tasks[rank].status == SPARK_STATUS_IO_ERROR,"cancelled tree is terminal, never success");
     FuzzHoldShipper(0u);
     CHECK(FuzzRunSet(FuzzChainMain,1800008u,run,count,"tree-recover-chain",0u,-1),"tree recovery generation aligns");
     CHECK(FuzzRunSet(FuzzRoundMain,1800009u,run,count,"tree-recover",3u,-1),"tree recovers after cancellation");
@@ -2055,7 +2063,6 @@ static int FuzzCudaHostAlloc(void **pointer,size_t bytes,unsigned int flags)
 #define cudaMemcpy FuzzCudaMemcpy
 #define cudaHostAlloc FuzzCudaHostAlloc
 #include "../ring/transport/tp_device_collective.c"
-#include <sys/mman.h>
 #undef calloc
 #undef cudaMalloc
 #undef cudaFree
@@ -2156,7 +2163,8 @@ static void FuzzMeshTopology(void)
         SparkTpDeviceCollectiveCreate(&config,&peer) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectivePrepareReceiveBf16(&peer,g_regions[0],1u,FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
         "construct mismatched peer shape for cross-rank gate");
-    CHECK(SparkTpDeviceCollectiveChainKey(&peer,777u) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(SparkTpDeviceCollectiveChainKey(&root,778u) == SPARK_STATUS_OK &&
+        SparkTpDeviceCollectiveChainKey(&peer,778u) == SPARK_STATUS_INVALID_ARGUMENT,
         "matching request key cannot admit a different root or membership map");
     SparkTpDeviceCollectiveDestroy(&peer);
     SparkTpDeviceCollectiveDestroy(&root);

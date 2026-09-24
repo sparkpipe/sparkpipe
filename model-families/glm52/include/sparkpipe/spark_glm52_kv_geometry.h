@@ -2,6 +2,7 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_glm52_model.h"
+#include "llm_defines.h"
 
 #define SPARK_GLM_KV_LAYOUT SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE
 #define SPARK_GLM_KV_LAYER_COUNT SPARK_GLM52_MODEL_LAYER_COUNT

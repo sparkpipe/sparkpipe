@@ -1242,9 +1242,9 @@ cudaError_t SparkGlm5NextLaunchMeshCopyDown(cudaStream_t stream,
     const volatile void *shipped_cell,void *round_control,
     const volatile void *cancel_cell,uint64_t timeout_ns)
 {
-    SparkTpMeshRoundControl *control = round_control;
-    const volatile uint64_t *shipped = shipped_cell;
-    const volatile uint64_t *cancel = cancel_cell;
+    SparkTpMeshRoundControl *control = (SparkTpMeshRoundControl *)round_control;
+    const volatile uint64_t *shipped = (const volatile uint64_t *)shipped_cell;
+    const volatile uint64_t *cancel = (const volatile uint64_t *)cancel_cell;
     uint64_t deadline = cuda_stub_roundloop_now_ns() + timeout_ns;
     uint64_t previous,expected_cancel;
     (void)stream;
@@ -1393,11 +1393,11 @@ cudaError_t SparkGlm5NextLaunchMeshTree(cudaStream_t stream,void *band_base,
     void *output,void *scratch,uint64_t elements,
     uint32_t operation,uint32_t rounds,uint64_t timeout_ns)
 {
-    uint8_t *band = band_base;
-    volatile uint64_t *entry = entry_address;
-    const volatile uint64_t *shipped = shipped_address;
-    const volatile uint64_t *cancel = cancel_address;
-    SparkTpMeshRoundControl *control = round_control;
+    uint8_t *band = (uint8_t *)band_base;
+    volatile uint64_t *entry = (volatile uint64_t *)entry_address;
+    const volatile uint64_t *shipped = (const volatile uint64_t *)shipped_address;
+    const volatile uint64_t *cancel = (const volatile uint64_t *)cancel_address;
+    SparkTpMeshRoundControl *control = (SparkTpMeshRoundControl *)round_control;
     uint32_t levels = SparkTpMeshTreeLevels(degree);
     uint32_t width = operation == 2u ? 8u : operation == 1u ? 4u : 2u;
     uint64_t capacity = (slot_bytes - 16u) / width;

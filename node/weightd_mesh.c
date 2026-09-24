@@ -1335,13 +1335,24 @@ static void SparkWeightdMeshDoorbellPoll(void)
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
 }
 
+static inline void SparkWeightdMeshCpuRelax(void)
+{
+#if defined(__aarch64__)
+    __asm__ volatile ("yield");
+#elif defined(__x86_64__)
+    __builtin_ia32_pause();
+#else
+#error "SparkWeightdMeshCpuRelax requires aarch64 or x86_64"
+#endif
+}
+
 void SparkWeightdMeshDoorbellLoop(void)
 {
     for (;;)
     {
         SparkWeightdMeshWaitForActivity();
         SparkWeightdMeshDoorbellPoll();
-        __asm__ volatile ("yield");
+        SparkWeightdMeshCpuRelax();
     }
 }
 

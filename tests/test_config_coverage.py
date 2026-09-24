@@ -34,6 +34,11 @@ EXEMPT = {
                              "states a token against one, and the layer does "
                              "not allocate - it is handed buffers",
     "K3_MAX_CONTEXT": "a pool-sizing number for the host, not a layer input",
+    "K3_KDA_CONV_WINDOW_BYTES": "the host sizes the per-layer conv windows from "
+                                "SPARK_K3_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER; "
+                                "this device-tier copy exists so "
+                                "tests/test_k3_llm_defines.c can assert both "
+                                "tiers agree",
     "K3_ROUTED_SCALE": "1.0 in this checkpoint, so the multiply is omitted "
                        "rather than emitted as a no-op. It stops being safe to "
                        "omit the moment a sibling checkpoint sets it otherwise",

@@ -114,7 +114,7 @@ def stage_gates(adapter, rank, failures):
     check(set(adapter.keys()) == EXACT_STAGE_MEMBERS, failures,
           f"adapter member set EXACT at rank {rank}: {sorted(adapter)}")
     check(adapter["tp_degree"] == 16, failures, "tp_degree 16")
-    check(adapter["schema_version"] == 1, failures, "stage schema 1")
+    check(adapter["schema_version"] == 3, failures, "stage schema 3")
     check(adapter["model_revision"] == lane.MODEL_REVISION, failures,
           "pinned model revision")
     check(adapter["stage_pack_path"]

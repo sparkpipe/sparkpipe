@@ -1,15 +1,5 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_status.h"
-/* The weightd client entry points come from the extern "C" guarded
- * header and the residentd-side static runtime archive. This TU compiles
- * as C++: hand-declaring the prototypes (the old form here) mangles the
- * references — the .so carried undefined _Z...SparkWeightdClient* symbols
- * that no host could resolve, and residentd's RTLD_NOW transport load
- * failed closed (first-launch find, same class as the k3 adapter
- * mesh-kernel symbol). The hand-declared forms were also wrong: connect
- * takes (path, SparkWeightdClient**, hello_out), there is no Disconnect
- * (Close), and MeshBroadcast carries the seq_value/seq_remote_offset
- * pair. */
 #include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,6 +78,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendFixed(
 {
     SparkHiddenSparkHostRdmaState *state =
         (SparkHiddenSparkHostRdmaState *)transport_state;
+    (void)sequence;
     if ( state == 0 || local_buffer == 0 || bytes == 0u ||
          state->mesh_buffer == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;

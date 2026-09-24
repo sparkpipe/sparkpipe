@@ -17,7 +17,7 @@ def main():
         cwd=repository,
     )
     with tempfile.TemporaryDirectory(
-            prefix="sparkpipe_release_agent_",dir="/private/tmp") as directory:
+            prefix="sparkpipe_release_agent_") as directory:
         root = Path(directory)
         release = root / "release"
         daemon = release / "bin" / "exit_immediately"

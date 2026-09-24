@@ -619,8 +619,8 @@ static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
     SparkHiddenTransportEndpoint endpoint;
 
     SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
-    assert((endpoint.capability_flags &
-        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u);
+    assert(endpoint.capability_flags ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS);
     assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_OK);
     endpoint.capability_flags &=

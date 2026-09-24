@@ -152,7 +152,9 @@ def main():
               "rows through route_source_token (route.cuh's contract), so the "
               "packed copy is a double-touch the kernel made dead (D9)")
         failures += 1
-    moe = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerLatentMoe")
+    stripped = re.sub(r"//[^\n]*", "", layer)
+    moe = "".join(function_body(stripped, name) for name in
+                  ("K3LayerLatentMoe", "K3LayerMoeRoute", "K3LayerMoeWeighted"))
     if "gemm.source_row_map = b->route_source_token;" not in moe:
         print("  FAIL the w1 launch does not read A rows through "
               "route_source_token; the map the route build writes is exactly "

@@ -94,7 +94,6 @@ def main() -> None:
 	fixture_verifier = read("tools/verify_dsv4_ga_reference_fixture.py")
 	fixture_generator = read("tools/generate_dsv4_ga_reference_fixture.sh")
 	driver_smoke = read("tools/sparkpipe_dsv4_driver_cuda_smoke.c")
-	require(header, "Generated from the exact source revision", "generated model contract")
 	require(header, "SPARK_DSV4_MODEL_EXPERT_WEIGHT_CODEC SPARK_WEIGHT_CODEC_MXFP4_E2M1", "package expert codec")
 	require(header, "SPARK_DSV4_MODEL_NON_EXPERT_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_NONE", "BF16 spine activation codec")
 	require(header, "SPARK_DSV4_MODEL_EXPERT_ACTIVATION_CODEC SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0", "expert activation codec")

@@ -1417,7 +1417,7 @@ static void check_execution_environment(void)
 {
 	uint64_t budget = 0u;
 	uint32_t lane;
-	const char *invalid_lanes[] = {"", "-1", "8", "4294967295", "1x", " 1", "+1"};
+	const char *invalid_lanes[] = {"", "-1", "16", "4294967295", "1x", " 1", "+1"};
 	assert(unsetenv("SPARK_WEIGHTD_LANE") == 0);
 	assert(SparkGlm5NextRequestedMeshLane(&lane) == SPARK_STATUS_OK && lane == SPARK_WEIGHTD_LANE_NONE);
 	for (uint32_t index=0u; index<sizeof(invalid_lanes)/sizeof(invalid_lanes[0]); index++)
