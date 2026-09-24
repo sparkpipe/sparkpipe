@@ -2135,6 +2135,9 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
         }
         __sync_synchronize();
         implementation->publish_ack_prev = entry[0];
+        implementation->base_seen = *(volatile uint64_t *)(implementation->mesh_buffer +
+            SparkTpDeviceCollectiveBaseCellOffset(band_index));
+        implementation->consumed_cell = implementation->base_seen;
     }
     return SparkTpDeviceCollectivePrepareHardware(implementation);
 }

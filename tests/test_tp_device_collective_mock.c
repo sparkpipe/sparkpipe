@@ -213,6 +213,64 @@ static void *PeerWaitMain(void *data)
 	return(0);
 }
 
+typedef struct TestEpochPublish
+{
+    volatile uint64_t *cell;
+    uint64_t epoch;
+} TestEpochPublish;
+
+static void *TestPublishNewEpoch(void *context)
+{
+    TestEpochPublish *publish = context;
+    usleep(100000);
+    __atomic_store_n(publish->cell,publish->epoch,__ATOMIC_RELEASE);
+    return 0;
+}
+
+static void TestRestartEpoch(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    config.tp_rank = 1u;
+    config.operation_timeout_milli = 1000u;
+    mock_server = 1u;
+    for (uint32_t delayed = 0u; delayed < 2u; delayed++)
+    {
+        SparkTpDeviceCollective collective = {0};
+        SparkTpDeviceCollectiveSubmission submission = {0};
+        uint16_t values[128] = {0};
+        pthread_t thread;
+        memset(mesh,0,SPARK_WEIGHTD_MESH_REGION_BYTES);
+        volatile uint64_t *cell = (volatile uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+        cell[0] = 1024u;
+        cell[1] = 0x10u;
+        cell[2] = 2u;
+        *(uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0u,1u)) = 1268u;
+        CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"restart peer create");
+        CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,1u,64u,0u,0) == SPARK_STATUS_OK,"restart maps old epoch before all-rank ready");
+        TestEpochPublish publish = {cell,2048u};
+        if (delayed) pthread_create(&thread,0,TestPublishNewEpoch,&publish);
+        else cell[0] = 2048u;
+        submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+        submission.descriptor_bytes = sizeof(submission);
+        submission.active_sequence_count = submission.logical_sequence_count = 1u;
+        submission.local_device = submission.full_device = values;
+        submission.cuda_stream = (void *)1;
+        submission.completion_function = TestComplete;
+        cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
+        uint64_t start = TestNowNs();
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_IO_ERROR,"restart reaches test hardware launch");
+        uint64_t elapsed = TestNowNs() - start;
+        CHECK(!delayed || elapsed >= 50000000u,"restart waits for the new root epoch rather than using the stale nonzero cell");
+        if (delayed) pthread_join(thread,0);
+        SparkTpMeshRoundControl *control = cuda_stub_mesh_hardware_control;
+        CHECK(control != 0 && control->seq >= 2048u,"restart dispatch uses current epoch for either rank order");
+        SparkTpDeviceCollectiveDestroy(&collective);
+    }
+    mock_server = 0u;
+    cuda_stub_mesh_hardware_launch_result = 0;
+    unsetenv("SPARK_TP_WAIT_MODE");
+}
+
 static void TestTopologySlice(void)
 {
 	SparkTpDeviceCollectiveTopology source,sliced,before;
@@ -626,6 +684,7 @@ int main(void)
 	TestHardwareDispatch(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
 	TestOwnedMesh(config);
+	TestRestartEpoch(config,mesh_buffer);
 	free(mesh_buffer);
 
 	fprintf(stderr,"%s: %u checks, %u failures (publish=%u combine=%u)\n",
