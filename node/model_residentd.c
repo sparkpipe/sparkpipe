@@ -604,12 +604,23 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	SparkModelResidentdMemoryMode memory_mode)
 {
 	SparkStatus status;
+	cudaError_t error;
 	uint32_t index;
 	runtime->memory_mode = memory_mode;
-	if ( cudaStreamCreateWithFlags(&runtime->execution_stream,cudaStreamNonBlocking) != cudaSuccess )
+	error = cudaStreamCreateWithFlags(&runtime->execution_stream,cudaStreamNonBlocking);
+	if ( error != cudaSuccess )
+	{
+		fprintf(stderr,"model_residentd cuda_stream_create stream=execution rank=%u stage=%u cuda_error=%d detail=%s\n",
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking) != cudaSuccess )
+	}
+	error = cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking);
+	if ( error != cudaSuccess )
+	{
+		fprintf(stderr,"model_residentd cuda_stream_create stream=transport rank=%u stage=%u cuda_error=%d detail=%s\n",
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	status = SPARK_STATUS_OK;
 	for (index=0u; status == SPARK_STATUS_OK && index<runtime->route_capacity; index++)
 	{
@@ -1771,6 +1782,23 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 	{
 		close(fd);
 		SPARK_RETURN(status);
+	}
+	if ( runtime->client.fd >= 0 )
+	{
+		SparkModelResidentIpcHelloAck ack;
+		fprintf(stderr,"model_residentd client_rejected status=BUSY rank=%u owner_session=%llu candidate_session=%llu; stop the owning API before reconnecting\n",
+			runtime->rank_plan.rank_index,
+			(unsigned long long)runtime->client.session_epoch,
+			(unsigned long long)hello->session_epoch);
+		status = SparkModelResidentIpcInitializeHelloAck(&ack,
+			hello->header.message_id,SPARK_STATUS_BUSY,
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
+			runtime->client.generation,hello->session_epoch,
+			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+		if ( status == SPARK_STATUS_OK && SparkModelResidentSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
+			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
+		close(fd);
+		return(SPARK_STATUS_BUSY);
 	}
 	SparkModelResidentdCloseClient(runtime);
 	if ( atomic_load(&runtime->failed_status) != SPARK_STATUS_OK )

@@ -108,8 +108,11 @@ class SmokeReceipts(unittest.TestCase):
     def test_assigned_lane_requires_exact_single_rank_receipt(self):
         log = "GLM mesh lane mode=explicit requested=2 resolved=2 capacity=8 rank=5\n"
         smoke.verify_lane(log, 2, 5)
+        smoke.verify_lane(log.replace("capacity=8", "capacity=16"), 2, 5)
+        smoke.verify_lane("GLM mesh lane mode=explicit requested=15 resolved=15 capacity=16 rank=5\n", 15, 5)
         for wrong in (log.replace("explicit", "automatic"), log.replace("resolved=2", "resolved=1"),
-                      log.replace("rank=5", "rank=4"), log + log, ""):
+                      log.replace("rank=5", "rank=4"), log.replace("capacity=8", "capacity=2"),
+                      log.replace("capacity=8", "capacity=0"), log + log, ""):
             with self.assertRaises(ValueError):
                 smoke.verify_lane(wrong, 2, 5)
 
@@ -142,6 +145,15 @@ class SmokeReceipts(unittest.TestCase):
                 if child.poll() is None:
                     child.kill()
                     child.wait()
+
+    def test_shutdown_preserves_first_failure_and_records_exited_owner(self):
+        child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"], start_new_session=True)
+        child.wait()
+        receipt = {"status": "FAIL", "error": "residentd-6.log: CUDA context allocation failed"}
+        smoke.stop_owned([child], receipt)
+        self.assertEqual(receipt["error"], "residentd-6.log: CUDA context allocation failed")
+        self.assertEqual(receipt["status"], "FAIL")
+        self.assertEqual(receipt["shutdown_errors"], [f"owned daemon pid={child.pid}: exited before shutdown: 3"])
 
 
 class SmokePreparation(unittest.TestCase):
