@@ -456,15 +456,7 @@ static void SparkGlm52ServingDriverCompletion(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static uint32_t SparkGlm52ServingAvailableSubmissionCount(
-	const SparkGlm52ServingState *state)
-{
-	uint32_t available,index;
-	available = 0u;
-	for (index=0u; index<state->pipeline_slot_count; index++)
-		available += state->pending[index].common.active == 0u ? 1u : 0u;
-	return(available);
-}
+#include "sparkpipe/family/serving/spark_serving_available_submission_count.h"
 
 static void SparkGlm52ServingDestroy(void *adapter_state)
 {

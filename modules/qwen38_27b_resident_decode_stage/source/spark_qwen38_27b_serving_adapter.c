@@ -1952,33 +1952,7 @@ static SparkStatus SparkQwen38_27bServingResolvePrefetch(void *adapter_state,con
 	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
 
-static SparkStatus SparkQwen38_27bServingResetControl(
-	SparkQwen38_27bServingState *state,
-	uint64_t control_generation)
-{
-	SparkModelDriverAdmissionRequest request = {0};
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkQwen38_27bServingQuiesce(state,UINT64_MAX);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.control_generation = control_generation;
-	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
-	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
-		status = SPARK_STATUS_VALIDATION_FAILED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
-		state->quiescing = 0u;
-	}
-	return(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset_control_typed.h"
 
 static SparkStatus SparkQwen38_27bServingReset(
 	void *adapter_state,

@@ -375,27 +375,6 @@ static void SparkLagunaServingDriverCompletion(
 
 #include "sparkpipe/family/serving/spark_serving_reserve_pending.h"
 
-static void SparkLagunaServingDestroy(void *adapter_state)
-{
-	SparkLagunaServingState *state;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	state = (SparkLagunaServingState *)adapter_state;
-	if ( state == 0 )
-		return;
-	if ( SparkLagunaServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		return;
-	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
-	{
-		memset(&snapshot,0,sizeof(snapshot));
-		if ( state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot) != SPARK_STATUS_OK || snapshot.active_submission_count != 0u )
-			return;
-	}
-	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
-		state->driver.interface->destroy(state->driver_instance);
-	SparkUnloadModelDriver(&state->driver);
-	free(state);
-}
-
 #include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
 
 static SparkStatus SparkLagunaServingLoadDriver(
@@ -454,6 +433,8 @@ static SparkStatus SparkLagunaServingValidateConfiguration(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/serving/spark_serving_destroy_laguna.h"
 
 static SparkStatus SparkLagunaServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
