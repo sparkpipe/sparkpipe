@@ -421,17 +421,6 @@ static uint64_t SparkLingModuleExpectedLayerBits(
 	return(mask);
 }
 
-static uint64_t SparkLingModuleExpectedGlobalBits(const SparkLingModuleState *state)
-{
-	uint64_t mask;
-	mask = 0u;
-	if ( state->owns_embedding != 0u )
-		mask |= UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		mask |= (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM) | (UINT64_C(1) << SPARK_LING_STAGEPACK_TENSOR_LM_HEAD);
-	return(mask);
-}
-
 static uint64_t SparkLingModuleExpectedMtpBits(const SparkLingModuleState *state)
 {
 	return(state->pack_has_mtp != 0u ?
@@ -1957,3 +1946,5 @@ static SparkStatus SparkLingInitializeState(
 	*state_out = state;
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_expected_global_bits_glm.h"

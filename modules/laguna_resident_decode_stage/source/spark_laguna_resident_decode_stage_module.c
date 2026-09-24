@@ -273,6 +273,8 @@ static SparkStatus SparkLagunaAllocateBytes(
 
 #include "sparkpipe/family/module/spark_module_validate_frame_buffers.h"
 
+#include "sparkpipe/family/module/spark_module_load_sequence_continuity.h"
+
 static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
 {
 	const SparkLagunaManifestContext *context = (const SparkLagunaManifestContext *)opaque;
@@ -495,17 +497,6 @@ static SparkStatus SparkLagunaModuleBindLayer(
 	if ( entry->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT )
 		return(SPARK_STATUS_OK);
 	return(SparkLagunaModuleBindLayerWeights(&state->layers[entry->layer_index - state->first_layer_index],entry,payload,scale));
-}
-
-static uint64_t SparkLagunaModuleExpectedGlobalBits(const SparkLagunaModuleState *state)
-{
-	uint64_t bits;
-	bits = 0u;
-	if ( state->owns_embedding != 0u )
-		bits |= UINT64_C(1) << SPARK_LAGUNA_STAGEPACK_TENSOR_EMBEDDING;
-	if ( state->owns_final_head != 0u )
-		bits |= (UINT64_C(1) << SPARK_LAGUNA_STAGEPACK_TENSOR_FINAL_NORM) | (UINT64_C(1) << SPARK_LAGUNA_STAGEPACK_TENSOR_LM_HEAD);
-	return(bits);
 }
 
 static uint64_t SparkLagunaModuleExpectedLayerBits(
@@ -966,33 +957,6 @@ static SparkStatus SparkLagunaValidateRoundMajor(
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
-}
-
-static SparkStatus SparkLagunaLoadSequenceContinuity(const SparkLagunaModuleState *state,const SparkLagunaResidentDecodeStageBatchView *batch,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
-{
-	const SparkKvLaneTransaction *owner;
-	uint32_t lane,slot;
-	if ( state->kv_lane_transactions == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-	{
-		slot = batch->row_resident_slots[lane];
-		if ( slot >= state->resident_sequence_capacity )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
-		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
-		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
-		owner = &state->kv_lane_transactions[slot];
-		if ( SparkLagunaPrefixRestorePending(owner) != 0u )
-		{
-			if ( owner->phase != SPARK_KV_LANE_TRANSACTION_COMMITTED || owner->lane.sequence_id != batch->row_sequence_ids[lane] || owner->lane.sequence_position != batch->row_positions[lane] )
-				SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-			bound[lane] = 1u;
-			sequence_ids[lane] = owner->lane.sequence_id;
-			next_positions[lane] = owner->lane.sequence_position;
-		}
-	}
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkLagunaValidateSequenceContinuity(
@@ -2247,3 +2211,5 @@ static SparkStatus SparkLagunaInitializeState(
 }
 
 #include "sparkpipe/family/module/spark_module_expected_mtp_bits.h"
+
+#include "sparkpipe/family/module/spark_module_expected_global_bits_glm.h"
