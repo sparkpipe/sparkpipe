@@ -98,7 +98,6 @@
 4 modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu: memcpy uses a direct size/count literal
 1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: memcpy uses a direct size/count literal
-2 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_stagepack_format.h: GLM model literal 6144 is outside the model contract
 18 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
 11 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier

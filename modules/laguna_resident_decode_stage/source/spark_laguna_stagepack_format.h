@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_laguna_model.h"
 #include "sparkpipe/spark_weight_codec.h"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
+
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_LAGUNA_STAGEPACK_MAGIC UINT32_C(0x334C4147)
 #define SPARK_LAGUNA_STAGEPACK_FORMAT_VERSION 1u
@@ -109,52 +114,10 @@ typedef struct SparkLagunaStagePackTensorShape
 #define SPARK_LAGUNA_STAGEPACK_HEADER_BYTES ((uint32_t)sizeof(SparkLagunaStagePackHeader))
 #define SPARK_LAGUNA_STAGEPACK_ENTRY_BYTES ((uint32_t)sizeof(SparkLagunaStagePackEntry))
 
-static inline uint32_t SparkLagunaStagePackKindIsGlobal(uint32_t tensor_kind)
-{
-    return(tensor_kind <= SPARK_LAGUNA_STAGEPACK_TENSOR_LM_HEAD ? 1u : 0u);
-}
-
 static inline uint32_t SparkLagunaStagePackKindIsAttention(uint32_t tensor_kind)
 {
     return(tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_FUSED_QKV &&
            tensor_kind <= SPARK_LAGUNA_STAGEPACK_TENSOR_K_NORM ? 1u : 0u);
-}
-
-static inline uint32_t SparkLagunaStagePackKindIsDense(uint32_t tensor_kind)
-{
-    return(tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_GATE_UP ||
-           tensor_kind == SPARK_LAGUNA_STAGEPACK_TENSOR_DENSE_DOWN ? 1u : 0u);
-}
-
-static inline uint32_t SparkLagunaStagePackKindIsRouted(uint32_t tensor_kind)
-{
-    return(tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_ROUTER &&
-           tensor_kind <= SPARK_LAGUNA_STAGEPACK_TENSOR_SHARED_DOWN ? 1u : 0u);
-}
-
-static inline uint32_t SparkLagunaStagePackLayerIsDense(uint32_t layer_index)
-{
-    return(layer_index < SPARK_LAGUNA_MODEL_FIRST_ROUTED_LAYER ? 1u : 0u);
-}
-
-static inline void SparkLagunaStagePackShapeBf16(SparkLagunaStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-    shape->payload_type = SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16;
-    shape->weight_codec = SPARK_WEIGHT_CODEC_BF16;
-    shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-    shape->group_count = groups;
-    shape->rows = rows;
-    shape->columns = columns;
-}
-
-static inline void SparkLagunaStagePackShapeF32(SparkLagunaStagePackTensorShape *shape,uint32_t groups,uint32_t rows,uint32_t columns)
-{
-    shape->payload_type = SPARK_LAGUNA_STAGEPACK_PAYLOAD_F32;
-    shape->weight_codec = SPARK_WEIGHT_CODEC_NONE;
-    shape->scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_NONE;
-    shape->group_count = groups;
-    shape->rows = rows;
-    shape->columns = columns;
 }
 
 static inline uint32_t SparkLagunaStagePackTpShardsRows(uint32_t tensor_kind)
@@ -186,16 +149,6 @@ static inline uint32_t SparkLagunaStagePackTpShardsCols(uint32_t tensor_kind)
     default:
         return(0u);
     }
-}
-
-static inline uint32_t SparkLagunaStagePackHeaderTpDegree(const SparkLagunaStagePackHeader *header)
-{
-    return(header != 0 ? header->reserved0 : 0u);
-}
-
-static inline uint32_t SparkLagunaStagePackHeaderTpRank(const SparkLagunaStagePackHeader *header)
-{
-    return(header != 0 ? header->reserved1 : 0u);
 }
 
 typedef struct SparkLagunaStagePackShapeSpec
@@ -248,6 +201,8 @@ static const SparkLagunaStagePackShapeSpec SPARK_LAGUNA_STAGEPACK_SHAPE_TABLE[SP
         {SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16, SPARK_WEIGHT_CODEC_BF16, SPARK_WEIGHT_SCALE_ENCODING_NONE, 1u, SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION, SPARK_LAGUNA_MODEL_MOE_INTERMEDIATE_DIMENSION, 0u},
 };
 
+#include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
+
 static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {
     if ( SparkLagunaStagePackKindIsDense(tensor_kind) !=
@@ -257,6 +212,8 @@ static inline int32_t SparkLagunaStagePackCheckLayerKind(uint32_t layer_index,ui
         return(-4);
     return(0);
 }
+
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_bf16.h"
 
 static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkLagunaStagePackTensorShape *shape)
 {
@@ -331,20 +288,4 @@ static inline int32_t SparkLagunaStagePackExpectedShape(uint32_t tensor_kind,uin
     return(0);
 }
 
-static inline uint64_t SparkLagunaStagePackExpectedPayloadBytes(const SparkLagunaStagePackTensorShape *shape)
-{
-    uint64_t elements;
-    if ( shape == 0 || shape->group_count == 0u || shape->rows == 0u || shape->columns == 0u || shape->group_count > UINT64_MAX / shape->rows || (uint64_t)shape->group_count * shape->rows > UINT64_MAX / shape->columns )
-        return(0u);
-    elements = (uint64_t)shape->group_count * shape->rows * shape->columns;
-    if ( shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_BF16 )
-        return(elements > UINT64_MAX / 2u ? 0u : elements * 2u);
-    if ( shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_F32 || shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_U32 )
-        return(elements > UINT64_MAX / 4u ? 0u : elements * 4u);
-    return(shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecPayloadBytes(shape->weight_codec,(uint64_t)shape->group_count * shape->rows,shape->columns) : 0u);
-}
-
-static inline uint64_t SparkLagunaStagePackExpectedScaleBytes(const SparkLagunaStagePackTensorShape *shape)
-{
-    return(shape != 0 && shape->payload_type == SPARK_LAGUNA_STAGEPACK_PAYLOAD_PACKED_WEIGHT ? SparkWeightCodecScaleBytes(shape->weight_codec,shape->group_count,shape->rows,shape->columns) : 0u);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_shape_f32.h"

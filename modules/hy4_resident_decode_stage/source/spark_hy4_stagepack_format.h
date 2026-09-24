@@ -5,13 +5,11 @@
 #include "sparkpipe/spark_hy4_model.h"
 #include "sparkpipe/spark_stagepack_format.h"
 #include "sparkpipe/spark_status.h"
+#define SPARK_FAMILY_CAMEL Hy4
+#define SPARK_FAMILY_UPPER HY4
+#define SPARK_FAMILY_LOWER hy4
 
-
-
-
-
-
-
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_HY4_STAGEPACK_MAGIC 0x50533448u
 #define SPARK_HY4_STAGEPACK_FORMAT_VERSION 1u
@@ -154,8 +152,6 @@ static const SparkStagePackGeometryTable SparkHy4StagePackGeometry =
 	.gdn_head_value_dimension = 0u,
 	.gdn_conv_kernel = 0u
 };
-
-
 
 static inline int32_t SparkHy4StagePackShapeGlobal(uint32_t tensor_kind,
 	SparkHy4StagePackTensorShape *shape)
@@ -322,8 +318,6 @@ static inline int32_t SparkHy4StagePackTensorShapeOf(uint32_t tensor_kind,
 	return -1;
 }
 
-
-
 static inline uint32_t SparkHy4StagePackNaturalFormat(uint32_t tensor_kind)
 {
 	switch ( tensor_kind )
@@ -413,21 +407,7 @@ static inline int32_t SparkHy4StagePackResolvedShape(uint32_t tensor_kind,
 	return 0;
 }
 
-static inline uint32_t SparkHy4StagePackExpectedTensorCount(
-	uint32_t first_layer_index, uint32_t moe_layer_count)
-{
-	
-
-
-
-	uint32_t tensors = moe_layer_count * 33u;
-	if ( first_layer_index == 0u )
-		tensors += 1u;
-	if ( first_layer_index + moe_layer_count ==
-		SPARK_HY4_MODEL_LAYER_COUNT )
-		tensors += 5u;
-	return tensors;
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_tensor_count.h"
 
 static inline void SparkHy4StagePackExpectedGeometry(
 	SparkHy4StagePackHeader *header, uint32_t moe_layer_count)
@@ -467,11 +447,4 @@ static inline void SparkHy4StagePackExpectedGeometry(
 
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkHy4StagePackHeader);
 
-static inline int32_t SparkHy4StagePackHeaderMatches(
-	const SparkHy4StagePackHeader *file_header,
-	const SparkHy4StagePackHeader *expected)
-{
-	return SparkStagePackHeaderMatches(
-		(const SparkStagePackHeaderCommon *)file_header,
-		(const SparkStagePackHeaderCommon *)expected);
-}
+#include "sparkpipe/family/stagepack/spark_stagepack_header_matches.h"
