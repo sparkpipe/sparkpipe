@@ -625,20 +625,6 @@ SparkStatus SparkMinimaxModuleValidationView(const SparkMinimaxModuleState *stat
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkMinimaxModuleDescribe(void *module_state,SparkStageModuleLifecycle *lifecycle)
-{
-	SparkMinimaxModuleState *state = (SparkMinimaxModuleState *)module_state;
-	lifecycle->module_tag = SPARK_MINIMAX_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 #include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
 
 static SparkStatus SparkMinimaxModuleInitializeTpCollective(SparkMinimaxModuleState *state)
@@ -1315,14 +1301,6 @@ static SparkStatus SparkMinimaxModuleAdmit(
 	SPARK_RETURN(status);
 }
 
-static void SparkMinimaxModuleSnapshotExtend(
-	void *module_state,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkMinimaxModuleState *state = (SparkMinimaxModuleState *)module_state;
-	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_MINIMAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-}
-
 static SparkStatus SparkMinimaxModuleStateTeardown(void *module_state)
 {
 	SparkMinimaxModuleState *state = (SparkMinimaxModuleState *)module_state;
@@ -1338,14 +1316,6 @@ static SparkStatus SparkMinimaxModuleStateTeardown(void *module_state)
 	free(state->lane_block_counts);
 	free(state->lane_context_tokens);
 	SparkStageModuleLedgerRelease(&state->ledger);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkMinimaxModuleInitializeGate(void)
-{
-	uint32_t allow_unqualified_execution = 0u;
-	if ( SparkStageModuleEnvironmentUnsigned(SPARK_MINIMAX_MODULE_TAG,"SPARK_MINIMAX_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
-		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1401,6 +1371,12 @@ static void SparkMinimaxModuleReportReady(void *module_state)
 	SparkMinimaxModuleState *state = (SparkMinimaxModuleState *)module_state;
 	(void)state;
 }
+
+#include "sparkpipe/family/module/spark_module_snapshot_extend.h"
+
+#include "sparkpipe/family/module/spark_module_describe.h"
+
+#include "sparkpipe/family/module/spark_module_initialize_gate.h"
 
 static const SparkStageModuleLifecycleOps SparkMinimaxModuleLifecycle =
 {

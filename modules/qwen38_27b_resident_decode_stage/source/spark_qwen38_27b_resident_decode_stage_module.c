@@ -3073,16 +3073,6 @@ static SparkStatus SparkQwen38_27bModuleAdmit(
     return status;
 }
 
-static void SparkQwen38_27bModuleSnapshotExtend(
-    void *module_state,
-    SparkModelDriverRuntimeSnapshot *snapshot)
-{
-    SparkQwen38_27bModuleState *state;
-
-    state = (SparkQwen38_27bModuleState *)module_state;
-    snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-}
-
 static SparkStatus SparkQwen38_27bModuleStateTeardown(void *module_state)
 {
     SparkQwen38_27bModuleState *state;
@@ -3115,42 +3105,6 @@ static SparkStatus SparkQwen38_27bModuleStateTeardown(void *module_state)
         free(state->dspark_weights.selector_hidden_proj_host);
     SparkStageKvClientClose(&state->kv_client);
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38_27bModuleInitializeGate(void)
-{
-    uint32_t allow_unqualified_execution;
-
-    allow_unqualified_execution = 0u;
-    if (SparkStageModuleEnvironmentUnsigned(
-            SPARK_QWEN38_27B_MODULE_TAG,
-            "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
-            1u,
-            1u,
-            &allow_unqualified_execution) != SPARK_STATUS_OK ||
-        allow_unqualified_execution != 1u)
-    {
-        SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
-    }
-    return SPARK_STATUS_OK;
-}
-
-static void SparkQwen38_27bModuleDescribe(
-    void *module_state,
-    SparkStageModuleLifecycle *lifecycle)
-{
-    SparkQwen38_27bModuleState *state;
-
-    state = (SparkQwen38_27bModuleState *)module_state;
-    lifecycle->module_tag = SPARK_QWEN38_27B_MODULE_TAG;
-    lifecycle->ledger = &state->ledger;
-    lifecycle->slot_states = state->slot_states;
-    lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-    lifecycle->submitted_count = &state->submitted_count;
-    lifecycle->completed_count = &state->completed_count;
-    lifecycle->rejected_count = &state->rejected_count;
-    lifecycle->failed_count = &state->failed_count;
-    lifecycle->tokens_emitted = &state->tokens_emitted;
 }
 
 static SparkStatus SparkQwen38_27bModulePrepare(
@@ -3267,6 +3221,12 @@ static void SparkQwen38_27bModuleReportReady(void *module_state)
         (double)state->ledger.device_bytes_resident /
             (1024.0 * 1024.0 * 1024.0));
 }
+
+#include "sparkpipe/family/module/spark_module_snapshot_extend.h"
+
+#include "sparkpipe/family/module/spark_module_describe.h"
+
+#include "sparkpipe/family/module/spark_module_initialize_gate.h"
 
 static const SparkStageModuleLifecycleOps SparkQwen38_27bModuleLifecycle =
 {

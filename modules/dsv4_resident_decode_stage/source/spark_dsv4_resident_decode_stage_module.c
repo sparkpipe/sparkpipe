@@ -6058,24 +6058,6 @@ static SparkStatus SparkDsv4ModuleStateTeardown(void *module_state)
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkDsv4ModuleDescribe(
-	void *module_state,
-	SparkStageModuleLifecycle *lifecycle)
-{
-	SparkDsv4ModuleState *state;
-
-	state = (SparkDsv4ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_DSV4_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 static SparkStatus SparkDsv4ModulePrepare(
 	void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
@@ -6155,6 +6137,8 @@ static void SparkDsv4ModuleReportReady(void *module_state)
 		(1024.0 * 1024.0 * 1024.0),(double)state->ledger.device_bytes_resident /
 		(1024.0 * 1024.0 * 1024.0));
 }
+
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkDsv4ModuleLifecycle =
 {

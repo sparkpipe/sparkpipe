@@ -15,17 +15,11 @@
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "spark_hy4_stagepack_format.h"
+#define SPARK_FAMILY_CAMEL Hy4
+#define SPARK_FAMILY_UPPER HY4
+#define SPARK_FAMILY_LOWER hy4
 
-
-
-
-
-
-
-
-
-
-
+#include "sparkpipe/family/spark_family.h"
 
 #define SPARK_HY4_MODULE_TAG "hy4_stage"
 
@@ -98,22 +92,6 @@ static SparkStatus SparkHy4ModuleConfigure(void *module_state,
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkHy4ModuleDescribe(void *module_state,
-	SparkStageModuleLifecycle *lifecycle)
-{
-	SparkHy4ModuleState *state;
-	state = (SparkHy4ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_HY4_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 static SparkStatus SparkHy4ModulePrepare(void *module_state,
 	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services)
@@ -152,6 +130,8 @@ static SparkStatus SparkHy4ModuleAdmit(void *module_state,
 	SparkStageModuleAdmissionDecisionAccept(decision);
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkHy4ModuleLifecycle =
 {

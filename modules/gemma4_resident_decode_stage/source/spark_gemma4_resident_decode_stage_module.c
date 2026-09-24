@@ -599,20 +599,6 @@ static SparkStatus SparkGemma4ModuleInitializeGate(void)
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkGemma4ModuleDescribe(void *module_state, SparkStageModuleLifecycle *lifecycle)
-{
-	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	lifecycle->module_tag = SPARK_GEMMA4_MODULE_TAG;
-	lifecycle->ledger = &state->ledger;
-	lifecycle->slot_states = state->slot_states;
-	lifecycle->pipeline_slot_count = state->pipeline_slot_count;
-	lifecycle->submitted_count = &state->submitted_count;
-	lifecycle->completed_count = &state->completed_count;
-	lifecycle->rejected_count = &state->rejected_count;
-	lifecycle->failed_count = &state->failed_count;
-	lifecycle->tokens_emitted = &state->tokens_emitted;
-}
-
 extern cudaError_t SparkGemma4ConfigureCudaKernels(void);
 extern cudaError_t SparkGemma4LaunchEmbeddingGatherShardedScaled(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
 extern cudaError_t SparkGemma4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
@@ -758,14 +744,6 @@ static SparkStatus SparkGemma4ModuleAdmit(
 	return(status);
 }
 
-static void SparkGemma4ModuleSnapshotExtend(
-	void *module_state,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	snapshot->kv_token_capacity = (uint64_t)state->kv_block_count * SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-}
-
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
@@ -789,6 +767,10 @@ static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
 	}
 	return(SPARK_STATUS_OK);
 }
+
+#include "sparkpipe/family/module/spark_module_snapshot_extend.h"
+
+#include "sparkpipe/family/module/spark_module_describe.h"
 
 static const SparkStageModuleLifecycleOps SparkGemma4ModuleLifecycle =
 {
