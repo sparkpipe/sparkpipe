@@ -52,6 +52,8 @@ int main(void)
         assert(capacity(slot.delta_bf16) >= full);
         assert(capacity(slot.mlp_down_bf16) >= full);
         assert(capacity(slot.branch_bf16) >= full);
+        assert(capacity(slot.attn_head_output_bf16) >= rows * SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / degree * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
+        assert(capacity(slot.attn_head_output_bf16) >= rows * SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / degree * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
         for (unsigned i = 0; i < count; ++i) free(allocations[i]);
         count = 0;
         cudaStreamDestroy(slot.cuda_stream);
@@ -61,10 +63,13 @@ int main(void)
 ''')
             paths = ['.', 'include', 'src', 'runtime', 'tests/cuda_stub', 'model-families/common/include', 'model-families/gemma4/include', 'model-families/gemma4/include/sparkpipe', 'modules/gemma4_resident_decode_stage/include', 'modules/gemma4_resident_decode_stage/source']
             command = ['cc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DARWIN_C_SOURCE', '-ffunction-sections', '-fdata-sections', *['-I'+str(ROOT/p) for p in paths], str(source), 'runtime/stage_module_common.c', 'tests/cuda_stub/cuda_runtime_stub.c', 'build/libsparkpipe_runtime.a', 'build/libsparkpipe_core.a', '-pthread', '-lm', '-Wl,-dead_strip' if os.uname().sysname == 'Darwin' else '-Wl,--gc-sections', '-o', str(Path(temp)/'test')]
-            built = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
-            self.assertEqual(built.returncode, 0, built.stderr)
-            tested = subprocess.run([str(Path(temp)/'test')], text=True, capture_output=True)
-            self.assertEqual(tested.returncode, 0, tested.stdout+tested.stderr)
+            for flavor, flags in [('dense', []), ('moe', ['-DSPARK_GEMMA4_MOE_BUILD=1', '-DSPARK_GEMMA4_MODEL_MOE_BLOCK=1'])]:
+                with self.subTest(flavor=flavor):
+                    built = subprocess.run(command + flags, cwd=ROOT, text=True, capture_output=True)
+                    self.assertEqual(built.returncode, 0, built.stderr)
+                    tested = subprocess.run([str(Path(temp)/'test')], text=True, capture_output=True)
+                    self.assertEqual(tested.returncode, 0, tested.stdout+tested.stderr)
+
 
 
 if __name__ == '__main__':

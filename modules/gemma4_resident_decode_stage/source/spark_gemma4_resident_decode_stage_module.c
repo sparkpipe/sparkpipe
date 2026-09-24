@@ -908,7 +908,7 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,full_kv_bytes,&slot->full_value_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,sliding_query_bytes,&slot->attn_head_output_bf16);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,full_query_bytes > sliding_query_bytes ? full_query_bytes : sliding_query_bytes,&slot->attn_head_output_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->attn_output_bf16);
 	if ( status == SPARK_STATUS_OK )
