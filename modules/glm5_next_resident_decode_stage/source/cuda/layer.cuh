@@ -15,6 +15,11 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
+#define SPARK_FAMILY_CAMEL Glm5Next
+#define SPARK_FAMILY_UPPER GLM5_NEXT
+#define SPARK_FAMILY_LOWER glm5_next
+
+#include "sparkpipe/family/spark_family.h"
 
 struct Glm5NextKv
 {
@@ -377,57 +382,7 @@ static_assert(
     "the firmware's split-partials sizing must match the kernel's "
     "partition cap");
 
-static int32_t Glm5NextLaunchBf16Linear(
-    const uint16_t *activation_bf16,
-    const void *weight_bf16,
-    uint16_t *output_bf16,
-    const uint32_t *row_offset,
-    uint32_t *tile_prefix,
-    uint32_t rows,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t output_row_stride,
-    uint32_t output_column_offset,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    LmGemmArguments gemm;
-
-    if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
-        row_offset == 0 || tile_prefix == 0 || rows == 0u ||
-        input_dimension == 0u || output_dimension == 0u ||
-        multiprocessors == 0u)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = row_offset;
-    gemm.group_tile_prefix = tile_prefix;
-    gemm.output_bf16 = output_bf16;
-    gemm.output_row_stride = output_row_stride;
-    gemm.output_column_offset = output_column_offset;
-    return LmGemmLaunch<
-        LmBf16Format,
-        GLM5_NEXT_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        GLM5_NEXT_LAYER_STAGES,
-        GLM5_NEXT_LAYER_WARPS>(
-            &gemm,
-            activation_bf16,
-            weight_bf16,
-            rows,
-            rows,
-            1u,
-            1u,
-            input_dimension,
-            output_dimension,
-            multiprocessors,
-            false,
-            stream);
-}
+#include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
 static int32_t Glm5NextLayerIndexer(
     const Glm5NextLayerBuffers *buffers,
@@ -633,7 +588,6 @@ static int32_t Glm5NextLayerIndexer(
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
 }
-
 
 static int Glm5NextDsaProbeVecLayer(void)
 {
@@ -961,40 +915,6 @@ static int32_t Glm5NextLayerAttention(
     return status;
 }
 
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void Glm5NextSplitFusedProjectionsKernel(
-    const uint16_t *__restrict__ qkvb_bf16,
-    uint16_t *__restrict__ query_bf16,
-    uint16_t *__restrict__ key_bf16,
-    uint16_t *__restrict__ value_bf16,
-    uint16_t *__restrict__ beta_bf16,
-    uint32_t rows,
-    uint32_t qk_dim,
-    uint32_t v_dim,
-    uint32_t heads,
-    uint32_t fused_rows)
-{
-    uint32_t row = blockIdx.x, index;
-    const uint32_t k_offset = qk_dim;
-    const uint32_t v_offset = 2u * qk_dim;
-    const uint32_t beta_offset = v_offset + v_dim;
-    uint64_t fused = (uint64_t)row * fused_rows;
-    uint64_t dense = (uint64_t)row * qk_dim;
-    if (row >= rows)
-        return;
-    for (index = threadIdx.x; index < qk_dim; index += THREADS)
-        query_bf16[dense + index] = qkvb_bf16[fused + index];
-    for (index = threadIdx.x; index < qk_dim; index += THREADS)
-        key_bf16[dense + index] = qkvb_bf16[fused + k_offset + index];
-    for (index = threadIdx.x; index < v_dim; index += THREADS)
-        value_bf16[((uint64_t)row * v_dim) + index] =
-            qkvb_bf16[fused + v_offset + index];
-    for (index = threadIdx.x; index < heads; index += THREADS)
-        beta_bf16[((uint64_t)row * heads) + index] =
-            qkvb_bf16[fused + beta_offset + index];
-}
-
 template<uint32_t THREADS, uint32_t LOW_RANK>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextSplitDecayGateDownKernel(
@@ -1014,16 +934,6 @@ void Glm5NextSplitDecayGateDownKernel(
             fused_bf16[((uint64_t)row * 2u * LOW_RANK) + LOW_RANK + index];
     }
 }
-
-static int32_t Glm5NextDeltaRuleOptIn(uint32_t shared_bytes)
-{
-    return(LmKernelSharedMemoryOptIn(
-        (const void *)LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,
-                                        GLM5_NEXT_KDA_KEY_DIM,
-                                        GLM5_NEXT_KDA_VALUE_DIM>,
-        shared_bytes));
-}
-
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -1125,7 +1035,6 @@ static void Glm5NextProbeBf16Floats(cudaStream_t stream,const uint16_t *device,u
             (double)probe_s[2],(double)probe_s[3],(unsigned long long)probe_bits); \
     } while (0)
 
-
 static int Glm5NextKdaProbeVecLayer(const Glm5NextLayerBuffers *buffers)
 {
     static int vec_layer = -1;
@@ -1195,6 +1104,8 @@ static int32_t Glm5NextKdaReplayRecord(
     }
     return error == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
+
+#include "sparkpipe/family/glm/spark_glm_layer_kda_projections.cuh"
 
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
@@ -1915,7 +1826,6 @@ static int32_t Glm5NextHcPost(
     return LM_LAUNCH_OK;
 }
 
-
 static int32_t Glm5NextLayerDenseMlp(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -2045,42 +1955,6 @@ static int32_t Glm5NextLayerDenseMlp(
     return(status);
 }
 
-template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoeValidate(
-    const Glm5NextLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t packed_rows)
-{
-    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-
-    static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
-        "GLM 5.2 routed experts require an explicit compressed codec");
-    static_assert(GLM5_NEXT_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
-        GLM5_NEXT_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u,
-        "GLM 5.2 expert dimensions must contain complete codec scale groups");
-
-    if (buffers == 0 || rows == 0u ||
-        packed_rows != rows * GLM5_NEXT_TOP_K ||
-        buffers->attention_out_bf16 == 0 || buffers->residual_bf16 == 0 ||
-        buffers->mlp_norm_weight == 0 || buffers->normed_bf16 == 0 ||
-        buffers->router_weight == 0 || buffers->router_logits == 0 ||
-        buffers->router_correction_bias == 0 ||
-        buffers->route_expert == 0 || buffers->route_weight == 0 ||
-        buffers->route_source_token == 0 || buffers->route_packed_row == 0 ||
-        buffers->group_row_offset == 0 ||
-        buffers->group_tile_prefix_w1 == 0 ||
-        buffers->group_tile_prefix_w2 == 0 ||
-        buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
-        buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
-        buffers->shared_gate_up_weight == 0 ||
-        buffers->shared_down_weight == 0 || buffers->shared_out_bf16 == 0)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-
-    return LM_LAUNCH_OK;
-}
-
 __global__ __launch_bounds__(GLM5_NEXT_LAYER_THREADS, 1)
 static void Glm5NextExpertCoverKernel(
     uint32_t *route_expert,
@@ -2119,6 +1993,23 @@ static void Glm5NextExpertCoverKernel(
     route_expert[index] = fallback;
     *expert_miss = 1u;
 }
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeRoute(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream);
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeExperts(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream);
+
+#include "sparkpipe/family/glm/spark_glm_layer_moe.cuh"
 
 template<uint32_t ExpertCodec>
 static int32_t Glm5NextLayerMoeRoute(
@@ -2407,19 +2298,6 @@ static int32_t Glm5NextLayerMoeExperts(
 
 // Resident execution retains the same submission order. Lazy execution can
 // acquire/import the routed working set between these two calls on this stream.
-template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoe(
-    const Glm5NextLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    int32_t status = Glm5NextLayerMoeRoute<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    return Glm5NextLayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
-}
 
 static int32_t Glm5NextHead(
     const Glm5NextLayerBuffers *buffers,

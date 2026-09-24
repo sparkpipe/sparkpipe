@@ -13,6 +13,11 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
 #include "modules/ling_resident_decode_stage/source/cuda/config.h"
+#define SPARK_FAMILY_CAMEL Ling
+#define SPARK_FAMILY_UPPER LING
+#define SPARK_FAMILY_LOWER ling
+
+#include "sparkpipe/family/spark_family.h"
 
 struct LingKv
 {
@@ -168,57 +173,7 @@ static_assert(
     "the firmware's split-partials sizing must match the kernel's "
     "partition cap");
 
-static int32_t LingLaunchBf16Linear(
-    const uint16_t *activation_bf16,
-    const void *weight_bf16,
-    uint16_t *output_bf16,
-    const uint32_t *row_offset,
-    uint32_t *tile_prefix,
-    uint32_t rows,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t output_row_stride,
-    uint32_t output_column_offset,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    LmGemmArguments gemm;
-
-    if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
-        row_offset == 0 || tile_prefix == 0 || rows == 0u ||
-        input_dimension == 0u || output_dimension == 0u ||
-        multiprocessors == 0u)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = row_offset;
-    gemm.group_tile_prefix = tile_prefix;
-    gemm.output_bf16 = output_bf16;
-    gemm.output_row_stride = output_row_stride;
-    gemm.output_column_offset = output_column_offset;
-    return LmGemmLaunch<
-        LmBf16Format,
-        LING_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        LING_LAYER_STAGES,
-        LING_LAYER_WARPS>(
-            &gemm,
-            activation_bf16,
-            weight_bf16,
-            rows,
-            rows,
-            1u,
-            1u,
-            input_dimension,
-            output_dimension,
-            multiprocessors,
-            false,
-            stream);
-}
+#include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
 static int32_t LingLayerAttention(
     const LingLayerBuffers *buffers,
@@ -450,49 +405,7 @@ static int32_t LingLayerAttention(
         stream);
 }
 
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void LingSplitFusedProjectionsKernel(
-    const uint16_t *__restrict__ qkvb_bf16,
-    uint16_t *__restrict__ query_bf16,
-    uint16_t *__restrict__ key_bf16,
-    uint16_t *__restrict__ value_bf16,
-    uint16_t *__restrict__ beta_bf16,
-    uint32_t rows,
-    uint32_t qk_dim,
-    uint32_t v_dim,
-    uint32_t heads,
-    uint32_t fused_rows)
-{
-    uint32_t row = blockIdx.x, index;
-    const uint32_t k_offset = qk_dim;
-    const uint32_t v_offset = 2u * qk_dim;
-    const uint32_t beta_offset = v_offset + v_dim;
-    uint64_t fused = (uint64_t)row * fused_rows;
-    uint64_t dense = (uint64_t)row * qk_dim;
-    if (row >= rows)
-        return;
-    for (index = threadIdx.x; index < qk_dim; index += THREADS)
-        query_bf16[dense + index] = qkvb_bf16[fused + index];
-    for (index = threadIdx.x; index < qk_dim; index += THREADS)
-        key_bf16[dense + index] = qkvb_bf16[fused + k_offset + index];
-    for (index = threadIdx.x; index < v_dim; index += THREADS)
-        value_bf16[((uint64_t)row * v_dim) + index] =
-            qkvb_bf16[fused + v_offset + index];
-    for (index = threadIdx.x; index < heads; index += THREADS)
-        beta_bf16[((uint64_t)row * heads) + index] =
-            qkvb_bf16[fused + beta_offset + index];
-}
-
-static int32_t LingDeltaRuleOptIn(uint32_t shared_bytes)
-{
-    return(LmKernelSharedMemoryOptIn(
-        (const void *)LmDeltaRuleKernel<LING_LAYER_THREADS,
-                                        LING_KDA_KEY_DIM,
-                                        LING_KDA_VALUE_DIM>,
-        shared_bytes));
-}
-
+#include "sparkpipe/family/glm/spark_glm_layer_kda_projections.cuh"
 
 static int32_t LingLayerKda(
     const LingLayerBuffers *buffers,

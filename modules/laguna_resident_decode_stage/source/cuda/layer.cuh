@@ -15,6 +15,11 @@
 #include "sparkpipe/spark_laguna_resident_decode_stage_firmware.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/config.h"
 #include "modules/laguna_resident_decode_stage/source/cuda/launch_shape.h"
+#define SPARK_FAMILY_CAMEL Laguna
+#define SPARK_FAMILY_UPPER LAGUNA
+#define SPARK_FAMILY_LOWER laguna
+
+#include "sparkpipe/family/spark_family.h"
 
 using LagunaKv = LmKvGeometry<LAGUNA_KV_SLOT_BYTES,LAGUNA_KV_PAGE_SLOTS,true>;
 
@@ -120,58 +125,6 @@ struct LagunaLayerBuffers
 	const uint32_t *row_positions;
 };
 
-static inline int32_t LagunaLaunchBf16Linear(
-	const uint16_t *activation_bf16,
-	const void *weight_bf16,
-	uint16_t *output_bf16,
-	const uint32_t *row_offset,
-	uint32_t *tile_prefix,
-	uint32_t rows,
-	uint32_t input_dimension,
-	uint32_t output_dimension,
-	uint32_t output_row_stride,
-	uint32_t output_column_offset,
-	uint32_t multiprocessors,
-	cudaStream_t stream)
-{
-	LmGemmArguments gemm;
-
-	if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
-		row_offset == 0 || tile_prefix == 0 || rows == 0u ||
-		input_dimension == 0u || output_dimension == 0u ||
-		multiprocessors == 0u)
-	{
-		return LM_LAUNCH_ERR_SHAPE;
-	}
-
-	memset(&gemm, 0, sizeof(gemm));
-	gemm.scale_a = LmScaleTensorNone();
-	gemm.scale_b = LmScaleTensorNone();
-	gemm.group_row_offset = row_offset;
-	gemm.group_tile_prefix = tile_prefix;
-	gemm.output_bf16 = output_bf16;
-	gemm.output_row_stride = output_row_stride;
-	gemm.output_column_offset = output_column_offset;
-	return LmGemmLaunch<
-		LmBf16Format,
-		LAGUNA_LAYER_TILE_N,
-		LmBf16Format::kTileK,
-		LAGUNA_LAYER_STAGES,
-		LAGUNA_LAYER_WARPS>(
-			&gemm,
-			activation_bf16,
-			weight_bf16,
-			rows,
-			rows,
-			1u,
-			1u,
-			input_dimension,
-			output_dimension,
-			multiprocessors,
-			false,
-			stream);
-}
-
 static inline SparkRopePlanDomain LagunaRopeFullDomain(void)
 {
 	SparkRopePlanDomain domain;
@@ -184,6 +137,8 @@ static inline SparkRopePlanDomain LagunaRopeFullDomain(void)
 	domain.rotary_dimension = LAGUNA_ROPE_FULL_ROT;
 	return domain;
 }
+
+#include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
 static int32_t LagunaLayerAttention(
 	const LagunaLayerBuffers *buffers,
@@ -520,39 +475,21 @@ static int32_t LagunaLayerDenseMlp(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t LagunaLayerMoeValidate(
+static int32_t LagunaLayerMoeRoute(
 	const LagunaLayerBuffers *buffers,
 	uint32_t rows,
-	uint32_t packed_rows)
-{
-	using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+	uint32_t packed_rows,
+	uint32_t multiprocessors,
+	cudaStream_t stream);
+template<uint32_t ExpertCodec>
+static int32_t LagunaLayerMoeExperts(
+	const LagunaLayerBuffers *buffers,
+	uint32_t rows,
+	uint32_t packed_rows,
+	uint32_t multiprocessors,
+	cudaStream_t stream);
 
-	static_assert((ExpertFormat::kScaleGroup == 0u ||
-			(LAGUNA_HIDDEN % ExpertFormat::kScaleGroup == 0u &&
-			 LAGUNA_EXPERT_INTERMEDIATE % ExpertFormat::kScaleGroup == 0u)),
-		"laguna expert dimensions must contain complete codec scale groups");
-
-	if (buffers == 0 || rows == 0u ||
-		packed_rows != rows * LAGUNA_TOP_K ||
-		buffers->attention_out_bf16 == 0 || buffers->residual_bf16 == 0 ||
-		buffers->mlp_norm_weight == 0 || buffers->normed_bf16 == 0 ||
-		buffers->router_weight == 0 || buffers->router_logits == 0 ||
-		buffers->router_correction_bias == 0 ||
-		buffers->route_expert == 0 || buffers->route_weight == 0 ||
-		buffers->route_source_token == 0 || buffers->route_packed_row == 0 ||
-		buffers->group_row_offset == 0 ||
-		buffers->group_tile_prefix_w1 == 0 ||
-		buffers->group_tile_prefix_w2 == 0 ||
-		buffers->expert_out_bf16 == 0 || buffers->gate_up_bf16 == 0 ||
-		buffers->intermediate_bf16 == 0 || buffers->hidden_bf16 == 0 ||
-		buffers->shared_gate_up_weight == 0 ||
-		buffers->shared_down_weight == 0 || buffers->shared_out_bf16 == 0)
-	{
-		return LM_LAUNCH_ERR_SHAPE;
-	}
-
-	return LM_LAUNCH_OK;
-}
+#include "sparkpipe/family/glm/spark_glm_layer_moe.cuh"
 
 template<uint32_t ExpertCodec>
 static int32_t LagunaLayerMoeRoute(
@@ -826,20 +763,6 @@ static int32_t LagunaLayerMoeExperts(
 	return cudaPeekAtLastError() == cudaSuccess
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH;
-}
-
-template<uint32_t ExpertCodec>
-static int32_t LagunaLayerMoe(
-	const LagunaLayerBuffers *buffers,
-	uint32_t rows,
-	uint32_t packed_rows,
-	uint32_t multiprocessors,
-	cudaStream_t stream)
-{
-	int32_t status = LagunaLayerMoeRoute<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
-	if (status != LM_LAUNCH_OK)
-		return status;
-	return LagunaLayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
 }
 
 static int32_t LagunaHead(
