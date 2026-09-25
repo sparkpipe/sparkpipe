@@ -721,7 +721,7 @@ Prefill waves and single-row decode keep the old kernel.
 
 **Tests:**
 
-- `tests/host_cuda/glm_rows_kernels_host.cu` (host, run by
+- `tests/host_cuda/glm_rows_kernels_host.cu` (host, also covers the per-head projection rows kernel bitwise for 1–40 rows; run by
   `tests/test_glm5_next_rows_kernels_host.py`). It runs both kernels with
   real thread cooperation through `tests/host_cuda/lm_host_threads.cuh`,
   which uses one pthread per CUDA thread, barriers for `__syncthreads`, and
@@ -732,6 +732,39 @@ Prefill waves and single-row decode keep the old kernel.
     1, 2 and 4 heads, with selected positions and `0xffffffff` holes.
 - `make test-glm5-next-rows-kernels` (GPU): the same checks at full
   hidden size and vocabulary slice, plus `TIMING` lines for B8 and B256.
+
+## DSA per-head projections (after #1218)
+
+After #1218, the B256 harness showed `begin_head` at 8.2 ms but
+`attention_dsa` still at 52.9 ms. Reading the KV once costs about 12 ms at
+context 1024. Most of the gap is in two per-head projections that run
+before and after the attention core:
+
+- **Query absorb:** 256 → 512 per head, through `kv_b_key_transposed`.
+- **Value up:** 512 → 256 per head, through `kv_b_value`.
+
+Both ran on `LmPerHeadProjectKernel`, which has the same problem the head
+had: one block per (row, head), each thread walking a whole weight row with
+2-byte loads, and every row re-reading the head's 256 KB weight. At B256
+that is 2 × 256 × 4 × 256 KB × 11 layers, about 5.8 GB per step of
+uncoalesced reads.
+
+`LmPerHeadProjectRowsKernel` computes one 64-output tile per block, for one
+head and 16 rows (4 rows when the wave has at most 4). It shares its tile
+loop with the head rows kernel (`inference/kernels/rows_tile.cuh`):
+
+- coalesced 64 × 64 weight tiles through shared memory;
+- sequential `k` accumulation, so its output is **bitwise equal** to the
+  per-row kernel.
+
+Because the output is bitwise equal, it is used at every row count,
+including B1.
+
+The all-heads attention walk now issues two positions' latent loads per
+warp before it computes either of them. That doubles the memory-level
+parallelism at large B, where each SM holds only one 8-warp block
+(212 registers). Each warp still processes its positions in the same
+order, so the result is unchanged.
 
 ## Next steps, ordered by expected gain
 

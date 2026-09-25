@@ -4,6 +4,7 @@
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/rows_tile.cuh"
 #include <stdint.h>
 
 struct LmLowRankWeights
@@ -471,6 +472,38 @@ void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint1
 				* LmBf16ToFloat(weight_bf16[weight_base + (index * IN_DIM) + element]);
 		output_bf16[output_base + index] = LmFloatToBf16(total);
 	}
+}
+
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t ROWS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
+{
+	constexpr uint32_t per_thread = ROWS / (THREADS / LM_ROWS_TILE_N);
+	static_assert(IN_DIM % LM_ROWS_TILE_K == 0u && OUT_DIM % LM_ROWS_TILE_N == 0u && INPUT_OFFSET + IN_DIM <= INPUT_HEAD_DIM, "per-head projection tiles must divide the head");
+	__shared__ float weight_tile[LM_ROWS_TILE_N][LM_ROWS_TILE_K + 1u];
+	__shared__ float input_tile[ROWS][LM_ROWS_TILE_K];
+	const uint32_t first_index = blockIdx.x * LM_ROWS_TILE_N, head = blockIdx.y, first_row = blockIdx.z * ROWS, lane = threadIdx.x % LM_ROWS_TILE_N, group = threadIdx.x / LM_ROWS_TILE_N;
+	const LmRowsTileOperand operand = {input_bf16 + ((uint64_t)head * INPUT_HEAD_DIM) + INPUT_OFFSET, weight_bf16 + ((uint64_t)head * OUT_DIM * IN_DIM), 0, (uint64_t)heads * INPUT_HEAD_DIM, IN_DIM, rows, OUT_DIM, IN_DIM};
+	uint32_t j, row;
+	float total[per_thread];
+	LmRowsTileDot<THREADS, ROWS>(&operand, weight_tile, input_tile, first_index, first_row, total);
+	for (j = 0u; j < per_thread; ++j)
+	{
+		row = first_row + group * per_thread + j;
+		if ( row < rows )
+			output_bf16[((((uint64_t)row * heads) + head) * OUT_DIM) + first_index + lane] = LmFloatToBf16(total[j]);
+	}
+}
+
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
+static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream)
+{
+	constexpr uint32_t few = THREADS / LM_ROWS_TILE_N, many = 4u * few;
+	if ( rows <= few )
+		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, few>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, 1u), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+	else
+		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, many>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, (rows + many - 1u) / many), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+	return(cudaPeekAtLastError());
 }
 
 template<

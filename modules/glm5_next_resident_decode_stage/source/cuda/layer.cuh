@@ -904,22 +904,8 @@ static int32_t Glm5NextLayerAttentionTail(
         Glm5NextProbeVecU16(stream,buffers->kv_slot_bf16,GLM5_NEXT_LATENT_ROW,
             layer_index,(uint32_t)vec_pass,"kv_slot");
 
-    LM_LAUNCH(
-        (LmPerHeadProjectKernel<
-            GLM5_NEXT_LAYER_THREADS,
-            GLM5_NEXT_QK_NOPE_DIM,
-            GLM5_NEXT_LATENT,
-            GLM5_NEXT_QK_NOPE_DIM + GLM5_NEXT_ROPE_DIM,
-            0u>),
-        dim3(rows, buffers->attn_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->q_bf16,
-        (const uint16_t *)buffers->kv_b_key_transposed_weight,
-        buffers->query_latent_bf16,
-        buffers->attn_heads,
-        rows);
+    if (LmPerHeadProjectRowsLaunch<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_QK_NOPE_DIM, GLM5_NEXT_LATENT, GLM5_NEXT_QK_NOPE_DIM + GLM5_NEXT_ROPE_DIM, 0u>(buffers->q_bf16, (const uint16_t *)buffers->kv_b_key_transposed_weight, buffers->query_latent_bf16, buffers->attn_heads, rows, stream) != cudaSuccess)
+        return LM_LAUNCH_ERR_LAUNCH;
     if ( vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->query_latent_bf16,
             vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"query_latent");
@@ -987,18 +973,8 @@ static int32_t Glm5NextLayerAttentionTail(
         Glm5NextProbeVecU16(stream,buffers->attention_latent_bf16,
             vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"attn_latent");
 
-    LM_LAUNCH(
-        (LmPerHeadProjectKernel<
-            GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_VALUE_DIM>),
-        dim3(rows, buffers->attn_heads),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->attention_latent_bf16,
-        (const uint16_t *)buffers->kv_b_value_weight,
-        buffers->attention_value_bf16,
-        buffers->attn_heads,
-        rows);
+    if (LmPerHeadProjectRowsLaunch<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_LATENT, GLM5_NEXT_VALUE_DIM>(buffers->attention_latent_bf16, (const uint16_t *)buffers->kv_b_value_weight, buffers->attention_value_bf16, buffers->attn_heads, rows, stream) != cudaSuccess)
+        return LM_LAUNCH_ERR_LAUNCH;
     if ( vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->attention_value_bf16,
             vec_rank_heads * GLM5_NEXT_VALUE_DIM,layer_index,(uint32_t)vec_pass,"attn_value");

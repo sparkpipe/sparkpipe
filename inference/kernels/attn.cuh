@@ -570,6 +570,42 @@ static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEAD
     }
 }
 
+#define LM_LATENT_HEADS_UNROLL 2u
+
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmLatentHeadsSlot(LmKvView cache, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, const uint32_t *__restrict__ row_position, uint32_t row, uint32_t sequence, uint32_t step, uint32_t last, uint32_t *failed)
+{
+    uint32_t position;
+    const uint8_t *slot;
+    if (step >= last || *failed != 0u)
+        return 0;
+    position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
+    if (row_position != 0 && position > row_position[row])
+        return 0;
+    slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
+    *failed = slot == 0 ? 1u : 0u;
+    return slot;
+}
+
+template<class Geometry, uint32_t HEADS, uint32_t PER_LANE>
+static __device__ __forceinline__ void LmLatentHeadsWalk(LmKvView cache, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, const uint32_t *__restrict__ row_position, uint32_t row, uint32_t sequence, uint32_t begin, uint32_t last, uint32_t lane, const float (*query)[PER_LANE], float qk_scale, float *running_max, float *running_sum, float (*accumulator)[PER_LANE])
+{
+    const uint8_t *slot[LM_LATENT_HEADS_UNROLL];
+    float value[LM_LATENT_HEADS_UNROLL][PER_LANE];
+    uint32_t step, unroll, failed = 0u;
+    for (step = begin; step < last && failed == 0u; step += LM_LATENT_HEADS_UNROLL * LM_LATENT_HEADS_WARPS)
+    {
+        for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
+            slot[unroll] = LmLatentHeadsSlot<Geometry>(cache, selected_positions, selected_count, row_position, row, sequence, step + unroll * LM_LATENT_HEADS_WARPS, last, &failed);
+        for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
+            if (slot[unroll] != 0)
+                LmLatentHeadsLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
+        for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
+            if (slot[unroll] != 0)
+                LmLatentHeadsStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
+    }
+}
+
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
 __global__ __launch_bounds__(LM_LATENT_HEADS_THREADS, 1)
 void LmLatentAttentionHeadsKernel(
@@ -591,10 +627,9 @@ void LmLatentAttentionHeadsKernel(
     __shared__ float warp_sum[LM_LATENT_HEADS_WARPS][HEADS];
     __shared__ float merged[HEADS][LATENT];
     uint32_t row = blockIdx.x, partition = blockIdx.y, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
-    uint32_t sequence = sequence_of_row[row], head, index, step, position, position_count, span, first, last;
-    float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE], value[PER_LANE];
+    uint32_t sequence = sequence_of_row[row], head, index, position_count, span, first, last;
+    float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE];
     float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS];
-    const uint8_t *slot;
     uint64_t base;
     if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
     {
@@ -613,17 +648,7 @@ void LmLatentAttentionHeadsKernel(
     span = (position_count + partitions - 1u) / partitions;
     first = partition * span;
     last = first + span < position_count ? first + span : position_count;
-    for (step = first + warp; step < last; step += LM_LATENT_HEADS_WARPS)
-    {
-        position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
-        if (row_position != 0 && position > row_position[row])
-            continue;
-        slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
-        if (slot == 0)
-            break;
-        LmLatentHeadsLoad<PER_LANE>((const uint16_t *)slot + lane * PER_LANE, value);
-        LmLatentHeadsStep<HEADS, PER_LANE>(query, value, qk_scale, running_max, running_sum, accumulator);
-    }
+    LmLatentHeadsWalk<Geometry, HEADS, PER_LANE>(cache, selected_positions, selected_count, row_position, row, sequence, first + warp, last, lane, query, qk_scale, running_max, running_sum, accumulator);
     LmLatentHeadsMerge<HEADS, LATENT, PER_LANE>(warp_max, warp_sum, merged, running_max, running_sum, accumulator, global_max, global_sum);
     for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_HEADS_THREADS)
     {
