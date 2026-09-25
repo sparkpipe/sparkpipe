@@ -398,7 +398,20 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
                 "hardware kernels use actual mapped device alias");
         }
     }
-    CHECK(cuda_stub_mesh_hardware_calls == 6u && cuda_stub_mesh_publish_calls == old_publish,
+    submission.logical_sequence_count = 1u;
+    submission.active_sequence_count = 4096u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 262144u,
+        "a single-sequence wave larger than one slot runs as chunked direct hardware rounds");
+    CHECK(SparkTpMeshDirectChunks(262144u,2u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u &&
+        SparkTpMeshDirectChunks(131072u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectChunks(1048576u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 8u &&
+        SparkTpMeshDirectChunks(4096u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectChunks(65536u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectChunks(65536u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u,
+        "direct chunk geometry: eight 16384-wide BF16 rows fit one slot, larger payloads split into slot-sized chunks");
+    submission.active_sequence_count = 2u;
+    CHECK(cuda_stub_mesh_hardware_calls == 7u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
@@ -591,7 +604,7 @@ int main(void)
 	config.tp_degree = 2u;
 	config.tp_rank = 0u;
 	config.local_hidden_dimension = 64u;
-	config.max_active_sequence_count = 4u;
+	config.max_active_sequence_count = 4096u;
 	config.connect_timeout_milli = 1000u;
 	config.operation_timeout_milli = 2000u;
 	config.collective_identifier = 0u;
