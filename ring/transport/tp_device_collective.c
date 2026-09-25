@@ -856,12 +856,25 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
 static SparkStatus SparkTpDeviceCollectiveEnsureCells(
     SparkTpDeviceCollectiveImplementation *implementation);
 
+static uint32_t SparkTpDeviceCollectiveHardwareLogical(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation,
+    uint64_t elements)
+{
+    uint64_t local = operation == 0u ? elements / implementation->tp_degree : elements;
+    if ( implementation->hardware_wait != 0u &&
+         local * (operation == 2u ? 8u : 2u) + 16u <= implementation->slot_bytes )
+        return 1u;
+    return submission->logical_sequence_count;
+}
+
 static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation,
     uint32_t rounds)
 {
     uint64_t elements = submission->active_sequence_count;
+    uint32_t logical;
     int launch_result;
     uint64_t phases;
     uint64_t chunks;
@@ -877,12 +890,13 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     }
     if ( implementation->hardware_wait != 0u && implementation->mesh_device == 0 )
         return SPARK_STATUS_UNSUPPORTED;
+    logical = SparkTpDeviceCollectiveHardwareLogical(implementation,submission,operation,elements);
     chunks = (elements - 1u) / ((implementation->slot_bytes - 16u) / width) + 1u;
     phases = 2u * SparkTpMeshTreeLevels(implementation->tp_degree);
     if ( chunks > UINT32_MAX / (phases != 0u ? phases : 1u) / rounds )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     phases *= chunks * rounds;
-    if ( implementation->hardware_wait != 0u && submission->logical_sequence_count == 1u )
+    if ( implementation->hardware_wait != 0u && logical == 1u )
         phases = rounds;
     if ( implementation->f32_scratch_bytes < implementation->slot_bytes )
     {
@@ -906,7 +920,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
             implementation->mesh_device + SPARK_WEIGHTD_MESH_WAIT_ENTRY(band,implementation->tp_rank),
             implementation->round_control,implementation->tp_rank,implementation->tp_degree,
             submission->local_device,submission->full_device,implementation->f32_scratch,
-            elements,operation,rounds,submission->logical_sequence_count,
+            elements,operation,rounds,logical,
             implementation->round_timeout_ns);
     else
         launch_result = SparkGlm5NextLaunchMeshTree(submission->cuda_stream,

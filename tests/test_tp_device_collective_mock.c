@@ -388,10 +388,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             uint64_t expected_elements = operation == 2u ? 2u : operation == 0u ? 256u : 128u;
             CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_OK,
                 "captured B1 and B2 operations select hardware launcher");
-            CHECK(cuda_stub_mesh_hardware_logical_rows == logical &&
+            CHECK(cuda_stub_mesh_hardware_logical_rows == 1u &&
                 cuda_stub_mesh_hardware_operation == operation &&
                 cuda_stub_mesh_hardware_elements == expected_elements,
-                "hardware launcher receives exact logical and payload geometry");
+                "a batch that fits one slot runs as one direct hardware round with exact payload geometry");
             CHECK(cuda_stub_mesh_hardware_band == cuda_stub_mesh_hardware_alias &&
                 cuda_stub_mesh_hardware_gate == (uint8_t *)cuda_stub_mesh_hardware_alias +
                     SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),
