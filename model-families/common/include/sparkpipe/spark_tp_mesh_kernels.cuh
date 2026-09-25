@@ -84,18 +84,16 @@ __global__ void SparkGlm5NextMeshGuardKernel(
     volatile unsigned long long *error_word,
     unsigned long long *output)
 {
-	/* Anchor the build marker: nvcc dead-strips the unreferenced
-	 * __constant__ (the iter3 graph reorg removed the last incidental
-	 * reference), which tripped the publish guard's strings check.
-	 * The load is a no-op branch (marker[0] != 0); outputs unchanged. */
-	if ( SparkTpMeshKernelsBuildMarker[0] == 0 )
-		return;
 	if ( threadIdx.x != 0u || blockIdx.x != 0u )
 		return;
 	if ( *error_word != 0ull )
 	{
 		output[0] = 0xFFFFFFFFFFFFFFFFull;
-		printf("MESH-GUARD-POISON\\n");
+		/* The %s keeps SparkTpMeshKernelsBuildMarker addressable at
+		 * runtime; without a real reference nvcc dead-strips the
+		 * __constant__ and the publish guard's strings check fails.
+		 * Branch is unreachable in normal operation; outputs unchanged. */
+		printf("MESH-GUARD-POISON %s\\n",SparkTpMeshKernelsBuildMarker);
 	}
 }
 
