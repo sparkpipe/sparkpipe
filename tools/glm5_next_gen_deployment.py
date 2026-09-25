@@ -144,7 +144,13 @@ def stage_config(rank: int) -> dict:
 
 def resident_deployment() -> dict:
     contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
-    page_capacity = 16 * ((stage_config(0)["max_sequence_positions"] + 63) // 64)
+    # Single source of truth: every dependent constant derives from the
+    # seed via tools/spark_serving_profile.py (#1210 drift law). The old
+    # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
+    import spark_serving_profile
+    sequences = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
+    derived_runtime_limits = spark_serving_profile.derive(
+        sequences, stage_config(0)["max_sequence_positions"])
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
@@ -185,14 +191,7 @@ def resident_deployment() -> dict:
         "weightd": {
             "socket_path": "/tmp/spark_weightd.sock",
         },
-        "runtime_limits": {
-            "max_inflight_submissions": 4,
-            "max_active_sequences": 16,
-            "max_input_rows": 1024,
-            "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": page_capacity,
-            "kv_physical_page_capacity": page_capacity,
-        },
+        "runtime_limits": derived_runtime_limits,
         "nodes": nodes,
     }
 
