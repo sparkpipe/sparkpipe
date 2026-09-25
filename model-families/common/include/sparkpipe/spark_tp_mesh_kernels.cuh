@@ -14,6 +14,13 @@
 #if defined(__CUDACC__)
 __constant__ char SparkTpMeshKernelsBuildMarker[] =
     SPARK_TP_MESH_KERNELS_MARKER;
+/* Host-side twin with __attribute__((used)): nvcc dead-strips the
+ * unreferenced __constant__ into the compressed fatbin where strings
+ * cannot see it, tripping the publish guard. The host pass (gcc)
+ * compiles this file-scope copy into .rodata unconditionally, from the
+ * SAME header and macro — a stale private copy still fails the check. */
+__attribute__((used)) static const char SparkTpMeshKernelsBuildMarkerHost[] =
+    SPARK_TP_MESH_KERNELS_MARKER;
 #endif
 
 #define SPARK_TP_MESH_THREADS 256u
@@ -89,11 +96,7 @@ __global__ void SparkGlm5NextMeshGuardKernel(
 	if ( *error_word != 0ull )
 	{
 		output[0] = 0xFFFFFFFFFFFFFFFFull;
-		/* The %s keeps SparkTpMeshKernelsBuildMarker addressable at
-		 * runtime; without a real reference nvcc dead-strips the
-		 * __constant__ and the publish guard's strings check fails.
-		 * Branch is unreachable in normal operation; outputs unchanged. */
-		printf("MESH-GUARD-POISON %s\\n",SparkTpMeshKernelsBuildMarker);
+		printf("MESH-GUARD-POISON\\n");
 	}
 }
 
