@@ -4133,8 +4133,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh",
-      "sha256": "121624aff7bb842ec7b68f96b2864c62aaed0f78d39d01f5255080af30cee554",
-      "size_bytes": 49429
+      "sha256": "314712f55bc8375ebb1b190539984c97edd26613ac8bab36dd55ac082108d67d",
+      "size_bytes": 49395
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_register.h",
@@ -14995,5 +14995,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73680271
+  "total_bytes": 73680237
 }
