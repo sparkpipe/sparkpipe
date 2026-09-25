@@ -1512,6 +1512,37 @@ static void TestModelBatchProcess(
 	unlink(batch_path);
 }
 
+static void TestModelPipelineFailedPrefillFreesSlot(SparkModelPipelineClient *pipeline,TestModelPipelineState *state)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4];
+	uint64_t positions[4],sequences[4];
+	uint8_t failure;
+	failure = 1u;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,401u);
+	submission.model_extension_kind = 96u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,1u);
+	assert(state->completions[0].status == SPARK_STATUS_IO_ERROR);
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,402u);
+	TestModelPipelineRetargetPrefill(&submission,lanes,sequences,904u,202u);
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,2u);
+	assert(state->result_statuses[1] == SPARK_STATUS_OK);
+	assert(state->completions[1].status == SPARK_STATUS_OK);
+	TestModelPipelineBuildRelease(&submission,lanes,403u);
+	lanes[0].request_id = 904u;
+	lanes[0].sequence_id = 202u;
+	submission.request_id = 904u;
+	submission.sequence_id = 202u;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,3u);
+	assert(state->completions[2].status == SPARK_STATUS_OK);
+}
+
 static void TestModelPipelineCachePublish(SparkModelPipelineClient *pipeline,
     TestModelPipelineState *state)
 {
@@ -1627,6 +1658,11 @@ int main(void)
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;
 	TestModelPipelineCachePublish(pipeline,&state);
+	SparkModelPipelineClientDestroy(pipeline);
+	memset(&state,0,sizeof(state));
+	pipeline = TestModelPipelineConnect(&deployment,&state);
+	state.pipeline = pipeline;
+	TestModelPipelineFailedPrefillFreesSlot(pipeline,&state);
 	SparkModelPipelineClientDestroy(pipeline);
 	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);

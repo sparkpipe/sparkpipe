@@ -190,6 +190,8 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
+	if ( submission->model_extension_kind == 96u && submission->model_extension_bytes == 1u )
+		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
@@ -219,7 +221,9 @@ static void TestModelServingBuildCompletion(
 	completion->service_time_ns = (uint64_t)(state->stage_index + 1u) * 10u;
 	completion->device_memcpy_bytes = (uint64_t)(state->stage_index + 1u) * 100u;
 	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
-	if ( state->stage_index + 1u != TestModelServingDescriptor.stage_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u || submission->model_extension_kind == 88u )
+	if ( submission->model_extension_kind == 96u )
+		completion->status = SPARK_STATUS_IO_ERROR;
+	if ( completion->status != SPARK_STATUS_OK || state->stage_index + 1u != TestModelServingDescriptor.stage_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u || submission->model_extension_kind == 88u )
 		return;
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 	completion->tokens_per_sequence = submission->tokens_per_sequence;

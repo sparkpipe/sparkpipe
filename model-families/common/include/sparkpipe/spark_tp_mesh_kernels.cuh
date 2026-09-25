@@ -978,50 +978,53 @@ static __global__ void SparkGlm5NextMeshHardwarePublishKernel(
     }
 }
 
+static __device__ void SparkGlm5NextMeshHardwareDirectElement(
+    const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,uint64_t ring,
+    uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,
+    uint32_t operation,uint64_t i)
+{
+    const volatile uint16_t *half;
+    const volatile uint64_t *wide;
+    uint64_t maximum,value,peer,j;
+    float sum;
+    if ( operation == 0u )
+    {
+        peer = i / count;
+        j = i % count;
+        half = (const volatile uint16_t *)(band + (peer * slots_per_rank + ring) * slot_bytes);
+        ((uint16_t *)output)[peer * local_elements + begin + j] = half[j];
+        return;
+    }
+    maximum = 0u;
+    sum = 0.0f;
+    for ( peer = 0u; peer < degree; peer++ )
+    {
+        wide = (const volatile uint64_t *)(band + (peer * slots_per_rank + ring) * slot_bytes);
+        half = (const volatile uint16_t *)wide;
+        value = operation == 2u ? wide[i] : 0u;
+        maximum = value > maximum ? value : maximum;
+        if ( operation != 2u )
+            sum += __uint_as_float((uint32_t)half[i] << 16u);
+    }
+    if ( operation == 2u )
+        ((uint64_t *)output)[begin + i] = maximum;
+    else
+        ((uint16_t *)output)[begin + i] = (uint16_t)(__float_as_uint(sum) >> 16u);
+}
+
 static __global__ void SparkGlm5NextMeshHardwareDirectKernel(
     const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     SparkTpMeshRoundControl *control,uint32_t degree,void *output,
-    uint64_t elements,uint32_t operation)
+    uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint32_t last)
 {
+    uint64_t ring,span,i;
     if ( control->error_word != 0u ) return;
     if ( threadIdx.x == 0u )
         (void)atomicMin((unsigned long long *)&control->math_started_ns,SparkGlm5NextGlobalTimerNs());
-    uint64_t ring = (control->round_seq - 1u) & (slots_per_rank - 1u);
-    for ( uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-          i < elements; i += (uint64_t)blockDim.x * gridDim.x )
-    {
-        if ( operation == 0u )
-        {
-            uint64_t local_elements = elements / degree;
-            uint64_t peer = i / local_elements;
-            const volatile uint16_t *source = (const volatile uint16_t *)(band +
-                (peer * slots_per_rank + ring) * slot_bytes);
-            ((uint16_t *)output)[i] = source[i % local_elements];
-        }
-        else if ( operation == 2u )
-        {
-            uint64_t maximum = 0u;
-            for ( uint32_t peer = 0u; peer < degree; peer++ )
-            {
-                const volatile uint64_t *source = (const volatile uint64_t *)(band +
-                    ((uint64_t)peer * slots_per_rank + ring) * slot_bytes);
-                uint64_t value = source[i];
-                if ( value > maximum ) maximum = value;
-            }
-            ((uint64_t *)output)[i] = maximum;
-        }
-        else
-        {
-            float sum = 0.0f;
-            for ( uint32_t peer = 0u; peer < degree; peer++ )
-            {
-                const volatile uint16_t *source = (const volatile uint16_t *)(band +
-                    ((uint64_t)peer * slots_per_rank + ring) * slot_bytes);
-                sum += __uint_as_float((uint32_t)source[i] << 16u);
-            }
-            ((uint16_t *)output)[i] = (uint16_t)(__float_as_uint(sum) >> 16u);
-        }
-    }
+    ring = (control->round_seq - 1u) & (slots_per_rank - 1u);
+    span = operation == 0u ? count * degree : count;
+    for ( i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; i < span; i += (uint64_t)blockDim.x * gridDim.x )
+        SparkGlm5NextMeshHardwareDirectElement(band,slot_bytes,slots_per_rank,ring,degree,output,local_elements,begin,count,operation,i);
     __syncthreads();
     if ( threadIdx.x == 0u )
     {
@@ -1032,7 +1035,8 @@ static __global__ void SparkGlm5NextMeshHardwareDirectKernel(
             control->combine_ns += SparkGlm5NextLdcvU64(&control->math_finished_ns) -
                 SparkGlm5NextLdcvU64(&control->math_started_ns);
             control->slot_cursor = control->seq;
-            control->rounds_done++;
+            if ( last != 0u )
+                control->rounds_done++;
         }
     }
 }
@@ -1195,6 +1199,40 @@ static cudaError_t SparkGlm5NextMeshHardwareWait(cudaStream_t stream,
     return cudaPeekAtLastError();
 }
 
+static cudaError_t SparkGlm5NextMeshHardwareDirectChunk(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t timeout_ns)
+{
+    uint32_t peers,blocks,width;
+    cudaError_t status;
+    peers = ((1u << degree) - 1u) & ~(1u << rank);
+    width = operation == 2u ? 8u : 2u;
+    blocks = (uint32_t)(((operation == 0u ? count * degree : count) + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
+    status = SparkGlm5NextMeshHardwareWait(stream,request,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+    if ( status != cudaSuccess )
+        return status;
+    SparkGlm5NextMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,local + begin * width,count * width,peers,1u,1u);
+    status = cudaPeekAtLastError();
+    if ( status == cudaSuccess )
+        status = SparkGlm5NextMeshHardwareWait(stream,request,control,SPARK_WEIGHTD_MESH_WAIT_PEERS,peers,0u,timeout_ns);
+    if ( status != cudaSuccess )
+        return status;
+    SparkGlm5NextMeshHardwareDirectKernel<<<blocks,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,begin + count == local_elements);
+    return cudaPeekAtLastError();
+}
+
+static cudaError_t SparkGlm5NextMeshHardwareDirectRound(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t elements,uint32_t operation,uint64_t timeout_ns)
+{
+    uint64_t local_elements,capacity,begin,count;
+    cudaError_t status = cudaSuccess;
+    local_elements = SparkTpMeshDirectLocalElements(elements,degree,operation);
+    capacity = SparkTpMeshDirectCapacity(slot_bytes,operation);
+    for (begin=0u; begin<local_elements && status==cudaSuccess; begin+=count)
+    {
+        count = local_elements - begin < capacity ? local_elements - begin : capacity;
+        status = SparkGlm5NextMeshHardwareDirectChunk(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,local_elements,begin,count,operation,timeout_ns);
+    }
+    return status;
+}
+
 extern "C" cudaError_t SparkGlm5NextLaunchMeshHardware(cudaStream_t stream,
     void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
     void *gate,void *round_control,uint32_t rank,uint32_t degree,
@@ -1213,31 +1251,13 @@ extern "C" cudaError_t SparkGlm5NextLaunchMeshHardware(cudaStream_t stream,
     uint32_t width = operation == 2u ? 8u : operation == 1u ? 4u : 2u;
     uint64_t capacity = (slot_bytes - 16u) / width;
     if ( capacity == 0u ) return cudaErrorInvalidValue;
-    uint64_t local_elements = operation == 0u ? elements / degree : elements;
-    uint32_t local_width = operation == 2u ? 8u : 2u;
-    if ( logical_rows == 1u && local_elements > (slot_bytes - 16u) / local_width )
-        return cudaErrorInvalidValue;
+    if ( SparkTpMeshDirectCapacity(slot_bytes,operation) == 0u ) return cudaErrorInvalidValue;
     for ( uint32_t round = 0u; round < rounds; round++ )
     {
         cudaError_t status;
         if ( logical_rows == 1u )
         {
-            status = SparkGlm5NextMeshHardwareWait(stream,request,control,
-                SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
-            if ( status != cudaSuccess ) return status;
-            uint32_t peers = ((1u << degree) - 1u) & ~(1u << rank);
-            SparkGlm5NextMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(
-                (uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,control,
-                rank,local,local_elements * local_width,peers,1u,1u);
-            status = cudaPeekAtLastError();
-            if ( status != cudaSuccess ) return status;
-            status = SparkGlm5NextMeshHardwareWait(stream,request,control,
-                SPARK_WEIGHTD_MESH_WAIT_PEERS,peers,0u,timeout_ns);
-            if ( status != cudaSuccess ) return status;
-            uint32_t blocks = (uint32_t)((elements + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
-            SparkGlm5NextMeshHardwareDirectKernel<<<blocks,SPARK_TP_MESH_THREADS,0u,stream>>>(
-                (const uint8_t *)band,slot_bytes,slots_per_rank,control,degree,output,elements,operation);
-            status = cudaPeekAtLastError();
+            status = SparkGlm5NextMeshHardwareDirectRound(stream,(uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,request,control,rank,degree,(const uint8_t *)local,output,elements,operation,timeout_ns);
             if ( status != cudaSuccess ) return status;
             continue;
         }

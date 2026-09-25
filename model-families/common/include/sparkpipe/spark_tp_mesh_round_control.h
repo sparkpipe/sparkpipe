@@ -64,6 +64,30 @@ static inline uint32_t SparkTpMeshTreeLevels(uint32_t degree)
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
+static inline uint64_t SparkTpMeshDirectCapacity(uint64_t slot_bytes,uint32_t operation)
+{
+    return ((slot_bytes - 16u) / (operation == 2u ? 8u : 2u)) & ~UINT64_C(3);
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshDirectLocalElements(uint64_t elements,uint32_t degree,uint32_t operation)
+{
+    return operation == 0u ? elements / degree : elements;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree,uint32_t operation,uint64_t slot_bytes)
+{
+    return (SparkTpMeshDirectLocalElements(elements,degree,operation) - 1u) / SparkTpMeshDirectCapacity(slot_bytes,operation) + 1u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
 static inline uint32_t SparkTpMeshTreeRoute(uint32_t rank,uint32_t degree,
     uint32_t phase)
 {

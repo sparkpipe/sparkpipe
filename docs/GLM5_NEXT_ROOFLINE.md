@@ -151,7 +151,8 @@ Iteration 3 makes three changes:
 
 - It captures one graph per row count (1-8) per slot.
 - A hardware-wait collective whose payload fits one mesh slot (256 KiB,
-  i.e. up to 31 rows of 4096 BF16) runs as a single direct round.
+  i.e. up to 32 rows of 4096 BF16 or 8 rows of 16384) runs as a single
+  direct round.
 - The skinny GEMV covers up to 8 dense rows and 8 routed tokens.
 
 Weights are read once per step for all rows, so the expected step time grows
@@ -188,6 +189,47 @@ Decode is weight-bandwidth bound, so that trade does not pay at small B. The
 overlap that does pay at B1 is using the collective wait to stream the next
 projection's weights into L2. `test-skinny-gemv` now prints the device L2
 size to size that experiment.
+
+## Multi-row prefill and the poisoned sequence slot (#1210)
+
+The B8 profile rejected prefill waves with
+`submission_rejected status=1 kind=1 rows=64 lanes=1`. Two defects combined.
+
+1. **The first multi-row wave failed in the collective.** The module sets
+   `logical_sequence_count` to the number of sequences in the wave. A prefill
+   wave of one sequence has 8 or 64 rows but a logical count of 1. The
+   collective treated a logical count of 1 as a payload that fits one mesh
+   slot. `RoundAdmit` returned `CAPACITY_EXCEEDED` for anything larger: the HC
+   collective at 8 rows is 8 × 16384 × 2 bytes = 256 KiB, one trailer over the
+   slot. Single-row prefill always fit, which is why B1 worked.
+2. **The failure poisoned the resident sequence slot.** residentd bound the
+   slot to the request's identity on every completion, failed or not. The
+   batch engine sends a RELEASE only for a request whose resident state it
+   has seen succeed, so after a failed first wave nothing unbound the slot.
+   Every later submission on that slot failed `ValidatePersistentSlot` with
+   `INVALID_ARGUMENT`. The host pipeline test reproduces the exact log line
+   without the fix.
+
+The fixes:
+
+- In hardware-wait mode every collective now runs as direct all-to-all rounds.
+  A payload larger than one slot is split into slot-sized chunks, one relay
+  round each. The binomial tree is no longer used in hardware mode, and spin
+  mode is unchanged.
+- The slot gains a 64-byte trailer margin, so eight 16384-wide BF16 rows fit
+  one slot exactly.
+
+  | Collective | Before | After |
+  | --- | --- | --- |
+  | HC collective at B8 decode | 3 tree chunks × 8 phases = 24 relay rounds | 1 round |
+  | 64-row prefill attention collective | failed | 2 rounds |
+  | 64-row prefill HC collective | failed | 8 rounds |
+
+- residentd no longer creates a binding from a failed completion. It
+  invalidates the continuation lease on failure.
+- The batch engine sends a RELEASE after an admitted prefill fails, because
+  some ranks may have bound state. A rejected RELEASE ends the request instead
+  of queueing another RELEASE.
 
 ## Next steps, ordered by expected gain
 
