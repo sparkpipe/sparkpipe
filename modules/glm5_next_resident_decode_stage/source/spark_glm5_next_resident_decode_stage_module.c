@@ -941,6 +941,26 @@ static SparkStatus SparkGlm5NextAllocateSlotHead(
 	SPARK_RETURN(status);
 }
 
+static void SparkGlm5NextShareSlotDevice(SparkGlm5NextExecutionSlot *slot,const SparkGlm5NextExecutionSlot *shared)
+{
+	SparkGlm5NextExecutionSlot host;
+	host = *slot;
+	*slot = *shared;
+	slot->stream = host.stream;
+	slot->route_ready_event = host.route_ready_event;
+	slot->route_recorded = 0u;
+	slot->host_staging = host.host_staging;
+	slot->host_token_ids = host.host_token_ids;
+	slot->host_resident_slots = host.host_resident_slots;
+	slot->host_positions = host.host_positions;
+	slot->host_output_token_ids = host.host_output_token_ids;
+	slot->host_kv_access_error = host.host_kv_access_error;
+	slot->host_group_row_offset = host.host_group_row_offset;
+	slot->host_run_begin = host.host_run_begin;
+	slot->host_run_state_index = host.host_run_state_index;
+	slot->host_run_row_indices = host.host_run_row_indices;
+}
+
 static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 {
 	uint32_t index;
@@ -950,10 +970,12 @@ static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 	{
 		state->slots[index].stream = state->execution_stream;
 		status = SparkGlm5NextAllocateSlotHost(&state->slots[index]);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotMetadata(state,&state->slots[index]);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHidden(state,&state->slots[index]);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotMlp(state,&state->slots[index]);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateSlotHead(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK && index != 0u )
+			SparkGlm5NextShareSlotDevice(&state->slots[index],&state->slots[0]);
+		if ( status == SPARK_STATUS_OK && index == 0u ) status = SparkGlm5NextAllocateSlotMetadata(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK && index == 0u ) status = SparkGlm5NextAllocateSlotHidden(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK && index == 0u ) status = SparkGlm5NextAllocateSlotMlp(state,&state->slots[index]);
+		if ( status == SPARK_STATUS_OK && index == 0u ) status = SparkGlm5NextAllocateSlotHead(state,&state->slots[index]);
 	}
 	SPARK_RETURN(status);
 }

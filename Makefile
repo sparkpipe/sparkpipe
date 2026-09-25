@@ -661,6 +661,13 @@ build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh m
 test-skinny-gemv: build/test_skinny_gemv
 	./build/test_skinny_gemv --run
 
+build/glm5_next_batch_roofline: tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: bench-glm5-next-batch
+bench-glm5-next-batch: build/glm5_next_batch_roofline
+	./build/glm5_next_batch_roofline $(ROOFLINE_ARGS)
+
 build/test_cuda_stream_receipt: tests/test_cuda_stream_receipt.c $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	test -f $(CUDA_HOME)/include/cuda_runtime.h
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
