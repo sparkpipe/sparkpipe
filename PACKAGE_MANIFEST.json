@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "63828098fd6554b7e205a2849d007fbdf2630fc07f7e7597b18954bea9f64626",
-      "size_bytes": 13083
+      "sha256": "df2cf197bcc015a33e3dfd6c2f900ce814a6310bada4d40c79f710e1c93b2a17",
+      "size_bytes": 14156
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -7808,13 +7808,13 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "5346ba38c6c1064bc1035944495a585696a726efab5650d0dc214400e0effcf0",
-      "size_bytes": 100220
+      "sha256": "7cf23423fca1b6da2f0a28e872d49fb2b6aa0075b58995cc7985e128cf0565dd",
+      "size_bytes": 101292
     },
     {
       "path": "runtime/model_batch_scheduler.h",
-      "sha256": "9f4042be5f5faad295b1f3fe29ebbdbe8826b1524883401d517708bf6d5c1a89",
-      "size_bytes": 1005
+      "sha256": "1c8f44eefeac59be393fc80f67c07d9c86615bf995ad1c09decf3d01abc9330f",
+      "size_bytes": 1239
     },
     {
       "path": "runtime/model_continuation_lease.c",
@@ -9798,8 +9798,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "137ad57ebe44afb28780e985b8661c2cceaf9058cbad720dfe8ce0890f037ca9",
-      "size_bytes": 81688
+      "sha256": "39d587903124b8548ae88d910097d47ac587c197e0814bdd89d4033ffb428b0d",
+      "size_bytes": 82334
     },
     {
       "path": "tests/test_model_pipeline_client_mock.c",
@@ -15005,5 +15005,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73705978
+  "total_bytes": 73709003
 }
