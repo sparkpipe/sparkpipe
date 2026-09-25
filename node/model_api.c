@@ -31,6 +31,15 @@
 #define API_MAX_INFLIGHT 16u
 
 #define API_DEFAULT_MODEL_ID "sparkpipe-model"
+#define API_WAIT_SLICE_MS 250u
+#define API_STREAM_BATCH_TOKENS 64u
+#define API_UTF8_MAX_SEQUENCE 4u
+#define API_STREAM_EVENT_END "]}\n\n"
+#define API_WAIT_DONE 0u
+#define API_WAIT_TOKENS 1u
+#define API_WAIT_ADMISSION 2u
+#define API_BUSY_RETRY_MS 5
+#define API_SEQUENCE_SAVE_MS 60000u
 
 typedef struct ApiRequest
 {
@@ -56,6 +65,10 @@ typedef struct ApiRequest
 	SparkModelBatchRequestHandle handle;
 	uint32_t *stop_tokens;
 	uint32_t stop_token_count;
+	uint32_t priority;
+	uint32_t stream;
+	uint32_t deadline_expired;
+	uint64_t deadline_ms;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -114,11 +127,25 @@ static void api_term_signal(int signal_number)
 	_exit(0);
 }
 
+static const char *api_finish_reason(const ApiRequest *req)
+{
+	return req->output_token_count >= req->max_tokens ? "length" : "stop";
+}
+
+static const char *api_identity(const char *value)
+{
+	return value != 0 ? value : "";
+}
+
 static void api_log_request_measurements(const ApiRequest *request)
 {
+	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+	char prompt_sha256[SPARK_SHA256_HEX_BYTES];
 	uint32_t index;
+	if (SparkSha256Bytes(request->prompt_tokens,(size_t)request->prompt_count * sizeof(uint32_t),prompt_sha256) != SPARK_STATUS_OK)
+		prompt_sha256[0] = '\0';
 	flockfile(stderr);
-	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count);
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
 	for (index=0u; index<request->output_token_count; index++)
 		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
 	fputs("]}\n",stderr);
@@ -214,6 +241,9 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					(unsigned)ev->token_id);
 				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
 				r->output_token_ids[r->output_token_count++] = ev->token_id;
+				pthread_mutex_lock(&r->mutex);
+				pthread_cond_signal(&r->cond);
+				pthread_mutex_unlock(&r->mutex);
 			}
 		}
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ||
@@ -293,163 +323,195 @@ static void api_cancel_queued(void)
 	}
 }
 
+static uint32_t api_before(const ApiRequest *a, const ApiRequest *b)
+{
+	uint64_t deadline_a = a->deadline_ms != 0u ? a->deadline_ms : UINT64_MAX, deadline_b = b->deadline_ms != 0u ? b->deadline_ms : UINT64_MAX;
+	if ( a->priority != b->priority )
+		return(a->priority > b->priority ? 1u : 0u);
+	if ( deadline_a != deadline_b )
+		return(deadline_a < deadline_b ? 1u : 0u);
+	return(a->id < b->id ? 1u : 0u);
+}
+
+static uint32_t api_pick_pending(ApiRequest **pending, uint32_t capacity)
+{
+	ApiRequest *request,*best;
+	uint32_t count = 0u;
+	while ( count < capacity )
+	{
+		best = 0;
+		for (request = S.queue_head; request != 0; request = request->next)
+			if ( request->done == 0 && request->submitted == 0 && request->inflight == 0 && (best == 0 || api_before(request,best) != 0u) )
+				best = request;
+		if ( best == 0 )
+			break;
+		best->inflight = 1;
+		pending[count++] = best;
+	}
+	return(count);
+}
+
+static void api_reap_orphans(void)
+{
+	ApiRequest *victim,*next,*reaped = 0;
+	pthread_mutex_lock(&S.queue_mutex);
+	for (victim = S.queue_head; victim != 0; victim = next)
+	{
+		next = victim->next;
+		if ( victim->orphaned == 0 || victim->inflight != 0 )
+			continue;
+		api_queue_unlink(victim);
+		victim->next = reaped;
+		reaped = victim;
+	}
+	pthread_mutex_unlock(&S.queue_mutex);
+	for (victim = reaped; victim != 0; victim = next)
+	{
+		next = victim->next;
+		api_request_destroy(victim);
+	}
+}
+
+static uint32_t api_submit(ApiRequest *r)
+{
+	SparkModelBatchSubmitRequest sub;
+	SparkModelBatchRequestHandle h;
+	SparkStatus st;
+	memset(&sub,0,sizeof(sub));
+	sub.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	sub.descriptor_bytes = (uint32_t)sizeof(sub);
+	sub.request_id = r->id;
+	sub.sequence_id = r->id;
+	sub.priority = r->priority;
+	sub.output_token_budget = r->max_tokens;
+	sub.prompt_token_ids = r->prompt_tokens;
+	sub.prompt_token_count = r->prompt_count;
+	(void)SparkModelBatchEngineReopenAdmission(S.engine);
+	st = SparkModelBatchEngineSubmit(S.engine,&sub,&h);
+	pthread_mutex_lock(&S.queue_mutex);
+	if ( st == SPARK_STATUS_OK )
+	{
+		r->submitted = 1;
+		r->handle = h;
+	}
+	else if ( st != SPARK_STATUS_BUSY )
+	{
+		r->status = (uint32_t)st;
+		r->done = 1;
+	}
+	pthread_mutex_lock(&r->mutex);
+	pthread_cond_signal(&r->cond);
+	pthread_mutex_unlock(&r->mutex);
+	pthread_mutex_unlock(&S.queue_mutex);
+	api_orphan_cancel_after_submit(r);
+	return st == SPARK_STATUS_BUSY ? 1u : 0u;
+}
+
+static uint32_t api_submit_pending(void)
+{
+	ApiRequest *pending[API_MAX_INFLIGHT];
+	uint32_t count,index,busy = 0u;
+	pthread_mutex_lock(&S.queue_mutex);
+	count = api_pick_pending(pending,API_MAX_INFLIGHT);
+	pthread_mutex_unlock(&S.queue_mutex);
+	for (index = 0u; index < count; index++)
+	{
+		if ( pending[index]->done == 0 && busy == 0u )
+			busy = api_submit(pending[index]);
+		pthread_mutex_lock(&S.queue_mutex);
+		pending[index]->inflight = 0;
+		pthread_mutex_unlock(&S.queue_mutex);
+	}
+	return busy;
+}
+
+static void api_save_sequence(void)
+{
+	char seq_path[1024];
+	FILE *seq_out;
+	uint64_t now_ms = api_now_ms();
+	if ( now_ms - S.seq_saved_ms < API_SEQUENCE_SAVE_MS )
+		return;
+	(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
+	seq_out = fopen(seq_path,"w");
+	if ( seq_out != 0 )
+	{
+		(void)fprintf(seq_out,"%llu %llu\n",(unsigned long long)SparkModelBatchEngineSessionFingerprint(S.engine),(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
+		(void)fclose(seq_out);
+	}
+	S.seq_saved_ms = now_ms;
+}
+
+static int api_poll_timeout(uint32_t busy)
+{
+	uint64_t deadline_ns,deadline_ms,save_ms,now_ms;
+	int timeout_ms;
+	deadline_ns = SparkModelBatchEngineNextProgressNs(S.engine);
+	deadline_ms = deadline_ns / UINT64_C(1000000) + (deadline_ns % UINT64_C(1000000) != 0u);
+	save_ms = S.seq_saved_ms + API_SEQUENCE_SAVE_MS;
+	if ( deadline_ms == 0u || save_ms < deadline_ms )
+		deadline_ms = save_ms;
+	now_ms = api_now_ms();
+	timeout_ms = deadline_ms <= now_ms ? 0 : (int)(deadline_ms - now_ms);
+	return busy != 0u && timeout_ms > API_BUSY_RETRY_MS ? API_BUSY_RETRY_MS : timeout_ms;
+}
+
+static void api_poll_engine(uint32_t busy)
+{
+	SparkModelResidentClientPollDescriptor fds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u];
+	uint32_t count = 0u,index;
+	SparkStatus status;
+	status = SparkModelBatchEngineGetPollDescriptors(S.engine,fds,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		api_logf("worker poll descriptors failed status=%u",(unsigned)status);
+		_exit(1);
+	}
+	for (index = 0u; index < count; index++)
+	{
+		pfds[index].fd = fds[index].fd;
+		pfds[index].events = (short)(((fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_READ) != 0u ? POLLIN : 0) | ((fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE) != 0u ? POLLOUT : 0));
+		pfds[index].revents = 0;
+	}
+	pfds[count].fd = S.wake_fds[0];
+	pfds[count].events = POLLIN;
+	pfds[count].revents = 0;
+	if ( poll(pfds,(nfds_t)count + 1u,api_poll_timeout(busy)) < 0 && errno != EINTR )
+	{
+		api_logf("worker poll failed errno=%d",errno);
+		_exit(1);
+	}
+}
+
 static void *api_worker(void *arg)
 {
-	SparkModelResidentClientPollDescriptor
-		fds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
-	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u];
+	uint32_t busy;
 	(void)arg;
 	while (S.running)
 	{
 		api_drain_worker_wake();
 		api_cancel_queued();
-		{
-			ApiRequest *pending[API_MAX_INFLIGHT];
-			uint32_t pending_count = 0;
-			ApiRequest *r;
-			uint32_t i;
-			pthread_mutex_lock(&S.queue_mutex);
-			{
-				ApiRequest *victim = S.queue_head;
-				while (victim != 0)
-				{
-					if (victim->orphaned && !victim->inflight)
-					{
-						ApiRequest *next = victim->next;
-						api_queue_unlink(victim);
-						pthread_mutex_unlock(&S.queue_mutex);
-						api_request_destroy(victim);
-						pthread_mutex_lock(&S.queue_mutex);
-						victim = next;
-						continue;
-					}
-					victim = victim->next;
-				}
-			}
-			for (r = S.queue_head; r != 0 && pending_count < API_MAX_INFLIGHT; r = r->next)
-			{
-				if (!r->done && !r->submitted && !r->inflight)
-				{
-					r->inflight = 1;
-					pending[pending_count++] = r;
-				}
-			}
-			pthread_mutex_unlock(&S.queue_mutex);
-			for (i = 0; i < pending_count; i++)
-			{
-				SparkModelBatchSubmitRequest sub;
-				SparkModelBatchRequestHandle h;
-				SparkStatus st;
-				r = pending[i];
-				if (r->done)
-				{
-					pthread_mutex_lock(&S.queue_mutex);
-					r->inflight = 0;
-					pthread_mutex_unlock(&S.queue_mutex);
-					continue;
-				}
-				memset(&sub, 0, sizeof(sub));
-				sub.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-				sub.descriptor_bytes = (uint32_t)sizeof(sub);
-				sub.request_id = r->id;
-				sub.sequence_id = r->id;
-				sub.output_token_budget = r->max_tokens;
-				sub.prompt_token_ids = r->prompt_tokens;
-				sub.prompt_token_count = r->prompt_count;
-				(void)SparkModelBatchEngineReopenAdmission(S.engine);
-				st = SparkModelBatchEngineSubmit(S.engine, &sub, &h);
-				pthread_mutex_lock(&S.queue_mutex);
-				if (st == SPARK_STATUS_OK)
-				{
-					r->submitted = 1;
-					r->handle = h;
-				}
-				else
-				{
-					r->status = (uint32_t)st;
-					r->done = 1;
-					pthread_mutex_lock(&r->mutex);
-					pthread_cond_signal(&r->cond);
-					pthread_mutex_unlock(&r->mutex);
-				}
-				pthread_mutex_unlock(&S.queue_mutex);
-				api_orphan_cancel_after_submit(r);
-				pthread_mutex_lock(&S.queue_mutex);
-				r->inflight = 0;
-				pthread_mutex_unlock(&S.queue_mutex);
-			}
-		}
+		api_reap_orphans();
+		busy = api_submit_pending();
 		(void)SparkModelBatchEngineProgress(S.engine,4u);
-		{
-			uint32_t count,index;
-			uint64_t now_ms,deadline_ns,deadline_ms,save_ms;
-			int timeout_ms;
-			SparkStatus status;
-			now_ms = api_now_ms();
-			if ( now_ms - S.seq_saved_ms >= 60000u )
-			{
-				char seq_path[1024];
-				FILE *seq_out;
-				(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
-				seq_out = fopen(seq_path,"w");
-				if ( seq_out != 0 )
-				{
-					(void)fprintf(seq_out,"%llu %llu\n",
-						(unsigned long long)SparkModelBatchEngineSessionFingerprint(S.engine),
-						(unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
-					(void)fclose(seq_out);
-				}
-				S.seq_saved_ms = now_ms;
-			}
-			count = 0u;
-			status = SparkModelBatchEngineGetPollDescriptors(S.engine,fds,
-				SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&count);
-			if ( status != SPARK_STATUS_OK )
-			{
-				api_logf("worker poll descriptors failed status=%u",(unsigned)status);
-				_exit(1);
-			}
-			for (index=0u; index<count; index++)
-			{
-				pfds[index].fd = fds[index].fd;
-				pfds[index].events = 0;
-				pfds[index].revents = 0;
-				if ( (fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_READ) != 0u )
-					pfds[index].events |= POLLIN;
-				if ( (fds[index].events & SPARK_MODEL_RESIDENT_CLIENT_POLL_WRITE) != 0u )
-					pfds[index].events |= POLLOUT;
-			}
-			pfds[count].fd = S.wake_fds[0];
-			pfds[count].events = POLLIN;
-			pfds[count].revents = 0;
-			deadline_ns = SparkModelBatchEngineNextProgressNs(S.engine);
-			deadline_ms = deadline_ns / UINT64_C(1000000) + (deadline_ns % UINT64_C(1000000) != 0u);
-			save_ms = S.seq_saved_ms + 60000u;
-			if ( deadline_ms == 0u || save_ms < deadline_ms )
-				deadline_ms = save_ms;
-			now_ms = api_now_ms();
-			timeout_ms = deadline_ms <= now_ms ? 0 : (int)(deadline_ms - now_ms);
-			if ( poll(pfds,(nfds_t)count + 1u,timeout_ms) < 0 && errno != EINTR )
-			{
-				api_logf("worker poll failed errno=%d",errno);
-				_exit(1);
-			}
-		}
+		api_save_sequence();
+		api_poll_engine(busy);
 	}
 	return 0;
 }
 
-
-static void send_all(int fd, const char *data, size_t len)
+static int send_all(int fd, const char *data, size_t len)
 {
 	size_t off = 0;
 	while (off < len)
 	{
 		ssize_t n = send(fd, data + off, len - off, MSG_NOSIGNAL);
 		if (n <= 0)
-			return;
+			return 0;
 		off += (size_t)n;
 	}
+	return 1;
 }
 
 static void send_response(int fd, int code, const char *body)
@@ -647,6 +709,336 @@ static void send_tokenizer_unavailable(int fd)
 		"\"code\":\"tokenizer_unavailable\"}}");
 }
 
+typedef struct ApiStream
+{
+	char *pending;
+	char *piece;
+	char *escaped;
+	char *event;
+	uint32_t pending_bytes;
+	uint32_t pending_capacity;
+	uint32_t piece_capacity;
+	uint32_t sent_tokens;
+	uint32_t first;
+	size_t escaped_capacity;
+	size_t event_capacity;
+} ApiStream;
+
+static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root, uint32_t *stream, uint32_t *priority, uint32_t *deadline_ms)
+{
+	int32_t member;
+	bool flag;
+	*stream = *priority = *deadline_ms = 0u;
+	if ( root < 0 )
+		return 1;
+	member = SparkJsonFindObjectMember(doc,root,"stream");
+	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&flag) != SPARK_STATUS_OK )
+		return 0;
+	*stream = member >= 0 && flag ? 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"priority");
+	if ( member >= 0 && SparkJsonGetUInt32(doc,member,priority) != SPARK_STATUS_OK )
+		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"deadline_ms");
+	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,deadline_ms) != SPARK_STATUS_OK || *deadline_ms == 0u) )
+		return 0;
+	return 1;
+}
+
+static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
+{
+	uint32_t count = EngineStopTokenCount;
+	memcpy(stops,EngineStopTokens,(size_t)EngineStopTokenCount * sizeof(uint32_t));
+	if ( req->stop_token_count <= API_MAX_STOP_TOKENS )
+	{
+		memcpy(stops + count,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
+		count += req->stop_token_count;
+	}
+	return count;
+}
+
+static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
+{
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u}",req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count);
+}
+
+static uint32_t api_client_gone(int fd)
+{
+	char probe;
+	ssize_t received = recv(fd,&probe,1,MSG_PEEK | MSG_DONTWAIT);
+	return received == 0 || (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK) ? 1u : 0u;
+}
+
+static void api_abandon(ApiRequest *req, uint32_t status, uint32_t deadline_expired)
+{
+	pthread_mutex_lock(&S.queue_mutex);
+	pthread_mutex_lock(&req->mutex);
+	req->cancel_pending = 1u;
+	req->deadline_expired = deadline_expired;
+	req->status = req->status == 0u ? status : req->status;
+	req->done = 1;
+	pthread_mutex_unlock(&req->mutex);
+	pthread_mutex_unlock(&S.queue_mutex);
+	api_wake_worker();
+}
+
+static uint32_t api_ready(const ApiRequest *req, uint32_t sent, uint32_t mode)
+{
+	return req->done != 0 || (mode == API_WAIT_TOKENS && req->output_token_count != sent) || (mode == API_WAIT_ADMISSION && req->submitted != 0) ? 1u : 0u;
+}
+
+static void api_wait_slice(ApiRequest *req, uint32_t sent, uint32_t mode, uint64_t now_ms)
+{
+	struct timespec until;
+	uint64_t slice = API_WAIT_SLICE_MS;
+	if ( req->deadline_ms != 0u && req->deadline_ms - now_ms < slice )
+		slice = req->deadline_ms - now_ms;
+	clock_gettime(CLOCK_REALTIME,&until);
+	until.tv_sec += (time_t)(slice / 1000u);
+	until.tv_nsec += (long)(slice % 1000u) * 1000000L;
+	if ( until.tv_nsec >= 1000000000L )
+	{
+		until.tv_sec += 1;
+		until.tv_nsec -= 1000000000L;
+	}
+	pthread_mutex_lock(&req->mutex);
+	if ( api_ready(req,sent,mode) == 0u )
+		pthread_cond_timedwait(&req->cond,&req->mutex,&until);
+	pthread_mutex_unlock(&req->mutex);
+}
+
+static void api_await(int fd, ApiRequest *req, uint32_t sent, uint32_t mode)
+{
+	uint64_t now_ms;
+	for (;;)
+	{
+		if ( api_ready(req,sent,mode) != 0u || S.running == 0 )
+			return;
+		if ( api_client_gone(fd) != 0u )
+		{
+			api_abandon(req,SPARK_STATUS_IO_ERROR,0u);
+			return;
+		}
+		now_ms = api_now_ms();
+		if ( req->deadline_ms != 0u && now_ms >= req->deadline_ms )
+		{
+			api_abandon(req,SPARK_STATUS_BUSY,1u);
+			return;
+		}
+		api_wait_slice(req,sent,mode,now_ms);
+	}
+}
+
+static uint32_t api_utf8_complete(const char *text, uint32_t length)
+{
+	uint32_t start = length,need;
+	uint8_t lead;
+	while ( start > 0u && length - start < API_UTF8_MAX_SEQUENCE && ((uint8_t)text[start - 1u] & 0xc0u) == 0x80u )
+		start--;
+	if ( start == 0u )
+		return length;
+	lead = (uint8_t)text[start - 1u];
+	need = lead < 0x80u ? 1u : (lead & 0xe0u) == 0xc0u ? 2u : (lead & 0xf0u) == 0xe0u ? 3u : (lead & 0xf8u) == 0xf0u ? 4u : 1u;
+	return start - 1u + need > length ? start - 1u : length;
+}
+
+static int api_stream_open(int fd, ApiStream *stream)
+{
+	static const char headers[] = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+	memset(stream,0,sizeof(*stream));
+	stream->first = 1u;
+	stream->piece_capacity = (HaveSidecar ? Sidecar.maximum_token_text_bytes : 0u) + 1u;
+	stream->pending_capacity = API_STREAM_BATCH_TOKENS * stream->piece_capacity + API_UTF8_MAX_SEQUENCE;
+	stream->escaped_capacity = (size_t)stream->pending_capacity * 6u + 8u;
+	stream->event_capacity = stream->escaped_capacity + (size_t)API_STREAM_BATCH_TOKENS * 12u + 512u;
+	stream->pending = malloc(stream->pending_capacity);
+	stream->piece = malloc(stream->piece_capacity);
+	stream->escaped = malloc(stream->escaped_capacity);
+	stream->event = malloc(stream->event_capacity);
+	if ( stream->pending == 0 || stream->piece == 0 || stream->escaped == 0 || stream->event == 0 )
+		return 0;
+	stream->escaped[0] = '\0';
+	return send_all(fd,headers,sizeof(headers) - 1u);
+}
+
+static uint32_t api_stream_take(ApiRequest *req, ApiStream *stream, uint32_t *tokens)
+{
+	uint32_t count;
+	pthread_mutex_lock(&S.queue_mutex);
+	count = req->output_token_count - stream->sent_tokens;
+	count = count > API_STREAM_BATCH_TOKENS ? API_STREAM_BATCH_TOKENS : count;
+	memcpy(tokens,req->output_token_ids + stream->sent_tokens,(size_t)count * sizeof(uint32_t));
+	stream->sent_tokens += count;
+	pthread_mutex_unlock(&S.queue_mutex);
+	return count;
+}
+
+static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t count, const uint32_t *stops, uint32_t stop_count, uint32_t flush)
+{
+	uint32_t index,bytes,ready;
+	size_t escaped_length = 0u;
+	stream->escaped[0] = '\0';
+	if ( !HaveSidecar )
+		return 1;
+	for (index = 0u; index < count; index++)
+	{
+		if ( SparkTokenizerSidecarDecodeText(&Sidecar,tokens + index,1u,stops,stop_count,0u,stream->piece,stream->piece_capacity,&bytes) != SPARK_STATUS_OK || stream->pending_bytes + bytes > stream->pending_capacity )
+			return 0;
+		memcpy(stream->pending + stream->pending_bytes,stream->piece,bytes);
+		stream->pending_bytes += bytes;
+	}
+	ready = flush != 0u ? stream->pending_bytes : api_utf8_complete(stream->pending,stream->pending_bytes);
+	if ( !append_json_escaped(stream->escaped,stream->escaped_capacity,&escaped_length,stream->pending,ready) )
+		return 0;
+	memmove(stream->pending,stream->pending + ready,stream->pending_bytes - ready);
+	stream->pending_bytes -= ready;
+	return 1;
+}
+
+static int api_stream_event(int fd, ApiStream *stream, int chat_format, const uint32_t *tokens, uint32_t count, const ApiRequest *finished)
+{
+	char usage[160],reason[24];
+	size_t length;
+	uint32_t index;
+	int written;
+	usage[0] = '\0';
+	(void)snprintf(reason,sizeof(reason),finished != 0 ? "\"%s\"" : "null",finished != 0 ? api_finish_reason(finished) : "");
+	if ( finished != 0 )
+		api_usage_json(usage,sizeof(usage),finished);
+	written = chat_format
+		? snprintf(stream->event,stream->event_capacity,"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{%s\"content\":\"%s\"},\"finish_reason\":%s}]%s,\"tokens\":[",stream->first != 0u ? "\"role\":\"assistant\"," : "",stream->escaped,reason,usage)
+		: snprintf(stream->event,stream->event_capacity,"data: {\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"%s\",\"finish_reason\":%s}]%s,\"tokens\":[",stream->escaped,reason,usage);
+	if ( written < 0 || (size_t)written >= stream->event_capacity )
+		return 0;
+	length = (size_t)written;
+	for (index = 0u; index < count && length + 16u < stream->event_capacity; index++)
+		length += (size_t)snprintf(stream->event + length,stream->event_capacity - length,"%s%u",index != 0u ? "," : "",tokens[index]);
+	if ( index != count || length + 8u > stream->event_capacity )
+		return 0;
+	memcpy(stream->event + length,API_STREAM_EVENT_END,sizeof(API_STREAM_EVENT_END) - 1u);
+	stream->first = 0u;
+	return send_all(fd,stream->event,length + sizeof(API_STREAM_EVENT_END) - 1u);
+}
+
+static int api_failure(const ApiRequest *req, char *body, size_t capacity)
+{
+	int code = 500;
+	if ( req->deadline_expired != 0u )
+		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
+	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED )
+		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"prompt plus max_tokens exceeds the deployment's context or KV capacity\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}");
+	else
+		(void)snprintf(body,capacity,"{\"error\":{\"message\":\"model status %u\",\"type\":\"model_error\",\"code\":%u}}",req->status,req->status);
+	return code;
+}
+
+static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, int chat_format, const uint32_t *stops, uint32_t stop_count, int alive)
+{
+	static const char done[] = "data: [DONE]\n\n";
+	char error[224],event[240];
+	if ( alive && (req->deadline_expired != 0u || req->status != 0u) )
+	{
+		(void)api_failure(req,error,sizeof(error));
+		(void)snprintf(event,sizeof(event),"data: %s\n\n",error);
+		alive = send_all(fd,event,strlen(event));
+	}
+	else if ( alive )
+		alive = api_stream_text(stream,0,0u,stops,stop_count,1u) && api_stream_event(fd,stream,chat_format,0,0u,req);
+	if ( alive )
+		(void)send_all(fd,done,sizeof(done) - 1u);
+	free(stream->pending);
+	free(stream->piece);
+	free(stream->escaped);
+	free(stream->event);
+}
+
+static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
+{
+	uint32_t stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,text_capacity = 1u,text_bytes = 0u;
+	char *text = 0,*escaped = 0,*response = 0,usage[160],err[160];
+	size_t escaped_capacity,escaped_length = 0u,response_capacity;
+	SparkStatus status = SPARK_STATUS_OK;
+	stop_count = api_stop_list(req,stops);
+	if (HaveSidecar)
+		text_capacity = req->output_token_count * Sidecar.maximum_token_text_bytes + 1u;
+	escaped_capacity = (size_t)text_capacity * 6u + 8u;
+	response_capacity = (size_t)req->tokens_json_len + escaped_capacity + 384u;
+	text = malloc(text_capacity);
+	escaped = malloc(escaped_capacity);
+	response = malloc(response_capacity);
+	if (text == 0 || escaped == 0 || response == 0)
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	else if (HaveSidecar)
+		status = SparkTokenizerSidecarDecodeText(&Sidecar,req->output_token_ids,req->output_token_count,stops,stop_count,0u,text,text_capacity,&text_bytes);
+	if (status == SPARK_STATUS_OK && !append_json_escaped(escaped,escaped_capacity,&escaped_length,text,text_bytes))
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	api_usage_json(usage,sizeof(usage),req);
+	if (status == SPARK_STATUS_OK && !HaveSidecar)
+		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"tokens\":[%s],\"finish_reason\":\"%s\"%s,\"status\":0}",req->tokens_json,api_finish_reason(req),usage);
+	else if (status == SPARK_STATUS_OK && chat_format)
+		(void)snprintf(response,response_capacity,"{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"%s\"},\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s],\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json);
+	else if (status == SPARK_STATUS_OK)
+		(void)snprintf(response,response_capacity,"{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"%s\",\"finish_reason\":\"%s\"}]%s,\"tokens\":[%s],\"status\":0}",escaped,api_finish_reason(req),usage,req->tokens_json);
+	if (status == SPARK_STATUS_OK)
+	{
+		send_response(fd,200,response);
+		api_logf("request_done fd=%d id=%llu status=%u output_tokens=%u ms=%llu",fd,(unsigned long long)req->id,(unsigned)req->status,req->output_token_count,(unsigned long long)(api_now_ms() - req->started_ms));
+	}
+	else
+	{
+		(void)snprintf(err,sizeof(err),"{\"error\":{\"message\":\"tokenizer sidecar failed to decode the completion (status %u)\",\"type\":\"model_error\",\"code\":%u}}",(unsigned)status,(unsigned)status);
+		send_response(fd,500,err);
+	}
+	free(text);
+	free(escaped);
+	free(response);
+}
+
+static void api_release_request(ApiRequest *req)
+{
+	api_log_request_measurements(req);
+	pthread_mutex_lock(&S.queue_mutex);
+	if (req->inflight || req->cancel_pending)
+	{
+		req->orphaned = 1;
+		pthread_mutex_unlock(&S.queue_mutex);
+		api_wake_worker();
+		return;
+	}
+	api_queue_unlink(req);
+	pthread_mutex_unlock(&S.queue_mutex);
+	api_request_destroy(req);
+}
+
+static void api_stream(int fd, ApiRequest *req, int chat_format)
+{
+	ApiStream stream;
+	uint32_t tokens[API_STREAM_BATCH_TOKENS],stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,count;
+	char error[224];
+	int alive;
+	api_await(fd,req,0u,API_WAIT_ADMISSION);
+	if ( req->done == 0 && req->submitted == 0 )
+		api_abandon(req,SPARK_STATUS_INTERNAL_ERROR,0u);
+	if ( req->deadline_expired != 0u || req->status != 0u )
+	{
+		send_response(fd,api_failure(req,error,sizeof(error)),error);
+		return;
+	}
+	stop_count = api_stop_list(req,stops);
+	alive = api_stream_open(fd,&stream);
+	while ( alive )
+	{
+		api_await(fd,req,stream.sent_tokens,API_WAIT_TOKENS);
+		count = api_stream_take(req,&stream,tokens);
+		if ( count == 0u && (req->done != 0 || S.running == 0) )
+			break;
+		if ( count != 0u )
+			alive = api_stream_text(&stream,tokens,count,stops,stop_count,0u) && api_stream_event(fd,&stream,chat_format,tokens,count,0);
+	}
+	if ( req->done == 0 )
+		api_abandon(req,alive != 0 ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_IO_ERROR,0u);
+	api_stream_close(fd,req,&stream,chat_format,stops,stop_count,alive);
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len,
 	int chat_format)
 {
@@ -656,6 +1048,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	uint32_t request_stop_count = 0;
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
+	uint32_t stream_mode = 0u, priority = 0u, deadline_ms = 0u;
 	char *prompt_text = 0;
 	uint32_t prompt_text_bytes = 0;
 	ApiRequest *req;
@@ -759,6 +1152,18 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
 			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
+	if (!api_parse_serving_options(&doc, root, &stream_mode, &priority, &deadline_ms))
+	{
+		SparkJsonDocumentDestroy(&doc);
+		free(prompt);
+		free(prompt_text);
+		free(request_stops);
+		send_response(fd, 400,
+			"{\"error\":{\"message\":\"stream must be a boolean; priority and deadline_ms "
+			"must be unsigned integers, deadline_ms nonzero\","
+			"\"type\":\"invalid_request_error\",\"code\":\"invalid_option\"}}");
+		return;
+	}
 	SparkJsonDocumentDestroy(&doc);
 	if (prompt_text != 0 && prompt != 0)
 	{
@@ -854,6 +1259,9 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->started_ms = api_now_ms();
 	req->stop_tokens = request_stops;
 	req->stop_token_count = request_stop_count;
+	req->stream = stream_mode;
+	req->priority = priority;
+	req->deadline_ms = deadline_ms != 0u ? req->started_ms + deadline_ms : 0u;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -866,180 +1274,24 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
 	api_wake_worker();
-	while (!req->done && S.running)
+	if (stream_mode)
 	{
-		{
-			char probe;
-			ssize_t received = recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
-			if (received == 0)
-				break;
-			if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-				break;
-		}
-		{
-			struct timespec api_wait_until;
-			clock_gettime(CLOCK_REALTIME, &api_wait_until);
-			api_wait_until.tv_nsec += 250000000L;
-			if (api_wait_until.tv_nsec >= 1000000000L)
-			{
-				api_wait_until.tv_sec += 1u;
-				api_wait_until.tv_nsec -= 1000000000L;
-			}
-			pthread_mutex_lock(&req->mutex);
-			if (!req->done)
-				pthread_cond_timedwait(&req->cond, &req->mutex, &api_wait_until);
-			pthread_mutex_unlock(&req->mutex);
-		}
-	}
-	if (!req->done && S.running)
-	{
-		pthread_mutex_lock(&S.queue_mutex);
-		pthread_mutex_lock(&req->mutex);
-		req->cancel_pending = 1u;
-		req->status = req->status == 0u ? SPARK_STATUS_IO_ERROR : req->status;
-		req->done = 1;
-		pthread_mutex_unlock(&req->mutex);
-		pthread_mutex_unlock(&S.queue_mutex);
-		api_wake_worker();
-	}
-	else if (!req->done)
-	{
-		pthread_mutex_lock(&req->mutex);
-		if (!req->done && req->status == 0u)
-			req->status = SPARK_STATUS_INTERNAL_ERROR;
-		pthread_mutex_unlock(&req->mutex);
-	}
-	if (req->status == 0 && HaveSidecar)
-	{
-		uint32_t decode_stops[API_MAX_STOP_TOKENS +
-			SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
-		uint32_t decode_stop_count = 0;
-		uint32_t text_capacity;
-		char *text_buffer = 0;
-		char *escaped = 0;
-		size_t escaped_cap;
-		size_t escaped_len = 0;
-		size_t response_len = 0;
-		size_t response_cap;
-		char *resp_text = 0;
-		uint32_t text_bytes = 0;
-		SparkStatus decode_status;
-		memcpy(decode_stops, EngineStopTokens,
-			(size_t)EngineStopTokenCount * sizeof(uint32_t));
-		decode_stop_count = EngineStopTokenCount;
-		if (req->stop_token_count <= API_MAX_STOP_TOKENS)
-		{
-			memcpy(decode_stops + decode_stop_count, req->stop_tokens,
-				(size_t)req->stop_token_count * sizeof(uint32_t));
-			decode_stop_count += req->stop_token_count;
-		}
-		text_capacity = req->output_token_count * Sidecar.maximum_token_text_bytes + 1u;
-		text_buffer = malloc((size_t)text_capacity);
-		escaped_cap = (size_t)text_capacity * 6u + 8u;
-		escaped = malloc(escaped_cap);
-		response_cap = (size_t)req->tokens_json_len + escaped_cap + 160u;
-		resp_text = malloc(response_cap);
-		if (text_buffer != 0 && escaped != 0 && resp_text != 0)
-			decode_status = SparkTokenizerSidecarDecodeText(&Sidecar,
-				req->output_token_ids, req->output_token_count,
-				decode_stops, decode_stop_count, 0u,
-				text_buffer, text_capacity, &text_bytes);
-		else
-			decode_status = SPARK_STATUS_INTERNAL_ERROR;
-		if (decode_status == SPARK_STATUS_OK)
-		{
-			if (!append_json_escaped(escaped, escaped_cap, &escaped_len,
-					text_buffer, text_bytes))
-				decode_status = SPARK_STATUS_INTERNAL_ERROR;
-		}
-		if (decode_status == SPARK_STATUS_OK)
-		{
-			if (chat_format)
-			{
-				memcpy(resp_text, "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"", 91u);
-				response_len = 91u;
-			}
-			else
-			{
-				memcpy(resp_text, "{\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"", 58u);
-				response_len = 58u;
-			}
-			memcpy(resp_text + response_len, escaped, escaped_len);
-			response_len += escaped_len;
-			if (chat_format)
-			{
-				memcpy(resp_text + response_len, "\"}}],\"tokens\":[", 15u);
-				response_len += 15u;
-			}
-			else
-			{
-				memcpy(resp_text + response_len, "\"}],\"tokens\":[", 14u);
-				response_len += 14u;
-			}
-			memcpy(resp_text + response_len, req->tokens_json, req->tokens_json_len);
-			response_len += req->tokens_json_len;
-			memcpy(resp_text + response_len, "],\"status\":0}", 13u);
-			response_len += 13u;
-			resp_text[response_len] = '\0';
-			send_response(fd, 200, resp_text);
-			api_logf("request_done fd=%d id=%llu status=%u output_tokens=%u ms=%llu",
-				fd, (unsigned long long)req->id, (unsigned)req->status,
-				req->output_token_count,
-				(unsigned long long)(api_now_ms() - req->started_ms));
-		}
-		else
-		{
-			char err[160];
-			(void)snprintf(err, sizeof(err),
-				"{\"error\":{\"message\":\"tokenizer sidecar failed to decode "
-				"the completion (status %u)\",\"type\":\"model_error\","
-				"\"code\":%u}}", (unsigned)decode_status, (unsigned)decode_status);
-			send_response(fd, 500, err);
-		}
-		free(text_buffer);
-		free(escaped);
-		free(resp_text);
-	}
-	else if (req->status == 0)
-	{
-		char *resp = malloc(req->tokens_json_len + 128);
-		if (resp != 0)
-		{
-			(void)snprintf(resp, req->tokens_json_len + 128,
-				"{\"object\":\"text_completion\",\"tokens\":[%s],\"status\":0}",
-				req->tokens_json);
-				send_response(fd, 200, resp);
-				api_logf("request_done fd=%d id=%llu status=%u output_tokens=%u ms=%llu",
-					fd, (unsigned long long)req->id, (unsigned)req->status,
-					req->output_token_count,
-					(unsigned long long)(api_now_ms() - req->started_ms));
-				free(resp);
-		}
-		else
-			send_response(fd, 500, "{\"error\":\"oom\"}");
-	}
-	else
-	{
-		char err[128];
-		(void)snprintf(err, sizeof(err),
-			"{\"error\":{\"message\":\"model status %u\","
-			"\"type\":\"model_error\",\"code\":%u}}",
-			req->status, req->status);
-		send_response(fd, 500, err);
-	}
-	api_log_request_measurements(req);
-	pthread_mutex_lock(&S.queue_mutex);
-	if (req->inflight || req->cancel_pending)
-	{
-		req->orphaned = 1;
-		pthread_mutex_unlock(&S.queue_mutex);
-		api_wake_worker();
+		api_stream(fd, req, chat_format);
+		api_release_request(req);
 		return;
 	}
-	api_queue_unlink(req);
-	pthread_mutex_unlock(&S.queue_mutex);
-	api_request_destroy(req);
-	return;
+	api_await(fd, req, 0u, API_WAIT_DONE);
+	if (req->done == 0)
+		api_abandon(req, SPARK_STATUS_INTERNAL_ERROR, 0u);
+	if (req->deadline_expired == 0u && req->status == 0)
+		api_send_completion(fd, req, chat_format);
+	else
+	{
+		char err[224];
+		int code = api_failure(req, err, sizeof(err));
+		send_response(fd, code, err);
+	}
+	api_release_request(req);
 }
 
 static void *api_connection(void *arg)

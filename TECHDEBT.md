@@ -249,17 +249,13 @@ progress diary.
 
 ## Serving API
 
-- `model_api` returns a completion only when it finishes. Add
-  server-sent-event streaming for `/v1/completions` and
-  `/v1/chat/completions`.
-- Decoding is greedy only. Add temperature and top-p sampling driven by a
-  counter-based RNG keyed by the request seed, so sampled completions
-  replay exactly, and return logprobs.
-- Accept priority and deadline per request and carry them into admission.
-- Log driver hash, contract hash and request per completion so any
-  completion can be replayed off-node and audited.
-- `docs/LITELLM_FRONTEND.md` still describes a token-ID-only upstream;
-  update it for text prompts through the tokenizer sidecar.
+- Decoding is greedy only. Add temperature sampling driven by a
+  counter-based RNG keyed by the request seed, so sampled completions replay
+  exactly: Gumbel-max on the vocab-parallel argmax needs no extra collective.
+  Then add top-k/top-p and logprobs, which need a cross-rank log-sum-exp.
+- Carry `deadline_ms` into the batch engine and the serving submission
+  (`deadline_time_ns` exists but is not populated) so the scheduler, not
+  only the API, orders work by deadline.
 
 ## Production qualification
 

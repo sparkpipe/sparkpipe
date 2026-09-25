@@ -39,9 +39,13 @@
 
 #define TEST_LOOPBACK_RANK_COUNT 3u
 #define TEST_LOOPBACK_HTTP_DEADLINE_MS 10000u
+#define TEST_LOOPBACK_OVERLOAD_REQUESTS 96u
 #define TEST_LOOPBACK_FUZZ_DEADLINE_MS 5000u
 #define TEST_LOOPBACK_TOKEN_FLOOR 4200u
 #define TEST_LOOPBACK_TOKEN_CEILING 4210u
+#define TEST_LOOPBACK_MAX_ACTIVE 16u
+#define TEST_LOOPBACK_PREFILL_TOKEN_OFFSET 3u
+#define TEST_LOOPBACK_TOKEN_LANE_CEILING (TEST_LOOPBACK_TOKEN_FLOOR + TEST_LOOPBACK_PREFILL_TOKEN_OFFSET + TEST_LOOPBACK_MAX_ACTIVE)
 
 static const char *const TestLoopbackTransportHosts[TEST_LOOPBACK_RANK_COUNT] =
 {
@@ -224,7 +228,7 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	fixture.runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	fixture.runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	fixture.runtime_limits.max_inflight_submission_count = 2u;
-	fixture.runtime_limits.max_active_sequence_count = 16u;
+	fixture.runtime_limits.max_active_sequence_count = TEST_LOOPBACK_MAX_ACTIVE;
 	fixture.runtime_limits.max_input_row_count = 32u;
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
@@ -552,6 +556,43 @@ static uint64_t TestLoopbackExpectServed(
 	return(signature);
 }
 
+static void TestLoopbackExpectStatus(const TestLoopbackStack *stack,const char *body,int32_t expected,char *response,size_t capacity)
+{
+	int32_t status = TestLoopbackHttpPost(stack->api_port,body,response,capacity,TEST_LOOPBACK_HTTP_DEADLINE_MS,0);
+	if ( status != expected )
+		fprintf(stderr,"test_system_loopback: %s expected %d, got %d; response: %.512s\n",body,(int)expected,(int)status,response);
+	assert(status == expected);
+}
+
+static void TestLoopbackServingOptions(const TestLoopbackStack *stack)
+{
+	char response[65536];
+	uint32_t tokens[64],count,events,index;
+	const char *cursor;
+	count = events = 0u;
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"stream\":true}",200,response,sizeof(response));
+	assert(strstr(response,"Content-Type: text/event-stream") != 0 && strstr(response,"data: [DONE]") != 0);
+	for (cursor = strstr(response,"data: {"); cursor != 0; cursor = strstr(cursor + 1,"data: {"))
+	{
+		events++;
+		count += TestLoopbackScanTokenArray(cursor,tokens + count,64u - count);
+	}
+	assert(count == 4u && events >= 2u && strstr(response,"\"finish_reason\":\"length\"") != 0 && strstr(response,"\"completion_tokens\":4") != 0);
+	for (index=0u; index<count; index++)
+		assert(tokens[index] >= TEST_LOOPBACK_TOKEN_FLOOR && tokens[index] < TEST_LOOPBACK_TOKEN_CEILING);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":200,\"deadline_ms\":1}",504,response,sizeof(response));
+	assert(strstr(response,"deadline_exceeded") != 0);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"priority\":7}",200,response,sizeof(response));
+	assert(strstr(response,"\"finish_reason\":\"length\"") != 0 && strstr(response,"\"total_tokens\":6") != 0);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":512}",400,response,sizeof(response));
+	assert(strstr(response,"context_length_exceeded") != 0);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":512,\"stream\":true}",400,response,sizeof(response));
+	assert(strstr(response,"context_length_exceeded") != 0 && strstr(response,"text/event-stream") == 0);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"priority\":-1}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"stream\":3}",400,response,sizeof(response));
+	TestLoopbackExpectServed(stack,4u,(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS,(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS);
+}
+
 static pid_t TestLoopbackForkRequest(
 	uint32_t port,
 	const char *body,
@@ -574,7 +615,7 @@ static pid_t TestLoopbackForkRequest(
 			count = TestLoopbackScanTokenArray(TestLoopbackResponseBody(response),tokens,16u);
 			assert(count == 4u);
 			for (index=0u; index<count; index++)
-				assert(tokens[index] >= TEST_LOOPBACK_TOKEN_FLOOR && tokens[index] < TEST_LOOPBACK_TOKEN_CEILING);
+				assert(tokens[index] >= TEST_LOOPBACK_TOKEN_FLOOR && tokens[index] < TEST_LOOPBACK_TOKEN_LANE_CEILING);
 			_exit(0);
 		}
 		if ( status >= 500 && status <= 599 && strstr(response,"error") != 0 )
@@ -617,6 +658,16 @@ static int32_t TestLoopbackJoinRequest(pid_t child,uint64_t deadline_ms)
 		}
 		nanosleep(&delay,0);
 	}
+}
+
+static void TestLoopbackOverload(const TestLoopbackStack *stack)
+{
+	pid_t requests[TEST_LOOPBACK_OVERLOAD_REQUESTS];
+	uint32_t index;
+	for (index=0u; index<TEST_LOOPBACK_OVERLOAD_REQUESTS; index++)
+		requests[index] = TestLoopbackForkRequest(stack->api_port,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4}",TEST_LOOPBACK_HTTP_DEADLINE_MS);
+	for (index=0u; index<TEST_LOOPBACK_OVERLOAD_REQUESTS; index++)
+		assert(TestLoopbackJoinRequest(requests[index],TEST_LOOPBACK_HTTP_DEADLINE_MS) == 0);
 }
 
 static void TestLoopbackSleepMs(uint64_t milliseconds)
@@ -873,6 +924,10 @@ int main(int argc,char **argv)
 	TestLoopbackExpectServed(&stack,4u,(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS,
 		(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS);
 	printf("test_system_loopback: warm serve OK\n");
+	TestLoopbackServingOptions(&stack);
+	printf("test_system_loopback: streaming, deadline, priority and option validation OK\n");
+	TestLoopbackOverload(&stack);
+	printf("test_system_loopback: %u concurrent requests beyond engine capacity OK\n",TEST_LOOPBACK_OVERLOAD_REQUESTS);
 	TestLoopbackResurrectIdleRank(&stack);
 	TestLoopbackResurrectApi(&stack);
 	TestLoopbackResurrectMidFlight(&stack);
