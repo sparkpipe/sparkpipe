@@ -54,6 +54,7 @@ SparkStatus SparkJsonCopyString(const SparkJsonDocument *document, int32_t token
 SparkStatus SparkJsonCopyRawValue(const SparkJsonDocument *document, int32_t token_index, char **text, uint32_t *text_bytes);
 SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_index, uint32_t *value);
 SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_index, uint64_t *value);
+SparkStatus SparkJsonGetFloat(const SparkJsonDocument *document, int32_t token_index, float *value);
 SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token_index, bool *value);
 
 #ifdef __cplusplus

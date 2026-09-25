@@ -249,10 +249,16 @@ progress diary.
 
 ## Serving API
 
-- Decoding is greedy only. Add temperature sampling driven by a
-  counter-based RNG keyed by the request seed, so sampled completions replay
-  exactly: Gumbel-max on the vocab-parallel argmax needs no extra collective.
-  Then add top-k/top-p and logprobs, which need a cross-rank log-sum-exp.
+- Sampling is temperature-only and only glm5_next implements it; other
+  adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
+  which need a cross-rank log-sum-exp, and port the sampled head
+  (`LmHeadSampledCandidate*Kernel`) to the other families.
+- Sampled rows take the full-vocab BF16 head instead of the certified FP8
+  B1 head, run eagerly instead of replaying a CUDA graph, and get no MTP
+  drafts: the certified screen prunes with un-noised bounds, graphs freeze
+  the head choice, and drafts are keyed by relative positions. Noise the
+  screen bounds, key drafts by absolute position, and capture sampled
+  graphs to lift all three.
 - Carry `deadline_ms` into the batch engine and the serving submission
   (`deadline_time_ns` exists but is not populated) so the scheduler, not
   only the API, orders work by deadline.

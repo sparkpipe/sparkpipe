@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -900,6 +901,35 @@ SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_
     }
     free(primitive);
     *value = (uint64_t)parsed_value;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkJsonGetFloat(const SparkJsonDocument *document, int32_t token_index, float *value)
+{
+    char *primitive;
+    char *end;
+    float parsed_value;
+    SparkStatus status;
+
+    if (value == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    status = SparkJsonCopyPrimitive(document, token_index, &primitive);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    errno = 0;
+    end = 0;
+    parsed_value = strtof(primitive, &end);
+    if (strchr("-0123456789", primitive[0]) == 0 || strpbrk(primitive, "xXiInN") != 0 || errno != 0 || end == primitive || *end != '\0' || !isfinite(parsed_value))
+    {
+        free(primitive);
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+    }
+    free(primitive);
+    *value = parsed_value;
     return SPARK_STATUS_OK;
 }
 

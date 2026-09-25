@@ -424,6 +424,25 @@ SparkStatus SparkModelServingAdapterSelectEmitRows(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelServingAdapterValidateSampling(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission)
+{
+	const SparkRowSampling *rule;
+	uint32_t lane;
+	for (lane=0u; lane<submission->lane_count; lane++)
+	{
+		rule = &submission->lanes[lane].sampling;
+		if ( SparkSamplingRuleValid(rule) == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( rule->inverse_temperature != 0.0f && (lane >= submission->active_sequence_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( rule->inverse_temperature != 0.0f && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING) == 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
@@ -444,6 +463,9 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelServingAdapterValidateSampling(descriptor,submission);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
 		if ( submission->tokens_per_sequence != 0u )

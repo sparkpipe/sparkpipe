@@ -432,6 +432,35 @@ static void TestScenarioChainEosCheckpoint(const SparkModelResidentDeployment *d
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioSamplingValidation(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchSubmitRequest request = {0};
+	SparkModelBatchRequestHandle handle = 0u;
+	uint32_t prompt[2] = {11u,12u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.request_id = request.sequence_id = 1u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 2u;
+	request.output_token_budget = 2u;
+	request.temperature = 2.5f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: temperature above the maximum is rejected");
+	request.temperature = 0.0f;
+	request.seed = 5u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: a greedy request carries no seed");
+	request.temperature = 0.00001f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: temperature below the minimum is rejected");
+	request.temperature = 0.7f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK && handle != 0u,"sampling: a seeded request is admitted by a sampling adapter");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	SparkModelResidentDeployment bounded = *deployment;
@@ -710,6 +739,7 @@ int main(void)
 		TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
+		TestScenarioSamplingValidation(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 		TestScenarioDriverIoError(&deployment,runtime_root);
 		TestScenarioEosEarlyStop(&deployment,runtime_root);

@@ -394,6 +394,8 @@ struct Glm5NextLayerBuffers
     const uint32_t *context_length;
     const uint32_t *positions;
     const uint32_t *row_positions;
+    const SparkRowSampling *row_sampling;
+    uint32_t head_token_offset;
     uint32_t index_owner_rank;
     uint32_t index_owner_degree;
     uint32_t attention_decode_wave;
@@ -2392,6 +2394,24 @@ static int32_t Glm5NextLayerMoeExperts(
 // Resident execution retains the same submission order. Lazy execution can
 // acquire/import the routed working set between these two calls on this stream.
 
+static int32_t Glm5NextHeadCommit(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t tiles, cudaStream_t stream)
+{
+    LM_LAUNCH((LmHeadCommitKernel<GLM5_NEXT_LAYER_THREADS>), rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->head_candidate_score, buffers->head_candidate_token, tiles, buffers->output_token, buffers->output_score, rows);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextHeadSampled(const Glm5NextLayerBuffers *buffers, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, uint32_t tiles, cudaStream_t stream)
+{
+    const LmHeadSampling sampling = {buffers->row_sampling, buffers->positions, rows, buffers->head_token_offset};
+    if (token_ids != 0 || buffers->positions == 0)
+        return LM_LAUNCH_ERR_SHAPE;
+    if (rows > 1u)
+        LM_LAUNCH((LmHeadSampledCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE, GLM5_NEXT_HEAD_ROWS>), dim3(tiles, (rows + GLM5_NEXT_HEAD_ROWS - 1u) / GLM5_NEXT_HEAD_ROWS), GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->normed_bf16, (const uint16_t *)head_weight, buffers->head_candidate_score, buffers->head_candidate_token, rows, GLM5_NEXT_HIDDEN, vocabulary, sampling);
+    else
+        LM_LAUNCH((LmHeadSampledCandidateKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE>), dim3(tiles, rows), GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->normed_bf16, (const uint16_t *)head_weight, buffers->head_candidate_score, buffers->head_candidate_token, GLM5_NEXT_HIDDEN, vocabulary, sampling);
+    return Glm5NextHeadCommit(buffers, rows, tiles, stream);
+}
+
 static int32_t Glm5NextHead(
     const Glm5NextLayerBuffers *buffers,
     const void *head_norm_weight,
@@ -2426,6 +2446,8 @@ static int32_t Glm5NextHead(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
+    if (buffers->row_sampling != 0)
+        return Glm5NextHeadSampled(buffers, head_weight, token_ids, vocabulary, rows, tiles, stream);
     if (rows > 1u)
         LM_LAUNCH(
             (LmHeadCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE, GLM5_NEXT_HEAD_ROWS>),
@@ -2456,21 +2478,7 @@ static int32_t Glm5NextHead(
         rows,
         GLM5_NEXT_HIDDEN,
         vocabulary);
-    LM_LAUNCH(
-        (LmHeadCommitKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->head_candidate_score,
-        buffers->head_candidate_token,
-        tiles,
-        buffers->output_token,
-        buffers->output_score,
-        rows);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
+    return Glm5NextHeadCommit(buffers, rows, tiles, stream);
 }
 
 static int32_t Glm5NextHeadCertifiedB1(

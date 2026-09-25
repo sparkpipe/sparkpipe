@@ -56,12 +56,16 @@ template<class T> static std::vector<T> Download(const T *device,size_t count)
     return host;
 }
 
-static void HeadRun(bool rows_kernel,const uint16_t *normed,const uint16_t *weight,uint32_t rows,uint32_t vocabulary,uint32_t *token,float *score,cudaStream_t stream)
+static void HeadRun(bool rows_kernel,const uint16_t *normed,const uint16_t *weight,uint32_t rows,uint32_t vocabulary,uint32_t *token,float *score,cudaStream_t stream,const LmHeadSampling *sampling=nullptr)
 {
     const uint32_t tiles=(vocabulary+GLM5_NEXT_HEAD_TILE-1u)/GLM5_NEXT_HEAD_TILE;
     float *candidate_score; uint32_t *candidate_token;
     CUDA(cudaMalloc(&candidate_score,(uint64_t)rows*tiles*4u)); CUDA(cudaMalloc(&candidate_token,(uint64_t)rows*tiles*4u));
-    if (rows_kernel)
+    if (sampling != nullptr && rows_kernel)
+        LmHeadSampledCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE,GLM5_NEXT_HEAD_ROWS><<<dim3(tiles,(rows+GLM5_NEXT_HEAD_ROWS-1u)/GLM5_NEXT_HEAD_ROWS),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,candidate_score,candidate_token,rows,GLM5_NEXT_HIDDEN,vocabulary,*sampling);
+    else if (sampling != nullptr)
+        LmHeadSampledCandidateKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE><<<dim3(tiles,rows),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,candidate_score,candidate_token,GLM5_NEXT_HIDDEN,vocabulary,*sampling);
+    else if (rows_kernel)
         LmHeadCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE,GLM5_NEXT_HEAD_ROWS><<<dim3(tiles,(rows+GLM5_NEXT_HEAD_ROWS-1u)/GLM5_NEXT_HEAD_ROWS),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,0,candidate_score,candidate_token,rows,GLM5_NEXT_HIDDEN,vocabulary);
     else
         LmHeadCandidateKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE><<<dim3(tiles,rows),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,0,candidate_score,candidate_token,rows,GLM5_NEXT_HIDDEN,vocabulary);
@@ -72,14 +76,14 @@ static void HeadRun(bool rows_kernel,const uint16_t *normed,const uint16_t *weig
     CUDA(cudaFree(candidate_score)); CUDA(cudaFree(candidate_token));
 }
 
-static float HeadTime(bool rows_kernel,const uint16_t *normed,const uint16_t *weight,uint32_t rows,uint32_t vocabulary,uint32_t *token,float *score,cudaStream_t stream)
+static float HeadTime(bool rows_kernel,const uint16_t *normed,const uint16_t *weight,uint32_t rows,uint32_t vocabulary,uint32_t *token,float *score,cudaStream_t stream,const LmHeadSampling *sampling=nullptr)
 {
     cudaEvent_t begin,end;
     float ms;
     CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
-    HeadRun(rows_kernel,normed,weight,rows,vocabulary,token,score,stream);
+    HeadRun(rows_kernel,normed,weight,rows,vocabulary,token,score,stream,sampling);
     CUDA(cudaEventRecord(begin,stream));
-    HeadRun(rows_kernel,normed,weight,rows,vocabulary,token,score,stream);
+    HeadRun(rows_kernel,normed,weight,rows,vocabulary,token,score,stream,sampling);
     CUDA(cudaEventRecord(end,stream));
     CUDA(cudaEventSynchronize(end)); CUDA(cudaEventElapsedTime(&ms,begin,end));
     CUDA(cudaEventDestroy(begin)); CUDA(cudaEventDestroy(end));
@@ -110,6 +114,61 @@ static void HeadCase(uint32_t rows,uint32_t vocabulary,bool timing,cudaStream_t 
     if (timing)
         printf("TIMING head rows=%u vocabulary=%u per_row_kernel_ms=%.3f rows_kernel_ms=%.3f speedup=%.1f\n",rows,vocabulary,HeadTime(false,device_normed,device_weight,rows,vocabulary,token_a,score_a,stream),HeadTime(true,device_normed,device_weight,rows,vocabulary,token_b,score_b,stream),HeadTime(false,device_normed,device_weight,rows,vocabulary,token_a,score_a,stream)/HeadTime(true,device_normed,device_weight,rows,vocabulary,token_b,score_b,stream));
     CUDA(cudaFree(device_normed)); CUDA(cudaFree(device_weight)); CUDA(cudaFree(token_a)); CUDA(cudaFree(token_b)); CUDA(cudaFree(score_a)); CUDA(cudaFree(score_b));
+}
+
+static uint64_t HeadKey(float score,uint32_t token)
+{
+    uint32_t bits;
+    memcpy(&bits,&score,sizeof(bits));
+    bits^=(bits & 0x80000000u) != 0u ? 0xffffffffu : 0x80000000u;
+    return ((uint64_t)bits<<32u)|(0xffffffffu-token);
+}
+
+static void SampledHeadCase(uint32_t rows,uint32_t vocabulary,cudaStream_t stream)
+{
+    std::vector<uint16_t> normed((uint64_t)rows*GLM5_NEXT_HIDDEN),weight((uint64_t)vocabulary*GLM5_NEXT_HIDDEN);
+    std::vector<SparkRowSampling> rules(rows);
+    std::vector<uint32_t> positions(rows),token[5];
+    std::vector<float> score[5];
+    uint32_t *device_token[5],half=vocabulary/2u,moved=0u,row,index;
+    float *device_score[5];
+    for (auto &value : normed) value=Bf16(Signed());
+    for (auto &value : weight) value=Bf16(Signed()*0.05f);
+    for (row=0u; row<rows; row++)
+    {
+        rules[row]=SparkSamplingRule(row%3u == 1u ? 0.0f : 0.6f+0.2f*(float)(row%5u),77u+row/2u);
+        positions[row]=1000u+row*7u;
+    }
+    uint16_t *device_normed=Upload(normed),*device_weight=Upload(weight);
+    SparkRowSampling *device_rules=Upload(rules);
+    uint32_t *device_positions=Upload(positions);
+    const LmHeadSampling full={device_rules,device_positions,rows,0u},high={device_rules,device_positions,rows,half};
+    for (index=0u; index<5u; index++) { CUDA(cudaMalloc(&device_token[index],rows*4u)); CUDA(cudaMalloc(&device_score[index],rows*4u)); }
+    HeadRun(false,device_normed,device_weight,rows,vocabulary,device_token[0],device_score[0],stream,&full);
+    HeadRun(true,device_normed,device_weight,rows,vocabulary,device_token[1],device_score[1],stream,&full);
+    HeadRun(true,device_normed,device_weight,rows,vocabulary,device_token[2],device_score[2],stream);
+    HeadRun(true,device_normed,device_weight,rows,half,device_token[3],device_score[3],stream,&full);
+    HeadRun(true,device_normed,device_weight+(uint64_t)half*GLM5_NEXT_HIDDEN,rows,vocabulary-half,device_token[4],device_score[4],stream,&high);
+    for (index=0u; index<5u; index++) { token[index]=Download(device_token[index],rows); score[index]=Download(device_score[index],rows); }
+    for (row=0u; row<rows; row++)
+    {
+        if (token[0][row] != token[1][row] || memcmp(&score[0][row],&score[1][row],4u) != 0 || (HeadKey(score[3][row],token[3][row]) > HeadKey(score[4][row],token[4][row]+half) ? token[3][row] : token[4][row]+half) != token[1][row] || (rules[row].inverse_temperature == 0.0f && (token[1][row] != token[2][row] || memcmp(&score[1][row],&score[2][row],4u) != 0)))
+        {
+            fprintf(stderr,"SAMPLED-HEAD-MISMATCH rows=%u row=%u single=%u rows_kernel=%u greedy=%u shards=%u/%u\n",rows,row,token[0][row],token[1][row],token[2][row],token[3][row],token[4][row]+half);
+            exit(1);
+        }
+        moved+=rules[row].inverse_temperature != 0.0f && token[1][row] != token[2][row] ? 1u : 0u;
+    }
+    if (rows >= 8u && moved == 0u)
+    {
+        fprintf(stderr,"SAMPLED-HEAD-MISMATCH rows=%u no sampled row left the argmax\n",rows);
+        exit(1);
+    }
+    printf("PASS sampled head rows=%u vocabulary=%u single_rows_sharded_bitwise_equal=yes greedy_rows_unchanged=yes moved=%u\n",rows,vocabulary,moved);
+    if (rows >= 64u)
+        printf("TIMING sampled head rows=%u vocabulary=%u greedy_ms=%.3f sampled_ms=%.3f\n",rows,vocabulary,HeadTime(true,device_normed,device_weight,rows,vocabulary,device_token[2],device_score[2],stream),HeadTime(true,device_normed,device_weight,rows,vocabulary,device_token[1],device_score[1],stream,&full));
+    for (index=0u; index<5u; index++) { CUDA(cudaFree(device_token[index])); CUDA(cudaFree(device_score[index])); }
+    CUDA(cudaFree(device_normed)); CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_rules)); CUDA(cudaFree(device_positions));
 }
 
 template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM> static float ProjectTime(bool rows_kernel,const uint16_t *input,const uint16_t *weight,uint16_t *output,uint32_t rows,cudaStream_t stream)
@@ -337,6 +396,8 @@ int main(int argc,char **argv)
         HeadCase(rows,1000u,false,stream);
     HeadCase(256u,9680u,true,stream);
     HeadCase(8u,9680u,true,stream);
+    for (uint32_t rows : {1u,3u,17u,256u})
+        SampledHeadCase(rows,9680u,stream);
     for (uint32_t rows : {1u,4u,5u,8u,17u,256u})
     {
         ProjectCase<GLM5_NEXT_QK_NOPE_DIM,GLM5_NEXT_LATENT,GLM5_NEXT_QK_NOPE_DIM+GLM5_NEXT_ROPE_DIM>(rows,"query_absorb",stream);

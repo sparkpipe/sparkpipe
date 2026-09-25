@@ -177,6 +177,7 @@ typedef struct SparkGlm5NextServingPending
 	uint32_t input_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint64_t row_positions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint64_t row_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	SparkRowSampling row_sampling[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 } SparkGlm5NextServingPending;
 
@@ -230,7 +231,8 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -1060,6 +1062,9 @@ static void SparkGlm5NextServingBuildFrame(
 	SparkGlm5NextResidentDecodeStageFrameContext *context = &pending->context;
 	SparkModelDriverBuffer *buffer = &pending->buffer;
 	SparkModelDriverFrame *frame = &pending->frame;
+	uint32_t row;
+	for (row=0u; SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && row<submission->row_count; row++)
+		pending->row_sampling[row] = submission->lanes[submission->row_lane_indices[row]].sampling;
 	memset(batch,0,sizeof(*batch));
 	batch->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;
 	batch->descriptor_bytes = sizeof(*batch);
@@ -1069,6 +1074,7 @@ static void SparkGlm5NextServingBuildFrame(
 	batch->row_resident_slots = pending->resident_slots;
 	batch->row_positions = pending->row_positions;
 	batch->row_sequence_ids = pending->row_sequence_ids;
+	batch->row_sampling = pending->row_sampling;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);

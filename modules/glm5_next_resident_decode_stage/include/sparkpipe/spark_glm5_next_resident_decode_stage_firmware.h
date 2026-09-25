@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_module_abi.h"
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
 
@@ -15,7 +16,7 @@ extern "C" {
 
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION UINT32_C(0x00000002)
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP UINT32_C(0x00000004)
@@ -124,6 +125,7 @@ typedef struct SparkGlm5NextResidentDecodeStageBatchView
 	const uint32_t *row_resident_slots;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
+	const SparkRowSampling *row_sampling;
 } SparkGlm5NextResidentDecodeStageBatchView;
 
 #define SPARK_GLM5_NEXT_STATE_CAPTURE_ABI_VERSION 1u

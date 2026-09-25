@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sparkpipe/spark_sampling.h"
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
@@ -70,6 +71,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint64_t graph_failed_rows;
 	uint32_t graph_disabled;
 	void *host_staging;
+	SparkRowSampling *host_row_sampling;
+	uint32_t sampled;
 	uint32_t *host_token_ids;
 	uint32_t *host_resident_slots;
 	uint32_t *host_positions;
@@ -79,6 +82,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *token_ids;
 	uint32_t *resident_slots;
 	uint32_t *positions;
+	SparkRowSampling *row_sampling;
 	uint32_t *context_lengths;
 	uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
@@ -188,6 +192,8 @@ typedef struct SparkGlm5NextCudaWave
 	const uint32_t *host_token_ids;
 	const uint32_t *host_resident_slots;
 	const uint32_t *host_positions;
+	const SparkRowSampling *host_row_sampling;
+	uint32_t sampled;
 	const void *hidden_input_bf16;
 	void *hidden_output_bf16;
 	const void *sideband_input_u32;

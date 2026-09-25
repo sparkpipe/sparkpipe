@@ -39,6 +39,7 @@ typedef struct probe_state
 	uint64_t next_request_id,control_generation;
 	uint32_t tokens[PROBE_INPUT_ROWS],slots[PROBE_INPUT_ROWS],outputs[PROBE_INPUT_ROWS];
 	uint64_t positions[PROBE_INPUT_ROWS],sequences[PROBE_INPUT_ROWS];
+	SparkRowSampling sampling[PROBE_INPUT_ROWS];
 } probe_state_t;
 
 static uint64_t probe_time(void)
@@ -165,6 +166,7 @@ static void probe_batch(probe_state_t *state,uint32_t rows,uint32_t step)
 		state->slots[row] = row;
 		state->positions[row] = step;
 		state->sequences[row] = (row + 1u);
+		state->sampling[row] = SparkSamplingRule(0.0f,0u);
 		state->outputs[row] = UINT32_MAX;
 		state->cache_lanes[row] = (SparkModelDriverCacheLane){.sequence_id=(row + 1u),.sequence_position=step,.request_generation=1u,.step_generation=(step + 1u),.resident_sequence_slot=row,.context_token_count=(step + 1u)};
 	}
@@ -176,6 +178,7 @@ static void probe_batch(probe_state_t *state,uint32_t rows,uint32_t step)
 	state->batch.row_resident_slots = state->slots;
 	state->batch.row_positions = state->positions;
 	state->batch.row_sequence_ids = state->sequences;
+	state->batch.row_sampling = state->sampling;
 	state->context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	state->context.descriptor_bytes = sizeof(state->context);
 	state->context.flags = step == 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;

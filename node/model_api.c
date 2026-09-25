@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <fcntl.h>
+#include <sys/random.h>
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
@@ -21,6 +22,7 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
+#include "sparkpipe/spark_sampling.h"
 
 #define API_MAX_BODY		(8u * 1024u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
@@ -40,6 +42,16 @@
 #define API_WAIT_ADMISSION 2u
 #define API_BUSY_RETRY_MS 5
 #define API_SEQUENCE_SAVE_MS 60000u
+
+typedef struct ApiOptions
+{
+	uint32_t stream;
+	uint32_t priority;
+	uint32_t deadline_ms;
+	uint32_t seeded;
+	float temperature;
+	uint64_t seed;
+} ApiOptions;
 
 typedef struct ApiRequest
 {
@@ -69,6 +81,8 @@ typedef struct ApiRequest
 	uint32_t stream;
 	uint32_t deadline_expired;
 	uint64_t deadline_ms;
+	float temperature;
+	uint64_t seed;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -145,7 +159,7 @@ static void api_log_request_measurements(const ApiRequest *request)
 	if (SparkSha256Bytes(request->prompt_tokens,(size_t)request->prompt_count * sizeof(uint32_t),prompt_sha256) != SPARK_STATUS_OK)
 		prompt_sha256[0] = '\0';
 	flockfile(stderr);
-	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
+	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
 	for (index=0u; index<request->output_token_count; index++)
 		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
 	fputs("]}\n",stderr);
@@ -383,6 +397,8 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.request_id = r->id;
 	sub.sequence_id = r->id;
 	sub.priority = r->priority;
+	sub.temperature = r->temperature;
+	sub.seed = r->seed;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
@@ -724,23 +740,47 @@ typedef struct ApiStream
 	size_t event_capacity;
 } ApiStream;
 
-static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root, uint32_t *stream, uint32_t *priority, uint32_t *deadline_ms)
+static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root, ApiOptions *options)
+{
+	int32_t member;
+	float top_p;
+	member = SparkJsonFindObjectMember(doc,root,"temperature");
+	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->temperature) != SPARK_STATUS_OK || SparkSamplingTemperatureValid(options->temperature) == 0u) )
+		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"seed");
+	options->seeded = member >= 0 ? 1u : 0u;
+	if ( member >= 0 && SparkJsonGetUInt64(doc,member,&options->seed) != SPARK_STATUS_OK )
+		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"top_p");
+	return member < 0 || (SparkJsonGetFloat(doc,member,&top_p) == SPARK_STATUS_OK && top_p == 1.0f);
+}
+
+static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root, ApiOptions *options)
 {
 	int32_t member;
 	bool flag;
-	*stream = *priority = *deadline_ms = 0u;
+	memset(options,0,sizeof(*options));
 	if ( root < 0 )
 		return 1;
 	member = SparkJsonFindObjectMember(doc,root,"stream");
 	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&flag) != SPARK_STATUS_OK )
 		return 0;
-	*stream = member >= 0 && flag ? 1u : 0u;
+	options->stream = member >= 0 && flag ? 1u : 0u;
 	member = SparkJsonFindObjectMember(doc,root,"priority");
-	if ( member >= 0 && SparkJsonGetUInt32(doc,member,priority) != SPARK_STATUS_OK )
+	if ( member >= 0 && SparkJsonGetUInt32(doc,member,&options->priority) != SPARK_STATUS_OK )
 		return 0;
 	member = SparkJsonFindObjectMember(doc,root,"deadline_ms");
-	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,deadline_ms) != SPARK_STATUS_OK || *deadline_ms == 0u) )
+	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&options->deadline_ms) != SPARK_STATUS_OK || options->deadline_ms == 0u) )
 		return 0;
+	return api_parse_sampling_options(doc,root,options);
+}
+
+static int api_resolve_seed(ApiOptions *options)
+{
+	if ( options->temperature == 0.0f )
+		options->seed = 0u;
+	else if ( options->seeded == 0u )
+		return getrandom(&options->seed,sizeof(options->seed),0) == (ssize_t)sizeof(options->seed);
 	return 1;
 }
 
@@ -926,6 +966,8 @@ static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED )
 		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"prompt plus max_tokens exceeds the deployment's context or KV capacity\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}");
+	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_UNSUPPORTED )
+		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"this deployment decodes greedily only; send temperature 0\",\"type\":\"invalid_request_error\",\"code\":\"sampling_unsupported\"}}");
 	else
 		(void)snprintf(body,capacity,"{\"error\":{\"message\":\"model status %u\",\"type\":\"model_error\",\"code\":%u}}",req->status,req->status);
 	return code;
@@ -1048,7 +1090,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	uint32_t request_stop_count = 0;
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
-	uint32_t stream_mode = 0u, priority = 0u, deadline_ms = 0u;
+	ApiOptions options;
 	char *prompt_text = 0;
 	uint32_t prompt_text_bytes = 0;
 	ApiRequest *req;
@@ -1152,15 +1194,16 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
 			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
 	}
-	if (!api_parse_serving_options(&doc, root, &stream_mode, &priority, &deadline_ms))
+	if (!api_parse_serving_options(&doc, root, &options))
 	{
 		SparkJsonDocumentDestroy(&doc);
 		free(prompt);
 		free(prompt_text);
 		free(request_stops);
 		send_response(fd, 400,
-			"{\"error\":{\"message\":\"stream must be a boolean; priority and deadline_ms "
-			"must be unsigned integers, deadline_ms nonzero\","
+			"{\"error\":{\"message\":\"stream must be a boolean; priority, deadline_ms and seed "
+			"must be unsigned integers, deadline_ms nonzero; temperature must be 0 or between "
+			"0.0001 and 2; top_p, if given, must be 1\","
 			"\"type\":\"invalid_request_error\",\"code\":\"invalid_option\"}}");
 		return;
 	}
@@ -1239,6 +1282,13 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		send_response(fd, 400, "{\"error\":\"prompt + max_tokens exceeds context limit\"}");
 		return;
 	}
+	if (!api_resolve_seed(&options))
+	{
+		free(prompt);
+		free(request_stops);
+		send_response(fd, 500, "{\"error\":{\"message\":\"no entropy for a sampling seed\",\"type\":\"server_error\",\"code\":\"seed_unavailable\"}}");
+		return;
+	}
 	req = calloc(1, sizeof(*req));
 	if (req == 0)
 	{
@@ -1259,9 +1309,11 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->started_ms = api_now_ms();
 	req->stop_tokens = request_stops;
 	req->stop_token_count = request_stop_count;
-	req->stream = stream_mode;
-	req->priority = priority;
-	req->deadline_ms = deadline_ms != 0u ? req->started_ms + deadline_ms : 0u;
+	req->stream = options.stream;
+	req->priority = options.priority;
+	req->deadline_ms = options.deadline_ms != 0u ? req->started_ms + options.deadline_ms : 0u;
+	req->temperature = options.temperature;
+	req->seed = options.seed;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -1274,7 +1326,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	S.queue_tail = req;
 	pthread_mutex_unlock(&S.queue_mutex);
 	api_wake_worker();
-	if (stream_mode)
+	if (options.stream)
 	{
 		api_stream(fd, req, chat_format);
 		api_release_request(req);
