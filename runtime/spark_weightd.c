@@ -200,7 +200,7 @@ struct SparkWeightdServer
     uint64_t daemon_generation;
     uint64_t next_arena_generation;
     uint64_t next_owner;
-    uint32_t orphan_mesh_owners;
+    uint16_t orphan_lanes;
     uint32_t arena_count;
     uint64_t resident_bytes;
     uint16_t lane_owner[SPARK_WEIGHTD_MESH_MAX_LANES];
@@ -2602,7 +2602,7 @@ static uint32_t SparkWeightdServerOnMeshActivity(SparkWeightdServer *server, Spa
          activity->lane >= SPARK_WEIGHTD_MESH_MAX_LANES ||
          server->lane_owner[activity->lane] == 0u )
         status = SPARK_STATUS_INVALID_ARGUMENT;
-    else if ( activity->active != 0u && server->orphan_mesh_owners != 0u )
+    else if ( activity->active != 0u && (server->orphan_lanes & (1u << activity->lane)) != 0u )
         status = SPARK_STATUS_IO_ERROR;
     else if ( activity->active != 0u && connection->mesh_active != 0u )
         status = activity->generation == connection->mesh_generation ?
@@ -2742,8 +2742,6 @@ static uint32_t SparkWeightdServerOnLaneAcquire(SparkWeightdServer *server, Spar
         (acquire->requested_lane != SPARK_WEIGHTD_LANE_NONE &&
          acquire->requested_lane >= SPARK_WEIGHTD_MESH_MAX_LANES))
         result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
-    else if (server->orphan_mesh_owners != 0u)
-        result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
     else if (connection->lane_mask != 0u)
         result->status = (uint32_t)SPARK_STATUS_DUPLICATE;
     else
@@ -2755,6 +2753,12 @@ static uint32_t SparkWeightdServerOnLaneAcquire(SparkWeightdServer *server, Spar
             (acquire->requested_lane == SPARK_WEIGHTD_LANE_NONE ||
              acquire->requested_lane == lane))
         {
+            if ((server->orphan_lanes & (1u << lane)) != 0u &&
+                acquire->topology.rank_count == 0u)
+            {
+                result->status = (uint32_t)SPARK_STATUS_BUSY;
+                continue;
+            }
             if (acquire->topology.rank_count != 0u)
             {
                 result->status = (uint32_t)SparkWeightdMeshLaneConfigure(
@@ -2762,6 +2766,7 @@ static uint32_t SparkWeightdServerOnLaneAcquire(SparkWeightdServer *server, Spar
                 if (result->status != (uint32_t)SPARK_STATUS_OK)
                     break;
             }
+            server->orphan_lanes &= (uint16_t)~(1u << lane);
             server->lane_owner[lane] =
                 (uint16_t)(connection - server->connections) + 1u;
             connection->lane_mask |= (uint16_t)(1u << lane);
@@ -2967,10 +2972,12 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     SparkWeightdConnection *connection = &server->connections[connection_index];
     if ( connection->mesh_active != 0u )
     {
-        server->orphan_mesh_owners++;
-        fprintf(stderr,"weightd mesh owner disconnected before GPU drain: owner=%llu generation=%llu; new mesh activity blocked\n",
+        server->orphan_lanes |= (uint16_t)(1u << connection->mesh_lane);
+        (void)SparkWeightdMeshSetActivity(connection->mesh_lane,0u);
+        fprintf(stderr,"weightd mesh owner disconnected before GPU drain: owner=%llu generation=%llu lane=%u; lane quarantined until a verified reconfigure\n",
             (unsigned long long)connection->owner,
-            (unsigned long long)connection->mesh_generation);
+            (unsigned long long)connection->mesh_generation,
+            connection->mesh_lane);
         connection->mesh_active = 0u;
     }
     connection->mesh_generation = 0u;
