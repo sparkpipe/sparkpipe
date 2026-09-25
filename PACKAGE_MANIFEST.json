@@ -313,8 +313,8 @@
     },
     {
       "path": "deployment/glm5_next_tp16/model_resident.json",
-      "sha256": "29bed0f5443ac26089c3caa14b31abd08a87e8ab40fee557f91afebceac9d3ec",
-      "size_bytes": 8311
+      "sha256": "64a7a17597329f7fb0d72ada459774a6028a6b2baba2582bcb0a4ad7f8ffc033",
+      "size_bytes": 8426
     },
     {
       "path": "deployment/include/sparkpipe/spark_hardware_topology.h",
@@ -13178,8 +13178,8 @@
     },
     {
       "path": "tools/spark_serving_profile.py",
-      "sha256": "35cd0bc1f0bce89c128b8a9205712bb45fcc4250d0355a236599c75ea1687082",
-      "size_bytes": 4711
+      "sha256": "d0697340ea4c7d4fc14e2fad38febf3015ea2e9f03faf2f1b0b3461fb68332c2",
+      "size_bytes": 5128
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -15005,5 +15005,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73688482
+  "total_bytes": 73689014
 }
