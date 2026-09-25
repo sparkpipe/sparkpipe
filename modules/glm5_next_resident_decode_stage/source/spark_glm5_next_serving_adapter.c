@@ -132,21 +132,23 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 	"tp_collective"
 };
 
-static const char *const SparkGlm5NextServingConfigurationMembersBridge[] =
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE (sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0]))
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 3u)
+
+static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,const char **list)
 {
-	"schema_version",
-	"model_revision",
-	"expert_weight_codec",
-	"stage_pack_path",
-	"max_sequence_positions",
-	"execution_row_capacity",
-	"decode_split_context_threshold",
-	"draft_bridge_host",
-	"draft_bridge_port",
-	"tp_degree",
-	"tp_rank",
-	"tp_collective"
-};
+	uint32_t count;
+	for (count=0u; count<SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE; count++)
+		list[count] = SparkGlm5NextServingConfigurationMembers[count];
+	if ( bridge != 0u )
+	{
+		list[count++] = "draft_bridge_host";
+		list[count++] = "draft_bridge_port";
+	}
+	if ( index_cp != 0u )
+		list[count++] = "dsa_index_context_parallel";
+	return(count);
+}
 
 typedef struct SparkGlm5NextServingPending
 {
@@ -197,6 +199,7 @@ typedef struct SparkGlm5NextServingState
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
 	uint32_t tap_extraction;
+	uint32_t index_cp;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -628,9 +631,10 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	uint32_t *tp_rank)
 {
 	SparkJsonDocument document;
+	const char *members[SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX];
 	char *relative_stage_pack_path;
 	uint32_t schema_version;
-	int32_t root,token;
+	int32_t root,token,index_cp_token;
 	int32_t bridge_host_token,bridge_port_token;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
@@ -641,15 +645,19 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	bridge_host_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_host") : -1;
 	bridge_port_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_port") : -1;
+	index_cp_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"dsa_index_context_parallel") : -1;
 	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
 	{
 		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = bridge_host_token >= 0 ?
-			SparkJsonValidateObjectMembersExact(&document,root,SparkGlm5NextServingConfigurationMembersBridge,(uint32_t)(sizeof(SparkGlm5NextServingConfigurationMembersBridge) / sizeof(SparkGlm5NextServingConfigurationMembersBridge[0]))) :
-			SparkJsonValidateObjectMembersExact(&document,root,SparkGlm5NextServingConfigurationMembers,(uint32_t)(sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0])));
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,members));
+	state->index_cp = 0u;
+	if ( status == SPARK_STATUS_OK && index_cp_token >= 0 )
+		status = SparkJsonGetUInt32(&document,index_cp_token,&state->index_cp);
+	if ( status == SPARK_STATUS_OK && state->index_cp > 1u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingJsonUnsigned(&document,root,"schema_version",&schema_version);
 	if ( status == SPARK_STATUS_OK && schema_version != SPARK_GLM5_NEXT_SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION )
@@ -986,6 +994,8 @@ static SparkStatus SparkGlm5NextServingInitialize(
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP;
 		if ( state->tap_extraction != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION;
+		if ( state->index_cp != 0u )
+			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;

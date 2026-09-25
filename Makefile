@@ -346,6 +346,7 @@ TEST_NAMES := \
     test_weightd_churn \
     test_weightd_expert_stress \
     test_glm5_next_lazy_dispatch \
+    test_glm5_next_index_cp_math \
     test_weightd_worker \
     test_weightd_fd_frames \
     test_weightd_attach \
@@ -661,6 +662,13 @@ build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh m
 test-skinny-gemv: build/test_skinny_gemv
 	./build/test_skinny_gemv --run
 
+build/test_glm5_next_index_cp: tests/test_glm5_next_index_cp.cu model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-glm5-next-index-cp
+test-glm5-next-index-cp: build/test_glm5_next_index_cp
+	./build/test_glm5_next_index_cp --run
+
 build/glm5_next_batch_roofline: tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
 
@@ -813,6 +821,9 @@ build/test_gdn_reference: model-families/common/validation/spark_gdn_reference.c
 
 build/test_numerical_metrics: tests/test_numerical_metrics.c include/sparkpipe/spark_numerical_metrics.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -lm -o $@
+
+build/test_glm5_next_index_cp_math: tests/test_glm5_next_index_cp_math.c model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h | build
+	$(CC) -I. -Iinclude -Imodel-families/glm5_next/include $(CFLAGS) $< -o $@
 
 build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@

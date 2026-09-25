@@ -21,7 +21,7 @@
 typedef struct RoofConfig
 {
 	uint32_t batches[ROOF_MAX_BATCHES];
-	uint32_t batch_count,context,iterations,copies,max_batch;
+	uint32_t batch_count,context,iterations,copies,max_batch,index_cp;
 	double round_us,nic_gbps,memory_gbps;
 }
 RoofConfig;
@@ -371,12 +371,18 @@ static void RoofBuildState(RoofState *state,const RoofModel *model,const RoofCon
 	state->slot.stream = stream;
 	RoofAllocateCaches(state,config);
 	RoofAllocateSlotRows(&state->slot,config->max_batch,state->max_positions);
+	if ( config->index_cp > 1u )
+	{
+		state->slot.index_local_scores_f32 = (float *)RoofRows(config->max_batch,SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,sizeof(float));
+		state->slot.index_gathered_scores_f32 = (float *)RoofRows(config->max_batch * config->index_cp,SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,sizeof(float));
+	}
 	RoofAllocateSlotHidden(&state->slot,config->max_batch);
 	RoofAllocateHost(state,config);
 	state->hidden_input = RoofFilled((uint64_t)config->max_batch * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u,0u,0x41DDu,1.0f);
 	ROOF_LAUNCH(SparkGlm5NextConfigureCudaModule(&multiprocessors));
 	wave->layer_count = ROOF_LAYERS;
 	wave->tp_degree = ROOF_TP;
+	wave->index_cp_degree = config->index_cp > 1u ? config->index_cp : 1u;
 	wave->commit = 1u;
 	wave->resident_sequence_capacity = config->max_batch;
 	wave->max_sequence_positions = state->max_positions;
@@ -411,6 +417,25 @@ static void RoofSetRows(RoofState *state,uint32_t rows,uint32_t context)
 	state->host_run_begin[rows] = rows;
 }
 
+static void RoofAttention(const RoofState *state,uint32_t layer)
+{
+	const SparkGlm5NextCudaWave *wave;
+	uint64_t floats;
+	uint32_t sequences,peer;
+	wave = &state->wave;
+	sequences = SparkGlm5NextLayerIndexGatherSequences(wave,layer);
+	if ( sequences == 0u )
+	{
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttention(wave,layer));
+		return;
+	}
+	floats = (uint64_t)sequences * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS;
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionScore(wave,layer));
+	for (peer=0u; peer<wave->index_cp_degree; peer++)
+		ROOF_CUDA(cudaMemcpyAsync(state->slot.index_gathered_scores_f32 + peer * floats,state->slot.index_local_scores_f32,floats * sizeof(float),cudaMemcpyDeviceToDevice,(cudaStream_t)state->slot.stream));
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionSelect(wave,layer));
+}
+
 static void RoofStep(const RoofState *state)
 {
 	const SparkGlm5NextCudaWave *wave;
@@ -419,7 +444,7 @@ static void RoofStep(const RoofState *state)
 	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveBegin(wave));
 	for (layer=0u; layer<ROOF_LAYERS; layer++)
 	{
-		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttention(wave,layer));
+		RoofAttention(state,layer);
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer));
@@ -452,7 +477,7 @@ static void RoofProfileStep(const RoofState *state,cudaEvent_t *events,cudaStrea
 	for (layer=0u; layer<ROOF_LAYERS; layer++)
 	{
 		RoofRecord(events,&cursor,stream);
-		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttention(wave,layer));
+		RoofAttention(state,layer);
 		RoofRecord(events,&cursor,stream);
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
 		RoofRecord(events,&cursor,stream);
@@ -513,18 +538,19 @@ static double RoofDistinctExperts(const RoofState *state)
 	return(layers != 0u ? (double)count / (double)layers : 0.0);
 }
 
-static double RoofStepBytes(const RoofModel *model,uint32_t rows,uint32_t context,double distinct)
+static double RoofStepBytes(const RoofModel *model,uint32_t rows,uint32_t context,uint32_t index_cp,double distinct)
 {
 	uint32_t layer,kind;
-	double bytes,attended;
+	double bytes,attended,indexed;
 	bytes = (double)model->head_bytes;
 	attended = (double)(context < SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K ? context : SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K);
+	indexed = context > SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K ? (double)context * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2.0 / (double)index_cp : 0.0;
 	for (layer=0u; layer<ROOF_LAYERS; layer++)
 	{
 		kind = RoofLayerKind(layer);
 		bytes += (double)model->bytes[kind].fixed + (kind != 0u ? distinct * (double)model->bytes[kind].expert : 0.0);
 		if ( SparkGlm5NextStagePackLayerIsDsa(layer) != 0u )
-			bytes += (double)rows * attended * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
+			bytes += (double)rows * (attended * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES + indexed);
 	}
 	return(bytes);
 }
@@ -544,12 +570,12 @@ static void RoofReport(const RoofModel *model,const RoofState *state,const RoofC
 {
 	double distinct,bytes,payload,direct_ms,rsag_ms,collectives;
 	distinct = RoofDistinctExperts(state);
-	bytes = RoofStepBytes(model,rows,config->context,distinct);
+	bytes = RoofStepBytes(model,rows,config->context,state->wave.index_cp_degree,distinct);
 	collectives = 2.0 * ROOF_LAYERS + 2.0;
 	payload = (double)rows * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2.0;
 	direct_ms = collectives * (15.0 * payload / (config->nic_gbps * 1e9) + config->round_us * 1e-6) * 1e3;
 	rsag_ms = collectives * (1.875 * payload / (config->nic_gbps * 1e9) + 2.0 * config->round_us * 1e-6) * 1e3;
-	printf("ROOFLINE rows=%u context=%u step_ms=%.2f compute_tok_s=%.0f distinct_experts=%.1f uniform_expect=%.1f step_gb=%.2f achieved_gbps=%.0f memory_bound_ms=%.2f hidden_finite=%u\n",rows,config->context,step_ms,rows * 1000.0 / step_ms,distinct,ROOF_EXPERTS * (1.0 - pow(1.0 - (double)SPARK_GLM5_NEXT_MODEL_MOE_TOP_K / ROOF_EXPERTS,(double)rows)),bytes / 1e9,bytes / (step_ms * 1e6),bytes / (config->memory_gbps * 1e6),RoofHiddenFinite(state,rows));
+	printf("ROOFLINE rows=%u context=%u index_cp=%u step_ms=%.2f compute_tok_s=%.0f distinct_experts=%.1f uniform_expect=%.1f step_gb=%.2f achieved_gbps=%.0f memory_bound_ms=%.2f hidden_finite=%u\n",rows,config->context,state->wave.index_cp_degree,step_ms,rows * 1000.0 / step_ms,distinct,ROOF_EXPERTS * (1.0 - pow(1.0 - (double)SPARK_GLM5_NEXT_MODEL_MOE_TOP_K / ROOF_EXPERTS,(double)rows)),bytes / 1e9,bytes / (step_ms * 1e6),bytes / (config->memory_gbps * 1e6),RoofHiddenFinite(state,rows));
 	printf("ROOFLINE-FLEET rows=%u collectives=%.0f direct_ms=%.1f rsag_ms=%.1f tok_s_direct=%.0f tok_s_rsag=%.0f tok_s_rsag_overlapped=%.0f\n",rows,collectives,direct_ms,rsag_ms,rows * 1000.0 / (step_ms + direct_ms),rows * 1000.0 / (step_ms + rsag_ms),rows * 1000.0 / (step_ms > rsag_ms ? step_ms : rsag_ms));
 }
 
@@ -612,6 +638,8 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 			config->iterations = (uint32_t)strtoul(argv[index + 1],0,10);
 		else if ( strcmp(argv[index],"--copies") == 0 )
 			config->copies = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--index-cp") == 0 )
+			config->index_cp = (uint32_t)strtoul(argv[index + 1],0,10);
 		else if ( strcmp(argv[index],"--round-us") == 0 )
 			config->round_us = strtod(argv[index + 1],0);
 		else if ( strcmp(argv[index],"--nic-gbps") == 0 )
@@ -621,7 +649,7 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 	}
 	for (batch=0u; batch<config->batch_count; batch++)
 		config->max_batch = config->batches[batch] > config->max_batch ? config->batches[batch] : config->max_batch;
-	return(config->batch_count == 0u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
+	return(config->batch_count == 0u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->index_cp > ROOF_TP || (config->index_cp > 1u && SparkGlm5NextIndexCpFits(((config->context + 63u) / 64u) * 64u,config->index_cp,config->max_batch) == 0u) || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
 }
 
 int main(int argc,char **argv)
@@ -634,7 +662,7 @@ int main(int argc,char **argv)
 	uint32_t batch;
 	if ( RoofParse(argc,argv,&config) != 0 )
 	{
-		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--round-us 100] [--nic-gbps 11.5]\n");
+		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5]\n");
 		return(2);
 	}
 	setvbuf(stdout,0,_IOLBF,0);
