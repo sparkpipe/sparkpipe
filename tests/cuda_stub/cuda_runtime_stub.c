@@ -1667,6 +1667,7 @@ void *cuda_stub_mesh_hardware_control;
 uint64_t cuda_stub_mesh_hardware_elements;
 uint32_t cuda_stub_mesh_hardware_operation;
 uint32_t cuda_stub_mesh_hardware_logical_rows;
+uint32_t cuda_stub_mesh_hardware_slice_routes;
 
 cudaError_t SparkGlm5NextMeshHardwarePrepare(void *host,void **device)
 {
@@ -1680,9 +1681,10 @@ cudaError_t SparkGlm5NextLaunchMeshHardware(cudaStream_t stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,
-    uint32_t rounds,uint32_t logical_rows,uint64_t timeout_ns)
+    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,uint64_t timeout_ns)
 {
     (void)stream;(void)slot_bytes;(void)slots_per_rank;(void)entry;
+    cuda_stub_mesh_hardware_slice_routes = slice_routes;
     (void)round_control;(void)rank;(void)degree;(void)local;(void)output;
     (void)scratch;(void)rounds;(void)timeout_ns;
     cuda_stub_mesh_hardware_calls++;

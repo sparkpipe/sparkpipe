@@ -44,6 +44,7 @@ extern cudaError_t cuda_stub_stream_query_result;
 extern uint64_t cuda_stub_mesh_hardware_elements;
 extern uint32_t cuda_stub_mesh_hardware_operation;
 extern uint32_t cuda_stub_mesh_hardware_logical_rows;
+extern uint32_t cuda_stub_mesh_hardware_slice_routes;
 
 static uint64_t mock_client_alive = 1u;
 static uint32_t mock_server;
@@ -410,8 +411,26 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshDirectChunks(65536u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
         SparkTpMeshDirectChunks(65536u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u,
         "direct chunk geometry: eight 16384-wide BF16 rows fit one slot, larger payloads split into slot-sized chunks");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == 1u,
+        "a weightd that advertises slice routes lets the launcher choose reduce-scatter + all-gather");
+    request->capabilities = 0u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == 0u,
+        "an older weightd keeps every collective on direct rounds");
+    CHECK(SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,1u) == 2u &&
+        SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,0u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(262144u,2u,1u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(32768u,16u,1u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(262144u,16u,2u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(262144u,16u,0u,1u) == 1u,
+        "reduce-scatter + all-gather only for BF16 sums of at least 12 rows over 4+ ranks");
+    CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
+        SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
+        "slices are whole 8-byte words and cover the chunk");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 7u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 9u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;

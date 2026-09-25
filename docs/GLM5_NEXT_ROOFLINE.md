@@ -286,6 +286,193 @@ wave and joins the next one. Prefill and release submissions are not capped.
 With 8 streams, one step then carries 8 rows. The weights are streamed once
 for all 8 tokens instead of once per token.
 
+## Large batches: what is and is not sharded
+
+Per rank, with TP16, the caches are split as follows (`layer.cuh`,
+`spark_glm5_next_model.h`):
+
+| State | Layout per rank | Bytes |
+| --- | --- | ---: |
+| KDA recurrent state + conv windows (34 layers) | head-sharded, 4 of 64 heads | about 8.5 MiB per sequence |
+| DSA latent KV (11 layers) | replicated, every token on every rank | 1024 B per token per layer |
+| DSA indexer keys (11 layers) | replicated, every token on every rank | 514 B per token per layer |
+
+Only the KDA state is 1/16 per rank. The DSA path stores the full latent
+(`LmKvStoreKernel`) and the full indexer key on every rank. The attention
+heads are split (`attn_heads = 64 / tp`), but MLA shares one latent across
+all heads, so every rank also reads the same KV rows. Replicated DSA state
+costs 16.5 KiB per token per rank:
+
+| Batch × context | DSA state per rank |
+| --- | ---: |
+| 64 × 4K | 4.2 GiB |
+| 64 × 32K | 33 GiB |
+| 256 × 32K | 132 GiB (does not fit) |
+
+It also costs bandwidth. The indexer scores every past token on every rank,
+which reads 5.65 KB per token per step. At 32K context that is 185 MB per
+row per step: 43 ms per step at B64, more than the weights.
+
+## Batch roofline
+
+Per step, each rank reads the following:
+
+- dense weights: 1.65 GB, independent of B;
+- one 1.573 MB slice for each distinct routed expert per routed layer (42
+  layers). With uniform routing, B rows touch
+  `288 × (1 − (1 − 8/288)^B)` experts: 58 at B8, 240 at B64, 280 at B128,
+  288 at B256;
+- DSA KV of `min(context, 2048)` tokens per row;
+- indexer keys of `context` tokens per row.
+
+At 1K context and 273 GB/s this gives these bounds for one model instance
+across all 16 ranks:
+
+| B | Bytes per step | Memory-bound step | Aggregate tok/s | Per stream |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 5.6 GB | 21 ms | 390 | 49 |
+| 64 | 18.6 GB | 68 ms | 940 | 15 |
+| 128 | 22.3 GB | 82 ms | 1560 | 12 |
+| 256 | 25.1 GB | 92 ms | 2780 | 11 |
+
+About 3000 tok/s is an aggregate over up to 256 concurrent streams, and it
+holds only if the following all hold:
+
+1. collectives are overlapped with compute, or much cheaper than today;
+2. contexts are short, or the DSA state is sharded (phase 3);
+3. one execution workspace, not one per slot and per driver.
+
+Each stream still sees about 11 tok/s.
+
+The collectives at B256 are 92 per step, each carrying 2 MiB:
+
+| Collective | Per collective | Per step |
+| --- | ---: | ---: |
+| Direct all-to-all | 15 × payload, 2.8 ms | 260 ms |
+| Reduce-scatter + all-gather | 1.875 × payload in 2 rounds, 0.54 ms | 50 ms |
+
+### Measuring it: `bench-glm5-next-batch`
+
+`tools/glm5_next_batch_roofline.cu` links the module's real CUDA kernels
+into a single-rank harness. Setup:
+
+- It builds TP16 per-rank tensors with the exact stagepack shapes: FP8
+  experts, BF16 dense weights, norms set to 1.0.
+- By default it keeps 2 copies of each layer kind. Layer weights repeat
+  every 2 layers, but one layer's bytes far exceed the 24 MB L2, so no
+  step is served from cache.
+- Caches are sized for the largest batch and context requested.
+
+For each batch it then does the following:
+
+1. Runs the full 45-layer decode step: attention, router, grouped experts
+   and head. It runs no collectives.
+2. Times the steps with CUDA events.
+3. Reports the distinct experts that routing selected.
+
+```sh
+make bench-glm5-next-batch ROOFLINE_ARGS="--batches 1,8,32,64,128,256 --context 1024"
+make bench-glm5-next-batch ROOFLINE_ARGS="--batches 64,256 --context 4096"
+```
+
+Output lines:
+
+- `ROOFLINE`: `step_ms`, `compute_tok_s`, `distinct_experts` against
+  `uniform_expect`, `step_gb`, `achieved_gbps`, `memory_bound_ms`, and
+  `hidden_finite`.
+- `ROOFLINE-FLEET`: adds the modelled collective cost (`--round-us`,
+  `--nic-gbps`) for direct, RS/AG and RS/AG overlapped with compute.
+
+`achieved_gbps` well below 273 at large B means the grouped expert kernels,
+not the memory, are the limit.
+
+### Execution workspace per driver
+
+The module allocated a full device workspace per pipeline slot: hidden,
+attention, MLP and head buffers sized for `execution_row_capacity`. Only one
+chain runs at a time (`tp_chain_active`), and the chain lock is released
+only after the completion has copied its outputs. Slots 1..n now alias slot
+0's device workspace and keep their own host staging, events, graphs and MTP
+buffers. With 4 slots this saves three workspaces per rank.
+
+### Phases
+
+1. **Measure the batch roofline, and use one execution workspace per
+   driver.** Done.
+2. **Reduce-scatter + all-gather** for BF16 sums of 12 rows or more.
+   Done; see the next section. It needs the coordinated weightd roll.
+3. **Context-parallel DSA.** Each rank keeps the KV and indexer keys of
+   1/16 of the tokens. The work splits as follows:
+   - scoring is local;
+   - the global top-2048 is found with two small histogram all-reduces
+     (the threshold bucket, then the exact threshold);
+   - attention over local selected tokens produces per-head partial
+     outputs with their log-sum-exp;
+   - the head owners merge the partials.
+
+   This cuts DSA memory and indexer bandwidth by 16×. It adds an
+   all-gather of the latent query (64 KiB per row) and a partial exchange
+   of the same size per DSA layer.
+4. **Remove the host from the collective path.** This means two things:
+   - GPU-initiated RDMA;
+   - two micro-batches in flight, so that one computes while the other
+     communicates.
+
+   A node-level KV pool and scheduler shares cache capacity between
+   drivers instead of preallocating per driver.
+
+### Reduce-scatter + all-gather over slice routes
+
+Doorbell word 3 used to be a peer mask. It is now a route with named
+bitfields:
+
+| Field | Bits |
+| --- | ---: |
+| `peer_mask` | 32 |
+| `slice_bytes` | 24 |
+| `mode` (FULL, SCATTER or GATHER) | 2 |
+| `reserved` | 6 |
+
+The modes post as follows:
+
+- **FULL** posts the whole payload to every peer. It is the old behaviour,
+  and a bare mask decodes to FULL.
+- **SCATTER** posts to each peer `p` only bytes
+  `[p * slice, (p + 1) * slice)`.
+- **GATHER** posts the local rank's slice to every peer.
+
+In all three modes the slot offsets and the 8-byte tail tag are the same
+as before, so the wait protocol does not change.
+
+For one chunk of a BF16 sum:
+
+1. The kernel publishes the chunk with SCATTER.
+2. Each rank reduces its own slice across the 16 slots and writes the
+   result to the output.
+3. Each rank publishes that slice with GATHER into the other ring slot.
+4. After the second wait, the kernel copies every peer's slice into the
+   output.
+
+Each chunk takes two rounds and puts 1.875× the payload on the wire
+instead of 15×. The sum order over peers is the same as in the direct
+path, so results are bitwise identical.
+
+The launcher picks RS/AG only if all of the following hold:
+
+- the operation is a BF16 sum;
+- the degree is at least 4;
+- the payload is at least 49152 elements (12 rows of 4096);
+- the local weightd advertises `SLICE_ROUTES` in the lane's wait entries.
+
+The host phase accounting uses the same predicate.
+
+**Compatibility.** The mesh record magic is bumped to `MESH0005`, so a
+fleet with mixed weightd versions refuses to wire (`WD-MESH-ABI-MISMATCH`)
+instead of mixing the two protocols. That makes this a full weightd +
+weightd_warm roll. Drivers built before this change still work against the
+new weightd, because they only write FULL routes. The kernel marker is now
+`SPARK-TP-MESH-KERNELS-V11-SLICE-ROUTES`.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure

@@ -85,6 +85,26 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
     return (SparkTpMeshDirectLocalElements(elements,degree,operation) - 1u) / SparkTpMeshDirectCapacity(slot_bytes,operation) + 1u;
 }
 
+#define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
+#define SPARK_TP_MESH_OPERATION_SLICE_GATHER 3u
+#define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint32_t SparkTpMeshDirectPhasesPerChunk(uint64_t elements,uint32_t degree,uint32_t operation,uint32_t slice_routes)
+{
+    return slice_routes != 0u && operation == 1u && degree >= SPARK_TP_MESH_RSAG_MIN_DEGREE && elements >= SPARK_TP_MESH_RSAG_MIN_ELEMENTS ? 2u : 1u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshRsagSlice(uint64_t count,uint32_t degree)
+{
+    return ((count + degree - 1u) / degree + 3u) & ~UINT64_C(3);
+}
+
 #if defined(__CUDACC__)
 __host__ __device__
 #endif

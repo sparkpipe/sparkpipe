@@ -22,7 +22,7 @@
 #endif
 
 #define TEST_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
-#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303034)
+#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303035)
 #define TEST_MESH_LIVE_DIR "/tmp/weightd-mesh"
 
 typedef struct TestMeshRecord
@@ -284,16 +284,24 @@ static uint64_t test_shipped(uint32_t band, uint32_t rank)
         SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank));
 }
 
-static SparkStatus test_post_slot(uint32_t band, uint32_t rank,
-    uint64_t seq, uint32_t mask)
+static SparkStatus test_post_route(uint32_t band, uint32_t rank,
+    uint64_t seq, uint64_t bytes, SparkWeightdMeshRoute route)
 {
     SparkStatus status;
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     status = SparkWeightdMeshPostSlot(band,rank,seq,
         (uint64_t)rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
-            ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)),64u,mask);
+            ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)),bytes,route);
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     return status;
+}
+
+static SparkStatus test_post_slot(uint32_t band, uint32_t rank,
+    uint64_t seq, uint32_t mask)
+{
+    SparkWeightdMeshRoute route = {0};
+    route.fields.peer_mask = mask;
+    return test_post_route(band,rank,seq,64u,route);
 }
 
 static void test_complete_range(uint32_t first, uint32_t last)
@@ -459,6 +467,78 @@ static void test_slot_lifetimes(uint32_t local_rank)
     test_complete_range(first + TEST_MESH_PEERS * 2u,spark_stub_ibv_posted_count());
     for ( i = 0u; i < TEST_MESH_PEERS; i++ )
         CHECK(weightd_mesh.send_pending[i] == 0u,"all accepted SQ ownership returns after terminal completions");
+}
+
+static void test_expect_route(uint32_t first, uint32_t last, uint64_t slot_base,
+    SparkWeightdMeshRoute route, uint32_t local_rank, uint64_t bytes, const char *label)
+{
+    uint32_t i, peer, peer_rank, data = 0u, tails = 0u;
+    uint64_t offset, length;
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork work;
+        CHECK(spark_stub_ibv_posted(i,&work) == 0,label);
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+            if ( weightd_mesh.send_qps[peer]->qp_num == work.qp_number ) break;
+        peer_rank = test_peer_rank(peer,local_rank);
+        offset = SparkWeightdMeshRouteSpan(route,peer_rank,local_rank,bytes,&length);
+        if ( (work.wr_id & 3u) == 3u )
+        {
+            tails++;
+            CHECK(work.source == slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u && work.length == 8u,label);
+            continue;
+        }
+        data++;
+        CHECK(length != 0u && work.source == slot_base + offset && work.length == length,label);
+        CHECK(work.remote - weightd_mesh.qp_info[peer].remote_addr ==
+            work.source - (uint64_t)(uintptr_t)weightd_mesh.recv_buffer,label);
+    }
+    CHECK(tails == TEST_MESH_PEERS,label);
+    CHECK(data <= TEST_MESH_PEERS,label);
+}
+
+static void test_slice_routes(uint32_t local_rank)
+{
+    uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) &
+        ~(1u << local_rank);
+    uint64_t seq = (UINT64_C(9) << 32u) | 1u, bytes = 1000u, slot_base;
+    uint32_t first, last;
+    SparkWeightdMeshRoute route = {0};
+    const SparkWeightdMeshWaitRequest *request = (const SparkWeightdMeshWaitRequest *)(
+        (const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_ENTRY(8u,local_rank));
+    CHECK(request->capabilities == SPARK_WEIGHTD_MESH_CAPABILITIES,
+        "configured lane advertises slice routes to its drivers");
+    slot_base = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer +
+        (8u * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK) *
+        SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    route.fields.peer_mask = all_peers;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_SCATTER;
+    route.fields.slice_bytes = 68u;
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "slice widths must keep 8-byte alignment");
+    route.fields.slice_bytes = 64u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_OK,"scatter route posts");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS * 2u,"scatter posts one slice and one tail per peer");
+    test_expect_route(first,last,slot_base,route,local_rank,bytes,
+        "scatter sends each peer only its own slice at the same slot offset");
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq,"scatter releases after every slice and tail completes");
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_GATHER;
+    route.fields.slice_bytes = 80u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq + 1u,bytes,route) == SPARK_STATUS_OK,"gather route posts");
+    last = spark_stub_ibv_posted_count();
+    test_expect_route(first,last,slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES,route,local_rank,bytes,
+        "gather sends the local slice to every peer");
+    CHECK(last - first == (local_rank * 80u < bytes ? 2u : 1u) * TEST_MESH_PEERS,
+        "an empty gather slice still delivers the tail");
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq + 1u,"gather releases after its tails complete");
+    route.fields.mode = 3u;
+    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "unknown route modes are rejected");
 }
 
 typedef struct TestMeshActivityThread
@@ -1349,6 +1429,7 @@ int main(void)
     }
     test_all_transfer_identities();
     test_slot_lifetimes(local_rank);
+    test_slice_routes(local_rank);
     test_mesh_topology();
 
     /* case 6: a second daemon instance with its own record dir must not
