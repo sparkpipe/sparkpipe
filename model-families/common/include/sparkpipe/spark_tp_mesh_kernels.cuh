@@ -93,6 +93,9 @@ __global__ void SparkGlm5NextMeshGuardKernel(
 	}
 }
 
+#define SPARK_TP_MESH_WAIT_SLEEP_NS 200u
+#define SPARK_TP_MESH_WAIT_SPINS_BEFORE_SLEEP 1024ull
+
 __global__ void SparkGlm5NextMeshWaitKernel(
     volatile uint64_t *band_base,
     uint64_t slot_bytes,
@@ -171,6 +174,8 @@ __global__ void SparkGlm5NextMeshWaitKernel(
 					atomicExch((unsigned long long *)error_word,sequence);
 					return;
 				}
+				if ( spins > SPARK_TP_MESH_WAIT_SPINS_BEFORE_SLEEP )
+					__nanosleep(SPARK_TP_MESH_WAIT_SLEEP_NS);
 			}
 		}
 	}

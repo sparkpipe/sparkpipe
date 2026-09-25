@@ -37,6 +37,7 @@ struct HostDim { unsigned x; } threadIdx={0},blockIdx={0},blockDim={1};
 static unsigned long long host_timer;
 static unsigned long long SparkGlm5NextGlobalTimerNs(void) { return ++host_timer; }
 static uint64_t SparkGlm5NextLdcvU64(const volatile void *p) { return *(const volatile uint64_t *)p; }
+static void __nanosleep(unsigned nanoseconds) { (void)nanoseconds; }
 static unsigned long long atomicExch(unsigned long long *p,unsigned long long x)
 {
     unsigned long long old=*p;
@@ -171,7 +172,7 @@ def main():
     mesh = MESH.read_text()
     cuda = read_source(CUDA)
     module = read_source(MODULE)
-    cancelled = re.search(r'(?m)^#define SPARK_TP_MESH_ERROR_CANCELLED .*$', mesh).group()
+    cancelled = '\n'.join(re.findall(r'(?m)^#define SPARK_TP_MESH_(?:ERROR_CANCELLED|WAIT_[A-Z_]+) .*$', mesh))
     kernels = [function(mesh, name) for name in ['SparkGlm5NextMeshWaitKernel', 'SparkGlm5NextMeshGuardKernel']]
     kernels.append(function(cuda, 'SparkGlm5NextHeadMaxlocUnpackKernel'))
     run(KERNEL_PREFIX + cancelled + '\n' + '\n'.join(kernels) + KERNEL_MAIN,
