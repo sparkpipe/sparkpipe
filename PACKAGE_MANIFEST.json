@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "e578b775dd6172dbfa1e61baf54f6441de3f5390f1207f941ee2ccbd27afa942",
-      "size_bytes": 9477
+      "sha256": "eff0217f098ff147aa3fabe7dc50d1914cfb32a5a23e590032721bd396d23aec",
+      "size_bytes": 11607
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3728,8 +3728,8 @@
     },
     {
       "path": "include/sparkpipe/spark_weightd.h",
-      "sha256": "b8d48ea41cb88fbb580d128d7294446c2411e2b3ce8b57f26bd73cc2dca3b322",
-      "size_bytes": 25038
+      "sha256": "66c0dedf60d6f6e3363ab97dfcfcd9754e1f5831fd7ac005495799bfdfcb1b23",
+      "size_bytes": 25128
     },
     {
       "path": "include/sparkpipe/spark_weightd_attach.h",
@@ -4133,8 +4133,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh",
-      "sha256": "f4a2f3efc3448a615411bec3f170aaf83ad6c593561a890ebfce5b4e7d676d8f",
-      "size_bytes": 49569
+      "sha256": "382575d41ce559cdf479f2b90c72549d77f6089026c745a9927df4dda60dd822",
+      "size_bytes": 51154
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_register.h",
@@ -4143,8 +4143,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h",
-      "sha256": "c5ba8c9a1d827aded8f17ccbba34e4e25da0403a06ab765b910162a1d30a9d25",
-      "size_bytes": 2729
+      "sha256": "d17b51512649a6a04c4a30d8614234519e890796858acc6fd12292e5b3941134",
+      "size_bytes": 3484
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_work_control_common.h",
@@ -5968,8 +5968,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "f1bfb750b58ad68f8a874f6444f881b080540caddf8a4c556506253167bb607a",
-      "size_bytes": 126071
+      "sha256": "818633731e219454f3f5ad5cb9e660d165969de5cafeba35280d876e1d554c95",
+      "size_bytes": 126324
     },
     {
       "path": "node/weightd.c",
@@ -7763,8 +7763,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "3065eea269f0bdcb1609b86d81db73734e42f61d879ce9482a5fbca44e466aab",
-      "size_bytes": 116727
+      "sha256": "67217e856d640303e7250f2f892b8bf24e855208beee945f8e710bf998a1a614",
+      "size_bytes": 116862
     },
     {
       "path": "runtime/README",
@@ -7808,8 +7808,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "0650bd22037f8bd4c5a24ab95e46171bac6f4e696f6ddd5e334680b4cccae6db",
-      "size_bytes": 99781
+      "sha256": "5346ba38c6c1064bc1035944495a585696a726efab5650d0dc214400e0effcf0",
+      "size_bytes": 100220
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -8273,8 +8273,8 @@
     },
     {
       "path": "tests/fixtures/model_serving_adapter_module.c",
-      "sha256": "c3391864d347aa6a610f82c88debae2691ed3599c5893dbdd57ef294b0e7f052",
-      "size_bytes": 21080
+      "sha256": "bbfc9dce3b667381eefe7b15d6fae871e57dbaea51cc9011be2b0975674f0b67",
+      "size_bytes": 21333
     },
     {
       "path": "tests/fixtures/module_add_one.c",
@@ -9558,8 +9558,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "1a70c5093e009c36c981d81a958cb844f23767f2f6d0090b250f5698e92743f9",
-      "size_bytes": 99911
+      "sha256": "47345ac45b4d6196e85c474f4b1fce8c66f668aa8863ce030add19361147b57a",
+      "size_bytes": 102345
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -9798,8 +9798,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "0ee520079a7a353eb41c74b1baa965f413664aeaa01882b4a5f9a5cfeab7c220",
-      "size_bytes": 76954
+      "sha256": "b2e8f9b75e89c9dc072e138355fe01167b78d361b2ff9ad087769eb28165eea0",
+      "size_bytes": 78697
     },
     {
       "path": "tests/test_model_pipeline_client_mock.c",
@@ -10378,8 +10378,8 @@
     },
     {
       "path": "tests/test_tp_device_collective_mock.c",
-      "sha256": "04ef89f9590b24111e50db03c0ee3e7d5f7e44b8ea2e24f9a8563deb3cc5223b",
-      "size_bytes": 32525
+      "sha256": "3f3873d0122c582481918f9e806348626ae3d3b5321dfe8ec51535beb31d5c87",
+      "size_bytes": 33585
     },
     {
       "path": "tests/test_tp_f32_tree_host.py",
@@ -14995,5 +14995,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73680411
+  "total_bytes": 73691288
 }
