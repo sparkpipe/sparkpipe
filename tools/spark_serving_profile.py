@@ -66,7 +66,7 @@ def profile(name: str) -> dict:
     return derive(sequences, positions)
 
 
-def verify(runtime_limits: dict, stage_config: dict) -> list:
+def verify(runtime_limits: dict, stage_config: dict, nodes_backing=None) -> list:
     """Return a list of drift findings ([] = consistent)."""
     positions = stage_config.get("max_sequence_positions") or 512
     try:
@@ -76,6 +76,10 @@ def verify(runtime_limits: dict, stage_config: dict) -> list:
     got = dict(runtime_limits)
     got["execution_row_capacity"] = stage_config.get("execution_row_capacity", 0)
     got["max_sequence_positions"] = stage_config.get("max_sequence_positions", 0)
+    # kv_backing_maximum_bytes lives per-node in the deployment, not in
+    # runtime_limits; accept it from either position.
+    if got.get("kv_backing_maximum_bytes") is None and nodes_backing is not None:
+        got["kv_backing_maximum_bytes"] = nodes_backing
     findings = []
     for key, expected in want.items():
         actual = got.get(key)
@@ -96,7 +100,9 @@ if __name__ == "__main__":
     if args.verify_deployment:
         deployment = json.load(open(args.verify_deployment))
         stage = json.load(open(args.verify_stage)) if args.verify_stage else {}
-        findings = verify(deployment.get("runtime_limits", {}), stage)
+        nodes = deployment.get("nodes") or []
+        backing = nodes[0].get("kv_backing_maximum_bytes") if nodes else None
+        findings = verify(deployment.get("runtime_limits", {}), stage, backing)
         if findings:
             for f in findings:
                 print(f"DRIFT: {f}")
