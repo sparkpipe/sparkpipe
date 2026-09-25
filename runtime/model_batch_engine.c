@@ -119,6 +119,7 @@ struct SparkModelBatchEngine
 	uint32_t max_active_sequence_count;
 	uint32_t scratch_row_capacity;
 	uint32_t submission_capacity;
+	uint32_t pipeline_depth;
 	uint32_t maximum_messages_per_rank;
 	uint32_t stop_token_count;
 	uint32_t stop_token_ids[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT + SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];
@@ -240,6 +241,20 @@ uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 		return(0u);
 	return(queued_by_kind[selected_kind] < maximum_by_kind[selected_kind] ?
 		queued_by_kind[selected_kind] : maximum_by_kind[selected_kind]);
+}
+
+uint32_t SparkModelBatchSchedulerPipelineDepth(uint32_t capability_flags,uint32_t stage_count,uint32_t parallel_group_size)
+{
+	if ( (capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u || stage_count == 0u )
+		return(1u);
+	if ( (capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u && parallel_group_size != 0u )
+		return(stage_count / parallel_group_size != 0u ? stage_count / parallel_group_size : 1u);
+	return(stage_count);
+}
+
+uint32_t SparkModelBatchSchedulerDecodeWaveOpen(const uint32_t inflight_by_kind[5],uint32_t pipeline_depth)
+{
+	return(inflight_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] < pipeline_depth ? 1u : 0u);
 }
 
 uint32_t SparkModelBatchSchedulerChooseWorkKind(
@@ -1152,6 +1167,7 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( engine->adapter_descriptor == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	engine->cache_block_token_count = engine->adapter_descriptor->cache_block_token_count;
+	engine->pipeline_depth = SparkModelBatchSchedulerPipelineDepth(engine->adapter_descriptor->capability_flags,engine->adapter_descriptor->stage_count,engine->adapter_descriptor->parallel_group_size);
 	if ( engine->cache_block_token_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->prefix_cache_entry_capacity = engine->kv_logical_page_capacity;
@@ -2142,6 +2158,8 @@ static uint32_t SparkModelBatchChooseWorkKind(
 		if ( SparkModelBatchSchedulerPlanMixedLaneCount(queued_by_kind,maximum_by_kind,inflight_by_kind,kind,engine->submission_capacity) == 0u )
 			available_by_kind[kind] = 0u;
 	}
+	if ( SparkModelBatchSchedulerDecodeWaveOpen(inflight_by_kind,engine->pipeline_depth) == 0u )
+		available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
 	return(SparkModelBatchSchedulerChooseWorkKind(available_by_kind,minimum_by_kind,engine->admission_open,engine->inflight_submission_count,engine->submission_capacity,&engine->next_work_kind,engine->work_kind_bypass_counts));
 }
 

@@ -260,6 +260,32 @@ executes in the client's submission order. The pipeline test defers one
 stage's continuation prepare while a later prefill commits; without the fix
 that stage runs the prefill first.
 
+## Decode waves (8 streams at 1.5x one stream)
+
+After the ordering fix, 8 streams completed but reached only 30.4 tok/s in
+aggregate, and every graph replay was `rows=1`.
+
+The batch engine dispatched each READY_DECODE request as soon as it was
+ready, as long as a submission slot was free (`max_inflight_submission_count`
+is 4). On a PARALLEL_FANOUT deployment the ranks execute one chain at a
+time. So after the prefills, each stream became its own one-row decode chain
+and the chains ran one after another. They never merged, because a request
+that becomes ready always found a free slot.
+
+The engine now caps decode submissions in flight at the pipeline depth:
+
+| Deployment | Depth |
+| --- | --- |
+| Fanout TP | 1 |
+| Hybrid TP+PP | `stage_count / parallel_group_size` |
+| PP | `stage_count` |
+
+A request that becomes ready while a decode wave is running waits for that
+wave and joins the next one. Prefill and release submissions are not capped.
+
+With 8 streams, one step then carries 8 rows. The weights are streamed once
+for all 8 tokens instead of once per token.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure
