@@ -858,33 +858,42 @@ static SparkStatus SparkModelResidentdEnqueueCommittedLocked(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route)
 {
-	uint32_t encoded_index;
+	uint32_t encoded_index,index,previous_index;
 	if ( route->committed_fifo_queued != 0u )
 		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	encoded_index = route->slot_index + 1u;
-	if ( runtime->committed_fifo_tail != 0u )
-		runtime->routes[runtime->committed_fifo_tail - 1u].
-			committed_fifo_next = encoded_index;
+	previous_index = 0u;
+	index = runtime->committed_fifo_head;
+	while ( index != 0u && runtime->routes[index - 1u].submission_id < route->submission_id )
+	{
+		previous_index = index;
+		index = runtime->routes[index - 1u].committed_fifo_next;
+	}
+	route->committed_fifo_next = index;
+	if ( previous_index != 0u )
+		runtime->routes[previous_index - 1u].committed_fifo_next = encoded_index;
 	else
 		runtime->committed_fifo_head = encoded_index;
-	runtime->committed_fifo_tail = encoded_index;
+	if ( index == 0u )
+		runtime->committed_fifo_tail = encoded_index;
 	route->committed_fifo_queued = 1u;
-	route->committed_fifo_next = 0u;
-	{
-		static uint32_t commit_trace;
-		if ( commit_trace < 12u )
-		{
-			commit_trace++;
-			fprintf(stderr,
-			    "COMMIT-TRACE id=%llu slot=%u ready_state=%u fifo_head=%u lanes=%u\n",
-			    (unsigned long long)route->submission_id,
-			    (unsigned)route->slot_index,
-			    (unsigned)route->ready_state,
-			    (unsigned)runtime->committed_fifo_head,
-			    (unsigned)route->resident_slots_claimed);
-		}
-	}
 	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkModelResidentdEarlierRouteUncommittedLocked(
+	const SparkModelResidentdRuntime *runtime,
+	const SparkModelResidentdRoute *route)
+{
+	const SparkModelResidentdRoute *other;
+	uint32_t index;
+	for (index=0u; index<runtime->route_capacity; index++)
+	{
+		other = &runtime->routes[index];
+		if ( other != route && other->active != 0u && other->committed_fifo_queued == 0u && other->submission_id < route->submission_id &&
+			(other->state == SPARK_MODEL_RESIDENTD_ROUTE_IDLE || other->state == SPARK_MODEL_RESIDENTD_ROUTE_RESERVED || other->state == SPARK_MODEL_RESIDENTD_ROUTE_RESOLVING || other->state == SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING || other->state == SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER) )
+			return(1u);
+	}
+	return(0u);
 }
 
 static SparkStatus SparkModelResidentdRemoveCommittedLocked(
@@ -2463,8 +2472,9 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 		pthread_mutex_unlock(&runtime->mutex);
 		return(SPARK_STATUS_OK);
 	}
-	if ( runtime->committed_fifo_head != 0u &&
-		runtime->committed_fifo_head != route->slot_index + 1u )
+	if ( (runtime->committed_fifo_head != 0u &&
+		runtime->committed_fifo_head != route->slot_index + 1u) ||
+		SparkModelResidentdEarlierRouteUncommittedLocked(runtime,route) != 0u )
 	{
 		pthread_mutex_unlock(&runtime->mutex);
 		return(SPARK_STATUS_OK);

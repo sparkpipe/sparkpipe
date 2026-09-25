@@ -1543,6 +1543,57 @@ static void TestModelPipelineFailedPrefillFreesSlot(SparkModelPipelineClient *pi
 	assert(state->completions[2].status == SPARK_STATUS_OK);
 }
 
+static void TestModelPipelineAssertExecutionOrder(const TestModelPipelineState *state,uint64_t first,uint64_t second)
+{
+	const SparkModelPipelineStageCompletion *early,*late;
+	uint32_t stage;
+	for (stage=0u; stage<TEST_MODEL_PIPELINE_RANK_COUNT; stage++)
+	{
+		early = TestModelPipelineFindStageCompletion(state,first,stage);
+		late = TestModelPipelineFindStageCompletion(state,second,stage);
+		assert(early != 0 && late != 0 && early->status == SPARK_STATUS_OK && late->status == SPARK_STATUS_OK);
+		assert(early->host_staging_bytes < late->host_staging_bytes);
+	}
+}
+
+static void TestModelPipelineDeferredContinuationKeepsOrder(SparkModelPipelineClient *pipeline,TestModelPipelineState *state)
+{
+	SparkModelServingSubmission submissions[3];
+	SparkModelServingLane lanes[3][2];
+	uint32_t tokens[3][4],row_lanes[3][4];
+	uint64_t positions[3][4],sequences[3][4];
+	uint8_t marker;
+	marker = 1u;
+	TestModelPipelineBuildPrefill(&submissions[0],lanes[0],tokens[0],row_lanes[0],positions[0],sequences[0],701u);
+	TestModelPipelineRetargetPrefill(&submissions[0],&lanes[0][0],sequences[0],811u,311u);
+	lanes[0][0].resident_sequence_slot = 26u;
+	lanes[0][0].context_token_count = 4u;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[0]) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,1u);
+	assert(state->completions[0].status == SPARK_STATUS_OK);
+	TestModelPipelineBuildPrefill(&submissions[1],lanes[1],tokens[1],row_lanes[1],positions[1],sequences[1],702u);
+	TestModelPipelineRetargetPrefill(&submissions[1],&lanes[1][0],sequences[1],811u,311u);
+	lanes[1][0].resident_sequence_slot = 26u;
+	submissions[1].work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submissions[1].row_count = submissions[1].token_count = submissions[1].new_token_count = 1u;
+	submissions[1].sequence_position = lanes[1][0].sequence_position = positions[1][0] = 4u;
+	lanes[1][0].context_token_count = 5u;
+	submissions[1].model_extension_kind = 95u;
+	submissions[1].model_extension_bytes = sizeof(marker);
+	submissions[1].model_extension = &marker;
+	TestModelPipelineBuildPrefill(&submissions[2],lanes[2],tokens[2],row_lanes[2],positions[2],sequences[2],703u);
+	TestModelPipelineRetargetPrefill(&submissions[2],&lanes[2][0],sequences[2],812u,312u);
+	lanes[2][0].resident_sequence_slot = 25u;
+	lanes[2][0].context_token_count = 4u;
+	submissions[2].model_extension_kind = 94u;
+	submissions[2].model_extension_bytes = sizeof(marker);
+	submissions[2].model_extension = &marker;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[1]) == SPARK_STATUS_OK);
+	assert(SparkModelPipelineClientSubmit(pipeline,&submissions[2]) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,3u);
+	TestModelPipelineAssertExecutionOrder(state,702u,703u);
+}
+
 static void TestModelPipelineCachePublish(SparkModelPipelineClient *pipeline,
     TestModelPipelineState *state)
 {
@@ -1663,6 +1714,11 @@ int main(void)
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;
 	TestModelPipelineFailedPrefillFreesSlot(pipeline,&state);
+	SparkModelPipelineClientDestroy(pipeline);
+	memset(&state,0,sizeof(state));
+	pipeline = TestModelPipelineConnect(&deployment,&state);
+	state.pipeline = pipeline;
+	TestModelPipelineDeferredContinuationKeepsOrder(pipeline,&state);
 	SparkModelPipelineClientDestroy(pipeline);
 	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);

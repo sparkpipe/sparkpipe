@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "eff0217f098ff147aa3fabe7dc50d1914cfb32a5a23e590032721bd396d23aec",
-      "size_bytes": 11607
+      "sha256": "63828098fd6554b7e205a2849d007fbdf2630fc07f7e7597b18954bea9f64626",
+      "size_bytes": 13083
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -5968,8 +5968,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "818633731e219454f3f5ad5cb9e660d165969de5cafeba35280d876e1d554c95",
-      "size_bytes": 126324
+      "sha256": "792532a9ea427186e1fb2aa24287c44071bc9739b68901573d5a76cf9186225a",
+      "size_bytes": 127019
     },
     {
       "path": "node/weightd.c",
@@ -8273,8 +8273,8 @@
     },
     {
       "path": "tests/fixtures/model_serving_adapter_module.c",
-      "sha256": "bbfc9dce3b667381eefe7b15d6fae871e57dbaea51cc9011be2b0975674f0b67",
-      "size_bytes": 21333
+      "sha256": "fcd912cceaf948bc5dc2f084b7fd5d137a9e87a76316df2a87fb6b483fa3ac46",
+      "size_bytes": 22258
     },
     {
       "path": "tests/fixtures/module_add_one.c",
@@ -9798,8 +9798,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "b2e8f9b75e89c9dc072e138355fe01167b78d361b2ff9ad087769eb28165eea0",
-      "size_bytes": 78697
+      "sha256": "137ad57ebe44afb28780e985b8661c2cceaf9058cbad720dfe8ce0890f037ca9",
+      "size_bytes": 81688
     },
     {
       "path": "tests/test_model_pipeline_client_mock.c",
@@ -15005,5 +15005,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73699891
+  "total_bytes": 73705978
 }
