@@ -802,6 +802,7 @@ static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
 		slot->graph_exec_rows[index] = 0;
 		slot->graph_bound_rows[index] = 0u;
 	}
+	slot->graph_failed_rows = 0u;
 	slot->graph_exec_a = 0;
 }
 
@@ -3073,9 +3074,9 @@ static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_
 	SparkGlm5NextGraphDisarm(state);
 	if ( exec == 0 )
 	{
-		fprintf(stderr,"GRAPH-CAPTURE-FAILED rows=%u\n",index + 1u);
-		slot->graph_disabled = 1u;
-		return(SPARK_STATUS_BUSY);
+		fprintf(stderr,"GRAPH-CAPTURE-FAILED rows=%u; this row count runs eager from now on\n",index + 1u);
+		slot->graph_failed_rows |= UINT64_C(1) << index;
+		return(SPARK_STATUS_UNSUPPORTED);
 	}
 	slot->graph_exec_rows[index] = exec;
 	slot->graph_bound_rows[index] = bound;
@@ -3111,9 +3112,11 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 		(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[index]);
 		slot->graph_exec_rows[index] = 0;
 	}
-	if ( slot->graph_exec_rows[index] == 0 && SparkGlm5NextGraphCapture(chain,index,bound) != SPARK_STATUS_OK )
+	if ( slot->graph_exec_rows[index] == 0 )
+		status = SparkGlm5NextGraphCapture(chain,index,bound);
+	if ( slot->graph_exec_rows[index] == 0 )
 	{
-		*status_out = SPARK_STATUS_BUSY;
+		*status_out = status == SPARK_STATUS_UNSUPPORTED ? status : SPARK_STATUS_BUSY;
 		return;
 	}
 	slot->graph_exec_a = slot->graph_exec_rows[index];
@@ -3300,6 +3303,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			fprintf(stderr,
 			    "GRAPH-GATE-COLD experts not warm; eager first\n");
 		if ( chain->wave_rows >= 1u && chain->wave_rows <= SPARK_GLM5_NEXT_GRAPH_ROWS_MAX &&
+		     (chain->slot->graph_failed_rows & (UINT64_C(1) << (chain->wave_rows - 1u))) == 0u &&
 		     chain->first_row == 0u && chain->spec_verify == 0u &&
 		     chain->batch->active_sequence_count == chain->wave_rows &&
 		     state->tp_device_collective_initialized != 0u &&
@@ -3319,11 +3323,14 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 				SparkGlm5NextFinishChain(chain);
 				return;
 			}
-			SparkGlm5NextTerminalFailure(state,graph_status,"graph-execution");
-			fprintf(stderr,"GRAPH-PATH-FAILED status=%d; engine restart required\n",
-				(int32_t)graph_status);
-			SparkGlm5NextTpChainFail(chain,graph_status);
-			return;
+			if ( graph_status != SPARK_STATUS_UNSUPPORTED )
+			{
+				SparkGlm5NextTerminalFailure(state,graph_status,"graph-execution");
+				fprintf(stderr,"GRAPH-PATH-FAILED status=%d; engine restart required\n",
+					(int32_t)graph_status);
+				SparkGlm5NextTpChainFail(chain,graph_status);
+				return;
+			}
 		}
 		if ( SparkGlm5NextBuildWave(chain) != SPARK_STATUS_OK )
 		{
