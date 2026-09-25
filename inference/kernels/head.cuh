@@ -7,6 +7,99 @@
 #include "runtime/launch.h"
 #include <stdint.h>
 
+#define LM_HEAD_ROWS_TOKENS 64u
+#define LM_HEAD_ROWS_K 64u
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ void LmHeadRowsLoad(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float (*weight_tile)[LM_HEAD_ROWS_K + 1u], float (*input_tile)[LM_HEAD_ROWS_K], uint32_t first_index, uint32_t first_row, uint32_t tile_rows, uint32_t rows, uint32_t hidden, uint32_t vocabulary, uint32_t k0)
+{
+	uint32_t element, token, index, row;
+	for (element = threadIdx.x; element < LM_HEAD_ROWS_TOKENS * LM_HEAD_ROWS_K; element += THREADS)
+	{
+		index = first_index + element / LM_HEAD_ROWS_K;
+		token = index < vocabulary ? (token_ids != 0 ? token_ids[index] : index) : 0u;
+		weight_tile[element / LM_HEAD_ROWS_K][element % LM_HEAD_ROWS_K] = index < vocabulary ? LmBf16ToFloat(head_weight_bf16[((uint64_t)token * hidden) + k0 + element % LM_HEAD_ROWS_K]) : 0.0f;
+	}
+	for (element = threadIdx.x; element < tile_rows * LM_HEAD_ROWS_K; element += THREADS)
+	{
+		row = first_row + element / LM_HEAD_ROWS_K;
+		input_tile[element / LM_HEAD_ROWS_K][element % LM_HEAD_ROWS_K] = row < rows ? LmBf16ToFloat(normed_bf16[((uint64_t)row * hidden) + k0 + element % LM_HEAD_ROWS_K]) : 0.0f;
+	}
+}
+
+template<uint32_t ROWS>
+static __device__ __forceinline__ void LmHeadRowsReduce(float (*best_score)[LM_HEAD_ROWS_TOKENS], uint32_t (*best_token)[LM_HEAD_ROWS_TOKENS], uint32_t threads)
+{
+	uint32_t stride, element, row, lane;
+	for (stride = LM_HEAD_ROWS_TOKENS / 2u; stride > 0u; stride >>= 1u)
+	{
+		for (element = threadIdx.x; element < ROWS * stride; element += threads)
+		{
+			row = element / stride;
+			lane = element % stride;
+			if ( best_score[row][lane + stride] > best_score[row][lane] || (best_score[row][lane + stride] == best_score[row][lane] && best_token[row][lane + stride] < best_token[row][lane]) )
+			{
+				best_score[row][lane] = best_score[row][lane + stride];
+				best_token[row][lane] = best_token[row][lane + stride];
+			}
+		}
+		__syncthreads();
+	}
+}
+
+template<uint32_t THREADS, uint32_t TILE, uint32_t ROWS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadCandidateRowsKernel(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t rows, uint32_t hidden, uint32_t vocabulary)
+{
+	constexpr uint32_t groups = THREADS / LM_HEAD_ROWS_TOKENS, per_thread = ROWS / groups;
+	static_assert(THREADS % LM_HEAD_ROWS_TOKENS == 0u && ROWS % (THREADS / LM_HEAD_ROWS_TOKENS) == 0u && TILE % LM_HEAD_ROWS_TOKENS == 0u, "head row tiles must divide evenly");
+	__shared__ float weight_tile[LM_HEAD_ROWS_TOKENS][LM_HEAD_ROWS_K + 1u];
+	__shared__ float input_tile[ROWS][LM_HEAD_ROWS_K];
+	__shared__ float best_score[ROWS][LM_HEAD_ROWS_TOKENS];
+	__shared__ uint32_t best_token[ROWS][LM_HEAD_ROWS_TOKENS];
+	const uint32_t tile = blockIdx.x, first_row = blockIdx.y * ROWS, lane = threadIdx.x % LM_HEAD_ROWS_TOKENS, group = threadIdx.x / LM_HEAD_ROWS_TOKENS;
+	uint32_t sub, k0, k, j, index, best_id[per_thread];
+	float total[per_thread], best[per_thread];
+	for (j = 0u; j < per_thread; ++j)
+	{
+		best[j] = -INFINITY;
+		best_id[j] = 0xffffffffu;
+	}
+	for (sub = 0u; sub < TILE; sub += LM_HEAD_ROWS_TOKENS)
+	{
+		index = tile * TILE + sub + lane;
+		for (j = 0u; j < per_thread; ++j)
+			total[j] = 0.0f;
+		for (k0 = 0u; k0 < hidden; k0 += LM_HEAD_ROWS_K)
+		{
+			__syncthreads();
+			LmHeadRowsLoad<THREADS>(normed_bf16, head_weight_bf16, token_ids, weight_tile, input_tile, tile * TILE + sub, first_row, ROWS, rows, hidden, vocabulary, k0);
+			__syncthreads();
+			for (k = 0u; k < LM_HEAD_ROWS_K; ++k)
+				for (j = 0u; j < per_thread; ++j)
+					total[j] += input_tile[group * per_thread + j][k] * weight_tile[lane][k];
+		}
+		for (j = 0u; j < per_thread; ++j)
+			if ( index < vocabulary && total[j] > best[j] )
+			{
+				best[j] = total[j];
+				best_id[j] = token_ids != 0 ? token_ids[index] : index;
+			}
+	}
+	for (j = 0u; j < per_thread; ++j)
+	{
+		best_score[group * per_thread + j][lane] = best[j];
+		best_token[group * per_thread + j][lane] = best_id[j];
+	}
+	__syncthreads();
+	LmHeadRowsReduce<ROWS>(best_score, best_token, THREADS);
+	if ( threadIdx.x < ROWS && first_row + threadIdx.x < rows )
+	{
+		candidate_score[((first_row + threadIdx.x) * gridDim.x) + tile] = best_score[threadIdx.x][0];
+		candidate_token[((first_row + threadIdx.x) * gridDim.x) + tile] = best_token[threadIdx.x][0];
+	}
+}
+
 template<uint32_t THREADS, uint32_t TILE>
 __global__ __launch_bounds__(THREADS, 1)
 void LmHeadCandidateKernel(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t rows, uint32_t hidden, uint32_t vocabulary)

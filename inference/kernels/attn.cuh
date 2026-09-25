@@ -489,6 +489,209 @@ void LmLatentAttentionDecodeSplitCombineKernel(
     }
 }
 
+#define LM_LATENT_HEADS_WARPS 8u
+#define LM_LATENT_HEADS_THREADS (LM_LATENT_HEADS_WARPS * 32u)
+
+template<uint32_t PER_LANE>
+static __device__ __forceinline__ void LmLatentHeadsLoad(const uint16_t *__restrict__ source, float *values)
+{
+    uint32_t chunk, word, bits[4];
+    uint4 packed;
+    for (chunk = 0u; chunk < PER_LANE / 8u; ++chunk)
+    {
+        packed = ((const uint4 *)source)[chunk];
+        bits[0] = packed.x; bits[1] = packed.y; bits[2] = packed.z; bits[3] = packed.w;
+        for (word = 0u; word < 4u; ++word)
+        {
+            values[chunk * 8u + word * 2u] = __uint_as_float(bits[word] << 16u);
+            values[chunk * 8u + word * 2u + 1u] = __uint_as_float(bits[word] & 0xffff0000u);
+        }
+    }
+}
+
+template<uint32_t HEADS, uint32_t PER_LANE>
+static __device__ __forceinline__ void LmLatentHeadsStep(const float (*query)[PER_LANE], const float *value, float qk_scale, float *running_max, float *running_sum, float (*accumulator)[PER_LANE])
+{
+    uint32_t head, element, mask;
+    float score, previous, scaled_previous, scaled_current;
+    for (head = 0u; head < HEADS; ++head)
+    {
+        score = 0.0f;
+        for (element = 0u; element < PER_LANE; ++element)
+            score += query[head][element] * value[element];
+        for (mask = 16u; mask > 0u; mask >>= 1u)
+            score += __shfl_xor_sync(0xffffffffu, score, mask);
+        score *= qk_scale;
+        previous = running_max[head];
+        running_max[head] = fmaxf(previous, score);
+        scaled_previous = __expf(previous - running_max[head]);
+        scaled_current = __expf(score - running_max[head]);
+        running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
+        for (element = 0u; element < PER_LANE; ++element)
+            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (scaled_current * value[element]);
+    }
+}
+
+template<uint32_t HEADS, uint32_t LATENT>
+static __device__ __forceinline__ float LmLatentHeadsScale(const float (*warp_max)[HEADS], uint32_t warp, uint32_t head, float global_max)
+{
+    return(global_max == -INFINITY || warp_max[warp][head] == -INFINITY ? 0.0f : __expf(warp_max[warp][head] - global_max));
+}
+
+template<uint32_t HEADS, uint32_t LATENT, uint32_t PER_LANE>
+static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEADS], float (*warp_sum)[HEADS], float (*merged)[LATENT], const float *running_max, const float *running_sum, const float (*accumulator)[PER_LANE], float *global_max, float *global_sum)
+{
+    uint32_t warp = threadIdx.x / 32u, lane = threadIdx.x % 32u, head, element, index;
+    if (lane == 0u)
+        for (head = 0u; head < HEADS; ++head)
+        {
+            warp_max[warp][head] = running_max[head];
+            warp_sum[warp][head] = running_sum[head];
+        }
+    for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_HEADS_THREADS)
+        merged[index / LATENT][index % LATENT] = 0.0f;
+    __syncthreads();
+    for (head = 0u; head < HEADS; ++head)
+    {
+        global_max[head] = -INFINITY;
+        global_sum[head] = 0.0f;
+        for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
+            global_max[head] = fmaxf(global_max[head], warp_max[index][head]);
+        for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
+            global_sum[head] = fmaf(warp_sum[index][head], LmLatentHeadsScale<HEADS, LATENT>(warp_max, index, head, global_max[head]), global_sum[head]);
+    }
+    for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
+    {
+        if (warp == index)
+            for (head = 0u; head < HEADS; ++head)
+                for (element = 0u; element < PER_LANE; ++element)
+                    merged[head][lane * PER_LANE + element] += accumulator[head][element] * LmLatentHeadsScale<HEADS, LATENT>(warp_max, index, head, global_max[head]);
+        __syncthreads();
+    }
+}
+
+template<class Geometry, uint32_t LATENT, uint32_t HEADS>
+__global__ __launch_bounds__(LM_LATENT_HEADS_THREADS, 1)
+void LmLatentAttentionHeadsKernel(
+    const uint16_t *__restrict__ query_latent_bf16,
+    LmKvView cache,
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ selected_positions,
+    uint32_t selected_count,
+    uint32_t partitions,
+    float qk_scale,
+    uint16_t *__restrict__ output_bf16,
+    float *__restrict__ partials,
+    const uint32_t *__restrict__ row_position)
+{
+    constexpr uint32_t PER_LANE = LATENT / 32u;
+    static_assert(LATENT % 256u == 0u, "each lane loads whole 16-byte latent chunks");
+    __shared__ float warp_max[LM_LATENT_HEADS_WARPS][HEADS];
+    __shared__ float warp_sum[LM_LATENT_HEADS_WARPS][HEADS];
+    __shared__ float merged[HEADS][LATENT];
+    uint32_t row = blockIdx.x, partition = blockIdx.y, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
+    uint32_t sequence = sequence_of_row[row], head, index, step, position, position_count, span, first, last;
+    float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE], value[PER_LANE];
+    float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS];
+    const uint8_t *slot;
+    uint64_t base;
+    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
+    {
+        LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
+        return;
+    }
+    for (head = 0u; head < HEADS; ++head)
+    {
+        running_max[head] = -INFINITY;
+        running_sum[head] = 0.0f;
+        LmLatentHeadsLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * PER_LANE, query[head]);
+        for (index = 0u; index < PER_LANE; ++index)
+            accumulator[head][index] = 0.0f;
+    }
+    position_count = selected_positions != 0 ? selected_count : context_length[sequence];
+    span = (position_count + partitions - 1u) / partitions;
+    first = partition * span;
+    last = first + span < position_count ? first + span : position_count;
+    for (step = first + warp; step < last; step += LM_LATENT_HEADS_WARPS)
+    {
+        position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
+        if (row_position != 0 && position > row_position[row])
+            continue;
+        slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
+        if (slot == 0)
+            break;
+        LmLatentHeadsLoad<PER_LANE>((const uint16_t *)slot + lane * PER_LANE, value);
+        LmLatentHeadsStep<HEADS, PER_LANE>(query, value, qk_scale, running_max, running_sum, accumulator);
+    }
+    LmLatentHeadsMerge<HEADS, LATENT, PER_LANE>(warp_max, warp_sum, merged, running_max, running_sum, accumulator, global_max, global_sum);
+    for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_HEADS_THREADS)
+    {
+        head = index / LATENT;
+        if (partitions == 1u)
+            output_bf16[((uint64_t)row * HEADS + head) * LATENT + index % LATENT] = LmFloatToBf16(merged[head][index % LATENT] / fmaxf(global_sum[head], 1.0e-20f));
+        else
+        {
+            base = (((uint64_t)row * HEADS + head) * partitions + partition) * (LATENT + 2u);
+            partials[base + 2u + index % LATENT] = merged[head][index % LATENT];
+            if (index % LATENT == 0u)
+            {
+                partials[base] = global_max[head];
+                partials[base + 1u] = global_sum[head];
+            }
+        }
+    }
+}
+
+static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
+{
+    return(heads == 1u || heads == 2u || heads == 4u ? 1u : 0u);
+}
+
+template<class Geometry, uint32_t LATENT, uint32_t HEADS>
+static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+{
+    LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
+    if (cudaPeekAtLastError() != cudaSuccess || partitions == 1u)
+        return cudaPeekAtLastError();
+    LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
+    return cudaPeekAtLastError();
+}
+
+template<class Geometry, uint32_t LATENT>
+static inline cudaError_t LmLatentAttentionHeadsLaunch(
+    const uint16_t *query_latent_bf16,
+    LmKvView cache,
+    const uint32_t *sequence_of_row,
+    const uint32_t *context_length,
+    const uint32_t *selected_positions,
+    uint32_t selected_count,
+    uint32_t heads,
+    float qk_scale,
+    uint16_t *output_bf16,
+    const uint32_t *row_position,
+    uint32_t rows,
+    uint32_t position_bound,
+    uint32_t split_context_threshold,
+    float *split_partials,
+    uint32_t split_partial_blocks,
+    uint32_t multiprocessor_count,
+    cudaStream_t stream)
+{
+    uint32_t partitions;
+    partitions = rows == 0u || multiprocessor_count == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + rows - 1u) / rows;
+    partitions = partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ? LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS : partitions;
+    if (split_context_threshold == 0u || split_partials == 0 || position_bound < split_context_threshold || partitions < 2u || (uint64_t)rows * heads * partitions > split_partial_blocks)
+        partitions = 1u;
+    if (heads == 1u)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    if (heads == 2u)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    if (heads == 4u)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    return cudaErrorNotSupported;
+}
+
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     const uint16_t *query_latent_bf16,
