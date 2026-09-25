@@ -201,6 +201,58 @@ static void TimeShape(const DenseShape *shape,cudaStream_t stream)
     CUDA(cudaFree(weights)); CUDA(cudaFree(activation)); CUDA(cudaFree(output)); CUDA(cudaFree(row_offset)); CUDA(cudaFree(tile_prefix));
 }
 
+static float TopkTime(bool warp,const float *logits,uint32_t *indices,float *values,const float *bias,cudaStream_t stream)
+{
+    cudaGraph_t graph; cudaGraphExec_t executable; cudaEvent_t begin,end;
+    std::vector<float> samples;
+    float ms;
+    CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
+    CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+    for (uint32_t i=0u; i<42u; i++)
+        if (warp)
+            CUDA((LmTopkRouteLaunch<256u,8u,true,LM_TOPK_SCORE_SIGMOID>(1u,logits,288u,indices,values,bias,0,2.5f,stream)));
+        else
+            LmTopkSmallKernel<256u,8u,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<1u,256u,2u*LM_TOPK_SMALL_LIMIT*sizeof(uint32_t),stream>>>(logits,288u,indices,values,bias,0,2.5f);
+    CUDA(cudaStreamEndCapture(stream,&graph));
+    CUDA(cudaGraphInstantiate(&executable,graph,nullptr,nullptr,0u));
+    for (uint32_t i=0u; i<10u; i++)
+    {
+        CUDA(cudaEventRecord(begin,stream)); CUDA(cudaGraphLaunch(executable,stream)); CUDA(cudaEventRecord(end,stream));
+        CUDA(cudaEventSynchronize(end)); CUDA(cudaEventElapsedTime(&ms,begin,end));
+        if (i >= 2u) samples.push_back(ms);
+    }
+    std::sort(samples.begin(),samples.end());
+    CUDA(cudaGraphExecDestroy(executable)); CUDA(cudaGraphDestroy(graph)); CUDA(cudaEventDestroy(begin)); CUDA(cudaEventDestroy(end));
+    return 0.5f*(samples[3]+samples[4]);
+}
+
+static void TopkCase(cudaStream_t stream)
+{
+    const uint32_t rows=4u,n=288u,k=8u;
+    std::vector<float> logits(rows*n),bias(n),values_small(rows*k),values_warp(rows*k);
+    std::vector<uint32_t> indices_small(rows*k),indices_warp(rows*k);
+    float *device_logits,*device_bias,*device_values; uint32_t *device_indices;
+    for (auto &value : logits) value=Signed()*6.0f;
+    for (auto &value : bias) value=Signed()*0.5f;
+    CUDA(cudaMalloc(&device_logits,logits.size()*4u)); CUDA(cudaMalloc(&device_bias,bias.size()*4u));
+    CUDA(cudaMalloc(&device_values,rows*k*4u)); CUDA(cudaMalloc(&device_indices,rows*k*4u));
+    CUDA(cudaMemcpy(device_logits,logits.data(),logits.size()*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_bias,bias.data(),bias.size()*4u,cudaMemcpyHostToDevice));
+    LmTopkSmallKernel<256u,8u,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<rows,256u,2u*LM_TOPK_SMALL_LIMIT*sizeof(uint32_t),stream>>>(device_logits,n,device_indices,device_values,device_bias,0,2.5f);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(indices_small.data(),device_indices,rows*k*4u,cudaMemcpyDeviceToHost));
+    CUDA(cudaMemcpy(values_small.data(),device_values,rows*k*4u,cudaMemcpyDeviceToHost));
+    CUDA((LmTopkRouteLaunch<256u,8u,true,LM_TOPK_SCORE_SIGMOID>(rows,device_logits,n,device_indices,device_values,device_bias,0,2.5f,stream)));
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(indices_warp.data(),device_indices,rows*k*4u,cudaMemcpyDeviceToHost));
+    CUDA(cudaMemcpy(values_warp.data(),device_values,rows*k*4u,cudaMemcpyDeviceToHost));
+    REQUIRE(indices_small == indices_warp);
+    REQUIRE(memcmp(values_small.data(),values_warp.data(),rows*k*4u) == 0);
+    printf("PASS router top-8 of 288: warp kernel indices and renormalised weights bitwise equal to the bitonic kernel rows=%u\n",rows);
+    printf("TIMING router_topk calls=42 bitonic_ms=%.4f warp_ms=%.4f\n",TopkTime(false,device_logits,device_indices,device_values,device_bias,stream),TopkTime(true,device_logits,device_indices,device_values,device_bias,stream));
+    CUDA(cudaFree(device_logits)); CUDA(cudaFree(device_bias)); CUDA(cudaFree(device_values)); CUDA(cudaFree(device_indices));
+}
+
 int main(int argc,char **argv)
 {
     cudaStream_t stream;
@@ -212,24 +264,30 @@ int main(int argc,char **argv)
     alarm(600);
     setvbuf(stdout,nullptr,_IOLBF,0);
     CUDA(cudaSetDevice(0));
+    {
+        cudaDeviceProp properties;
+        CUDA(cudaGetDeviceProperties(&properties,0));
+        printf("DEVICE sm=%d.%d multiprocessors=%d l2_bytes=%d persisting_l2_max_bytes=%d\n",properties.major,properties.minor,properties.multiProcessorCount,properties.l2CacheSize,properties.persistingL2CacheMaxSize);
+    }
     CUDA(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     for (const DenseShape &shape : dense_shapes)
-        for (uint32_t rows : {1u,2u,3u,4u})
+        for (uint32_t rows : {1u,2u,3u,4u,5u,8u})
             DenseCase(&shape,rows,stream);
-    puts("PASS skinny dense bf16 shapes=19 rows=1..4 reference=f64");
-    for (uint32_t tokens : {1u,2u})
+    puts("PASS skinny dense bf16 shapes=19 rows=1,2,3,4,5,8 reference=f64");
+    for (uint32_t tokens : {1u,2u,8u})
     {
         ExpertCase(4096u,256u,tokens,0u,stream);
         ExpertCase(128u,4096u,tokens,1u,stream);
     }
-    puts("PASS skinny grouped fp8 w1/w2 tokens=1..2 duplicate_expert=yes reference=f64");
-    REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,5u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
+    puts("PASS skinny grouped fp8 w1/w2 tokens=1,2,8 duplicate_expert=yes reference=f64");
+    REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,9u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
-    REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,5u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
-    puts("PASS skinny declines rows>4, more than four routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
+    REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,9u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
+    puts("PASS skinny declines rows>8, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
     for (const DenseShape &shape : dense_shapes)
         if ((shape.input % LmBf16Format::kTileK) == 0u)
             TimeShape(&shape,stream);
+    TopkCase(stream);
     CUDA(cudaStreamDestroy(stream));
     puts("PASS skinny_gemv_probe");
     return 0;
