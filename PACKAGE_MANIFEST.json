@@ -1,5 +1,5 @@
 {
-  "file_count": 2998,
+  "file_count": 3000,
   "files": [
     {
       "path": ".gitattributes",
@@ -10122,6 +10122,11 @@
       "size_bytes": 27714
     },
     {
+      "path": "tests/test_serving_profile_derivation.py",
+      "sha256": "dacddeebc35a810bb958e1210a624a4f8b5e04bbe38b75b491765bda1cce6cd3",
+      "size_bytes": 3273
+    },
+    {
       "path": "tests/test_serving_tp_config.c",
       "sha256": "759af8fc5d132ebe6cb5a43f6b5deb8e9fc5c06b7b2df87072e338b21a0af8c6",
       "size_bytes": 12734
@@ -11693,8 +11698,8 @@
     },
     {
       "path": "tools/glm5_next_gen_deployment.py",
-      "sha256": "56f17799fd513ec5000d88126f6d98ae6d1fd163a1503b8481f3f34d521e7d2e",
-      "size_bytes": 10313
+      "sha256": "73c232ac5625e8e3f551f6bb14760d8c37240b32db47ea0903748453239b8dff",
+      "size_bytes": 10400
     },
     {
       "path": "tools/glm5_next_gen_name_map.py",
@@ -13170,6 +13175,11 @@
       "path": "tools/spark_queue_live_gate.py",
       "sha256": "7b082a6d4d73de7191e1c767a3b0d31c441a7debf2d7a9c51fe19857acd573c5",
       "size_bytes": 7030
+    },
+    {
+      "path": "tools/spark_serving_profile.py",
+      "sha256": "35cd0bc1f0bce89c128b8a9205712bb45fcc4250d0355a236599c75ea1687082",
+      "size_bytes": 4711
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -14995,5 +15005,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73680411
+  "total_bytes": 73688482
 }
