@@ -647,12 +647,19 @@ test-glm-head-offset: | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" tests/test_glm5_next_head_offset.cu -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o build/test_glm5_next_head_offset
 	./build/test_glm5_next_head_offset
 
-build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_next_hc_mix_baseline.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_next_hc_mix_baseline.cuh inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
 
 .PHONY: test-glm-hc-mix
 test-glm-hc-mix: build/test_glm5_next_hc_mix
 	./build/test_glm5_next_hc_mix --run
+
+build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-skinny-gemv
+test-skinny-gemv: build/test_skinny_gemv
+	./build/test_skinny_gemv --run
 
 build/test_cuda_stream_receipt: tests/test_cuda_stream_receipt.c $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	test -f $(CUDA_HOME)/include/cuda_runtime.h

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cooperative_groups.h>
+
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/hc.cuh"
@@ -1538,173 +1540,186 @@ static int32_t Glm5NextLayerKda(
     return(status);
 }
 
-__global__ void Glm5NextHcSplitSinkhornKernel(
-    const float *__restrict__ mixes_f32,
-    const float *__restrict__ scale3_f32,
-    const float *__restrict__ base_f32,
-    uint32_t row_count,
-    uint32_t hc,
-    uint32_t iterations,
-    float epsilon,
-    float *__restrict__ pre_f32,
-    float *__restrict__ post_f32,
-    float *__restrict__ comb_f32)
+#define GLM5_NEXT_HC_CLUSTER 8u
+#define GLM5_NEXT_HC_SLICE (GLM5_NEXT_HC_FLAT / GLM5_NEXT_HC_CLUSTER)
+#define GLM5_NEXT_HC_PRE_SLICE (GLM5_NEXT_HIDDEN / GLM5_NEXT_HC_CLUSTER)
+#define GLM5_NEXT_HC_VECTORS (GLM5_NEXT_HC_SLICE / 4u / LM_WARP_LANES)
+static_assert(GLM5_NEXT_HC == 4u && GLM5_NEXT_HC_MIX == (2u + GLM5_NEXT_HC) * GLM5_NEXT_HC, "the HC site is specialised for four streams");
+static_assert(GLM5_NEXT_HC_SLICE % (4u * LM_WARP_LANES) == 0u && GLM5_NEXT_HIDDEN % GLM5_NEXT_HC_CLUSTER == 0u, "HC slices must be whole float4 warp spans");
+
+typedef struct Glm5NextHcShared
 {
-    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t i, j, iteration;
-    const uint32_t mix_rows = (2u + hc) * hc;
-    const float *mixes;
-    float comb[16], maximum, total;
-    if (row >= row_count || hc > 4u)
-        return;
-    mixes = mixes_f32 + (uint64_t)row * mix_rows;
-    for (i = 0u; i < hc; ++i)
-    {
-        pre_f32[(uint64_t)row * hc + i] =
-            1.0f / (1.0f + __expf(-(mixes[i] * scale3_f32[0] + base_f32[i]))) +
-            epsilon;
-        post_f32[(uint64_t)row * hc + i] =
-            2.0f / (1.0f + __expf(-(mixes[hc + i] * scale3_f32[1] +
-                                    base_f32[hc + i])));
-    }
-    for (i = 0u; i < hc; ++i)
-    {
-        maximum = -3.0e38f;
-        for (j = 0u; j < hc; ++j)
-        {
-            comb[i * hc + j] =
-                mixes[2u * hc + i * hc + j] * scale3_f32[2] +
-                base_f32[2u * hc + i * hc + j];
-            maximum = fmaxf(maximum, comb[i * hc + j]);
-        }
-        total = 0.0f;
-        for (j = 0u; j < hc; ++j)
-            total += (comb[i * hc + j] = __expf(comb[i * hc + j] - maximum));
-        for (j = 0u; j < hc; ++j)
-            comb[i * hc + j] = comb[i * hc + j] / total + epsilon;
-    }
-    for (iteration = 0u; iteration < iterations; ++iteration)
-    {
-        if (iteration != 0u)
-            for (i = 0u; i < hc; ++i)
-            {
-                total = 0.0f;
-                for (j = 0u; j < hc; ++j)
-                    total += comb[i * hc + j];
-                for (j = 0u; j < hc; ++j)
-                    comb[i * hc + j] /= total + epsilon;
-            }
-        for (j = 0u; j < hc; ++j)
-        {
-            total = 0.0f;
-            for (i = 0u; i < hc; ++i)
-                total += comb[i * hc + j];
-            for (i = 0u; i < hc; ++i)
-                comb[i * hc + j] /= total + epsilon;
-        }
-    }
-    for (i = 0u; i < hc * hc; ++i)
-        comb_f32[(uint64_t)row * hc * hc + i] = comb[i];
+	float staged[GLM5_NEXT_HC_SLICE];
+	float partial[GLM5_NEXT_HC_MIX + 1u];
+	float mixes[GLM5_NEXT_HC_MIX + 1u];
+	float reduction[GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES];
+	float pre[GLM5_NEXT_HC];
+}
+Glm5NextHcShared;
+
+static __device__ void Glm5NextHcSinkhorn(const float *mixes, const float *scale3, const float *base, float *pre, float *post, float *comb_out)
+{
+	constexpr uint32_t hc = GLM5_NEXT_HC;
+	uint32_t i, j, iteration;
+	float comb[hc * hc], maximum, total;
+	#pragma unroll
+	for (i = 0u; i < hc; ++i)
+	{
+		pre[i] = 1.0f / (1.0f + __expf(-(mixes[i] * scale3[0] + base[i]))) + GLM5_NEXT_HC_EPSILON;
+		post[i] = 2.0f / (1.0f + __expf(-(mixes[hc + i] * scale3[1] + base[hc + i])));
+	}
+	#pragma unroll
+	for (i = 0u; i < hc; ++i)
+	{
+		maximum = -3.0e38f;
+		#pragma unroll
+		for (j = 0u; j < hc; ++j)
+		{
+			comb[i * hc + j] = mixes[2u * hc + i * hc + j] * scale3[2] + base[2u * hc + i * hc + j];
+			maximum = fmaxf(maximum, comb[i * hc + j]);
+		}
+		total = 0.0f;
+		#pragma unroll
+		for (j = 0u; j < hc; ++j)
+			total += (comb[i * hc + j] = __expf(comb[i * hc + j] - maximum));
+		#pragma unroll
+		for (j = 0u; j < hc; ++j)
+			comb[i * hc + j] = comb[i * hc + j] / total + GLM5_NEXT_HC_EPSILON;
+	}
+	for (iteration = 0u; iteration < GLM5_NEXT_HC_SINKHORN_ITERATIONS; ++iteration)
+	{
+		if (iteration != 0u)
+			#pragma unroll
+			for (i = 0u; i < hc; ++i)
+			{
+				total = 0.0f;
+				#pragma unroll
+				for (j = 0u; j < hc; ++j)
+					total += comb[i * hc + j];
+				#pragma unroll
+				for (j = 0u; j < hc; ++j)
+					comb[i * hc + j] /= total + GLM5_NEXT_HC_EPSILON;
+			}
+		#pragma unroll
+		for (j = 0u; j < hc; ++j)
+		{
+			total = 0.0f;
+			#pragma unroll
+			for (i = 0u; i < hc; ++i)
+				total += comb[i * hc + j];
+			#pragma unroll
+			for (i = 0u; i < hc; ++i)
+				comb[i * hc + j] /= total + GLM5_NEXT_HC_EPSILON;
+		}
+	}
+	#pragma unroll
+	for (i = 0u; i < hc * hc; ++i)
+		comb_out[i] = comb[i];
 }
 
-#define GLM5_NEXT_HC_MIX_TILE 4096u
-#define GLM5_NEXT_HC_MIX_BLOCKS 3u
-__global__ void Glm5NextHcMixKernel(
-    const uint16_t *__restrict__ streams_bf16,
-    const float *__restrict__ fn_f32,
-    float *__restrict__ mixes_f32,
-    uint32_t row_count,
-    uint32_t flat_dimension,
-    uint32_t mix_rows,
-    float rms_epsilon)
+static __device__ float Glm5NextHcStage(Glm5NextHcShared *shared, const uint16_t *slice)
 {
-    extern __shared__ float staged[];
-    __shared__ float reduction[GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES];
-    uint32_t row = blockIdx.x;
-    uint32_t warp = threadIdx.x / LM_WARP_LANES;
-    uint32_t lane = threadIdx.x % LM_WARP_LANES;
-    uint32_t mix, element, tile, tile_end, tile_elements;
-    const uint32_t warps = GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES;
-    float value, total = 0.0f, accumulator;
-    float accum[4];
-    if (row >= row_count)
-        return;
-    for (mix = 0u; mix < 3u; mix++)
-        accum[mix] = 0.0f;
-    for (tile = 0u; tile < flat_dimension; tile += GLM5_NEXT_HC_MIX_TILE)
-    {
-        tile_end = tile + GLM5_NEXT_HC_MIX_TILE < flat_dimension
-            ? tile + GLM5_NEXT_HC_MIX_TILE
-            : flat_dimension;
-        tile_elements = tile_end - tile;
-        __syncthreads();
-        for (element = threadIdx.x; element < tile_elements;
-             element += GLM5_NEXT_LAYER_THREADS)
-        {
-            value = LmBf16ToFloat(
-                streams_bf16[((uint64_t)row * flat_dimension) + tile + element]);
-            staged[element] = value;
-            total += value * value;
-        }
-        __syncthreads();
-        for (mix = warp; mix < mix_rows; mix += warps)
-        {
-            if (mix % GLM5_NEXT_HC_MIX_BLOCKS != blockIdx.y)
-                continue;
-            accumulator = 0.0f;
-            for (element = lane; element < tile_elements; element += LM_WARP_LANES)
-                accumulator += staged[element] *
-                    fn_f32[((uint64_t)mix * flat_dimension) + tile + element];
-            for (uint32_t lane_step = LM_WARP_LANES / 2u; lane_step > 0u;
-                 lane_step >>= 1)
-                accumulator +=
-                    __shfl_down_sync(0xFFFFFFFFu, accumulator, lane_step);
-            if (lane == 0u)
-                accum[mix / warps] += accumulator;
-        }
-    }
-    total = LmBlockSum<GLM5_NEXT_LAYER_THREADS>(total, reduction);
-    __shared__ float inverse_shared[1];
-    if (threadIdx.x == 0u)
-        inverse_shared[0] =
-            rsqrtf(total / (float)flat_dimension + rms_epsilon);
-    __syncthreads();
-    for (mix = warp; mix < mix_rows; mix += warps)
-        if (lane == 0u && mix % GLM5_NEXT_HC_MIX_BLOCKS == blockIdx.y)
-            mixes_f32[((uint64_t)row * mix_rows) + mix] =
-                accum[mix / warps] * inverse_shared[0];
+	uint32_t element;
+	float value, total = 0.0f;
+	for (element = threadIdx.x; element < GLM5_NEXT_HC_SLICE; element += GLM5_NEXT_LAYER_THREADS)
+	{
+		value = LmBf16ToFloat(slice[element]);
+		shared->staged[element] = value;
+		total += value * value;
+	}
+	return(LmBlockSum<GLM5_NEXT_LAYER_THREADS>(total, shared->reduction));
 }
 
-__global__ void Glm5NextHcPreReduceKernel(
-    const uint16_t *__restrict__ streams_bf16,
-    const float *__restrict__ pre_f32,
-    uint16_t *__restrict__ collapsed_bf16,
-    uint16_t *__restrict__ snapshot_bf16,
-    uint32_t row_count,
-    uint32_t hc,
-    uint32_t dimension)
+static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, uint32_t offset)
 {
-    uint32_t row = blockIdx.x;
-    uint32_t element, stream;
-    float value;
-    if (row >= row_count)
-        return;
-    for (element = threadIdx.x; element < dimension;
-         element += blockDim.x)
-    {
-        value = 0.0f;
-        for (stream = 0u; stream < hc; ++stream)
-        {
-            uint64_t index =
-                (((uint64_t)row * hc) + stream) * dimension + element;
-            uint16_t raw = streams_bf16[index];
-            snapshot_bf16[index] = raw;
-            value += pre_f32[((uint64_t)row * hc) + stream] *
-                LmBf16ToFloat(raw);
-        }
-        collapsed_bf16[(uint64_t)row * dimension + element] =
-            LmFloatToBf16(value);
-    }
+	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
+	uint32_t mix, vector, step;
+	float4 weight[GLM5_NEXT_HC_VECTORS], value;
+	float accumulator;
+	for (mix = warp; mix < GLM5_NEXT_HC_MIX; mix += GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES)
+	{
+		#pragma unroll
+		for (vector = 0u; vector < GLM5_NEXT_HC_VECTORS; vector++)
+			weight[vector] = __ldcs((const float4 *)(fn + (uint64_t)mix * GLM5_NEXT_HC_FLAT + offset) + lane + vector * LM_WARP_LANES);
+		accumulator = 0.0f;
+		#pragma unroll
+		for (vector = 0u; vector < GLM5_NEXT_HC_VECTORS; vector++)
+		{
+			value = ((const float4 *)shared->staged)[lane + vector * LM_WARP_LANES];
+			accumulator = fmaf(weight[vector].x, value.x, accumulator);
+			accumulator = fmaf(weight[vector].y, value.y, accumulator);
+			accumulator = fmaf(weight[vector].z, value.z, accumulator);
+			accumulator = fmaf(weight[vector].w, value.w, accumulator);
+		}
+		for (step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u)
+			accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
+		if (lane == 0u)
+			shared->partial[mix] = accumulator;
+	}
+}
+
+static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, float *comb)
+{
+	uint32_t rank, mix;
+	float total, inverse;
+	if (threadIdx.x <= GLM5_NEXT_HC_MIX)
+	{
+		total = 0.0f;
+		for (rank = 0u; rank < GLM5_NEXT_HC_CLUSTER; rank++)
+			total += cluster.map_shared_rank(shared->partial, rank)[threadIdx.x];
+		shared->mixes[threadIdx.x] = total;
+	}
+	__syncthreads();
+	if (threadIdx.x != 0u)
+		return;
+	inverse = rsqrtf(shared->mixes[GLM5_NEXT_HC_MIX] / (float)GLM5_NEXT_HC_FLAT + GLM5_NEXT_RMS_EPSILON);
+	for (mix = 0u; mix < GLM5_NEXT_HC_MIX; mix++)
+		mixes[mix] = shared->mixes[mix] = shared->mixes[mix] * inverse;
+	Glm5NextHcSinkhorn(shared->mixes, scale3, base, shared->pre, post, comb);
+	for (mix = 0u; mix < GLM5_NEXT_HC; mix++)
+		pre[mix] = shared->pre[mix];
+}
+
+static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first)
+{
+	uint32_t element, stream;
+	uint64_t index;
+	uint16_t raw;
+	float value;
+	for (element = first + threadIdx.x; element < first + GLM5_NEXT_HC_PRE_SLICE; element += GLM5_NEXT_LAYER_THREADS)
+	{
+		value = 0.0f;
+		#pragma unroll
+		for (stream = 0u; stream < GLM5_NEXT_HC; ++stream)
+		{
+			index = (uint64_t)stream * GLM5_NEXT_HIDDEN + element;
+			raw = streams[index];
+			snapshot[index] = raw;
+			value += pre[stream] * LmBf16ToFloat(raw);
+		}
+		collapsed[element] = LmFloatToBf16(value);
+	}
+}
+
+__global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(GLM5_NEXT_LAYER_THREADS) Glm5NextHcSiteKernel(const uint16_t *__restrict__ streams_bf16, const float *__restrict__ fn_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ mixes_f32, float *__restrict__ pre_f32, float *__restrict__ post_f32, float *__restrict__ comb_f32, uint16_t *__restrict__ collapsed_bf16, uint16_t *__restrict__ snapshot_bf16)
+{
+	__shared__ Glm5NextHcShared shared;
+	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
+	const uint32_t slice = cluster.block_rank(), row = blockIdx.x / GLM5_NEXT_HC_CLUSTER;
+	const uint16_t *streams = streams_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT;
+	float total;
+	total = Glm5NextHcStage(&shared, streams + slice * GLM5_NEXT_HC_SLICE);
+	Glm5NextHcDot(&shared, fn_f32, slice * GLM5_NEXT_HC_SLICE);
+	if (threadIdx.x == 0u)
+		shared.partial[GLM5_NEXT_HC_MIX] = total;
+	cluster.sync();
+	if (slice == 0u)
+		Glm5NextHcFinish(cluster, &shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC, comb_f32 + (uint64_t)row * GLM5_NEXT_HC * GLM5_NEXT_HC);
+	cluster.sync();
+	if (slice != 0u && threadIdx.x < GLM5_NEXT_HC)
+		shared.pre[threadIdx.x] = cluster.map_shared_rank(shared.pre, 0u)[threadIdx.x];
+	cluster.sync();
+	Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, slice * GLM5_NEXT_HC_PRE_SLICE);
 }
 
 __global__ void Glm5NextHcHeadMeanKernel(
@@ -1740,55 +1755,28 @@ static int32_t Glm5NextHcSite(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    uint32_t mix_rows = GLM5_NEXT_HC_MIX;
-    uint32_t flat = GLM5_NEXT_HC_FLAT;
     if (buffers->hc_mixes_f32 == 0 || buffers->hc_pre_f32 == 0 ||
         buffers->hc_post_f32 == 0 || buffers->hc_comb_f32 == 0 ||
         buffers->hc_collapsed_bf16 == 0 || buffers->hc_snapshot_bf16 == 0 ||
-        fn_weight == 0 || base_weight == 0 || scale_weight == 0)
+        fn_weight == 0 || base_weight == 0 || scale_weight == 0 ||
+        ((uintptr_t)fn_weight % 16u) != 0u)
         return LM_LAUNCH_ERR_SHAPE;
     LM_LAUNCH(
-        (Glm5NextHcMixKernel),
-        dim3(rows,GLM5_NEXT_HC_MIX_BLOCKS),
-        GLM5_NEXT_LAYER_THREADS,
-        GLM5_NEXT_HC_MIX_TILE * sizeof(float),
-        stream,
-        buffers->hidden_bf16   ,
-        (const float *)fn_weight,
-        buffers->hc_mixes_f32,
-        rows,
-        flat,
-        mix_rows,
-        GLM5_NEXT_RMS_EPSILON);
-    LM_LAUNCH(
-        (Glm5NextHcSplitSinkhornKernel),
-        (rows + 63u) / 64u,
-        64u,
-        0,
-        stream,
-        buffers->hc_mixes_f32,
-        (const float *)scale_weight,
-        (const float *)base_weight,
-        rows,
-        GLM5_NEXT_HC,
-        GLM5_NEXT_HC_SINKHORN_ITERATIONS,
-        GLM5_NEXT_HC_EPSILON,
-        buffers->hc_pre_f32,
-        buffers->hc_post_f32,
-        buffers->hc_comb_f32);
-    LM_LAUNCH(
-        (Glm5NextHcPreReduceKernel),
-        rows,
+        (Glm5NextHcSiteKernel),
+        rows * GLM5_NEXT_HC_CLUSTER,
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,
         buffers->hidden_bf16,
+        (const float *)fn_weight,
+        (const float *)scale_weight,
+        (const float *)base_weight,
+        buffers->hc_mixes_f32,
         buffers->hc_pre_f32,
+        buffers->hc_post_f32,
+        buffers->hc_comb_f32,
         buffers->hc_collapsed_bf16,
-        buffers->hc_snapshot_bf16,
-        rows,
-        GLM5_NEXT_HC,
-        GLM5_NEXT_HIDDEN);
+        buffers->hc_snapshot_bf16);
     return LM_LAUNCH_OK;
 }
 
@@ -1809,7 +1797,7 @@ static int32_t Glm5NextHcPost(
     }
     LM_LAUNCH(
         (LmHcPostBf16Kernel),
-        rows,
+        dim3(rows, GLM5_NEXT_HIDDEN / GLM5_NEXT_LAYER_THREADS),
         GLM5_NEXT_LAYER_THREADS,
         0,
         stream,
@@ -2036,13 +2024,15 @@ static int32_t Glm5NextLayerMoeRoute(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
+    status = LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM5_NEXT_HIDDEN, GLM5_NEXT_EXPERTS, 0u, 0u, stream);
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmScaleTensorNone();
     gemm.group_row_offset = buffers->dense_row_offset;
     gemm.group_tile_prefix = buffers->dense_tile_prefix;
     gemm.output_f32 = buffers->router_logits;
-    status = LmGemmLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmLaunch<
         LmBf16Format,
         GLM5_NEXT_LAYER_TILE_N,
         LmBf16Format::kTileK,
@@ -2146,13 +2136,15 @@ static int32_t Glm5NextLayerMoeExperts(
         GLM5_NEXT_EXPERTS,
         buffers->expert_w1_rows,
         GLM5_NEXT_HIDDEN);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
 	gemm.source_row_map = buffers->route_source_token;
 	gemm.source_row_count = rows;
     gemm.output_bf16 = buffers->gate_up_bf16;
-    status = LmGemmWeightOnlyIndirectLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmWeightOnlyIndirectLaunch<
         ExpertFormat,
         GLM5_NEXT_LAYER_TILE_N,
         GLM5_NEXT_LAYER_STAGES,
@@ -2191,11 +2183,13 @@ static int32_t Glm5NextLayerMoeExperts(
         GLM5_NEXT_EXPERTS,
         GLM5_NEXT_HIDDEN,
         buffers->expert_intermediate);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
     gemm.output_bf16 = buffers->expert_out_bf16;
-    status = LmGemmWeightOnlyLaunch<
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmGemmWeightOnlyLaunch<
         ExpertFormat,
         GLM5_NEXT_LAYER_TILE_N,
         GLM5_NEXT_LAYER_STAGES,

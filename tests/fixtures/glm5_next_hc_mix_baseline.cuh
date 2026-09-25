@@ -1,4 +1,5 @@
 #pragma once
+#define GLM5_NEXT_HC_MIX_TILE 4096u
 __global__ void Glm5NextHcMixBaselineKernel(
     const uint16_t *__restrict__ streams_bf16,
     const float *__restrict__ fn_f32,
@@ -61,4 +62,105 @@ __global__ void Glm5NextHcMixBaselineKernel(
         if (lane == 0u)
             mixes_f32[((uint64_t)row * mix_rows) + mix] =
                 accum[mix / warps] * inverse_shared[0];
+}
+
+__global__ void Glm5NextHcSinkhornBaselineKernel(
+    const float *__restrict__ mixes_f32,
+    const float *__restrict__ scale3_f32,
+    const float *__restrict__ base_f32,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t iterations,
+    float epsilon,
+    float *__restrict__ pre_f32,
+    float *__restrict__ post_f32,
+    float *__restrict__ comb_f32)
+{
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t i, j, iteration;
+    const uint32_t mix_rows = (2u + hc) * hc;
+    const float *mixes;
+    float comb[16], maximum, total;
+    if (row >= row_count || hc > 4u)
+        return;
+    mixes = mixes_f32 + (uint64_t)row * mix_rows;
+    for (i = 0u; i < hc; ++i)
+    {
+        pre_f32[(uint64_t)row * hc + i] =
+            1.0f / (1.0f + __expf(-(mixes[i] * scale3_f32[0] + base_f32[i]))) +
+            epsilon;
+        post_f32[(uint64_t)row * hc + i] =
+            2.0f / (1.0f + __expf(-(mixes[hc + i] * scale3_f32[1] +
+                                    base_f32[hc + i])));
+    }
+    for (i = 0u; i < hc; ++i)
+    {
+        maximum = -3.0e38f;
+        for (j = 0u; j < hc; ++j)
+        {
+            comb[i * hc + j] =
+                mixes[2u * hc + i * hc + j] * scale3_f32[2] +
+                base_f32[2u * hc + i * hc + j];
+            maximum = fmaxf(maximum, comb[i * hc + j]);
+        }
+        total = 0.0f;
+        for (j = 0u; j < hc; ++j)
+            total += (comb[i * hc + j] = __expf(comb[i * hc + j] - maximum));
+        for (j = 0u; j < hc; ++j)
+            comb[i * hc + j] = comb[i * hc + j] / total + epsilon;
+    }
+    for (iteration = 0u; iteration < iterations; ++iteration)
+    {
+        if (iteration != 0u)
+            for (i = 0u; i < hc; ++i)
+            {
+                total = 0.0f;
+                for (j = 0u; j < hc; ++j)
+                    total += comb[i * hc + j];
+                for (j = 0u; j < hc; ++j)
+                    comb[i * hc + j] /= total + epsilon;
+            }
+        for (j = 0u; j < hc; ++j)
+        {
+            total = 0.0f;
+            for (i = 0u; i < hc; ++i)
+                total += comb[i * hc + j];
+            for (i = 0u; i < hc; ++i)
+                comb[i * hc + j] /= total + epsilon;
+        }
+    }
+    for (i = 0u; i < hc * hc; ++i)
+        comb_f32[(uint64_t)row * hc * hc + i] = comb[i];
+}
+
+__global__ void Glm5NextHcPreReduceBaselineKernel(
+    const uint16_t *__restrict__ streams_bf16,
+    const float *__restrict__ pre_f32,
+    uint16_t *__restrict__ collapsed_bf16,
+    uint16_t *__restrict__ snapshot_bf16,
+    uint32_t row_count,
+    uint32_t hc,
+    uint32_t dimension)
+{
+    uint32_t row = blockIdx.x;
+    uint32_t element, stream;
+    float value;
+    if (row >= row_count)
+        return;
+    for (element = threadIdx.x; element < dimension;
+         element += blockDim.x)
+    {
+        value = 0.0f;
+        for (stream = 0u; stream < hc; ++stream)
+        {
+            uint64_t index =
+                (((uint64_t)row * hc) + stream) * dimension + element;
+            uint16_t raw = streams_bf16[index];
+            snapshot_bf16[index] = raw;
+            value += pre_f32[((uint64_t)row * hc) + stream] *
+                LmBf16ToFloat(raw);
+        }
+        collapsed_bf16[(uint64_t)row * dimension + element] =
+            LmFloatToBf16(value);
+    }
 }
