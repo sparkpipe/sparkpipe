@@ -43,7 +43,7 @@ def stage_config(rank):
         "stage_pack_path": PACK_TEMPLATE % rank,
         "max_sequence_positions": 32768,
         "execution_row_capacity": 1024,
-        "decode_split_context_threshold": 2048,
+        "decode_split_context_threshold": 64,
         "tp_degree": TP,
         "tp_rank": tp_rank,
         "tp_collective": {
