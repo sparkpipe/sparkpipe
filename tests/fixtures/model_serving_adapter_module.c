@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
@@ -34,6 +35,7 @@ typedef struct TestModelServingState
 	uint32_t stage_index;
 	uint32_t quiescing;
 	uint32_t continuation_busy_returned;
+	uint64_t deferred_prepare_since_ns;
 	uint32_t hold_completion_steps;
 	uint32_t held_count;
 	uint32_t held_head;
@@ -190,7 +192,7 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
-	if ( submission->model_extension_kind == 96u && submission->model_extension_bytes == 1u )
+	if ( (submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -223,6 +225,8 @@ static void TestModelServingBuildCompletion(
 	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
 	if ( submission->model_extension_kind == 96u )
 		completion->status = SPARK_STATUS_IO_ERROR;
+	if ( submission->model_extension_kind == 94u || submission->model_extension_kind == 95u )
+		completion->host_staging_bytes = state->submitted_count;
 	if ( completion->status != SPARK_STATUS_OK || state->stage_index + 1u != TestModelServingDescriptor.stage_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u || submission->model_extension_kind == 88u )
 		return;
 	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
@@ -319,6 +323,18 @@ static SparkStatus TestModelServingSubmit(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t TestModelServingDeferPrepare(TestModelServingState *state,const SparkModelServingSubmission *submission)
+{
+	struct timespec now;
+	uint64_t now_ns;
+	if ( submission->model_extension_kind != 95u || state->stage_index != 1u || clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+		return(0u);
+	now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	if ( state->deferred_prepare_since_ns == 0u )
+		state->deferred_prepare_since_ns = now_ns;
+	return(now_ns - state->deferred_prepare_since_ns < 200000000ull ? 1u : 0u);
+}
+
 static SparkStatus TestModelServingPrefetch(
 	void *adapter_state,
 	const SparkModelServingSubmission *submissions,
@@ -339,6 +355,8 @@ static SparkStatus TestModelServingPrefetch(
 		state->continuation_busy_returned = 1u;
 		return(SPARK_STATUS_BUSY);
 	}
+	if ( TestModelServingDeferPrepare(state,submissions) != 0u )
+		return(SPARK_STATUS_BUSY);
 	free_index = UINT32_MAX;
 	for (index=0u; index<sizeof(state->prepared) / sizeof(state->prepared[0]);
 		index++)
