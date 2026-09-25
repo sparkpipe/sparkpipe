@@ -138,12 +138,48 @@ typedef struct SparkWeightdMeshWaitRequest
     uint64_t ready;
     uint64_t error;
     uint64_t diag;
-    uint64_t reserved[5];
+    uint64_t capabilities;
+    uint64_t reserved[4];
 } SparkWeightdMeshWaitRequest;
+
+#define SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES 1u
+#define SPARK_WEIGHTD_MESH_CAPABILITIES SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES
+#define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
+#define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
+#define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
+
+typedef struct SparkWeightdMeshRouteFields
+{
+    uint64_t peer_mask:32;
+    uint64_t slice_bytes:24;
+    uint64_t mode:2;
+    uint64_t reserved:6;
+} SparkWeightdMeshRouteFields;
+
+typedef union SparkWeightdMeshRoute
+{
+    uint64_t word;
+    SparkWeightdMeshRouteFields fields;
+} SparkWeightdMeshRoute;
+
+static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
+{
+    return route.fields.reserved == 0u && route.fields.mode <= SPARK_WEIGHTD_MESH_ROUTE_GATHER && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u);
+}
+
+static inline uint64_t SparkWeightdMeshRouteSpan(SparkWeightdMeshRoute route,uint32_t peer,uint32_t local,uint64_t bytes,uint64_t *length)
+{
+    uint64_t begin;
+    begin = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? 0u : (uint64_t)(route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_SCATTER ? peer : local) * route.fields.slice_bytes;
+    begin = begin < bytes ? begin : bytes;
+    *length = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL || bytes - begin < route.fields.slice_bytes ? bytes - begin : route.fields.slice_bytes;
+    return(begin);
+}
 #if !defined(__cplusplus)
 _Static_assert(sizeof(SparkWeightdMeshWaitRequest) == SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES &&
     offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
     "mesh wait request and ready occupy distinct cache lines");
+_Static_assert(sizeof(SparkWeightdMeshRoute) == sizeof(uint64_t),"mesh route is one doorbell word");
 _Static_assert(SPARK_WEIGHTD_MESH_WAIT_OFFSET % SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 0u &&
     SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES <=

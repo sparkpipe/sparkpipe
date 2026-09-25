@@ -44,10 +44,10 @@ struct Rank
 struct Probe
 {
     static constexpr uint64_t band_bytes=SPARK_WEIGHTD_MESH_SLOT_BYTES*SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
-    static constexpr size_t tensor_bytes=SPARK_WEIGHTD_MESH_SLOT_BYTES+4096u;
+    static constexpr size_t tensor_bytes=2u*SPARK_WEIGHTD_MESH_SLOT_BYTES+4096u;
     uint8_t *host=nullptr,*device=nullptr;
     Rank ranks[SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
-    uint32_t degree=0u,operation=0u,rows=0u,rounds=0u;
+    uint32_t degree=0u,operation=0u,rows=0u,rounds=0u,routes=1u;
     uint64_t elements=0u,launch_count=0u,epoch=100u,cancel=0u,timeout=UINT64_C(2000000000);
     uint64_t shipped[16]={},pending[16]={},pending_at[16]={},enqueue_ns[16]={};
     std::atomic<bool> stop{false},hold{false};
@@ -114,8 +114,10 @@ struct Probe
                     if (pending[rank]==0u) { pending[rank]=tag;pending_at[rank]=now; }
                     REQUIRE(pending[rank]==tag);
                     if (hold.load() || now-pending_at[rank]<delay_ns.load()) continue;
-                    uint64_t bytes=Load(entry+1),slot=Load(entry+2),mask=Load(entry+3);
-                    REQUIRE(bytes>0u && bytes<=SPARK_WEIGHTD_MESH_SLOT_BYTES-16u);
+                    uint64_t bytes=Load(entry+1),slot=Load(entry+2),mask,offset,length;
+                    SparkWeightdMeshRoute route;route.word=Load(entry+3);mask=route.fields.peer_mask;
+                    REQUIRE(bytes>0u && bytes<=SPARK_WEIGHTD_MESH_SLOT_BYTES-16u && SparkWeightdMeshRouteValid(route));
+                    REQUIRE(routes!=0u || route.fields.mode==SPARK_WEIGHTD_MESH_ROUTE_FULL);
                     REQUIRE(slot/SPARK_WEIGHTD_MESH_SLOTS_PER_RANK==rank && (mask&(UINT64_C(1)<<rank))==0u);
                     REQUIRE(mask!=0u && (mask&~((UINT64_C(1)<<degree)-1u))==0u);
                     uint8_t *source=host+rank*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
@@ -124,7 +126,8 @@ struct Probe
                     {
                         if ((mask&(UINT64_C(1)<<peer))==0u) continue;
                         uint8_t *target=host+peer*band_bytes+slot*SPARK_WEIGHTD_MESH_SLOT_BYTES;
-                        std::memcpy(target,source,bytes);
+                        offset=SparkWeightdMeshRouteSpan(route,peer,rank,bytes,&length);
+                        std::memcpy(target+offset,source+offset,length);
                         Store(reinterpret_cast<uint64_t *>(target+SPARK_WEIGHTD_MESH_SLOT_BYTES-8u),tag);
                     }
                     Store(reinterpret_cast<uint64_t *>(host+SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(rank,rank)),tag);
@@ -200,7 +203,7 @@ struct Probe
             SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),
             ranks[rank].control,rank,degree,ranks[rank].input,ranks[rank].output,ranks[rank].scratch,
-            elements,operation,rounds,rows,timeout));
+            elements,operation,rounds,rows,routes,timeout));
     }
     double Capture()
     {
@@ -275,7 +278,7 @@ struct Probe
             {
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
-                uint64_t advances=rows==1u ? 1u : chunks*2u*SparkTpMeshTreeLevels(degree);
+                uint64_t advances=rows==1u ? SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
@@ -294,7 +297,7 @@ struct Probe
         if (graph)
             for (uint32_t replay=0u;replay<2u;replay++) { Data(replay+2u);begin=Now();Launch(true);elapsed=Wait(begin);Verify(); }
         EndWorker();completed_cases++;
-        std::printf("PASS numerical tp=%u rows=%u operation=%u elements=%llu graph=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,b,op,static_cast<unsigned long long>(count),graph,construction,elapsed,static_cast<unsigned long long>(transfers.load()));
+        std::printf("PASS numerical tp=%u rows=%u operation=%u elements=%llu graph=%u rsag=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,b,op,static_cast<unsigned long long>(count),graph,b==1u && SparkTpMeshDirectPhasesPerChunk(count,n,op,routes)==2u,construction,elapsed,static_cast<unsigned long long>(transfers.load()));
     }
     void Faults()
     {
@@ -383,6 +386,12 @@ int main(int argc,char **argv)
         if (operation==0u) elements=(elements+15u)&~UINT64_C(15);
         probe.Case(16u,operation,2u,elements,false);probe.Case(16u,operation,2u,elements,true);
     }
+    for (uint32_t degree:{3u,4u,5u,16u})
+        for (uint64_t elements:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
+        {
+            probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
+        }
+    probe.routes=0u;probe.Case(16u,1u,1u,65536u,true);probe.routes=1u;
     probe.Faults();probe.Timings();
     std::printf("PASS tp_mesh_hardware_probe cases=%u GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy\n",probe.completed_cases);
     return 0;

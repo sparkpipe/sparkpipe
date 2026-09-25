@@ -55,7 +55,7 @@ extern int SparkGlm5NextLaunchMeshHardware(void *stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,
-    uint32_t rounds,uint32_t logical_rows,uint64_t timeout_ns);
+    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,uint64_t timeout_ns);
 extern int SparkGlm5NextLaunchMeshSeqPad(void *stream,void *seq_cell);
 extern int SparkGlm5NextLaunchMeshGuard(void *stream,
     volatile void *error_word,void *output);
@@ -861,7 +861,16 @@ static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveIm
     return implementation->hardware_wait == 0u && submission->logical_sequence_count == 1u ? 1u : 0u;
 }
 
-static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveImplementation *implementation,uint32_t operation,uint64_t elements,uint32_t rounds,uint64_t *phases_out)
+static uint32_t SparkTpDeviceCollectiveSliceRoutes(const SparkTpDeviceCollectiveImplementation *implementation)
+{
+    const SparkWeightdMeshWaitRequest *request;
+    if ( implementation->hardware_wait == 0u || implementation->mesh_buffer == 0 )
+        return(0u);
+    request = (const SparkWeightdMeshWaitRequest *)(implementation->mesh_buffer + SPARK_WEIGHTD_MESH_WAIT_ENTRY(SparkTpDeviceCollectiveBandIndex(implementation),implementation->tp_rank));
+    return((__atomic_load_n(&request->capabilities,__ATOMIC_ACQUIRE) & SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES) != 0u ? 1u : 0u);
+}
+
+static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveImplementation *implementation,uint32_t operation,uint64_t elements,uint32_t rounds,uint32_t slice_routes,uint64_t *phases_out)
 {
     uint64_t chunks,phases;
     uint32_t width;
@@ -871,7 +880,7 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     if ( implementation->hardware_wait != 0u )
     {
         chunks = SparkTpMeshDirectChunks(elements,implementation->tp_degree,operation,implementation->slot_bytes);
-        phases = 1u;
+        phases = SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes);
     }
     if ( chunks > UINT32_MAX / (phases != 0u ? phases : 1u) / rounds )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -888,7 +897,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     int launch_result;
     uint64_t phases;
     SparkStatus status;
-    uint32_t band = SparkTpDeviceCollectiveBandIndex(implementation);
+    uint32_t band = SparkTpDeviceCollectiveBandIndex(implementation),slice_routes = SparkTpDeviceCollectiveSliceRoutes(implementation);
     if ( operation != 2u ) elements *= implementation->local_hidden_dimension;
     if ( operation == 0u )
     {
@@ -899,7 +908,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     }
     if ( implementation->hardware_wait != 0u && implementation->mesh_device == 0 )
         return SPARK_STATUS_UNSUPPORTED;
-    status = SparkTpDeviceCollectivePhases(implementation,operation,elements,rounds,&phases);
+    status = SparkTpDeviceCollectivePhases(implementation,operation,elements,rounds,slice_routes,&phases);
     if ( status != SPARK_STATUS_OK )
         return status;
     if ( implementation->f32_scratch_bytes < implementation->slot_bytes )
@@ -924,7 +933,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
             implementation->mesh_device + SPARK_WEIGHTD_MESH_WAIT_ENTRY(band,implementation->tp_rank),
             implementation->round_control,implementation->tp_rank,implementation->tp_degree,
             submission->local_device,submission->full_device,implementation->f32_scratch,
-            elements,operation,rounds,1u,
+            elements,operation,rounds,1u,slice_routes,
             implementation->round_timeout_ns);
     else
         launch_result = SparkGlm5NextLaunchMeshTree(submission->cuda_stream,

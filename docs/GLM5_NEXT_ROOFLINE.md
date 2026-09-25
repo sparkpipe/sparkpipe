@@ -398,16 +398,9 @@ buffers. With 4 slots this saves three workspaces per rank.
 ### Phases
 
 1. **Measure the batch roofline, and use one execution workspace per
-   driver.** Done in this change.
-2. **Reduce-scatter + all-gather** for payloads above one slot. This needs
-   the following:
-   - weightd posts one slice per peer, not the whole slot;
-   - a two-round kernel path;
-   - the same coordinated roll as any mesh change: weightd, weightd_warm,
-     drivers and tools.
-
-   The mesh region itself stays at 256 MiB per node. Chunking (#1212)
-   already makes its size independent of B.
+   driver.** Done.
+2. **Reduce-scatter + all-gather** for BF16 sums of 12 rows or more.
+   Done; see the next section. It needs the coordinated weightd roll.
 3. **Context-parallel DSA.** Each rank keeps the KV and indexer keys of
    1/16 of the tokens. The work splits as follows:
    - scoring is local;
@@ -427,6 +420,58 @@ buffers. With 4 slots this saves three workspaces per rank.
 
    A node-level KV pool and scheduler shares cache capacity between
    drivers instead of preallocating per driver.
+
+### Reduce-scatter + all-gather over slice routes
+
+Doorbell word 3 used to be a peer mask. It is now a route with named
+bitfields:
+
+| Field | Bits |
+| --- | ---: |
+| `peer_mask` | 32 |
+| `slice_bytes` | 24 |
+| `mode` (FULL, SCATTER or GATHER) | 2 |
+| `reserved` | 6 |
+
+The modes post as follows:
+
+- **FULL** posts the whole payload to every peer. It is the old behaviour,
+  and a bare mask decodes to FULL.
+- **SCATTER** posts to each peer `p` only bytes
+  `[p * slice, (p + 1) * slice)`.
+- **GATHER** posts the local rank's slice to every peer.
+
+In all three modes the slot offsets and the 8-byte tail tag are the same
+as before, so the wait protocol does not change.
+
+For one chunk of a BF16 sum:
+
+1. The kernel publishes the chunk with SCATTER.
+2. Each rank reduces its own slice across the 16 slots and writes the
+   result to the output.
+3. Each rank publishes that slice with GATHER into the other ring slot.
+4. After the second wait, the kernel copies every peer's slice into the
+   output.
+
+Each chunk takes two rounds and puts 1.875× the payload on the wire
+instead of 15×. The sum order over peers is the same as in the direct
+path, so results are bitwise identical.
+
+The launcher picks RS/AG only if all of the following hold:
+
+- the operation is a BF16 sum;
+- the degree is at least 4;
+- the payload is at least 49152 elements (12 rows of 4096);
+- the local weightd advertises `SLICE_ROUTES` in the lane's wait entries.
+
+The host phase accounting uses the same predicate.
+
+**Compatibility.** The mesh record magic is bumped to `MESH0005`, so a
+fleet with mixed weightd versions refuses to wire (`WD-MESH-ABI-MISMATCH`)
+instead of mixing the two protocols. That makes this a full weightd +
+weightd_warm roll. Drivers built before this change still work against the
+new weightd, because they only write FULL routes. The kernel marker is now
+`SPARK-TP-MESH-KERNELS-V11-SLICE-ROUTES`.
 
 ## Next steps, ordered by expected gain
 
