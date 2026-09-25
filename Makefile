@@ -519,6 +519,7 @@ PYTHON_TESTS := \
 	tests/test_generated_control_admission.py \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_glm5_next_rows_kernels_host.py \
+	tests/test_skinny_grouped_host.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \

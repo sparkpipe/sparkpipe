@@ -766,6 +766,59 @@ parallelism at large B, where each SM holds only one 8-warp block
 (212 registers). Each warp still processes its positions in the same
 order, so the result is unchanged.
 
+## Grouped experts at large batches (after #1219)
+
+At B256 the routed experts take about 190 ms of the 302 ms step. Their
+weights stream in about 66 ms: 288 experts × 1.57 MB × 42 layers is
+19 GB at 273 GB/s. The per-expert grouped kernel spent the difference on
+three things:
+
+- **Activation re-reads.** One lane group computed one output neuron. For
+  every neuron, it re-read all of the expert's activation rows from L1/L2.
+  At 8 rows that is 16 times more activation traffic than weight traffic.
+  For W2 (K = 128) it also meant 1.2 million tiny tasks per call.
+- **FP8 conversions.** The `cvt.e4m3x2` inline assembly was marked
+  `volatile`, so the compiler could not reuse a converted weight chunk
+  across the rows of a pass. Every row converted the same 16 weights again.
+- **Scale index math.** Each 16-element chunk looked up its FP8 scale
+  through the generic tensor path, which costs two runtime integer
+  divisions.
+
+The fixes:
+
+- `LmSkinnyGroupedKernel` now gives each lane group four neurons
+  (`LM_SKINNY_GROUPED_NEURONS`). One staged activation chunk serves all
+  four neurons, and a W2 call has a quarter as many tasks.
+- The conversion assembly in `dtype.cuh` is no longer `volatile`. The
+  instructions are pure, so the results are unchanged.
+- Skinny kernels compute the scale index directly: row stride times neuron,
+  plus the chunk offset divided by the compile-time scale group. Launch
+  validation requires the scale layout this assumes (one row per scale
+  row, `Format::kScaleGroup` columns) and otherwise falls back to the
+  tensor-core path.
+
+Each neuron keeps its lane assignment, its chunk order and its reduction
+tree. The grouped kernel is therefore bitwise equal to the one-neuron
+version and to the per-pair kernel used up to 8 tokens.
+
+**Measuring it.**
+
+- The harness prints `ROOFLINE-EXPERTS` per batch. It splits the experts
+  phase into `up_ms` (W1 and SwiGLU), `down_ms` (W2) and `combine_ms`
+  (finalize, shared expert, add), and gives `up_gbps` and `down_gbps`
+  against the distinct experts actually selected.
+- `test-skinny-gemv` times the grouped kernel with four neurons, two
+  neurons and one neuron against the tensor-core GEMM, for both shapes, at
+  9, 32, 64 and 256 tokens.
+
+**Tests.**
+
+- `tests/host_cuda/skinny_grouped_host.cu` runs on the threaded host shim.
+  It checks that the four-neuron kernel is bitwise equal to the one-neuron
+  kernel and to the per-pair kernel, at 2, 5 and 20 tokens, for both the
+  W1 and W2 shapes.
+- The GPU test adds the same bitwise check for FP8 at 9, 32 and 96 tokens.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure
