@@ -57,7 +57,7 @@ typedef struct SparkGlm5NextLayerWeights
 	const void *index_compress_gate_bf16;
 } SparkGlm5NextLayerWeights;
 
-#define SPARK_GLM5_NEXT_GRAPH_ROWS_MAX 8u
+#define SPARK_GLM5_NEXT_GRAPH_ROWS_MAX 64u
 
 typedef struct SparkGlm5NextExecutionSlot
 {
@@ -67,6 +67,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *graph_exec_a;
 	void *graph_exec_rows[SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
 	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
+	uint64_t graph_failed_rows;
 	uint32_t graph_disabled;
 	void *host_staging;
 	uint32_t *host_token_ids;

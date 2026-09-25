@@ -13,6 +13,8 @@
 #define ROOF_KINDS 3u
 #define ROOF_MAX_COPIES 8u
 #define ROOF_MAX_BATCHES 16u
+#define ROOF_PHASES 7u
+#define ROOF_PHASE_EVENTS (2u + ROOF_LAYERS * 5u)
 #define ROOF_CUDA(call) do { cudaError_t roof_error = (call); if ( roof_error != cudaSuccess ) { fprintf(stderr,"ROOFLINE-FAIL line=%d cuda=%s call=%s\n",__LINE__,cudaGetErrorString(roof_error),#call); exit(1); } } while (0)
 #define ROOF_LAUNCH(call) do { int32_t roof_status = (call); if ( roof_status != LM_LAUNCH_OK ) { fprintf(stderr,"ROOFLINE-FAIL line=%d launch=%d call=%s\n",__LINE__,(int)roof_status,#call); exit(1); } } while (0)
 
@@ -426,6 +428,76 @@ static void RoofStep(const RoofState *state)
 	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveHead(wave));
 }
 
+static uint32_t RoofPhaseOf(uint32_t layer,uint32_t launch)
+{
+	if ( launch == 0u )
+		return(SparkGlm5NextStagePackLayerIsDsa(layer) != 0u ? 1u : 0u);
+	return(launch + 1u);
+}
+
+static void RoofRecord(cudaEvent_t *events,uint32_t *cursor,cudaStream_t stream)
+{
+	ROOF_CUDA(cudaEventRecord(events[*cursor],stream));
+	(*cursor)++;
+}
+
+static void RoofProfileStep(const RoofState *state,cudaEvent_t *events,cudaStream_t stream)
+{
+	const SparkGlm5NextCudaWave *wave;
+	uint32_t layer,cursor;
+	wave = &state->wave;
+	cursor = 0u;
+	RoofRecord(events,&cursor,stream);
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveBegin(wave));
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+	{
+		RoofRecord(events,&cursor,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttention(wave,layer));
+		RoofRecord(events,&cursor,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
+		RoofRecord(events,&cursor,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
+		RoofRecord(events,&cursor,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer));
+		RoofRecord(events,&cursor,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer));
+	}
+	RoofRecord(events,&cursor,stream);
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveHead(wave));
+	ROOF_CUDA(cudaEventRecord(events[ROOF_PHASE_EVENTS],stream));
+}
+
+static void RoofProfile(const RoofState *state,uint32_t rows,cudaStream_t stream)
+{
+	static const char *names[ROOF_PHASES] = {"attention_kda","attention_dsa","attention_post","route","experts","mlp_post","begin_head"};
+	cudaEvent_t events[ROOF_PHASE_EVENTS + 1u];
+	double phases[ROOF_PHASES];
+	uint32_t index,layer,launch;
+	float elapsed;
+	for (index=0u; index<=ROOF_PHASE_EVENTS; index++)
+		ROOF_CUDA(cudaEventCreate(&events[index]));
+	RoofProfileStep(state,events,stream);
+	ROOF_CUDA(cudaEventSynchronize(events[ROOF_PHASE_EVENTS]));
+	memset(phases,0,sizeof(phases));
+	ROOF_CUDA(cudaEventElapsedTime(&elapsed,events[0],events[1]));
+	phases[ROOF_PHASES - 1u] += elapsed;
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+		for (launch=0u; launch<5u; launch++)
+		{
+			index = 1u + layer * 5u + launch;
+			ROOF_CUDA(cudaEventElapsedTime(&elapsed,events[index],events[index + 1u]));
+			phases[RoofPhaseOf(layer,launch)] += elapsed;
+		}
+	ROOF_CUDA(cudaEventElapsedTime(&elapsed,events[ROOF_PHASE_EVENTS - 1u],events[ROOF_PHASE_EVENTS]));
+	phases[ROOF_PHASES - 1u] += elapsed;
+	printf("ROOFLINE-PHASES rows=%u",rows);
+	for (index=0u; index<ROOF_PHASES; index++)
+		printf(" %s_ms=%.2f",names[index],phases[index]);
+	printf("\n");
+	for (index=0u; index<=ROOF_PHASE_EVENTS; index++)
+		ROOF_CUDA(cudaEventDestroy(events[index]));
+}
+
 static double RoofDistinctExperts(const RoofState *state)
 {
 	const uint32_t *offsets;
@@ -575,7 +647,10 @@ int main(int argc,char **argv)
 	ROOF_CUDA(cudaDeviceSynchronize());
 	printf("ROOFLINE-MODEL fixed_mb_kda_dense=%.1f fixed_mb_kda_moe=%.1f fixed_mb_dsa_moe=%.1f expert_mb=%.3f head_mb=%.1f\n",model.bytes[0].fixed / 1e6,model.bytes[1].fixed / 1e6,model.bytes[2].fixed / 1e6,model.bytes[1].expert / 1e6,model.head_bytes / 1e6);
 	for (batch=0u; batch<config.batch_count; batch++)
+	{
 		RoofReport(&model,&state,&config,config.batches[batch],RoofMeasure(&state,&config,config.batches[batch],stream));
+		RoofProfile(&state,config.batches[batch],stream);
+	}
 	ROOF_CUDA(cudaStreamDestroy(stream));
 	puts("ROOFLINE-DONE");
 	return(0);

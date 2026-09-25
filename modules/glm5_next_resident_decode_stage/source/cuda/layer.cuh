@@ -2136,6 +2136,8 @@ static int32_t Glm5NextLayerMoeExperts(
         buffers->expert_w1_rows,
         GLM5_NEXT_HIDDEN);
     status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
@@ -2183,6 +2185,8 @@ static int32_t Glm5NextLayerMoeExperts(
         GLM5_NEXT_HIDDEN,
         buffers->expert_intermediate);
     status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;

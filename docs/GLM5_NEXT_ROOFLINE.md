@@ -473,6 +473,113 @@ weightd_warm roll. Drivers built before this change still work against the
 new weightd, because they only write FULL routes. The kernel marker is now
 `SPARK-TP-MESH-KERNELS-V11-SLICE-ROUTES`.
 
+## Harness results and the per-expert skinny kernel (#1215 follow-up)
+
+These are the harness numbers measured on one Spark with real kernels
+(#1215):
+
+| B | Step | Achieved | Memory bound |
+| ---: | ---: | ---: | ---: |
+| 1 | 20.0 ms | 128 GB/s | 9.4 ms |
+| 8 | 39.3 ms | 151 GB/s | 21.8 ms |
+| 32 | 203 ms | 61 GB/s | 45.6 ms |
+| 256 | 582 ms | 40 GB/s | 86 ms |
+
+Bandwidth efficiency falls by 4× between B8 and B256.
+
+Up to 8 tokens (64 token-expert pairs), the routed experts run on
+`LmSkinnyExperts`. That kernel handles each (token, expert) pair
+independently, streaming the pair's expert weights once per pair. Above 64
+pairs, the experts fell back to the tensor-core grouped GEMM. That GEMM is
+tiled for dense row blocks, but at B32 an expert has about 1.5 rows, and at
+B256 about 7.
+
+`LmSkinnyGroupedExperts` replaces that fallback up to an average of 16 rows
+per expert (576 tokens). How it works:
+
+- One task per (expert, output neuron). It reads the expert's rows from the
+  route build (`group_row_offset`, `route_source_token`) and processes them
+  in blocks of 4 or 8.
+- Each weight row is fetched from DRAM once per expert, not once per pair.
+  Later row blocks re-read it from L2.
+- Within a warp every task belongs to the same expert, so shuffle
+  reductions stay warp-uniform.
+- The per-lane accumulation order and the reduction are the same as in
+  `LmSkinnyExperts`, so a row's result is bitwise equal to the per-pair
+  kernel's result.
+- It also covers prefill chunks, up to 576 tokens.
+
+Above 16 rows per expert, the tensor-core GEMM is still used.
+
+`test_skinny_gemv` has two parts:
+
+- **Correctness.** It checks the new kernel against an f64 reference for 9,
+  32 and 96 tokens, with one expert forced to 20 or more rows, using real
+  `LmRouteBuild` offsets.
+- **Timing.** It prints `TIMING grouped_experts` lines comparing the
+  kernel with the tensor-core grouped GEMM at 9, 32, 64 and 256 tokens.
+
+The harness also prints `ROOFLINE-PHASES`, a per-step breakdown into:
+
+- KDA attention;
+- DSA attention;
+- attention post;
+- route;
+- experts;
+- MLP post;
+- begin + head.
+
+The next kernel target can therefore be read off directly.
+
+## Decode graphs above 8 rows
+
+Graphs were captured for 1 to 8 rows only. A B16 wave therefore ran the
+eager path, which issues about 1950 launches per step. Graph capture now
+covers up to 64 rows.
+
+A capture that fails at some row count used to disable graphs for the whole
+slot and then terminate the engine. Now it marks only that row count
+(`graph_failed_rows`). That row count then runs eager, which is logged once
+as `GRAPH-CAPTURE-FAILED rows=N; this row count runs eager from now on`, and
+every other row count keeps its graph.
+
+## B16 and larger
+
+The module's sequence cap is the compile-time batch bucket
+(`SPARK_BATCH_BUCKET`). The Makefile builds every bucket from 1 to 1024
+(`make -C modules/glm5_next_resident_decode_stage variants` /
+`publish_variants`), and each is published under its own module ID:
+`spark.glm5_next.resident_decode_stage.bf16.expert_fp8.h4096.l45.kda34.e288.k8.b<N>.v2`.
+
+The `active=8` clamp came from deploying the b8 variant. A B16 profile needs
+the b16 (or b32) variant; there is no code change.
+
+## Wave width in the concurrency sweep
+
+In the 8-stream sweep, every stream prefills 176 tokens through 8-row
+chunks: about 22 chunks per stream, 176 prefill submissions in total. They
+alternate with decode waves, which only take requests whose prefill has
+finished. With 32 output tokens per stream, early streams finish decoding
+before late streams finish prefill. So waves stay at 1 or 2 rows, and the
+sweep time is mostly prefill.
+
+To measure decode waves, run many more output tokens per stream than prompt
+chunks. To make prefill itself faster, raise the prefill chunk size (see
+below).
+
+The prefill chunk is `execution_row_capacity` in the adapter configuration,
+together with the engine's `max_prefill_rows_per_submission`. It is
+independent of the sequence bucket: the module caps it at 65536, and the
+mesh at `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` (128). With 64- or 128-row
+chunks:
+
+- a 176-token prompt takes 2–3 prefill submissions instead of 22;
+- the routed experts use the per-expert kernel;
+- the dense layers use the tensor-core GEMM.
+
+The dense layers at more than 8 rows produce slightly different numerics
+from the 1-row skinny path, so prefill logits are not bitwise equal to B1.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure

@@ -152,6 +152,128 @@ static void ExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t a
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out)); CUDA(cudaFree(device_route)); CUDA(cudaFree(device_packed));
 }
 
+typedef struct GroupedRoute
+{
+    uint32_t *route,*offset,*packed,*source,*prefix_up,*prefix_down;
+    std::vector<uint32_t> host_offset,host_source;
+}
+GroupedRoute;
+
+static void GroupedRouteBuild(GroupedRoute *route,uint32_t tokens,uint32_t input,uint32_t output,uint32_t skew,cudaStream_t stream)
+{
+    const uint32_t experts=288u,top_k=8u,pairs=tokens*top_k;
+    std::vector<uint32_t> expert(pairs);
+    for (uint32_t pair=0u; pair<pairs; pair++)
+        expert[pair]=(pair%top_k) == 0u && pair/top_k < skew ? 5u : Random()%experts;
+    CUDA(cudaMalloc(&route->route,pairs*4u)); CUDA(cudaMalloc(&route->offset,(experts+1u)*4u)); CUDA(cudaMalloc(&route->packed,pairs*4u));
+    CUDA(cudaMalloc(&route->source,pairs*4u)); CUDA(cudaMalloc(&route->prefix_up,(experts+1u)*4u)); CUDA(cudaMalloc(&route->prefix_down,(experts+1u)*4u));
+    CUDA(cudaMemcpy(route->route,expert.data(),pairs*4u,cudaMemcpyHostToDevice));
+    REQUIRE((LmRouteBuild<256u,288u>(route->route,tokens,pairs,top_k,route->offset,route->packed,route->source,input == 4096u ? output : input,input == 4096u ? input : output,GLM5_NEXT_LAYER_TILE_N,route->prefix_up,route->prefix_down,stream)) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    route->host_offset.resize(experts+1u); route->host_source.resize(pairs);
+    CUDA(cudaMemcpy(route->host_offset.data(),route->offset,(experts+1u)*4u,cudaMemcpyDeviceToHost));
+    CUDA(cudaMemcpy(route->host_source.data(),route->source,pairs*4u,cudaMemcpyDeviceToHost));
+}
+
+static void GroupedRouteFree(GroupedRoute *route)
+{
+    CUDA(cudaFree(route->route)); CUDA(cudaFree(route->offset)); CUDA(cudaFree(route->packed));
+    CUDA(cudaFree(route->source)); CUDA(cudaFree(route->prefix_up)); CUDA(cudaFree(route->prefix_down));
+}
+
+static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t skew,cudaStream_t stream)
+{
+    const uint32_t experts=288u, top_k=8u, pairs=tokens*top_k, activation_rows=activation_packed ? pairs : tokens;
+    std::vector<uint8_t> weight((uint64_t)experts*output*input);
+    std::vector<float> scale((uint64_t)experts*output*(input/128u));
+    std::vector<uint16_t> activation((uint64_t)activation_rows*input),out((uint64_t)pairs*output);
+    uint8_t *device_weight; float *device_scale; uint16_t *device_activation,*device_out;
+    GroupedRoute route;
+    double total,magnitude;
+    uint32_t widest=0u;
+    for (auto &value : weight) { value=(uint8_t)(Random()&0xffu); if ((value&0x7fu) == 0x7fu) value^=1u; }
+    for (auto &value : scale) value=std::ldexp(1.0f+(Random()%256u)/256.0f,-10);
+    for (auto &value : activation) value=Bf16(Signed()*4.0f);
+    GroupedRouteBuild(&route,tokens,input,output,skew,stream);
+    CUDA(cudaMalloc(&device_weight,weight.size())); CUDA(cudaMalloc(&device_scale,scale.size()*4u)); CUDA(cudaMalloc(&device_activation,activation.size()*2u)); CUDA(cudaMalloc(&device_out,out.size()*2u));
+    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    REQUIRE(LmSkinnyGroupedExperts<LmFp8>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
+    for (uint32_t expert=0u; expert<experts; expert++)
+    {
+        widest=std::max(widest,route.host_offset[expert+1u]-route.host_offset[expert]);
+        for (uint32_t row=route.host_offset[expert]; row<route.host_offset[expert+1u]; row++)
+            for (uint32_t neuron=0u; neuron<output; neuron++)
+            {
+                ExpertReference(weight,scale,activation,expert,neuron,input,output,activation_packed ? row : route.host_source[row],&total,&magnitude);
+                Check(Bf16Value(out[(uint64_t)row*output+neuron]),total,magnitude,activation_packed ? "grouped_w2" : "grouped_w1",row,neuron);
+            }
+    }
+    REQUIRE(route.host_offset[experts] == pairs);
+    REQUIRE(skew == 0u || widest >= skew);
+    GroupedRouteFree(&route);
+    CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out));
+}
+
+static float GroupedTime(bool skinny,uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,const uint8_t *weight,const float *scale,const uint16_t *activation,uint16_t *out,const GroupedRoute *route,uint32_t multiprocessors,cudaStream_t stream)
+{
+    const uint32_t experts=288u,top_k=8u,pairs=tokens*top_k;
+    cudaGraph_t graph; cudaGraphExec_t executable; cudaEvent_t begin,end;
+    std::vector<float> samples;
+    LmGemmArguments gemm;
+    float ms;
+    memset(&gemm,0,sizeof(gemm));
+    gemm.scale_a=LmScaleTensorNone(); gemm.scale_b=LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(scale,experts,output,input);
+    gemm.prefix_built=1u; gemm.group_row_offset=route->offset; gemm.group_tile_prefix=input == 4096u ? route->prefix_up : route->prefix_down; gemm.output_bf16=out;
+    gemm.source_row_map=activation_packed ? 0 : route->source; gemm.source_row_count=tokens;
+    CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
+    CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+    for (uint32_t i=0u; i<16u; i++)
+        if (skinny)
+            REQUIRE(LmSkinnyGroupedExperts<LmFp8>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
+        else if (activation_packed)
+            REQUIRE((LmGemmWeightOnlyLaunch<LmFp8,GLM5_NEXT_LAYER_TILE_N,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,pairs,tokens,top_k,experts,input,output,multiprocessors,true,stream)) == LM_LAUNCH_OK);
+        else
+            REQUIRE((LmGemmWeightOnlyIndirectLaunch<LmFp8,GLM5_NEXT_LAYER_TILE_N,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,pairs,tokens,top_k,experts,input,output,multiprocessors,stream)) == LM_LAUNCH_OK);
+    CUDA(cudaStreamEndCapture(stream,&graph));
+    CUDA(cudaGraphInstantiate(&executable,graph,nullptr,nullptr,0u));
+    for (uint32_t i=0u; i<8u; i++)
+    {
+        CUDA(cudaEventRecord(begin,stream)); CUDA(cudaGraphLaunch(executable,stream)); CUDA(cudaEventRecord(end,stream));
+        CUDA(cudaEventSynchronize(end)); CUDA(cudaEventElapsedTime(&ms,begin,end));
+        if (i >= 2u) samples.push_back(ms/16.0f);
+    }
+    std::sort(samples.begin(),samples.end());
+    CUDA(cudaGraphExecDestroy(executable)); CUDA(cudaGraphDestroy(graph)); CUDA(cudaEventDestroy(begin)); CUDA(cudaEventDestroy(end));
+    return samples[samples.size()/2u];
+}
+
+static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t multiprocessors,cudaStream_t stream)
+{
+    const uint32_t experts=288u,pairs=tokens*8u;
+    const uint64_t expert_bytes=(uint64_t)output*input+(uint64_t)output*(input/128u)*4u;
+    uint8_t *weight; float *scale; uint16_t *activation,*out;
+    GroupedRoute route;
+    uint32_t distinct=0u;
+    float skinny,tensor;
+    GroupedRouteBuild(&route,tokens,input,output,0u,stream);
+    for (uint32_t expert=0u; expert<experts; expert++)
+        distinct+=route.host_offset[expert+1u] != route.host_offset[expert] ? 1u : 0u;
+    CUDA(cudaMalloc(&weight,(uint64_t)experts*output*input)); CUDA(cudaMemset(weight,0x38,(uint64_t)experts*output*input));
+    CUDA(cudaMalloc(&scale,(uint64_t)experts*output*(input/128u)*4u)); CUDA(cudaMemset(scale,0,(uint64_t)experts*output*(input/128u)*4u));
+    CUDA(cudaMalloc(&activation,(uint64_t)pairs*input*2u)); CUDA(cudaMemset(activation,0x3c,(uint64_t)pairs*input*2u));
+    CUDA(cudaMalloc(&out,(uint64_t)pairs*output*2u));
+    skinny=GroupedTime(true,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    tensor=GroupedTime(false,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    printf("TIMING grouped_experts %s tokens=%u distinct=%u skinny_ms=%.4f skinny_gbps=%.1f tensor_core_ms=%.4f tensor_core_gbps=%.1f speedup=%.2f\n",activation_packed ? "w2" : "w1",tokens,distinct,skinny,distinct*expert_bytes/(skinny*1e6),tensor,distinct*expert_bytes/(tensor*1e6),tensor/skinny);
+    GroupedRouteFree(&route);
+    CUDA(cudaFree(weight)); CUDA(cudaFree(scale)); CUDA(cudaFree(activation)); CUDA(cudaFree(out));
+}
+
 static int32_t TensorCoreLinear(const uint16_t *activation,const uint16_t *weight,uint16_t *output,const uint32_t *row_offset,uint32_t *tile_prefix,uint32_t input,uint32_t neurons,cudaStream_t stream)
 {
     LmGemmArguments gemm;
@@ -256,6 +378,7 @@ static void TopkCase(cudaStream_t stream)
 int main(int argc,char **argv)
 {
     cudaStream_t stream;
+    uint32_t multiprocessors;
     if (argc != 2 || strcmp(argv[1],"--run") != 0)
     {
         puts("usage: test_skinny_gemv --run");
@@ -268,6 +391,7 @@ int main(int argc,char **argv)
         cudaDeviceProp properties;
         CUDA(cudaGetDeviceProperties(&properties,0));
         printf("DEVICE sm=%d.%d multiprocessors=%d l2_bytes=%d persisting_l2_max_bytes=%d\n",properties.major,properties.minor,properties.multiProcessorCount,properties.l2CacheSize,properties.persistingL2CacheMaxSize);
+        multiprocessors=(uint32_t)properties.multiProcessorCount;
     }
     CUDA(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     for (const DenseShape &shape : dense_shapes)
@@ -280,6 +404,15 @@ int main(int argc,char **argv)
         ExpertCase(128u,4096u,tokens,1u,stream);
     }
     puts("PASS skinny grouped fp8 w1/w2 tokens=1,2,8 duplicate_expert=yes reference=f64");
+    for (uint32_t tokens : {9u,32u,96u})
+    {
+        GroupedExpertCase(4096u,256u,tokens,0u,tokens >= 32u ? 20u : 0u,stream);
+        GroupedExpertCase(128u,4096u,tokens,1u,tokens >= 32u ? 20u : 0u,stream);
+    }
+    puts("PASS skinny per-expert fp8 w1/w2 tokens=9,32,96 rows_per_expert_up_to=20 real_route_build=yes reference=f64");
+    REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,288u,288u*16u+1u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,0,288u,64u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
+    puts("PASS per-expert skinny declines more than 16 rows per expert on average and a missing token map");
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,9u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,9u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
@@ -287,6 +420,11 @@ int main(int argc,char **argv)
     for (const DenseShape &shape : dense_shapes)
         if ((shape.input % LmBf16Format::kTileK) == 0u)
             TimeShape(&shape,stream);
+    for (uint32_t tokens : {9u,32u,64u,256u})
+    {
+        GroupedTiming(4096u,256u,tokens,0u,multiprocessors,stream);
+        GroupedTiming(128u,4096u,tokens,1u,multiprocessors,stream);
+    }
     TopkCase(stream);
     CUDA(cudaStreamDestroy(stream));
     puts("PASS skinny_gemv_probe");
