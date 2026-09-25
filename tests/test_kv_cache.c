@@ -1488,6 +1488,55 @@ static int32_t SparkTestKvTransactionsPartialCompletionFailure(void)
 	return(0);
 }
 
+static int32_t SparkTestKvTransactionsChunk(SparkTestKvTransactions *fixture,uint32_t position,uint32_t context,uint32_t prompt,uint32_t step)
+{
+	SparkModelDriverFrame frame;
+	SparkStatus status;
+	SparkTestKvPageLane(&fixture->lanes[0],1u,0u,position,context);
+	if ( context % SPARK_TEST_BLOCK_TOKENS == 0u || context == prompt )
+		SparkTestKvPagePublish(&fixture->lanes[0],context,(uint8_t)(90u + context));
+	fixture->request.submission_id = step;
+	fixture->request.transaction_id = step;
+	fixture->request.step_generation = step;
+	fixture->request.sequence_position = position;
+	fixture->request.new_token_count = context - position;
+	fixture->request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	status = SparkKvLaneTransactionsAdmit(&fixture->transactions,&fixture->request);
+	if ( status != SPARK_STATUS_OK )
+		return(-(int32_t)(100u + status));
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	status = SparkKvLaneTransactionsAdmit(&fixture->transactions,&fixture->request);
+	if ( status != SPARK_STATUS_OK )
+		return(-(int32_t)(200u + status));
+	frame = SparkTestKvTransactionFrame(&fixture->request);
+	frame.sequence_position = position;
+	frame.flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	status = SparkKvLaneTransactionsClaim(&fixture->transactions,&frame);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvLaneTransactionsFinish(&fixture->transactions,(uint32_t[]){0u},1u,SPARK_STATUS_OK,0u);
+	if ( status != SPARK_STATUS_OK || fixture->pages.cache.sequences[0].next_token_position != context )
+		return(-(int32_t)(300u + status));
+	return(0);
+}
+
+static int32_t SparkTestKvTransactionsChunkedPrefill(uint32_t chunk)
+{
+	SparkTestKvTransactions fixture;
+	uint32_t position,context,step;
+	int32_t status;
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	status = 0;
+	for (position=0u,step=1u; position<7u && status==0; position=context,step++)
+	{
+		context = position + chunk - position % chunk;
+		if ( context > 7u )
+			context = 7u;
+		status = SparkTestKvTransactionsChunk(&fixture,position,context,7u,step);
+	}
+	return(status);
+}
+
 static void SparkTestKvPageCachePublishesPartialPrefix(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -2068,6 +2117,12 @@ int main(void)
 		status = SparkTestKvTransactionsRejectStaleAndInFlight();
 	if ( status == 0 )
 		status = SparkTestKvTransactionsPartialCompletionFailure();
+	if ( status == 0 )
+		status = SparkTestKvTransactionsChunkedPrefill(SPARK_TEST_BLOCK_TOKENS);
+	if ( status == 0 )
+		status = SparkTestKvTransactionsChunkedPrefill(2u);
+	if ( status != 0 )
+		fprintf(stderr,"kv transaction test status=%d\n",(int)status);
 	if ( status != 0 )
 		return(-status);
 	SparkTestKvPageCachePublishesPartialPrefix();
