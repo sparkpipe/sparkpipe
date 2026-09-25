@@ -580,6 +580,98 @@ chunks:
 The dense layers at more than 8 rows produce slightly different numerics
 from the 1-row skinny path, so prefill logits are not bitwise equal to B1.
 
+## Phase 3A: indexer context parallelism (exact)
+
+Above 2048 tokens, every DSA layer used to score all of a row's context
+pools on every rank:
+
+- one pool is 4 tokens, with a 257-wide packed key per token;
+- that is 5.65 KB per token per row per step across the 11 layers;
+- at 32K context this is 185 MB per row per step, 43 ms at B64.
+
+With `"dsa_index_context_parallel": 1` in the glm adapter configuration, the
+work is split as follows:
+
+- **Ownership.** A pool belongs to rank `page % tp` (pages of 64 tokens, 16
+  pools each; `spark_glm5_next_index_cp.h`). Each rank scores only its own
+  pools, which is 1/16 of the indexer reads.
+- **Gather.** The local score rows are all-gathered on the main collective:
+  op 0, `active_sequence_count = ceil(rows * local_stride / 2048)`. A permute
+  kernel then puts them back in global pool order.
+- **Selection.** The existing top-k, gather and expand kernels run unchanged
+  on the full score array, on every rank.
+- **Exactness.** Each pool is scored by exactly one rank, with the same code
+  as the replicated path. The selection is therefore bitwise equal to
+  replicated mode.
+- **Cost.** One extra collective per DSA layer, and only when the wave's
+  context exceeds 2048. It carries about `context` bytes per row (4 bytes
+  per pool, received from 15 peers), rounded up to 8 KiB per rank.
+
+The chain gets one new stage (`GATHER_INDEX`, appended to the enum so the
+numeric stage values in existing logs do not change), in both the eager
+chain and graph recording. The attention launch is split into
+`AttentionScore` (HC site, norms, q_a, index projections and store, local
+pool scores) and `AttentionSelect` (permute, top-k, q_b onward).
+
+Limits:
+
+- It requires `tp_degree >= 2`.
+- The local scores must fit the gather at `execution_row_capacity`. At TP16
+  that holds up to 128K `max_sequence_positions`. Beyond that, module init
+  refuses with a message.
+- Storage is unchanged: every rank still stores every index key and the
+  full latent KV. Only the indexer reads are split.
+
+Tests:
+
+- `tests/test_glm5_next_index_cp_math.c` (host): ownership covers every pool
+  exactly once for degrees 1–16; gather sizing.
+- `tests/host_cuda/glm_index_kv_host.cu` (host, runs the real kernels via
+  the host CUDA shim): context-parallel pool scores, gathered and permuted,
+  are `memcmp`-equal to the replicated scores for degrees 2–16.
+- `make test-glm5-next-index-cp` (GPU): the same comparison on the device,
+  at 2049 and at 9001/4100/20000 tokens, for degrees 2, 3 and 16.
+
+The harness takes `--index-cp 16` and adds the index read to `step_gb`.
+It simulates the gather with device copies, so its timing covers the
+compute side only.
+
+## Phase 3B: sharding the latent KV itself (design, not implemented)
+
+The latent KV (1024 B per token per DSA layer) is still replicated. Storing
+1/16 per rank would mean computing attention where the KV lives:
+
+1. Each rank computes partial softmax states for all 64 heads over its own
+   selected positions.
+2. The partials `(m, l, o[512])` move to the head owners.
+3. The head owners merge them (`LmLatentAttentionDecodeSplitCombineKernel`
+   already does exactly this, with partitions = ranks).
+
+The problem is the traffic, per row per DSA layer:
+
+| Transfer | Direction | Size |
+| --- | --- | ---: |
+| All-gather of the latent query | into each rank | about 64 KB |
+| All-to-all of the partials | out of each rank | about 62 KB |
+
+A 256 KiB mesh slot carries only 16 KiB per peer per SCATTER round, so at
+B64 the all-to-all alone needs about 16 rounds per layer. That is about
+18 ms per step at 100 µs per round, which is worse than the memory it
+saves.
+
+Two ways around this:
+
+- **A 2D split.** For example 4 head groups × 4 context shards:
+  - KV is stored at 1/4 per rank;
+  - traffic is about 24 KB per row per DSA layer, exchanged within a group
+    of 4.
+- **Phase 4 first.** GPU-initiated RDMA with per-peer buffers sized to the
+  exchange.
+
+Until then, capacity for long contexts comes from the existing KV arena. It
+evicts cold pages to the backing store (`resident_block_capacity <
+logical_block_count`).
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure

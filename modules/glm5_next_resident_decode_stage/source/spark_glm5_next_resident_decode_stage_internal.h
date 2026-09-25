@@ -131,6 +131,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *hc_mean_bf16;
 	float *router_logits_f32;
 	float *selection_scores_f32;
+	float *index_local_scores_f32;
+	float *index_gathered_scores_f32;
 	float *attention_split_partials_f32;
 	uint32_t *selected_positions;
 	uint32_t *route_expert;
@@ -170,6 +172,7 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t layer_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
+	uint32_t index_cp_degree;
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;
@@ -258,6 +261,9 @@ extern "C" {
 int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerAttentionSelect(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+uint32_t SparkGlm5NextLayerIndexGatherSequences(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 // Split path: Route completes dense layers; routed layers require Experts after
 // route readiness and working-set acquisition on the same slot/stream. Route
