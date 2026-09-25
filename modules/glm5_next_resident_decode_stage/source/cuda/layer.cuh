@@ -228,7 +228,8 @@ void Glm5NextPoolExpandKernel(
 #define GLM5_NEXT_LAYER_TILE_N 128u
 #define GLM5_NEXT_LAYER_STAGES 2u
 #define GLM5_NEXT_LAYER_WARPS 8u
-#define GLM5_NEXT_HEAD_TILE 1024u
+#define GLM5_NEXT_HEAD_TILE SPARK_GLM5_NEXT_HEAD_TILE
+#define GLM5_NEXT_HEAD_ROWS 16u
 
 static_assert(
     GLM5_NEXT_HIDDEN % LmBf16Format::kTileK == 0u,
@@ -395,6 +396,7 @@ struct Glm5NextLayerBuffers
     const uint32_t *row_positions;
     uint32_t index_owner_rank;
     uint32_t index_owner_degree;
+    uint32_t attention_decode_wave;
     float *index_local_scores;
     const float *index_gathered_scores;
     uint32_t *selected_positions;
@@ -933,7 +935,30 @@ static int32_t Glm5NextLayerAttentionTail(
         buffers->positions,
         rows,
         GLM5_NEXT_LATENT_ROW);
-    if (LmLatentAttentionDecodeSplitLaunch<
+    static_assert(GLM5_NEXT_ROPE_DIM == 0u, "the all-heads latent kernel carries no RoPE part");
+    if (buffers->attention_decode_wave != 0u && LmLatentAttentionHeadsSupported(buffers->attn_heads) != 0u)
+    {
+        if (LmLatentAttentionHeadsLaunch<Glm5NextKv, GLM5_NEXT_LATENT>(
+                buffers->query_latent_bf16,
+                buffers->cache,
+                buffers->sequence_of_row,
+                buffers->context_length,
+                selected_positions,
+                selected_position_count,
+                buffers->attn_heads,
+                buffers->qk_scale,
+                buffers->attention_latent_bf16,
+                buffers->row_positions,
+                rows,
+                context > GLM5_NEXT_DSA_SELECTED ? GLM5_NEXT_DSA_SELECTED : context,
+                buffers->decode_split_context_threshold,
+                buffers->attention_split_partials,
+                (uint32_t)buffers->attention_split_partial_blocks,
+                multiprocessors,
+                stream) != cudaSuccess)
+            return LM_LAUNCH_ERR_LAUNCH;
+    }
+    else if (LmLatentAttentionDecodeSplitLaunch<
             Glm5NextKv, GLM5_NEXT_ATTN_THREADS, GLM5_NEXT_LATENT,
             GLM5_NEXT_ROPE_DIM>(
             buffers->query_latent_bf16,
@@ -2425,6 +2450,22 @@ static int32_t Glm5NextHead(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
+    if (rows > 1u)
+        LM_LAUNCH(
+            (LmHeadCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE, GLM5_NEXT_HEAD_ROWS>),
+            dim3(tiles, (rows + GLM5_NEXT_HEAD_ROWS - 1u) / GLM5_NEXT_HEAD_ROWS),
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            buffers->normed_bf16,
+            (const uint16_t *)head_weight,
+            token_ids,
+            buffers->head_candidate_score,
+            buffers->head_candidate_token,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            vocabulary);
+    else
     LM_LAUNCH(
         (LmHeadCandidateKernel<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_HEAD_TILE>),
         dim3(tiles, rows),

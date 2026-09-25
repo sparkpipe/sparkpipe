@@ -518,6 +518,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_driver_probe.py \
 	tests/test_generated_control_admission.py \
 	tests/test_glm5_next_index_kv.py \
+	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
@@ -668,6 +669,13 @@ build/test_glm5_next_index_cp: tests/test_glm5_next_index_cp.cu model-families/g
 .PHONY: test-glm5-next-index-cp
 test-glm5-next-index-cp: build/test_glm5_next_index_cp
 	./build/test_glm5_next_index_cp --run
+
+build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inference/kernels/head.cuh inference/kernels/attn.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-glm5-next-rows-kernels
+test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
+	./build/test_glm5_next_rows_kernels --run
 
 build/glm5_next_batch_roofline: tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@

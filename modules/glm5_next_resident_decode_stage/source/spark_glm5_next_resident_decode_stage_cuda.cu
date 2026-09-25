@@ -320,6 +320,7 @@ static void SparkGlm5NextBindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->index_owner_rank = wave->tp_rank;
+	buffers->attention_decode_wave = wave->run_count == wave->row_count && wave->row_count > 1u ? 1u : 0u;
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;

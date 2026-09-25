@@ -672,6 +672,67 @@ Until then, capacity for long contexts comes from the existing KV arena. It
 evicts cold pages to the backing store (`resident_block_capacity <
 logical_block_count`).
 
+## Head and DSA attention at large batches
+
+At B256 after the per-expert kernel, the harness showed `begin_head` at
+106 ms and `attention_dsa` at 99 ms. Both kernels were written for one
+row.
+
+**Head.** `LmHeadCandidateKernel` runs one block per (row, 1024-token
+tile). Each thread walks a whole 8 KB weight row with 2-byte loads, and
+every row re-reads the full 79 MB vocabulary slice. The multi-row path now
+uses `LmHeadCandidateRowsKernel`, which works on 16 rows × 128 tokens per
+block:
+
+- the weights come in as coalesced 64 × 64 tiles through shared memory
+  (padded to stride 65, so the per-token reads are conflict-free);
+- the weights are read once per 16 rows instead of once per row;
+- each thread accumulates one token over `k` in the same order as the
+  per-row kernel, so every token's score is bitwise equal;
+- ties go to the lowest token id, both within a tile and in
+  `LmHeadCommitKernel`.
+
+`SPARK_GLM5_NEXT_HEAD_TILE` is now 128 (was 1024) and is shared by the
+module allocation, the validation tools and the kernels. Single-row decode
+uses the certified FP8 head and is unchanged. The single-row
+`Glm5NextHead` (MTP) now has 76 candidate tiles instead of 10. Its scores
+are identical, and the token can differ only on an exact score tie.
+
+**Latent attention.** `LmLatentAttentionDecodeKernel` runs one block per
+(row, head) and does a block-wide reduction for every attended position.
+Each rank's 4 heads therefore read the same 1 KB latent row 4 times, with
+a barrier per position. In decode waves (every row is a different
+sequence, and there are at least 2 rows), `LmLatentAttentionHeadsKernel`
+replaces it:
+
+- one block per row (and per partition, if the split applies);
+- 8 warps walk the positions in a strided pattern, and each warp loads a
+  latent row once for all 4 heads;
+- the dot products reduce with warp shuffles and there are no block
+  barriers in the loop;
+- the online-softmax states of the 8 warps are merged in a fixed order at
+  the end;
+- split partitions use the existing `(m, l, o)` layout and combine kernel.
+
+The fp32 summation order differs from the per-head kernel, so the result
+is not bitwise equal to it. Batched decode was already not bitwise equal
+to B1, because the old split partition count depends on `rows × heads`.
+Prefill waves and single-row decode keep the old kernel.
+
+**Tests:**
+
+- `tests/host_cuda/glm_rows_kernels_host.cu` (host, run by
+  `tests/test_glm5_next_rows_kernels_host.py`). It runs both kernels with
+  real thread cooperation through `tests/host_cuda/lm_host_threads.cuh`,
+  which uses one pthread per CUDA thread, barriers for `__syncthreads`, and
+  a per-warp exchange for `__shfl_xor_sync`. The checks:
+  - the head rows kernel is bitwise equal to the per-row kernel for 2–40
+    rows, including an exact tie;
+  - the attention output matches an f64 reference, split and unsplit, for
+    1, 2 and 4 heads, with selected positions and `0xffffffff` holes.
+- `make test-glm5-next-rows-kernels` (GPU): the same checks at full
+  hidden size and vocabulary slice, plus `TIMING` lines for B8 and B256.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure

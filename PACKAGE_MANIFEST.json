@@ -1,5 +1,5 @@
 {
-  "file_count": 3004,
+  "file_count": 3008,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "1f3cdadc6df3685c82d85e235d3e0e7b3481b8a7a0236a067f0c6855909a7fda",
-      "size_bytes": 135621
+      "sha256": "96716fe5f59454075be038a02e1046d54c97fdf72013b258d8dfb2a17ef7e1ce",
+      "size_bytes": 136381
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "0ef5d475d434ac9d23e71dea71c396b13304714aef3c7bf3582fdc576d999f32",
-      "size_bytes": 30098
+      "sha256": "24f0b6cf875ec1abcb806e2b1c0deb885992a2e66aa09645a76ef2d4563a0326",
+      "size_bytes": 33179
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3778,8 +3778,8 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "49b0d30a87ac7745d4f17025ea45ef3946255f9698936c770f006f24a461ca8d",
-      "size_bytes": 33891
+      "sha256": "8cf1e1a21da8080351a488732b83e558aa7f945257c153912b3cc73fffd80bd7",
+      "size_bytes": 44599
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -3848,8 +3848,8 @@
     },
     {
       "path": "inference/kernels/head.cuh",
-      "sha256": "3f68e4f08c61be7137169947d99856d50b51dfef030358ae576f601e1aa8327c",
-      "size_bytes": 10021
+      "sha256": "c0697f2ca998eb136aa56b5c6a2b6a8186b4d2ff0a08baddf9b924922fee3f0e",
+      "size_bytes": 14528
     },
     {
       "path": "inference/kernels/kv.cuh",
@@ -5113,8 +5113,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h",
-      "sha256": "1fe36a111d553cfbc1d593ec188860aaf100aa2e90aec13692c2611957d7500f",
-      "size_bytes": 10730
+      "sha256": "f0402bfe6a32c05b68ceb4d16ce8a8da4ef8a3fd2556f9aca89f5d2611138372",
+      "size_bytes": 10769
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_serving_adapter.h",
@@ -5143,8 +5143,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "d02507fd598a2df9fd84dcf61b7daa79378e74c35ad2eab3259d18a2322e7d68",
-      "size_bytes": 91817
+      "sha256": "a811a2e6376e0a5e2f2afdfaba2292dd3562ec5b32142349353aa709f8b06b55",
+      "size_bytes": 93559
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -5153,8 +5153,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "0fdac3a4280159b2ff4edd0f14c3b982b4bbcacf431525e718dcc6215f686e15",
-      "size_bytes": 42194
+      "sha256": "f44e6be2031a27ddeab7fbd39178f18fc0ef7c6117a11acde1216266bce0e0d1",
+      "size_bytes": 42298
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
@@ -5163,8 +5163,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "84e696a5d17267773018f90a2e8f8adc4f7e105972c377f10aebc4f807f955ac",
-      "size_bytes": 225148
+      "sha256": "e44797d81e1f7258f61f7a8a9bbfa16c31fd47e2def3b50942175650e836f4f3",
+      "size_bytes": 225108
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5208,13 +5208,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
-      "sha256": "fb9453c26b63d279696474e4408af03122f442e90b98c34429e4b3a45151e9f1",
-      "size_bytes": 59126
+      "sha256": "bb4cd2f032b68fac4f183df7076b797c9ffa79c67571663dbe25e5c554bb9ac7",
+      "size_bytes": 59146
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_tap_ring.cu",
-      "sha256": "0fb869a413dfa0bef964abcf8cfff0e21b0868c68ea13f5488e632e5036eea85",
-      "size_bytes": 56460
+      "sha256": "21338b083fdad23240a4a670da4c4fb4db33cda7cd4208d2cb2236450448e614",
+      "size_bytes": 56480
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/validation/validate_glm5_next_resident_decode_stage_cuda.sh",
@@ -8422,6 +8422,11 @@
       "size_bytes": 6345
     },
     {
+      "path": "tests/host_cuda/glm_rows_kernels_host.cu",
+      "sha256": "444d7142c0699f5f6eeee373d533d5b91907012f9f096e19bb4dfb75931ada95",
+      "size_bytes": 8099
+    },
+    {
       "path": "tests/host_cuda/gqa_host.cu",
       "sha256": "ad83b0925f8b55d795068efa8978f5343826f85f662af47d15747115e440bd33",
       "size_bytes": 4534
@@ -8478,8 +8483,13 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "b464e511063e84de75cfbcc63359a1e4dd3fc0e473ea29284e75991fb5c7f5a3",
-      "size_bytes": 6558
+      "sha256": "bc61a8beb4b6f00324712603aa0108d087f6ae348e94c84859bbfde3d9a8bbe9",
+      "size_bytes": 6650
+    },
+    {
+      "path": "tests/host_cuda/lm_host_threads.cuh",
+      "sha256": "d6faa7468aafc32dd6cc4873b986b5d75c595d9e9f4331f4f9ee91eb5003c8d2",
+      "size_bytes": 2750
     },
     {
       "path": "tests/host_cuda/mimo25_layer_host.cu",
@@ -9255,6 +9265,16 @@
       "path": "tests/test_glm5_next_range_manifest.py",
       "sha256": "5af12f61bf52725c73be6037416560b2f78f747eda8a3d27cf4147b46a1b9b05",
       "size_bytes": 3073
+    },
+    {
+      "path": "tests/test_glm5_next_rows_kernels.cu",
+      "sha256": "1b9136b2a6b975dfdb803a78aa7fc654191cfec39973ef872387e80d4b80f43a",
+      "size_bytes": 16008
+    },
+    {
+      "path": "tests/test_glm5_next_rows_kernels_host.py",
+      "sha256": "d822439169b7383f602cafe5415cd2957d9c166f800ef39b5a3b565a5b703dd9",
+      "size_bytes": 736
     },
     {
       "path": "tests/test_glm5_next_stage_context.py",
@@ -15025,5 +15045,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73819440
+  "total_bytes": 73868066
 }

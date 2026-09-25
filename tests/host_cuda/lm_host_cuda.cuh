@@ -89,6 +89,7 @@ static inline __half __ushort_as_half(unsigned short bits) { __half h; h.raw = b
 static inline unsigned short __half_as_ushort(__half h) { return h.raw; }
 static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { return 0.0f; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
+static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
 static inline void __threadfence_block(void) {}
 
