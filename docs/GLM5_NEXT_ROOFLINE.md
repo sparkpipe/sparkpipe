@@ -231,6 +231,35 @@ The fixes:
   some ranks may have bound state. A rejected RELEASE ends the request instead
   of queueing another RELEASE.
 
+## Execution order across ranks (4-stream deadlock)
+
+Tensor-parallel ranks exchange collectives by mesh sequence number, not by
+submission. Every rank must therefore execute submissions in the same order.
+
+Each residentd runs submissions from a committed FIFO. Before this fix the
+FIFO order depended on timing:
+
+- A decision commit entered the FIFO when its message arrived.
+- A continuation entered only once its local prepare succeeded. An adapter
+  `BUSY` or an exhausted progress budget could defer that prepare to a later
+  pass.
+- The route scan starts at a rank-local position.
+
+With one submission in flight the order cannot diverge. With several, one
+rank could run a prefill while its peers ran a decode continuation. The ranks
+then published different payloads under the same mesh sequence. The
+collectives waited for tags that never came, until the 35 s completion drain
+failed. The engine then went terminal and restarted, which is the connection
+refused the API saw afterwards.
+
+residentd now keeps the committed FIFO sorted by `submission_id`. It hands a
+route to the adapter only when that route is the FIFO head and no active
+route with a smaller `submission_id` is still before its commit (reserved,
+resolving, preparing a continuation, or not yet queued). Every rank thus
+executes in the client's submission order. The pipeline test defers one
+stage's continuation prepare while a later prefill commits; without the fix
+that stage runs the prefill first.
+
 ## Next steps, ordered by expected gain
 
 1. Remeasure the ladder tail with the lock-free wiring scan, and measure
