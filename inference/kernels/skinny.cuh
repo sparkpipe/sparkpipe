@@ -49,7 +49,7 @@ static __device__ __forceinline__ float LmSkinnyBf16Chunk(uint4 weight, uint4 ac
 
 static __device__ __forceinline__ float LmSkinnyFp8Word(uint32_t weight, uint4 activation_half, uint32_t word, float accumulator)
 {
-	float2 low = LmE4m3PairToFloat2((uint16_t)weight), high = LmE4m3PairToFloat2((uint16_t)(weight >> 16u));
+	float2 low = LmE4m3PairToFloat2Pure((uint16_t)weight), high = LmE4m3PairToFloat2Pure((uint16_t)(weight >> 16u));
 	uint32_t first = word == 0u ? activation_half.x : activation_half.z, second = word == 0u ? activation_half.y : activation_half.w;
 	accumulator = fmaf(low.x,__uint_as_float(first << 16u),accumulator);
 	accumulator = fmaf(low.y,__uint_as_float(first & 0xffff0000u),accumulator);

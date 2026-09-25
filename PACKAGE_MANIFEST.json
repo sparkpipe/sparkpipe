@@ -1,5 +1,5 @@
 {
-  "file_count": 3011,
+  "file_count": 3012,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "7309d83335f0ddb8cc5c0d3bcef37408d0ad0ae953d0dee440879a918541ba94",
-      "size_bytes": 136480
+      "sha256": "eda54001b521c35226613568ada51eba35dc939a32c09b8a7d6eccdd433cad3b",
+      "size_bytes": 135834
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "1f0ac29cbda83b388eb8bf085cabb412302a99770db7fcc215ea0773efe0c6bc",
-      "size_bytes": 37317
+      "sha256": "1daa615a07c9a223cfc4baf0c0896dc97d5b23af37175150f73e599756955b41",
+      "size_bytes": 39818
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3783,8 +3783,8 @@
     },
     {
       "path": "inference/kernels/dtype.cuh",
-      "sha256": "1fd065b8ed033458d3a2583492ef1b9890eb6c57eddfbc833f3144ee7c19f8e8",
-      "size_bytes": 5388
+      "sha256": "0c83ac10c5bac7b1a1c838a3bf1990f51be7633e86af297fbe37ce0206a07e5f",
+      "size_bytes": 5805
     },
     {
       "path": "inference/kernels/formats/bf16.cuh",
@@ -3903,8 +3903,8 @@
     },
     {
       "path": "inference/kernels/skinny.cuh",
-      "sha256": "c0c9af974d69578fd2da7cb7eb52ae2534e4aaa140ec78b5b4e09118b1faea69",
-      "size_bytes": 19936
+      "sha256": "baa4623d6cfcdf04b9d6d90ab0525d8b25e8cc1f96fa15faa02c48357ece56a2",
+      "size_bytes": 19944
     },
     {
       "path": "inference/kernels/spec_verify.cuh",
@@ -12367,6 +12367,11 @@
       "size_bytes": 765
     },
     {
+      "path": "tools/kernel_codegen_diff.py",
+      "sha256": "93ba7fd8991185477a64aae2dd5ff611a1f04978036774ccbd3de8ff45e8e346",
+      "size_bytes": 2927
+    },
+    {
       "path": "tools/kernel_crew/spark_frame_error_probe.cu",
       "sha256": "19e787f61bc48fdc8c8ebbae1b55821d44b66be946f11ef45e14366c6d4ad56f",
       "size_bytes": 14829
@@ -15060,5 +15065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73911725
+  "total_bytes": 73916932
 }

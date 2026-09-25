@@ -60,7 +60,7 @@ static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64
 static __device__ __forceinline__ uint8_t LmFloatToE4m3(float value)
 {
 	uint16_t encoded;
-	asm("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
 	return((uint8_t)encoded);
 }
@@ -68,7 +68,7 @@ static __device__ __forceinline__ uint8_t LmFloatToE4m3(float value)
 static __device__ __forceinline__ uint16_t LmFloatPairToE4m3(float low, float high)
 {
 	uint16_t encoded;
-	asm("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(high), "f"(low));
 	return(encoded);
 }
@@ -76,27 +76,40 @@ static __device__ __forceinline__ uint16_t LmFloatPairToE4m3(float low, float hi
 static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
 {
 	uint32_t widened;
-	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
 		: "=r"(widened) : "h"((uint16_t)value));
 	return(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))));
+}
+
+static __device__ __forceinline__ float2 LmHalfPairBitsToFloat2(uint32_t widened)
+{
+	float2 result;
+	result.x = __half2float(__ushort_as_half((uint16_t)widened));
+	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
+	return(result);
 }
 
 static __device__ __forceinline__ float2 LmE4m3PairToFloat2(uint16_t value)
 {
 	uint32_t widened;
-	float2 result;
+	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"(value));
+	return(LmHalfPairBitsToFloat2(widened));
+}
+
+static __device__ __forceinline__ float2 LmE4m3PairToFloat2Pure(uint16_t value)
+{
+	uint32_t widened;
 	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
 		: "=r"(widened) : "h"(value));
-	result.x = __half2float(__ushort_as_half((uint16_t)widened));
-	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
-	return(result);
+	return(LmHalfPairBitsToFloat2(widened));
 }
 
 
 static __device__ __forceinline__ uint8_t LmFloatPairToE2m1(float low, float high)
 {
 	uint16_t encoded;
-	asm("{\n\t.reg .b8 packed;\n"
+	asm volatile("{\n\t.reg .b8 packed;\n"
 		"\tcvt.rn.satfinite.e2m1x2.f32 packed, %1, %2;\n"
 		"\tcvt.u16.u8 %0, packed;\n\t}\n"
 		: "=h"(encoded) : "f"(high), "f"(low));
@@ -107,7 +120,7 @@ static __device__ __forceinline__ float2 LmE2m1PairToFloat(uint8_t packed)
 {
 	uint32_t widened;
 	float2 result;
-	asm("{\n\t.reg .b8 narrow;\n"
+	asm volatile("{\n\t.reg .b8 narrow;\n"
 		"\tcvt.u8.u16 narrow, %1;\n"
 		"\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
 		: "=r"(widened) : "h"((uint16_t)packed));
@@ -119,7 +132,7 @@ static __device__ __forceinline__ float2 LmE2m1PairToFloat(uint8_t packed)
 static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 {
 	uint16_t encoded;
-	asm("cvt.rn.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
+	asm volatile("cvt.rn.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
 	return((uint8_t)(encoded >> 8u));
 }
@@ -127,7 +140,7 @@ static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 {
 	uint32_t widened;
-	asm("cvt.rn.bf16x2.ue8m0x2 %0, %1;\n"
+	asm volatile("cvt.rn.bf16x2.ue8m0x2 %0, %1;\n"
 		: "=r"(widened) : "h"((uint16_t)value));
 	return(LmBf16ToFloat((uint16_t)(widened & 0xffffu)));
 }

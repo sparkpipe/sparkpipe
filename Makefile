@@ -642,48 +642,60 @@ $(QWEN38_LINK_TARGETS): $(QWEN38_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LI
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
+GLM5_NEXT_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"
+GLM5_NEXT_CUDA_LINK = -L$(CUDA_HOME)/lib64 -lcudart -lcuda
+GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h
+
 build:
 	mkdir -p build
 
 .PHONY: test-glm-head-offset
 test-glm-head-offset: | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" tests/test_glm5_next_head_offset.cu -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o build/test_glm5_next_head_offset
+	$(GLM5_NEXT_NVCC) tests/test_glm5_next_head_offset.cu $(GLM5_NEXT_CUDA_LINK) -o build/test_glm5_next_head_offset
 	./build/test_glm5_next_head_offset
 
 build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_next_hc_mix_baseline.cuh inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: test-glm-hc-mix
 test-glm-hc-mix: build/test_glm5_next_hc_mix
 	./build/test_glm5_next_hc_mix --run
 
 build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: test-skinny-gemv
 test-skinny-gemv: build/test_skinny_gemv
 	./build/test_skinny_gemv --run
 
 build/test_glm5_next_index_cp: tests/test_glm5_next_index_cp.cu model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: test-glm5-next-index-cp
 test-glm5-next-index-cp: build/test_glm5_next_index_cp
 	./build/test_glm5_next_index_cp --run
 
 build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inference/kernels/head.cuh inference/kernels/attn.cuh inference/kernels/project.cuh inference/kernels/rows_tile.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: test-glm5-next-rows-kernels
 test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
 	./build/test_glm5_next_rows_kernels --run
 
-build/glm5_next_batch_roofline: tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: bench-glm5-next-batch
 bench-glm5-next-batch: build/glm5_next_batch_roofline
 	./build/glm5_next_batch_roofline $(ROOFLINE_ARGS)
+
+build/glm5_next_batch_roofline.cubin: $(GLM5_NEXT_ROOFLINE_DEPS) | build
+	$(GLM5_NEXT_NVCC) -cubin $< -o $@
+
+.PHONY: kernel-codegen-diff
+kernel-codegen-diff: build/glm5_next_batch_roofline.cubin
+	test -f "$(BASE_CUBIN)"
+	PATH=$(CUDA_HOME)/bin:$$PATH python3 tools/kernel_codegen_diff.py "$(BASE_CUBIN)" build/glm5_next_batch_roofline.cubin $(if $(ALLOW),--allow '$(ALLOW)')
 
 build/test_cuda_stream_receipt: tests/test_cuda_stream_receipt.c $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	test -f $(CUDA_HOME)/include/cuda_runtime.h

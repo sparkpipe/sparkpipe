@@ -789,8 +789,10 @@ The fixes:
 - `LmSkinnyGroupedKernel` now gives each lane group four neurons
   (`LM_SKINNY_GROUPED_NEURONS`). One staged activation chunk serves all
   four neurons, and a W2 call has a quarter as many tasks.
-- The conversion assembly in `dtype.cuh` is no longer `volatile`. The
-  instructions are pure, so the results are unchanged.
+- The skinny FP8 chunk converts through `LmE4m3PairToFloat2Pure`, whose
+  assembly is not `volatile`, so the compiler can reuse a converted chunk
+  across rows. Every other conversion in `dtype.cuh` stays `volatile` (see
+  the measurement below for why).
 - Skinny kernels compute the scale index directly: row stride times neuron,
   plus the chunk offset divided by the compile-time scale group. Launch
   validation requires the scale layout this assumes (one row per scale
@@ -818,6 +820,49 @@ version and to the per-pair kernel used up to 8 tokens.
   kernel and to the per-pair kernel, at 2, 5 and 20 tokens, for both the
   W1 and W2 shapes.
 - The GPU test adds the same bitwise check for FP8 at 9, 32 and 96 tokens.
+
+**Measured (first revision, PR #1221).** The grouped kernel was bitwise
+equal everywhere and ran at 260 GB/s standalone, 3.67 times the
+tensor-core path. B256 experts fell from 190 to 134 ms (up 71.8, down
+38.7, combine 22.9 ms). But the B256 step rose from 302 to 344 ms: KDA
+attention took 46 ms more, DSA 33 ms and the router 21 ms, reproducibly,
+while B1 and B8 did not move.
+
+The first revision had dropped `volatile` from every conversion in
+`dtype.cuh`, not only the skinny one. The tensor-core GEMM calls the same
+helpers (`LmFp8::Fragment` for FP8 weights, and in every instance, BF16
+included, the UE4M3 and UE8M0 decodes inside the generic scale loader), and
+its register allocation changed with them:
+the 64-row-tile FP8 instance went from 117 to 60 registers and the BF16
+instance, which the router uses at large batches, from 87 to 45. These
+GEMMs serve the KDA, DSA and router projections from 32 rows up, which
+matches the regression exactly. The skinny kernels serve B1 and B8, which
+is why those did not move.
+
+The revision keeps `volatile` everywhere except the skinny chunk. Compared
+with main, every kernel outside the skinny family now compiles to
+identical instructions (only relocated addresses differ). The grouped
+kernels, the multi-row per-pair kernels and the W1 single-row kernel
+compile exactly as in the measured revision. The only skinny kernels that
+differ from it are the single-row ones with two or more neurons per lane
+group; for GLM that is the W2 kernel at B1 and B8 (124 registers instead of
+128, same occupancy).
+
+**Checking which kernels a change touches.** Host tests cannot see register
+allocation, so a shared-header change can move every kernel that includes
+it. `make kernel-codegen-diff` compiles the harness (which instantiates
+every GLM kernel) to a cubin and compares it with a base cubin kernel by
+kernel. It normalizes relocated addresses, prints register, stack and local
+memory use for each kernel that changed, and fails when a kernel outside
+`ALLOW` changed:
+
+```sh
+git checkout main && make build/glm5_next_batch_roofline.cubin && cp build/glm5_next_batch_roofline.cubin /tmp/base.cubin
+git checkout <branch> && make kernel-codegen-diff BASE_CUBIN=/tmp/base.cubin ALLOW=LmSkinny
+```
+
+On the first revision it reports the nine `LmGemmKernel` instances as
+unexpected. On the second it reports only skinny kernels.
 
 ## Next steps, ordered by expected gain
 
