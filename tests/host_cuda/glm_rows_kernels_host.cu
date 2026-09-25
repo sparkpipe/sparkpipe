@@ -9,10 +9,13 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk.cuh"
 #include "runtime/launch.h"
+#include "runtime/gemm.cuh"
+#include "inference/kernels/tile.cuh"
 #include "tests/host_cuda/lm_host_threads.cuh"
 LmHostDim3 blockDim,gridDim;
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/head.cuh"
+#include "inference/kernels/project.cuh"
 
 #define HOST_LATENT 512u
 #define HOST_PAGE 64u
@@ -148,16 +151,39 @@ static void HostAttentionCase(uint32_t rows,uint32_t heads,uint32_t context,uint
 	printf("attention rows=%u heads=%u context=%u selected=%u multiprocessors=%u worst_abs=%.6f\n",rows,heads,context,selected,multiprocessors,worst);
 }
 
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
+static void HostProjectCase(uint32_t rows, uint32_t heads)
+{
+	static uint16_t input[HOST_MAX_ROWS * 4u * 512u],weight[4u * 512u * 512u],expected[HOST_MAX_ROWS * 4u * 512u],actual[HOST_MAX_ROWS * 4u * 512u + 1u];
+	uint32_t index;
+	for (index=0u; index<rows * heads * INPUT_HEAD_DIM; index++) input[index] = LmFloatToBf16(HostSigned());
+	for (index=0u; index<heads * OUT_DIM * IN_DIM; index++) weight[index] = LmFloatToBf16(HostSigned() * 0.1f);
+	memset(actual,0xff,sizeof(actual));
+	LM_LAUNCH((LmPerHeadProjectKernel<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>),dim3(rows,heads),256u,0,0,input,weight,expected,heads,rows);
+	assert((LmPerHeadProjectRowsLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input,weight,actual,heads,rows,0)) == cudaSuccess);
+	if (memcmp(expected,actual,(uint64_t)rows * heads * OUT_DIM * sizeof(uint16_t)) != 0 || actual[rows * heads * OUT_DIM] != 0xffffu)
+	{
+		fprintf(stderr,"FAIL projection in=%u out=%u head_dim=%u offset=%u rows=%u heads=%u\n",IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET,rows,heads);
+		exit(1);
+	}
+}
+
 int main(void)
 {
 	uint32_t rows;
 	for (rows=2u; rows<=HOST_MAX_ROWS; rows = rows == 2u ? 15u : rows == 17u ? 40u : rows + 1u)
 		HostHeadCase(rows);
+	for (rows=1u; rows<=HOST_MAX_ROWS; rows = rows == 5u ? 17u : rows == 17u ? 40u : rows + 1u)
+	{
+		HostProjectCase<256u,512u,256u,0u>(rows,4u);
+		HostProjectCase<512u,256u,512u,0u>(rows,4u);
+		HostProjectCase<128u,64u,192u,64u>(rows,3u);
+	}
 	HostAttentionCase(3u,1u,130u,0u,48u);
 	HostAttentionCase(2u,2u,3000u,40u,48u);
 	HostAttentionCase(3u,4u,200u,0u,48u);
 	HostAttentionCase(5u,4u,60u,0u,1u);
 	HostAttentionCase(2u,4u,1000u,64u,48u);
-	puts("PASS GLM row kernels on host threads: head rows kernel equals the per-row kernel bitwise for 2-40 rows; all-heads latent attention matches an f64 reference, split and unsplit, with selected positions");
+	puts("PASS GLM row kernels on host threads: head rows kernel equals the per-row kernel bitwise for 2-40 rows; per-head projection rows kernel equals the per-row kernel bitwise for 1-40 rows; all-heads latent attention matches an f64 reference, split and unsplit, with selected positions");
 	return(0);
 }

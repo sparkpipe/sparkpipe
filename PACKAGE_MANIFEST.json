@@ -1,5 +1,5 @@
 {
-  "file_count": 3008,
+  "file_count": 3009,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "96716fe5f59454075be038a02e1046d54c97fdf72013b258d8dfb2a17ef7e1ce",
-      "size_bytes": 136381
+      "sha256": "22d04a7fce8e5b555795d8a1ce2bb5d25f6cce21def16f85c634410c0fcf751b",
+      "size_bytes": 136443
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "24f0b6cf875ec1abcb806e2b1c0deb885992a2e66aa09645a76ef2d4563a0326",
-      "size_bytes": 33179
+      "sha256": "c72c237b53708bb51a7d31f39c1ca6abe3636c611f63cc9de8ca75e6ec680674",
+      "size_bytes": 34754
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3778,8 +3778,8 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "8cf1e1a21da8080351a488732b83e558aa7f945257c153912b3cc73fffd80bd7",
-      "size_bytes": 44599
+      "sha256": "dec02bf3e9b3dcce7b19abdbc866e66019c1856c68f0aa70b45f23c7ed6b387b",
+      "size_bytes": 46317
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -3848,8 +3848,8 @@
     },
     {
       "path": "inference/kernels/head.cuh",
-      "sha256": "c0697f2ca998eb136aa56b5c6a2b6a8186b4d2ff0a08baddf9b924922fee3f0e",
-      "size_bytes": 14528
+      "sha256": "b358eb81c4e11072bf73b23581134fa5fdc9bdc390bda45e67701f0498f5ac81",
+      "size_bytes": 12903
     },
     {
       "path": "inference/kernels/kv.cuh",
@@ -3883,13 +3883,18 @@
     },
     {
       "path": "inference/kernels/project.cuh",
-      "sha256": "9736e8f7a7d153c06ba46efff682fe8a707f86bd4d9eae710f8a5793a20522de",
-      "size_bytes": 15976
+      "sha256": "461f2028cbda892c4f0b31b8b9a5756ae619d68f9dbcd60d351e3d1699adde3c",
+      "size_bytes": 18393
     },
     {
       "path": "inference/kernels/route.cuh",
       "sha256": "897ac477a55b68044d5a144ad4b125fba50ed0995ddc8ce7f2d3567e4de487d8",
       "size_bytes": 4268
+    },
+    {
+      "path": "inference/kernels/rows_tile.cuh",
+      "sha256": "bd961543e31a044eb9fbdca68d2300f92d933a639ed55a1041f95fe8b8180ed7",
+      "size_bytes": 2389
     },
     {
       "path": "inference/kernels/scale.cuh",
@@ -5143,8 +5148,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "a811a2e6376e0a5e2f2afdfaba2292dd3562ec5b32142349353aa709f8b06b55",
-      "size_bytes": 93559
+      "sha256": "1c643a125c2e5b1b6bb13e6caa7cfbf9fb29af1d301b9174bb80d3902b25e0e8",
+      "size_bytes": 93297
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -8423,8 +8428,8 @@
     },
     {
       "path": "tests/host_cuda/glm_rows_kernels_host.cu",
-      "sha256": "444d7142c0699f5f6eeee373d533d5b91907012f9f096e19bb4dfb75931ada95",
-      "size_bytes": 8099
+      "sha256": "a8bf0a4ce1bb5423a69c5239faa2ef1fdf8fc0004edfb93a45b596596706a09c",
+      "size_bytes": 9680
     },
     {
       "path": "tests/host_cuda/gqa_host.cu",
@@ -9268,8 +9273,8 @@
     },
     {
       "path": "tests/test_glm5_next_rows_kernels.cu",
-      "sha256": "1b9136b2a6b975dfdb803a78aa7fc654191cfec39973ef872387e80d4b80f43a",
-      "size_bytes": 16008
+      "sha256": "0f6f65fad4da9c92c7c61137553570436bb3f4fdb579b8d5cafca5d0c049dbd7",
+      "size_bytes": 19394
     },
     {
       "path": "tests/test_glm5_next_rows_kernels_host.py",
@@ -15045,5 +15050,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73868066
+  "total_bytes": 73879307
 }

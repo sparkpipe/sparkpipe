@@ -112,6 +112,51 @@ static void HeadCase(uint32_t rows,uint32_t vocabulary,bool timing,cudaStream_t 
     CUDA(cudaFree(device_normed)); CUDA(cudaFree(device_weight)); CUDA(cudaFree(token_a)); CUDA(cudaFree(token_b)); CUDA(cudaFree(score_a)); CUDA(cudaFree(score_b));
 }
 
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM> static float ProjectTime(bool rows_kernel,const uint16_t *input,const uint16_t *weight,uint16_t *output,uint32_t rows,cudaStream_t stream)
+{
+    cudaEvent_t begin,end;
+    float ms;
+    CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
+    CUDA(cudaEventRecord(begin,stream));
+    for (uint32_t repeat=0u; repeat<10u; repeat++)
+        if (rows_kernel)
+            CUDA((LmPerHeadProjectRowsLaunch<GLM5_NEXT_LAYER_THREADS,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,0u>(input,weight,output,4u,rows,stream)));
+        else
+            LmPerHeadProjectKernel<GLM5_NEXT_LAYER_THREADS,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,0u><<<dim3(rows,4u),GLM5_NEXT_LAYER_THREADS,0,stream>>>(input,weight,output,4u,rows);
+    CUDA(cudaPeekAtLastError());
+    CUDA(cudaEventRecord(end,stream));
+    CUDA(cudaEventSynchronize(end)); CUDA(cudaEventElapsedTime(&ms,begin,end));
+    CUDA(cudaEventDestroy(begin)); CUDA(cudaEventDestroy(end));
+    return ms/10.0f;
+}
+
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM> static void ProjectCase(uint32_t rows,const char *name,cudaStream_t stream)
+{
+    std::vector<uint16_t> input((uint64_t)rows*4u*INPUT_HEAD_DIM),weight((uint64_t)4u*OUT_DIM*IN_DIM);
+    uint16_t *device_input,*device_weight,*expected,*actual;
+    float old_ms,rows_ms;
+    for (auto &value : input) value=Bf16(Signed());
+    for (auto &value : weight) value=Bf16(Signed()*0.05f);
+    device_input=Upload(input); device_weight=Upload(weight);
+    CUDA(cudaMalloc(&expected,(uint64_t)rows*4u*OUT_DIM*2u)); CUDA(cudaMalloc(&actual,(uint64_t)rows*4u*OUT_DIM*2u));
+    LmPerHeadProjectKernel<GLM5_NEXT_LAYER_THREADS,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,0u><<<dim3(rows,4u),GLM5_NEXT_LAYER_THREADS,0,stream>>>(device_input,device_weight,expected,4u,rows);
+    CUDA(cudaPeekAtLastError());
+    CUDA((LmPerHeadProjectRowsLaunch<GLM5_NEXT_LAYER_THREADS,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,0u>(device_input,device_weight,actual,4u,rows,stream)));
+    CUDA(cudaStreamSynchronize(stream));
+    std::vector<uint16_t> a=Download(expected,(size_t)rows*4u*OUT_DIM),b=Download(actual,(size_t)rows*4u*OUT_DIM);
+    for (size_t index=0u; index<a.size(); index++)
+        if (a[index] != b[index])
+        {
+            fprintf(stderr,"PROJECT-MISMATCH %s rows=%u index=%zu per_row=0x%04x rows_kernel=0x%04x\n",name,rows,index,a[index],b[index]);
+            exit(1);
+        }
+    old_ms=ProjectTime<IN_DIM,OUT_DIM,INPUT_HEAD_DIM>(false,device_input,device_weight,expected,rows,stream);
+    rows_ms=ProjectTime<IN_DIM,OUT_DIM,INPUT_HEAD_DIM>(true,device_input,device_weight,actual,rows,stream);
+    printf("PASS projection %s rows=%u heads=4 bitwise_equal=yes\n",name,rows);
+    printf("TIMING projection %s rows=%u per_row_kernel_ms=%.4f rows_kernel_ms=%.4f speedup=%.1f per_step_saving_ms=%.2f\n",name,rows,old_ms,rows_ms,old_ms/rows_ms,(old_ms-rows_ms)*(float)SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT);
+    CUDA(cudaFree(device_input)); CUDA(cudaFree(device_weight)); CUDA(cudaFree(expected)); CUDA(cudaFree(actual));
+}
+
 typedef struct AttentionCase
 {
     uint32_t rows,heads,pages_per_sequence,selected;
@@ -292,6 +337,11 @@ int main(int argc,char **argv)
         HeadCase(rows,1000u,false,stream);
     HeadCase(256u,9680u,true,stream);
     HeadCase(8u,9680u,true,stream);
+    for (uint32_t rows : {1u,4u,5u,8u,17u,256u})
+    {
+        ProjectCase<GLM5_NEXT_QK_NOPE_DIM,GLM5_NEXT_LATENT,GLM5_NEXT_QK_NOPE_DIM+GLM5_NEXT_ROPE_DIM>(rows,"query_absorb",stream);
+        ProjectCase<GLM5_NEXT_LATENT,GLM5_NEXT_VALUE_DIM,GLM5_NEXT_LATENT>(rows,"value_up",stream);
+    }
     for (uint32_t heads : {1u,2u,4u})
     {
         AttentionCaseRun(3u,heads,700u,0u,(uint32_t)properties.multiProcessorCount,stream);
@@ -302,6 +352,6 @@ int main(int argc,char **argv)
     AttentionTiming(8u,1024u,(uint32_t)properties.multiProcessorCount,stream);
     AttentionTiming(256u,1024u,(uint32_t)properties.multiProcessorCount,stream);
     CUDA(cudaStreamDestroy(stream));
-    puts("PASS glm5_next row kernels: head rows kernel equals the per-row kernel bitwise; all-heads latent attention matches an f64 reference");
+    puts("PASS glm5_next row kernels: head rows kernel and per-head projection rows kernel equal the per-row kernels bitwise; all-heads latent attention matches an f64 reference");
     return 0;
 }
