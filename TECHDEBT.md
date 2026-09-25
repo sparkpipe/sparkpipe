@@ -1,8 +1,9 @@
 # SparkPipe Technical Debt
 
 This file contains only unfinished work against
-[`ARCHITECTURE.md`](ARCHITECTURE.md). Completed work is removed rather than
-retained as a progress diary.
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and the system described in
+[`README.md`](README.md). Completed work is removed rather than retained as a
+progress diary.
 
 ## Dual-fabric topology contract
 
@@ -48,6 +49,26 @@ retained as a progress diary.
   hardware profile without changing the model driver or resident weights.
 - Remove the graph-island controller only after the replacement produces exact
   tokens and beats its retained merged-main B1 and saturated-batch receipts.
+
+## Mesh collectives
+
+- Every hardware-wait round crosses weightd's CPU relay twice: the local
+  doorbell sweep posts the RDMA writes and the remote sweep completes the
+  waiter. Replace it with GPU-initiated RDMA so kernels post work requests
+  and ring the NIC doorbell themselves; a 16-rank 8 KiB all-reduce should
+  then cost tens of microseconds rather than the measured 167 us p50.
+- Two collective substrates coexist: DSV4 uses the residentd-owned hidden
+  transport (`ring/transport/tp_collective.c`, recursive doubling and split
+  rings), the other families use the weightd mesh through
+  `ring/transport/tp_device_collective.c`. Converge on one substrate with
+  one algorithm selector and one measured crossover profile.
+- The weightd mesh is wired on one interface (the switched rail). Build the
+  pair-link hierarchical all-reduce (pair sum over `rank XOR 1`, 8-way
+  switched exchange, pair return) designed in
+  `docs/GLM5_NEXT_ROOFLINE.md` and select it for prefill and large batches.
+- Overlap communication with compute: two micro-batches in flight per
+  engine, one computing while the other's collectives complete. Measure the
+  extra weight reads that splitting costs against the exposed wait it hides.
 
 ## Steady-state decode hot-path audit
 
@@ -128,6 +149,22 @@ retained as a progress diary.
 - Preserve resumable KV and request ownership across model eviction and
   reactivation, subject to explicit capacity and retention policy.
 
+## KV sharding
+
+- MLA/DSA models store the full shared latent KV and indexer keys on every
+  TP rank. GLM 5.3 Flash at TP16 holds 16.5 KiB per token per rank of
+  replicated DSA state; only its KDA recurrent state is head-sharded.
+- Context-parallel indexer scoring (`dsa_index_context_parallel`) splits the
+  indexer reads exactly but is opt-in and off on the fleet, and it does not
+  shard storage. Qualify it on long prompts and make it the default.
+- Build context-parallel latent attention: each rank stores and attends
+  over its own tokens and the head owners merge partial softmax states. The
+  query all-gather and partial exchange (about 64 KiB each per row per DSA
+  layer) exceed the current 256 KiB slot budget at B64; land it after
+  GPU-initiated RDMA or as a 4 head-group x 4 context-shard split.
+- Replace per-driver KV and index pools with one node-level pool shared by
+  all resident drivers, admitted against resident demand.
+
 ## Dynamic batching
 
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to
@@ -150,6 +187,12 @@ retained as a progress diary.
   pressure, cancellation, and starvation bounds.
 - Make priority and deadline enforcement span admission, prefill, decode,
   speculation, gang scheduling, model promotion, and storage I/O.
+- Dense projections above eight rows leave the skinny kernel for
+  tensor-core GEMM with a different accumulation order, and batched latent
+  attention sums in a different order from the per-head kernel, so prefill
+  and batched-decode logits are not bitwise equal to B1. Extend the
+  row-blocked kernels that keep the skinny order wherever they match the
+  tensor-core throughput.
 
 ## Model contracts
 
@@ -164,6 +207,17 @@ retained as a progress diary.
 - Bind GLM 5.2 dense gate, up, down, and router-logit tensor-core linear plans
   at startup before required-stage validation.
 
+## Speculation
+
+- The GLM 5.3 Flash MTP draft layer keeps a one-page KV per execution slot
+  and attends only within its current draft chain, not the sequence
+  history. Give it per-sequence draft KV and measure the acceptance change.
+- Wire tree verification (`spark_speculation_tree.h`) into the common
+  acceptance engine; it currently resolves chains only.
+- Build the tournament provider over the provider slot, with per-drafter
+  acceptance telemetry, after the single-drafter agreement matrix is
+  measured.
+
 ## Packaging and provenance
 
 - Add the upstream implementation commit to stage-pack provenance at the next
@@ -171,6 +225,19 @@ retained as a progress diary.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and
   model conversion dependencies.
 - Generate compact deployment specifications for every released model package.
+- Replace the 33 per-family `tools/*stagepack*.py` packers with the
+  universal packer (`docs/UNIVERSAL_PACKER.md`): one CLI, one codec table,
+  per-family byte-compatible emitters, each gated on byte identity with its
+  existing packs.
+
+## Driver consolidation
+
+- Adopt the common parameterized modules in
+  `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
+  replace (measured at about 26,000 lines across the families), each
+  migration proved by byte or behaviour identity.
+- Publish one driver per model with prewarmed row-count specializations
+  instead of one module ID per `SPARK_BATCH_BUCKET`.
 
 ## Runtime completion
 
@@ -180,12 +247,39 @@ retained as a progress diary.
   generation, package and driver hashes, all-rank identities, token stream,
   accuracy, performance, route counters, and drained queue state.
 
+## Serving API
+
+- `model_api` returns a completion only when it finishes. Add
+  server-sent-event streaming for `/v1/completions` and
+  `/v1/chat/completions`.
+- Decoding is greedy only. Add temperature and top-p sampling driven by a
+  counter-based RNG keyed by the request seed, so sampled completions
+  replay exactly, and return logprobs.
+- Accept priority and deadline per request and carry them into admission.
+- Log driver hash, contract hash and request per completion so any
+  completion can be replayed off-node and audited.
+- `docs/LITELLM_FRONTEND.md` still describes a token-ID-only upstream;
+  update it for text prompts through the tokenizer sidecar.
+
 ## Production qualification
 
 - Repeat accepted transport and model measurements from clean merged `main`,
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
+
+## Hardware independence
+
+- The device layer exists only as `SparkMemoryBuffer`
+  (`include/sparkpipe/spark_memory_buffer.h`). Build the rest of the memory
+  interface (register, map_file, make_resident/evict) and then streams,
+  events and launch, per `docs/INFERENCE_OS_DESIGN.md`.
+- Modules call the CUDA runtime directly. Move them behind the device layer
+  so a module target can be `host.*`, `metal.*` or `rocm.*`.
+- Add rank, island and link-class descriptors and derive collective
+  decomposition from the link matrix instead of a configured backend.
+- Qualify the Metal backend on the Mac Studios and keep the host backend as
+  a CI oracle for common policy, not only for kernels.
 
 ## DGX Station deployment
 

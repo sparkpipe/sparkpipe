@@ -48,8 +48,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "972f1c4246287c02d4a882f75602150dc6ccdb4c88c3cbb913778ba55e4a2851",
-      "size_bytes": 8036
+      "sha256": "fde9e8c7a1f576bd4631fda77a19c4eb8d381c4eb8ca3792fda60b0b7cb260b9",
+      "size_bytes": 20047
     },
     {
       "path": "SPEC.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "714f262deaf0742f59485a7ba805898e35ca57e15f72b94e3110f3afc1ddbcda",
-      "size_bytes": 16303
+      "sha256": "15f12ec4bbf210b20ba322fc62a3aaeae6ff06c13dc2af2641d45c38c0b42c4b",
+      "size_bytes": 21407
     },
     {
       "path": "cache/cache.h",
@@ -15050,5 +15050,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73879307
+  "total_bytes": 73896422
 }
