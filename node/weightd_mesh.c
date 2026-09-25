@@ -307,6 +307,33 @@ static SparkStatus SparkWeightdMeshTransitionQp(
 
 static pthread_mutex_t SparkWeightdMeshWireLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t SparkWeightdMeshActivityCondition = PTHREAD_COND_INITIALIZER;
+static uint32_t SparkWeightdMeshWireWaiters;
+static __thread uint32_t SparkWeightdMeshPollingThread;
+
+static inline void SparkWeightdMeshCpuRelax(void)
+{
+#if defined(__aarch64__)
+    __asm__ volatile ("yield");
+#elif defined(__x86_64__)
+    __builtin_ia32_pause();
+#else
+#error "SparkWeightdMeshCpuRelax requires aarch64 or x86_64"
+#endif
+}
+
+static void SparkWeightdMeshWireAcquire(void)
+{
+    if ( SparkWeightdMeshPollingThread != 0u )
+    {
+        while ( __atomic_load_n(&SparkWeightdMeshWireWaiters,__ATOMIC_ACQUIRE) != 0u )
+            SparkWeightdMeshCpuRelax();
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        return;
+    }
+    __atomic_add_fetch(&SparkWeightdMeshWireWaiters,1u,__ATOMIC_ACQ_REL);
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    __atomic_sub_fetch(&SparkWeightdMeshWireWaiters,1u,__ATOMIC_ACQ_REL);
+}
 
 SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     const SparkWeightdMeshTopology *topology)
@@ -319,7 +346,7 @@ SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     if ( topology->rank_count == 0u ) return SPARK_STATUS_OK;
     if ( topology->local_rank >= topology->rank_count )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     for (rank=0u; rank<topology->rank_count; rank++)
     {
         uint32_t physical = topology->physical_ranks[rank];
@@ -369,7 +396,7 @@ done:
 SparkStatus SparkWeightdMeshSetActivity(uint32_t lane,uint32_t active)
 {
     SparkStatus status = SPARK_STATUS_OK;
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     if ( active > 1u || lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
         status = SPARK_STATUS_INVALID_ARGUMENT;
     else if ( weightd_mesh.lane_topology[lane].rank_count == 0u )
@@ -535,7 +562,7 @@ static void SparkWeightdMeshWaitRequestsPoll(uint64_t now_ns)
 
 static void SparkWeightdMeshWaitForActivity(void)
 {
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     while ( (weightd_mesh.mesh_ready == 0u && SparkWeightdMeshHasWaitWork() == 0u) ||
             (weightd_mesh.activity_owners == 0u &&
              SparkWeightdMeshHasPending() == 0u &&
@@ -680,7 +707,7 @@ static void SparkWeightdMeshTryWireLocked(void)
 
 static void SparkWeightdMeshTryWire(void)
 {
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     SparkWeightdMeshTryWireLocked();
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
 }
@@ -1088,7 +1115,7 @@ static void SparkWeightdMeshDrainCq(void)
     int index;
     uint32_t repair_needed = 0u;
 
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     for (;;)
     {
         completed = ibv_poll_cq(weightd_mesh.cq,64,completions);
@@ -1240,7 +1267,7 @@ static void SparkWeightdMeshDoorbellPoll(void)
     struct timespec now;
     uint64_t now_ns;
     SparkWeightdMeshDrainCq();
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     now_ns = clock_gettime(CLOCK_MONOTONIC,&now) == 0 ?
         (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec : 0u;
     SparkWeightdMeshWaitRequestsPoll(now_ns);
@@ -1335,19 +1362,9 @@ static void SparkWeightdMeshDoorbellPoll(void)
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
 }
 
-static inline void SparkWeightdMeshCpuRelax(void)
-{
-#if defined(__aarch64__)
-    __asm__ volatile ("yield");
-#elif defined(__x86_64__)
-    __builtin_ia32_pause();
-#else
-#error "SparkWeightdMeshCpuRelax requires aarch64 or x86_64"
-#endif
-}
-
 void SparkWeightdMeshDoorbellLoop(void)
 {
+    SparkWeightdMeshPollingThread = 1u;
     for (;;)
     {
         SparkWeightdMeshWaitForActivity();
@@ -1390,7 +1407,7 @@ uint32_t SparkWeightdMeshBroadcast(
     uint32_t rank;
     uint32_t posted = 0u;
 
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     if (weightd_mesh.mesh_ready == 0u || peer_rank_mask == 0u ||
         (peer_rank_mask & ~weightd_mesh.rank_mask) != 0u ||
         (peer_rank_mask & (1u << weightd_mesh.local_rank)) != 0u)
@@ -1503,7 +1520,7 @@ SparkStatus SparkWeightdMeshPostWrite(
     work_request.wr.rdma.remote_addr =
         weightd_mesh.qp_info[peer].remote_addr + remote_offset;
     work_request.wr.rdma.rkey = weightd_mesh.qp_info[peer].rkey;
-    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshWireAcquire();
     if ( weightd_mesh.mesh_ready == 0u || weightd_mesh.wired_boot_ns[peer] == 0u ||
          weightd_mesh.send_pending[peer] >= SPARK_WEIGHTD_MESH_SEND_CAPACITY )
     {
