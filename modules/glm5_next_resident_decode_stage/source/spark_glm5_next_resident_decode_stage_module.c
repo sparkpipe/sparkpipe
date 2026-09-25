@@ -792,6 +792,19 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
 }
 
+static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
+{
+	uint32_t index;
+	for ( index = 0u; index < SPARK_GLM5_NEXT_GRAPH_ROWS_MAX; index++ )
+	{
+		if ( slot->graph_exec_rows[index] != 0 )
+			(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[index]);
+		slot->graph_exec_rows[index] = 0;
+		slot->graph_bound_rows[index] = 0u;
+	}
+	slot->graph_exec_a = 0;
+}
+
 static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 {
 	uint32_t index;
@@ -803,10 +816,7 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
 		state->slots[index].route_ready_event = 0;
 		state->slots[index].route_recorded = 0u;
-		if ( state->slots[index].graph_exec_a != 0 )
-			(void)cudaGraphExecDestroy((cudaGraphExec_t)state->slots[index].graph_exec_a);
-		state->slots[index].graph_exec_a = 0;
-		state->slots[index].graph_ready = 0u;
+		SparkGlm5NextGraphDestroyAll(&state->slots[index]);
 		if ( state->slots[index].host_staging != 0 )
 			(void)cudaFreeHost(state->slots[index].host_staging);
 		state->slots[index].host_staging = 0;
@@ -2829,6 +2839,7 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 {
 	SparkGlm5NextModuleState *state;
 	SparkStatus status;
+	uint32_t row;
 	void *exec;
 	state = chain->state;
 	status = SparkGlm5NextWeightdHealth(state);
@@ -2990,11 +3001,12 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 		status = SPARK_STATUS_BUSY;
 	}
 	if ( status == SPARK_STATUS_OK )
-	{
-		((uint32_t *)chain->wave.host_positions)[0] += 1u;
-		((uint32_t *)chain->wave.host_token_ids)[0] =
-			chain->slot->host_output_token_ids[chain->first_row];
-	}
+		for ( row = 0u; row < chain->wave_rows; row++ )
+		{
+			((uint32_t *)chain->wave.host_positions)[row] += 1u;
+			((uint32_t *)chain->wave.host_token_ids)[row] =
+				chain->slot->host_output_token_ids[chain->first_row + row];
+		}
 	*status_out = status;
 }
 
@@ -3023,15 +3035,39 @@ static void SparkGlm5NextGraphDisarm(
 			&state->tp_device_collective_hc);
 }
 
+static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_t index,uint32_t bound)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	void *exec = 0;
+	chain->wave.maximum_context = bound;
+	if ( SparkGlm5NextGraphArm(state) != SPARK_STATUS_OK )
+	{
+		SparkGlm5NextGraphDisarm(state);
+		slot->graph_disabled = 1u;
+		return(SPARK_STATUS_BUSY);
+	}
+	SparkGlm5NextGraphRecord(chain,&exec);
+	SparkGlm5NextGraphDisarm(state);
+	if ( exec == 0 )
+	{
+		fprintf(stderr,"GRAPH-CAPTURE-FAILED rows=%u\n",index + 1u);
+		slot->graph_disabled = 1u;
+		return(SPARK_STATUS_BUSY);
+	}
+	slot->graph_exec_rows[index] = exec;
+	slot->graph_bound_rows[index] = bound;
+	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u bound=%u\n",index + 1u,bound);
+	return(SPARK_STATUS_OK);
+}
+
 static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
     SparkStatus *status_out)
 {
-	SparkGlm5NextModuleState *state;
-	SparkGlm5NextExecutionSlot *slot;
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t bound;
-	state = chain->state;
-	slot = chain->slot;
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	SparkStatus status;
+	uint32_t bound, index = chain->wave_rows - 1u;
 	if ( slot->graph_disabled != 0u )
 	{
 		*status_out = SPARK_STATUS_BUSY;
@@ -3045,47 +3081,23 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 		*status_out = status;
 		return;
 	}
-	bound = chain->wave.maximum_context +
-		SPARK_GLM5_NEXT_GRAPH_CONTEXT_MARGIN;
+	bound = chain->wave.maximum_context + SPARK_GLM5_NEXT_GRAPH_CONTEXT_MARGIN;
 	if ( bound > chain->wave.max_sequence_positions )
 		bound = chain->wave.max_sequence_positions;
-	if ( slot->graph_ready != 0u &&
-	     chain->wave.maximum_context > slot->graph_bound )
+	if ( slot->graph_exec_rows[index] != 0 && chain->wave.maximum_context > slot->graph_bound_rows[index] )
 	{
-		if ( slot->graph_exec_a != 0 )
-			(void)cudaGraphExecDestroy(
-				(cudaGraphExec_t)slot->graph_exec_a);
-		slot->graph_exec_a = 0;
-		slot->graph_ready = 0u;
+		(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[index]);
+		slot->graph_exec_rows[index] = 0;
 	}
-	if ( slot->graph_ready == 0u )
+	if ( slot->graph_exec_rows[index] == 0 && SparkGlm5NextGraphCapture(chain,index,bound) != SPARK_STATUS_OK )
 	{
-		void *exec_a = 0;
-		chain->wave.maximum_context = bound;
-		if ( SparkGlm5NextGraphArm(state) != SPARK_STATUS_OK )
-		{
-			SparkGlm5NextGraphDisarm(state);
-			slot->graph_disabled = 1u;
-			*status_out = SPARK_STATUS_BUSY;
-			return;
-		}
-		SparkGlm5NextGraphRecord(chain,&exec_a);
-		SparkGlm5NextGraphDisarm(state);
-		if ( exec_a == 0 )
-		{
-			fprintf(stderr,"GRAPH-CAPTURE-FAILED\n");
-			slot->graph_disabled = 1u;
-			*status_out = SPARK_STATUS_BUSY;
-			return;
-		}
-		slot->graph_exec_a = exec_a;
-		slot->graph_bound = bound;
-		slot->graph_ready = 1u;
-		fprintf(stderr,"GRAPH-CAPTURE-OK bound=%u\n",bound);
+		*status_out = SPARK_STATUS_BUSY;
+		return;
 	}
+	slot->graph_exec_a = slot->graph_exec_rows[index];
 	SparkGlm5NextGraphStep(chain,&status);
 	if ( status == SPARK_STATUS_OK )
-	SparkGlm5NextGraphDisarm(state);
+		SparkGlm5NextGraphDisarm(state);
 	*status_out = status;
 }
 
@@ -3265,7 +3277,9 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		     state->graph_gate_printed < 3u )
 			fprintf(stderr,
 			    "GRAPH-GATE-COLD experts not warm; eager first\n");
-		if ( chain->wave_rows == 1u && chain->first_row == 0u &&
+		if ( chain->wave_rows >= 1u && chain->wave_rows <= SPARK_GLM5_NEXT_GRAPH_ROWS_MAX &&
+		     chain->first_row == 0u && chain->spec_verify == 0u &&
+		     chain->batch->active_sequence_count == chain->wave_rows &&
 		     state->tp_device_collective_initialized != 0u &&
 		     state->lazy_pack != 0 && state->tp_degree > 1u &&
 		     state->graph_path_enabled != 0u &&

@@ -9,7 +9,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#define LM_SKINNY_ROWS 4u
+#define LM_SKINNY_ROWS 8u
+#define LM_SKINNY_ROWS_MID 4u
 #define LM_SKINNY_THREADS 256u
 #define LM_SKINNY_CHUNK_BYTES 16u
 
@@ -127,7 +128,7 @@ static __device__ __forceinline__ void LmSkinnyResolve(const LmSkinnyArguments &
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
 static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArguments &args, const uint4 *const *rows, const uint16_t *const *activation, uint32_t group, uint32_t neuron, uint32_t sub, uint32_t chunks, float (*accumulator)[ROWS])
 {
-	constexpr uint32_t unroll = ((ROWS == 1u ? 8u : 4u) / NPG) != 0u ? (ROWS == 1u ? 8u : 4u) / NPG : 1u, elements = LmSkinnyFormat<Format>::kElements;
+	constexpr uint32_t depth = ROWS == 1u ? 8u : ROWS <= LM_SKINNY_ROWS_MID ? 4u : 2u, unroll = depth / NPG != 0u ? depth / NPG : 1u, elements = LmSkinnyFormat<Format>::kElements;
 	uint32_t base, u, n, r, c;
 	float scale;
 	uint4 weight[unroll][NPG];
@@ -226,8 +227,10 @@ template<class Format, uint32_t LANES>
 static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
 {
 	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
-	if ( args->rows != 1u )
+	if ( args->rows > LM_SKINNY_ROWS_MID )
 		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
+	if ( args->rows != 1u )
+		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(args,stream));
 	if ( per_lane >= 8u )
 		return(LmSkinnyLaunchShape<Format,LANES,1u,1u>(args,stream));
 	if ( per_lane >= 4u )

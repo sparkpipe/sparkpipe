@@ -14,6 +14,13 @@
 #if defined(__CUDACC__)
 __constant__ char SparkTpMeshKernelsBuildMarker[] =
     SPARK_TP_MESH_KERNELS_MARKER;
+/* Host-side twin with __attribute__((used)): nvcc dead-strips the
+ * unreferenced __constant__ into the compressed fatbin where strings
+ * cannot see it, tripping the publish guard. The host pass (gcc)
+ * compiles this file-scope copy into .rodata unconditionally, from the
+ * SAME header and macro — a stale private copy still fails the check. */
+__attribute__((used)) static const char SparkTpMeshKernelsBuildMarkerHost[] =
+    SPARK_TP_MESH_KERNELS_MARKER;
 #endif
 
 #define SPARK_TP_MESH_THREADS 256u

@@ -8,6 +8,7 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
@@ -2068,25 +2069,10 @@ static int32_t Glm5NextLayerMoeRoute(
         return status;
     }
 
-    LM_LAUNCH(
-        (LmTopkSmallKernel<
-            GLM5_NEXT_LAYER_THREADS,
-            GLM5_NEXT_TOP_K,
-            true,
-            1u,
-            1u,
-            LM_TOPK_SCORE_SIGMOID>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
-        stream,
-        buffers->router_logits,
-        GLM5_NEXT_EXPERTS,
-        buffers->route_expert,
-        buffers->route_weight,
-        buffers->router_correction_bias,
-        0,
-        GLM5_NEXT_ROUTED_SCALE);
+    if (LmTopkRouteLaunch<GLM5_NEXT_LAYER_THREADS, GLM5_NEXT_TOP_K, true, LM_TOPK_SCORE_SIGMOID>(
+            rows, buffers->router_logits, GLM5_NEXT_EXPERTS, buffers->route_expert, buffers->route_weight,
+            buffers->router_correction_bias, 0, GLM5_NEXT_ROUTED_SCALE, stream) != cudaSuccess)
+        return LM_LAUNCH_ERR_LAUNCH;
     if ( buffers->expert_cover != 0 && buffers->expert_miss != 0 )
     {
         LM_LAUNCH(
