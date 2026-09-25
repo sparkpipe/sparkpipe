@@ -368,4 +368,3 @@ extern "C" SparkStatus SparkLagunaStageYarnTableUpload(float *device_inv_freq,vo
 
 #include "sparkpipe/family/glm/spark_glm_layer_mlp_experts.cuh"
 
-#include "sparkpipe/family/glm/spark_glm_op_wait.cuh"

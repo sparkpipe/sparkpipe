@@ -5,7 +5,7 @@
  "stage_pack_path": "packs/glm53flash.fp8.tp16.rank0.sp",
  "max_sequence_positions": 32768,
  "execution_row_capacity": 1024,
- "decode_split_context_threshold": 2048,
+ "decode_split_context_threshold": 64,
  "tp_degree": 16,
  "tp_rank": 0,
  "tp_collective": {

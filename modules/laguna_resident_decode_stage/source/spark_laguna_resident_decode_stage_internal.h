@@ -124,7 +124,6 @@ extern "C" {
 
 int32_t SparkLagunaLaunchCudaWave(const SparkLagunaCudaWave *wave);
 int32_t SparkLagunaLaunchCudaWaveBegin(const SparkLagunaCudaWave *wave);
-SparkStatus SparkLagunaLaunchOpWait(cudaStream_t stream,void *flag_device,uint64_t wait_value);
 int32_t SparkLagunaLaunchCudaLayerAttention(const SparkLagunaCudaWave *wave,uint32_t local_layer);
 int32_t SparkLagunaLaunchCudaLayerMlp(const SparkLagunaCudaWave *wave,uint32_t local_layer);
 int32_t SparkLagunaLaunchCudaLayerMlpRoute(const SparkLagunaCudaWave *wave,uint32_t local_layer);

@@ -135,7 +135,7 @@ def stage_config(rank: int) -> dict:
         # bit-for-bit, multi-partition deterministic) + the window cell:
         # split-on vs split-off equivalence at 8K+ context on the resident
         # serving before the decode timing claim.
-        "decode_split_context_threshold": 2048,
+        "decode_split_context_threshold": 64,
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),

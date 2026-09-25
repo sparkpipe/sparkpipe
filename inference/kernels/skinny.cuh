@@ -112,82 +112,139 @@ static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale
 		return(LmScaleTensorLoad(scale,group,neuron,k));
 }
 
-template<class Format, uint32_t LANES, uint32_t ROWS>
-__global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyKernel(const __grid_constant__ LmSkinnyArguments args)
+static __device__ __forceinline__ void LmSkinnyResolve(const LmSkinnyArguments &args, uint32_t pair, uint32_t *group, uint32_t *source, uint32_t *target)
 {
-	constexpr uint32_t unroll = ROWS == 1u ? 8u : 4u, elements = LmSkinnyFormat<Format>::kElements;
-	const uint32_t sub = threadIdx.x % LANES, task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LANES;
-	const uint32_t total = (args.route_expert != 0 ? args.pairs : 1u) * args.output_dimension, live = task < total ? 1u : 0u;
-	const uint32_t chunks = live != 0u ? args.input_dimension / elements : 0u, pair = live != 0u ? task / args.output_dimension : 0u, neuron = live != 0u ? task % args.output_dimension : 0u;
-	uint32_t group = 0u, source = 0u, target = 0u, base, u, r, c, step;
-	float accumulator[ROWS], scale;
-	uint4 weight[unroll];
+	*group = 0u;
+	*source = 0u;
+	*target = 0u;
+	if ( args.route_expert == 0 )
+		return;
+	*group = args.route_expert[pair];
+	*target = args.route_packed_row != 0 ? args.route_packed_row[pair] : pair;
+	*source = args.activation_packed != 0u ? *target : pair / args.top_k;
+}
+
+template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArguments &args, const uint4 *const *rows, const uint16_t *const *activation, uint32_t group, uint32_t neuron, uint32_t sub, uint32_t chunks, float (*accumulator)[ROWS])
+{
+	constexpr uint32_t unroll = ((ROWS == 1u ? 8u : 4u) / NPG) != 0u ? (ROWS == 1u ? 8u : 4u) / NPG : 1u, elements = LmSkinnyFormat<Format>::kElements;
+	uint32_t base, u, n, r, c;
+	float scale;
+	uint4 weight[unroll][NPG];
 	typename LmSkinnyFormat<Format>::Activation staged[unroll][ROWS];
-	const uint4 *row;
-	const uint16_t *activation[ROWS];
-	if ( live != 0u && args.route_expert != 0 )
-	{
-		group = args.route_expert[pair];
-		target = args.route_packed_row != 0 ? args.route_packed_row[pair] : pair;
-		source = args.activation_packed != 0u ? target : pair / args.top_k;
-	}
-	row = (const uint4 *)(args.weight + (uint64_t)group * args.weight_group_bytes + (uint64_t)neuron * args.input_dimension * (LM_SKINNY_CHUNK_BYTES / elements));
-	#pragma unroll
-	for ( r = 0u; r < ROWS; r++ )
-	{
-		accumulator[r] = 0.0f;
-		activation[r] = args.activation + (uint64_t)(source + (r < args.rows ? r : 0u)) * args.input_dimension;
-	}
 	for ( base = sub; base < chunks; base += LANES * unroll )
 	{
 		#pragma unroll
 		for ( u = 0u; u < unroll; u++ )
 		{
 			c = base + u * LANES < chunks ? base + u * LANES : 0u;
-			weight[u] = base + u * LANES < chunks ? __ldcs(row + c) : make_uint4(0u,0u,0u,0u);
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+				weight[u][n] = base + u * LANES < chunks ? __ldcs(rows[n] + c) : make_uint4(0u,0u,0u,0u);
 			#pragma unroll
 			for ( r = 0u; r < ROWS; r++ )
 				staged[u][r] = LmSkinnyFormat<Format>::Load(activation[r] + c * elements);
 		}
 		#pragma unroll
 		for ( u = 0u; u < unroll; u++ )
-		{
-			scale = LmSkinnyScale<Format>(&args.scale,group,neuron,(base + u * LANES) * elements);
 			#pragma unroll
-			for ( r = 0u; r < ROWS; r++ )
-				accumulator[r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u],staged[u][r]),accumulator[r]);
-		}
+			for ( n = 0u; n < NPG; n++ )
+			{
+				scale = LmSkinnyScale<Format>(&args.scale,group,neuron + n,(base + u * LANES) * elements);
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[u][r]),accumulator[n][r]);
+			}
 	}
+}
+
+template<uint32_t LANES, uint32_t ROWS, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyStore(const LmSkinnyArguments &args, float (*accumulator)[ROWS], uint32_t sub, uint32_t live, uint32_t target, uint32_t neuron)
+{
+	uint32_t step, n, r;
+	uint64_t index;
 	#pragma unroll
 	for ( step = LANES / 2u; step > 0u; step >>= 1u )
 		#pragma unroll
-		for ( r = 0u; r < ROWS; r++ )
-			accumulator[r] += __shfl_xor_sync(0xffffffffu,accumulator[r],step,LANES);
+		for ( n = 0u; n < NPG; n++ )
+			#pragma unroll
+			for ( r = 0u; r < ROWS; r++ )
+				accumulator[n][r] += __shfl_xor_sync(0xffffffffu,accumulator[n][r],step,LANES);
 	if ( live == 0u || sub != 0u )
 		return;
 	#pragma unroll
-	for ( r = 0u; r < ROWS; r++ )
-		if ( r < args.rows && args.output_f32 != 0 )
-			args.output_f32[(uint64_t)(target + r) * args.output_row_stride + args.output_column_offset + neuron] = accumulator[r];
-		else if ( r < args.rows )
-			args.output_bf16[(uint64_t)(target + r) * args.output_row_stride + args.output_column_offset + neuron] = LmFloatToBf16(accumulator[r]);
+	for ( n = 0u; n < NPG; n++ )
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+		{
+			if ( r >= args.rows || neuron + n >= args.output_dimension )
+				continue;
+			index = (uint64_t)(target + r) * args.output_row_stride + args.output_column_offset + neuron + n;
+			if ( args.output_f32 != 0 )
+				args.output_f32[index] = accumulator[n][r];
+			else
+				args.output_bf16[index] = LmFloatToBf16(accumulator[n][r]);
+		}
 }
 
-template<class Format, uint32_t LANES, uint32_t ROWS>
-static int32_t LmSkinnyLaunchShape(const LmSkinnyArguments *args, uint64_t tasks, cudaStream_t stream)
+template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
+__global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyKernel(const __grid_constant__ LmSkinnyArguments args)
 {
-	LmSkinnyKernel<Format,LANES,ROWS><<<(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream>>>(*args);
+	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
+	const uint32_t sub = threadIdx.x % LANES, task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LANES, per_pair = (args.output_dimension + NPG - 1u) / NPG;
+	const uint32_t live = task < (args.route_expert != 0 ? args.pairs : 1u) * per_pair ? 1u : 0u;
+	const uint32_t chunks = live != 0u ? args.input_dimension / elements : 0u, pair = live != 0u ? task / per_pair : 0u, neuron = live != 0u ? (task % per_pair) * NPG : 0u;
+	uint32_t group, source, target, n, r;
+	float accumulator[NPG][ROWS];
+	const uint4 *rows[NPG];
+	const uint16_t *activation[ROWS];
+	LmSkinnyResolve(args,pair,&group,&source,&target);
+	#pragma unroll
+	for ( n = 0u; n < NPG; n++ )
+	{
+		rows[n] = (const uint4 *)(args.weight + (uint64_t)group * args.weight_group_bytes + (uint64_t)(neuron + n < args.output_dimension ? neuron + n : neuron) * args.input_dimension * (LM_SKINNY_CHUNK_BYTES / elements));
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+			accumulator[n][r] = 0.0f;
+	}
+	#pragma unroll
+	for ( r = 0u; r < ROWS; r++ )
+		activation[r] = args.activation + (uint64_t)(source + (r < args.rows ? r : 0u)) * args.input_dimension;
+	LmSkinnyAccumulate<Format,LANES,ROWS,NPG>(args,rows,activation,group,neuron,sub,chunks,accumulator);
+	LmSkinnyStore<LANES,ROWS,NPG>(args,accumulator,sub,live,target,neuron);
+}
+
+template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
+static int32_t LmSkinnyLaunchShape(const LmSkinnyArguments *args, cudaStream_t stream)
+{
+	uint64_t tasks = (uint64_t)(args->route_expert != 0 ? args->pairs : 1u) * ((args->output_dimension + NPG - 1u) / NPG);
+	LmSkinnyKernel<Format,LANES,ROWS,NPG><<<(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream>>>(*args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-template<class Format, uint32_t ROWS>
-static int32_t LmSkinnyLaunchRows(const LmSkinnyArguments *args, uint64_t tasks, uint32_t chunks, cudaStream_t stream)
+template<class Format, uint32_t LANES>
+static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
+{
+	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
+	if ( args->rows != 1u )
+		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
+	if ( per_lane >= 8u )
+		return(LmSkinnyLaunchShape<Format,LANES,1u,1u>(args,stream));
+	if ( per_lane >= 4u )
+		return(LmSkinnyLaunchShape<Format,LANES,1u,2u>(args,stream));
+	if ( per_lane >= 2u )
+		return(LmSkinnyLaunchShape<Format,LANES,1u,4u>(args,stream));
+	return(LmSkinnyLaunchShape<Format,LANES,1u,8u>(args,stream));
+}
+
+template<class Format>
+static int32_t LmSkinnyLaunchRows(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
 {
 	if ( chunks >= 32u )
-		return(LmSkinnyLaunchShape<Format,32u,ROWS>(args,tasks,stream));
+		return(LmSkinnyLaunchGroup<Format,32u>(args,chunks,stream));
 	if ( chunks >= 16u )
-		return(LmSkinnyLaunchShape<Format,16u,ROWS>(args,tasks,stream));
-	return(LmSkinnyLaunchShape<Format,8u,ROWS>(args,tasks,stream));
+		return(LmSkinnyLaunchGroup<Format,16u>(args,chunks,stream));
+	return(LmSkinnyLaunchGroup<Format,8u>(args,chunks,stream));
 }
 
 static uint32_t LmSkinnyAligned(const void *pointer)
@@ -216,7 +273,6 @@ static int32_t LmSkinnyValidate(const LmSkinnyArguments *args)
 template<class Format>
 static int32_t LmSkinnyLaunch(LmSkinnyArguments *args, cudaStream_t stream)
 {
-	uint64_t tasks;
 	int32_t status;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported )
 		return(LM_LAUNCH_ERR_SHAPE);
@@ -227,10 +283,7 @@ static int32_t LmSkinnyLaunch(LmSkinnyArguments *args, cudaStream_t stream)
 		status = LmSkinnyValidate<Format>(args);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		tasks = (uint64_t)(args->route_expert != 0 ? args->pairs : 1u) * args->output_dimension;
-		if ( args->rows == 1u )
-			return(LmSkinnyLaunchRows<Format,1u>(args,tasks,args->input_dimension / LmSkinnyFormat<Format>::kElements,stream));
-		return(LmSkinnyLaunchRows<Format,LM_SKINNY_ROWS>(args,tasks,args->input_dimension / LmSkinnyFormat<Format>::kElements,stream));
+		return(LmSkinnyLaunchRows<Format>(args,args->input_dimension / LmSkinnyFormat<Format>::kElements,stream));
 	}
 }
 

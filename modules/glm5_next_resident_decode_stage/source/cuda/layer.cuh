@@ -1557,64 +1557,75 @@ typedef struct Glm5NextHcShared
 }
 Glm5NextHcShared;
 
-static __device__ void Glm5NextHcSinkhorn(const float *mixes, const float *scale3, const float *base, float *pre, float *post, float *comb_out)
+static __device__ __forceinline__ float Glm5NextHcRowSum(float value, uint32_t lane)
+{
+	const uint32_t row = lane & 12u;
+	uint32_t j;
+	float total = 0.0f, part;
+	#pragma unroll
+	for (j = 0u; j < GLM5_NEXT_HC; ++j)
+	{
+		part = __shfl_sync(0xffffffffu, value, row + j);
+		total += part;
+	}
+	return total;
+}
+
+static __device__ __forceinline__ float Glm5NextHcColumnSum(float value, uint32_t lane)
+{
+	const uint32_t column = lane & 3u;
+	uint32_t i;
+	float total = 0.0f, part;
+	#pragma unroll
+	for (i = 0u; i < GLM5_NEXT_HC; ++i)
+	{
+		part = __shfl_sync(0xffffffffu, value, column + i * GLM5_NEXT_HC);
+		total += part;
+	}
+	return total;
+}
+
+static __device__ __forceinline__ float Glm5NextHcRowMax(float value, uint32_t lane)
+{
+	const uint32_t row = lane & 12u;
+	uint32_t j;
+	float maximum = -3.0e38f, part;
+	#pragma unroll
+	for (j = 0u; j < GLM5_NEXT_HC; ++j)
+	{
+		part = __shfl_sync(0xffffffffu, value, row + j);
+		maximum = fmaxf(maximum, part);
+	}
+	return maximum;
+}
+
+static __device__ void Glm5NextHcSinkhornWarp(const float *mixes, const float *scale3, const float *base, float *pre, float *post, float *comb_out)
 {
 	constexpr uint32_t hc = GLM5_NEXT_HC;
-	uint32_t i, j, iteration;
-	float comb[hc * hc], maximum, total;
-	#pragma unroll
-	for (i = 0u; i < hc; ++i)
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, cell = lane & 15u;
+	uint32_t iteration;
+	float value, total;
+	if (lane < hc)
 	{
-		pre[i] = 1.0f / (1.0f + __expf(-(mixes[i] * scale3[0] + base[i]))) + GLM5_NEXT_HC_EPSILON;
-		post[i] = 2.0f / (1.0f + __expf(-(mixes[hc + i] * scale3[1] + base[hc + i])));
+		pre[lane] = 1.0f / (1.0f + __expf(-(mixes[lane] * scale3[0] + base[lane]))) + GLM5_NEXT_HC_EPSILON;
+		post[lane] = 2.0f / (1.0f + __expf(-(mixes[hc + lane] * scale3[1] + base[hc + lane])));
 	}
-	#pragma unroll
-	for (i = 0u; i < hc; ++i)
-	{
-		maximum = -3.0e38f;
-		#pragma unroll
-		for (j = 0u; j < hc; ++j)
-		{
-			comb[i * hc + j] = mixes[2u * hc + i * hc + j] * scale3[2] + base[2u * hc + i * hc + j];
-			maximum = fmaxf(maximum, comb[i * hc + j]);
-		}
-		total = 0.0f;
-		#pragma unroll
-		for (j = 0u; j < hc; ++j)
-			total += (comb[i * hc + j] = __expf(comb[i * hc + j] - maximum));
-		#pragma unroll
-		for (j = 0u; j < hc; ++j)
-			comb[i * hc + j] = comb[i * hc + j] / total + GLM5_NEXT_HC_EPSILON;
-	}
+	value = mixes[2u * hc + cell] * scale3[2] + base[2u * hc + cell];
+	value = __expf(value - Glm5NextHcRowMax(value, lane));
+	total = Glm5NextHcRowSum(value, lane);
+	value = value / total + GLM5_NEXT_HC_EPSILON;
 	for (iteration = 0u; iteration < GLM5_NEXT_HC_SINKHORN_ITERATIONS; ++iteration)
 	{
 		if (iteration != 0u)
-			#pragma unroll
-			for (i = 0u; i < hc; ++i)
-			{
-				total = 0.0f;
-				#pragma unroll
-				for (j = 0u; j < hc; ++j)
-					total += comb[i * hc + j];
-				#pragma unroll
-				for (j = 0u; j < hc; ++j)
-					comb[i * hc + j] /= total + GLM5_NEXT_HC_EPSILON;
-			}
-		#pragma unroll
-		for (j = 0u; j < hc; ++j)
 		{
-			total = 0.0f;
-			#pragma unroll
-			for (i = 0u; i < hc; ++i)
-				total += comb[i * hc + j];
-			#pragma unroll
-			for (i = 0u; i < hc; ++i)
-				comb[i * hc + j] /= total + GLM5_NEXT_HC_EPSILON;
+			total = Glm5NextHcRowSum(value, lane);
+			value /= total + GLM5_NEXT_HC_EPSILON;
 		}
+		total = Glm5NextHcColumnSum(value, lane);
+		value /= total + GLM5_NEXT_HC_EPSILON;
 	}
-	#pragma unroll
-	for (i = 0u; i < hc * hc; ++i)
-		comb_out[i] = comb[i];
+	if (lane < hc * hc)
+		comb_out[cell] = value;
 }
 
 static __device__ float Glm5NextHcStage(Glm5NextHcShared *shared, const uint16_t *slice)
@@ -1660,7 +1671,7 @@ static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, 
 
 static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, float *comb)
 {
-	uint32_t rank, mix;
+	uint32_t rank;
 	float total, inverse;
 	if (threadIdx.x <= GLM5_NEXT_HC_MIX)
 	{
@@ -1670,14 +1681,16 @@ static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &clust
 		shared->mixes[threadIdx.x] = total;
 	}
 	__syncthreads();
-	if (threadIdx.x != 0u)
+	if (threadIdx.x >= LM_WARP_LANES)
 		return;
 	inverse = rsqrtf(shared->mixes[GLM5_NEXT_HC_MIX] / (float)GLM5_NEXT_HC_FLAT + GLM5_NEXT_RMS_EPSILON);
-	for (mix = 0u; mix < GLM5_NEXT_HC_MIX; mix++)
-		mixes[mix] = shared->mixes[mix] = shared->mixes[mix] * inverse;
-	Glm5NextHcSinkhorn(shared->mixes, scale3, base, shared->pre, post, comb);
-	for (mix = 0u; mix < GLM5_NEXT_HC; mix++)
-		pre[mix] = shared->pre[mix];
+	if (threadIdx.x < GLM5_NEXT_HC_MIX)
+		mixes[threadIdx.x] = shared->mixes[threadIdx.x] = shared->mixes[threadIdx.x] * inverse;
+	__syncwarp();
+	Glm5NextHcSinkhornWarp(shared->mixes, scale3, base, shared->pre, post, comb);
+	__syncwarp();
+	if (threadIdx.x < GLM5_NEXT_HC)
+		pre[threadIdx.x] = shared->pre[threadIdx.x];
 }
 
 static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first)

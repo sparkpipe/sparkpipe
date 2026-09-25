@@ -27,7 +27,7 @@ static const DenseShape dense_shapes[] =
     {"mla_q_a",4096u,1536u,0u},{"mla_q_b",1536u,1024u,0u},{"mla_kv_a",4096u,512u,0u},{"index_q",1536u,4096u,0u},
     {"index_k",4096u,128u,0u},{"index_head",4096u,32u,0u},{"attn_out",1024u,4096u,0u},{"router",4096u,288u,1u},
     {"shared_gate_up",4096u,256u,0u},{"shared_down",128u,4096u,0u},{"dense_gate_up",4096u,1536u,0u},{"dense_down",768u,4096u,0u},
-    {"mtp_eh_proj",8192u,4096u,0u},{"odd_tail",96u,40u,0u}
+    {"mtp_eh_proj",8192u,4096u,0u},{"odd_tail",96u,37u,0u},{"odd_small_k",128u,4097u,1u}
 };
 
 static uint32_t random_state = 20260924u;
@@ -216,7 +216,7 @@ int main(int argc,char **argv)
     for (const DenseShape &shape : dense_shapes)
         for (uint32_t rows : {1u,2u,3u,4u})
             DenseCase(&shape,rows,stream);
-    puts("PASS skinny dense bf16 shapes=18 rows=1..4 reference=f64");
+    puts("PASS skinny dense bf16 shapes=19 rows=1..4 reference=f64");
     for (uint32_t tokens : {1u,2u})
     {
         ExpertCase(4096u,256u,tokens,0u,stream);

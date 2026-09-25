@@ -733,6 +733,17 @@ static void test_mesh_hardware_wait(void)
     SparkWeightdMeshWaitRequestsPoll(8000u);
     CHECK(request->ready == 1u && request->error == UINT64_MAX &&
         SparkWeightdMeshHasWaitWork() == 0u,"request without live producer fails before returning idle");
+    {
+        uint64_t started;
+        CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,"idle producer holds activity");
+        weightd_mesh.work_ns = 0u;
+        started = SparkWeightdMeshMonotonicNs();
+        SparkWeightdMeshWaitForActivity();
+        CHECK(SparkWeightdMeshMonotonicNs() - started >= UINT64_C(150000),
+            "an active lane without traffic polls at the dormant cadence instead of spinning");
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(SparkWeightdMeshSetActivity(band / 2u,0u) == SPARK_STATUS_OK,"idle producer releases activity");
+    }
     *cancel = 0u;
 }
 
@@ -1122,14 +1133,22 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
         "socket loss scenario begins known active generation");
     SparkWeightdClientClose(first);
     test_sleep_ns(UINT64_C(50000000));
-    CHECK(SparkWeightdClientMeshActivity(second,2u,1u,timeout) == SPARK_STATUS_IO_ERROR &&
-        test_mesh_owner_count() == 1u,"unexpected active disconnect retains producer and blocks new work");
+    CHECK(test_mesh_owner_count() == 0u,"unexpected active disconnect releases its producer count");
+    CHECK(SparkWeightdClientMeshActivity(second,2u,1u,timeout) == SPARK_STATUS_OK &&
+        test_mesh_owner_count() == 1u,"a disconnected producer fences only its own lane");
+    CHECK(SparkWeightdClientMeshActivity(second,2u,0u,timeout) == SPARK_STATUS_OK,
+        "other lanes keep releasing activity normally");
     {
         SparkWeightdClient *replacement = 0;
         assert(SparkWeightdClientConnect(path,&replacement,0) == SPARK_STATUS_OK);
         lane = SPARK_WEIGHTD_LANE_NONE;
-        CHECK(SparkWeightdClientLaneAcquire(replacement,0u,0,&lane,timeout) == SPARK_STATUS_IO_ERROR &&
-            lane == SPARK_WEIGHTD_LANE_NONE,"undrained disconnected producer fences lane reuse");
+        CHECK(SparkWeightdClientLaneAcquire(replacement,0u,0,&lane,timeout) == SPARK_STATUS_BUSY &&
+            lane == SPARK_WEIGHTD_LANE_NONE,"an orphaned lane is not reused without a verifiable topology");
+        CHECK(SparkWeightdClientLaneAcquire(replacement,0u,&topology,&lane,timeout) == SPARK_STATUS_OK &&
+            lane == 0u,"a verified reconfigure clears the orphaned lane");
+        CHECK(SparkWeightdClientMeshActivity(replacement,1u,1u,timeout) == SPARK_STATUS_OK &&
+            SparkWeightdClientMeshActivity(replacement,1u,0u,timeout) == SPARK_STATUS_OK,
+            "the reconfigured lane serves new mesh activity");
         SparkWeightdClientClose(replacement);
     }
     SparkWeightdClientClose(second);

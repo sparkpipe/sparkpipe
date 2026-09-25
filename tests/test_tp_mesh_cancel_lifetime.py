@@ -4,7 +4,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 source = (ROOT / "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh").read_text()
-begin = source.index("__global__ void SparkGlm5NextMeshWaitKernel(")
+begin = source.index("#define SPARK_TP_MESH_WAIT_SLEEP_NS")
 end = source.index("\n\nstatic __device__ __forceinline__ float2", begin)
 body = source[begin:end]
 prelude = r'''
@@ -35,6 +35,7 @@ static unsigned long long SparkGlm5NextLdcvU64(const volatile void *address)
     }
     return *(const volatile uint64_t *)address;
 }
+static void __nanosleep(unsigned nanoseconds) { (void)nanoseconds; sched_yield(); }
 static unsigned long long atomicExch(unsigned long long *address,unsigned long long value)
 { return __atomic_exchange_n(address,value,__ATOMIC_SEQ_CST); }
 '''

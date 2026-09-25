@@ -80,20 +80,52 @@ Results are deterministic run to run but not bitwise equal to the previous
 build. Sinkhorn, pre-reduce and HC post are bitwise unchanged for identical
 inputs. The GPU tests check against f64 references.
 
+## Measured after PR #1205 (fleet, 2026-09-25)
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Warm decode tok/s | 4.4-6.5 | 7.3-9.1 |
+| Graph replay p50 | 90-99 ms | 45.8 ms |
+| Compute kernels per token | 54.6 ms | 21.6 ms |
+| BF16 skinny GEMV per token | 12.8 ms | 6.2 ms (234 GB/s) |
+| Routed FP8 experts per token | 14.0 ms | 3.2 ms (W1 1.8, W2 1.4) |
+| HC site per token | ~9.5 ms | 2.7 ms |
+| Latent attention per token | - | 2.5 ms (11 calls) |
+| Router top-k per token | - | 1.05 ms (42 calls) |
+
+An isolated 16-rank 8 KiB all-reduce through the shared weightd mesh costs
+p50 174-319 µs (bimodal by rank) and p99 about 775 µs. That is roughly
+27 ms per token over about 90 collectives, so collective latency, not
+compute, is now the largest term.
+
+## Collective relay (weightd)
+
+A hardware-wait round crosses weightd's CPU relay twice: the local sweep
+posts the RDMA writes, and the remote sweep completes the waiter. Before
+this branch every doorbell-thread iteration touched all 512 doorbell cells
+with a full barrier each and all 512 wait cells twice. It also printed one
+`WD-SEEN` line to stderr per round while holding the wire lock. Only one
+doorbell cell and one wait cell per configured band can carry valid work:
+the one at the lane's local rank. The sweep now polls only those cells and
+runs the full 512-cell scan once per millisecond, which keeps the error
+reporting for invalid cells. The doorbell thread is pinned to the
+highest-capacity CPUs.
+
+Other threads now get priority on the wire lock over the spinning doorbell
+thread. A lane that stays active without any doorbell, wait or send for
+20 ms is polled every 200 µs instead of spun on. A client that disconnects
+while active now quarantines only its own lane. A lane acquire with a
+topology clears the quarantine after `SparkWeightdMeshLaneConfigure` proves
+the lane is quiescent.
+
 ## Next steps, ordered by expected gain
 
-1. Get a per-kernel CUPTI table for this build to rank the remaining
-   11–15 ms of small kernels:
-   - RMSNorm at one CTA per row;
-   - KDA split, conv, sigmoid and copy launches;
-   - the delta-rule grid of 4 CTAs;
-   - the indexer.
-2. Measure one 16-rank 8 KB all-reduce in isolation. There are at least 90
-   collectives per token, so their latency floor decides whether 10 ms is
-   reachable at TP16 at all.
-3. Fuse the per-layer elementwise chains into the adjacent GEMV prologues and
-   epilogues: norm into the input projection, split and conv into the
-   `qkv_beta` epilogue, gate into the output projection.
-4. Consider sharding the replicated projections behind one extra all-gather
-   each. This trades up to 661 MB per rank for more collectives, and only pays
-   if the collective latency from step 2 is small.
+1. Remeasure the 8 KiB all-reduce ladder and the per-token interval split
+   (graph replay vs host) with the relay changes.
+2. Overlap or remove collectives: fuse the attention and MLP reductions
+   where the math allows, and move the HC site reductions off the critical
+   path.
+3. Replace the router's full bitonic sort (25 µs per call) with a
+   warp-level top-8.
+4. Batch the GEMVs that share an input (DSA q_a, kv_a and the indexer
+   projections; KDA qkv_beta and decay-gate-down) into one launch.
