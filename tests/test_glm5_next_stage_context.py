@@ -295,7 +295,7 @@ static void check_graph_epoch_ownership(void)
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.tp_device_collective.operation_timeout_milli = 50u;
 	chain.state = &state;chain.slot = &state.slots[0];
-	chain.wave.host_positions = &position;chain.wave.host_token_ids = &token;
+	chain.wave.host_positions = &position;chain.wave.host_token_ids = &token;chain.wave_rows = 1u;
 	GRAPH_LAUNCHES = 0u;GRAPH_ERROR = 0u;DRAIN_STATUS = cudaSuccess;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_OK && position == 8u && token == output);
