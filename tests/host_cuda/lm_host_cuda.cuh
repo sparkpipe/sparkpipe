@@ -36,6 +36,7 @@ template <typename Accum, typename A, typename B, typename C> static inline void
 #define __forceinline__ inline
 #define __launch_bounds__(...)
 #define __restrict__
+#define __grid_constant__
 
 struct LmHostDim3
 {
@@ -84,6 +85,7 @@ struct float2 { float x, y; };
 struct float4 { float x, y, z, w; };
 struct uint2 { unsigned x, y; };
 struct uint4 { unsigned x, y, z, w; };
+static inline uint4 make_uint4(unsigned x, unsigned y, unsigned z, unsigned w) { uint4 v; v.x = x; v.y = y; v.z = z; v.w = w; return v; }
 static inline float2 make_float2(float a, float b) { float2 v; v.x = a; v.y = b; return v; }
 static inline __half __ushort_as_half(unsigned short bits) { __half h; h.raw = bits; return h; }
 static inline unsigned short __half_as_ushort(__half h) { return h.raw; }

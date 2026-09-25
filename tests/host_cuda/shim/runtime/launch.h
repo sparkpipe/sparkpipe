@@ -8,6 +8,7 @@
 #define LM_LAUNCH_ERR_MAP (-44)
 #define LM_LAUNCH_ERR_ATTRIBUTE (-45)
 #define LM_LAUNCH_ERR_LAUNCH (-46)
+#define LM_LAUNCH_ERR_OUTPUT (-47)
 
 static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
 {

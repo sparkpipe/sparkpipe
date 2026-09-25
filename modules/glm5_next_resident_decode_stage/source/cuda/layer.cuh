@@ -2209,77 +2209,40 @@ static int32_t Glm5NextLayerMoeRoute(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoeExperts(
-    const Glm5NextLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t packed_rows,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
+static int32_t Glm5NextLayerMoeUp(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
     LmGemmArguments gemm;
-    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 ||
-        buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
-        return(LM_LAUNCH_ERR_SHAPE);
+    int32_t status;
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
-        buffers->expert_w1_scale,
-        GLM5_NEXT_EXPERTS,
-        buffers->expert_w1_rows,
-        GLM5_NEXT_HIDDEN);
+    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w1_scale, GLM5_NEXT_EXPERTS, buffers->expert_w1_rows, GLM5_NEXT_HIDDEN);
     status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
-	gemm.source_row_map = buffers->route_source_token;
-	gemm.source_row_count = rows;
+    gemm.source_row_map = buffers->route_source_token;
+    gemm.source_row_count = rows;
     gemm.output_bf16 = buffers->gate_up_bf16;
     if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmGemmWeightOnlyIndirectLaunch<
-        ExpertFormat,
-        GLM5_NEXT_LAYER_TILE_N,
-        GLM5_NEXT_LAYER_STAGES,
-        GLM5_NEXT_LAYER_WARPS>(
-            &gemm,
-			buffers->normed_bf16,
-            buffers->expert_w1_weight,
-            packed_rows,
-            rows,
-            GLM5_NEXT_TOP_K,
-            GLM5_NEXT_EXPERTS,
-            GLM5_NEXT_HIDDEN,
-            buffers->expert_w1_rows,
-            multiprocessors,
-            stream);
+        status = LmGemmWeightOnlyIndirectLaunch<ExpertFormat, GLM5_NEXT_LAYER_TILE_N, GLM5_NEXT_LAYER_STAGES, GLM5_NEXT_LAYER_WARPS>(&gemm, buffers->normed_bf16, buffers->expert_w1_weight, packed_rows, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, multiprocessors, stream);
     if (status != LM_LAUNCH_OK)
-    {
         return status;
-    }
+    LM_LAUNCH((LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>), packed_rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->gate_up_bf16, buffers->intermediate_bf16, buffers->expert_intermediate, SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
 
-    LM_LAUNCH(
-        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
-        packed_rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->gate_up_bf16,
-        buffers->intermediate_bf16,
-        buffers->expert_intermediate,
-        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
-
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeDown(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+    using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+    LmGemmArguments gemm;
+    int32_t status;
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(
-        buffers->expert_w2_scale,
-        GLM5_NEXT_EXPERTS,
-        GLM5_NEXT_HIDDEN,
-        buffers->expert_intermediate);
+    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w2_scale, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_intermediate);
     status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
@@ -2288,105 +2251,45 @@ static int32_t Glm5NextLayerMoeExperts(
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
     gemm.output_bf16 = buffers->expert_out_bf16;
     if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmGemmWeightOnlyLaunch<
-        ExpertFormat,
-        GLM5_NEXT_LAYER_TILE_N,
-        GLM5_NEXT_LAYER_STAGES,
-        GLM5_NEXT_LAYER_WARPS>(
-            &gemm,
-            buffers->intermediate_bf16,
-            buffers->expert_w2_weight,
-            packed_rows,
-            rows,
-            GLM5_NEXT_TOP_K,
-            GLM5_NEXT_EXPERTS,
-            buffers->expert_intermediate,
-            GLM5_NEXT_HIDDEN,
-            multiprocessors,
-            true,
-            stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
-    }
+        status = LmGemmWeightOnlyLaunch<ExpertFormat, GLM5_NEXT_LAYER_TILE_N, GLM5_NEXT_LAYER_STAGES, GLM5_NEXT_LAYER_WARPS>(&gemm, buffers->intermediate_bf16, buffers->expert_w2_weight, packed_rows, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_EXPERTS, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, multiprocessors, true, stream);
+    return status;
+}
 
-    LM_LAUNCH(
-        (LmMoeFinalizeKernel<GLM5_NEXT_LAYER_THREADS>),
-        dim3(
-            (GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) /
-                GLM5_NEXT_LAYER_THREADS,
-            rows),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->expert_out_bf16,
-        buffers->route_packed_row,
-        buffers->route_weight,
-        buffers->attention_out_bf16,
-        rows,
-        GLM5_NEXT_TOP_K,
-        GLM5_NEXT_HIDDEN);
-    status = Glm5NextLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->shared_gate_up_weight,
-        buffers->gate_up_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        buffers->shared_gate_up_rows,
-        buffers->shared_gate_up_rows,
-        0u,
-        multiprocessors,
-        stream);
+static int32_t Glm5NextLayerMoeCombine(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+    const dim3 grid((GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS, rows);
+    int32_t status;
+    LM_LAUNCH((LmMoeFinalizeKernel<GLM5_NEXT_LAYER_THREADS>), grid, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->expert_out_bf16, buffers->route_packed_row, buffers->route_weight, buffers->attention_out_bf16, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_HIDDEN);
+    status = Glm5NextLaunchBf16Linear(buffers->normed_bf16, buffers->shared_gate_up_weight, buffers->gate_up_bf16, buffers->dense_row_offset, buffers->dense_tile_prefix, rows, GLM5_NEXT_HIDDEN, buffers->shared_gate_up_rows, buffers->shared_gate_up_rows, 0u, multiprocessors, stream);
     if (status != LM_LAUNCH_OK)
-    {
         return status;
-    }
-    LM_LAUNCH(
-        (LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->gate_up_bf16,
-        buffers->intermediate_bf16,
-        buffers->shared_intermediate,
-        SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
-    status = Glm5NextLaunchBf16Linear(
-        buffers->intermediate_bf16,
-        buffers->shared_down_weight,
-        buffers->shared_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        buffers->shared_intermediate,
-        GLM5_NEXT_HIDDEN,
-        GLM5_NEXT_HIDDEN,
-        0u,
-        multiprocessors,
-        stream);
+    LM_LAUNCH((LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>), rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->gate_up_bf16, buffers->intermediate_bf16, buffers->shared_intermediate, SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
+    status = Glm5NextLaunchBf16Linear(buffers->intermediate_bf16, buffers->shared_down_weight, buffers->shared_out_bf16, buffers->dense_row_offset, buffers->dense_tile_prefix, rows, buffers->shared_intermediate, GLM5_NEXT_HIDDEN, GLM5_NEXT_HIDDEN, 0u, multiprocessors, stream);
     if (status != LM_LAUNCH_OK)
-    {
         return status;
-    }
-    LM_LAUNCH(
-        (LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>),
-        dim3(
-            (GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) /
-                GLM5_NEXT_LAYER_THREADS,
-            rows),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->attention_out_bf16,
-        buffers->shared_out_bf16,
-        buffers->attention_out_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
+    LM_LAUNCH((LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>), grid, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->attention_out_bf16, buffers->shared_out_bf16, buffers->attention_out_bf16, rows, GLM5_NEXT_HIDDEN);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+template<uint32_t ExpertCodec>
+static int32_t Glm5NextLayerMoeExperts(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 || buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+        return(LM_LAUNCH_ERR_SHAPE);
+    status = Glm5NextLayerMoeUp<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK)
+        status = Glm5NextLayerMoeDown<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK)
+        status = Glm5NextLayerMoeCombine(buffers, rows, multiprocessors, stream);
+    return status;
 }
 
 // Resident execution retains the same submission order. Lazy execution can

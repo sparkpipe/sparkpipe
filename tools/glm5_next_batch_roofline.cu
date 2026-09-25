@@ -15,6 +15,8 @@
 #define ROOF_MAX_BATCHES 16u
 #define ROOF_PHASES 7u
 #define ROOF_PHASE_EVENTS (2u + ROOF_LAYERS * 5u)
+#define ROOF_EXPERT_INTERMEDIATE (SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / ROOF_TP)
+#define ROOF_EXPERT_W1_ROWS (2u * ROOF_EXPERT_INTERMEDIATE)
 #define ROOF_CUDA(call) do { cudaError_t roof_error = (call); if ( roof_error != cudaSuccess ) { fprintf(stderr,"ROOFLINE-FAIL line=%d cuda=%s call=%s\n",__LINE__,cudaGetErrorString(roof_error),#call); exit(1); } } while (0)
 #define ROOF_LAUNCH(call) do { int32_t roof_status = (call); if ( roof_status != LM_LAUNCH_OK ) { fprintf(stderr,"ROOFLINE-FAIL line=%d launch=%d call=%s\n",__LINE__,(int)roof_status,#call); exit(1); } } while (0)
 
@@ -538,6 +540,77 @@ static double RoofDistinctExperts(const RoofState *state)
 	return(layers != 0u ? (double)count / (double)layers : 0.0);
 }
 
+static void RoofExpertsLayer(const RoofState *state,uint32_t layer,cudaEvent_t *events,cudaStream_t stream)
+{
+	const SparkGlm5NextCudaWave *wave;
+	Glm5NextLayerBuffers buffers;
+	uint32_t rows,packed;
+	wave = &state->wave;
+	rows = wave->row_count;
+	packed = rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K;
+	ROOF_CUDA(cudaEventRecord(events[0],stream));
+	if ( wave->first_layer_index + layer >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
+	{
+		SparkGlm5NextBindLayer(wave,layer,&buffers);
+		ROOF_LAUNCH((Glm5NextLayerMoeUp<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,rows,packed,wave->multiprocessor_count,stream)));
+		ROOF_CUDA(cudaEventRecord(events[1],stream));
+		ROOF_LAUNCH((Glm5NextLayerMoeDown<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,rows,packed,wave->multiprocessor_count,stream)));
+		ROOF_CUDA(cudaEventRecord(events[2],stream));
+		ROOF_LAUNCH(Glm5NextLayerMoeCombine(&buffers,rows,wave->multiprocessor_count,stream));
+	}
+	else
+	{
+		ROOF_CUDA(cudaEventRecord(events[1],stream));
+		ROOF_CUDA(cudaEventRecord(events[2],stream));
+	}
+	ROOF_CUDA(cudaEventRecord(events[3],stream));
+}
+
+static void RoofExpertsStep(const RoofState *state,cudaEvent_t (*events)[4],cudaStream_t stream)
+{
+	const SparkGlm5NextCudaWave *wave;
+	uint32_t layer;
+	wave = &state->wave;
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveBegin(wave));
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+	{
+		RoofAttention(state,layer);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
+		RoofExpertsLayer(state,layer,events[layer],stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer));
+	}
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveHead(wave));
+}
+
+static void RoofExpertsProfile(const RoofState *state,uint32_t rows,cudaStream_t stream)
+{
+	const double w1 = (double)ROOF_EXPERT_W1_ROWS * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION + (double)(ROOF_EXPERT_W1_ROWS / 128u) * (SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION / 128u) * 4.0;
+	const double w2 = (double)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * ROOF_EXPERT_INTERMEDIATE + (double)(SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION / 128u) * (ROOF_EXPERT_INTERMEDIATE / 128u) * 4.0;
+	cudaEvent_t events[ROOF_LAYERS][4];
+	double part[3],distinct,layers;
+	uint32_t layer,index;
+	float elapsed;
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+		for (index=0u; index<4u; index++)
+			ROOF_CUDA(cudaEventCreate(&events[layer][index]));
+	RoofExpertsStep(state,events,stream);
+	ROOF_CUDA(cudaStreamSynchronize(stream));
+	part[0] = part[1] = part[2] = 0.0;
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+		for (index=0u; index<3u; index++)
+		{
+			ROOF_CUDA(cudaEventElapsedTime(&elapsed,events[layer][index],events[layer][index + 1u]));
+			part[index] += elapsed;
+		}
+	distinct = RoofDistinctExperts(state);
+	layers = (double)(ROOF_LAYERS - SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER);
+	printf("ROOFLINE-EXPERTS rows=%u up_ms=%.2f down_ms=%.2f combine_ms=%.2f up_gbps=%.0f down_gbps=%.0f\n",rows,part[0],part[1],part[2],distinct * w1 * layers / (part[0] * 1e6),distinct * w2 * layers / (part[1] * 1e6));
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+		for (index=0u; index<4u; index++)
+			ROOF_CUDA(cudaEventDestroy(events[layer][index]));
+}
+
 static double RoofStepBytes(const RoofModel *model,uint32_t rows,uint32_t context,uint32_t index_cp,double distinct)
 {
 	uint32_t layer,kind;
@@ -678,6 +751,7 @@ int main(int argc,char **argv)
 	{
 		RoofReport(&model,&state,&config,config.batches[batch],RoofMeasure(&state,&config,config.batches[batch],stream));
 		RoofProfile(&state,config.batches[batch],stream);
+		RoofExpertsProfile(&state,config.batches[batch],stream);
 	}
 	ROOF_CUDA(cudaStreamDestroy(stream));
 	puts("ROOFLINE-DONE");

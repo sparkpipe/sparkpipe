@@ -1,5 +1,5 @@
 {
-  "file_count": 3009,
+  "file_count": 3012,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "22d04a7fce8e5b555795d8a1ce2bb5d25f6cce21def16f85c634410c0fcf751b",
-      "size_bytes": 136443
+      "sha256": "eda54001b521c35226613568ada51eba35dc939a32c09b8a7d6eccdd433cad3b",
+      "size_bytes": 135834
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "c72c237b53708bb51a7d31f39c1ca6abe3636c611f63cc9de8ca75e6ec680674",
-      "size_bytes": 34754
+      "sha256": "1daa615a07c9a223cfc4baf0c0896dc97d5b23af37175150f73e599756955b41",
+      "size_bytes": 39818
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3783,8 +3783,8 @@
     },
     {
       "path": "inference/kernels/dtype.cuh",
-      "sha256": "86a056cae67a6aa1c66a3ad4f574cc9581bd66120727da8a0c99752116794d87",
-      "size_bytes": 5460
+      "sha256": "0c83ac10c5bac7b1a1c838a3bf1990f51be7633e86af297fbe37ce0206a07e5f",
+      "size_bytes": 5805
     },
     {
       "path": "inference/kernels/formats/bf16.cuh",
@@ -3903,8 +3903,8 @@
     },
     {
       "path": "inference/kernels/skinny.cuh",
-      "sha256": "8e818472f9d912aba5e4d8070a7d4471b40307191e68fadb8b1c0ca5bab1b1d2",
-      "size_bytes": 18400
+      "sha256": "baa4623d6cfcdf04b9d6d90ab0525d8b25e8cc1f96fa15faa02c48357ece56a2",
+      "size_bytes": 19944
     },
     {
       "path": "inference/kernels/spec_verify.cuh",
@@ -5148,8 +5148,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "1c643a125c2e5b1b6bb13e6caa7cfbf9fb29af1d301b9174bb80d3902b25e0e8",
-      "size_bytes": 93297
+      "sha256": "f7acd5bc334e8d799572e004cb9a18a5749338e962a2fddf9133c671c9724abe",
+      "size_bytes": 93268
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -8488,8 +8488,8 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "bc61a8beb4b6f00324712603aa0108d087f6ae348e94c84859bbfde3d9a8bbe9",
-      "size_bytes": 6650
+      "sha256": "75c90b259f94f369cf58a6dee6aa0805662ddb70811a2e9832c66a62c69424d7",
+      "size_bytes": 6814
     },
     {
       "path": "tests/host_cuda/lm_host_threads.cuh",
@@ -8538,8 +8538,13 @@
     },
     {
       "path": "tests/host_cuda/shim/runtime/launch.h",
-      "sha256": "903fc7075da85027902f495615785876df47f42882e4a926ca09c18da25fc41e",
-      "size_bytes": 1016
+      "sha256": "28274eb32b4e1196418f88bd51465b0f132ed6943e8801cc8aaed9ea4ab2a4cc",
+      "size_bytes": 1051
+    },
+    {
+      "path": "tests/host_cuda/skinny_grouped_host.cu",
+      "sha256": "e3cb3da1c2b20880482b267194996bab666bf0a3449f52c6396f8dfdbf1bcb60",
+      "size_bytes": 5365
     },
     {
       "path": "tests/host_cuda/tp_reduce_host.cu",
@@ -10183,8 +10188,13 @@
     },
     {
       "path": "tests/test_skinny_gemv.cu",
-      "sha256": "48c8a7efcd940b719e5f0da129c7136d3950e76bbf7544e2a85b8b615bff7fa2",
-      "size_bytes": 27034
+      "sha256": "7804e2690be2f370c1d3cf215c6242fee79eafedca8712a08e077003b9531272",
+      "size_bytes": 28615
+    },
+    {
+      "path": "tests/test_skinny_grouped_host.py",
+      "sha256": "28371304b350a7b878be70e63578a47699b40cee4ffae328f7f84fe887ea6e52",
+      "size_bytes": 710
     },
     {
       "path": "tests/test_sources_exist.py",
@@ -11683,8 +11693,8 @@
     },
     {
       "path": "tools/glm5_next_batch_roofline.cu",
-      "sha256": "0f1744e2607dfbc14a989792118556ae6fdd7ab160257e2cd7f16aeeee65139c",
-      "size_bytes": 35491
+      "sha256": "6f9c48562233089ca84db9e5b23b33877a7b4e2a0a503a1b72fa7b92ad4ca836",
+      "size_bytes": 38904
     },
     {
       "path": "tools/glm5_next_bench_wrap.py",
@@ -12355,6 +12365,11 @@
       "path": "tools/k3_watchdog.sh",
       "sha256": "118fcad7a3c5e539421766dd1611989dfed3b7fb67df5747da376cdf85f88e46",
       "size_bytes": 765
+    },
+    {
+      "path": "tools/kernel_codegen_diff.py",
+      "sha256": "93ba7fd8991185477a64aae2dd5ff611a1f04978036774ccbd3de8ff45e8e346",
+      "size_bytes": 2927
     },
     {
       "path": "tools/kernel_crew/spark_frame_error_probe.cu",
@@ -15050,5 +15065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73896422
+  "total_bytes": 73916932
 }

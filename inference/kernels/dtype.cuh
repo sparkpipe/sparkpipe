@@ -81,15 +81,28 @@ static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
 	return(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))));
 }
 
-static __device__ __forceinline__ float2 LmE4m3PairToFloat2(uint16_t value)
+static __device__ __forceinline__ float2 LmHalfPairBitsToFloat2(uint32_t widened)
 {
-	uint32_t widened;
 	float2 result;
-	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
-		: "=r"(widened) : "h"(value));
 	result.x = __half2float(__ushort_as_half((uint16_t)widened));
 	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
 	return(result);
+}
+
+static __device__ __forceinline__ float2 LmE4m3PairToFloat2(uint16_t value)
+{
+	uint32_t widened;
+	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"(value));
+	return(LmHalfPairBitsToFloat2(widened));
+}
+
+static __device__ __forceinline__ float2 LmE4m3PairToFloat2Pure(uint16_t value)
+{
+	uint32_t widened;
+	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"(value));
+	return(LmHalfPairBitsToFloat2(widened));
 }
 
 

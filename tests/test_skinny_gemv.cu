@@ -200,9 +200,15 @@ static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uin
     CUDA(cudaMemcpy(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice));
     CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
     CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    std::vector<uint16_t> single((uint64_t)pairs*output);
+    REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,1u>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(single.data(),device_out,single.size()*2u,cudaMemcpyDeviceToHost));
+    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
+    REQUIRE(memcmp(single.data(),out.data(),out.size()*2u) == 0);
     for (uint32_t expert=0u; expert<experts; expert++)
     {
         widest=std::max(widest,route.host_offset[expert+1u]-route.host_offset[expert]);
@@ -219,7 +225,7 @@ static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uin
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out));
 }
 
-static float GroupedTime(bool skinny,uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,const uint8_t *weight,const float *scale,const uint16_t *activation,uint16_t *out,const GroupedRoute *route,uint32_t multiprocessors,cudaStream_t stream)
+static float GroupedTime(uint32_t neurons,uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,const uint8_t *weight,const float *scale,const uint16_t *activation,uint16_t *out,const GroupedRoute *route,uint32_t multiprocessors,cudaStream_t stream)
 {
     const uint32_t experts=288u,top_k=8u,pairs=tokens*top_k;
     cudaGraph_t graph; cudaGraphExec_t executable; cudaEvent_t begin,end;
@@ -233,7 +239,11 @@ static float GroupedTime(bool skinny,uint32_t input,uint32_t output,uint32_t tok
     CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
     CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
     for (uint32_t i=0u; i<16u; i++)
-        if (skinny)
+        if (neurons == 1u)
+            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,1u>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
+        else if (neurons == 2u)
+            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,2u>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
+        else if (neurons != 0u)
             REQUIRE(LmSkinnyGroupedExperts<LmFp8>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
         else if (activation_packed)
             REQUIRE((LmGemmWeightOnlyLaunch<LmFp8,GLM5_NEXT_LAYER_TILE_N,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,pairs,tokens,top_k,experts,input,output,multiprocessors,true,stream)) == LM_LAUNCH_OK);
@@ -259,7 +269,7 @@ static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_
     uint8_t *weight; float *scale; uint16_t *activation,*out;
     GroupedRoute route;
     uint32_t distinct=0u;
-    float skinny,tensor;
+    float skinny,single,pair,tensor;
     GroupedRouteBuild(&route,tokens,input,output,0u,stream);
     for (uint32_t expert=0u; expert<experts; expert++)
         distinct+=route.host_offset[expert+1u] != route.host_offset[expert] ? 1u : 0u;
@@ -267,9 +277,11 @@ static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_
     CUDA(cudaMalloc(&scale,(uint64_t)experts*output*(input/128u)*4u)); CUDA(cudaMemset(scale,0,(uint64_t)experts*output*(input/128u)*4u));
     CUDA(cudaMalloc(&activation,(uint64_t)pairs*input*2u)); CUDA(cudaMemset(activation,0x3c,(uint64_t)pairs*input*2u));
     CUDA(cudaMalloc(&out,(uint64_t)pairs*output*2u));
-    skinny=GroupedTime(true,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    tensor=GroupedTime(false,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    printf("TIMING grouped_experts %s tokens=%u distinct=%u skinny_ms=%.4f skinny_gbps=%.1f tensor_core_ms=%.4f tensor_core_gbps=%.1f speedup=%.2f\n",activation_packed ? "w2" : "w1",tokens,distinct,skinny,distinct*expert_bytes/(skinny*1e6),tensor,distinct*expert_bytes/(tensor*1e6),tensor/skinny);
+    skinny=GroupedTime(LM_SKINNY_GROUPED_NEURONS,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    single=GroupedTime(1u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    pair=GroupedTime(2u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    tensor=GroupedTime(0u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
+    printf("TIMING grouped_experts %s tokens=%u distinct=%u skinny_ms=%.4f skinny_gbps=%.1f one_neuron_ms=%.4f one_neuron_gbps=%.1f two_neuron_ms=%.4f two_neuron_gbps=%.1f tensor_core_ms=%.4f tensor_core_gbps=%.1f speedup_vs_one_neuron=%.2f speedup_vs_tensor_core=%.2f\n",activation_packed ? "w2" : "w1",tokens,distinct,skinny,distinct*expert_bytes/(skinny*1e6),single,distinct*expert_bytes/(single*1e6),pair,distinct*expert_bytes/(pair*1e6),tensor,distinct*expert_bytes/(tensor*1e6),single/skinny,tensor/skinny);
     GroupedRouteFree(&route);
     CUDA(cudaFree(weight)); CUDA(cudaFree(scale)); CUDA(cudaFree(activation)); CUDA(cudaFree(out));
 }
@@ -409,7 +421,7 @@ int main(int argc,char **argv)
         GroupedExpertCase(4096u,256u,tokens,0u,tokens >= 32u ? 20u : 0u,stream);
         GroupedExpertCase(128u,4096u,tokens,1u,tokens >= 32u ? 20u : 0u,stream);
     }
-    puts("PASS skinny per-expert fp8 w1/w2 tokens=9,32,96 rows_per_expert_up_to=20 real_route_build=yes reference=f64");
+    puts("PASS skinny per-expert fp8 w1/w2 tokens=9,32,96 rows_per_expert_up_to=20 real_route_build=yes reference=f64 neuron_blocked_equals_one_neuron=bitwise");
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,288u,288u*16u+1u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,0,288u,64u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     puts("PASS per-expert skinny declines more than 16 rows per expert on average and a missing token map");
