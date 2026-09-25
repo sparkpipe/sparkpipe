@@ -1,5 +1,5 @@
 {
-  "file_count": 2997,
+  "file_count": 2998,
   "files": [
     {
       "path": ".gitattributes",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "fd3ab436138dade7061ec9b3494d91763c9865c713e1fa0fddf2e9a6921aafa0",
-      "size_bytes": 6295
+      "sha256": "e578b775dd6172dbfa1e61baf54f6441de3f5390f1207f941ee2ccbd27afa942",
+      "size_bytes": 9477
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3898,8 +3898,8 @@
     },
     {
       "path": "inference/kernels/skinny.cuh",
-      "sha256": "a9bb97b92ec9bcad1dc59e426316f19fb5d9647fd9995b10d2720546f0004833",
-      "size_bytes": 13139
+      "sha256": "e80a7e4925c586ea5da911314c099ee4bfbf4fec95f8092071f2955d78f238a5",
+      "size_bytes": 13317
     },
     {
       "path": "inference/kernels/spec_verify.cuh",
@@ -3930,6 +3930,11 @@
       "path": "inference/kernels/topk.cuh",
       "sha256": "5b95d1a9833311c7a32bfb235cbdf473975ff38b7432ebd383ee00abbf3e2c81",
       "size_bytes": 6849
+    },
+    {
+      "path": "inference/kernels/topk_warp.cuh",
+      "sha256": "a46db751acb14e8af354e70e4d0c889371becf75ca7398a568285c386b9bc521",
+      "size_bytes": 4212
     },
     {
       "path": "inference/kernels/tp_reduce.cuh",
@@ -5133,8 +5138,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "d95e0fde14f68c55872f960d44a67740fd662e8d6c62f69e2cb039453d755d4f",
-      "size_bytes": 87815
+      "sha256": "f434ec49b2d752b45400ff8ea102ea340101185d2435d3704159e3489b9ada60",
+      "size_bytes": 87678
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -5148,13 +5153,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "6c4bc671e4b86d178393e4df472863cd3e51b46261324e1ed8d9054793cd6b61",
-      "size_bytes": 10712
+      "sha256": "e8c5bd633a855e4b1a55b88e7c7907957f8f9808daab5587d59b95f66f17fce7",
+      "size_bytes": 10824
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "f3c310690255a7a77962b8f9c75780ca8ae408f8e323425697de9e56748feadc",
-      "size_bytes": 218649
+      "sha256": "d608a82b0879bf9b84516ce24b371c394011eeeed61fbf085548bb61c1fedaf1",
+      "size_bytes": 219469
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -5973,8 +5978,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "eae8c54c00d0b20373cbf24a96b74dab9aebdad0c0c86ae5d0d495cc1269ae69",
-      "size_bytes": 62636
+      "sha256": "5f25618749e916a6e74eb3999a468f33b0f5916fb83394434271a393869c4bc2",
+      "size_bytes": 63712
     },
     {
       "path": "node/weightd_spawn.c",
@@ -7758,8 +7763,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "c05994662f598ee3c49dd938333f66fb34e6aac8760d936449956f41881d36d8",
-      "size_bytes": 116149
+      "sha256": "3065eea269f0bdcb1609b86d81db73734e42f61d879ce9482a5fbca44e466aab",
+      "size_bytes": 116727
     },
     {
       "path": "runtime/README",
@@ -9238,8 +9243,8 @@
     },
     {
       "path": "tests/test_glm5_next_stage_context.py",
-      "sha256": "077e690c63df2b9f5cecb37a2fd8abf0e2abc40ec459f5def68f233232ffb380",
-      "size_bytes": 83263
+      "sha256": "c1724fa2f393b1f789696baf6c3b4d94a19263a646992ce4e6d514b9698a6c92",
+      "size_bytes": 83284
     },
     {
       "path": "tests/test_gqa_host.py",
@@ -10133,8 +10138,8 @@
     },
     {
       "path": "tests/test_skinny_gemv.cu",
-      "sha256": "53dacf325cade702b2065e1197dab7436eb4f444c2f6e57ce9cc5813871acfe2",
-      "size_bytes": 13228
+      "sha256": "cd86cab3223345fc65d535099091c0ae1745ca8ce4a351e6bfe7a2115fd85a87",
+      "size_bytes": 17168
     },
     {
       "path": "tests/test_sources_exist.py",
@@ -10373,8 +10378,8 @@
     },
     {
       "path": "tests/test_tp_device_collective_mock.c",
-      "sha256": "4de832eb39b35d268cb13257d0fe1f91922814be7f8cf30383ff88f3f8553f68",
-      "size_bytes": 32503
+      "sha256": "04ef89f9590b24111e50db03c0ee3e7d5f7e44b8ea2e24f9a8563deb3cc5223b",
+      "size_bytes": 32525
     },
     {
       "path": "tests/test_tp_f32_tree_host.py",
@@ -14990,5 +14995,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73665944
+  "total_bytes": 73679948
 }

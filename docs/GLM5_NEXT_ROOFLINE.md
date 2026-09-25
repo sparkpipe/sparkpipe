@@ -118,14 +118,85 @@ while active now quarantines only its own lane. A lane acquire with a
 topology clears the quarantine after `SparkWeightdMeshLaneConfigure` proves
 the lane is quiescent.
 
+## Measured after PR #1208 (fleet, 2026-09-25)
+
+| Metric | Value |
+| --- | ---: |
+| Warm decode tok/s | 27.6-29.8 |
+| Token interval / chain p50 | 28-30 ms / 28.8 ms |
+| Graph replay p50 / p90 | 25.5 / 44.5 ms |
+| Compute kernels per token | 17.2 ms, 1950 launches |
+| 8 KiB 16-rank all-reduce p50 / p90 / p99 / max | 167 µs / 472 µs / 3 ms / 12 ms |
+
+While the all-reduce ladder ran, weightd spent 91% of its CPU in
+`SparkWeightdMeshPoll`. Of that, 54.5% was in `open()` of peer records and
+36.9% in `ibv_query_qp`, which is a firmware command. `TryWire` ran both
+while holding the wire lock. Since waiters now have priority, the doorbell
+thread waits out every such call, and that explains the millisecond tail.
+Iteration 3 moves the peer-record reads and QP queries outside the lock. It
+also turns CQ-error repair into a flag that the main thread services at most
+every 10 ms. `WD-MESH-STATS` reports try-wire calls, record failures,
+rewires, not-ready transitions and repairs every 10 s.
+
+## Batching
+
+Before iteration 3, only single-row waves used the captured graph. A batch
+of two or more decode rows fell back to the eager per-layer path. Its
+collectives also took the 8-phase binomial tree, because
+`logical_sequence_count > 1`, and each phase is one relay round trip. Batched
+decode was therefore slower per step than B1 by far more than the extra rows
+justify.
+
+Iteration 3 makes three changes:
+
+- It captures one graph per row count (1-8) per slot.
+- A hardware-wait collective whose payload fits one mesh slot (256 KiB,
+  i.e. up to 31 rows of 4096 BF16) runs as a single direct round.
+- The skinny GEMV covers up to 8 dense rows and 8 routed tokens.
+
+Weights are read once per step for all rows, so the expected step time grows
+slowly with B. Routed experts grow with the number of distinct experts
+selected.
+
+## Pair links
+
+Each Spark has a second port (nominally 200 Gb/s, about 100 Gb/s useful)
+cabled directly to `rank XOR 1`. A hierarchical all-reduce runs in three
+steps:
+
+1. Pair sum over the direct link.
+2. An 8-way exchange of half vectors: even ranks own half 0, odd ranks own
+   half 1.
+3. Return of the other half over the direct link.
+
+This cuts switched bytes per rank from 15 x payload to 3.5 x payload. It
+also needs three relay-mediated rounds instead of one.
+
+| Payload | Direct all-to-all wire time | Hierarchical wire time |
+| --- | ---: | ---: |
+| B rows of 8 KiB | about 9.6 µs x B | about 2.9 µs x B |
+| 256-row prefill chunk (2 MiB) | about 2.5 ms | about 0.6 ms |
+
+With a per-round cost of 50-170 µs, the two extra rounds only pay above
+roughly 25-30 rows. It is therefore the right algorithm for prefill and
+large batches. It is the wrong one for B1-B8 decode, where one direct round
+is latency bound.
+
+Splitting a batch into row groups, so that one group's all-reduce overlaps
+another group's compute, costs an extra read of the layer weights per group.
+Decode is weight-bandwidth bound, so that trade does not pay at small B. The
+overlap that does pay at B1 is using the collective wait to stream the next
+projection's weights into L2. `test-skinny-gemv` now prints the device L2
+size to size that experiment.
+
 ## Next steps, ordered by expected gain
 
-1. Remeasure the 8 KiB all-reduce ladder and the per-token interval split
-   (graph replay vs host) with the relay changes.
-2. Overlap or remove collectives: fuse the attention and MLP reductions
-   where the math allows, and move the HC site reductions off the critical
-   path.
-3. Replace the router's full bitonic sort (25 µs per call) with a
-   warp-level top-8.
-4. Batch the GEMVs that share an input (DSA q_a, kv_a and the indexer
-   projections; KDA qkv_beta and decay-gate-down) into one launch.
+1. Remeasure the ladder tail with the lock-free wiring scan, and measure
+   batched decode at 1, 2, 4 and 8 concurrent streams.
+2. Remove the CPU relay from the critical path: GPU-initiated RDMA
+   (IBGDA-style), with the GPU writing work requests and ringing the NIC
+   doorbell. A 16-rank 8 KiB all-reduce should then cost tens of
+   microseconds.
+3. Pair-link hierarchical all-reduce for prefill and B >= 16.
+4. Fuse RMSNorm into the consuming GEMV and batch GEMVs that share an input,
+   to cut the 1950 launches per token.
