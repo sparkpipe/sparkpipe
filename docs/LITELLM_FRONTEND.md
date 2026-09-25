@@ -15,28 +15,65 @@ contract-exact mock-upstream verification of the passthrough bridge.
 - Clients get one OpenAI-compatible door: `http://<mac>:4000`, bearer-key
   auth, model-name routing (`glm-5.3-flash` → spark0:8433), access logging.
 
-## THE prompt_token_ids contract (read first)
+## The model_api contract (read first)
 
-SparkPipe's `model_api` (`node/model_api.c`) is OpenAI-*shaped*, not
-OpenAI-compatible:
+`model_api` (`node/model_api.c`) accepts OpenAI-shaped requests. Text
+prompts need a tokenizer sidecar in the deployment config; token IDs always
+work.
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /health` | — | `{"status":"ok","served":N}` |
-| `POST /v1/completions` (also `/v1/chat/completions` path) | `{"prompt_token_ids":[int,...],"max_tokens":N}` (max_tokens optional, default 32, cap 8192) | `{"object":"text_completion","tokens":[int,...],"status":0}` |
+| `GET /health` | — | `{"status":"ok","served":N,"tokenizer":bool}` |
+| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}` |
+| `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
+| `POST /v1/chat/completions` | `messages` (text), or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
 
-There is **no text-prompt path** and **no `/v1/models`** on the upstream.
-Prompts go in as token IDs and completions come back as token IDs.
+Optional request fields:
 
-Consequences for LiteLLM (all verified against the contract-exact mock in
-`tools/litellm_mock_upstream.py`, LiteLLM 1.74.0):
+| Field | Meaning |
+| --- | --- |
+| `max_tokens` | output budget, default 32, cap 8192 |
+| `stop_token_ids` | extra stop tokens, added to the model's EOS set |
+| `stream` | `true` answers `text/event-stream`: one `data:` event per batch of new tokens (`text_completion` or `chat.completion.chunk` with a text or `delta.content` piece that never splits a UTF-8 sequence), a final event with `finish_reason` and `usage`, then `data: [DONE]` |
+| `priority` | unsigned integer; higher runs first, with aging in the batch engine so lower priorities cannot starve |
+| `deadline_ms` | relative deadline; queued requests are submitted earliest-deadline first within a priority, and a request still running at its deadline is cancelled and answered `504` with code `deadline_exceeded` (or an error event on a stream) |
+
+A malformed `stream`, `priority` or `deadline_ms` is a `400
+invalid_option`, never a silent default. A prompt plus `max_tokens` that the
+deployment's context or KV pages cannot hold is a `400
+context_length_exceeded`; the batch engine's own admission check decides, so
+the API never duplicates the limits. Without a tokenizer sidecar the
+response carries `tokens` only; with one it carries both text and `tokens`.
+
+A stream opens only after the engine has accepted the request, so every
+admission failure is an ordinary status code. Failures after admission
+arrive as an error event before `data: [DONE]`. A client that disconnects
+mid-stream cancels its request in the engine.
+
+When every engine request slot is taken, new requests wait in the API's
+queue instead of failing. The queue submits by priority, then earliest
+deadline, then arrival, as slots free up. A queued request still honours
+its deadline.
+
+Every request writes one `request_measurements` JSON line to the API log.
+It records the prompt's SHA-256, the adapter, model and driver identities,
+the session fingerprint, the priority, the stream flag, the finish reason and
+every output token with its timestamp. That is enough to replay a
+completion off-node and compare it bit for bit.
+
+The passthrough notes below were verified against the earlier token-ID-only
+upstream (contract-exact mock in `tools/litellm_mock_upstream.py`, LiteLLM
+1.74.0). Now that the upstream accepts OpenAI-shaped text bodies, the
+transformed routes are expected to work too, but they have no receipt yet;
+the passthrough stays the verified integration until one exists.
 
 1. LiteLLM's **transformed routes** (`/v1/completions`, `/v1/chat/completions`)
    rewrite the body into the OpenAI shape and ignore unknown fields. A body
-   carrying only `prompt_token_ids` dies at the proxy (`KeyError 'prompt'`);
-   a text prompt would be forwarded as `prompt` and the upstream answers
-   `400 {"error":"prompt_token_ids required"}`. **Do not use these routes.**
+   carrying only `prompt_token_ids` dies at the proxy (`KeyError 'prompt'`).
+   Against the token-ID-only upstream a text prompt was answered
+   `400 {"error":"prompt_token_ids required"}`; with a tokenizer sidecar it is
+   now accepted, but that path has no LiteLLM receipt yet.
 2. LiteLLM's **pass-through route is the integration point.** Clients POST to
 
    ```
@@ -129,10 +166,9 @@ curl http://<mac>:4000/vllm/v1/completions \
 # -> {"object":"text_completion","tokens":[...],"status":0}   (upstream bytes, verbatim)
 ```
 
-`GET /v1/models` (with the key) lists the routed model names. Tokenization
-and detokenization are the client's job today — the upstream speaks token
-IDs end to end (honest bridge; a text facade belongs in model_api or a
-sidecar, not in the proxy config).
+`GET /v1/models` (with the key) lists the routed model names. Deployments
+with a tokenizer sidecar accept text prompts and return text; others speak
+token IDs end to end.
 
 ## Add-a-model procedure
 

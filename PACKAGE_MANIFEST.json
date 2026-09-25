@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "15f12ec4bbf210b20ba322fc62a3aaeae6ff06c13dc2af2641d45c38c0b42c4b",
-      "size_bytes": 21407
+      "sha256": "9947b1b00c13714e96361f953050735750b7cf8cf425697181a9e08216183f71",
+      "size_bytes": 21235
     },
     {
       "path": "cache/cache.h",
@@ -848,8 +848,8 @@
     },
     {
       "path": "docs/LITELLM_FRONTEND.md",
-      "sha256": "4c02d1ee8963aab6d7c07b16d40fb1857921f8e0381724ed4b7bb3e9073e9b03",
-      "size_bytes": 7547
+      "sha256": "487a3a623177d83d140af21cff3898cf1ed505606880f53b165597920b17650b",
+      "size_bytes": 9924
     },
     {
       "path": "docs/LITELLM_INTEGRATION.md",
@@ -5968,8 +5968,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "d0edd457868f0a904bbddcb15bc137f484879e02c23062b32a3d78d628d84a01",
-      "size_bytes": 39915
+      "sha256": "d0db62fd48ca4be586538a66576212f9a95d92e187c3dbede6fc29ed2e9c957e",
+      "size_bytes": 52179
     },
     {
       "path": "node/model_batch.c",
@@ -10333,8 +10333,8 @@
     },
     {
       "path": "tests/test_system_loopback.c",
-      "sha256": "168937e0d2d2a5df36842aa3d1ec5574072659c78991706ee6058c889547d13f",
-      "size_bytes": 28274
+      "sha256": "969b0086b2bfdf9fe2c7e927b6c62fdfb8317cdc832e3426a2a2a0ed9fa1fc01",
+      "size_bytes": 31865
     },
     {
       "path": "tests/test_t1_reference_decoder.py",
@@ -15065,5 +15065,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73916932
+  "total_bytes": 73934992
 }
