@@ -682,6 +682,16 @@ static void SparkModelBatchRestoreRejectedRequest(
 
 static uint64_t SparkModelBatchNowNs(void);
 
+static void SparkModelBatchRejectedResidency(
+	SparkModelBatchRequestState *request,
+	const SparkModelBatchSubmissionState *submission)
+{
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		request->resident_bound = 0u;
+	else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && submission->admitted != 0u )
+		request->resident_bound = 1u;
+}
+
 static void SparkModelBatchHandleRejected(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchSubmissionState *submission,
@@ -722,6 +732,7 @@ static void SparkModelBatchHandleRejected(
 				fprintf(stderr,"batch_retry_cap request=%llu restores=%u; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count);
+			SparkModelBatchRejectedResidency(request,submission);
 			SparkModelBatchFailRequest(engine,request,status);
 		}
 	}

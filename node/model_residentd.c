@@ -836,12 +836,13 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 	{
 		lane = &route->submission.lanes[lane_index];
 		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
+		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE && (route->completion.status == SPARK_STATUS_OK || slot->bound != 0u) ? 1u : 0u;
 		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
 		slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
 		slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
-		if ( (descriptor->capability_flags &
-			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
+		if ( route->completion.status != SPARK_STATUS_OK && route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			SparkModelContinuationLeaseInvalidate(&slot->lease);
+		else if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
 			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
 			if ( status != SPARK_STATUS_OK )
