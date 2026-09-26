@@ -46,40 +46,10 @@ extern "C" {
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED 8u
 
-typedef struct SparkQwen38_27bLinearView
-{
-	uint32_t abi_version;
-	uint32_t weight_format;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	const void *weight_payload;
-	const uint8_t *weight_scale_e8m0;
-	uint64_t weight_payload_bytes;
-	uint64_t weight_scale_bytes;
-} SparkQwen38_27bLinearView;
+#define SPARK_ABI_TYPE(name) SparkQwen38_27b##name
+#include "sparkpipe/family/abi/spark_abi_linear_view.h"
 
-typedef struct SparkQwen38_27bGdnLayerWeights
-{
-	SparkQwen38_27bLinearView qkv;
-	SparkQwen38_27bLinearView gate;
-	SparkQwen38_27bLinearView beta;
-	SparkQwen38_27bLinearView decay;
-	SparkQwen38_27bLinearView output;
-	const void *conv_weight_bf16;
-	const float *a_log_f32;
-	const float *dt_bias_f32;
-	const void *gdn_norm_weight_bf16;
-} SparkQwen38_27bGdnLayerWeights;
-
-typedef struct SparkQwen38_27bAttnLayerWeights
-{
-	SparkQwen38_27bLinearView query;
-	SparkQwen38_27bLinearView key;
-	SparkQwen38_27bLinearView value;
-	SparkQwen38_27bLinearView output;
-	const void *query_norm_weight_bf16;
-	const void *key_norm_weight_bf16;
-} SparkQwen38_27bAttnLayerWeights;
+#include "sparkpipe/family/abi/spark_abi_gdn_attn_layer_weights.h"
 
 typedef struct SparkQwen38_27bFfnLayerWeights
 {
@@ -100,34 +70,9 @@ typedef struct SparkQwen38_27bMtpWeights
 	SparkQwen38_27bFfnLayerWeights ffn;
 } SparkQwen38_27bMtpWeights;
 
-typedef struct SparkQwen38_27bGdnStatePool
-{
-	uint32_t abi_version;
-	uint32_t lane_capacity;
-	uint32_t gdn_layer_count;
-	uint32_t reserved0;
-	float *state_f32;
-	uint64_t state_lane_stride_elements;
-	uint64_t state_layer_stride_elements;
-	void *conv_tail_bf16;
-	uint64_t conv_tail_lane_stride_elements;
-	uint64_t conv_tail_layer_stride_elements;
-	uint32_t *state_cold_by_row;
-} SparkQwen38_27bGdnStatePool;
+#include "sparkpipe/family/abi/spark_abi_gdn_state_pool.h"
 
-typedef struct SparkQwen38_27bKvBlockTableView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t block_token_count;
-	uint32_t lane_count;
-	uint32_t lane_stride;
-	uint32_t lane_capacity;
-	const uint32_t *physical_block_indices;
-	const uint32_t *lane_physical_block_counts;
-	const uint32_t *host_physical_block_indices;
-	const uint32_t *host_lane_physical_block_counts;
-} SparkQwen38_27bKvBlockTableView;
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 
 typedef struct SparkQwen38_27bPipelineSlot
 {
@@ -197,45 +142,12 @@ typedef struct SparkQwen38_27bResidentDecodeStageNodeContext
 	uint64_t estimated_service_time_ns;
 } SparkQwen38_27bResidentDecodeStageNodeContext;
 
-typedef struct SparkQwen38_27bDecodeBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t reserved0;
-	const uint32_t *row_lane_indices;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkQwen38_27bDecodeBatchView;
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
 
-typedef struct SparkQwen38_27bPrefillFrameView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-} SparkQwen38_27bPrefillFrameView;
+#include "sparkpipe/family/abi/spark_abi_prefill_frame_view.h"
 
-typedef struct SparkQwen38_27bMtpDraftView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t draft_token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-	const uint32_t *row_token_ids;
-} SparkQwen38_27bMtpDraftView;
-
-typedef struct SparkQwen38_27bGdnSnapshotView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t snapshot_index;
-	uint32_t reserved0;
-} SparkQwen38_27bGdnSnapshotView;
+#include "sparkpipe/family/abi/spark_abi_speculative_views.h"
+#undef SPARK_ABI_TYPE
 
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u

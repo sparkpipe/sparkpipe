@@ -900,7 +900,9 @@ it. `make kernel-codegen-diff` compiles the harness (which instantiates
 every GLM kernel) to a cubin and compares it with a base cubin kernel by
 kernel. It normalizes relocated addresses, prints register, stack and local
 memory use for each kernel that changed, and fails when a kernel outside
-`ALLOW` changed:
+`ALLOW` changed (with no `ALLOW`, any change fails). It also fails when
+either cubin yields no kernels, as happens when `nvdisasm` is not installed,
+so a broken toolchain cannot pass as identical:
 
 ```sh
 git checkout main && make build/glm5_next_batch_roofline.cubin && cp build/glm5_next_batch_roofline.cubin /tmp/base.cubin

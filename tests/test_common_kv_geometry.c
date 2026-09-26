@@ -43,6 +43,7 @@ int main(void)
 	CHECK_CONSTANT(request.value_head_dimension,0u,"value_head_dimension");
 	CHECK_CONSTANT(request.compressed_dimension,SPARK_GLM_KV_COMPRESSED_DIMENSION,"compressed_dimension");
 	CHECK_CONSTANT(request.position_dimension,SPARK_GLM_KV_POSITION_DIMENSION,"position_dimension");
+	CHECK_CONSTANT(request.compressed_dimension + request.position_dimension,SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,"compressed plus position elements equal the cached row");
 	CHECK_CONSTANT(request.bytes_per_scalar,SPARK_GLM_KV_BYTES_PER_SCALAR,"bytes_per_scalar");
 	CHECK_CONSTANT(request.fp8_scale_block_size,SPARK_GLM_KV_FP8_SCALE_BLOCK_SIZE,"fp8_scale_block_size");
 	CHECK_CONSTANT(request.index_key_layer_count,SPARK_GLM_KV_INDEX_KEY_LAYER_COUNT,"index_key_layer_count");

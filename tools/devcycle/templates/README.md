@@ -103,7 +103,6 @@ sparkb through the queue (sync the ref, then a CPU job):
 export PATH=/usr/local/cuda/bin:$PATH      # cuobjdump is not on sparkb's default PATH
 export NVCC=/usr/local/cuda/bin/nvcc
 export CUDA_ARCH=sm_121a
-export SPARK_CUDA_GATE_SCOPE=complete
 bash tools/cuda13_sm121a_compile_gate.sh
 ```
 

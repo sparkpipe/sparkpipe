@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 
-#include "llm_defines.h"
 #include "sparkpipe/spark_qwen4_flash_model.h"
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_hidden_transport.h"
@@ -48,58 +47,12 @@ _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == 0u,
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 == 3u,"mxfp4 weight code must match the shared format");
 _Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 == 6u,"e8m0 weight code must match the shared format");
 
-typedef struct SparkQwen4FlashLinearView
-{
-	uint32_t abi_version;
-	uint32_t weight_format;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	const void *weight_payload;
-	const uint8_t *weight_scale_e8m0;
-	uint64_t weight_payload_bytes;
-	uint64_t weight_scale_bytes;
-} SparkQwen4FlashLinearView;
+#define SPARK_ABI_TYPE(name) SparkQwen4Flash##name
+#include "sparkpipe/family/abi/spark_abi_linear_view.h"
 
-typedef struct SparkQwen4FlashGdnLayerWeights
-{
-	SparkQwen4FlashLinearView qkv;
-	SparkQwen4FlashLinearView gate;
-	SparkQwen4FlashLinearView beta;
-	SparkQwen4FlashLinearView decay;
-	SparkQwen4FlashLinearView output;
-	const void *conv_weight_bf16;
-	const float *a_log_f32;
-	const float *dt_bias_f32;
-	const void *gdn_norm_weight_bf16;
-} SparkQwen4FlashGdnLayerWeights;
+#include "sparkpipe/family/abi/spark_abi_gdn_attn_layer_weights.h"
 
-typedef struct SparkQwen4FlashAttnLayerWeights
-{
-	SparkQwen4FlashLinearView query;
-	SparkQwen4FlashLinearView key;
-	SparkQwen4FlashLinearView value;
-	SparkQwen4FlashLinearView output;
-	const void *query_norm_weight_bf16;
-	const void *key_norm_weight_bf16;
-} SparkQwen4FlashAttnLayerWeights;
-
-typedef struct SparkQwen4FlashMoeWeights
-{
-	SparkQwen4FlashLinearView gate;
-	SparkQwen4FlashLinearView experts_w1;
-	SparkQwen4FlashLinearView experts_w3;
-	SparkQwen4FlashLinearView experts_w2;
-	SparkQwen4FlashLinearView shared_gate;
-	SparkQwen4FlashLinearView shared_up;
-	SparkQwen4FlashLinearView shared_down;
-	const void *shared_gate_weight_bf16;
-	uint64_t experts_w1_payload_offset;
-	uint64_t experts_w1_scale_offset;
-	uint64_t experts_w3_payload_offset;
-	uint64_t experts_w3_scale_offset;
-	uint64_t experts_w2_payload_offset;
-	uint64_t experts_w2_scale_offset;
-} SparkQwen4FlashMoeWeights;
+#include "sparkpipe/family/abi/spark_abi_moe_weights.h"
 
 typedef struct SparkQwen4FlashHcWeights
 {
@@ -150,149 +103,17 @@ typedef struct SparkQwen4FlashMtpWeights
 	SparkQwen4FlashMoeWeights moe;
 } SparkQwen4FlashMtpWeights;
 
-typedef struct SparkQwen4FlashGdnStatePool
-{
-	uint32_t abi_version;
-	uint32_t lane_capacity;
-	uint32_t gdn_layer_count;
-	uint32_t reserved0;
-	float *state_f32;
-	uint64_t state_lane_stride_elements;
-	uint64_t state_layer_stride_elements;
-	void *conv_tail_bf16;
-	uint64_t conv_tail_lane_stride_elements;
-	uint64_t conv_tail_layer_stride_elements;
-	uint32_t *state_cold_by_row;
-} SparkQwen4FlashGdnStatePool;
+#include "sparkpipe/family/abi/spark_abi_gdn_state_pool.h"
 
-typedef struct SparkQwen4FlashKvBlockTableView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t block_token_count;
-	uint32_t lane_count;
-	uint32_t lane_stride;
-	uint32_t lane_capacity;
-	const uint32_t *physical_block_indices;
-	const uint32_t *lane_physical_block_counts;
-	const uint32_t *host_physical_block_indices;
-	const uint32_t *host_lane_physical_block_counts;
-} SparkQwen4FlashKvBlockTableView;
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 
-typedef struct SparkQwen4FlashPipelineSlot
-{
-	void *cuda_stream;
-	const uint32_t *input_token_ids;
-	uint32_t *output_token_ids;
-	const uint32_t *row_lane_indices;
-	const uint32_t *slot_mapping;
-	const uint32_t *context_lengths;
-	void *hidden_input_bf16;
-	void *hidden_bf16;
-	void *normalized_bf16;
-	void *attn_query_bf16;
-	void *attn_key_bf16;
-	void *attn_value_bf16;
-	void *attn_gate_bf16;
-	void *attn_head_output_bf16;
-	void *attn_output_bf16;
-	void *gdn_conv_workspace_bf16;
-	void *gdn_query_bf16;
-	void *gdn_key_bf16;
-	void *gdn_value_bf16;
-	void *gdn_gate_bf16;
-	void *gdn_ba_bf16;
-	void *gdn_log_decay_f32;
-	void *gdn_beta_f32;
-	void *gdn_core_output_bf16;
-	void *moe_slot_up_bf16;
-	void *moe_slot_out_bf16;
-	void *moe_indices_u32;
-	float *moe_weights_f32;
-	uint32_t *moe_inverse_u32;
-	uint32_t *moe_grouped_rows_u32;
-	uint32_t *moe_tile_prefix_w1_u32;
-	uint32_t *moe_tile_prefix_w2_u32;
-	void *argmax_score_f32;
-	void *argmax_token_ids;
-	float *chunk_qn_f32;
-	float *chunk_kn_f32;
-	float *chunk_cum_g_f32;
-	float *chunk_decay_f32;
-	float *chunk_attn_f32;
-	float *chunk_w_f32;
-	float *chunk_kg_f32;
-	uint32_t *mtp_draft_token_ids;
-} SparkQwen4FlashPipelineSlot;
+#include "sparkpipe/family/abi/spark_abi_pipeline_node_context.h"
 
-typedef struct SparkQwen4FlashResidentDecodeStageNodeContext
-{
-	uint32_t abi_version;
-	uint32_t stage_count;
-	uint32_t stage_index;
-	uint32_t first_layer_index;
-	uint32_t layer_count;
-	uint32_t owns_embedding;
-	uint32_t owns_final_head;
-	uint32_t max_active_sequence_count;
-	uint32_t max_prefill_tokens;
-	uint32_t pipeline_slot_count;
-	uint32_t kv_cache_block_count;
-	uint32_t enable_cuda_graph_replay;
-	float rms_norm_epsilon;
-	const void *token_embedding_bf16;
-	const void *final_norm_weight_bf16;
-	const void *lm_head_weight_bf16;
-	const void *attention_norm_weights_by_layer_bf16[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const void *mlp_norm_weights_by_layer_bf16[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const SparkQwen4FlashGdnLayerWeights *gdn_weights_by_layer;
-	const SparkQwen4FlashAttnLayerWeights *attn_weights_by_layer;
-	const SparkQwen4FlashMoeWeights *moe_weights_by_layer;
-	SparkQwen4FlashGdnStatePool gdn_state_pool;
-	void *kv_cache_bf16;
-	const SparkQwen4FlashPipelineSlot *pipeline_slots;
-	uint64_t estimated_service_time_ns;
-} SparkQwen4FlashResidentDecodeStageNodeContext;
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
 
-typedef struct SparkQwen4FlashDecodeBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t reserved0;
-	const uint32_t *row_lane_indices;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkQwen4FlashDecodeBatchView;
+#include "sparkpipe/family/abi/spark_abi_prefill_frame_view.h"
 
-typedef struct SparkQwen4FlashPrefillFrameView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-} SparkQwen4FlashPrefillFrameView;
-
-typedef struct SparkQwen4FlashMtpDraftView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t draft_token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-	const uint32_t *row_token_ids;
-} SparkQwen4FlashMtpDraftView;
-
-typedef struct SparkQwen4FlashGdnSnapshotView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t snapshot_index;
-	uint32_t reserved0;
-} SparkQwen4FlashGdnSnapshotView;
+#include "sparkpipe/family/abi/spark_abi_speculative_views.h"
 
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
@@ -303,27 +124,8 @@ typedef struct SparkQwen4FlashGdnSnapshotView
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 
-typedef SparkStatus (*SparkQwen4FlashHiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
-typedef SparkStatus (*SparkQwen4FlashHiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
-
-typedef struct SparkQwen4FlashResidentDecodeStageFrameContext
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t flags;
-	uint32_t reserved0;
-	const SparkQwen4FlashKvBlockTableView *kv_block_table;
-	const SparkQwen4FlashDecodeBatchView *decode_batch;
-	const SparkQwen4FlashPrefillFrameView *prefill_frame;
-	const SparkQwen4FlashMtpDraftView *mtp_draft;
-	const SparkQwen4FlashGdnSnapshotView *gdn_snapshot;
-	SparkHiddenTransportSession *hidden_input_transport_session;
-	SparkHiddenTransportSession *hidden_output_transport_session;
-	SparkQwen4FlashHiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-	SparkQwen4FlashHiddenTransportSendFunction hidden_output_send_function;
-	SparkHiddenTransportPacket hidden_input_packet;
-	SparkHiddenTransportPacket hidden_output_packet;
-} SparkQwen4FlashResidentDecodeStageFrameContext;
+#include "sparkpipe/family/abi/spark_abi_frame_context_speculative.h"
+#undef SPARK_ABI_TYPE
 
 SparkStatus SparkQwen4FlashResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);
 SparkStatus SparkQwen4FlashResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame);
