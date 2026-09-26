@@ -57,6 +57,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t model_extension_kind;
 	uint32_t first_draft_miss_count;
 	uint32_t first_draft_policy;
+	SparkRowSampling sampling;
 	SparkModelBatchRequestHandle handle;
 } SparkModelBatchRequestState;
 
@@ -1266,8 +1267,10 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->abi_version != SPARK_MODEL_BATCH_ENGINE_ABI_VERSION || request->descriptor_bytes != SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	if ( request->reserved0 != 0u || request->request_id == 0u || request->sequence_id == 0u || request->prompt_token_ids == 0 || request->prompt_token_count == 0u || request->output_token_budget == 0u )
+	if ( SparkSamplingTemperatureValid(request->temperature) == 0u || (request->temperature == 0.0f && request->seed != 0u) || request->request_id == 0u || request->sequence_id == 0u || request->prompt_token_ids == 0 || request->prompt_token_count == 0u || request->output_token_budget == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->temperature != 0.0f && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->prompt_token_count > engine->max_context_tokens || request->output_token_budget > engine->max_context_tokens - request->prompt_token_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
@@ -1301,6 +1304,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 		state->generation = 1u;
 	state->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 	state->priority = request->priority;
+	state->sampling = SparkSamplingRule(request->temperature,request->seed);
 	state->prompt_token_count = request->prompt_token_count;
 	state->output_token_budget = request->output_token_budget;
 	state->request_id = request->request_id;
@@ -1848,6 +1852,8 @@ static void SparkModelBatchInitializeLane(
 	lane->context_token_count = context_token_count;
 	lane->input_token_id = input_token_id;
 	lane->flags = flags;
+	if ( SparkModelServingWorkKindUsesRows(work_kind) != 0u )
+		lane->sampling = request->sampling;
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 		return;
 	if ( request->cache_prefix_token_count != 0u &&

@@ -38,9 +38,14 @@ Optional request fields:
 | `stream` | `true` answers `text/event-stream`: one `data:` event per batch of new tokens (`text_completion` or `chat.completion.chunk` with a text or `delta.content` piece that never splits a UTF-8 sequence), a final event with `finish_reason` and `usage`, then `data: [DONE]` |
 | `priority` | unsigned integer; higher runs first, with aging in the batch engine so lower priorities cannot starve |
 | `deadline_ms` | relative deadline; queued requests are submitted earliest-deadline first within a priority, and a request still running at its deadline is cancelled and answered `504` with code `deadline_exceeded` (or an error event on a stream) |
+| `temperature` | `0` (the default) decodes greedily; `0.0001` to `2` samples from softmax(logits / T) with Gumbel-max noise keyed by (seed, position, token) |
+| `seed` | unsigned 64-bit; the same seed, prompt and deployment reproduce a sampled completion token for token. Without one, the API draws a random seed and logs it |
+| `top_p` | accepted only as `1`: nucleus sampling is not implemented |
 
-A malformed `stream`, `priority` or `deadline_ms` is a `400
-invalid_option`, never a silent default. A prompt plus `max_tokens` that the
+A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed` or
+`top_p` is a `400 invalid_option`, never a silent default. A nonzero
+temperature on a deployment whose adapter cannot sample is a `400
+sampling_unsupported`. A prompt plus `max_tokens` that the
 deployment's context or KV pages cannot hold is a `400
 context_length_exceeded`; the batch engine's own admission check decides, so
 the API never duplicates the limits. Without a tokenizer sidecar the
@@ -58,7 +63,8 @@ its deadline.
 
 Every request writes one `request_measurements` JSON line to the API log.
 It records the prompt's SHA-256, the adapter, model and driver identities,
-the session fingerprint, the priority, the stream flag, the finish reason and
+the session fingerprint, the priority, the stream flag, the temperature and
+seed, the finish reason and
 every output token with its timestamp. That is enough to replay a
 completion off-node and compare it bit for bit.
 

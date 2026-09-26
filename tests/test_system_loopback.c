@@ -564,6 +564,34 @@ static void TestLoopbackExpectStatus(const TestLoopbackStack *stack,const char *
 	assert(status == expected);
 }
 
+static void TestLoopbackTokens(const TestLoopbackStack *stack,const char *body,uint32_t *tokens)
+{
+	char response[65536];
+	TestLoopbackExpectStatus(stack,body,200,response,sizeof(response));
+	assert(TestLoopbackScanTokenArray(TestLoopbackResponseBody(response),tokens,16u) == 4u);
+}
+
+static void TestLoopbackSampling(const TestLoopbackStack *stack)
+{
+	char response[65536];
+	uint32_t first[16],second[16],other[16],greedy[16],index,differ = 0u;
+	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8,\"seed\":42}",first);
+	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8,\"seed\":42}",second);
+	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8,\"seed\":43,\"top_p\":1}",other);
+	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0,\"seed\":42}",greedy);
+	for (index=0u; index<4u; index++)
+	{
+		assert(first[index] == second[index]);
+		differ += first[index] != other[index] ? 1u : 0u;
+	}
+	assert(differ == 4u && memcmp(first,greedy,4u * sizeof(uint32_t)) != 0);
+	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8}",other);
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":3}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":\"0.5\"}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0.9}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"seed\":-1}",400,response,sizeof(response));
+}
+
 static void TestLoopbackServingOptions(const TestLoopbackStack *stack)
 {
 	char response[65536];
@@ -926,6 +954,8 @@ int main(int argc,char **argv)
 	printf("test_system_loopback: warm serve OK\n");
 	TestLoopbackServingOptions(&stack);
 	printf("test_system_loopback: streaming, deadline, priority and option validation OK\n");
+	TestLoopbackSampling(&stack);
+	printf("test_system_loopback: seeded sampling reproducible end to end OK\n");
 	TestLoopbackOverload(&stack);
 	printf("test_system_loopback: %u concurrent requests beyond engine capacity OK\n",TEST_LOOPBACK_OVERLOAD_REQUESTS);
 	TestLoopbackResurrectIdleRank(&stack);

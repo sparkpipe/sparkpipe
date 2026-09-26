@@ -306,9 +306,13 @@ path can be selected individually, and none can be compiled out.
 - collectives sum peers in a fixed order;
 - kernel variants agree bitwise wherever the arithmetic allows.
 
-Sampling uses a counter-based RNG keyed by the request seed, so a sampled
-completion can be replayed off-node and audited against logged
-(driver, contract, request) identities.
+Sampling is Gumbel-max on the vocab-parallel argmax. Every rank perturbs
+its logits with noise from a counter-based RNG keyed by (request seed,
+position, global token id), and the existing cross-rank max picks the
+sample, so sampling adds no collective. The noise does not depend on which
+rank or batch row computes it, so a sampled completion replays like a greedy
+one and can be audited off-node against logged (driver, contract, request)
+identities.
 
 **Evidence domains.** Each of these is separate:
 

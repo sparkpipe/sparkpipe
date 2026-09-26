@@ -135,6 +135,8 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	}
 	if ( error == cudaSuccess && wave->owns_embedding != 0u )
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && wave->sampled != 0u )
+		error = cudaMemcpyAsync(slot->row_sampling,wave->host_row_sampling,(uint64_t)wave->row_count * sizeof(SparkRowSampling),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 	{
 		SparkGlm5NextWaveMetadataKernel<<<(wave->row_count + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
@@ -342,6 +344,8 @@ static void SparkGlm5NextBindLayer(
 	buffers->context_length = slot->context_lengths;
 	buffers->positions = slot->positions;
 	buffers->row_positions = slot->positions;
+	buffers->row_sampling = wave->sampled != 0u ? slot->row_sampling : 0;
+	buffers->head_token_offset = wave->tp_rank * buffers->head_vocabulary;
 	buffers->selected_positions = slot->selected_positions;
 	buffers->selected_position_count = GLM5_NEXT_DSA_SELECTED;
 	buffers->fused_qkvb_bf16 = slot->fused_qkvb_bf16;
@@ -532,7 +536,7 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		if ( error != cudaSuccess )
 			return(SparkGlm5NextCudaStatus(error));
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 )
+		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 && wave->sampled == 0u )
 			status = Glm5NextHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
 		else
 			status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);

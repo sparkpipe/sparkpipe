@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weight_codec.h"
 
@@ -10,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 22u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 23u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -55,6 +56,8 @@ extern "C" {
 	UINT32_C(0x00002000)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH \
 	UINT32_C(0x00004000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING \
+	UINT32_C(0x00008000)
 #define SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | \
@@ -63,7 +66,8 @@ extern "C" {
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING)
 
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT 1u
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT 2u
@@ -151,6 +155,7 @@ typedef struct SparkModelServingLane
 	uint32_t cache_publish_token_count;
 	SparkModelServingCacheIdentity cache_prefix_identity;
 	SparkModelServingCacheIdentity cache_publish_identity;
+	SparkRowSampling sampling;
 } SparkModelServingLane;
 
 typedef struct SparkModelServingSubmission

@@ -1,5 +1,5 @@
 {
-  "file_count": 3012,
+  "file_count": 3015,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "eda54001b521c35226613568ada51eba35dc939a32c09b8a7d6eccdd433cad3b",
-      "size_bytes": 135834
+      "sha256": "67d8c676934777178dbc2684fe20081779e6f823422b365ef6adcbad6439b5fa",
+      "size_bytes": 136479
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -48,8 +48,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "fde9e8c7a1f576bd4631fda77a19c4eb8d381c4eb8ca3792fda60b0b7cb260b9",
-      "size_bytes": 20047
+      "sha256": "9812d666515f8f03b05147bbe82a6a07dd287d4fe54512efbf2623eaf8ec586e",
+      "size_bytes": 20323
     },
     {
       "path": "SPEC.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "9947b1b00c13714e96361f953050735750b7cf8cf425697181a9e08216183f71",
-      "size_bytes": 21235
+      "sha256": "b91677bfc8b787af14538f0d4e1252c1be8d7eb48ac4745de7f9e42ba8b1d811",
+      "size_bytes": 21606
     },
     {
       "path": "cache/cache.h",
@@ -848,8 +848,8 @@
     },
     {
       "path": "docs/LITELLM_FRONTEND.md",
-      "sha256": "487a3a623177d83d140af21cff3898cf1ed505606880f53b165597920b17650b",
-      "size_bytes": 9924
+      "sha256": "0363d625a3c946a005b1c47b73dcccf5ea2dcbfd5fb1c69e07c9e0942616a023",
+      "size_bytes": 10481
     },
     {
       "path": "docs/LITELLM_INTEGRATION.md",
@@ -3473,8 +3473,8 @@
     },
     {
       "path": "include/sparkpipe/spark_json.h",
-      "sha256": "60d9b69777e72e3fa2db5f68e41c292b00f20a1e143d5b5ab567905d918d1b2d",
-      "size_bytes": 2632
+      "sha256": "c5cd575b27bd29b667dd59d9ab4348cc9d95c19147583ecd6984ba515375c5bb",
+      "size_bytes": 2733
     },
     {
       "path": "include/sparkpipe/spark_kda_reference.h",
@@ -3528,8 +3528,8 @@
     },
     {
       "path": "include/sparkpipe/spark_model_batch_engine.h",
-      "sha256": "865981e40addd1484bdfffaa672bc0a5fe17b7514e46939a9323314cc6b41a01",
-      "size_bytes": 5414
+      "sha256": "4601dd1110e2831821a5313f99492b617d0c96b4e5d43a1acf199bbb3c2ef474",
+      "size_bytes": 5429
     },
     {
       "path": "include/sparkpipe/spark_model_description.h",
@@ -3578,8 +3578,8 @@
     },
     {
       "path": "include/sparkpipe/spark_model_serving_adapter.h",
-      "sha256": "aed5d97910655a201c0bfc1bfae0627e1a63a8ca5cc3d33615bc8b149bc9a3e3",
-      "size_bytes": 15501
+      "sha256": "6981303de4ae880662ac7f1a4a47b9257fb7eabafd2164110b4b3cd7aa5d6882",
+      "size_bytes": 15701
     },
     {
       "path": "include/sparkpipe/spark_module_abi.h",
@@ -3625,6 +3625,11 @@
       "path": "include/sparkpipe/spark_runtime_completion.h",
       "sha256": "cf30771a995ffb53a3094b5bcdcfcc3b558d6deb75d9c62a5f96b227371525c1",
       "size_bytes": 8048
+    },
+    {
+      "path": "include/sparkpipe/spark_sampling.h",
+      "sha256": "e52c47dc4f98729897f4ab1a3c5833921e08e8740bc077f03b9e9fd7bc3752d9",
+      "size_bytes": 1175
     },
     {
       "path": "include/sparkpipe/spark_serving_adapter_template.h",
@@ -3848,8 +3853,8 @@
     },
     {
       "path": "inference/kernels/head.cuh",
-      "sha256": "b358eb81c4e11072bf73b23581134fa5fdc9bdc390bda45e67701f0498f5ac81",
-      "size_bytes": 12903
+      "sha256": "a0576295ccb9783d89d7ec00178abd683e37fe63489ce029281ed0b2f24b0254",
+      "size_bytes": 16898
     },
     {
       "path": "inference/kernels/kv.cuh",
@@ -5118,8 +5123,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h",
-      "sha256": "f0402bfe6a32c05b68ceb4d16ce8a8da4ef8a3fd2556f9aca89f5d2611138372",
-      "size_bytes": 10769
+      "sha256": "3b8550abed6198bcc22ffc01690b7f43f8729c67d2cf5c6b05781b53e70bb558",
+      "size_bytes": 10846
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/include/sparkpipe/spark_glm5_next_serving_adapter.h",
@@ -5148,8 +5153,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "f7acd5bc334e8d799572e004cb9a18a5749338e962a2fddf9133c671c9724abe",
-      "size_bytes": 93268
+      "sha256": "1b31a23029dc28476ea1486b70a0fa28ce996d5d9c104c2fac624a4e09f58bfe",
+      "size_bytes": 94753
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -5158,23 +5163,23 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "f44e6be2031a27ddeab7fbd39178f18fc0ef7c6117a11acde1216266bce0e0d1",
-      "size_bytes": 42298
+      "sha256": "f0a94e8ef1b8156c463a17c85d4be357eab7cb0afae5486240c4f6f4d25d5608",
+      "size_bytes": 42670
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "1fb0cd487719a4e17708ededee95e749ac2beca961f2908201775923ce8e3ca5",
-      "size_bytes": 11270
+      "sha256": "46489c35f1df967d844f1005a8d77e6f43adfd25d2eb7b3941c7f9d17afa5d29",
+      "size_bytes": 11461
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "e44797d81e1f7258f61f7a8a9bbfa16c31fd47e2def3b50942175650e836f4f3",
-      "size_bytes": 225108
+      "sha256": "d74383bd01e7ba8cff6a7cd308ecd6a91c3734272d393db227a5331561496612",
+      "size_bytes": 226352
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "34d2b0e4609d23a88242ca597f11564df5a6e9a69106882a75c29ebe67933fa7",
-      "size_bytes": 61085
+      "sha256": "dfc7b37001001d7df121963adb1ea4c58794dedf9a78358cbc27a299072375ad",
+      "size_bytes": 61497
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -5968,8 +5973,8 @@
     },
     {
       "path": "node/model_api.c",
-      "sha256": "d0db62fd48ca4be586538a66576212f9a95d92e187c3dbede6fc29ed2e9c957e",
-      "size_bytes": 52179
+      "sha256": "c88b061068f2afba0ed514095288cd90d8d76929ef2297ad1c50d7f7f0353de4",
+      "size_bytes": 54235
     },
     {
       "path": "node/model_batch.c",
@@ -7803,8 +7808,8 @@
     },
     {
       "path": "runtime/json.c",
-      "sha256": "af98b1a57eacb83738fe419628ce3ab8201d0f50f9477182f78f5e0e34a7acc7",
-      "size_bytes": 30464
+      "sha256": "d418cbdeba9b96cfac39b76855aaa512eb0c036716296fff504be20b310736ae",
+      "size_bytes": 31293
     },
     {
       "path": "runtime/launch.h",
@@ -7818,8 +7823,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "7cf23423fca1b6da2f0a28e872d49fb2b6aa0075b58995cc7985e128cf0565dd",
-      "size_bytes": 101292
+      "sha256": "05a5af945cdf0e17d54d97eff211f2baa80f4b3b12f9df21342a28793538b725",
+      "size_bytes": 101764
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -7873,8 +7878,8 @@
     },
     {
       "path": "runtime/model_serving_adapter.c",
-      "sha256": "a7a6c48e16f838c6a27e06423304d911f5b93cbf1dc024d10b9bbc3dbda429ca",
-      "size_bytes": 40245
+      "sha256": "54e3beacf210f3e515cc9123a121f9415ba3fdf49b71f55d0a8d6fd142c06843",
+      "size_bytes": 41188
     },
     {
       "path": "runtime/net.h",
@@ -8283,8 +8288,8 @@
     },
     {
       "path": "tests/fixtures/model_serving_adapter_module.c",
-      "sha256": "fcd912cceaf948bc5dc2f084b7fd5d137a9e87a76316df2a87fb6b483fa3ac46",
-      "size_bytes": 22258
+      "sha256": "d98f891e3d20a2b335796f17b31e6000f2a66791fae96ae583991b09a6c9c84d",
+      "size_bytes": 22488
     },
     {
       "path": "tests/fixtures/module_add_one.c",
@@ -8440,6 +8445,11 @@
       "path": "tests/host_cuda/head_host.cu",
       "sha256": "0201463a96b7600ba761124a5038c8c9d78996d0a15e2603f8518383948d0ae5",
       "size_bytes": 2815
+    },
+    {
+      "path": "tests/host_cuda/head_sampling_host.cu",
+      "sha256": "4f37c218704c4550ba7a23ffb9376f9c0817fffabfdccf859464292ef7b60ce5",
+      "size_bytes": 9070
     },
     {
       "path": "tests/host_cuda/k3_engine_host.c",
@@ -9278,8 +9288,8 @@
     },
     {
       "path": "tests/test_glm5_next_rows_kernels.cu",
-      "sha256": "0f6f65fad4da9c92c7c61137553570436bb3f4fdb579b8d5cafca5d0c049dbd7",
-      "size_bytes": 19394
+      "sha256": "6aec8d0f109ebf2a810c85b65037a9f54057cc9a4d98c8f7fe044247e0c6ad18",
+      "size_bytes": 23914
     },
     {
       "path": "tests/test_glm5_next_rows_kernels_host.py",
@@ -9365,6 +9375,11 @@
       "path": "tests/test_head_host.py",
       "sha256": "cee2d3a7983be80b8ef60f11773b2272e3f9269cfd91c21282a1cb9d443d70d3",
       "size_bytes": 4637
+    },
+    {
+      "path": "tests/test_head_sampling_host.py",
+      "sha256": "04bdc85d5b6d9b92ff21f19afe191d685befc965b5fbc01fcf9e9e6cba5dd96c",
+      "size_bytes": 709
     },
     {
       "path": "tests/test_hidden_transport.c",
@@ -9823,8 +9838,8 @@
     },
     {
       "path": "tests/test_model_batch_engine_mock.c",
-      "sha256": "0d8754bb05a287c41e6125d6eee5ba637931c30fefe4ae8d3dbb389ff2ae1f34",
-      "size_bytes": 30553
+      "sha256": "d9821e8153cde917ae036bc80c8cbd16cba936b71bc1ebd2811851b9d06fac87",
+      "size_bytes": 32065
     },
     {
       "path": "tests/test_model_description.c",
@@ -9888,8 +9903,8 @@
     },
     {
       "path": "tests/test_model_serving_adapter.c",
-      "sha256": "f26300945521a97b52c673ac4a81bf40be715ede1c44daa0a9c5dbf9c745d524",
-      "size_bytes": 38816
+      "sha256": "36020a1ffd351d57841f208fed10a1b66c106a9be9c1b08d7bb75966c64b0df7",
+      "size_bytes": 39835
     },
     {
       "path": "tests/test_model_serving_architecture.py",
@@ -10333,8 +10348,8 @@
     },
     {
       "path": "tests/test_system_loopback.c",
-      "sha256": "969b0086b2bfdf9fe2c7e927b6c62fdfb8317cdc832e3426a2a2a0ed9fa1fc01",
-      "size_bytes": 31865
+      "sha256": "3c39a5ee09c9a61bffe6519820cc31a6b87b3e990e4d9b8a6f675aa56e1152bb",
+      "size_bytes": 33755
     },
     {
       "path": "tests/test_t1_reference_decoder.py",
@@ -11733,8 +11748,8 @@
     },
     {
       "path": "tools/glm5_next_driver_probe.c",
-      "sha256": "ff0af78c540005177576dc8e80499182db53d1f8a58d4a7ae2e8b011b31e0494",
-      "size_bytes": 24699
+      "sha256": "cc4011bed771bdfd866b22aa5f7f308a235a2e596dddeace2519519433a7aff3",
+      "size_bytes": 24844
     },
     {
       "path": "tools/glm5_next_dsa_host_oracle.py",
@@ -15065,5 +15080,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73934992
+  "total_bytes": 73969503
 }

@@ -761,7 +761,7 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	if ( slot == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	words = (rows * 4u) + SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT +
+	words = (rows * (4u + sizeof(SparkRowSampling) / sizeof(uint32_t))) + SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT +
 	    SPARK_GLM5_NEXT_MODEL_LAYER_COUNT *
 	        (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u);
 	bytes = words * sizeof(uint32_t);
@@ -769,7 +769,8 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"host_staging"));
 	memset(slot->host_staging,0,bytes);
-	cursor = (uint32_t *)slot->host_staging;
+	slot->host_row_sampling = (SparkRowSampling *)slot->host_staging;
+	cursor = (uint32_t *)(slot->host_row_sampling + rows);
 	slot->host_token_ids = cursor;
 	cursor += rows;
 	slot->host_resident_slots = cursor;
@@ -844,6 +845,7 @@ static SparkStatus SparkGlm5NextAllocateSlotMetadata(
 	status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(SparkRowSampling),(void **)&slot->row_sampling);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity + 1u,1u,sizeof(uint32_t),(void **)&slot->run_begin);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->run_state_index);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->run_row_indices);
@@ -960,6 +962,7 @@ static void SparkGlm5NextShareSlotDevice(SparkGlm5NextExecutionSlot *slot,const 
 	slot->route_ready_event = host.route_ready_event;
 	slot->route_recorded = 0u;
 	slot->host_staging = host.host_staging;
+	slot->host_row_sampling = host.host_row_sampling;
 	slot->host_token_ids = host.host_token_ids;
 	slot->host_resident_slots = host.host_resident_slots;
 	slot->host_positions = host.host_positions;
@@ -1654,7 +1657,7 @@ static SparkStatus SparkGlm5NextValidateFrame(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->active_slot_count != batch->active_sequence_count || frame->new_token_count != batch->row_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
+	if ( (state->owns_embedding != 0u && batch->token_ids == 0) || (state->owns_final_head != 0u && batch->row_sampling == 0) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	expected_flags = prefill != 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	expected_flags |= state->owns_embedding == 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
@@ -1779,6 +1782,8 @@ static SparkStatus SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->host_token_ids = state->owns_embedding != 0u ? slot->host_token_ids + chain->first_row : 0;
 	wave->host_resident_slots = slot->host_resident_slots + chain->first_row;
 	wave->host_positions = slot->host_positions + chain->first_row;
+	wave->host_row_sampling = state->owns_final_head != 0u ? slot->host_row_sampling + chain->first_row : 0;
+	wave->sampled = state->owns_final_head != 0u ? slot->sampled : 0u;
 	wave->hidden_input_bf16 = context->hidden_input_bf16;
 	wave->hidden_output_bf16 = context->hidden_output_bf16;
 	wave->sideband_input_u32 = context->sideband_input;
@@ -2287,7 +2292,8 @@ static SparkStatus SparkGlm5NextMtpDriveDraft(
 	if ( state->mtp_enabled == 0u ||
 		(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
 		batch->row_count != 1u || batch->active_sequence_count != 1u ||
-		batch->token_ids == 0 || state->owns_embedding == 0u || state->owns_final_head == 0u )
+		batch->token_ids == 0 || state->owns_embedding == 0u || state->owns_final_head == 0u ||
+		batch->row_sampling[0].inverse_temperature != 0.0f )
 		return(SPARK_STATUS_OK);
 	lane = batch->row_resident_slots[0];
 	position = batch->row_positions[0];
@@ -3357,6 +3363,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( chain->wave_rows >= 1u && chain->wave_rows <= SPARK_GLM5_NEXT_GRAPH_ROWS_MAX &&
 		     (chain->slot->graph_failed_rows & (UINT64_C(1) << (chain->wave_rows - 1u))) == 0u &&
 		     chain->first_row == 0u && chain->spec_verify == 0u &&
+		     chain->slot->sampled == 0u &&
 		     chain->batch->active_sequence_count == chain->wave_rows &&
 		     state->tp_device_collective_initialized != 0u &&
 		     state->lazy_pack != 0 && state->tp_degree > 1u &&
@@ -3620,7 +3627,7 @@ static void SparkGlm5NextPrepareAsyncCompletion(
 	async->completion.tokens_per_sequence = frame->tokens_per_sequence;
 	async->completion.status = SPARK_STATUS_OK;
 	async->completion.residency = frame->residency;
-	async->completion.host_staging_bytes = (uint64_t)batch->row_count * sizeof(uint32_t) * (3u + state->owns_final_head);
+	async->completion.host_staging_bytes = (uint64_t)batch->row_count * (sizeof(uint32_t) * (3u + state->owns_final_head) + sizeof(SparkRowSampling) * state->owns_final_head);
 	async->completion.device_memcpy_bytes = async->completion.host_staging_bytes;
 }
 
@@ -4110,6 +4117,17 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextStageHostSampling(const SparkGlm5NextModuleState *state,SparkGlm5NextExecutionSlot *slot,const SparkGlm5NextResidentDecodeStageBatchView *batch)
+{
+	uint32_t row;
+	slot->sampled = 0u;
+	for (row=0u; state->owns_final_head != 0u && row<batch->row_count; row++)
+	{
+		slot->host_row_sampling[row] = batch->row_sampling[row];
+		slot->sampled |= batch->row_sampling[row].inverse_temperature != 0.0f ? 1u : 0u;
+	}
+}
+
 static SparkStatus SparkGlm5NextExecuteBatch(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context)
 {
 	const SparkGlm5NextResidentDecodeStageBatchView *batch = context->batch;
@@ -4152,6 +4170,7 @@ static SparkStatus SparkGlm5NextExecuteBatch(SparkGlm5NextModuleState *state,Spa
 		status = SparkGlm5NextStageHostBatch(state,slot,batch);
 		if ( status == SPARK_STATUS_OK )
 		{
+			SparkGlm5NextStageHostSampling(state,slot,batch);
 			SparkGlm5NextPrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 			status = SparkGlm5NextStartClaimedBatch(state,frame,context,slot_index);
 		}
@@ -4264,7 +4283,7 @@ static void SparkGlm5NextAdmissionCost(
 {
 	(void)context;
 	decision->host_staging_bytes = (uint64_t)request->new_token_count *
-		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u);
+		(sizeof(uint32_t) * 3u + sizeof(uint64_t) * 2u + sizeof(SparkRowSampling));
 	decision->device_memcpy_bytes = decision->host_staging_bytes;
 }
 
