@@ -88,6 +88,9 @@ contract; they do not select a degraded mode.
 
 `collective_host_submit_ms` and `collective_host_submissions` describe host
 submission work, including capture. They are not graph replay allreduce timing.
+`path` names how the chain ran: `graph`, `linear`, or `eager` for the chain
+state machine. A linear chain checks its rounds once at the end, so its
+submission time is launch work only.
 `GRAPH-REPLAY-TIME wall_ns` includes compute and waits; `stream_status` is the
 CUDA query result, followed by the separate sticky collective-error check.
 `elapsed_since_previous_wait_end_us` includes intervening computation.

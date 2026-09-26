@@ -305,9 +305,12 @@ cudaError_t cudaStreamQuery(cudaStream_t stream)
     return cuda_stub_stream_query_result;
 }
 
+uint32_t cuda_stub_stream_sync_calls;
+
 cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
     (void)stream;
+    cuda_stub_stream_sync_calls++;
     return cudaSuccess;
 }
 

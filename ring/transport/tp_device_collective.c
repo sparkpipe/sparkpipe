@@ -152,6 +152,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t cell_mirror;
     uint32_t capture_rounds;
     uint32_t capture_parity;
+    uint64_t deferred_rounds;
     uint64_t cancel_seen;
     uint32_t round_deadline_ms;
     pthread_mutex_t completion_lock;
@@ -844,6 +845,7 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
                 SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             implementation->cell_mirror = 0ull;
             implementation->capture_rounds = 0u;
+            implementation->deferred_rounds = 0u;
         }
         else
             SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -859,6 +861,22 @@ static SparkStatus SparkTpDeviceCollectiveEnsureCells(
 static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission)
 {
     return implementation->hardware_wait == 0u && submission->logical_sequence_count == 1u ? 1u : 0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveDeferred(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission)
+{
+    return implementation->capture_armed == 0u && implementation->hardware_wait != 0u && submission->completion_function == 0 && (submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u ? 1u : 0u;
+}
+
+static SparkStatus SparkTpDeviceCollectiveReadControl(SparkTpDeviceCollectiveImplementation *implementation,void *stream)
+{
+    if ( cudaMemcpyAsync((void *)implementation->published_host_cell,implementation->round_control,SPARK_TP_MESH_ROUND_CONTROL_BYTES,SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,stream) != 0 || cudaStreamSynchronize(stream) != 0 )
+        return SPARK_STATUS_IO_ERROR;
+    memcpy(&implementation->round_control_host,(const void *)implementation->published_host_cell,sizeof(implementation->round_control_host));
+    implementation->publish_ack_prev = implementation->round_control_host.round_seq;
+    implementation->cell_mirror = implementation->round_control_host.seq;
+    implementation->round_seq = implementation->round_control_host.seq;
+    return SPARK_STATUS_OK;
 }
 
 static uint32_t SparkTpDeviceCollectiveSliceRoutes(const SparkTpDeviceCollectiveImplementation *implementation)
@@ -921,7 +939,8 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
         implementation->f32_scratch = scratch;
         implementation->f32_scratch_bytes = implementation->slot_bytes;
     }
-    if ( cudaMemsetAsync((uint8_t *)implementation->round_control +
+    if ( (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
+         cudaMemsetAsync((uint8_t *)implementation->round_control +
             SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUNDS_DONE * sizeof(uint64_t),0,
             sizeof(uint64_t),submission->cuda_stream) != 0 )
         return SPARK_STATUS_IO_ERROR;
@@ -958,16 +977,14 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
         implementation->capture_rounds += (uint32_t)phases;
         return SPARK_STATUS_OK;
     }
-    if ( cudaMemcpyAsync((void *)implementation->published_host_cell,
-            implementation->round_control,SPARK_TP_MESH_ROUND_CONTROL_BYTES,
-            SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,submission->cuda_stream) != 0 ||
-         cudaStreamSynchronize(submission->cuda_stream) != 0 )
-        return SPARK_STATUS_IO_ERROR;
-    memcpy(&implementation->round_control_host,(const void *)implementation->published_host_cell,
-        sizeof(implementation->round_control_host));
-    implementation->publish_ack_prev = implementation->round_control_host.round_seq;
-    implementation->cell_mirror = implementation->round_control_host.seq;
-    implementation->round_seq = implementation->round_control_host.seq;
+    if ( SparkTpDeviceCollectiveDeferred(implementation,submission) != 0u )
+    {
+        implementation->deferred_rounds += rounds;
+        return SPARK_STATUS_OK;
+    }
+    status = SparkTpDeviceCollectiveReadControl(implementation,submission->cuda_stream);
+    if ( status != SPARK_STATUS_OK )
+        return status;
     if ( implementation->round_control_host.error_word != 0u ||
          implementation->round_control_host.rounds_done != rounds )
     {
@@ -1550,10 +1567,11 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     if ( implementation->mesh_buffer == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( implementation->capture_armed == 0u &&
-         submission->completion_function == 0 )
+         submission->completion_function == 0 &&
+         SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     round = *submission;
-    if ( implementation->capture_armed == 0u )
+    if ( implementation->capture_armed == 0u && submission->completion_function != 0 )
     {
         completion = calloc(1u,sizeof(*completion));
         if ( completion == 0 )
@@ -2506,6 +2524,36 @@ SparkStatus SparkTpDeviceCollectiveHardwareStats(
             sizeof(*timing_out),SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 )
         return SPARK_STATUS_IO_ERROR;
     return SPARK_STATUS_OK;
+}
+
+uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *collective)
+{
+    const SparkTpDeviceCollectiveImplementation *implementation;
+    if ( collective == 0 || collective->implementation == 0 )
+        return 0u;
+    implementation = collective->implementation;
+    return implementation->hardware_wait != 0u && implementation->mesh_buffer != 0 ? 1u : 0u;
+}
+
+SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective,void *stream)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint64_t expected;
+    SparkStatus status;
+    if ( collective == 0 || collective->implementation == 0 || stream == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    expected = implementation->deferred_rounds;
+    if ( expected == 0u )
+        return SPARK_STATUS_OK;
+    implementation->deferred_rounds = 0u;
+    status = SparkTpDeviceCollectiveReadControl(implementation,stream);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    if ( implementation->round_control_host.error_word == 0u && implementation->round_control_host.rounds_done == expected )
+        return SPARK_STATUS_OK;
+    fprintf(stderr,"MESH-DEFERRED-ROUNDS-FAILED rank=%u band=%u rounds=%llu done=%llu seq=%llu error=%llu diag=%llu\n",implementation->tp_rank,SparkTpDeviceCollectiveBandIndex(implementation),(unsigned long long)expected,(unsigned long long)implementation->round_control_host.rounds_done,(unsigned long long)implementation->round_control_host.seq,(unsigned long long)implementation->round_control_host.error_word,(unsigned long long)implementation->round_control_host.diag_word);
+    return SPARK_STATUS_IO_ERROR;
 }
 
 void SparkTpDeviceCollectiveRoundStats(

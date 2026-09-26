@@ -114,11 +114,16 @@ progress diary.
   finishes the chain, and the completion worker then waits on the same stream
   again. Move the stuck-graph timeout and the error checks into the completion
   path so residentd keeps serving its socket during the replay.
-- glm5_next: an eager chain synchronizes the stream after every collective
-  round (`SparkTpDeviceCollectiveRunDeviceRounds`) and twice more per routed
-  layer (expert lease, then release), so it pays host round trips per layer.
-  Prefill chunks always run eager, and decode waves queue behind them
-  (`decode_wait_ms` in `G5N-WAVE-TIMING`).
+- glm5_next: prefill chunks never run as a graph, and a decode wave that
+  arrives behind a chunk waits for the chunk's whole GPU time
+  (`decode_wait_ms` in `G5N-WAVE-TIMING`). Capture prefill graphs per chunk
+  shape, or order decode waves ahead of queued prefill chunks.
+- glm5_next: the chain state machine still synchronizes the stream after
+  every collective round and twice more per routed layer (expert lease, then
+  release). It runs only where a linear chain cannot: experts not pinned,
+  MTP, speculative verify, the T1 trace, `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`,
+  or a collective without hardware-wait rounds. Pin experts wherever the
+  arena fits them, and move MTP and speculative verify onto the linear walk.
 - glm5_next: between two waves every rank ends and restarts mesh activity
   (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
   the other ranks spin on, and two host callbacks run. Keep the activity and
