@@ -90,7 +90,14 @@ contract; they do not select a degraded mode.
 submission work, including capture. They are not graph replay allreduce timing.
 `path` names how the chain ran: `graph`, `linear`, or `eager` for the chain
 state machine. A linear chain checks its rounds once at the end, so its
-submission time is launch work only.
+submission time is launch work only. `steps` is the number of decode steps the
+frame ran (1 unless it was a resident decode chain), and `total_ms` covers all
+of them. `walk_ms` is the part of `total_ms` the host spent enqueueing linear
+steps. A linear chain with a small `walk_ms` spent its time waiting for the GPU
+and its peers. A full CUDA launch queue also blocks the walk, so a `walk_ms`
+close to `total_ms` means the host's launches were the bound only if the GPU
+finished soon after the walk did; a GPU still busy for many milliseconds after
+the walk ended was the bound itself.
 `GRAPH-REPLAY-TIME wall_ns` includes compute and waits; `stream_status` is the
 CUDA query result, followed by the separate sticky collective-error check.
 `elapsed_since_previous_wait_end_us` includes intervening computation.

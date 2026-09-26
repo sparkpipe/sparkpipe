@@ -126,8 +126,27 @@ progress diary.
   arena fits them, and move MTP and speculative verify onto the linear walk.
 - glm5_next: between two waves every rank ends and restarts mesh activity
   (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
-  the other ranks spin on, and two host callbacks run. Keep the activity and
-  the epoch across the waves of a session.
+  the other ranks spin on, and two host callbacks run. Resident decode chains
+  pay this once per K decode steps instead of once per step; prefill chunks,
+  publish frames and single-step waves still pay it every time. Keep the
+  activity and the epoch across the waves of a session.
+- glm5_next: a resident decode chain feeds each step's tokens back through the
+  host. Between steps it synchronizes the stream, copies the sampled tokens
+  into the pinned input arrays and advances the positions. On the linear path
+  that wait runs on residentd's thread, which a single-step linear chain never
+  blocks. Feed the next step on the device (copy the head's tokens into the
+  input rows and advance the positions in a kernel) so K steps are one enqueue
+  or one graph.
+- glm5_next: the engine ends a chain at the nearest block end of any lane in
+  the batch, so chains shorten as the batch grows: a mean of about 5.4 steps
+  at 8 lanes against 8 at one lane, by simulation of random lane offsets. Each
+  lane's block end is also still a separate publish frame. Publishing block
+  checkpoints from inside a chain would keep chains at 8 steps and remove
+  those frames.
+- glm5_next: a decode chain holds the rank for all of its steps, so a prefill
+  chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
+  without looking at queued prefill; shorten chains while prefill waits if
+  time to first token suffers.
 
 ## Resident TP4 x PP4 execution
 
@@ -236,6 +255,11 @@ progress diary.
 - Build the tournament provider over the provider slot, with per-drafter
   acceptance telemetry, after the single-drafter agreement matrix is
   measured.
+- glm5_next resident decode chains run no MTP draft: a frame of more than
+  one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
+  whenever the adapter offers them, so with MTP enabled drafts only run on
+  single-step frames. Choose between MTP and chains per batch in the engine,
+  or verify drafts inside a chain.
 
 ## Packaging and provenance
 
@@ -310,6 +334,12 @@ progress diary.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
+- `tests/test_glm5_next_adapter_config_load.py` is not part of `make test`,
+  and its deployment section fails on `main`:
+  `tools/glm5_next_gen_deployment.py` writes nine `runtime_limits` members and
+  `SparkModelResidentDeploymentLoad` accepts exactly six. Its adapter unit
+  sections pass. Align the generator and the loader, then add the test to the
+  suite.
 
 ## Hardware independence
 

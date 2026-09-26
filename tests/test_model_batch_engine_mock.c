@@ -405,6 +405,63 @@ static void TestScenarioChainPublishesFinalCheckpoint(const SparkModelResidentDe
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioChainPublishesAtBlockBoundary(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0},published = {0};
+	uint32_t prompt[9] = {11u,12u,13u,14u,1000u,1000u,1001u,1000u,1001u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,620u,8u,prompt,4u);
+	CHECK(TestWaitLane(engine,1u,4u,&lane) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u,"chain block: the first decode frame carries no checkpoint");
+	MockResidentClientSetAutoTokens(2u);
+	CHECK(TestWaitLane(engine,1u,6u,&lane) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u && lane.cache_publish_token_count == 0u,"chain block: a chain that ends inside a block decodes on without a publish frame");
+	CHECK(TestWaitLane(engine,1u,8u,&published) != 0u && published.flags == SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH && published.context_token_count == 8u && published.cache_publish_token_count == 8u,"chain block: a chain that reaches the block boundary publishes it");
+	MockResidentClientSetAutoTokens(3u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 8u,"chain block: every chained token is emitted once");
+	MockResidentClientSetAutoTokens(1u);
+	TestSubmitPrompt(engine,2u,621u,1u,prompt,9u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.sequence_position == 8u && lane.cache_prefix_token_count == 8u && memcmp(&lane.cache_prefix_identity,&published.cache_publish_identity,sizeof(lane.cache_prefix_identity)) == 0,"chain block: the boundary checkpoint is reusable");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 8u,"chain block: a required hit consumes the boundary checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static uint32_t TestCoordinatorFrames(void)
+{
+	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
+}
+
+static void TestScenarioSingleTokenEosSkipsPublish(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t frames;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,630u,8u);
+	CHECK(TestWaitLane(engine,1u,4u,&lane) != 0u,"single EOS: a decode frame follows prefill");
+	frames = TestCoordinatorFrames();
+	MockResidentClientSetTokenStart(154820u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestDrive(engine,8u);
+	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 2u && TestCoordinatorFrames() == frames + 1u,"single EOS: a one-token completion that stops on EOS releases without a publish frame");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioChainEosCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -737,6 +794,8 @@ int main(void)
 		TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
 		TestScenarioPartialPrefixAppend(&deployment,runtime_root);
 		TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
+		TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
+		TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
 		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 		TestScenarioSamplingValidation(&deployment,runtime_root);

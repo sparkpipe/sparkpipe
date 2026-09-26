@@ -819,6 +819,14 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkModelBatchChainCheckpoint(const SparkModelBatchEngine *engine,const SparkModelBatchRequestState *request,uint32_t generated_before,uint32_t tokens_per_sequence)
+{
+	uint32_t before = request->prompt_token_count + generated_before - 1u,after = request->prompt_token_count + request->generated_token_count - 1u;
+	if ( tokens_per_sequence < 2u )
+		return(0u);
+	return(request->state != SPARK_MODEL_BATCH_REQUEST_READY_DECODE || after / engine->cache_block_token_count > before / engine->cache_block_token_count ? 1u : 0u);
+}
+
 static SparkStatus SparkModelBatchHandleDecodeCompletion(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchSubmissionState *submission,
@@ -867,7 +875,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 				break;
 		}
 		if ( request->generated_token_count - generated_before == completion->tokens_per_sequence &&
-			(completion->tokens_per_sequence > 1u || request->cache_deferred_publication != 0u) &&
+			(SparkModelBatchChainCheckpoint(engine,request,generated_before,completion->tokens_per_sequence) != 0u || request->cache_deferred_publication != 0u) &&
 			(engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u &&
 			request->prompt_token_count + request->generated_token_count - 1u > request->cache_published_token_count )
 			request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PUBLISH;

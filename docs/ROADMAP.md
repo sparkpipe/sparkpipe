@@ -24,10 +24,13 @@ Each step answers a measured cost:
    with no host round trip per collective round or per routed layer. After
    that: graph-captured prefill, or decode ordered ahead of prefill. Measured
    by `decode_wait_ms` in `G5N-WAVE-TIMING` and the eager `CHAIN-TIME` lines.
-2. **Host work between waves at most 2 ms.** Keep mesh activity and the chain
-   epoch across waves, take graph completion off residentd's thread, then
-   decode several steps per submission. Measured by `idle`, `key`, `setup`
-   and `post` in `G5N-WAVE-TIMING`.
+2. **Host work between waves at most 2 ms.** Decode several steps per
+   submission, keep mesh activity and the chain epoch across waves, and take
+   graph completion off residentd's thread. Resident decode chains, up to 8
+   steps per decode frame, came first: they divide the per-frame cost by the
+   chain length without changing it. Measured by `idle`, `key`, `setup` and
+   `post` in `G5N-WAVE-TIMING`, divided by `steps/decode` from
+   `tools/wave_timeline_report.py` for the cost per step.
 3. **Collective waits at most 3 ms per wave.** GPU-initiated RDMA, and the
    pair link for the first reduction level. Measured by `peer_wait_ms`.
 4. **Kernels at 80% of bandwidth or better** at B1 and B8. Measured by
