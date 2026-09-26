@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MESH_TAIL = "gates=1 gate_us=64/64 gate_ms=0 self=0 starts=1 start_us=64/64 start_ms=0 start_self=0 worst_us=40 worst_tag=23:1 worst_closer=2 peers=1:32/32/0/0/0,2:64/64/1/1/37,3:32/32/0/0/0"
 MESH_SELF = "gates=1 gate_us=1/1 gate_ms=0 self=1 starts=1 start_us=1/1 start_ms=0 start_self=1 worst_us=0 worst_tag=0:0 worst_closer=0 peers=1:128/128/0/0/0,2:128/128/0/0/0,3:128/128/0/0/0"
-WAVE = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 retries=2 idle_us=8388608/8388608 pre_us=1024/1024 key_us=512/512 gpu_us=65536/131072 post_us=512/512 idle_ms=9847 pre_ms=3 key_ms=0 gpu_ms=210 post_ms=1 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=91 worst_request=8 worst_epochs=11/12 worst_us=4938500/1000/300/90000/500"
+WAVE = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 prefill=1 graph=2 eager=1 graph_path=1 retries=2 busy=1/1/0/0/0 captures=1 capture_ms=250 idle_us=8388608/8388608 wait_us=128/4096 key_us=512/512 setup_us=1024/262144 run_us=65536/131072 post_us=512/512 idle_ms=10593 wait_ms=3 key_ms=0 setup_ms=252 run_ms=210 post_ms=1 graph_run_ms=150 eager_run_ms=60 decode_wait_ms=3 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=311 worst_request=7 worst_epochs=11/12 worst_us=0/100/300/251000/60000/500"
 
 
 def run(tool, *logs):
@@ -39,9 +39,9 @@ def main():
               "excess wait and the worst gate are reported", output)
         output = run("wave_timeline_report.py", f"3={wave}")
         lines = [line.split() for line in output.splitlines()]
-        check("3 1 3 8.0 2 | 3282.3 1.0 0.0 70.0 0.3 | 20.0 1.0 2.0 3.0 44.0 | 1024 131072".split() in lines,
-              "the per-wave budget splits GPU time into collective waits and compute", output)
-        check(["91", "3", "8", "11/12", "4938500/1000/300/90000/500"] in lines, "the slowest wave carries its request and epochs", output)
+        check("3 1 3 8.0 33.3 66.7 on 0.7 1/1/0/0/0 | 3531.0 1.0 0.0 84.0 70.0 0.3 | 20.0 1.0 2.0 3.0 44.0 | 75.0 60.0 1.5 1 250 | 4096 131072".split() in lines,
+              "the per-wave budget splits a wave into contiguous intervals, graph and eager runs, and busy reasons", output)
+        check(["311", "3", "7", "11/12", "0/100/300/251000/60000/500"] in lines, "the slowest wave carries its request, epochs and six parts", output)
     print("PASS timing reports: tools parse the exact WD-MESH-TIMING and G5N-WAVE-TIMING lines the C tests assert")
     return 0
 

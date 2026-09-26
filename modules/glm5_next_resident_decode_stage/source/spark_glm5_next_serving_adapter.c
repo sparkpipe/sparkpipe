@@ -1151,7 +1151,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	SparkGlm5NextServingBuildFrame(state,submission,pending);
 	status = SparkGlm5NextServingAdmit(state,submission,pending,&pending->frame);
-	if ( status != SPARK_STATUS_OK )
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1166,7 +1166,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 		}
 		else
 			status = state->program->submit(state->driver_instance,&pending->frame);
-		if ( status != SPARK_STATUS_OK )
+		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
 	}
 	if ( status != SPARK_STATUS_OK )

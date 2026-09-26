@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include "sparkpipe/spark_error_site.h"
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -107,16 +108,20 @@ static void SparkGlm5NextScheduleCompletionWork(SparkGlm5NextModuleState *state,
 
 typedef struct SparkGlm5NextWaveTiming
 {
-	SparkLatencyHistogram idle;
-	SparkLatencyHistogram pre;
-	SparkLatencyHistogram key;
-	SparkLatencyHistogram gpu;
-	SparkLatencyHistogram post;
+	SparkLatencyHistogram interval[SPARK_GLM5_NEXT_WAVE_INTERVALS];
 	uint64_t window_ns;
 	uint64_t delivered_ns;
 	uint64_t waves;
 	uint64_t rows;
+	uint64_t prefill;
+	uint64_t graph;
 	uint64_t retries;
+	uint64_t busy[SPARK_GLM5_NEXT_BUSY_REASONS];
+	uint64_t captures;
+	uint64_t capture_ns;
+	uint64_t graph_run_ns;
+	uint64_t eager_run_ns;
+	uint64_t decode_wait_ns;
 	uint64_t source_wait_ns;
 	uint64_t peer_wait_ns;
 	uint64_t copy_ns;
@@ -124,7 +129,8 @@ typedef struct SparkGlm5NextWaveTiming
 	uint64_t worst_ns;
 	uint64_t worst_request;
 	uint64_t worst_epoch[2];
-	uint64_t worst_part_ns[5];
+	uint64_t worst_part_ns[SPARK_GLM5_NEXT_WAVE_INTERVALS];
+	uint32_t graph_path;
 } SparkGlm5NextWaveTiming;
 
 typedef struct SparkGlm5NextAsyncCompletion
@@ -147,10 +153,16 @@ typedef struct SparkGlm5NextAsyncCompletion
 	uint64_t chain_start_ns;
 	uint64_t attempt_ns;
 	uint64_t keyed_ns;
-	uint64_t launched_ns;
-	uint64_t callback_ns;
+	uint64_t launch_ns;
+	uint64_t finish_ns;
+	uint64_t capture_ns;
 	uint64_t epoch[2];
 	uint32_t retries;
+	uint32_t busy[SPARK_GLM5_NEXT_BUSY_REASONS];
+	uint32_t captures;
+	uint32_t prefill;
+	uint32_t graph;
+	uint32_t graph_path;
 	uint32_t mtp_draft_tokens[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
 	SparkModelDriverCompletion completion;
 } SparkGlm5NextAsyncCompletion;
@@ -308,6 +320,8 @@ struct SparkGlm5NextModuleState
 	uint64_t wave_attempt_request;
 	uint64_t wave_attempt_ns;
 	uint32_t wave_attempt_retries;
+	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
+	uint32_t graph_path_requested;
 	uint32_t chain_profile_stage;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
@@ -2376,10 +2390,20 @@ static SparkStatus SparkGlm5NextMtpStashHidden(
 }
 
 static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain);
+
+static uint32_t SparkGlm5NextGraphPathState(const SparkGlm5NextModuleState *state)
+{
+	if ( state->graph_path_requested == 0u )
+		return(SPARK_GLM5_NEXT_GRAPH_PATH_OFF);
+	return(state->graph_path_enabled != 0u ? SPARK_GLM5_NEXT_GRAPH_PATH_ON : SPARK_GLM5_NEXT_GRAPH_PATH_DEGRADED);
+}
+
 static void SparkGlm5NextFinishChain(SparkGlm5NextTpChain *chain)
 {
+	SparkGlm5NextAsyncCompletion *async = &chain->state->completions[chain->slot_index];
 	SparkStatus status = chain->expert_lease != 0u ? SparkGlm5NextLazyRelease(chain) : SPARK_STATUS_OK;
-	chain->state->completions[chain->slot_index].launched_ns = SparkGlm5NextNowNs();
+	async->finish_ns = SparkGlm5NextNowNs();
+	async->graph_path = SparkGlm5NextGraphPathState(chain->state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextEnqueueAsyncCompletion(chain->state,chain->slot,chain->slot_index);
 	if ( status != SPARK_STATUS_OK )
@@ -2984,6 +3008,8 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 	if ( status == SPARK_STATUS_OK )
 	{
 		exec = chain->slot->graph_exec_a;
+		state->completions[chain->slot_index].launch_ns = SparkGlm5NextNowNs();
+		state->completions[chain->slot_index].graph = 1u;
 		{
 			cudaError_t pre_err = cudaGetLastError();
 			cudaError_t launch_rc = cudaGraphLaunch(exec,chain->slot->stream);
@@ -3149,7 +3175,7 @@ static void SparkGlm5NextGraphDisarm(
 			&state->tp_device_collective_hc);
 }
 
-static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_t index,uint32_t bound)
+static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uint32_t index,uint32_t bound)
 {
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextExecutionSlot *slot = chain->slot;
@@ -3173,6 +3199,16 @@ static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_
 	slot->graph_bound_rows[index] = bound;
 	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u bound=%u\n",index + 1u,bound);
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_t index,uint32_t bound)
+{
+	SparkGlm5NextAsyncCompletion *async = &chain->state->completions[chain->slot_index];
+	uint64_t started_ns = SparkGlm5NextNowNs();
+	SparkStatus status = SparkGlm5NextGraphCaptureRows(chain,index,bound);
+	async->captures++;
+	async->capture_ns += SparkGlm5NextNowNs() - started_ns;
+	return(status);
 }
 
 static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
@@ -3431,6 +3467,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		SparkGlm5NextT1Wave(&chain->wave);
+		state->completions[chain->slot_index].launch_ns = SparkGlm5NextNowNs();
 		if ( SparkGlm5NextLaunchCudaWaveBegin(&chain->wave) != 0 )
 		{
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -3643,6 +3680,7 @@ static void SparkGlm5NextPrepareAsyncCompletion(
 	async->slot_index = slot_index;
 	async->lane_count = batch->active_sequence_count;
 	async->row_count = batch->row_count;
+	async->prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
 	async->state_capture = ((const SparkGlm5NextResidentDecodeStageFrameContext *)frame->user_context)->state_capture;
 	async->output_token_destination = state->owns_final_head != 0u ? (uint32_t *)frame->buffers[0].address : 0;
 	for (lane=0u; lane<batch->active_sequence_count && lane<SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT; lane++)
@@ -3841,62 +3879,86 @@ static uint64_t SparkGlm5NextSpanNs(uint64_t start_ns,uint64_t end_ns)
 	return(start_ns != 0u && end_ns >= start_ns ? end_ns - start_ns : 0u);
 }
 
+static const char *const SparkGlm5NextWaveIntervalNames[SPARK_GLM5_NEXT_WAVE_INTERVALS] = {"idle","wait","key","setup","run","post"};
+
+static void SparkGlm5NextLineAppend(char *line,size_t capacity,size_t *used,const char *format,...)
+{
+	va_list arguments;
+	int written;
+	if ( *used >= capacity )
+		return;
+	va_start(arguments,format);
+	written = vsnprintf(line + *used,capacity - *used,format,arguments);
+	va_end(arguments);
+	if ( written > 0 )
+		*used += (size_t)written < capacity - *used ? (size_t)written : capacity - *used;
+}
+
 static void SparkGlm5NextWaveTimingReport(SparkGlm5NextWaveTiming *timing,uint32_t tp_rank,uint64_t now_ns)
 {
+	char line[1536];
+	size_t used = 0u;
 	uint64_t delivered_ns = timing->delivered_ns;
-	fprintf(stderr,"G5N-WAVE-TIMING rank=%u waves=%llu rows=%llu retries=%llu idle_us=%llu/%llu pre_us=%llu/%llu key_us=%llu/%llu gpu_us=%llu/%llu post_us=%llu/%llu idle_ms=%llu pre_ms=%llu key_ms=%llu gpu_ms=%llu post_ms=%llu source_wait_ms=%llu peer_wait_ms=%llu copy_ms=%llu combine_ms=%llu worst_ms=%llu worst_request=%llu worst_epochs=%llu/%llu worst_us=%llu/%llu/%llu/%llu/%llu\n",
-		tp_rank,(unsigned long long)timing->waves,(unsigned long long)timing->rows,(unsigned long long)timing->retries,
-		(unsigned long long)SparkLatencyPercentileUs(&timing->idle,50u),(unsigned long long)SparkLatencyPercentileUs(&timing->idle,99u),
-		(unsigned long long)SparkLatencyPercentileUs(&timing->pre,50u),(unsigned long long)SparkLatencyPercentileUs(&timing->pre,99u),
-		(unsigned long long)SparkLatencyPercentileUs(&timing->key,50u),(unsigned long long)SparkLatencyPercentileUs(&timing->key,99u),
-		(unsigned long long)SparkLatencyPercentileUs(&timing->gpu,50u),(unsigned long long)SparkLatencyPercentileUs(&timing->gpu,99u),
-		(unsigned long long)SparkLatencyPercentileUs(&timing->post,50u),(unsigned long long)SparkLatencyPercentileUs(&timing->post,99u),
-		(unsigned long long)(timing->idle.total_ns / 1000000u),(unsigned long long)(timing->pre.total_ns / 1000000u),
-		(unsigned long long)(timing->key.total_ns / 1000000u),(unsigned long long)(timing->gpu.total_ns / 1000000u),
-		(unsigned long long)(timing->post.total_ns / 1000000u),(unsigned long long)(timing->source_wait_ns / 1000000u),
-		(unsigned long long)(timing->peer_wait_ns / 1000000u),(unsigned long long)(timing->copy_ns / 1000000u),
-		(unsigned long long)(timing->combine_ns / 1000000u),(unsigned long long)(timing->worst_ns / 1000000u),
-		(unsigned long long)timing->worst_request,(unsigned long long)timing->worst_epoch[0],(unsigned long long)timing->worst_epoch[1],
-		(unsigned long long)(timing->worst_part_ns[0] / 1000u),(unsigned long long)(timing->worst_part_ns[1] / 1000u),
-		(unsigned long long)(timing->worst_part_ns[2] / 1000u),(unsigned long long)(timing->worst_part_ns[3] / 1000u),
-		(unsigned long long)(timing->worst_part_ns[4] / 1000u));
+	uint32_t index;
+	SparkGlm5NextLineAppend(line,sizeof(line),&used,"G5N-WAVE-TIMING rank=%u waves=%llu rows=%llu prefill=%llu graph=%llu eager=%llu graph_path=%u retries=%llu busy=%llu/%llu/%llu/%llu/%llu captures=%llu capture_ms=%llu",tp_rank,(unsigned long long)timing->waves,(unsigned long long)timing->rows,(unsigned long long)timing->prefill,(unsigned long long)timing->graph,(unsigned long long)(timing->waves - timing->graph),timing->graph_path,(unsigned long long)timing->retries,(unsigned long long)timing->busy[SPARK_GLM5_NEXT_BUSY_CHAIN],(unsigned long long)timing->busy[SPARK_GLM5_NEXT_BUSY_STREAM],(unsigned long long)timing->busy[SPARK_GLM5_NEXT_BUSY_SLOT],(unsigned long long)timing->busy[SPARK_GLM5_NEXT_BUSY_LANES],(unsigned long long)timing->busy[SPARK_GLM5_NEXT_BUSY_OTHER],(unsigned long long)timing->captures,(unsigned long long)(timing->capture_ns / 1000000u));
+	for (index=0u; index<SPARK_GLM5_NEXT_WAVE_INTERVALS; index++)
+		SparkGlm5NextLineAppend(line,sizeof(line),&used," %s_us=%llu/%llu",SparkGlm5NextWaveIntervalNames[index],(unsigned long long)SparkLatencyPercentileUs(&timing->interval[index],50u),(unsigned long long)SparkLatencyPercentileUs(&timing->interval[index],99u));
+	for (index=0u; index<SPARK_GLM5_NEXT_WAVE_INTERVALS; index++)
+		SparkGlm5NextLineAppend(line,sizeof(line),&used," %s_ms=%llu",SparkGlm5NextWaveIntervalNames[index],(unsigned long long)(timing->interval[index].total_ns / 1000000u));
+	SparkGlm5NextLineAppend(line,sizeof(line),&used," graph_run_ms=%llu eager_run_ms=%llu decode_wait_ms=%llu source_wait_ms=%llu peer_wait_ms=%llu copy_ms=%llu combine_ms=%llu worst_ms=%llu worst_request=%llu worst_epochs=%llu/%llu worst_us=",(unsigned long long)(timing->graph_run_ns / 1000000u),(unsigned long long)(timing->eager_run_ns / 1000000u),(unsigned long long)(timing->decode_wait_ns / 1000000u),(unsigned long long)(timing->source_wait_ns / 1000000u),(unsigned long long)(timing->peer_wait_ns / 1000000u),(unsigned long long)(timing->copy_ns / 1000000u),(unsigned long long)(timing->combine_ns / 1000000u),(unsigned long long)(timing->worst_ns / 1000000u),(unsigned long long)timing->worst_request,(unsigned long long)timing->worst_epoch[0],(unsigned long long)timing->worst_epoch[1]);
+	for (index=0u; index<SPARK_GLM5_NEXT_WAVE_INTERVALS; index++)
+		SparkGlm5NextLineAppend(line,sizeof(line),&used,"%s%llu",index == 0u ? "" : "/",(unsigned long long)(timing->worst_part_ns[index] / 1000u));
+	fprintf(stderr,"%s\n",line);
 	memset(timing,0,sizeof(*timing));
 	timing->delivered_ns = delivered_ns;
 	timing->window_ns = now_ns;
 }
 
-static void SparkGlm5NextWaveTimingWorst(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,uint64_t total_ns,uint64_t delivered_ns)
+static void SparkGlm5NextWaveTimingWorst(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const uint64_t *marks,uint64_t total_ns)
 {
+	uint32_t index;
 	timing->worst_ns = total_ns;
 	timing->worst_request = async->completion.request_id;
 	timing->worst_epoch[0] = async->epoch[0];
 	timing->worst_epoch[1] = async->epoch[1];
-	timing->worst_part_ns[0] = timing->delivered_ns != 0u && async->attempt_ns > timing->delivered_ns ? async->attempt_ns - timing->delivered_ns : 0u;
-	timing->worst_part_ns[1] = SparkGlm5NextSpanNs(async->attempt_ns,async->launched_ns);
-	timing->worst_part_ns[2] = SparkGlm5NextSpanNs(async->chain_start_ns,async->keyed_ns);
-	timing->worst_part_ns[3] = SparkGlm5NextSpanNs(async->launched_ns,async->callback_ns);
-	timing->worst_part_ns[4] = SparkGlm5NextSpanNs(async->callback_ns,delivered_ns);
+	for (index=0u; index<SPARK_GLM5_NEXT_WAVE_INTERVALS; index++)
+		timing->worst_part_ns[index] = SparkGlm5NextSpanNs(marks[index],marks[index + 1u]);
 }
 
-static void SparkGlm5NextWaveTimingRecord(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const SparkTpDeviceCollectiveHardwareTiming *collective,uint32_t tp_rank,uint64_t delivered_ns)
+static void SparkGlm5NextWaveTimingCount(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const SparkTpDeviceCollectiveHardwareTiming *collective,uint64_t run_ns)
 {
-	uint64_t total_ns = SparkGlm5NextSpanNs(async->attempt_ns,delivered_ns);
-	if ( timing->window_ns == 0u )
-		timing->window_ns = delivered_ns;
-	SparkLatencyAdd(&timing->idle,timing->delivered_ns,async->attempt_ns);
-	SparkLatencyAdd(&timing->pre,async->attempt_ns,async->launched_ns);
-	SparkLatencyAdd(&timing->key,async->chain_start_ns,async->keyed_ns);
-	SparkLatencyAdd(&timing->gpu,async->launched_ns,async->callback_ns);
-	SparkLatencyAdd(&timing->post,async->callback_ns,delivered_ns);
+	uint32_t reason;
 	timing->waves++;
 	timing->rows += async->row_count;
+	timing->prefill += async->prefill;
+	timing->graph += async->graph;
 	timing->retries += async->retries;
+	timing->captures += async->captures;
+	timing->capture_ns += async->capture_ns;
+	timing->graph_path = async->graph_path;
+	timing->graph_run_ns += async->graph != 0u ? run_ns : 0u;
+	timing->eager_run_ns += async->graph != 0u ? 0u : run_ns;
+	timing->decode_wait_ns += async->prefill == 0u ? SparkGlm5NextSpanNs(async->attempt_ns,async->chain_start_ns) : 0u;
 	timing->source_wait_ns += collective->source_wait_ns;
 	timing->peer_wait_ns += collective->peer_wait_ns;
 	timing->copy_ns += collective->copy_ns;
 	timing->combine_ns += collective->combine_ns;
+	for (reason=0u; reason<SPARK_GLM5_NEXT_BUSY_REASONS; reason++)
+		timing->busy[reason] += async->busy[reason];
+}
+
+static void SparkGlm5NextWaveTimingRecord(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const SparkTpDeviceCollectiveHardwareTiming *collective,uint32_t tp_rank,uint64_t delivered_ns)
+{
+	uint64_t marks[SPARK_GLM5_NEXT_WAVE_INTERVALS + 1u] = {timing->delivered_ns,async->attempt_ns,async->chain_start_ns,async->keyed_ns,async->launch_ns,async->finish_ns,delivered_ns};
+	uint64_t total_ns = SparkGlm5NextSpanNs(async->attempt_ns,delivered_ns);
+	uint32_t index;
+	if ( timing->window_ns == 0u )
+		timing->window_ns = delivered_ns;
+	for (index=0u; index<SPARK_GLM5_NEXT_WAVE_INTERVALS; index++)
+		SparkLatencyAdd(&timing->interval[index],marks[index],marks[index + 1u]);
+	SparkGlm5NextWaveTimingCount(timing,async,collective,SparkGlm5NextSpanNs(async->launch_ns,async->finish_ns));
 	if ( total_ns > timing->worst_ns )
-		SparkGlm5NextWaveTimingWorst(timing,async,total_ns,delivered_ns);
+		SparkGlm5NextWaveTimingWorst(timing,async,marks,total_ns);
 	timing->delivered_ns = delivered_ns;
 	if ( delivered_ns - timing->window_ns >= SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS )
 		SparkGlm5NextWaveTimingReport(timing,tp_rank,delivered_ns);
@@ -4015,10 +4077,10 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	completion = async->completion;
 	complete = async->completion_function;
 	complete_context = async->completion_context;
+	SparkGlm5NextWaveTimingRecord(&state->wave_timing,async,&collective,state->tp_rank,SparkGlm5NextNowNs());
 	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
 	atomic_store_explicit(&state->tp_chain_active,0u,memory_order_release);
 	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
-	SparkGlm5NextWaveTimingRecord(&state->wave_timing,async,&collective,state->tp_rank,SparkGlm5NextNowNs());
 	complete(complete_context,&completion);
 }
 
@@ -4065,8 +4127,6 @@ static void SparkGlm5NextScheduleCompletionWork(SparkGlm5NextModuleState *state,
 static void CUDART_CB SparkGlm5NextCompleteAsync(void *context)
 {
 	SparkGlm5NextAsyncCompletion *async = context;
-	if ( async != 0 )
-		async->callback_ns = SparkGlm5NextNowNs();
 	if ( async != 0 && async->state != 0 )
 		SparkGlm5NextScheduleCompletionWork(async->state,SparkGlm5NextCompleteOnWorker,async);
 }
@@ -4148,12 +4208,14 @@ static SparkStatus SparkGlm5NextRestoreCacheLanes(SparkGlm5NextModuleState *stat
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextClaimTpChain(SparkGlm5NextModuleState *state)
+static SparkStatus SparkGlm5NextClaimTpChain(SparkGlm5NextModuleState *state,uint32_t *busy_reason)
 {
 	uint32_t expected = 0u;
 	cudaError_t error;
+	*busy_reason = SPARK_GLM5_NEXT_BUSY_CHAIN;
 	if ( !atomic_compare_exchange_strong_explicit(&state->tp_chain_active,&expected,1u,memory_order_acq_rel,memory_order_acquire) )
 		return(SPARK_STATUS_BUSY);
+	*busy_reason = SPARK_GLM5_NEXT_BUSY_STREAM;
 	error = cudaStreamQuery((cudaStream_t)state->execution_stream);
 	if ( error == cudaSuccess )
 		return(SPARK_STATUS_OK);
@@ -4161,22 +4223,41 @@ static SparkStatus SparkGlm5NextClaimTpChain(SparkGlm5NextModuleState *state)
 	return(error == cudaErrorNotReady ? SPARK_STATUS_BUSY : SparkGlm5NextTerminalFailure(state,SPARK_STATUS_IO_ERROR,"chain-rearm"));
 }
 
-static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context,uint32_t slot_index)
+static void SparkGlm5NextStampClaim(SparkGlm5NextModuleState *state,uint32_t slot_index)
+{
+	SparkGlm5NextAsyncCompletion *async = &state->completions[slot_index];
+	async->chain_start_ns = SparkGlm5NextNowNs();
+	async->attempt_ns = state->wave_attempt_ns;
+	async->retries = state->wave_attempt_retries;
+	memcpy(async->busy,state->wave_attempt_busy,sizeof(async->busy));
+}
+
+static void SparkGlm5NextStampKeyed(SparkGlm5NextModuleState *state,uint32_t slot_index)
+{
+	SparkGlm5NextAsyncCompletion *async = &state->completions[slot_index];
+	async->keyed_ns = SparkGlm5NextNowNs();
+	async->epoch[0] = SparkTpDeviceCollectiveChainEpoch(&state->tp_device_collective);
+	async->epoch[1] = SparkTpDeviceCollectiveChainEpoch(&state->tp_device_collective_hc);
+}
+
+static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context,uint32_t slot_index,uint32_t *busy_reason)
 {
 	SparkGlm5NextExecutionSlot *slot = &state->slots[slot_index];
 	SparkGlm5NextTpChain *chain;
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t retained_index;
+	*busy_reason = SPARK_GLM5_NEXT_BUSY_OTHER;
 	for ( retained_index = 0u; retained_index < state->pipeline_slot_count; retained_index++ )
 		if ( atomic_load_explicit(&state->lazy_retained[retained_index],memory_order_acquire) != 0 )
 		{
 			SparkGlm5NextScheduleRetainedRetry(state);
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 		}
-	status = SparkGlm5NextClaimTpChain(state);
+	status = SparkGlm5NextClaimTpChain(state,busy_reason);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	*busy_reason = SPARK_GLM5_NEXT_BUSY_OTHER;
 	chain = (SparkGlm5NextTpChain *)calloc(1u,sizeof(*chain));
 	if ( chain == 0 )
 	{
@@ -4196,9 +4277,7 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 	chain->frame = frame;
 	chain->context = context;
 	chain->batch = context->batch;
-	state->completions[slot_index].chain_start_ns = SparkGlm5NextNowNs();
-	state->completions[slot_index].attempt_ns = state->wave_attempt_ns;
-	state->completions[slot_index].retries = state->wave_attempt_retries;
+	SparkGlm5NextStampClaim(state,slot_index);
 	chain->wave_rows = context->batch->row_count;
 	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
@@ -4207,9 +4286,7 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,chain->frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
 	if ( status == SPARK_STATUS_OK && state->tp_device_collective_hc_initialized != 0u )
 		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective_hc,chain->frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
-	state->completions[slot_index].keyed_ns = SparkGlm5NextNowNs();
-	state->completions[slot_index].epoch[0] = SparkTpDeviceCollectiveChainEpoch(&state->tp_device_collective);
-	state->completions[slot_index].epoch[1] = SparkTpDeviceCollectiveChainEpoch(&state->tp_device_collective_hc);
+	SparkGlm5NextStampKeyed(state,slot_index);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextRestoreCacheLanes(state,&state->completions[slot_index]);
 	if ( status == SPARK_STATUS_OK )
@@ -4241,25 +4318,52 @@ static void SparkGlm5NextStageHostSampling(const SparkGlm5NextModuleState *state
 	}
 }
 
+static void SparkGlm5NextNoteAttempt(SparkGlm5NextModuleState *state,uint64_t request_id)
+{
+	if ( state->wave_attempt_request == request_id && state->wave_attempt_ns != 0u )
+	{
+		state->wave_attempt_retries++;
+		return;
+	}
+	state->wave_attempt_request = request_id;
+	state->wave_attempt_ns = SparkGlm5NextNowNs();
+	state->wave_attempt_retries = 0u;
+	memset(state->wave_attempt_busy,0,sizeof(state->wave_attempt_busy));
+}
+
+static SparkStatus SparkGlm5NextNoteBusy(SparkGlm5NextModuleState *state,SparkStatus status,uint32_t reason)
+{
+	if ( status == SPARK_STATUS_BUSY )
+		state->wave_attempt_busy[reason < SPARK_GLM5_NEXT_BUSY_REASONS ? reason : SPARK_GLM5_NEXT_BUSY_OTHER]++;
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextStartSlot(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context,uint32_t slot_index,const SparkGlm5NextClaimedContinuityContext *continuity,uint32_t *busy_reason)
+{
+	const SparkGlm5NextResidentDecodeStageBatchView *batch = context->batch;
+	SparkGlm5NextExecutionSlot *slot = &state->slots[slot_index];
+	SparkStatus status;
+	*busy_reason = SPARK_GLM5_NEXT_BUSY_OTHER;
+	slot->stream = frame->execution_stream;
+	status = SparkGlm5NextStageHostBatch(state,slot,batch);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	SparkGlm5NextStageHostSampling(state,slot,batch);
+	SparkGlm5NextPrepareAsyncCompletion(state,frame,batch,continuity->bound,continuity->sequence_ids,continuity->next_positions,slot_index);
+	return(SparkGlm5NextStartClaimedBatch(state,frame,context,slot_index,busy_reason));
+}
+
 static SparkStatus SparkGlm5NextExecuteBatch(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageFrameContext *context)
 {
 	const SparkGlm5NextResidentDecodeStageBatchView *batch = context->batch;
 	SparkGlm5NextClaimedContinuityContext continuity;
-	SparkGlm5NextExecutionSlot *slot;
 	uint8_t simulated_bound[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t simulated_sequence[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t simulated_next[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t slot_index;
-	uint64_t last_ordinal,attempt_ns = SparkGlm5NextNowNs();
+	uint32_t slot_index,busy_reason = SPARK_GLM5_NEXT_BUSY_SLOT;
+	uint64_t last_ordinal;
 	SparkStatus status;
-	if ( state->wave_attempt_request != frame->request_id || state->wave_attempt_ns == 0u )
-	{
-		state->wave_attempt_request = frame->request_id;
-		state->wave_attempt_ns = attempt_ns;
-		state->wave_attempt_retries = 0u;
-	}
-	else
-		state->wave_attempt_retries++;
+	SparkGlm5NextNoteAttempt(state,frame->request_id);
 	status = SparkGlm5NextWeightdHealth(state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -4277,30 +4381,23 @@ static SparkStatus SparkGlm5NextExecuteBatch(SparkGlm5NextModuleState *state,Spa
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm5NextPrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"G5N-DBG submit-fail site=lane-claim status=%d req=%llu rows=%u\n",(int)status,(unsigned long long)frame->request_id,(unsigned)batch->active_sequence_count);
-		SPARK_RETURN(status);
+		if ( status != SPARK_STATUS_BUSY )
+			fprintf(stderr,"G5N-DBG submit-fail site=lane-claim status=%d req=%llu rows=%u\n",(int)status,(unsigned long long)frame->request_id,(unsigned)batch->active_sequence_count);
+		SPARK_RETURN(SparkGlm5NextNoteBusy(state,status,SPARK_GLM5_NEXT_BUSY_LANES));
 	}
 	slot_index = (uint32_t)(frame->request_id % state->pipeline_slot_count);
 	status = SparkStageModuleIndexSetClaim(state->slot_states,state->pipeline_slot_count,&slot_index,1u);
-	if ( status != SPARK_STATUS_OK )
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 		fprintf(stderr,"G5N-DBG submit-fail site=slot-claim status=%d req=%llu slot=%u\n",(int)status,(unsigned long long)frame->request_id,(unsigned)slot_index);
 	if ( status == SPARK_STATUS_OK )
 	{
-		slot = &state->slots[slot_index];
-		slot->stream = frame->execution_stream;
-		status = SparkGlm5NextStageHostBatch(state,slot,batch);
-		if ( status == SPARK_STATUS_OK )
-		{
-			SparkGlm5NextStageHostSampling(state,slot,batch);
-			SparkGlm5NextPrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
-			status = SparkGlm5NextStartClaimedBatch(state,frame,context,slot_index);
-		}
+		status = SparkGlm5NextStartSlot(state,frame,context,slot_index,&continuity,&busy_reason);
 		if ( status != SPARK_STATUS_OK )
 			SparkStageModuleSlotRelease(state->slot_states,slot_index);
 	}
 	if ( status != SPARK_STATUS_OK )
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-	SPARK_RETURN(status);
+	SPARK_RETURN(SparkGlm5NextNoteBusy(state,status,busy_reason));
 }
 
 static SparkStatus SparkGlm5NextPublishCache(SparkGlm5NextModuleState *state,SparkModelDriverFrame *frame)
@@ -4731,6 +4828,7 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		state->graph_path_enabled = strcmp(graph_env,"1") == 0 ? 1u : 0u;
+		state->graph_path_requested = state->graph_path_enabled;
 		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
 		state->graph_record_limit = record_limit_env != 0 ?
 		    (uint32_t)strtoul(record_limit_env,0,10) : 0u;

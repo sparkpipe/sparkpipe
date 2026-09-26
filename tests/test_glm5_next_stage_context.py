@@ -300,6 +300,7 @@ static void check_graph_epoch_ownership(void)
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_OK && position == 8u && token == output);
 	assert(GRAPH_LAUNCHES == 1u && EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] == 42u);
+	assert(state.completions[0].graph == 1u && state.completions[0].launch_ns != 0u);
 	state.decode_miss_host[0] = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_BUSY && position == 8u);
@@ -694,20 +695,21 @@ static void check_stream_receipt(void)
 
 static void check_chain_ownership(void)
 {
+	uint32_t reason = SPARK_GLM5_NEXT_BUSY_REASONS;
 	memset(&state,0,sizeof(state));
 	state.execution_stream = (void *)(uintptr_t)7u;
 	DRAIN_STATUS = cudaErrorNotReady;
 	STREAM_QUERY_COUNT = 0u;
-	assert(SparkGlm5NextClaimTpChain(&state) == SPARK_STATUS_BUSY);
+	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_BUSY && reason == SPARK_GLM5_NEXT_BUSY_STREAM);
 	assert(STREAM_QUERY_COUNT == 1u && atomic_load(&state.tp_chain_active) == 0u);
 	DRAIN_STATUS = cudaSuccess;
-	assert(SparkGlm5NextClaimTpChain(&state) == SPARK_STATUS_OK);
+	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_OK);
 	assert(STREAM_QUERY_COUNT == 2u && atomic_load(&state.tp_chain_active) == 1u);
-	assert(SparkGlm5NextClaimTpChain(&state) == SPARK_STATUS_BUSY);
+	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_BUSY && reason == SPARK_GLM5_NEXT_BUSY_CHAIN);
 	assert(STREAM_QUERY_COUNT == 2u && atomic_load(&state.tp_chain_active) == 1u);
 	atomic_store(&state.tp_chain_active,0u);
 	DRAIN_STATUS = cudaErrorInvalidValue;
-	assert(SparkGlm5NextClaimTpChain(&state) == SPARK_STATUS_IO_ERROR);
+	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_IO_ERROR);
 	assert(atomic_load(&state.terminal_status) == SPARK_STATUS_IO_ERROR && atomic_load(&state.tp_chain_active) == 0u);
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	DRAIN_STATUS = cudaErrorNotReady;
@@ -1625,36 +1627,69 @@ static void check_pack_identity(void)
 	assert(SparkGlm5NextPackValidateHeader(&state,&header,header.file_bytes) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static void check_attempt_accounting(void)
+{
+	memset(&state,0,sizeof(state));
+	SparkGlm5NextNoteAttempt(&state,5u);
+	assert(state.wave_attempt_request == 5u && state.wave_attempt_ns != 0u && state.wave_attempt_retries == 0u);
+	assert(SparkGlm5NextNoteBusy(&state,SPARK_STATUS_BUSY,SPARK_GLM5_NEXT_BUSY_CHAIN) == SPARK_STATUS_BUSY);
+	SparkGlm5NextNoteAttempt(&state,5u);
+	assert(SparkGlm5NextNoteBusy(&state,SPARK_STATUS_BUSY,SPARK_GLM5_NEXT_BUSY_REASONS + 3u) == SPARK_STATUS_BUSY);
+	SparkGlm5NextNoteAttempt(&state,5u);
+	assert(SparkGlm5NextNoteBusy(&state,SPARK_STATUS_IO_ERROR,SPARK_GLM5_NEXT_BUSY_SLOT) == SPARK_STATUS_IO_ERROR);
+	assert(state.wave_attempt_retries == 2u && state.wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_CHAIN] == 1u && state.wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_OTHER] == 1u && state.wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_SLOT] == 0u);
+	SparkGlm5NextStampClaim(&state,1u);
+	assert(state.completions[1].attempt_ns == state.wave_attempt_ns && state.completions[1].chain_start_ns >= state.wave_attempt_ns);
+	assert(state.completions[1].retries == 2u && state.completions[1].busy[SPARK_GLM5_NEXT_BUSY_CHAIN] == 1u && state.completions[1].busy[SPARK_GLM5_NEXT_BUSY_OTHER] == 1u);
+	SparkGlm5NextNoteAttempt(&state,6u);
+	assert(state.wave_attempt_request == 6u && state.wave_attempt_retries == 0u && state.wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_CHAIN] == 0u && state.wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_OTHER] == 0u);
+	assert(SparkGlm5NextGraphPathState(&state) == SPARK_GLM5_NEXT_GRAPH_PATH_OFF);
+	state.graph_path_requested = 1u;
+	assert(SparkGlm5NextGraphPathState(&state) == SPARK_GLM5_NEXT_GRAPH_PATH_DEGRADED);
+	state.graph_path_enabled = 1u;
+	assert(SparkGlm5NextGraphPathState(&state) == SPARK_GLM5_NEXT_GRAPH_PATH_ON);
+}
+
 static void check_wave_timing(void)
 {
 	static SparkGlm5NextWaveTiming timing;
 	SparkGlm5NextAsyncCompletion wave;
 	SparkTpDeviceCollectiveHardwareTiming collective = {1000000u,20000000u,2000000u,3000000u};
+	const uint64_t attempt[3] = {UINT64_C(1000000000),UINT64_C(6000000000),UINT64_C(12000000000)},wait[3] = {100000u,3000000u,100000u},setup[3] = {251000000u,600000u,600000u},run[3] = {60000000u,90000000u,60000000u};
 	char path[] = "/tmp/g5n_wave_timing_XXXXXX",text[2048] = {0};
-	const char *expected = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 retries=2 idle_us=8388608/8388608 pre_us=1024/1024 key_us=512/512 gpu_us=65536/131072 post_us=512/512 idle_ms=9847 pre_ms=3 key_ms=0 gpu_ms=210 post_ms=1 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=91 worst_request=8 worst_epochs=11/12 worst_us=4938500/1000/300/90000/500\n";
+	const char *expected = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 prefill=1 graph=2 eager=1 graph_path=1 retries=2 busy=1/1/0/0/0 captures=1 capture_ms=250 idle_us=8388608/8388608 wait_us=128/4096 key_us=512/512 setup_us=1024/262144 run_us=65536/131072 post_us=512/512 idle_ms=10593 wait_ms=3 key_ms=0 setup_ms=252 run_ms=210 post_ms=1 graph_run_ms=150 eager_run_ms=60 decode_wait_ms=3 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=311 worst_request=7 worst_epochs=11/12 worst_us=0/100/300/251000/60000/500\n";
 	int descriptor = mkstemp(path),saved = dup(2);
 	uint64_t index;
-	memset(&wave,0,sizeof(wave));
-	wave.row_count = 8u;
-	wave.epoch[0] = 11u;
-	wave.epoch[1] = 12u;
 	assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
 	for (index=0u; index<3u; index++)
 	{
+		memset(&wave,0,sizeof(wave));
+		wave.row_count = 8u;
+		wave.epoch[0] = 11u;
+		wave.epoch[1] = 12u;
+		wave.graph_path = SPARK_GLM5_NEXT_GRAPH_PATH_ON;
 		wave.completion.request_id = 7u + index;
+		wave.graph = index < 2u ? 1u : 0u;
+		wave.prefill = index == 2u ? 1u : 0u;
+		wave.captures = index == 0u ? 1u : 0u;
+		wave.capture_ns = index == 0u ? 250000000u : 0u;
 		wave.retries = index == 1u ? 2u : 0u;
-		wave.attempt_ns = UINT64_C(1000000000) + index * UINT64_C(5000000000);
-		wave.chain_start_ns = wave.attempt_ns + 100000u;
-		wave.keyed_ns = wave.attempt_ns + 400000u;
-		wave.launched_ns = wave.attempt_ns + 1000000u;
-		wave.callback_ns = wave.launched_ns + (index == 1u ? 90000000u : 60000000u);
-		SparkGlm5NextWaveTimingRecord(&timing,&wave,&collective,3u,wave.callback_ns + 500000u);
+		wave.busy[SPARK_GLM5_NEXT_BUSY_CHAIN] = index == 1u ? 1u : 0u;
+		wave.busy[SPARK_GLM5_NEXT_BUSY_STREAM] = index == 1u ? 1u : 0u;
+		wave.attempt_ns = attempt[index];
+		wave.chain_start_ns = wave.attempt_ns + wait[index];
+		wave.keyed_ns = wave.chain_start_ns + 300000u;
+		wave.launch_ns = wave.keyed_ns + setup[index];
+		wave.finish_ns = wave.launch_ns + run[index];
+		SparkGlm5NextWaveTimingRecord(&timing,&wave,&collective,3u,wave.finish_ns + 500000u);
 	}
 	fflush(stderr);
 	assert(dup2(saved,2) == 2 && close(saved) == 0);
 	assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
+	if ( strcmp(text,expected) != 0 )
+		fprintf(stderr,"wave timing line:\n%s",text);
 	assert(strcmp(text,expected) == 0);
-	assert(timing.waves == 0u && timing.worst_ns == 0u && timing.delivered_ns == UINT64_C(11061500000) && timing.window_ns == timing.delivered_ns);
+	assert(timing.waves == 0u && timing.worst_ns == 0u && timing.delivered_ns == UINT64_C(12061500000) && timing.window_ns == timing.delivered_ns);
 }
 
 int32_t main(void)
@@ -1664,6 +1699,7 @@ int32_t main(void)
 	SparkFirmwareModuleHostServices services = {0};
 	const char *path = 0;
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
+	check_attempt_accounting();
 	check_wave_timing();
 	check_graph_epoch_ownership();
 	check_lazy_open_retained_owner();

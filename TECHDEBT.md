@@ -109,6 +109,20 @@ progress diary.
 - Accept each removal independently: exact token parity first, then at least
   three unprofiled end-to-end cached-prefill B1 runs. Do not stack candidates
   until the preceding candidate beats the retained 33.6647 tok/s floor.
+- glm5_next: the graph path waits for the whole graph on residentd's thread
+  (`SparkGlm5NextGraphStep` through `SparkStageModuleCudaWaitFor`) before it
+  finishes the chain, and the completion worker then waits on the same stream
+  again. Move the stuck-graph timeout and the error checks into the completion
+  path so residentd keeps serving its socket during the replay.
+- glm5_next: an eager chain synchronizes the stream after every collective
+  round (`SparkTpDeviceCollectiveRunDeviceRounds`) and twice more per routed
+  layer (expert lease, then release), so it pays host round trips per layer.
+  Prefill chunks always run eager, and decode waves queue behind them
+  (`decode_wait_ms` in `G5N-WAVE-TIMING`).
+- glm5_next: between two waves every rank ends and restarts mesh activity
+  (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
+  the other ranks spin on, and two host callbacks run. Keep the activity and
+  the epoch across the waves of a session.
 
 ## Resident TP4 x PP4 execution
 
