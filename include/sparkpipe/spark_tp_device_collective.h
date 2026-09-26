@@ -371,6 +371,10 @@ SparkStatus SparkTpDeviceCollectiveHardwareStats(
     SparkTpDeviceCollective *collective,
     SparkTpDeviceCollectiveHardwareTiming *timing_out);
 
+uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *collective);
+
+SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective,void *stream);
+
 void SparkTpDeviceCollectiveRoundStats(
     SparkTpDeviceCollective *collective,
     uint64_t *count_out,

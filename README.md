@@ -209,7 +209,9 @@ regime:
 
 Where the arithmetic allows, the variants accumulate in the same order and
 are bitwise equal to each other, so the batch a request lands in does not
-change its tokens. Decode graphs are captured for each row count.
+change its tokens. Decode graphs are captured for each row count. A frame
+that no graph covers enqueues the same launches in one pass and checks its
+collective rounds once, at the end of the frame.
 
 **The harness.** `tools/glm5_next_batch_roofline.cu` runs the real kernels
 on one GPU at any batch and context. It prints per-phase time against the

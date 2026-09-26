@@ -45,6 +45,7 @@ extern uint64_t cuda_stub_mesh_hardware_elements;
 extern uint32_t cuda_stub_mesh_hardware_operation;
 extern uint32_t cuda_stub_mesh_hardware_logical_rows;
 extern uint32_t cuda_stub_mesh_hardware_slice_routes;
+extern uint32_t cuda_stub_stream_sync_calls;
 
 static uint64_t mock_client_alive = 1u;
 static uint32_t mock_server;
@@ -504,6 +505,93 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     SparkTpDeviceCollectiveDestroy(&collective);
 }
 
+static void TestDeferredSubmission(SparkTpDeviceCollectiveSubmission *submission,uint16_t *local,uint16_t *output)
+{
+    memset(submission,0,sizeof(*submission));
+    submission->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission->descriptor_bytes = sizeof(*submission);
+    submission->active_sequence_count = 2u;
+    submission->logical_sequence_count = 2u;
+    submission->local_device = local;
+    submission->full_device = output;
+    submission->cuda_stream = (void *)1;
+    submission->flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+}
+
+static void TestDeferredVerify(SparkTpDeviceCollective *collective,SparkTpMeshRoundControl *control)
+{
+    uint32_t syncs,round;
+    SparkTpDeviceCollectiveSubmission submission;
+    uint16_t local[256] = {0},output[512] = {0};
+    TestDeferredSubmission(&submission,local,output);
+    for (round=1u; round<=3u; round++)
+    {
+        CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a stream-ordered round enqueues without a completion");
+        control->rounds_done = round;
+    }
+    control->rounds_done = 3u;
+    syncs = cuda_stub_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"one read-back checks three deferred rounds");
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"nothing deferred means nothing to read");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"two more deferred rounds");
+    control->rounds_done = 1u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_IO_ERROR,"a round that never finished fails the chain");
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK,"a failed check clears the deferred count");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"one more deferred round");
+    control->rounds_done = 1u;
+    control->error_word = 7u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_IO_ERROR,"a device error fails the chain even when every round finished");
+    control->error_word = 0u;
+}
+
+static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    SparkTpDeviceCollective collective = {0};
+    SparkTpDeviceCollectiveSubmission submission;
+    uint16_t local[256] = {0},output[512] = {0};
+    uint32_t syncs,launches;
+    SparkTpMeshRoundControl *control;
+    memset((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),0,sizeof(SparkWeightdMeshWaitRequest));
+    cuda_stub_mesh_hardware_alias = (uint8_t *)mesh + 64u;
+    cuda_stub_mesh_hardware_launch_result = 0;
+    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK && SparkTpDeviceCollectiveChainKey(&collective,901u) == SPARK_STATUS_OK,"deferred fixture");
+    CHECK(SparkTpDeviceCollectiveStreamOrdered(&collective) == 1u,"hardware waits can run stream-ordered rounds");
+    TestDeferredSubmission(&submission,local,output);
+    submission.flags = 0u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_INVALID_ARGUMENT,"a round without a completion must be stream-ordered");
+    submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+    submission.completion_function = TestComplete;
+    syncs = cuda_stub_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_IO_ERROR && cuda_stub_stream_sync_calls == syncs + 1u,"a round with a completion is still read back and checked on the spot");
+    submission.completion_function = 0;
+    syncs = cuda_stub_stream_sync_calls;
+    launches = cuda_stub_mesh_hardware_calls;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && cuda_stub_mesh_hardware_calls == launches + 1u && cuda_stub_stream_sync_calls == syncs,"a stream-ordered round launches without synchronizing the stream");
+    control = cuda_stub_mesh_hardware_control;
+    CHECK(control != 0 && control->rounds_done == 0u,"the first deferred round of a chain resets the round counter");
+    if ( control == 0 )
+        return;
+    control->rounds_done = 1u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 1u,"later deferred rounds keep counting");
+    CHECK(SparkTpDeviceCollectiveChainKey(&collective,902u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"a new chain drops the previous chain's deferred count");
+    TestDeferredVerify(&collective,control);
+    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records as before");
+    syncs = cuda_stub_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"captured rounds are not deferred rounds");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK,"a deferred round is pending");
+    control->rounds_done = 5u;
+    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 0u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records its own counter reset while deferred rounds are pending");
+    control->rounds_done = 1u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK,"the pending deferred round still verifies");
+    SparkTpDeviceCollectiveDestroy(&collective);
+    unsetenv("SPARK_TP_WAIT_MODE");
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,"spin fixture");
+    CHECK(SparkTpDeviceCollectiveStreamOrdered(&collective) == 0u && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_INVALID_ARGUMENT,"spin waits need a completion for every round");
+    SparkTpDeviceCollectiveDestroy(&collective);
+    cuda_stub_mesh_hardware_alias = 0;
+}
+
 static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
 {
     SparkTpDeviceCollective collective = {0};
@@ -714,6 +802,7 @@ int main(void)
 
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
+	TestDeferredRounds(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
 	TestOwnedMesh(config);
 	TestRestartEpoch(config,mesh_buffer);

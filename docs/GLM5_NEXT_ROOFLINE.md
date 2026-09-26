@@ -219,7 +219,7 @@ Each rank's glm5_next module prints one line every 10 s from its completion
 worker:
 
 ```
-G5N-WAVE-TIMING rank=R waves=N rows=N prefill=N graph=N eager=N graph_path=P retries=N busy=C/S/L/A/O captures=N capture_ms=T idle_us=p50/p99 wait_us=p50/p99 key_us=p50/p99 setup_us=p50/p99 run_us=p50/p99 post_us=p50/p99 idle_ms=T wait_ms=T key_ms=T setup_ms=T run_ms=T post_ms=T graph_run_ms=T eager_run_ms=T decode_wait_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/wait/key/setup/run/post
+G5N-WAVE-TIMING rank=R waves=N rows=N prefill=N graph=N eager=N linear=N graph_path=P retries=N busy=C/S/L/A/O captures=N capture_ms=T idle_us=p50/p99 wait_us=p50/p99 key_us=p50/p99 setup_us=p50/p99 run_us=p50/p99 post_us=p50/p99 idle_ms=T wait_ms=T key_ms=T setup_ms=T run_ms=T post_ms=T graph_run_ms=T eager_run_ms=T linear_run_ms=T decode_wait_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/wait/key/setup/run/post
 ```
 
 The six intervals follow one frame, each starting where the previous one
@@ -231,13 +231,15 @@ ends:
 | `wait` | first sight | the chain claim. The `BUSY` retries happen here, while another chain holds the rank. |
 | `key` | the chain claim | both bands' chain keys set: the activity handshakes and, on ranks other than 0, the wait for rank 0's epoch broadcast |
 | `setup` | keys set | the first launch: the graph launch on the graph path, the first kernel on the eager path. Graph captures fall here. |
-| `run` | the first launch | the host finishing the chain |
+| `run` | the first launch | the host finishing the chain; for a linear chain, the completion worker finding the stream drained |
 | `post` | the chain finished | the completion handed to residentd: host callback, completion worker, end of the collective chain |
 
 `run` is the wave's GPU time as the host sees it. The graph path waits for
 the whole graph on the residentd thread before it finishes the chain, and the
-eager path synchronizes the stream at every collective round, so on the eager
-path `run` also holds the host work between rounds.
+chain state machine synchronizes the stream at every collective round, so on
+that path `run` also holds the host work between rounds. A linear chain
+enqueues the whole wave and returns, so its `run` ends when the completion
+worker finds the stream drained, one host callback after the GPU finished.
 
 The other fields:
 
@@ -245,10 +247,12 @@ The other fields:
 | --- | --- |
 | `prefill` | frames that were prefill chunks; the rest are decode waves |
 | `graph`, `eager` | frames run as one CUDA graph, and the rest |
+| `linear` | eager frames enqueued as one linear chain; the other eager frames ran the chain state machine |
 | `graph_path` | 0: off by configuration; 1: on; 2: degraded, requested but turned off by a `GRAPH-FAILED`, so the rank runs eager until restart |
 | `busy` | `BUSY` retries by what blocked the claim: another chain holds the rank, the stream still had work, the frame's pipeline slot was taken, one of its sequence lanes was taken, or something else (a retained lease, a cache-frame claim) |
 | `captures`, `capture_ms` | graph captures and their time, inside `setup` |
 | `graph_run_ms`, `eager_run_ms` | `run` split by path |
+| `linear_run_ms` | the part of `eager_run_ms` that linear chains ran |
 | `decode_wait_ms` | `wait` of decode waves only: the time they queue behind other chains, such as prefill chunks |
 
 `wait` overlaps the `run` and `post` of the chain the frame queued behind, so
@@ -262,7 +266,9 @@ chain epochs, which match `worst_tag` in `WD-MESH-TIMING`.
 
 `python3 tools/wave_timeline_report.py 0=residentd0.log ...` prints each
 rank's per-frame budget with the busy reasons and path split, and the slowest
-frames across ranks.
+frames across ranks. Its `eager_run` column counts only the chain state
+machine, `linear_run` the linear chains; lines printed before linear chains
+existed count every non-graph frame as eager.
 
 ### Iteration 15's `pre` held the GPU time
 
@@ -286,6 +292,58 @@ could not be submitted at all while that route sat in a lower slot.
 `SparkModelResidentdSubmitAdapter` now reports whether it called the
 adapter, and a route that is not the head is skipped without an operation
 or a wake.
+
+## Linear eager chains
+
+After iteration 16 the fleet ran 94.1% of chains as graph replays, at 45.2 ms
+each, and 5.9% eager, at 153.7 ms each. 54.9 ms of every eager chain was the
+host blocked in collective rounds (`collective_host_submit_ms` in
+`CHAIN-TIME`): the chain state machine read the round-control block back and
+synchronized the stream after each of about 91 rounds, and every routed layer
+added a routing readback, a weightd lease and a stream synchronization on
+release. Eager chains are the prefill chunks and the decode waves the graph
+gate turns away. Decode waves queued behind them for about 15 ms per wave.
+
+When the stage's routed experts are all pinned, which the graph path already
+requires, an eager chain now runs as a linear chain
+(`SparkGlm5NextLinearChain`). The host enqueues the same launches the decode
+graph records, from the same walk (`SparkGlm5NextWalkChain`, which
+`SparkGlm5NextGraphRecord` also captures), in one pass:
+
+- every collective is a stream-ordered hardware-wait round with no completion
+  callback, no readback and no stream synchronization;
+- routed layers address the pinned arena, like the graph, instead of taking a
+  lease per layer. Both give the kernels the same arena base and the same
+  per-layer offsets, so the weights read are the same;
+- the host then hands the frame to the completion worker like any other
+  chain, and residentd is free while the GPU runs it.
+
+The rounds are checked once per chain. Every hardware-wait round adds one to
+the device's `rounds_done` word unless it failed, and the first failure sets
+the sticky `error_word`, after which later rounds skip their work. The
+collective counts the rounds it deferred. After the completion worker has
+drained the stream, `SparkTpDeviceCollectiveVerifyDeferred` reads each band's
+round-control block once. A set `error_word` or a short `rounds_done` prints
+`MESH-DEFERRED-ROUNDS-FAILED`; the module then broadcasts a cancel on both
+bands and fails the frame, which rolls back its cache lanes like any other
+failed frame.
+
+A chain runs the state machine instead when experts are not pinned, with MTP,
+speculative verify or the T1 trace, with `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`
+set, or when either collective lacks hardware-wait rounds
+(`SparkGlm5NextLinearEligible`).
+
+To check a deployment: `linear` in `G5N-WAVE-TIMING` should cover the frames
+that `eager` used to, `CHAIN-TIME` lines carry `path=linear` with
+`collective_host_submit_ms` reduced to launch time, and `decode_wait_ms` per
+decode wave falls by what the eager chains' host work cost. Greedy tokens
+must match the state machine's. With `SPARK_GLM5_NEXT_GRAPH_PATH=0`,
+`SPARK_GLM5_NEXT_PIN_EXPERTS=1` runs every chain linear and
+`SPARK_GLM5_NEXT_PIN_EXPERTS=0` runs every chain through the state machine,
+so the same prompts under both settings compare the two. What stays: a decode
+wave that arrives behind a prefill chunk still waits for the chunk's GPU
+time. Capturing prefill graphs, or ordering decode ahead of prefill, removes
+that.
 
 ## Batching
 
