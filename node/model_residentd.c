@@ -2460,12 +2460,11 @@ static SparkStatus SparkModelResidentdProgressTransport(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkModelResidentdSubmitAdapter(
-	SparkModelResidentdRuntime *runtime,
-	SparkModelResidentdRoute *route)
+static SparkStatus SparkModelResidentdSubmitAdapter(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,uint32_t *submitted)
 {
 	SparkStatus status,result;
 	uint32_t state;
+	*submitted = 0u;
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route->active == 0u || route->state != SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 	{
@@ -2488,6 +2487,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER;
 	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
 	pthread_mutex_unlock(&runtime->mutex);
+	*submitted = 1u;
 	status = runtime->adapter_library.adapter_interface.submit(runtime->adapter_state,&route->submission);
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 		fprintf(stderr,"model_residentd adapter_submit status=%s rank=%u stage=%u submission=%llu kind=%u rows=%u lanes=%u\n",SparkStatusToString(status),runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(unsigned long long)route->submission.submission_id,route->submission.work_kind,route->submission.row_count,route->submission.active_sequence_count);
@@ -2630,7 +2630,7 @@ static SparkStatus SparkModelResidentdProgressRoute(
 	SparkModelResidentdAdapterBudget *budget)
 {
 	SparkStatus status;
-	uint32_t state,step;
+	uint32_t state,step,submitted;
 	for (step=0u; step<4u; step++)
 	{
 		pthread_mutex_lock(&runtime->mutex);
@@ -2685,7 +2685,9 @@ static SparkStatus SparkModelResidentdProgressRoute(
 				budget->refused != 0u ||
 				(budget->serial != 0u && budget->ops != 0u) )
 				return(SPARK_STATUS_OK);
-			status = SparkModelResidentdSubmitAdapter(runtime,route);
+			status = SparkModelResidentdSubmitAdapter(runtime,route,&submitted);
+			if ( status == SPARK_STATUS_OK && submitted == 0u )
+				return(SPARK_STATUS_OK);
 			if ( status == SPARK_STATUS_BUSY )
 			{
 				budget->refused = 1u;

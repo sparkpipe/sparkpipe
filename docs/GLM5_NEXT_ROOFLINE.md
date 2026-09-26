@@ -184,7 +184,7 @@ How to read it:
 | --- | --- | --- |
 | One or two ranks close most gates, and their column shows much larger lag in every receiver's row | Stragglers | Look at those nodes: CPU placement of the doorbell thread, clocks and thermals, the NIC link and switch port |
 | A rank closes many gates but its excess is small | It is last by microseconds; the skew costs nothing | Nothing on that rank |
-| Most of `gate_ms` is `start_ms`, and one rank's excess is mostly start gates | That rank starts waves late | `G5N-WAVE-TIMING` on that rank: `pre_us`, `key_us`, retries |
+| Most of `gate_ms` is `start_ms`, and one rank's excess is mostly start gates | That rank starts waves late | `G5N-WAVE-TIMING` on that rank: `wait_us`, `key_us`, `setup_us` |
 | Lags similar for every sender, `post_us` tens of µs | The send-side relay is slow | Kernel-posted work requests |
 | Lags similar for every sender, `ship_us` well above the wire time of one round's bytes at about 100 Gb/s useful (120 KiB takes about 10 µs) | The NIC or switch path | Pair links, fewer bytes per round |
 | Lags similar and small, but the device peer wait is still large | The receive-side handoff costs the time (gate release, then GPU front end) | GPU waits directly on the peer tails |
@@ -219,27 +219,73 @@ Each rank's glm5_next module prints one line every 10 s from its completion
 worker:
 
 ```
-G5N-WAVE-TIMING rank=R waves=N rows=N retries=N idle_us=p50/p99 pre_us=p50/p99 key_us=p50/p99 gpu_us=p50/p99 post_us=p50/p99 idle_ms=T pre_ms=T key_ms=T gpu_ms=T post_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/pre/key/gpu/post
+G5N-WAVE-TIMING rank=R waves=N rows=N prefill=N graph=N eager=N graph_path=P retries=N busy=C/S/L/A/O captures=N capture_ms=T idle_us=p50/p99 wait_us=p50/p99 key_us=p50/p99 setup_us=p50/p99 run_us=p50/p99 post_us=p50/p99 idle_ms=T wait_ms=T key_ms=T setup_ms=T run_ms=T post_ms=T graph_run_ms=T eager_run_ms=T decode_wait_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/wait/key/setup/run/post
 ```
+
+The six intervals follow one frame, each starting where the previous one
+ends:
 
 | Interval | From | To |
 | --- | --- | --- |
-| `idle` | the previous wave's completion handed to residentd | the module first seeing this wave's frame |
-| `pre` | the module first seeing the frame, including `BUSY` retries (counted in `retries`) | the last launch (the graph launch on the graph path) |
+| `idle` | the previous frame's completion handed to residentd | the module first seeing this frame |
+| `wait` | first sight | the chain claim. The `BUSY` retries happen here, while another chain holds the rank. |
 | `key` | the chain claim | both bands' chain keys set: the activity handshakes and, on ranks other than 0, the wait for rank 0's epoch broadcast |
-| `gpu` | the last launch | the completion host callback: the GPU has finished the wave |
-| `post` | the host callback | the completion handed to residentd |
+| `setup` | keys set | the first launch: the graph launch on the graph path, the first kernel on the eager path. Graph captures fall here. |
+| `run` | the first launch | the host finishing the chain |
+| `post` | the chain finished | the completion handed to residentd: host callback, completion worker, end of the collective chain |
 
-The `_ms` fields are window totals, so dividing by `waves` gives the mean
-per wave, and idle + pre + gpu + post is the wave period on that rank. The
-collective fields are the device-measured sums from `COLLECTIVE-GPU-TIME`;
-`gpu` minus them is the rank's compute. `worst_*` names the window's
-slowest wave (frame to completion) by request id, which every rank shares,
-and by the main and hc chain epochs, which match `worst_tag` in
-`WD-MESH-TIMING`.
+`run` is the wave's GPU time as the host sees it. The graph path waits for
+the whole graph on the residentd thread before it finishes the chain, and the
+eager path synchronizes the stream at every collective round, so on the eager
+path `run` also holds the host work between rounds.
+
+The other fields:
+
+| Field | Meaning |
+| --- | --- |
+| `prefill` | frames that were prefill chunks; the rest are decode waves |
+| `graph`, `eager` | frames run as one CUDA graph, and the rest |
+| `graph_path` | 0: off by configuration; 1: on; 2: degraded, requested but turned off by a `GRAPH-FAILED`, so the rank runs eager until restart |
+| `busy` | `BUSY` retries by what blocked the claim: another chain holds the rank, the stream still had work, the frame's pipeline slot was taken, one of its sequence lanes was taken, or something else (a retained lease, a cache-frame claim) |
+| `captures`, `capture_ms` | graph captures and their time, inside `setup` |
+| `graph_run_ms`, `eager_run_ms` | `run` split by path |
+| `decode_wait_ms` | `wait` of decode waves only: the time they queue behind other chains, such as prefill chunks |
+
+`wait` overlaps the `run` and `post` of the chain the frame queued behind, so
+when frames queue, the intervals of all frames add up to more than the wall
+time. The `_ms` fields are window totals; divide by `waves` for per-frame
+means. The collective fields are the device-measured sums from
+`COLLECTIVE-GPU-TIME`; `run` minus them is compute plus any host gaps inside
+the run. `worst_*` names the window's slowest frame (first sight to
+completion) by request id, which every rank shares, and by the main and hc
+chain epochs, which match `worst_tag` in `WD-MESH-TIMING`.
 
 `python3 tools/wave_timeline_report.py 0=residentd0.log ...` prints each
-rank's per-wave budget and the slowest waves across ranks.
+rank's per-frame budget with the busy reasons and path split, and the slowest
+frames across ranks.
+
+### Iteration 15's `pre` held the GPU time
+
+Iteration 15 printed `pre` (first sight to "the last launch") and `gpu` (the
+last launch to the host callback). Both stamps were wrong. The launch stamp
+was taken in `SparkGlm5NextFinishChain`, which the graph path reaches only
+after `SparkGlm5NextGraphStep` has waited for the whole graph, and the eager
+path only after the last round's stream synchronization. So `pre` held the
+wave's GPU time and `gpu` only the callback latency. The 67 ms of `pre` per
+wave measured after PR #1226 is wave execution plus queueing, not host
+polling.
+
+The retries were real, but they came from residentd, not the module. While
+the head of the committed FIFO was `BUSY`, a later committed route in a
+lower route slot got a no-op submit that counted as an adapter operation and
+wrote the wake pipe. `poll` then never slept, and residentd retried the head
+back to back: 18,000 retries per second against the 1,000 per second that
+the 1 ms poll timeout allows. On adapters without asynchronous completion
+the same no-op used up the one-operation budget of the pass, so the head
+could not be submitted at all while that route sat in a lower slot.
+`SparkModelResidentdSubmitAdapter` now reports whether it called the
+adapter, and a route that is not the head is skipped without an operation
+or a wake.
 
 ## Batching
 

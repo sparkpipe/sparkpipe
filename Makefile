@@ -264,6 +264,7 @@ TEST_NAMES := \
 	test_model_resident_deployment \
     test_model_resident_ipc \
 	test_model_resident_deadline \
+	test_model_resident_adapter_budget \
 	test_model_resident_session \
     test_model_pipeline_client \
     test_model_batch_engine_mock \
@@ -1092,6 +1093,9 @@ build/test_model_resident_ipc: tests/test_model_resident_ipc.c $(RUNTIME_LIBRARY
 
 build/test_model_resident_deadline: tests/test_model_resident_deadline.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_deadline.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_model_resident_adapter_budget: tests/test_model_resident_adapter_budget.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_adapter_budget.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_memory_buffer: tests/test_memory_buffer.c runtime/memory_buffer.c include/sparkpipe/spark_memory_buffer.h tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_memory_buffer.c tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -o $@
