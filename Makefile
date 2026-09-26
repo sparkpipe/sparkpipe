@@ -523,6 +523,7 @@ PYTHON_TESTS := \
 	tests/test_skinny_grouped_host.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_module_host_contracts.py \
+	tests/test_timing_reports.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \

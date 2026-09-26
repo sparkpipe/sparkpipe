@@ -2213,6 +2213,14 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(
     return(SPARK_STATUS_OK);
 }
 
+uint64_t SparkTpDeviceCollectiveChainEpoch(
+    const SparkTpDeviceCollective *collective)
+{
+    if ( collective == 0 || collective->implementation == 0 )
+        return(0ull);
+    return(((const SparkTpDeviceCollectiveImplementation *)collective->implementation)->chain_epoch);
+}
+
 uint64_t SparkTpDeviceCollectiveRoundIndex(
     SparkTpDeviceCollective *collective)
 {

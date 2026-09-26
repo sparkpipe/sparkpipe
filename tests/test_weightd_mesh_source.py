@@ -69,7 +69,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,const char *interface_name,
     (void)rank; (void)interface_name; (void)sgid; (void)directory; (void)mask;
     return getenv("TEST_MESH_INIT_OK") != 0 ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR;
 }
-void SparkWeightdMeshDoorbellLoop(void) {}
+void SparkWeightdMeshDoorbellLoop(int32_t cpu) { (void)cpu; }
 SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
     SparkWeightdServer **server)
 { (void)config; *server = (SparkWeightdServer *)(uintptr_t)1u; return SPARK_STATUS_OK; }
@@ -98,5 +98,10 @@ const char *SparkStatusToString(SparkStatus status)
         assert result.stdout.count("SERVER-DESTROY") == 1, result
     result = subprocess.run(arguments[:-2], env={}, capture_output=True, text=True)
     assert result.returncode == 2 and "ready" not in result.stdout, result
+    for value in ("", "x", "-1", "1x", "100000"):
+        result = subprocess.run(arguments, env={"SPARK_WEIGHTD_MESH_DOORBELL_CPU": value}, capture_output=True, text=True)
+        assert result.returncode == 2 and "bad SPARK_WEIGHTD_MESH_DOORBELL_CPU" in result.stderr, (value, result)
+    result = subprocess.run(arguments, env={"SPARK_WEIGHTD_MESH_DOORBELL_CPU": "0", "TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 1 and "thread create failed" in result.stderr, result
     result = subprocess.run([str(binary)], env={}, capture_output=True, text=True)
     assert result.returncode == 0 and "SERVER-RUN" in result.stdout, result

@@ -18,7 +18,7 @@
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask);
 uint32_t SparkWeightdMeshReady(void);
-void SparkWeightdMeshDoorbellLoop(void);
+void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu);
 
 typedef struct SparkWeightdMeshLaunch
 {
@@ -27,6 +27,7 @@ typedef struct SparkWeightdMeshLaunch
     const char *interface_name;
     uint32_t sgid_index;
     const char *mesh_dir;
+    int32_t doorbell_cpu;
 } SparkWeightdMeshLaunch;
 
 static SparkWeightdMeshLaunch weightd_mesh_launch;
@@ -34,7 +35,7 @@ static SparkWeightdMeshLaunch weightd_mesh_launch;
 static void *SparkWeightdMeshThread(void *argument)
 {
     (void)argument;
-    SparkWeightdMeshDoorbellLoop();
+    SparkWeightdMeshDoorbellLoop(weightd_mesh_launch.doorbell_cpu);
     return 0;
 }
 
@@ -268,6 +269,22 @@ int main(int argument_count, char **arguments)
         const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
         const char *env_reserve = getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES");
         const char *env_mesh_dir = getenv("SPARK_WEIGHTD_MESH_DIR");
+        const char *env_doorbell_cpu = getenv("SPARK_WEIGHTD_MESH_DOORBELL_CPU");
+        weightd_mesh_launch.doorbell_cpu = -1;
+        if (env_doorbell_cpu != 0)
+        {
+            char *parse_end = 0;
+            long cpus = sysconf(_SC_NPROCESSORS_CONF);
+            unsigned long parsed = strtoul(env_doorbell_cpu, &parse_end, 10);
+            if (parse_end == env_doorbell_cpu || *parse_end != '\0' ||
+                env_doorbell_cpu[0] == '-' || cpus <= 0 || parsed >= (unsigned long)cpus)
+            {
+                fprintf(stderr, "weightd: bad SPARK_WEIGHTD_MESH_DOORBELL_CPU '%s' (0..%ld)\n",
+                    env_doorbell_cpu, cpus - 1);
+                return 2;
+            }
+            weightd_mesh_launch.doorbell_cpu = (int32_t)parsed;
+        }
         if (weightd_mesh_launch.mesh_dir == 0 && env_mesh_dir != 0 &&
             env_mesh_dir[0] != '\0')
             weightd_mesh_launch.mesh_dir = env_mesh_dir;

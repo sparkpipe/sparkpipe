@@ -59,6 +59,7 @@ typedef struct SparkGlm5NextLayerWeights
 } SparkGlm5NextLayerWeights;
 
 #define SPARK_GLM5_NEXT_GRAPH_ROWS_MAX 64u
+#define SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS UINT64_C(10000000000)
 
 typedef struct SparkGlm5NextExecutionSlot
 {

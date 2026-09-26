@@ -4,6 +4,7 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_latency_histogram.h"
 #include <infiniband/verbs.h>
 #include <cuda.h>
 #include <stdio.h>
@@ -28,8 +29,7 @@
 #define SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS 100000u
 #define SPARK_WEIGHTD_MESH_REPAIR_INTERVAL_NS UINT64_C(10000000)
 #define SPARK_WEIGHTD_MESH_STATS_NS UINT64_C(10000000000)
-#define SPARK_WEIGHTD_MESH_TIMING_BUCKETS 24u
-#define SPARK_WEIGHTD_MESH_TIMING_PEER_TEXT 48u
+#define SPARK_WEIGHTD_MESH_TIMING_PEER_TEXT 80u
 #ifndef SPARK_WEIGHTD_MESH_DIR
 #define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
 #endif
@@ -87,13 +87,20 @@ typedef struct SparkWeightdMeshTransfer
 
 typedef struct SparkWeightdMeshTiming
 {
-    uint64_t post[SPARK_WEIGHTD_MESH_TIMING_BUCKETS];
-    uint64_t ship[SPARK_WEIGHTD_MESH_TIMING_BUCKETS];
-    uint64_t credit[SPARK_WEIGHTD_MESH_TIMING_BUCKETS];
-    uint64_t gate[SPARK_WEIGHTD_MESH_TIMING_BUCKETS];
-    uint64_t lag[SPARK_WEIGHTD_MESH_RANKS][SPARK_WEIGHTD_MESH_TIMING_BUCKETS];
+    SparkLatencyHistogram post;
+    SparkLatencyHistogram ship;
+    SparkLatencyHistogram credit;
+    SparkLatencyHistogram gate;
+    SparkLatencyHistogram start;
+    SparkLatencyHistogram lag[SPARK_WEIGHTD_MESH_RANKS];
     uint64_t last[SPARK_WEIGHTD_MESH_RANKS];
+    uint64_t start_last[SPARK_WEIGHTD_MESH_RANKS];
+    uint64_t excess_ns[SPARK_WEIGHTD_MESH_RANKS];
     uint64_t self;
+    uint64_t start_self;
+    uint64_t worst_ns;
+    uint64_t worst_tag;
+    uint32_t worst_closer;
 } SparkWeightdMeshTiming;
 
 typedef struct SparkWeightdMesh
@@ -139,6 +146,8 @@ typedef struct SparkWeightdMesh
     uint64_t publish_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t post_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint64_t arrived[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
+    uint64_t arrival_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
+    uint64_t previous_arrival_ns[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     uint32_t last_peer[SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS];
     SparkWeightdMeshTiming timing;
     uint32_t activity_owners;
@@ -520,17 +529,33 @@ static uint32_t SparkWeightdMeshHasWaitWork(void)
     return 0u;
 }
 
-static uint32_t SparkWeightdMeshTimingBucket(uint64_t ns)
+static void SparkWeightdMeshGateClosed(uint32_t index,uint32_t band,const SparkWeightdMeshWaitRequest *request,uint64_t now_ns,uint32_t first)
 {
-    uint64_t us = ns / 1000u;
-    uint32_t bucket = us == 0u ? 0u : 64u - (uint32_t)__builtin_clzll(us);
-    return(bucket < SPARK_WEIGHTD_MESH_TIMING_BUCKETS ? bucket : SPARK_WEIGHTD_MESH_TIMING_BUCKETS - 1u);
-}
-
-static void SparkWeightdMeshTimingAdd(uint64_t *histogram,uint64_t start_ns,uint64_t end_ns)
-{
-    if ( start_ns != 0u && end_ns >= start_ns )
-        histogram[SparkWeightdMeshTimingBucket(end_ns - start_ns)]++;
+    const SparkWeightdMeshTopology *topology = &weightd_mesh.lane_topology[band / 2u];
+    SparkWeightdMeshTiming *timing = &weightd_mesh.timing;
+    uint64_t started = weightd_mesh.wait_started[index],waited = now_ns >= started ? now_ns - started : 0u;
+    uint32_t start = (uint32_t)request->tag == 1u ? 1u : 0u,closer = first != 0u ? topology->physical_ranks[topology->local_rank] : weightd_mesh.last_peer[index];
+    SparkLatencyAdd(&timing->gate,started,now_ns);
+    if ( start != 0u )
+        SparkLatencyAdd(&timing->start,started,now_ns);
+    if ( first != 0u )
+    {
+        timing->self++;
+        timing->start_self += start;
+    }
+    else
+    {
+        timing->last[closer]++;
+        timing->start_last[closer] += start;
+        if ( weightd_mesh.previous_arrival_ns[index] != 0u )
+            timing->excess_ns[closer] += weightd_mesh.arrival_ns[index] - weightd_mesh.previous_arrival_ns[index];
+    }
+    if ( waited > timing->worst_ns )
+    {
+        timing->worst_ns = waited;
+        timing->worst_tag = request->tag;
+        timing->worst_closer = closer;
+    }
 }
 
 static uint32_t SparkWeightdMeshPeersArrived(uint32_t index,uint32_t band,const SparkWeightdMeshWaitRequest *request,uint64_t now_ns,uint32_t first,uint64_t *diag)
@@ -556,17 +581,13 @@ static uint32_t SparkWeightdMeshPeersArrived(uint32_t index,uint32_t band,const 
         {
             weightd_mesh.arrived[index] |= UINT64_C(1) << peer;
             weightd_mesh.last_peer[index] = physical;
-            SparkWeightdMeshTimingAdd(weightd_mesh.timing.lag[physical],start,now_ns);
+            weightd_mesh.previous_arrival_ns[index] = weightd_mesh.arrival_ns[index];
+            weightd_mesh.arrival_ns[index] = now_ns;
+            SparkLatencyAdd(&weightd_mesh.timing.lag[physical],start,now_ns);
         }
     }
     if ( complete != 0u )
-    {
-        if ( first != 0u )
-            weightd_mesh.timing.self++;
-        else
-            weightd_mesh.timing.last[weightd_mesh.last_peer[index]]++;
-        SparkWeightdMeshTimingAdd(weightd_mesh.timing.gate,weightd_mesh.wait_started[index],now_ns);
-    }
+        SparkWeightdMeshGateClosed(index,band,request,now_ns,first);
     return(complete);
 }
 
@@ -598,6 +619,8 @@ static uint32_t SparkWeightdMeshWaitRequestsPollRange(uint64_t now_ns,uint32_t f
             weightd_mesh.wait_seen[index] = id;
             weightd_mesh.wait_started[index] = now_ns;
             weightd_mesh.arrived[index] = 0u;
+            weightd_mesh.arrival_ns[index] = 0u;
+            weightd_mesh.previous_arrival_ns[index] = 0u;
         }
         cancel = __atomic_load_n((uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
             SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
@@ -631,7 +654,7 @@ static uint32_t SparkWeightdMeshWaitRequestsPollRange(uint64_t now_ns,uint32_t f
             if ( complete == 0u && weightd_mesh.transfers[index].failed != 0u )
                 error = UINT64_MAX;
             if ( complete != 0u )
-                SparkWeightdMeshTimingAdd(weightd_mesh.timing.credit,weightd_mesh.wait_started[index],now_ns);
+                SparkLatencyAdd(&weightd_mesh.timing.credit,weightd_mesh.wait_started[index],now_ns);
         }
         else if ( error == 0u )
             complete = SparkWeightdMeshPeersArrived(index,band,request,now_ns,first,&diag);
@@ -1094,7 +1117,7 @@ static void SparkWeightdMeshCompleteTransfer(uint64_t work_id, int success, uint
         uint32_t rank = index % SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
         weightd_mesh.doorbell_posted[index] = transfer->seq;
         weightd_mesh.doorbell_stuck[index] = 0u;
-        SparkWeightdMeshTimingAdd(weightd_mesh.timing.ship,weightd_mesh.post_ns[index],now_ns);
+        SparkLatencyAdd(&weightd_mesh.timing.ship,weightd_mesh.post_ns[index],now_ns);
         __sync_synchronize();
         *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
             SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,rank)) = transfer->seq;
@@ -1206,7 +1229,7 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
     SparkWeightdMeshPostRoute(index,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
     weightd_mesh.post_ns[index] = now_ns;
     if ( weightd_mesh.publish_seq[index] == seq )
-        SparkWeightdMeshTimingAdd(weightd_mesh.timing.post,weightd_mesh.publish_ns[index],now_ns);
+        SparkLatencyAdd(&weightd_mesh.timing.post,weightd_mesh.publish_ns[index],now_ns);
     return transfer->failed != 0u ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
 }
 
@@ -1266,36 +1289,14 @@ static void SparkWeightdMeshDrainCq(void)
         __atomic_store_n(&weightd_mesh.repair_pending,1u,__ATOMIC_RELEASE);
 }
 
-static uint64_t SparkWeightdMeshTimingCount(const uint64_t *histogram)
-{
-    uint64_t total = 0u;
-    uint32_t bucket;
-    for (bucket=0u; bucket<SPARK_WEIGHTD_MESH_TIMING_BUCKETS; bucket++)
-        total += histogram[bucket];
-    return(total);
-}
-
-static uint64_t SparkWeightdMeshTimingPercentileUs(const uint64_t *histogram,uint32_t percent)
-{
-    uint64_t total = SparkWeightdMeshTimingCount(histogram),seen = 0u;
-    uint32_t bucket;
-    for (bucket=0u; bucket<SPARK_WEIGHTD_MESH_TIMING_BUCKETS && total != 0u; bucket++)
-    {
-        seen += histogram[bucket];
-        if ( seen * 100u >= total * percent )
-            return(UINT64_C(1) << bucket);
-    }
-    return(0u);
-}
-
 static void SparkWeightdMeshTimingPeers(const SparkWeightdMeshTiming *timing,char *text,size_t capacity)
 {
     size_t used = 0u;
     uint32_t peer;
     text[0] = '\0';
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_RANKS && used < capacity; peer++)
-        if ( SparkWeightdMeshTimingCount(timing->lag[peer]) != 0u )
-            used += (size_t)snprintf(text + used,capacity - used,"%s%u:%llu/%llu/%llu",used != 0u ? "," : "",peer,(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing->lag[peer],50u),(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing->lag[peer],99u),(unsigned long long)timing->last[peer]);
+        if ( SparkLatencyCount(&timing->lag[peer]) != 0u )
+            used += (size_t)snprintf(text + used,capacity - used,"%s%u:%llu/%llu/%llu/%llu/%llu",used != 0u ? "," : "",peer,(unsigned long long)SparkLatencyPercentileUs(&timing->lag[peer],50u),(unsigned long long)SparkLatencyPercentileUs(&timing->lag[peer],99u),(unsigned long long)timing->last[peer],(unsigned long long)timing->start_last[peer],(unsigned long long)(timing->excess_ns[peer] / 1000u));
 }
 
 static void SparkWeightdMeshTimingReport(void)
@@ -1306,18 +1307,23 @@ static void SparkWeightdMeshTimingReport(void)
     timing = weightd_mesh.timing;
     memset(&weightd_mesh.timing,0,sizeof(weightd_mesh.timing));
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
-    if ( SparkWeightdMeshTimingCount(timing.post) == 0u && SparkWeightdMeshTimingCount(timing.credit) == 0u && SparkWeightdMeshTimingCount(timing.gate) == 0u )
+    if ( SparkLatencyCount(&timing.post) == 0u && SparkLatencyCount(&timing.credit) == 0u && SparkLatencyCount(&timing.gate) == 0u )
         return;
     SparkWeightdMeshTimingPeers(&timing,peers,sizeof(peers));
-    fprintf(stderr,"WD-MESH-TIMING posts=%llu post_us=%llu/%llu ship_us=%llu/%llu credits=%llu credit_us=%llu/%llu gates=%llu gate_us=%llu/%llu self=%llu peers=%s\n",
-        (unsigned long long)SparkWeightdMeshTimingCount(timing.post),
-        (unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.post,50u),(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.post,99u),
-        (unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.ship,50u),(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.ship,99u),
-        (unsigned long long)SparkWeightdMeshTimingCount(timing.credit),
-        (unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.credit,50u),(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.credit,99u),
-        (unsigned long long)SparkWeightdMeshTimingCount(timing.gate),
-        (unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.gate,50u),(unsigned long long)SparkWeightdMeshTimingPercentileUs(timing.gate,99u),
-        (unsigned long long)timing.self,peers);
+    fprintf(stderr,"WD-MESH-TIMING posts=%llu post_us=%llu/%llu ship_us=%llu/%llu credits=%llu credit_us=%llu/%llu gates=%llu gate_us=%llu/%llu gate_ms=%llu self=%llu starts=%llu start_us=%llu/%llu start_ms=%llu start_self=%llu worst_us=%llu worst_tag=%llu:%llu worst_closer=%u peers=%s\n",
+        (unsigned long long)SparkLatencyCount(&timing.post),
+        (unsigned long long)SparkLatencyPercentileUs(&timing.post,50u),(unsigned long long)SparkLatencyPercentileUs(&timing.post,99u),
+        (unsigned long long)SparkLatencyPercentileUs(&timing.ship,50u),(unsigned long long)SparkLatencyPercentileUs(&timing.ship,99u),
+        (unsigned long long)SparkLatencyCount(&timing.credit),
+        (unsigned long long)SparkLatencyPercentileUs(&timing.credit,50u),(unsigned long long)SparkLatencyPercentileUs(&timing.credit,99u),
+        (unsigned long long)SparkLatencyCount(&timing.gate),
+        (unsigned long long)SparkLatencyPercentileUs(&timing.gate,50u),(unsigned long long)SparkLatencyPercentileUs(&timing.gate,99u),
+        (unsigned long long)(timing.gate.total_ns / 1000000u),(unsigned long long)timing.self,
+        (unsigned long long)SparkLatencyCount(&timing.start),
+        (unsigned long long)SparkLatencyPercentileUs(&timing.start,50u),(unsigned long long)SparkLatencyPercentileUs(&timing.start,99u),
+        (unsigned long long)(timing.start.total_ns / 1000000u),(unsigned long long)timing.start_self,
+        (unsigned long long)(timing.worst_ns / 1000u),(unsigned long long)(timing.worst_tag >> 32u),(unsigned long long)(uint32_t)timing.worst_tag,
+        timing.worst_closer,peers);
 }
 
 static void SparkWeightdMeshRepairAndReport(void)
@@ -1561,12 +1567,19 @@ static uint32_t SparkWeightdMeshCpuCapacity(uint32_t cpu)
     return(capacity);
 }
 
-static void SparkWeightdMeshPinFastCores(void)
+static void SparkWeightdMeshPinFastCores(int32_t doorbell_cpu)
 {
     uint32_t cpu, cpus, highest = 0u, lowest = UINT32_MAX, capacity, count = 0u;
     long configured = sysconf(_SC_NPROCESSORS_CONF);
     cpu_set_t set;
     cpus = configured > 0 && configured < CPU_SETSIZE ? (uint32_t)configured : 0u;
+    if ( doorbell_cpu >= 0 )
+    {
+        CPU_ZERO(&set);
+        CPU_SET((uint32_t)doorbell_cpu,&set);
+        fprintf(stderr,"WD-MESH-PIN doorbell thread cpu=%d capacity=%u rc=%d\n",doorbell_cpu,SparkWeightdMeshCpuCapacity((uint32_t)doorbell_cpu),pthread_setaffinity_np(pthread_self(),sizeof(set),&set));
+        return;
+    }
     for ( cpu = 0u; cpu < cpus; cpu++ )
     {
         capacity = SparkWeightdMeshCpuCapacity(cpu);
@@ -1585,10 +1598,10 @@ static void SparkWeightdMeshPinFastCores(void)
     fprintf(stderr,"WD-MESH-PIN doorbell thread cpus=%u capacity=%u min_capacity=%u rc=%d\n",count,highest,lowest,pthread_setaffinity_np(pthread_self(),sizeof(set),&set));
 }
 
-void SparkWeightdMeshDoorbellLoop(void)
+void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu)
 {
     SparkWeightdMeshPollingThread = 1u;
-    SparkWeightdMeshPinFastCores();
+    SparkWeightdMeshPinFastCores(doorbell_cpu);
     for (;;)
     {
         SparkWeightdMeshWaitForActivity();

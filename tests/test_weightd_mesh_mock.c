@@ -828,6 +828,30 @@ static void test_mesh_hardware_wait(void)
     *cancel = 0u;
 }
 
+static void test_mesh_timing_steady(SparkWeightdMeshWaitRequest *request,uint32_t band,const char *log_path)
+{
+    const uint64_t tag = (UINT64_C(23) << 32u) | 2u;
+    uint64_t *peer1 = test_peer_tail(band,1u,tag),*peer2 = test_peer_tail(band,2u,tag),*peer3 = test_peer_tail(band,3u,tag);
+    *peer1 = *peer2 = 0u;
+    *peer3 = tag;
+    test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_PEERS,tag,0xeu,0u);
+    request->timeout_ns = UINT64_C(1000000000);
+    SparkWeightdMeshWaitRequestsPoll(UINT64_C(1200000));
+    *peer1 = *peer2 = tag;
+    SparkWeightdMeshWaitRequestsPoll(UINT64_C(3700000));
+    CHECK(__atomic_load_n(&request->ready,__ATOMIC_ACQUIRE) == 1u && request->error == 0u &&
+        SparkLatencyCount(&weightd_mesh.timing.start) == 0u && weightd_mesh.timing.last[2] == 1u &&
+        weightd_mesh.timing.start_last[2] == 0u && weightd_mesh.timing.excess_ns[2] == 0u &&
+        weightd_mesh.timing.gate.total_ns == UINT64_C(2500000),
+        "a later round of the chain is not a start gate, and tails landing in one poll add no excess wait");
+    test_capture_begin(log_path);
+    SparkWeightdMeshTimingReport();
+    test_capture_end();
+    CHECK(test_file_contains(log_path,"gates=1 gate_us=4096/4096 gate_ms=2 self=0 starts=0 start_us=0/0 start_ms=0 start_self=0 worst_us=2500 worst_tag=23:2 worst_closer=2 peers=1:4096/4096/0/0/0,2:4096/4096/1/0/0,3:1/1/0/0/0") != 0,
+        "the report totals gate wait in milliseconds and names the worst gate by epoch, round and closer");
+    *peer1 = *peer2 = *peer3 = 0u;
+}
+
 static void test_mesh_timing(void)
 {
     const uint32_t band = 10u,rank = 0u;
@@ -849,15 +873,15 @@ static void test_mesh_timing(void)
     (void)SparkWeightdMeshDoorbellCell(band,rank,UINT64_C(1000000));
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     last = spark_stub_ibv_posted_count();
-    CHECK(last - first == 6u && SparkWeightdMeshTimingCount(weightd_mesh.timing.post) == 1u && weightd_mesh.timing.post[0] == 1u,
+    CHECK(last - first == 6u && SparkLatencyCount(&weightd_mesh.timing.post) == 1u && weightd_mesh.timing.post.count[0] == 1u,
         "a round posted in the sweep that saw its doorbell records a sub-microsecond relay post");
     test_complete_range(first,last);
-    CHECK(SparkWeightdMeshTimingCount(weightd_mesh.timing.ship) == 1u,"only the last transfer completion records the ship time");
+    CHECK(SparkLatencyCount(&weightd_mesh.timing.ship) == 1u,"only the last transfer completion records the ship time");
     test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,tag,0u,0u);
     request->timeout_ns = UINT64_C(1000000000);
     SparkWeightdMeshWaitRequestsPoll(UINT64_C(1010000));
     CHECK(__atomic_load_n(&request->ready,__ATOMIC_ACQUIRE) == 1u && request->error == 0u &&
-        SparkWeightdMeshTimingCount(weightd_mesh.timing.credit) == 1u && weightd_mesh.timing.credit[0] == 1u,
+        SparkLatencyCount(&weightd_mesh.timing.credit) == 1u && weightd_mesh.timing.credit.count[0] == 1u,
         "a source credit that is already shipped records a zero-wait credit gate");
     *peer1 = tag;
     *peer2 = 0u;
@@ -871,12 +895,15 @@ static void test_mesh_timing(void)
     *peer2 = tag;
     SparkWeightdMeshWaitRequestsPoll(UINT64_C(1060000));
     CHECK(__atomic_load_n(&request->ready,__ATOMIC_ACQUIRE) == 1u && request->error == 0u,"all peers release the timed gate");
-    CHECK(weightd_mesh.timing.lag[1][5] == 1u && weightd_mesh.timing.lag[3][5] == 1u && weightd_mesh.timing.lag[2][6] == 1u &&
+    CHECK(weightd_mesh.timing.lag[1].count[5] == 1u && weightd_mesh.timing.lag[3].count[5] == 1u && weightd_mesh.timing.lag[2].count[6] == 1u &&
         weightd_mesh.timing.last[2] == 1u && weightd_mesh.timing.last[1] == 0u && weightd_mesh.timing.last[3] == 0u &&
-        SparkWeightdMeshTimingCount(weightd_mesh.timing.gate) == 1u && weightd_mesh.timing.gate[6] == 1u,
+        SparkLatencyCount(&weightd_mesh.timing.gate) == 1u && weightd_mesh.timing.gate.count[6] == 1u,
         "lags are measured from the local publish, not from the gate request, and only the latest peer counts as last");
-    CHECK(SparkWeightdMeshTimingPercentileUs(weightd_mesh.timing.lag[2],50u) == 64u &&
-        SparkWeightdMeshTimingPercentileUs(weightd_mesh.timing.lag[3],99u) == 32u,
+    CHECK(weightd_mesh.timing.start_last[2] == 1u && weightd_mesh.timing.excess_ns[2] == UINT64_C(37000) &&
+        SparkLatencyCount(&weightd_mesh.timing.start) == 1u,
+        "the chain's first round is a start gate, and the last peer is charged the wait since the previous arrival");
+    CHECK(SparkLatencyPercentileUs(&weightd_mesh.timing.lag[2],50u) == 64u &&
+        SparkLatencyPercentileUs(&weightd_mesh.timing.lag[3],99u) == 32u,
         "percentiles report the bucket upper bound in microseconds");
     (void)snprintf(log_path,sizeof(log_path),"%s/timing.log",SPARK_WEIGHTD_MESH_DIR);
     test_capture_begin(log_path);
@@ -884,22 +911,23 @@ static void test_mesh_timing(void)
     test_capture_end();
     CHECK(test_file_contains(log_path,"WD-MESH-TIMING posts=1 post_us=1/1") != 0 &&
         test_file_contains(log_path,"credits=1 credit_us=1/1 gates=1") != 0 &&
-        test_file_contains(log_path,"gates=1 gate_us=64/64 self=0 peers=1:32/32/0,2:64/64/1,3:32/32/0") != 0,
-        "the report names every peer's lag percentiles and last-arrival count");
-    CHECK(SparkWeightdMeshTimingCount(weightd_mesh.timing.gate) == 0u && weightd_mesh.timing.last[2] == 0u,
+        test_file_contains(log_path,"gates=1 gate_us=64/64 gate_ms=0 self=0 starts=1 start_us=64/64 start_ms=0 start_self=0 worst_us=40 worst_tag=23:1 worst_closer=2 peers=1:32/32/0/0/0,2:64/64/1/1/37,3:32/32/0/0/0") != 0,
+        "the report names every peer's lag percentiles, last and start-last counts and excess wait");
+    CHECK(SparkLatencyCount(&weightd_mesh.timing.gate) == 0u && weightd_mesh.timing.last[2] == 0u,
         "each report starts a new window");
     test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_PEERS,tag,0xeu,0u);
     request->timeout_ns = UINT64_C(1000000000);
     SparkWeightdMeshWaitRequestsPoll(UINT64_C(1100000));
     CHECK(__atomic_load_n(&request->ready,__ATOMIC_ACQUIRE) == 1u && request->error == 0u &&
-        weightd_mesh.timing.self == 1u && weightd_mesh.timing.last[1] == 0u && weightd_mesh.timing.last[2] == 0u &&
-        weightd_mesh.timing.last[3] == 0u && weightd_mesh.timing.gate[0] == 1u,
+        weightd_mesh.timing.self == 1u && weightd_mesh.timing.start_self == 1u && weightd_mesh.timing.last[1] == 0u &&
+        weightd_mesh.timing.last[2] == 0u && weightd_mesh.timing.last[3] == 0u && weightd_mesh.timing.gate.count[0] == 1u,
         "a gate whose peers all arrived before weightd saw it is closed by the local rank, not by the last scanned peer");
     test_capture_begin(log_path);
     SparkWeightdMeshTimingReport();
     test_capture_end();
-    CHECK(test_file_contains(log_path,"gates=1 gate_us=1/1 self=1 peers=1:128/128/0,2:128/128/0,3:128/128/0") != 0,
+    CHECK(test_file_contains(log_path,"gates=1 gate_us=1/1 gate_ms=0 self=1 starts=1 start_us=1/1 start_ms=0 start_self=1 worst_us=0 worst_tag=0:0 worst_closer=0 peers=1:128/128/0/0/0,2:128/128/0/0/0,3:128/128/0/0/0") != 0,
         "the report counts gates the local rank closed");
+    test_mesh_timing_steady(request,band,log_path);
     (void)unlink(log_path);
     *peer1 = *peer2 = *peer3 = 0u;
     CHECK(SparkWeightdMeshSetActivity(band / 2u,0u) == SPARK_STATUS_OK,"timing lane releases activity");
