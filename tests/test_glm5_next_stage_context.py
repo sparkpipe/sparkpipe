@@ -1625,6 +1625,38 @@ static void check_pack_identity(void)
 	assert(SparkGlm5NextPackValidateHeader(&state,&header,header.file_bytes) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static void check_wave_timing(void)
+{
+	static SparkGlm5NextWaveTiming timing;
+	SparkGlm5NextAsyncCompletion wave;
+	SparkTpDeviceCollectiveHardwareTiming collective = {1000000u,20000000u,2000000u,3000000u};
+	char path[] = "/tmp/g5n_wave_timing_XXXXXX",text[2048] = {0};
+	const char *expected = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 retries=2 idle_us=8388608/8388608 pre_us=1024/1024 key_us=512/512 gpu_us=65536/131072 post_us=512/512 idle_ms=9847 pre_ms=3 key_ms=0 gpu_ms=210 post_ms=1 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=91 worst_request=8 worst_epochs=11/12 worst_us=4938500/1000/300/90000/500\n";
+	int descriptor = mkstemp(path),saved = dup(2);
+	uint64_t index;
+	memset(&wave,0,sizeof(wave));
+	wave.row_count = 8u;
+	wave.epoch[0] = 11u;
+	wave.epoch[1] = 12u;
+	assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
+	for (index=0u; index<3u; index++)
+	{
+		wave.completion.request_id = 7u + index;
+		wave.retries = index == 1u ? 2u : 0u;
+		wave.attempt_ns = UINT64_C(1000000000) + index * UINT64_C(5000000000);
+		wave.chain_start_ns = wave.attempt_ns + 100000u;
+		wave.keyed_ns = wave.attempt_ns + 400000u;
+		wave.launched_ns = wave.attempt_ns + 1000000u;
+		wave.callback_ns = wave.launched_ns + (index == 1u ? 90000000u : 60000000u);
+		SparkGlm5NextWaveTimingRecord(&timing,&wave,&collective,3u,wave.callback_ns + 500000u);
+	}
+	fflush(stderr);
+	assert(dup2(saved,2) == 2 && close(saved) == 0);
+	assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
+	assert(strcmp(text,expected) == 0);
+	assert(timing.waves == 0u && timing.worst_ns == 0u && timing.delivered_ns == UINT64_C(11061500000) && timing.window_ns == timing.delivered_ns);
+}
+
 int32_t main(void)
 {
 	SparkGlm5NextResidentDecodeStageNodeContext context = {0};
@@ -1632,6 +1664,7 @@ int32_t main(void)
 	SparkFirmwareModuleHostServices services = {0};
 	const char *path = 0;
 	uint32_t first[4] = {0u,12u,23u,34u},counts[4] = {12u,11u,11u,11u},stage;
+	check_wave_timing();
 	check_graph_epoch_ownership();
 	check_lazy_open_retained_owner();
 	check_graph_expert_ownership(0u,45u,3u,0u,0u);

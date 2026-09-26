@@ -424,6 +424,9 @@ SparkStatus SparkTpDeviceCollectiveEndChain(
     SparkTpDeviceCollective *collective,
     void *cuda_stream);
 
+uint64_t SparkTpDeviceCollectiveChainEpoch(
+    const SparkTpDeviceCollective *collective);
+
 uint64_t SparkTpDeviceCollectiveRoundIndex(
     SparkTpDeviceCollective *collective);
 

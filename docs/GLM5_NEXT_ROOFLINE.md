@@ -153,7 +153,7 @@ clock and prints a window every 10 s next to `WD-MESH-STATS`. No cross-node
 clock sync is needed.
 
 ```
-WD-MESH-TIMING posts=N post_us=p50/p99 ship_us=p50/p99 credits=N credit_us=p50/p99 gates=N gate_us=p50/p99 self=N peers=R:p50/p99/last,...
+WD-MESH-TIMING posts=N post_us=p50/p99 ship_us=p50/p99 credits=N credit_us=p50/p99 gates=N gate_us=p50/p99 gate_ms=T self=N starts=N start_us=p50/p99 start_ms=T start_self=N worst_us=W worst_tag=E:R worst_closer=C peers=R:p50/p99/last/start_last/excess_us,...
 ```
 
 | Field | Measures |
@@ -161,28 +161,85 @@ WD-MESH-TIMING posts=N post_us=p50/p99 ship_us=p50/p99 credits=N credit_us=p50/p
 | `post_us` | From weightd first seeing the local GPU's doorbell to the RDMA writes being posted: the send-side relay reaction. |
 | `ship_us` | From the post to the last write completion. That is the NIC round trip, and it also frees the source slot. |
 | `credit_us` | From weightd seeing a hardware-wait source-credit gate (may the GPU reuse its slot?) to releasing it. A p50 near 1 means the credit was usually already there, so the handshake itself was the cost. |
-| `gate_us` | From weightd seeing a hardware-wait peer gate to releasing it. |
+| `gate_us`, `gate_ms` | From weightd seeing a hardware-wait peer gate to releasing it; `gate_ms` is the window's total, so `gate_ms / waves` is the wave time this rank's GPU spent waiting for peers. |
 | `self` | Peer gates whose tails had all arrived before weightd first saw the gate. This rank reached its own gate last, so it closed the gate itself. |
-| `peers` | For each physical sender: the arrival lag of its tail after this rank's own publish (p50 and p99), and how many of the remaining gates its tail closed. weightd only sees a tail when it polls an open gate. A lag is therefore never shorter than the gap between this rank's publish and weightd first seeing its gate, and tails that land in the same poll count toward the higher band rank. |
+| `starts`, `start_us`, `start_ms`, `start_self` | The same for the first round of each chain on a band (sequence 1 of the chain's epoch). On the hc band that round is the wave's embedding reduce, so it absorbs any skew in when ranks start the wave. |
+| `worst_us`, `worst_tag`, `worst_closer` | The window's longest gate: its wait, its epoch and round, and the rank that closed it (the local rank for a self-closed gate). The epoch matches `worst_epochs` in `G5N-WAVE-TIMING`. |
+| `peers` | For each physical sender: the arrival lag of its tail after this rank's own publish (p50 and p99), how many gates and chain-start gates its tail closed, and its excess: for each gate it closed, the time between the previous tail and its own, summed in µs. The excess is the wait that sender alone cost. weightd only sees a tail when it polls an open gate, so a lag is never shorter than the gap between this rank's publish and weightd first seeing its gate, and tails that land in the same poll count toward the higher band rank and add no excess. |
 
 Values are upper bounds of power-of-two microsecond buckets. Peer lags need
 hardware waits (`SPARK_TP_WAIT_MODE=hardware`); in spin mode the GPU polls
 the tails itself and only `post_us` and `ship_us` are reported.
 
 `python3 tools/mesh_timing_report.py 0=rank0.log 1=rank1.log ...` combines all
-ranks' lines. It prints each rank's hop medians, a receiver × sender matrix
-of median lag, and each rank's share of all gates closed. A rank closes a gate
-either as the last sender on another rank or through its own `self` count, so
-the shares add up to 100%.
+ranks' lines. It prints each rank's hop medians and mean gate time per
+window, a receiver × sender matrix of median lag, each rank's share of all
+gates and of chain-start gates closed, the excess wait charged to each rank,
+and the ten worst gates. A rank closes a gate either as the last sender on
+another rank or through its own `self` count, so the shares add up to 100%.
 
 How to read it:
 
 | Pattern | Conclusion | Next step |
 | --- | --- | --- |
 | One or two ranks close most gates, and their column shows much larger lag in every receiver's row | Stragglers | Look at those nodes: CPU placement of the doorbell thread, clocks and thermals, the NIC link and switch port |
+| A rank closes many gates but its excess is small | It is last by microseconds; the skew costs nothing | Nothing on that rank |
+| Most of `gate_ms` is `start_ms`, and one rank's excess is mostly start gates | That rank starts waves late | `G5N-WAVE-TIMING` on that rank: `pre_us`, `key_us`, retries |
 | Lags similar for every sender, `post_us` tens of µs | The send-side relay is slow | Kernel-posted work requests |
 | Lags similar for every sender, `ship_us` well above the wire time of one round's bytes at about 100 Gb/s useful (120 KiB takes about 10 µs) | The NIC or switch path | Pair links, fewer bytes per round |
 | Lags similar and small, but the device peer wait is still large | The receive-side handoff costs the time (gate release, then GPU front end) | GPU waits directly on the peer tails |
+
+`SPARK_WEIGHTD_MESH_DOORBELL_CPU=<cpu>` pins weightd's doorbell thread to
+that one CPU instead of spreading it over all highest-capacity CPUs, so a
+node's residentd threads can be kept off it (for example with `taskset`).
+weightd refuses to start on a value that is not a CPU of the node.
+
+### Measured after PR #1224 (fleet, 2026-09-26)
+
+16 ranks, 8-stream load, hardware waits:
+
+| Hop | p50 |
+| --- | ---: |
+| Send-side relay (doorbell to post) | 1 µs |
+| NIC round trip (ship) | 128-256 µs |
+| Credit gate | 1 µs |
+| Peer gate release | 128-256 µs, p99 up to 32 ms |
+| Arrival lag, every peer pair | 64-128 µs |
+
+No rank's column stood out in the lag matrix, so there is no straggler node
+or bad port at the median. The shares of gates closed were skewed: rank 1
+closed 22.9%, rank 15 14%, ranks 12-14 7-9%, every other rank 2-5%. About
+92 rounds at 128 µs is 12 ms of each 72 ms wave. Where the rest of the
+35 ms outside compute goes is what the gate classes above and the wave
+timeline below measure.
+
+## Wave timeline per rank
+
+Each rank's glm5_next module prints one line every 10 s from its completion
+worker:
+
+```
+G5N-WAVE-TIMING rank=R waves=N rows=N retries=N idle_us=p50/p99 pre_us=p50/p99 key_us=p50/p99 gpu_us=p50/p99 post_us=p50/p99 idle_ms=T pre_ms=T key_ms=T gpu_ms=T post_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/pre/key/gpu/post
+```
+
+| Interval | From | To |
+| --- | --- | --- |
+| `idle` | the previous wave's completion handed to residentd | the module first seeing this wave's frame |
+| `pre` | the module first seeing the frame, including `BUSY` retries (counted in `retries`) | the last launch (the graph launch on the graph path) |
+| `key` | the chain claim | both bands' chain keys set: the activity handshakes and, on ranks other than 0, the wait for rank 0's epoch broadcast |
+| `gpu` | the last launch | the completion host callback: the GPU has finished the wave |
+| `post` | the host callback | the completion handed to residentd |
+
+The `_ms` fields are window totals, so dividing by `waves` gives the mean
+per wave, and idle + pre + gpu + post is the wave period on that rank. The
+collective fields are the device-measured sums from `COLLECTIVE-GPU-TIME`;
+`gpu` minus them is the rank's compute. `worst_*` names the window's
+slowest wave (frame to completion) by request id, which every rank shares,
+and by the main and hc chain epochs, which match `worst_tag` in
+`WD-MESH-TIMING`.
+
+`python3 tools/wave_timeline_report.py 0=residentd0.log ...` prints each
+rank's per-wave budget and the slowest waves across ranks.
 
 ## Batching
 
