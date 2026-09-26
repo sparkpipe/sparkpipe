@@ -1,5 +1,5 @@
 {
-  "file_count": 3034,
+  "file_count": 3035,
   "files": [
     {
       "path": ".gitattributes",
@@ -938,8 +938,13 @@
     },
     {
       "path": "docs/README.md",
-      "sha256": "e663c20fed3d7efa161892d738203c298c6be5c8b5ef0a758c93cabd43427de7",
-      "size_bytes": 2154
+      "sha256": "37242537036015622994fe1788869399e10baa51139c8393e9253488de7d5c30",
+      "size_bytes": 2261
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "sha256": "09670ea664f23b449bc2a2e185272774080a57a26125e34f243f40ac53e4d335",
+      "size_bytes": 4702
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
@@ -15175,5 +15180,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74022368
+  "total_bytes": 74027177
 }

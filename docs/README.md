@@ -37,6 +37,8 @@ selected system, not the sequence of experiments that produced it.
 ## Changing status
 
 - [`../TECHDEBT.md`](../TECHDEBT.md): unfinished implementation work only.
+- [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
+  milestone's exit criterion.
 - [`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md): measurements,
   projections, and target gates only.
 
