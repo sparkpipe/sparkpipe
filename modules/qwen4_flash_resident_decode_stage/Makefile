@@ -22,6 +22,7 @@ QWEN4_FLASH_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c
 # "/model_contracts/..." and pinned an EMPTY contract hash into the adapter
 # provenance.
 QWEN4_FLASH_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/qwen4_flash_authoritative.json | awk '{print $$1}')
+MTP_LAYER_COUNT ?= 0
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
 	-DSPARK_LLM_MTP_LAYER_COUNT=$(MTP_LAYER_COUNT)u \
@@ -44,7 +45,6 @@ STAGE_LAYER_COUNT ?= 4
 MAX_ACTIVE_SEQUENCES ?= 32
 PIPELINE_SLOT_COUNT ?= 2
 KV_BLOCK_COUNT ?= 4096
-MTP_LAYER_COUNT ?= 0
 GDN_SNAPSHOT_SLOT_COUNT ?= 0
 KV_PROVIDER ?= none
 KV_SERVICE_ADDRESS ?= none

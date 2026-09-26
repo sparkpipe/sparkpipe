@@ -174,16 +174,9 @@ typedef struct SparkHy4ResidentDecodeStageNodeContext
 	uint64_t estimated_service_time_ns;
 } SparkHy4ResidentDecodeStageNodeContext;
 
-typedef struct SparkHy4DecodeBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t reserved0;
-	const uint32_t *row_lane_indices;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkHy4DecodeBatchView;
+#define SPARK_ABI_TYPE(name) SparkHy4##name
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
+#undef SPARK_ABI_TYPE
 
 typedef struct SparkHy4PrefillFrameView
 {

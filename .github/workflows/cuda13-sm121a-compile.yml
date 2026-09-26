@@ -28,7 +28,6 @@ jobs:
         env:
           NVCC: /usr/local/cuda/bin/nvcc
           CUDA_ARCH: sm_121a
-          SPARK_CUDA_GATE_SCOPE: complete
         run: tools/cuda13_sm121a_compile_gate.sh
       - name: Upload compile receipts
         if: always()

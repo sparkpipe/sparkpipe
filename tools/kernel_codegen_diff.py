@@ -46,7 +46,10 @@ def code(cubin):
 
 
 def demangle(name):
-    result = subprocess.run(["c++filt", name], capture_output=True, text=True)
+    try:
+        result = subprocess.run(["c++filt", name], capture_output=True, text=True)
+    except OSError:
+        return name
     return result.stdout.strip() if result.returncode == 0 else name
 
 
@@ -57,6 +60,10 @@ def main():
     parser.add_argument("--allow", default="", help="regex of kernels allowed to change")
     args = parser.parse_args()
     base_code, head_code = code(args.base), code(args.head)
+    empty = [path for path, table in ((args.base, base_code), (args.head, head_code)) if not table]
+    if empty:
+        print("no kernels parsed from %s: cuobjdump -sass printed no functions (is nvdisasm installed?)" % " and ".join(empty))
+        return 1
     base_resources, head_resources = resources(args.base), resources(args.head)
     allow = re.compile(args.allow) if args.allow else None
     unexpected = 0
@@ -68,7 +75,7 @@ def main():
         unexpected += 0 if permitted else 1
         print("%s %s %s -> %s %s" % ("allowed" if permitted else "UNEXPECTED", state, base_resources.get(name, "-"), head_resources.get(name, "-"), demangle(name)))
     print("kernels %d identical %d unexpected %d" % (len(set(base_code) | set(head_code)), sum(1 for name in base_code if base_code[name] == head_code.get(name)), unexpected))
-    return 1 if unexpected and allow is not None else 0
+    return 1 if unexpected else 0
 
 
 if __name__ == "__main__":

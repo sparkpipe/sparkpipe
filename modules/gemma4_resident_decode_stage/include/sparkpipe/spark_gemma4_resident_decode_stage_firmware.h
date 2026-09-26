@@ -31,17 +31,8 @@ extern "C" {
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 7u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED 8u
 
-typedef struct SparkGemma4LinearView
-{
-	uint32_t abi_version;
-	uint32_t weight_format;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	const void *weight_payload;
-	const uint8_t *weight_scale_e8m0;
-	uint64_t weight_payload_bytes;
-	uint64_t weight_scale_bytes;
-} SparkGemma4LinearView;
+#define SPARK_ABI_TYPE(name) SparkGemma4##name
+#include "sparkpipe/family/abi/spark_abi_linear_view.h"
 
 typedef struct SparkGemma4SlidingLayerWeights
 {
@@ -77,19 +68,7 @@ typedef struct SparkGemma4MoeLayerWeights
 } SparkGemma4MoeLayerWeights;
 #endif
 
-typedef struct SparkGemma4KvBlockTableView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t block_token_count;
-	uint32_t lane_count;
-	uint32_t lane_stride;
-	uint32_t lane_capacity;
-	const uint32_t *physical_block_indices;
-	const uint32_t *lane_physical_block_counts;
-	const uint32_t *host_physical_block_indices;
-	const uint32_t *host_lane_physical_block_counts;
-} SparkGemma4KvBlockTableView;
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 
 typedef struct SparkGemma4PipelineSlot
 {
@@ -175,15 +154,7 @@ typedef struct SparkGemma4DecodeBatchView
 	const uint32_t *context_lengths;
 } SparkGemma4DecodeBatchView;
 
-typedef struct SparkGemma4PrefillFrameView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-} SparkGemma4PrefillFrameView;
+#include "sparkpipe/family/abi/spark_abi_prefill_frame_view.h"
 
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
@@ -191,25 +162,8 @@ typedef struct SparkGemma4PrefillFrameView
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
 #define SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
 
-typedef SparkStatus (*SparkGemma4HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
-typedef SparkStatus (*SparkGemma4HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
-
-typedef struct SparkGemma4ResidentDecodeStageFrameContext
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t flags;
-	uint32_t reserved0;
-	const SparkGemma4KvBlockTableView *kv_block_table;
-	const SparkGemma4DecodeBatchView *decode_batch;
-	const SparkGemma4PrefillFrameView *prefill_frame;
-	SparkHiddenTransportSession *hidden_input_transport_session;
-	SparkHiddenTransportSession *hidden_output_transport_session;
-	SparkGemma4HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-	SparkGemma4HiddenTransportSendFunction hidden_output_send_function;
-	SparkHiddenTransportPacket hidden_input_packet;
-	SparkHiddenTransportPacket hidden_output_packet;
-} SparkGemma4ResidentDecodeStageFrameContext;
+#include "sparkpipe/family/abi/spark_abi_frame_context.h"
+#undef SPARK_ABI_TYPE
 
 SparkStatus SparkGemma4ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);
 SparkStatus SparkGemma4ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame);

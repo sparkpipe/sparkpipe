@@ -91,17 +91,9 @@ typedef struct SparkLagunaResidentDecodeStageNodeContext
 typedef SparkResidentDecodeStageBatchView SparkLagunaResidentDecodeStageBatchView;
 typedef SparkResidentDecodeStageFrameContext SparkLagunaResidentDecodeStageFrameContext;
 
-typedef struct SparkLagunaLinearView
-{
-	uint32_t abi_version;
-	uint32_t weight_format;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	const void *weight_payload;
-	const uint8_t *weight_scale_e8m0;
-	uint64_t weight_payload_bytes;
-	uint64_t weight_scale_bytes;
-} SparkLagunaLinearView;
+#define SPARK_ABI_TYPE(name) SparkLaguna##name
+#include "sparkpipe/family/abi/spark_abi_linear_view.h"
+#undef SPARK_ABI_TYPE
 
 static inline uint32_t SparkLagunaResidentDecodeStageSpanIsValid(uint32_t stage_count,uint32_t stage_index,uint32_t first_layer,uint32_t layer_count)
 {

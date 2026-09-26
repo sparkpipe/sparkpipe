@@ -238,6 +238,28 @@ progress diary.
   migration proved by byte or behaviour identity.
 - Publish one driver per model with prewarmed row-count specializations
   instead of one module ID per `SPARK_BATCH_BUCKET`.
+- The qwen4_flash CUDA translation unit has not compiled since the
+  common-module adoption (`80773c04`), and no gate builds it. `nvcc` for
+  sm_121a reports 77 errors:
+  - C `_Static_assert` in `common/common_stagepack_format_ext.h` and the
+    family `llm_defines.h`, which the CUDA front end rejects;
+  - two launcher sets, the common-module delegates and the older family
+    bodies, both defining `SparkQwen4FlashLaunchGateSelect`, `MoeRoute`,
+    `FusedExpertW13Act` and `ExpertDown`;
+  - a second, bodiless `SparkQwen4FlashHeadOrderKey` that swallows the
+    `LaunchGatedNorm` launcher after it;
+  - `SPARK_LLM_WEIGHT_FORMAT_*` codes that `common_gdn_stage_kernels.cu`
+    uses but this family does not define;
+  - `LmGdnStageLaunchDecayBeta`, declared with 9 parameters and defined
+    with 10.
+
+  Pick one body per launcher against the behaviour each replaced (NVFP4
+  dispatch, router sort capacity), add the module to the sm_121a gate and
+  requalify it on hardware.
+- Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
+  `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
+  keep their own bucket ladders. `tests/test_template_adoption.py` lists
+  them.
 
 ## Runtime completion
 

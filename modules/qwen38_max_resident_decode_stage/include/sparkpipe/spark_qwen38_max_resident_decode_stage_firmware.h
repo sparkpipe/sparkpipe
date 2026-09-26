@@ -39,58 +39,12 @@ extern "C" {
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_F32B128 SPARK_LLM_WEIGHT_FORMAT_FP8_E4M3_F32B128
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED SPARK_LLM_WEIGHT_FORMAT_NVFP4_PACKED
 
-typedef struct SparkQwen38MaxLinearView
-{
-	uint32_t abi_version;
-	uint32_t weight_format;
-	uint32_t input_dimension;
-	uint32_t output_dimension;
-	const void *weight_payload;
-	const uint8_t *weight_scale_e8m0;
-	uint64_t weight_payload_bytes;
-	uint64_t weight_scale_bytes;
-} SparkQwen38MaxLinearView;
+#define SPARK_ABI_TYPE(name) SparkQwen38Max##name
+#include "sparkpipe/family/abi/spark_abi_linear_view.h"
 
-typedef struct SparkQwen38MaxGdnLayerWeights
-{
-	SparkQwen38MaxLinearView qkv;
-	SparkQwen38MaxLinearView gate;
-	SparkQwen38MaxLinearView beta;
-	SparkQwen38MaxLinearView decay;
-	SparkQwen38MaxLinearView output;
-	const void *conv_weight_bf16;
-	const float *a_log_f32;
-	const float *dt_bias_f32;
-	const void *gdn_norm_weight_bf16;
-} SparkQwen38MaxGdnLayerWeights;
+#include "sparkpipe/family/abi/spark_abi_gdn_attn_layer_weights.h"
 
-typedef struct SparkQwen38MaxAttnLayerWeights
-{
-	SparkQwen38MaxLinearView query;
-	SparkQwen38MaxLinearView key;
-	SparkQwen38MaxLinearView value;
-	SparkQwen38MaxLinearView output;
-	const void *query_norm_weight_bf16;
-	const void *key_norm_weight_bf16;
-} SparkQwen38MaxAttnLayerWeights;
-
-typedef struct SparkQwen38MaxMoeWeights
-{
-	SparkQwen38MaxLinearView gate;
-	SparkQwen38MaxLinearView experts_w1;
-	SparkQwen38MaxLinearView experts_w3;
-	SparkQwen38MaxLinearView experts_w2;
-	SparkQwen38MaxLinearView shared_gate;
-	SparkQwen38MaxLinearView shared_up;
-	SparkQwen38MaxLinearView shared_down;
-	const void *shared_gate_weight_bf16;
-	uint64_t experts_w1_payload_offset;
-	uint64_t experts_w1_scale_offset;
-	uint64_t experts_w3_payload_offset;
-	uint64_t experts_w3_scale_offset;
-	uint64_t experts_w2_payload_offset;
-	uint64_t experts_w2_scale_offset;
-} SparkQwen38MaxMoeWeights;
+#include "sparkpipe/family/abi/spark_abi_moe_weights.h"
 
 typedef struct SparkQwen38MaxMtpWeights
 {
@@ -104,149 +58,17 @@ typedef struct SparkQwen38MaxMtpWeights
 	SparkQwen38MaxMoeWeights moe;
 } SparkQwen38MaxMtpWeights;
 
-typedef struct SparkQwen38MaxGdnStatePool
-{
-	uint32_t abi_version;
-	uint32_t lane_capacity;
-	uint32_t gdn_layer_count;
-	uint32_t reserved0;
-	float *state_f32;
-	uint64_t state_lane_stride_elements;
-	uint64_t state_layer_stride_elements;
-	void *conv_tail_bf16;
-	uint64_t conv_tail_lane_stride_elements;
-	uint64_t conv_tail_layer_stride_elements;
-	uint32_t *state_cold_by_row;
-} SparkQwen38MaxGdnStatePool;
+#include "sparkpipe/family/abi/spark_abi_gdn_state_pool.h"
 
-typedef struct SparkQwen38MaxKvBlockTableView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t block_token_count;
-	uint32_t lane_count;
-	uint32_t lane_stride;
-	uint32_t lane_capacity;
-	const uint32_t *physical_block_indices;
-	const uint32_t *lane_physical_block_counts;
-	const uint32_t *host_physical_block_indices;
-	const uint32_t *host_lane_physical_block_counts;
-} SparkQwen38MaxKvBlockTableView;
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 
-typedef struct SparkQwen38MaxPipelineSlot
-{
-	void *cuda_stream;
-	const uint32_t *input_token_ids;
-	uint32_t *output_token_ids;
-	const uint32_t *row_lane_indices;
-	const uint32_t *slot_mapping;
-	const uint32_t *context_lengths;
-	void *hidden_input_bf16;
-	void *hidden_bf16;
-	void *normalized_bf16;
-	void *attn_query_bf16;
-	void *attn_key_bf16;
-	void *attn_value_bf16;
-	void *attn_gate_bf16;
-	void *attn_head_output_bf16;
-	void *attn_output_bf16;
-	void *gdn_conv_workspace_bf16;
-	void *gdn_query_bf16;
-	void *gdn_key_bf16;
-	void *gdn_value_bf16;
-	void *gdn_gate_bf16;
-	void *gdn_ba_bf16;
-	void *gdn_log_decay_f32;
-	void *gdn_beta_f32;
-	void *gdn_core_output_bf16;
-	void *moe_slot_up_bf16;
-	void *moe_slot_out_bf16;
-	void *moe_indices_u32;
-	float *moe_weights_f32;
-	uint32_t *moe_inverse_u32;
-	uint32_t *moe_grouped_rows_u32;
-	uint32_t *moe_tile_prefix_w1_u32;
-	uint32_t *moe_tile_prefix_w2_u32;
-	void *argmax_score_f32;
-	void *argmax_token_ids;
-	float *chunk_qn_f32;
-	float *chunk_kn_f32;
-	float *chunk_cum_g_f32;
-	float *chunk_decay_f32;
-	float *chunk_attn_f32;
-	float *chunk_w_f32;
-	float *chunk_kg_f32;
-	uint32_t *mtp_draft_token_ids;
-} SparkQwen38MaxPipelineSlot;
+#include "sparkpipe/family/abi/spark_abi_pipeline_node_context.h"
 
-typedef struct SparkQwen38MaxResidentDecodeStageNodeContext
-{
-	uint32_t abi_version;
-	uint32_t stage_count;
-	uint32_t stage_index;
-	uint32_t first_layer_index;
-	uint32_t layer_count;
-	uint32_t owns_embedding;
-	uint32_t owns_final_head;
-	uint32_t max_active_sequence_count;
-	uint32_t max_prefill_tokens;
-	uint32_t pipeline_slot_count;
-	uint32_t kv_cache_block_count;
-	uint32_t enable_cuda_graph_replay;
-	float rms_norm_epsilon;
-	const void *token_embedding_bf16;
-	const void *final_norm_weight_bf16;
-	const void *lm_head_weight_bf16;
-	const void *attention_norm_weights_by_layer_bf16[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const void *mlp_norm_weights_by_layer_bf16[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_LAYER_COUNT];
-	const SparkQwen38MaxGdnLayerWeights *gdn_weights_by_layer;
-	const SparkQwen38MaxAttnLayerWeights *attn_weights_by_layer;
-	const SparkQwen38MaxMoeWeights *moe_weights_by_layer;
-	SparkQwen38MaxGdnStatePool gdn_state_pool;
-	void *kv_cache_bf16;
-	const SparkQwen38MaxPipelineSlot *pipeline_slots;
-	uint64_t estimated_service_time_ns;
-} SparkQwen38MaxResidentDecodeStageNodeContext;
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
 
-typedef struct SparkQwen38MaxDecodeBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t reserved0;
-	const uint32_t *row_lane_indices;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkQwen38MaxDecodeBatchView;
+#include "sparkpipe/family/abi/spark_abi_prefill_frame_view.h"
 
-typedef struct SparkQwen38MaxPrefillFrameView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-} SparkQwen38MaxPrefillFrameView;
-
-typedef struct SparkQwen38MaxMtpDraftView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t draft_token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-	const uint32_t *row_token_ids;
-} SparkQwen38MaxMtpDraftView;
-
-typedef struct SparkQwen38MaxGdnSnapshotView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t snapshot_index;
-	uint32_t reserved0;
-} SparkQwen38MaxGdnSnapshotView;
+#include "sparkpipe/family/abi/spark_abi_speculative_views.h"
 
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE SPARK_LLM_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW SPARK_LLM_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW
@@ -257,27 +79,8 @@ typedef struct SparkQwen38MaxGdnSnapshotView
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY SPARK_LLM_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY
 #define SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST SPARK_LLM_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST
 
-typedef SparkStatus (*SparkQwen38MaxHiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
-typedef SparkStatus (*SparkQwen38MaxHiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
-
-typedef struct SparkQwen38MaxResidentDecodeStageFrameContext
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t flags;
-	uint32_t reserved0;
-	const SparkQwen38MaxKvBlockTableView *kv_block_table;
-	const SparkQwen38MaxDecodeBatchView *decode_batch;
-	const SparkQwen38MaxPrefillFrameView *prefill_frame;
-	const SparkQwen38MaxMtpDraftView *mtp_draft;
-	const SparkQwen38MaxGdnSnapshotView *gdn_snapshot;
-	SparkHiddenTransportSession *hidden_input_transport_session;
-	SparkHiddenTransportSession *hidden_output_transport_session;
-	SparkQwen38MaxHiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-	SparkQwen38MaxHiddenTransportSendFunction hidden_output_send_function;
-	SparkHiddenTransportPacket hidden_input_packet;
-	SparkHiddenTransportPacket hidden_output_packet;
-} SparkQwen38MaxResidentDecodeStageFrameContext;
+#include "sparkpipe/family/abi/spark_abi_frame_context_speculative.h"
+#undef SPARK_ABI_TYPE
 
 SparkStatus SparkQwen38MaxResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state);
 SparkStatus SparkQwen38MaxResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame);

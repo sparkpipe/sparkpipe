@@ -83,19 +83,8 @@ typedef struct SparkMinimaxMlpLayerWeights
 	SparkMinimaxLinearView down;
 } SparkMinimaxMlpLayerWeights;
 
-typedef struct SparkMinimaxKvBlockTableView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t block_token_count;
-	uint32_t lane_count;
-	uint32_t lane_stride;
-	uint32_t lane_capacity;
-	const uint32_t *physical_block_indices;
-	const uint32_t *lane_physical_block_counts;
-	const uint32_t *host_physical_block_indices;
-	const uint32_t *host_lane_physical_block_counts;
-} SparkMinimaxKvBlockTableView;
+#define SPARK_ABI_TYPE(name) SparkMinimax##name
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 
 typedef struct SparkMinimaxPipelineSlot
 {
@@ -155,16 +144,7 @@ typedef struct SparkMinimaxResidentDecodeStageNodeContext
 	uint64_t estimated_service_time_ns;
 } SparkMinimaxResidentDecodeStageNodeContext;
 
-typedef struct SparkMinimaxDecodeBatchView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t row_count;
-	uint32_t reserved0;
-	const uint32_t *row_lane_indices;
-	const uint64_t *row_positions;
-	const uint64_t *row_sequence_ids;
-} SparkMinimaxDecodeBatchView;
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
 
 typedef struct SparkMinimaxPrefillFrameView
 {
@@ -183,25 +163,8 @@ typedef struct SparkMinimaxPrefillFrameView
 #define SPARK_MINIMAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
 #define SPARK_MINIMAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
 
-typedef SparkStatus (*SparkMinimaxHiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session,SparkHiddenTransportPacket *packet);
-typedef SparkStatus (*SparkMinimaxHiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session,const SparkHiddenTransportPacket *packet);
-
-typedef struct SparkMinimaxResidentDecodeStageFrameContext
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t flags;
-	uint32_t reserved0;
-	const SparkMinimaxKvBlockTableView *kv_block_table;
-	const SparkMinimaxDecodeBatchView *decode_batch;
-	const SparkMinimaxPrefillFrameView *prefill_frame;
-	SparkHiddenTransportSession *hidden_input_transport_session;
-	SparkHiddenTransportSession *hidden_output_transport_session;
-	SparkMinimaxHiddenTransportPostReceiveFunction hidden_input_post_receive_function;
-	SparkMinimaxHiddenTransportSendFunction hidden_output_send_function;
-	SparkHiddenTransportPacket hidden_input_packet;
-	SparkHiddenTransportPacket hidden_output_packet;
-} SparkMinimaxResidentDecodeStageFrameContext;
+#include "sparkpipe/family/abi/spark_abi_frame_context.h"
+#undef SPARK_ABI_TYPE
 
 SparkStatus SparkMinimaxResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration,const SparkFirmwareModuleHostServices *host_services,void **module_state);
 SparkStatus SparkMinimaxResidentDecodeStageExecute(void *module_state,SparkModelDriverFrame *frame);
