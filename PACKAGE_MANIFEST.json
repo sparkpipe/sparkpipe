@@ -1,5 +1,5 @@
 {
-  "file_count": 3015,
+  "file_count": 3016,
   "files": [
     {
       "path": ".gitattributes",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "1daa615a07c9a223cfc4baf0c0896dc97d5b23af37175150f73e599756955b41",
-      "size_bytes": 39818
+      "sha256": "a4190a95cd3a319344cd5035e13afa74a7bdac75b4a05bf38df912e52c26ef89",
+      "size_bytes": 42963
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -5993,8 +5993,8 @@
     },
     {
       "path": "node/weightd_mesh.c",
-      "sha256": "9f7c584de6c9395d669cb64564e6aa7cc5755bdbb438f4a48693c964eeec0cbc",
-      "size_bytes": 65218
+      "sha256": "cf76030d4cd8f7062e9c4c5b60af9921642069416654781505555a0b3e24e5ba",
+      "size_bytes": 71333
     },
     {
       "path": "node/weightd_spawn.c",
@@ -10548,8 +10548,8 @@
     },
     {
       "path": "tests/test_weightd_mesh_mock.c",
-      "sha256": "01af3d9fa8227272e953336daa92b7114449e14ca4a03dbf04443ff15c18d741",
-      "size_bytes": 73081
+      "sha256": "66604d78a8f9af74d0dff0b8fe20935f8db77ac6252fbc40ed98fc1009cb7957",
+      "size_bytes": 78098
     },
     {
       "path": "tests/test_weightd_mesh_source.py",
@@ -12565,6 +12565,11 @@
       "path": "tools/mesh_register_repro_run.sh",
       "sha256": "e556a324d882328131e5ff26a5f4d68dc146106c8562c8e8dc74b9816bc73501",
       "size_bytes": 447
+    },
+    {
+      "path": "tools/mesh_timing_report.py",
+      "sha256": "7520b4c7f12818b0e1c339e08d23076d58e871e7aa3d61885293e306e2565b30",
+      "size_bytes": 2558
     },
     {
       "path": "tools/metric.sh",
@@ -15080,5 +15085,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73969503
+  "total_bytes": 73986338
 }

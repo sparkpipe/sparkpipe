@@ -138,6 +138,52 @@ also turns CQ-error repair into a flag that the main thread services at most
 every 10 ms. `WD-MESH-STATS` reports try-wire calls, record failures,
 rewires, not-ready transitions and repairs every 10 s.
 
+## Relay timing per hop and per peer
+
+The device counters split a token's collective time into source wait, peer
+wait, copy and combine. At TP16, B1 the peer wait dominates at about 27 ms
+per token. It has three possible causes:
+
+- a peer that publishes late (a straggler);
+- the relay hops on either node;
+- the NIC path.
+
+To tell them apart, weightd timestamps every round in its own monotonic
+clock and prints a window every 10 s next to `WD-MESH-STATS`. No cross-node
+clock sync is needed.
+
+```
+WD-MESH-TIMING posts=N post_us=p50/p99 ship_us=p50/p99 credits=N credit_us=p50/p99 gates=N gate_us=p50/p99 self=N peers=R:p50/p99/last,...
+```
+
+| Field | Measures |
+| --- | --- |
+| `post_us` | From weightd first seeing the local GPU's doorbell to the RDMA writes being posted: the send-side relay reaction. |
+| `ship_us` | From the post to the last write completion. That is the NIC round trip, and it also frees the source slot. |
+| `credit_us` | From weightd seeing a hardware-wait source-credit gate (may the GPU reuse its slot?) to releasing it. A p50 near 1 means the credit was usually already there, so the handshake itself was the cost. |
+| `gate_us` | From weightd seeing a hardware-wait peer gate to releasing it. |
+| `self` | Peer gates whose tails had all arrived before weightd first saw the gate. This rank reached its own gate last, so it closed the gate itself. |
+| `peers` | For each physical sender: the arrival lag of its tail after this rank's own publish (p50 and p99), and how many of the remaining gates its tail closed. weightd only sees a tail when it polls an open gate. A lag is therefore never shorter than the gap between this rank's publish and weightd first seeing its gate, and tails that land in the same poll count toward the higher band rank. |
+
+Values are upper bounds of power-of-two microsecond buckets. Peer lags need
+hardware waits (`SPARK_TP_WAIT_MODE=hardware`); in spin mode the GPU polls
+the tails itself and only `post_us` and `ship_us` are reported.
+
+`python3 tools/mesh_timing_report.py 0=rank0.log 1=rank1.log ...` combines all
+ranks' lines. It prints each rank's hop medians, a receiver × sender matrix
+of median lag, and each rank's share of all gates closed. A rank closes a gate
+either as the last sender on another rank or through its own `self` count, so
+the shares add up to 100%.
+
+How to read it:
+
+| Pattern | Conclusion | Next step |
+| --- | --- | --- |
+| One or two ranks close most gates, and their column shows much larger lag in every receiver's row | Stragglers | Look at those nodes: CPU placement of the doorbell thread, clocks and thermals, the NIC link and switch port |
+| Lags similar for every sender, `post_us` tens of µs | The send-side relay is slow | Kernel-posted work requests |
+| Lags similar for every sender, `ship_us` well above the wire time of one round's bytes at about 100 Gb/s useful (120 KiB takes about 10 µs) | The NIC or switch path | Pair links, fewer bytes per round |
+| Lags similar and small, but the device peer wait is still large | The receive-side handoff costs the time (gate release, then GPU front end) | GPU waits directly on the peer tails |
+
 ## Batching
 
 Before iteration 3, only single-row waves used the captured graph. A batch
