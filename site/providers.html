@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe Providers</title>
 <meta name="description" content="Sell the SparkPipe capacity you are not using through sparkpipe.ai. You set the price and keep 85%; every provider is validated by replay.">
-<meta name="theme-color" content="#eef0ec">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,7 +14,7 @@
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32" fill="none"><path d="M0.5 16H7M25 16H31.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="7" y="6" width="18" height="20" rx="5.5" stroke="currentColor" stroke-width="1.8"/><path d="M17.8 9 12.2 17.4H15.4L14.2 23 19.8 14.6H16.6Z" fill="currentColor"/></symbol></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
 
 <header class="nav">
   <div class="wrap">
@@ -107,7 +108,7 @@
         <text class="strong" x="438" y="187">provider C · $0.50/M</text>
         <text class="signal-text" x="674" y="187" text-anchor="end">14 req</text>
         <rect class="box dashed" x="424" y="222" width="262" height="40" rx="2"/>
-        <text class="target-text" x="438" y="247">reference nodes · replay ~2%</text>
+        <text class="replay-text" x="438" y="247">reference nodes · replay ~2%</text>
       </svg>
     </div>
     <p class="caption">Example: one buyer's 64 requests for GLM 5.3 Flash spread across three providers. Each provider sets its own price.</p>
@@ -144,9 +145,8 @@
       <div class="form">
         <label for="preset">Model and operating point
           <select id="preset">
-            <option value="129.9,0.50">GLM 5.3 Flash · B8 · measured</option>
-            <option value="2200,0.50" selected>GLM 5.3 Flash · B256 · target</option>
-            <option value="75.55,4.40">GLM 5.2 · B16 · measured</option>
+            <option value="240,0.50">GLM 5.3 Flash · B8 · projected</option>
+            <option value="1650,0.50" selected>GLM 5.3 Flash · B256 · projected</option>
             <option value="">Custom</option>
           </select>
         </label>
@@ -161,7 +161,7 @@
         <div><span>sparkpipe.ai, 15%</span><strong id="fee">–</strong></div>
       </div>
     </div>
-    <p class="caption">Measured: GLM 5.3 Flash on 16 Sparks (2026-09-26); GLM 5.2 on 8 Sparks (2026-08-16). Target: the batch-serving milestone at 256 streams and 1K context, where each stream runs at about 11 tok/s. A month is 30 days. Input tokens are billed on top at your input price. Prices are examples.</p>
+    <p class="caption">Projected, not measured: GLM 5.3 Flash on 16 Sparks at 1K context after the planned kernel and collective work, where each of 256 streams runs at about 6.5 tok/s. A month is 30 days. Input tokens are billed on top at your input price. Prices are examples.</p>
   </div>
 </section>
 
@@ -176,8 +176,8 @@
       <details><summary>Who can reach my installation?</summary><p>Only the router and the reference nodes, over the tailnet. Its access rules let them reach your model API's port and nothing else, and buyers only ever see a model name at sparkpipe.ai. The provider that serves a request does see its prompt, as with any hosted API: GB10 has no confidential-computing mode.</p></details>
       <details><summary>Why is validation mandatory for everyone?</summary><p>Buyers pay for a specific model at its published precision. Without replays, a provider could serve a quantized copy and charge for the real one, and honest providers would be undercut. Validating every provider is also what makes providers interchangeable.</p></details>
       <details><summary>Which models can I sell?</summary><p>Any resident model your installation serves with a released SparkPipe driver. Large models pay best per token, and few installations can hold them, so fewer providers share their demand.</p></details>
-      <details><summary>What hardware is supported?</summary><p>DGX Spark installations of 4, 8 or 16 Sparks. DGX Station and Mac Studio support are on the roadmap. Each hardware type gets its own reference nodes, because different kernels produce different bits.</p></details>
-      <details><summary>When does it open?</summary><p>The network is milestone M9 on the <a href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener">public roadmap</a>. It opens once batched serving reaches its throughput targets, because that is what makes reselling pay.</p></details>
+      <details><summary>What hardware is supported?</summary><p>DGX Spark installations of 4, 8 or 16 Sparks. Mac Studio support (M5 Ultra) is planned, on its own or alongside Sparks. Each hardware type gets its own reference nodes, because different kernels produce different bits.</p></details>
+      <details><summary>When does it open?</summary><p>The network is milestone M9 on the <a href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener">public roadmap</a>. It opens after batched serving lands (milestone M2), because batch throughput is what makes reselling pay.</p></details>
     </div>
   </div>
 </section>
@@ -204,7 +204,7 @@
   <div class="wrap">
     <span>© 2026 HYOR AI Tech Ltd · SparkPipe is open source, all C and CUDA</span>
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="playground.html">Playground</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai</a></nav>
-    <span>Measurements carry their dates; targets are labelled.</span>
+    <span>Measurements carry their dates. Throughput figures are projections and say so.</span>
   </div>
 </footer>
 

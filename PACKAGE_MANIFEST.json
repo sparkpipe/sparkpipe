@@ -8098,28 +8098,28 @@
     },
     {
       "path": "site/favicon.svg",
-      "sha256": "2bb03abd270ebac994a06d7465b09b339330e801680be5106cb5a00b6460cc59",
-      "size_bytes": 385
+      "sha256": "c873d00a1776d60ceb5b9fbf30ece1a48af8fbc4c4b164507dcb4365a0336bbe",
+      "size_bytes": 341
     },
     {
       "path": "site/index.html",
-      "sha256": "bd17cbd8e2e7bbd1defb8d33852e2abfbabd5ec548e3bb142529b819d34ede24",
-      "size_bytes": 22973
+      "sha256": "1af5cfefbce5c3a3bb49ebc017855cc30e512b92b7c14a1dc9e733c3759aca0e",
+      "size_bytes": 26035
     },
     {
       "path": "site/playground.html",
-      "sha256": "f6b3606709cb29d11e62961103be866027ea803e8b38c5393d47655ca816a225",
-      "size_bytes": 13694
+      "sha256": "5187719dd001aa6ef98fb99b8306ddad4a981e50af057d5a43c61139a07193d9",
+      "size_bytes": 13927
     },
     {
       "path": "site/providers.html",
-      "sha256": "08d46c0f5e413fcdc7c8758e7ac230d7468f89dfb93a78b9c2cb7d48b477606f",
-      "size_bytes": 14880
+      "sha256": "4e46d43be3fc6660d17f8e48100b71c95976bff48c0714abf471f656c9ef848d",
+      "size_bytes": 15056
     },
     {
       "path": "site/site.css",
-      "sha256": "5876dd1b8946b7ee89ea942e905477242b45a5c89165b8fe6abdd9b5823dc529",
-      "size_bytes": 24379
+      "sha256": "43b1e994da0d0600c5162e42ec5092b5df3624038e57ff33c8878abc1aac0bb3",
+      "size_bytes": 25531
     },
     {
       "path": "sources.mk",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74182938
+  "total_bytes": 74187517
 }
