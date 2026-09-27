@@ -9913,8 +9913,8 @@
     },
     {
       "path": "tests/test_model_batch_engine_mock.c",
-      "sha256": "4bb62f7fb2850f7959ae3c55fbf4ee4dadada692bc001f6281d0ad6f5728ff01",
-      "size_bytes": 35648
+      "sha256": "5dfe1a1893e870808f34c3ff70d03e1d3d19d010b0b9367e67bce192df2d201d",
+      "size_bytes": 37953
     },
     {
       "path": "tests/test_model_description.c",
@@ -15180,5 +15180,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74105540
+  "total_bytes": 74107845
 }

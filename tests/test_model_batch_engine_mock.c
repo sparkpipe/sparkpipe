@@ -434,6 +434,38 @@ static void TestScenarioChainPublishesAtBlockBoundary(const SparkModelResidentDe
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioGeneratedCheckpointIdentity(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t chain)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prefix[5] = {11u,12u,13u,14u,15u};
+	uint32_t divergent[12] = {11u,12u,13u,14u,15u,21u,22u,23u,24u,25u,26u,27u};
+	uint32_t extended[9] = {11u,12u,13u,14u,15u,1000u,1000u,chain == 1u ? 1000u : 1001u,31u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,640u,4u,prefix,5u);
+	CHECK(TestWaitLane(engine,1u,5u,&lane) != 0u,"generated identity: prefill emits before decode");
+	MockResidentClientSetAutoTokens(chain);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 4u,"generated identity: the source request completes");
+	MockResidentClientSetAutoTokens(1u);
+	TestSubmitPrompt(engine,2u,641u,1u,divergent,12u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 5u && lane.sequence_position == 5u && lane.input_token_id == divergent[5],"generated identity: a prompt that diverges from the generated tokens reuses only the shared prompt");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 5u,"generated identity: the divergent request reports the shared prompt only");
+	TestSubmitPrompt(engine,3u,642u,1u,extended,9u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 8u && lane.sequence_position == 8u && lane.input_token_id == extended[8],"generated identity: a prompt that repeats the generated tokens reuses the generated checkpoint");
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 8u,"generated identity: the extending request reports the generated checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static uint32_t TestCoordinatorFrames(void)
 {
 	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
@@ -797,6 +829,8 @@ int main(void)
 		TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
 		TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
 		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
+		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
+		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 		TestScenarioSamplingValidation(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
