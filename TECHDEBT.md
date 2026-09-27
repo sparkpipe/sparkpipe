@@ -381,7 +381,10 @@ progress diary.
 - Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
   `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
   keep their own bucket ladders. `tests/test_template_adoption.py` lists
-  them.
+  them. dsv4's ladder adds buckets 6, 9 and 11. k3's is the common ladder,
+  but `spark_batch_variant_tuning_common.h` can be instantiated once per
+  translation unit and `tests/test_batch_variants.py` compiles the glm52,
+  k3 and dsv4 headers together; no k3 build includes k3's header.
 
 ## Runtime completion
 
