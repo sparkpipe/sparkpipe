@@ -667,7 +667,7 @@ static SparkStatus SparkLingServingReset(void *adapter_state,
 	SparkStatus status;
 	state = (SparkLingServingState *)adapter_state;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
 		memory_order_acquire,memory_order_relaxed) == 0 )
 		return(SPARK_STATUS_BUSY);

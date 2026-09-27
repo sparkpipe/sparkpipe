@@ -9,6 +9,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_gemma4_model.h"
@@ -232,7 +233,7 @@ static SparkStatus SparkGemma4ServingReset(void *adapter_state,
 	uint32_t expected = 0u;
 	SparkStatus status;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
 		memory_order_acquire,memory_order_relaxed) == 0 )
 		return(SPARK_STATUS_BUSY);

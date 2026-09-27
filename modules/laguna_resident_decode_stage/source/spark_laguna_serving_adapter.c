@@ -785,7 +785,7 @@ static SparkStatus SparkLagunaServingReset(void *adapter_state,uint64_t control_
 	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
-		SPARK_FAIL(SPARK_STATUS_BUSY);
+		return(SPARK_STATUS_BUSY);
 	status = SparkLagunaServingResetControl(state,control_generation);
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
 	return(status);
