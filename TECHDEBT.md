@@ -57,11 +57,23 @@ progress diary.
   waiter. Replace it with GPU-initiated RDMA so kernels post work requests
   and ring the NIC doorbell themselves; a 16-rank 8 KiB all-reduce should
   then cost tens of microseconds rather than the measured 167 us p50.
-- Two collective substrates coexist: DSV4 uses the residentd-owned hidden
-  transport (`ring/transport/tp_collective.c`, recursive doubling and split
-  rings), the other families use the weightd mesh through
-  `ring/transport/tp_device_collective.c`. Converge on one substrate with
-  one algorithm selector and one measured crossover profile.
+- Two collective substrates coexist: the residentd-owned hidden transport
+  (`ring/transport/tp_collective.c`, recursive doubling and split rings),
+  which k3's runner still creates, and the weightd mesh through
+  `ring/transport/tp_device_collective.c`, which every other TP module
+  opens. Converge on one substrate with one algorithm selector and one
+  measured crossover profile.
+- The mesh reads only degree, rank, width, rows, the operation timeout, the
+  band, the lane and the host combines from `SparkTpDeviceCollectiveConfig`.
+  The rest of that struct (hosts, ports, identifiers, credits and bindings,
+  rails, algorithm masks and thresholds), the stub calls around it
+  (`ApplyTopology` copies the degree, `ProbeMemoryMode`,
+  `CreditBindingRouteCount`) and the adapters' `tp_collective` stage-config
+  section that feeds them predate the mesh. Remove them together with a
+  fleet stage-config migration. The relay and TP4-tree combine kernels in
+  dsv4, qwen38_27b and k3, and
+  `tools/hardware/spark_dsv4_tp4_tree_bitwise.cu`, serve the same
+  pre-mesh algorithms.
 - The weightd mesh is wired on one interface (the switched rail). Build the
   pair-link hierarchical all-reduce (pair sum over `rank XOR 1`, 8-way
   switched exchange, pair return) designed in
@@ -328,14 +340,20 @@ progress diary.
 - Publish one driver per model with prewarmed row-count specializations
   instead of one module ID per `SPARK_BATCH_BUCKET`.
 - Every decode module now builds for sm_121a and links as a driver in
-  `tools/cuda13_sm121a_compile_gate.sh`, but four have changed since they
-  last ran on hardware. Requalify each of them:
+  `tools/cuda13_sm121a_compile_gate.sh`, and every TP module opens the
+  weightd mesh in `tests/test_tp_collective_open.py`. Most of them have
+  changed since they last ran on hardware. Requalify each of them:
   - qwen4_flash now runs the common GDN decay kernel with its sharded-pack
     layout (`SPARK_LLM_GDN_DECAY_REPLICATED 0`), and the common expert
     launchers, which now also take NVFP4;
   - hy4 links the stage-module lifecycle it calls, and did not link before;
   - dsv4, muse_glimmer and qwen4_flash compile the common mesh kernels that
-    `tp_device_collective.c` calls, and did not link before.
+    `tp_device_collective.c` calls, and did not link before;
+  - dsv4 could not open its TP collective at all (a local-host check the
+    mesh rewrite left unsatisfiable), and dsv4 and muse_glimmer never
+    attached the mesh, so every TP round would have been refused;
+  - glm52, laguna, qwen38_max and qwen4_flash attached the mesh only with a
+    lazy pack, and now map it themselves without one.
 - dsv4, muse_glimmer and qwen4_flash still register their own BF16 combine
   and none of the common FP32 combines. Call
   `SparkTpMeshRegisterCommonCombines`, delete the private combine, and

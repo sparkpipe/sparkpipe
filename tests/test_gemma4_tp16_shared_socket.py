@@ -29,7 +29,6 @@ WRAPPER = REPOSITORY / "tools/gemma4_tp16_shared_socket.sh"
 
 RANKS = 16
 LANE_CONTROL_BASE, LANE_CONTROL_END = 23096, 23111
-LANE_COLLECTIVE_BASE, LANE_COLLECTIVE_END = 53200, 53215
 LANE_TRANSPORT_BASE, LANE_TRANSPORT_END = 64096, 64111
 MODEL_REVISION = "842da3794eaa0b77d5f08bae87a17459d91ff475"
 ADAPTER_MEMBERS = {"schema_version", "model_revision", "stage_pack_path",
@@ -104,23 +103,9 @@ def test_generator(output: Path) -> dict:
         check(env["SPARK_GEMMA4_TP_DEGREE"] == "16", f"rank {rank} env tp degree")
         check(env["SPARK_GEMMA4_TP_RANK"] == str(rank), f"rank {rank} env tp rank")
         check(env["SPARK_GEMMA4_TP_STANDALONE"] == "0", f"rank {rank} standalone")
-        check(env["SPARK_GEMMA4_STAGE_TP_PORT_BASE"] == str(LANE_COLLECTIVE_BASE),
-              f"rank {rank} collective base")
-        check(env["SPARK_GEMMA4_STAGE_TP_HOSTS"].split(",") ==
-              [f"spark{hex(r)[2:]}" for r in range(RANKS)], f"rank {rank} hosts")
-        check(env["SPARK_GEMMA4_STAGE_TP_LOCAL_HOST"] == f"spark{hex(rank)[2:]}",
-              f"rank {rank} local host")
-        check(int(env["SPARK_GEMMA4_STAGE_TP_IDENTIFIER"]) > 0, f"rank {rank} identifier")
-        cells = [int(cell) for cell in env["SPARK_GEMMA4_STAGE_TP_SESSION_PORTS"].split(",")]
-        check(len(cells) == RANKS * RANKS, f"rank {rank} session matrix size")
-        for row in range(RANKS):
-            for column in range(RANKS):
-                cell = cells[row * RANKS + column]
-                if row == column:
-                    check(cell == 0, f"rank {rank} session diag ({row},{column})")
-                else:
-                    check(LANE_COLLECTIVE_BASE <= cell <= LANE_COLLECTIVE_END,
-                          f"rank {rank} session cell ({row},{column})={cell} inside lane block")
+        check(set(env) == {"SPARK_GEMMA4_TP_DEGREE", "SPARK_GEMMA4_TP_RANK",
+                           "SPARK_GEMMA4_TP_STANDALONE", "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS"},
+              f"rank {rank} env names only what the module reads: {sorted(env)}")
     return deployment
 
 

@@ -126,25 +126,10 @@ include ../resident_decode_stage_rules.mk
 # the per-node fleet form needs no env plumbing.
 VALIDATION_HOST_SUFFIX := $(shell hostname | sed 's/^spark//')
 VALIDATION_NODE_RANK := $(shell printf '%d' 0x$(VALIDATION_HOST_SUFFIX))
-VALIDATION_TP_PORT_BASE := 53032
-# SPARK_QWEN38_MAX_STAGE_TP_SESSION_PORTS is mandatory env whenever the
-# degree exceeds 1 (SparkQwen38MaxModuleConfigure parses the full NxN
-# matrix, diagonal 0, off-diagonal nonzero): column-derived cells
-# [r][c] = base+c stay inside lane 2's reserved collective block
-# 53032-53047 (the gemma4 tp16 generator convention; the collective
-# backend never binds them - the unqualified tier skips the mesh).
-# No spaces: RUNTIME_CONFIGURATION words are shell assignment prefixes.
-VALIDATION_TP_SESSION_PORTS := $(shell for r in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do for c in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do if [ $$r -eq $$c ]; then printf '0,'; else printf '%d,' $$(( $(VALIDATION_TP_PORT_BASE) + c )); fi; done; done | sed 's/,$$//')
 ifeq ($(ALLOW_UNQUALIFIED_EXECUTION),1)
 RUNTIME_CONFIGURATION += \
 	SPARK_QWEN38_MAX_STAGE_TP_DEGREE=16 \
-	SPARK_QWEN38_MAX_STAGE_TP_RANK=$(VALIDATION_NODE_RANK) \
-	SPARK_QWEN38_MAX_STAGE_TP_BACKEND_PATH=$(REPOSITORY_ROOT)/build/libhidden_transport_spark_host_rdma_verbs.so \
-	SPARK_QWEN38_MAX_STAGE_TP_IDENTIFIER=2 \
-	SPARK_QWEN38_MAX_STAGE_TP_PORT_BASE=$(VALIDATION_TP_PORT_BASE) \
-	SPARK_QWEN38_MAX_STAGE_TP_HOSTS=spark0,spark1,spark2,spark3,spark4,spark5,spark6,spark7,spark8,spark9,sparka,sparkb,sparkc,sparkd,sparke,sparkf \
-	SPARK_QWEN38_MAX_STAGE_TP_SESSION_PORTS=$(VALIDATION_TP_SESSION_PORTS) \
-	SPARK_QWEN38_MAX_STAGE_TP_LOCAL_HOST=$(shell hostname)
+	SPARK_QWEN38_MAX_STAGE_TP_RANK=$(VALIDATION_NODE_RANK)
 endif
 
 # Serving adapter: the shared object the residentd dlopens. Nothing else in

@@ -61,11 +61,6 @@ fi
 echo "qwen4_flash_tp4_smoke host=$spark_host rank=$tp_rank local_host=$local_host pack=$pack_path"
 
 cd "$worktree"
-export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="$backend_so"
-export SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER="$identifier"
-export SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE="$port_base"
-export SPARK_QWEN4_FLASH_STAGE_TP_HOSTS="$rail_hosts"
-export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$local_host"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS="120000"
 
 # The harness prints per-check lines; module initialize for tp_degree>1

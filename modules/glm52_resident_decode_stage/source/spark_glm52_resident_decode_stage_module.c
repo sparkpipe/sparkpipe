@@ -1086,7 +1086,6 @@ typedef struct SparkGlm52ClaimedContinuityContext
 } SparkGlm52ClaimedContinuityContext;
 
 #define SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
-#define SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
 
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status);
 static void CUDART_CB SparkGlm52CompleteAsync(void *context);
@@ -1174,39 +1173,19 @@ static SparkStatus SparkGlm52ModuleInitializeTpCollective(
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = state->pipeline_slot_count * SPARK_GLM52_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	configuration.control_port_base = context->tp_collective_control_port_base;
-	configuration.collective_identifier = context->tp_collective_identifier;
-	configuration.backend_module_path = context->tp_collective_backend_module_path;
-	configuration.registration_cuda_stream = state->execution_stream;
+	SparkTpMeshRegisterCommonCombines(&configuration);
+	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		SparkTpMeshRegisterCommonCombines(&configuration);
-		configuration.combine_context = state;
-		configuration.algorithm_mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
-		configuration.direct_all_to_all_max_payload_bytes =
-			SPARK_GLM52_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES;
-	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
-	if ( state->lazy_pack != 0 &&
-	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
-		status = SparkTpDeviceCollectivePrepareReceiveBf16(
-		    &state->tp_device_collective,
-		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
-		    0u,0u,0u,0u);
-	return(status);
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,state->lazy_pack != 0 ? (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr : 0);
+	SPARK_RETURN(status);
 }
 
 SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkGlm52ModuleTpCompletion,SparkGlm52TpChain,SparkGlm52TpChainAdvance)

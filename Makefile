@@ -593,6 +593,7 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_minimax.py \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_qwen38_27b.py \
+	tests/test_tp_collective_open.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \

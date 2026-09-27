@@ -168,11 +168,6 @@ cd "\$dir"
 # the collective itself is env-wired, mirroring the P4 smoke pattern).
 export SPARK_QWEN4_FLASH_TP_DEGREE=${#host_array[@]}
 export SPARK_QWEN4_FLASH_TP_RANK=$r
-export SPARK_QWEN4_FLASH_STAGE_TP_BACKEND_PATH="\$dir/lib/libhidden_transport_spark_host_rdma_verbs.so"
-export SPARK_QWEN4_FLASH_STAGE_TP_IDENTIFIER=$identifier
-export SPARK_QWEN4_FLASH_STAGE_TP_PORT_BASE=$port_base
-export SPARK_QWEN4_FLASH_STAGE_TP_HOSTS="$rail_csv"
-export SPARK_QWEN4_FLASH_STAGE_TP_LOCAL_HOST="$rail_local"
 export SPARK_QWEN4_FLASH_STAGE_TP_TIMEOUT_MS=180000
 export LD_LIBRARY_PATH="\$dir/lib:\${LD_LIBRARY_PATH:-}"
 nohup "\$dir/bin/sparkpipe_model_residentd" --deployment "\$dir" --rank-index "$r" > "\$dir/residentd-r$r.log" 2>&1 < /dev/null &

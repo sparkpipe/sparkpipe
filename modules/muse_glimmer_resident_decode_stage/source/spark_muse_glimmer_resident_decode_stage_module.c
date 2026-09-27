@@ -98,18 +98,11 @@ typedef struct SparkMuseGlimmerModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	uint32_t tp_passive;
+	uint32_t tp_standalone;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_collective_initialized;
 	atomic_uint tp_completion_flag;
 	atomic_ullong tp_next_ordinal;
-	char tp_backend_path[SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
-	char tp_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
-	char tp_local_host[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
-	uint16_t tp_session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
-	uint64_t tp_collective_identifier;
-	uint32_t tp_control_port_base;
-	uint32_t tp_connect_timeout_milli;
 	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
@@ -165,101 +158,28 @@ typedef struct SparkMuseGlimmerModuleState
 	void *kv_gdn_staging;
 } SparkMuseGlimmerModuleState;
 
+static SparkStatus SparkMuseGlimmerModuleConfigureTp(SparkMuseGlimmerModuleState *state)
+{
+	SparkStatus status;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_DEGREE",1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_MUSE_GLIMMER_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_RANK",0u,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT - 1u,SPARK_MUSE_GLIMMER_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT || (SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkMuseGlimmerModuleConfigure(SparkMuseGlimmerModuleState *state)
 {
 	SparkStatus status;
-	{
-		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_DEGREE",1u,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_MUSE_GLIMMER_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_RANK",0u,SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT - 1u,SPARK_MUSE_GLIMMER_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT || (SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		state->tp_collective_identifier = 0u;
-		state->tp_control_port_base = 0u;
-		state->tp_connect_timeout_milli = SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
-		state->tp_operation_timeout_milli = SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
-		state->tp_backend_path[0] = '\0';
-		state->tp_local_host[0] = '\0';
-		for (uint32_t host_clear = 0u; host_clear < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; host_clear++)
-			state->tp_hosts[host_clear][0] = '\0';
-		if ( state->tp_degree > 1u )
-		{
-			const char *tp_backend;
-			if ( SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_BACKEND_PATH",&tp_backend) != SPARK_STATUS_OK )
-			{
-				state->tp_passive = 1u;
-				fprintf(stderr,"%s tp_passive degree=%u rank=%u (single-rank replay of a tp-sliced pack; no hidden combine)\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
-			}
-		}
-		if ( state->tp_degree > 1u && state->tp_passive == 0u )
-		{
-			const char *tp_backend;
-			const char *tp_hosts;
-			const char *tp_local_host;
-			uint64_t tp_identifier;
-			const char *scan;
-			uint32_t host_index;
-			status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_BACKEND_PATH",&tp_backend);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsigned64(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_IDENTIFIER",0u,UINT64_MAX,&tp_identifier);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_PORT_BASE",1u,65535u,&state->tp_control_port_base);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_HOSTS",&tp_hosts);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_LOCAL_HOST",&tp_local_host);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_connect_timeout_milli);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-			snprintf(state->tp_backend_path,sizeof(state->tp_backend_path),"%s",tp_backend);
-			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
-			state->tp_collective_identifier = tp_identifier;
-			state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
-			scan = tp_hosts;
-			host_index = 0u;
-			while ( *scan != '\0' && host_index < state->tp_degree )
-			{
-				const char *comma = strchr(scan,',');
-				size_t length = comma != 0 ? (size_t)(comma - scan) : strlen(scan);
-				if ( length >= SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES )
-					return(SPARK_STATUS_INVALID_ARGUMENT);
-				memcpy(state->tp_hosts[host_index],scan,length);
-				state->tp_hosts[host_index][length] = '\0';
-				host_index++;
-				scan = comma != 0 ? comma + 1 : scan + length;
-			}
-			if ( host_index != state->tp_degree )
-				return(SPARK_STATUS_INVALID_ARGUMENT);
-			{
-				const char *tp_session_ports;
-				const char *cell_scan;
-				uint32_t row_index,column_index;
-				unsigned long cell_value;
-				status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_SESSION_PORTS",&tp_session_ports);
-				if ( status != SPARK_STATUS_OK )
-					return(status);
-				cell_scan = tp_session_ports;
-				for (row_index = 0u; row_index < state->tp_degree; row_index++)
-					for (column_index = 0u; column_index < state->tp_degree; column_index++)
-					{
-						char *cell_end;
-						errno = 0;
-						cell_value = strtoul(cell_scan,&cell_end,10);
-						if ( cell_end == cell_scan || errno != 0 ||
-							cell_value > 65535u ||
-							(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
-							return(SPARK_STATUS_INVALID_ARGUMENT);
-						state->tp_session_ports[row_index][column_index] = (uint16_t)cell_value;
-						cell_scan = cell_end;
-						while ( *cell_scan == ',' )
-							cell_scan++;
-					}
-			}
-		}
-	}
+	status = SparkMuseGlimmerModuleConfigureTp(state);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_COUNT",1u,SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_INDEX",0u,SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
@@ -880,56 +800,36 @@ extern cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, void 
 static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmerModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
-	SparkTpDeviceCollectiveTopology topology;
-	uint32_t rank;
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
-	memset(&topology,0,sizeof(topology));
-	topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	topology.rank_count = state->tp_degree;
-	topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
-	topology.rail_count = 0u;
-	topology.direct_all_to_all_max_payload_bytes = 0u;
-	topology.split_ring_min_payload_bytes = 0u;
-	memcpy(topology.session_ports,state->tp_session_ports,
-		sizeof(topology.session_ports));
-	for (rank = 0u; rank < state->tp_degree; rank++)
-		memcpy(topology.rank_hosts[rank],state->tp_hosts[rank],SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
+	if ( state->tp_standalone != 0u )
+	{
+		fprintf(stderr,"%s tp_collective_skipped standalone=1 degree=%u rank=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
+		return(SPARK_STATUS_OK);
+	}
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = 8u;
 	configuration.local_hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	configuration.connect_timeout_milli = state->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.control_port_base = state->tp_control_port_base;
-	configuration.collective_identifier = state->tp_collective_identifier;
-	configuration.backend_module_path = state->tp_backend_path;
-	configuration.local_host = state->tp_local_host;
-	configuration.registration_cuda_stream = state->slots[0].cuda_stream;
 	configuration.combine_bf16_function = SparkMuseGlimmerModuleTpCombineBf16;
 	configuration.combine_context = state;
-	status = SparkTpDeviceCollectiveApplyTopology(&topology,&configuration);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s tp_apply_topology_failed status=%d\n",SPARK_MUSE_GLIMMER_MODULE_TAG,(int)status);
-		return(status);
-	}
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_MUSE_GLIMMER_MODULE_TAG,(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	state->tp_collective_initialized = 1u;
-	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
-	return(SPARK_STATUS_OK);
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
+	if ( status == SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_collective_open degree=%u rank=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkMuseGlimmerModuleTpAllReduceHidden(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, void *device_bf16, uint32_t rows)
@@ -938,7 +838,7 @@ static SparkStatus SparkMuseGlimmerModuleTpAllReduceHidden(SparkMuseGlimmerModul
 	struct timespec pause;
 	uint32_t polls,flag;
 	SparkStatus status;
-	if ( state->tp_degree == 1u || state->tp_passive != 0u )
+	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		return(SPARK_STATUS_INTERNAL_ERROR);
@@ -980,7 +880,7 @@ static SparkStatus SparkMuseGlimmerModuleTpMaxloc(SparkMuseGlimmerModuleState *s
 	struct timespec pause;
 	uint32_t polls,flag;
 	SparkStatus status;
-	if ( state->tp_degree == 1u || state->tp_passive != 0u )
+	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_collective_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1067,7 +967,7 @@ static SparkStatus SparkMuseGlimmerModulePrepare(
 		status = SparkMuseGlimmerModuleAllocateSlot(state,&state->slots[0]);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMuseGlimmerModuleAllocateSlotHostMirrors(state,&state->slots[0]);
-	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u && state->tp_passive == 0u )
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u && state->tp_standalone == 0u )
 		status = SparkMuseGlimmerModuleInitializeTpCollective(state);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s initialize_failed status=%d\n",SPARK_MUSE_GLIMMER_MODULE_TAG,(int)status);
