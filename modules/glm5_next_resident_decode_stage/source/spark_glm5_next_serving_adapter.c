@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_glm5_next_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
+#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_speculation_seam.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
@@ -278,203 +279,6 @@ static SparkStatus SparkGlm5NextServingJsonUnsigned(
 	return(token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,token,value));
 }
 
-static SparkStatus SparkGlm5NextServingLoadTpAlgorithms(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,mask;
-	token = SparkGlm5NextServingJsonMember(document,object,"algorithms");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	mask = 0u;
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		if ( SparkJsonStringEquals(document,element,"recursive_doubling") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING;
-		else if ( SparkJsonStringEquals(document,element,
-				"counter_rotating_split_ring") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING;
-		else if ( SparkJsonStringEquals(document,element,"direct_all_to_all") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
-		else if ( SparkJsonStringEquals(document,element,"tree") )
-			mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
-		else
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING )
-	{
-	}
-	else if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL )
-	{
-	}
-	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING |
-		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) )
-	{
-	}
-	else if ( count == 1u && mask == SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE )
-	{
-	}
-	else if ( count == 2u && mask == (SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE |
-		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING) )
-	{
-	}
-	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->algorithm_mask = mask;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm5NextServingLoadTpStepRails(
-	const SparkJsonDocument *document,
-	int32_t object,
-	uint32_t tp_degree,
-	SparkTpDeviceCollectiveTopology *topology)
-{
-	int32_t element,token;
-	uint32_t count,index,value;
-	SparkStatus status;
-	token = SparkGlm5NextServingJsonMember(document,object,"step_rail_indices");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_ROUTE_COUNT &&
-		count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-			SparkJsonGetUInt32(document,element,&value);
-		if ( status != SPARK_STATUS_OK || value >=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		topology->step_rail_indices[index] = value;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm5NextServingLoadTpRailHosts(
-	const SparkJsonDocument *document,
-	int32_t object,
-	SparkTpDeviceCollectiveTopology *topology,
-	uint32_t tp_degree)
-{
-	int32_t element,host_element,token;
-	uint32_t host_count,index,rail;
-	char *host;
-	SparkStatus status;
-	token = SparkGlm5NextServingJsonMember(document,object,"rail_peer_hosts");
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) ||
-		SparkJsonGetArrayElementCount(document,token) !=
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	topology->rail_count = SPARK_TP_DEVICE_COLLECTIVE_MAX_RAIL_COUNT;
-	for (rail=0u; rail<topology->rail_count; rail++)
-	{
-		element = SparkJsonGetArrayElement(document,token,rail);
-		if ( element < 0 ||
-			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		host_count = SparkJsonGetArrayElementCount(document,element);
-		if ( host_count != tp_degree )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		for (index=0u; index<host_count; index++)
-		{
-			host_element = SparkJsonGetArrayElement(document,element,index);
-			host = 0;
-			status = host_element < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-				SparkJsonCopyString(document,host_element,&host);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkCopyString(
-					topology->rail_rank_hosts[rail][index],
-					SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-			free(host);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm5NextServingLoadSessionPorts(
-	const SparkJsonDocument *document,
-	int32_t object,
-	const char *name,
-	uint16_t table[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
-		[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE],
-	uint32_t tp_degree)
-{
-	int32_t token,element,cell;
-	uint32_t row,column,port,count;
-	SparkStatus status;
-	token = SparkGlm5NextServingJsonMember(document,object,name);
-	if ( token < 0 ||
-		!SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (row=0u; row<count; row++)
-	{
-		element = SparkJsonGetArrayElement(document,token,row);
-		if ( element < 0 ||
-			!SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_ARRAY) ||
-			SparkJsonGetArrayElementCount(document,element) != tp_degree )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		for (column=0u; column<count; column++)
-		{
-			cell = SparkJsonGetArrayElement(document,element,column);
-			status = cell < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-				SparkJsonGetUInt32(document,cell,&port);
-			if ( status != SPARK_STATUS_OK || port > UINT16_MAX ||
-				(row == column ? port != 0u : port == 0u) )
-				return(status == SPARK_STATUS_OK ?
-					SPARK_STATUS_SCHEMA_ERROR : status);
-			table[row][column] = (uint16_t)port;
-		}
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkGlm5NextServingValidateTpCollectiveMembers(
-	const SparkJsonDocument *document,
-	int32_t object,
-	uint32_t backend_kind)
-{
-	static const char *const base_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports"
-	};
-	static const char *const adaptive_members[] =
-	{
-		"backend","backend_module_path","collective_identifier",
-		"listen_port","connect_timeout_milli","operation_timeout_milli",
-		"peer_hosts","peer_ports","algorithms",
-		"direct_all_to_all_max_payload_bytes",
-		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices","session_ports","session_ports_hc"
-	};
-	const char *const *members;
-	uint32_t member_count;
-	members = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		adaptive_members : base_members;
-	member_count = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
-		(uint32_t)(sizeof(adaptive_members) / sizeof(adaptive_members[0])) :
-		(uint32_t)(sizeof(base_members) / sizeof(base_members[0]));
-	return(SparkJsonValidateObjectMembersExact(document,object,members,
-		member_count));
-}
-
 static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -482,142 +286,33 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	SparkGlm5NextServingState *state,
 	uint32_t tp_degree)
 {
-	int32_t object,token,element;
-	uint32_t count,index,port;
-	uint64_t collective_identifier;
-	char *host,*relative_backend_path;
+	SparkTpCollectiveConfigPolicy policy;
+	SparkTpCollectiveAdapterConfig config;
 	SparkStatus status;
 	if ( document == 0 || runtime_root == 0 || state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&state->tp_collective_topology,0,
-		sizeof(state->tp_collective_topology));
-	state->tp_collective_topology.abi_version =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	state->tp_collective_topology.descriptor_bytes =
-		SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	object = SparkGlm5NextServingJsonMember(document,root,"tp_collective");
-	if ( object < 0 || !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	token = SparkGlm5NextServingJsonMember(document,object,"backend");
-	if ( token < 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( SparkJsonStringEquals(document,token,"nccl") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-	else if ( SparkJsonStringEquals(document,token,"hidden_transport") )
-		state->tp_collective_backend_kind =
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	else
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkGlm5NextServingValidateTpCollectiveMembers(document,object,
-		state->tp_collective_backend_kind);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	relative_backend_path = 0;
-	token = SparkGlm5NextServingJsonMember(document,object,"backend_module_path");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
-		SparkJsonCopyString(document,token,&relative_backend_path);
+	memset(&policy,0,sizeof(policy));
+	policy.peer_count = tp_degree;
+	policy.allow_zero_collective_identifier = 1u;
+	policy.require_contiguous_peer_ports = 1u;
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
+	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;
+	policy.require_session_ports = 1u;
+	memset(&config,0,sizeof(config));
+	config.backend_module_path_buffer = state->tp_collective_backend_path;
+	config.backend_module_path_bytes = sizeof(state->tp_collective_backend_path);
+	status = SparkServingAdapterTemplateLoadTpCollective(document,root,runtime_root,&policy,&config);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkResolveRuntimePath(runtime_root,relative_backend_path,
-			state->tp_collective_backend_path,
-			sizeof(state->tp_collective_backend_path));
-	free(relative_backend_path);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	token = SparkGlm5NextServingJsonMember(document,object,"collective_identifier");
-	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt64(document,token,&collective_identifier);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	state->tp_collective_identifier = collective_identifier;
-	status = SparkGlm5NextServingJsonUnsigned(document,object,"listen_port",&port);
-	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	state->tp_listen_port = (uint16_t)port;
-	status = SparkGlm5NextServingJsonUnsigned(document,object,"connect_timeout_milli",&state->tp_connect_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_connect_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	status = SparkGlm5NextServingJsonUnsigned(document,object,"operation_timeout_milli",&state->tp_operation_timeout_milli);
-	if ( status != SPARK_STATUS_OK || state->tp_operation_timeout_milli == 0u )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	token = SparkGlm5NextServingJsonMember(document,object,"peer_hosts");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	state->tp_collective_topology.rank_count = count;
-	for (index=0u; index<count; index++)
 	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		host = 0;
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonCopyString(document,element,&host);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkCopyString(
-				state->tp_collective_topology.rank_hosts[index],
-				SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES,host);
-		free(host);
-		if ( status != SPARK_STATUS_OK ||
-			state->tp_collective_topology.rank_hosts[index][0] == '\0' )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-	}
-	token = SparkGlm5NextServingJsonMember(document,object,"peer_ports");
-	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_ARRAY) )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	count = SparkJsonGetArrayElementCount(document,token);
-	if ( count != tp_degree )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (index=0u; index<count; index++)
-	{
-		element = SparkJsonGetArrayElement(document,token,index);
-		status = element < 0 ? SPARK_STATUS_SCHEMA_ERROR : SparkJsonGetUInt32(document,element,&port);
-		if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
-			return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
-		state->tp_peer_ports[index] = (uint16_t)port;
-	}
-	state->tp_collective_control_port_base = state->tp_peer_ports[0];
-	for (index=1u; index<count; index++)
-	{
-		if ( state->tp_peer_ports[index] !=
-			(uint16_t)(state->tp_collective_control_port_base + index) )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	if ( state->tp_collective_backend_kind ==
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		status = SparkGlm5NextServingLoadTpAlgorithms(document,object,
-			&state->tp_collective_topology);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingLoadSessionPorts(document,object,
-				"session_ports",state->tp_collective_topology.session_ports,
-				tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingLoadSessionPorts(document,object,
-				"session_ports_hc",state->node_context.
-					tp_collective_session_ports_hc,tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingJsonUnsigned(document,object,
-				"direct_all_to_all_max_payload_bytes",
-				&state->tp_collective_topology.direct_all_to_all_max_payload_bytes);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingJsonUnsigned(document,object,
-				"split_ring_min_payload_bytes",
-				&state->tp_collective_topology.split_ring_min_payload_bytes);
-		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.algorithm_mask &
-				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL) == 0u &&
-			state->tp_collective_topology.direct_all_to_all_max_payload_bytes != 0u )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		if ( status == SPARK_STATUS_OK &&
-			(state->tp_collective_topology.algorithm_mask &
-				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING) == 0u &&
-			state->tp_collective_topology.split_ring_min_payload_bytes != 0u )
-			status = SPARK_STATUS_SCHEMA_ERROR;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingLoadTpRailHosts(document,object,
-				&state->tp_collective_topology,tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkGlm5NextServingLoadTpStepRails(document,object,
-				tp_degree,&state->tp_collective_topology);
+		state->tp_collective_backend_kind = config.backend_kind;
+		state->tp_collective_identifier = config.collective_identifier;
+		state->tp_listen_port = config.listen_port;
+		memcpy(state->tp_peer_ports,config.peer_ports,sizeof(state->tp_peer_ports));
+		state->tp_connect_timeout_milli = config.connect_timeout_milli;
+		state->tp_operation_timeout_milli = config.operation_timeout_milli;
+		state->tp_collective_control_port_base = config.control_port_base;
+		state->tp_collective_topology = config.topology;
+		memcpy(state->node_context.tp_collective_session_ports_hc,config.session_ports_hc,sizeof(state->node_context.tp_collective_session_ports_hc));
 	}
 	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
 	SPARK_RETURN(status);

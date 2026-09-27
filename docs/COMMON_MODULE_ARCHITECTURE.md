@@ -246,6 +246,10 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
     SparkServingAdapterTemplateRuntime *runtime);   /* the missing loader; seed: glm52 */
 ```
 Deletes the 370-LOC hand-rolled TP JSON parsers (ling/laguna/glm5_next/qwen38-27b).
+Status: every adapter with a TP collective (dsv4, glm52, glm5_next, laguna, ling,
+qwen38-27b) loads it through `SparkServingAdapterTemplateLoadTpCollective`. glm5_next
+moved last; its loader produced byte-identical state for the sixteen committed stage
+configs and rejected the same 27 malformed ones before and after.
 
 ### M-4 `common_serving_frame` *(shim)* — deployment-config handler skeleton.
 12 params; seed glm52 adapter. qwen38-27b's 2,322-LOC frame server collapses onto it.

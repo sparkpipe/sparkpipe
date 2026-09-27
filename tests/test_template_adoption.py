@@ -17,11 +17,11 @@ FAMILIES = {
     "glm52_resident_decode_stage": None,
     "qwen38_27b_resident_decode_stage": None,
     "k3_resident_decode_stage": "exempt:pack-API-module (verified not the pasted shape; dry-final report)",
-    "glm5_next_resident_decode_stage": "wave-2 (post-closeout)",
+    "glm5_next_resident_decode_stage": None,
     "qwen38_max_resident_decode_stage": "wave-2",
     "qwen4_flash_resident_decode_stage": "wave-2",
     "ling_resident_decode_stage": None,
-    "laguna_resident_decode_stage": "wave-2 (mod-infra-mid migration notes: TP-config loader + MASK_CONDITIONAL/ADAPTIVE_COMBOS policies)",
+    "laguna_resident_decode_stage": None,
 }
 
 FORK_SIGNATURES = [

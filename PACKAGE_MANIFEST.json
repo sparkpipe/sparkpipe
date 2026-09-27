@@ -643,8 +643,8 @@
     },
     {
       "path": "docs/COMMON_MODULE_ARCHITECTURE.md",
-      "sha256": "851216a2f2ef9356bd9199889d4597e086d632dba0651dab0d303cb3f8f081f6",
-      "size_bytes": 20252
+      "sha256": "c2ac33921ea67b34792e7fe3a0b09c1a49241690a7cf8318f468c8c6c4412221",
+      "size_bytes": 20571
     },
     {
       "path": "docs/CONSTANT_AUDIT.md",
@@ -5263,8 +5263,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "5c3681394a576dd8a17885662afcefd8bfeabbca6104e762ff732f3e9343e5d9",
-      "size_bytes": 62346
+      "sha256": "96ff94293290f3d60dcb9c64d44195c0072ec420b064043d1a538c454bd942e2",
+      "size_bytes": 50128
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -10513,8 +10513,8 @@
     },
     {
       "path": "tests/test_template_adoption.py",
-      "sha256": "129e70eac98a0c8915e3a328c411798b10a6e229cf378474fa1a03ce7188208b",
-      "size_bytes": 5900
+      "sha256": "23c128803dfbf87900ee8ee34415032f9cc04c43b364d958d78f54cfe7632fb0",
+      "size_bytes": 5782
     },
     {
       "path": "tests/test_tensor_map_encode.c",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74167633
+  "total_bytes": 74155616
 }
