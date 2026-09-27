@@ -890,7 +890,7 @@ static SparkStatus SparkMuseGlimmerModuleInitializeGate(void)
 	uint32_t allow_unqualified_execution;
 	allow_unqualified_execution = 0u;
 	if ( SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
-		return(SPARK_STATUS_MODULE_NOT_VALIDATED);
+		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
 	return(SPARK_STATUS_OK);
 }
 

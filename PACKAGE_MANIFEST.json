@@ -5123,8 +5123,8 @@
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c",
-      "sha256": "1d5520afdd35baff3fd3b0623674c61aa164651a063d5b400b60ceef53b86185",
-      "size_bytes": 79299
+      "sha256": "79635f5affced597cc724ce86a50b5d20c8ebdd59ade477f9ec10e92036dc3b1",
+      "size_bytes": 79303
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
@@ -5838,8 +5838,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c",
-      "sha256": "55ce8661fe616d0e540a0c37e4e5c6600a021cb0e2689c2f5a7bd4b5c7c8bc4c",
-      "size_bytes": 84172
+      "sha256": "19054e14d12bbc516cae8adff1133442f5db25de6958de41834d6f531e1c91d5",
+      "size_bytes": 84176
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
@@ -15250,5 +15250,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73941213
+  "total_bytes": 73941221
 }
