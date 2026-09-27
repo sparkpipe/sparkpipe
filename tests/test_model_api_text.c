@@ -120,7 +120,14 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"      {\"type\": \"ByteLevel\", \"add_prefix_space\": false}\n"
 		"    ]\n"
 		"  },\n"
-		"  \"added_tokens\": []\n"
+		"  \"added_tokens\": [\n"
+		"    {\"id\": 4400, \"content\": \"<|user|>\", \"special\": true},\n"
+		"    {\"id\": 4401, \"content\": \"<|assistant|>\", \"special\": true},\n"
+		"    {\"id\": 4402, \"content\": \"[gMASK]\", \"special\": true},\n"
+		"    {\"id\": 4403, \"content\": \"<sop>\", \"special\": true},\n"
+		"    {\"id\": 4404, \"content\": \"<|observation|>\", \"special\": true},\n"
+		"    {\"id\": 4405, \"content\": \"<|system|>\", \"special\": true}\n"
+		"  ]\n"
 		"}\n",
 		"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}{1,3}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+");
 	assert(fclose(file) == 0);
@@ -437,6 +444,7 @@ typedef struct TestApiStack
 	char deployment_path[108];
 	pid_t api_child;
 	uint32_t api_port;
+	const char *api_stderr_path;
 } TestApiStack;
 
 static void TestApiStartStack(TestApiStack *stack,const char *tokenizer_asset_path)
@@ -481,6 +489,8 @@ static void TestApiStartApi(TestApiStack *stack)
 		char *argv[10];
 		char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 		int argument = 0;
+		if ( stack->api_stderr_path != 0 )
+			assert(freopen(stack->api_stderr_path,"w",stderr) != 0);
 		(void)snprintf(port,sizeof(port),"%u",stack->api_port);
 		assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 		argv[argument++] = (char *)TEST_MODEL_API_PATH;
@@ -669,6 +679,174 @@ static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 		"decode(tokens); stops bound the stream)\n");
 }
 
+static uint32_t TestApiEncodeExpected(const SparkTokenizerSidecar *sidecar,
+	const char *text, uint32_t *token_ids, uint32_t token_capacity)
+{
+	SparkTokenizerWorkspace workspace;
+	SparkTokenizerEncoding encoding;
+	uint32_t text_bytes = (uint32_t)strlen(text);
+	SparkTokenizerWorkspaceReset(&workspace);
+	assert(SparkTokenizerWorkspaceInitialize(&workspace,text_bytes + 1u) ==
+		SPARK_STATUS_OK);
+	SparkTokenizerEncodingReset(&encoding);
+	encoding.token_capacity = token_capacity;
+	encoding.token_ids = token_ids;
+	assert(SparkTokenizerSidecarEncodeText(sidecar,text,text_bytes,0u,
+		&workspace,&encoding) == SPARK_STATUS_OK);
+	SparkTokenizerWorkspaceDestroy(&workspace);
+	assert(encoding.token_count != 0u && encoding.token_count <= token_capacity);
+	return encoding.token_count;
+}
+
+static char *TestApiReadFile(const char *path)
+{
+	FILE *file;
+	long size;
+	char *data;
+	file = fopen(path,"rb");
+	if ( file == 0 )
+		return 0;
+	assert(fseek(file,0,SEEK_END) == 0);
+	size = ftell(file);
+	assert(size >= 0);
+	assert(fseek(file,0,SEEK_SET) == 0);
+	data = malloc((size_t)size + 1u);
+	assert(data != 0);
+	assert(fread(data,1u,(size_t)size,file) == (size_t)size);
+	data[size] = '\0';
+	assert(fclose(file) == 0);
+	return data;
+}
+
+static const char *TestApiLastMeasurements(const char *log_data)
+{
+	const char *last = 0;
+	const char *next = strstr(log_data,"request_measurements");
+	while ( next != 0 )
+	{
+		last = next;
+		next = strstr(next + 1,"request_measurements");
+	}
+	return last;
+}
+
+/* The chat endpoint must render messages through the GLM chat layout, not a
+ * bare concatenation: the served prompt ids (recorded as prompt_sha256 over
+ * the token ids in the API's measurements log) must equal a locally encoded
+ * [gMASK]<sop>…<|assistant|>\n template for single- and multi-turn input. */
+static void TestApiChatTemplateServing(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar)
+{
+	static const char single_turn[] = "[gMASK]<sop><|user|>\nhi<|assistant|>\n";
+	static const char multi_turn[] =
+		"[gMASK]<sop><|system|>\nYou are terse.<|user|>\nhi"
+		"<|assistant|>\nok<|user|>\nbye<|assistant|>\n";
+	char expected_hex[SPARK_SHA256_HEX_BYTES];
+	char response[65536];
+	char *log_data;
+	const char *measurements;
+	const char *field;
+	uint32_t expected_ids[256];
+	uint32_t expected_count;
+	uint32_t logged_tokens;
+	unsigned measurements_before;
+	unsigned measurements_after;
+	struct timespec delay = {0,2000000};
+	unsigned attempt;
+
+	log_data = TestApiReadFile(stack->api_stderr_path);
+	assert(log_data != 0);
+	measurements_before = 0u;
+	for ( field = strstr(log_data,"request_measurements");
+		field != 0;
+		field = strstr(field + 1,"request_measurements") )
+		measurements_before++;
+	free(log_data);
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),
+		"\"object\":\"chat.completion\""));
+
+	expected_count = TestApiEncodeExpected(sidecar,single_turn,
+		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
+	assert(SparkSha256Bytes(expected_ids,
+		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
+
+	log_data = 0;
+	measurements_after = 0u;
+	for ( attempt = 0u; attempt < 500u; attempt++ )
+	{
+		log_data = TestApiReadFile(stack->api_stderr_path);
+		assert(log_data != 0);
+		measurements_after = 0u;
+		for ( field = strstr(log_data,"request_measurements");
+			field != 0;
+			field = strstr(field + 1,"request_measurements") )
+			measurements_after++;
+		if ( measurements_after > measurements_before )
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && measurements_after == measurements_before + 1u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"prompt_tokens\":");
+	assert(field != 0);
+	logged_tokens = (uint32_t)strtoul(field + 16,0,10);
+	assert(logged_tokens == expected_count);
+	field = strstr(measurements,"\"prompt_sha256\":\"");
+	assert(field != 0);
+	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
+	free(log_data);
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
+		"{\"messages\":["
+		"{\"role\":\"system\",\"content\":\"You are terse.\"},"
+		"{\"role\":\"user\",\"content\":\"hi\"},"
+		"{\"role\":\"assistant\",\"content\":\"ok\"},"
+		"{\"role\":\"user\",\"content\":\"bye\"}],\"max_tokens\":2}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+
+	expected_count = TestApiEncodeExpected(sidecar,multi_turn,
+		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
+	assert(SparkSha256Bytes(expected_ids,
+		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
+
+	log_data = 0;
+	for ( attempt = 0u; attempt < 500u; attempt++ )
+	{
+		log_data = TestApiReadFile(stack->api_stderr_path);
+		assert(log_data != 0);
+		measurements_after = 0u;
+		for ( field = strstr(log_data,"request_measurements");
+			field != 0;
+			field = strstr(field + 1,"request_measurements") )
+			measurements_after++;
+		if ( measurements_after > measurements_before + 1u )
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && measurements_after == measurements_before + 2u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"prompt_tokens\":");
+	assert(field != 0);
+	logged_tokens = (uint32_t)strtoul(field + 16,0,10);
+	assert(logged_tokens == expected_count);
+	field = strstr(measurements,"\"prompt_sha256\":\"");
+	assert(field != 0);
+	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
+	free(log_data);
+	printf("test_model_api_text: chat template OK (single- and multi-turn "
+		"prompts carry [gMASK]<sop> markers, roles and the assistant header)\n");
+}
+
 static void TestApiMissingAssetIsFatal(void)
 {
 	TestApiStack stack;
@@ -756,8 +934,24 @@ int main(void)
 	if ( stack.api_port == 0u )
 		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
 	TestApiStartStack(&stack,"build/test_tokenizer_sidecar_api_hf.json");
+	stack.api_stderr_path = "build/test_model_api_text_chat_stderr.log";
+	unlink(stack.api_stderr_path);
 	TestApiStartApi(&stack);
 	TestApiTextServingWithTokenizer(&stack);
+	{
+		SparkTokenizerSidecar sidecar;
+		SparkTokenizerSidecarConfiguration configuration;
+		SparkTokenizerSidecarReset(&sidecar);
+		memset(&configuration,0,sizeof(configuration));
+		configuration.abi_version = SPARK_TOKENIZER_SIDECAR_ABI_VERSION;
+		configuration.descriptor_bytes =
+			SPARK_TOKENIZER_SIDECAR_CONFIGURATION_DESCRIPTOR_BYTES;
+		configuration.asset_path = "build/test_tokenizer_sidecar_api_hf.json";
+		configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
+		assert(SparkTokenizerSidecarLoad(&sidecar,&configuration) == SPARK_STATUS_OK);
+		TestApiChatTemplateServing(&stack,&sidecar);
+		SparkTokenizerSidecarUnload(&sidecar);
+	}
 	TestApiStopStack(&stack);
 
 	TestApiMissingAssetIsFatal();

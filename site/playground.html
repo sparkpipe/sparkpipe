@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<title>SparkPipe Playground</title>
+<meta name="description" content="Talk to the models SparkPipe serves, through its OpenAI-compatible LiteLLM endpoint.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css?v=0c90e191">
+</head>
+<body class="app">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
+
+<header class="nav">
+  <div class="wrap wide">
+    <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">playground</span></a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="index.html">Home</a>
+      <a href="providers.html">Providers</a>
+    </nav>
+    <span class="status" aria-live="polite"><i id="dot" class="dot"></i><span id="status">Checking the API</span></span>
+  </div>
+</header>
+
+<main class="console">
+  <aside class="side form">
+    <p class="label">Connection</p>
+    <label for="endpoint">Endpoint<input id="endpoint" placeholder="https://sparkpipe.ai" spellcheck="false"></label>
+    <label for="key">API key<input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"></label>
+    <div class="row"><button id="connect" class="btn small" type="button">Connect</button><span id="models-note" class="hint">Enter an endpoint and key.</span></div>
+    <label for="model">Model<select id="model"></select></label>
+    <p class="label">Decoding</p>
+    <div class="pair">
+      <label for="max">Max tokens<input id="max" type="number" min="1" max="8192" value="256"></label>
+      <label for="temp">Temperature<input id="temp" type="number" min="0" max="2" step="0.1" value="0"></label>
+      <label for="seed">Seed<input id="seed" type="number" min="0" step="1" placeholder="random"></label>
+      <label for="deadline">Deadline, ms<input id="deadline" type="number" min="1" step="1" placeholder="none"></label>
+    </div>
+    <label class="check" for="stream"><input id="stream" type="checkbox" checked>Stream tokens as they decode</label>
+    <p class="hint">Temperature 0 decodes greedily. With a seed, a sampled reply replays token for token on the same deployment. A request still running at its deadline is cancelled.</p>
+    <details class="snippet">
+      <summary>Call it from code</summary>
+      <select id="lang" aria-label="Language"><option value="curl">curl</option><option value="python">Python (OpenAI SDK)</option></select>
+      <pre id="code"></pre>
+      <div class="row"><button id="copy" class="btn small" type="button">Copy</button></div>
+    </details>
+  </aside>
+
+  <section class="chat">
+    <div id="messages" class="messages" aria-live="polite">
+      <div id="empty" class="empty">
+        <p class="label signal">OpenAI-compatible · through LiteLLM</p>
+        <h2>Talk to a resident model.</h2>
+        <p>Requests go to SparkPipe's LiteLLM endpoint, the same one any OpenAI SDK can call. Every reply shows its time to first token and decode rate.</p>
+        <div class="examples">
+          <button type="button">Explain how a KV cache speeds up decoding</button>
+          <button type="button">Compare tensor and pipeline parallelism in a table</button>
+          <button type="button">Write a CUDA kernel optimization checklist</button>
+          <button type="button">Summarize mixture-of-experts routing for an engineer</button>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="composer-row">
+        <textarea id="prompt" rows="1" placeholder="Message the model" aria-label="Prompt"></textarea>
+        <button id="send" class="btn solid" type="button">Send</button>
+      </div>
+      <div class="composer-meta"><span>Enter to send, Shift+Enter for a new line</span><button id="clear" class="link" type="button">Clear conversation</button></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const load = (kind, key) => { try { return window[kind].getItem(key) || ''; } catch (_) { return ''; } };
+  const save = (kind, key, value) => { try { window[kind].setItem(key, value); } catch (_) {} };
+  const history = [];
+  let controller = null;
+  const base = () => ($('endpoint').value.trim() || location.origin).replace(/\/+$/, '').replace(/\/v1$/, '');
+  const headers = () => Object.assign({ 'Content-Type': 'application/json' }, $('key').value.trim() ? { Authorization: 'Bearer ' + $('key').value.trim() } : {});
+  const failure = async (response) => { const doc = await response.json().catch(() => ({})); return new Error((doc.error && (doc.error.message || doc.error)) || 'HTTP ' + response.status); };
+  const status = (state, text) => { $('dot').className = 'dot ' + state; $('status').textContent = text; };
+  const options = () => {
+    const body = { model: $('model').value, max_tokens: +$('max').value || 256, temperature: +$('temp').value || 0 };
+    if ($('seed').value !== '') body.seed = +$('seed').value;
+    if ($('deadline').value !== '') body.deadline_ms = +$('deadline').value;
+    return body;
+  };
+  const shell = (text) => "'" + text.replace(/'/g, "'\\''") + "'";
+  const snippet = () => {
+    const body = Object.assign(options(), { messages: [{ role: 'user', content: $('prompt').value.trim() || 'Hello' }] });
+    const url = base() + '/v1';
+    if ($('lang').value === 'curl') {
+      $('code').textContent = 'curl ' + url + '/chat/completions \\\n  -H "Authorization: Bearer $SPARKPIPE_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d ' + shell(JSON.stringify(body));
+      return;
+    }
+    const lines = ['model=' + JSON.stringify(body.model), 'messages=' + JSON.stringify(body.messages), 'max_tokens=' + body.max_tokens, 'temperature=' + body.temperature];
+    if (body.seed !== undefined) lines.push('seed=' + body.seed);
+    if (body.deadline_ms !== undefined) lines.push('extra_body={"deadline_ms": ' + body.deadline_ms + '}');
+    $('code').textContent = 'import os\nfrom openai import OpenAI\n\nclient = OpenAI(base_url=' + JSON.stringify(url) + ', api_key=os.environ["SPARKPIPE_API_KEY"])\nreply = client.chat.completions.create(\n    ' + lines.join(',\n    ') + ',\n)\nprint(reply.choices[0].message.content)';
+  };
+  const probe = async () => {
+    try {
+      const response = await fetch(base() + '/health/liveliness');
+      status(response.ok ? 'on' : 'off', response.ok ? 'API online' : 'API answered ' + response.status);
+    } catch (_) {
+      status('off', 'API unreachable');
+    }
+  };
+  const connect = async () => {
+    save('localStorage', 'sparkpipe-endpoint', $('endpoint').value.trim());
+    save('sessionStorage', 'sparkpipe-key', $('key').value.trim());
+    probe();
+    try {
+      const response = await fetch(base() + '/v1/models', { headers: headers() });
+      if (!response.ok) throw await failure(response);
+      const ids = ((await response.json()).data || []).map((model) => model.id);
+      const kept = $('model').value;
+      $('model').replaceChildren(...ids.map((id) => new Option(id, id, false, id === kept)));
+      $('models-note').textContent = ids.length + (ids.length === 1 ? ' model' : ' models') + ' behind this endpoint';
+    } catch (error) {
+      $('models-note').textContent = 'No model list: ' + error.message;
+    }
+    snippet();
+  };
+  const add = (role, text) => {
+    $('empty') && $('empty').remove();
+    const item = document.createElement('div'), who = document.createElement('div'), bubble = document.createElement('div'), meta = document.createElement('div');
+    item.className = 'msg ' + role;
+    who.className = 'who';
+    who.textContent = role === 'user' ? 'You' : $('model').value;
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    meta.className = 'meta';
+    item.append(who, bubble, meta);
+    $('messages').append(item);
+    $('messages').scrollTop = $('messages').scrollHeight;
+    return { bubble, meta };
+  };
+  const rate = (clock, usage, stream) => {
+    const parts = [$('model').value], tokens = usage && usage.completion_tokens;
+    if (stream && clock.first) parts.push('first token ' + Math.round(clock.first - clock.start) + ' ms');
+    if (tokens) parts.push(tokens + ' tokens');
+    if (tokens > 1 && stream && clock.last > clock.first) parts.push(((tokens - 1) * 1000 / (clock.last - clock.first)).toFixed(1) + ' tok/s decode');
+    if (tokens && !stream) parts.push((tokens * 1000 / (clock.end - clock.start)).toFixed(1) + ' tok/s end to end');
+    if (clock.finish) parts.push(clock.finish);
+    return parts.join(' · ');
+  };
+  const read = async (response, bubble, clock) => {
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = '', usage = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        const data = line.startsWith('data:') ? line.slice(5).trim() : '';
+        if (!data || data === '[DONE]') continue;
+        const chunk = JSON.parse(data), choice = (chunk.choices && chunk.choices[0]) || {}, piece = (choice.delta && choice.delta.content) || '';
+        if (piece) {
+          clock.first = clock.first || performance.now();
+          clock.last = performance.now();
+          bubble.textContent += piece;
+          $('messages').scrollTop = $('messages').scrollHeight;
+        }
+        clock.finish = choice.finish_reason || clock.finish;
+        usage = chunk.usage || usage;
+      }
+    }
+    return usage;
+  };
+  const busy = (on) => {
+    $('send').textContent = on ? 'Stop' : 'Send';
+    $('send').classList.toggle('solid', !on);
+    $('prompt').disabled = on;
+  };
+  const send = async () => {
+    const text = $('prompt').value.trim();
+    if (controller) { controller.abort(); return; }
+    if (!text) return;
+    if (!$('model').value) { $('models-note').textContent = 'Connect and pick a model first.'; return; }
+    history.push({ role: 'user', content: text });
+    add('user', text);
+    $('prompt').value = '';
+    const reply = add('assistant', ''), stream = $('stream').checked, clock = { start: performance.now(), first: 0, last: 0, end: 0, finish: '' };
+    const body = Object.assign(options(), { messages: history.slice(), stream });
+    if (stream) body.stream_options = { include_usage: true };
+    controller = new AbortController();
+    busy(true);
+    try {
+      const response = await fetch(base() + '/v1/chat/completions', { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: controller.signal });
+      if (!response.ok) throw await failure(response);
+      let usage = null;
+      if (stream) usage = await read(response, reply.bubble, clock);
+      else {
+        const doc = await response.json(), choice = (doc.choices && doc.choices[0]) || {};
+        reply.bubble.textContent = (choice.message && choice.message.content) || '';
+        clock.finish = choice.finish_reason || '';
+        usage = doc.usage;
+      }
+      clock.end = performance.now();
+      history.push({ role: 'assistant', content: reply.bubble.textContent });
+      reply.meta.textContent = rate(clock, usage, stream);
+    } catch (error) {
+      history.pop();
+      if (error.name !== 'AbortError') reply.bubble.classList.add('error');
+      reply.bubble.textContent = (reply.bubble.textContent ? reply.bubble.textContent + '\n\n' : '') + (error.name === 'AbortError' ? 'Stopped.' : 'No reply: ' + error.message);
+    } finally {
+      controller = null;
+      busy(false);
+      $('prompt').focus();
+    }
+  };
+  $('endpoint').value = load('localStorage', 'sparkpipe-endpoint');
+  $('key').value = load('sessionStorage', 'sparkpipe-key');
+  $('connect').addEventListener('click', connect);
+  $('send').addEventListener('click', send);
+  $('clear').addEventListener('click', () => { history.length = 0; $('messages').replaceChildren(); });
+  $('prompt').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } });
+  $('prompt').addEventListener('input', () => { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 180) + 'px'; snippet(); });
+  ['model', 'max', 'temp', 'seed', 'deadline', 'lang', 'endpoint'].forEach((id) => $(id).addEventListener('input', snippet));
+  $('copy').addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent = 'Copied'; setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500); }));
+  document.querySelectorAll('.examples button').forEach((button) => button.addEventListener('click', () => { $('prompt').value = button.textContent; $('prompt').focus(); snippet(); }));
+  snippet();
+  if ($('key').value || !$('endpoint').value) connect();
+  else probe();
+})();
+</script>
+</body>
+</html>
