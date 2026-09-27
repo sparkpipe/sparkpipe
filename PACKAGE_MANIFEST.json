@@ -1,5 +1,5 @@
 {
-  "file_count": 3037,
+  "file_count": 3039,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "ff46aed580ad7ded0690f8f16cea7df851c9f8e646bf517963c959ed0f0956e5",
-      "size_bytes": 138499
+      "sha256": "358a3fc8d08a4c9db74b0a5af78c825e4c678fc41bc79f43297f142cf01f5428",
+      "size_bytes": 138534
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -9457,6 +9457,11 @@
       "size_bytes": 675
     },
     {
+      "path": "tests/test_host_codegen_diff.py",
+      "sha256": "ce815883dbf4879653c2ecc43adb5bacb1554f529ebdd5316964841f43d2f825",
+      "size_bytes": 3766
+    },
+    {
       "path": "tests/test_hy4_fp8_scale_contract.py",
       "sha256": "405bc3f4d413e4a2e5524e071d5bdf037af20255dbf48d49848bfca9b4f42af9",
       "size_bytes": 7781
@@ -12015,6 +12020,11 @@
       "path": "tools/hardware/tp_f32_arithmetic.cu",
       "sha256": "31d495dae919a5a4e8f22f51578730ebd2d262748fe6b326309633153821747a",
       "size_bytes": 3141
+    },
+    {
+      "path": "tools/host_codegen_diff.py",
+      "sha256": "9570e8512156342bbdb8aaec1da5a16193eddf6629c5af45c171cdf3b05028a2",
+      "size_bytes": 4363
     },
     {
       "path": "tools/hy4_attach_harness.c",
@@ -15190,5 +15200,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74009042
+  "total_bytes": 74017206
 }
