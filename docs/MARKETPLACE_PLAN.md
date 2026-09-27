@@ -83,20 +83,21 @@ Revenue is throughput × time sold × the provider's price. Resold traffic is ba
 | GLM 5.3 Flash, 8 streams, 16 Sparks | ~300 | M1 target | 0.50 | $194 | $165 | $29 | 2,860 |
 | GLM 5.3 Flash, 64 streams, 16 Sparks | ~750 | M2 target | 0.50 | $486 | $413 | $73 | 1,140 |
 | GLM 5.3 Flash, 256 streams, 16 Sparks | ~2,200 | M2 target | 0.50 | $1,426 | $1,212 | $214 | 390 |
+| GLM 5.3 Flash, 256 streams, 16 Sparks | ~1,650 | projected ([`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode)); the site's figure | 0.50 | $1,069 | $909 | $160 | 520 |
 | GLM 5.2, 16 streams, 8 Sparks (TP8) | 75.55 | measured (2026-08-16) | 1.75–4.40 | $171–$431 | $146–$366 | $26–$65 | 645–1,620 |
 | GLM 5.3, 256 streams, 16 Sparks | ~1,900 | 80% of a weight-read bound, derived | 4.40 | ~$11,000 | ~$9,300 | ~$1,650 | ~51 |
 
 - A month is 30 days. Only output tokens are counted; input tokens are billed too, at the provider's input price, and add revenue in proportion to prompt length.
 - 50% sold is an assumption. The owner's own use and the network's demand both limit it.
 - Prices are the market references of 2026-09-26: GLM 5.3 Flash about $0.15 in and $0.50 out ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.3-flash)), GLM 5.2 $1.75–$4.40 out ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.2)), GLM 5.3 $4.40 out ([glm5.app](https://glm5.app/blog/glm-5-3-pricing)). Providers set their own.
-- The M1 and M2 targets are 80% of the batch roofline at 1K context ([`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md)): about 2,800 tok/s is the memory-bound ceiling at 256 streams. Each stream then sees about 11 tok/s, so that capacity sells to batch and agent traffic more than to chat.
+- The M1 and M2 targets are 80% of the batch roofline at 1K context ([`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md)): about 2,800 tok/s is the memory-bound ceiling at 256 streams. Each stream then sees about 8.6 tok/s at the target and 6.5 at the projection, so that capacity sells to batch and agent traffic more than to chat.
 - The GLM 5.2 cluster figure counts two TP8 instances per sixteen Sparks.
 - The GLM 5.3 row is not a roadmap target. Its 465 GB NVFP4 checkpoint spread over sixteen Sparks is about 29 GB per rank; at 256 streams every expert is read once per step, which takes 106 ms at 273 GB/s and bounds throughput near 2,400 tok/s. It leaves out collectives, which at that batch cost about as much again unless they overlap compute (M2), and GLM 5.3 is still onboarding on the GLM 5.2 driver.
 
 What this says:
 
 - **Today, reselling Flash barely covers electricity.** A sixteen-Spark cluster at an assumed 200 W per Spark and $0.15/kWh costs about $350 a month to run.
-- **At M2's batch throughput it pays.** A Flash cluster sold half the time earns its owner about $1,200 a month, the original pitch's $1k per installation, and 390 such clusters make $1M a year in fees.
+- **At M2's batch throughput it pays.** A Flash cluster sold half the time earns its owner about $900 a month at the projection and $1,200 at the target, around the original pitch's $1k per installation, and 390 to 520 such clusters make $1M a year in fees.
 - **Large models are worth more per Spark, today and at scale.** GLM 5.2's measured rate already earns 4–10× Flash's per Spark. At large batch a step reads every expert once, so throughput follows the checkpoint's bytes per rank, not its active parameters: GLM 5.3 in NVFP4 is about 29 GB per rank against Flash's 25 GB, at up to 9× the price. Few installations can hold such models (GLM 5.2 is 756 GB, eight Sparks in practice), so their providers compete with the hosted APIs' prices more than with each other. The network should lead with large models.
 - **Supply growth.** Mac Studio support (M8) widens the pool of installations. Each hardware type needs its own reference nodes, because different kernels give different bits.
 

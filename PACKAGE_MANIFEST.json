@@ -28,8 +28,8 @@
     },
     {
       "path": "ARCHITECTURE.md",
-      "sha256": "34519eeeb245fc719cba2bf570296ce91dbd09894531a7b3fcb5fdfc6153eaa9",
-      "size_bytes": 10362
+      "sha256": "2f86d354d60d88786b08fcd8d9b76e5a322311d28800c3b8d925bdfade40fb46",
+      "size_bytes": 10751
     },
     {
       "path": "COORDINATION.md",
@@ -43,13 +43,13 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "c378babfe7c629b3461c8f8c20e5170fc5781d2b152cde05b5470bf09a3bbee7",
-      "size_bytes": 39040
+      "sha256": "ec59d56de8c5e287fb01ca52f3c664de718762cc1f7846b49876e45354f78ab5",
+      "size_bytes": 41434
     },
     {
       "path": "README.md",
-      "sha256": "c48b6f50c6438be5c1eb924d906c7bea22facc93dc571726c2d465ad9e84c751",
-      "size_bytes": 24631
+      "sha256": "1c9c51837666dc8b43dcf045aa6c0ec58a00eb0b703b2fc2878380e27547c1b5",
+      "size_bytes": 25196
     },
     {
       "path": "SPEC.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "156e3e6546984bf6f1551ba254dcda03fba09327e647d00a3c222eb54d5e823c",
-      "size_bytes": 28155
+      "sha256": "2f099176b91c82992d5d3395cecd34b30daebf6de1b80c88e1a0fc431562b555",
+      "size_bytes": 28992
     },
     {
       "path": "cache/cache.h",
@@ -683,8 +683,8 @@
     },
     {
       "path": "docs/DRIVER_ACCEPTANCE.md",
-      "sha256": "cd5826b8b5e70623d492eead7d5a26002597dad532079b3c5a577ccbe47e1d4f",
-      "size_bytes": 8116
+      "sha256": "d698e159cdf186cecba4b13dee27baa288a005b246fd1f062b0b660502e95277",
+      "size_bytes": 8100
     },
     {
       "path": "docs/DRY_PACKBUILDER_PROPOSAL.md",
@@ -773,8 +773,8 @@
     },
     {
       "path": "docs/GOALS.md",
-      "sha256": "4c0d9fb295162077c7eee16a45a659858ecdd665254604254fb2df1fe7711e78",
-      "size_bytes": 14846
+      "sha256": "b6fb788c7a5cbc84fac6684d33019f8d1891c823fae23198bc8399d933fbef29",
+      "size_bytes": 14855
     },
     {
       "path": "docs/HARDWARE_INDEPENDENCE.md",
@@ -783,8 +783,8 @@
     },
     {
       "path": "docs/HARDWARE_TOPOLOGY.md",
-      "sha256": "0e0e8f359b968b6a94590e590b2e403c03ec1fdd3684bb3c88598995e5b05d3a",
-      "size_bytes": 3265
+      "sha256": "12235d777fde5c28337f4112aa2357bbd0fdeb1cebc7ad265acaed36a891eb52",
+      "size_bytes": 9859
     },
     {
       "path": "docs/HILLCLIMB_20260920.md",
@@ -858,8 +858,8 @@
     },
     {
       "path": "docs/MARKETPLACE_PLAN.md",
-      "sha256": "5965d714489011213e9174432cf705eb9cd783c53993301b120d14f9ddc0b2db",
-      "size_bytes": 18057
+      "sha256": "a859ffad8bff51171dafecd0b9964bf36bf5dad2b454b453b6c2e41db8ad062d",
+      "size_bytes": 18350
     },
     {
       "path": "docs/MESH_INVENTORY.md",
@@ -943,8 +943,8 @@
     },
     {
       "path": "docs/ROADMAP.md",
-      "sha256": "9f01d181d52b80ad0b053ca26f6e0fa7d101dd44ff40824d34bf883265361b51",
-      "size_bytes": 6351
+      "sha256": "67ac88b5fe4a53ab18283eddb76ec33da61c90fdb2a9deb7f60c3bee6c6321fd",
+      "size_bytes": 6683
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74171541
+  "total_bytes": 74182938
 }

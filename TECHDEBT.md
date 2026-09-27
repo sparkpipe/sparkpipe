@@ -393,18 +393,31 @@ door and the static pages and playground in `site/`.
 - Qualify the Metal backend on the Mac Studios and keep the host backend as
   a CI oracle for common policy, not only for kernels.
 
-## DGX Station deployment
+## Mac Studio deployment
 
-- Define exact 1x, 2x, 4x, and 8x Station hardware profiles, including memory
-  bandwidth, interconnect topology, power envelope, and storage.
-- Implement standalone placement and the mixed Station-plus-Spark execution
-  plan for every supported Station count without introducing model-specific
-  runtime branches.
-- Generate and calibrate Station collective profiles from exact model payloads
-  for each supported Station count.
-- Measure each Station-count profile against the selected DGX B300 comparison
-  workload and close the roughly one-half-throughput objective for the
-  four- and eight-Station largest-model workloads.
+The design is in
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+
+- Define hardware profiles for one to eight Studios: memory, bandwidth, the
+  Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
+- Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
+  only send and receive, on at most ten unreliable-connection queue pairs,
+  with no hardware acknowledgements and no routing, so the transport must
+  detect loss, retransmit, and forward between islands itself.
+- Place models on the pool: one replica per Studio when the model fits, TP
+  inside an island, TP4 x PP2 across the islands.
+- Serve disaggregated: a Spark TP group prefills and streams the KV cache
+  layer by layer to a Studio group, which decodes. This needs one KV wire
+  format per model, and the resumable request moves with its cache.
+- Run PP2 across hardware classes once routes waiting on transport input can
+  be cancelled when a peer rank fails.
+- Measure each bridge when the Studios arrive: Studio 10GbE into the fabric;
+  IP over Thunderbolt from a Studio to the RTX 5090 host, on that host's
+  controller; the host's ConnectX-6 into the CRS804. Record the winners as
+  named link classes in the deployment JSON.
+- Stand up reference nodes for every hardware combination the provider
+  network sells (Studios alone, and Spark prefill with Studio decode),
+  because different kernels produce different bits.
 - Validate office power, cooling, startup, failure recovery, and service
   operations as part of the deployment receipt.
 
@@ -414,8 +427,8 @@ door and the static pages and playground in `site/`.
   identities, catalog state, priority policy, and resumable request metadata.
 - Generate model placement and storage rebalance plans before nodes join the
   ready set; never improvise redistribution in the request path.
-- Support adding a Station as standalone capacity or as an explicit Spark
-  fabric enhancement under the same API and scheduler.
+- Support adding Mac Studios one at a time, as standalone replicas or as the
+  decode pool of a Spark fleet, under the same API and scheduler.
 - Retain upgrade and rollback receipts so a failed expansion returns to the
   prior ready deployment without mixed topology state.
 

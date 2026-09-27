@@ -1,10 +1,11 @@
 # SparkPipe Architecture
 
 SparkPipe is a private, on-premises frontier-model serving engine for businesses,
-teams, and individuals. It scales from four NVIDIA DGX Sparks through larger
-Spark and DGX Station fabrics. Applications use its OpenAI-compatible API and
-may add memory, tools, policy, routing, and user interfaces above it. SparkPipe
-owns model execution, scheduling, transport, residency, storage, and evidence.
+teams, and individuals. It scales from four NVIDIA DGX Sparks to sixteen, and
+adds Apple Mac Studios behind the same API. Applications use its
+OpenAI-compatible API and may add memory, tools, policy, routing, and user
+interfaces above it. SparkPipe owns model execution, scheduling, transport,
+residency, storage, and evidence.
 
 ## Serving objective
 
@@ -55,8 +56,8 @@ The serving contract is identical at every scale:
 | 4 Sparks | Entry system, TP4 models, interactive and modest agent workloads |
 | 8 Sparks | Larger resident set, TP8 or TP4 x PP2 model plans |
 | 16 Sparks | Full TP4 x PP4 large-model pipeline and eight direct pairs |
-| DGX Stations | 1x, 2x, 4x, or 8x standalone or Spark-fabric enhancement |
-| 4x / 8x Stations | Station fabric target for the largest models |
+| 1-8 Mac Studios | Replicas, TP inside a Thunderbolt 5 island of four, or TP4 x PP2 across two islands |
+| Sparks + Studios | One catalog: Spark prefill with Studio decode, or PP2 across classes |
 
 Four- and eight-Spark deployments use complete `rank XOR 1` direct pairs and
 the same switched-plus-direct collective contract. Expansion adds nodes,
@@ -224,19 +225,23 @@ The architecture changes only when the intended system changes. Open gaps are
 maintained in [`TECHDEBT.md`](TECHDEBT.md). Measurements and projections are
 maintained in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
-## DGX Station deployment class
+## Mac Studio deployment class
 
-SparkPipe also targets office-deployable DGX Station clusters. 1x, 2x, 4x, or
-8x Station systems may operate as a standalone fabric or augment the Spark
-pipeline. The execution planner applies the same model-aware sharding,
-residency, scheduling, and evidence contracts while using a Station-specific
-hardware and collective profile.
+SparkPipe is designed to add Apple Mac Studios with M5 Ultra and 256 GB, from
+one to eight, on their own or alongside a Spark fabric. The execution planner
+applies the same model-aware sharding, residency, scheduling, and evidence
+contracts, using a Mac Studio hardware profile, the Metal backend, and a
+Thunderbolt 5 link class.
 
-The 1x and 2x configurations provide smaller entry points; four- and
-eight-Station fabrics target the largest models.
+A Studio has 4.4 times a Spark's memory bandwidth and, by published figures,
+about a Spark's matrix throughput. Sixteen Sparks therefore have twice the
+compute of eight Studios, and eight Studios 2.2 times the bandwidth of sixteen
+Sparks, so the planner gives each class the phase it does best. Sparks
+prefill, Studios decode, and the KV cache crosses the bridge between them once
+per request. A model that neither pool holds alone runs one pipeline stage on
+each class. Tensor-parallel collectives never cross hardware classes.
 
-The design objective is to aggregate enough memory bandwidth and model
-parallelism to run the largest open models at roughly half the throughput of a
-DGX B300 datacenter system. This is a product target, not a measured result.
-The operational objective is ordinary-office deployment rather than the power,
-cooling, and facilities requirements of a roughly 15 kW datacenter appliance.
+The design objective is a mixed fleet that serves a workload faster end to end
+than either pool alone, with the same checkpoint, precision, and request
+shape. This is a product target, not a measured result. The operational
+objective is unchanged: desks and ordinary office power, not a datacenter.
