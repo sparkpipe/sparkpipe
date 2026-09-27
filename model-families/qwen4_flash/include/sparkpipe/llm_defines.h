@@ -1,8 +1,14 @@
 #pragma once
 
+#include <assert.h>
 #include <stdint.h>
 
 #include "common/common_stagepack_format_ext.h"
+
+#define SPARK_LLM_WEIGHT_FORMAT_BF16 SPARK_STAGEPACK_FORMAT_WEIGHT_BF16
+#define SPARK_LLM_WEIGHT_FORMAT_MXFP4_E2M1 SPARK_STAGEPACK_FORMAT_WEIGHT_MXFP4_E2M1
+#define SPARK_LLM_WEIGHT_FORMAT_FP8_E4M3_F32B128 SPARK_STAGEPACK_FORMAT_WEIGHT_FP8_E4M3_F32B128
+#define SPARK_LLM_WEIGHT_FORMAT_NVFP4_PACKED SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED
 
 #define SPARK_LLM_HIDDEN_DIMENSION 2560u
 #define SPARK_LLM_LAYER_COUNT 48u
@@ -54,6 +60,7 @@
 #define SPARK_LLM_GDN_VALUE_HEAD_COUNT 48u
 #define SPARK_LLM_GDN_HEAD_KEY_DIMENSION 128u
 #define SPARK_LLM_GDN_HEAD_VALUE_DIMENSION 128u
+#define SPARK_LLM_GDN_DECAY_REPLICATED 0u
 #define SPARK_LLM_GDN_VALUE_HEADS_PER_KEY_HEAD \
 	(SPARK_LLM_GDN_VALUE_HEAD_COUNT / SPARK_LLM_GDN_KEY_HEAD_COUNT)
 #define SPARK_LLM_GDN_LOCAL_KEY_HEAD_COUNT(tp_degree) \
@@ -206,21 +213,21 @@
 #define SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS 53u
 #define SPARK_LLM_STAGEPACK_TENSOR_PLE_NGRAM 54u
 
-_Static_assert(SPARK_LLM_GDN_LAYER_COUNT + SPARK_LLM_FULL_ATTENTION_LAYER_COUNT == SPARK_LLM_LAYER_COUNT,"layer split must cover the stack");
-_Static_assert((SPARK_LLM_LAYER_COUNT % SPARK_LLM_ATTN_PERIOD) == 0u,"layer count must be whole periods");
-_Static_assert(SPARK_LLM_GDN_LAYER_COUNT == (SPARK_LLM_LAYER_COUNT / SPARK_LLM_ATTN_PERIOD) * (SPARK_LLM_ATTN_PERIOD - 1u),"gdn count must match the 3:1 period");
-_Static_assert((SPARK_LLM_GDN_VALUE_HEAD_COUNT % SPARK_LLM_GDN_KEY_HEAD_COUNT) == 0u,"value heads must group evenly onto key heads");
-_Static_assert(SPARK_LLM_GDN_VALUE_HEADS_PER_KEY_HEAD == 3u,"grouped-value ratio is three per config (48 value heads over 16 key heads)");
-_Static_assert((SPARK_LLM_ATTN_QUERY_HEAD_COUNT % SPARK_LLM_ATTN_KV_HEAD_COUNT) == 0u,"query heads must group evenly onto kv heads");
-_Static_assert(SPARK_LLM_ROPE_DIMENSION == SPARK_LLM_ATTN_HEAD_DIMENSION / 4u,"rope covers a quarter of the head");
-_Static_assert((SPARK_LLM_ROPE_DIMENSION % 2u) == 0u,"rope dimension must pair");
-_Static_assert(SPARK_LLM_GDN_CONV_CHANNELS == 10240u,"conv width is q+k+v concatenated");
-_Static_assert(SPARK_LLM_GDN_QK_DIMENSION == 2048u && SPARK_LLM_GDN_VALUE_DIMENSION == 6144u,"gdn projection widths per config");
-_Static_assert(SPARK_LLM_ATTN_QUERY_DIMENSION == 6144u && SPARK_LLM_ATTN_KV_DIMENSION == 512u,"attention projection widths per config");
-_Static_assert(SPARK_LLM_MXFP4_GROUP_SIZE == 32u,"mxfp4 group size must be 32");
-_Static_assert((SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION % SPARK_LLM_MXFP4_GROUP_SIZE) == 0u,"expert intermediate must tile for mxfp4 groups");
-_Static_assert((SPARK_LLM_HIDDEN_DIMENSION % SPARK_LLM_MXFP4_GROUP_SIZE) == 0u,"hidden must tile for mxfp4 groups");
-_Static_assert(SPARK_LLM_ROUTED_EXPERT_COUNT <= SPARK_LLM_ROUTER_SORT_CAPACITY,"expert count exceeds router sort capacity");
+static_assert(SPARK_LLM_GDN_LAYER_COUNT + SPARK_LLM_FULL_ATTENTION_LAYER_COUNT == SPARK_LLM_LAYER_COUNT,"layer split must cover the stack");
+static_assert((SPARK_LLM_LAYER_COUNT % SPARK_LLM_ATTN_PERIOD) == 0u,"layer count must be whole periods");
+static_assert(SPARK_LLM_GDN_LAYER_COUNT == (SPARK_LLM_LAYER_COUNT / SPARK_LLM_ATTN_PERIOD) * (SPARK_LLM_ATTN_PERIOD - 1u),"gdn count must match the 3:1 period");
+static_assert((SPARK_LLM_GDN_VALUE_HEAD_COUNT % SPARK_LLM_GDN_KEY_HEAD_COUNT) == 0u,"value heads must group evenly onto key heads");
+static_assert(SPARK_LLM_GDN_VALUE_HEADS_PER_KEY_HEAD == 3u,"grouped-value ratio is three per config (48 value heads over 16 key heads)");
+static_assert((SPARK_LLM_ATTN_QUERY_HEAD_COUNT % SPARK_LLM_ATTN_KV_HEAD_COUNT) == 0u,"query heads must group evenly onto kv heads");
+static_assert(SPARK_LLM_ROPE_DIMENSION == SPARK_LLM_ATTN_HEAD_DIMENSION / 4u,"rope covers a quarter of the head");
+static_assert((SPARK_LLM_ROPE_DIMENSION % 2u) == 0u,"rope dimension must pair");
+static_assert(SPARK_LLM_GDN_CONV_CHANNELS == 10240u,"conv width is q+k+v concatenated");
+static_assert(SPARK_LLM_GDN_QK_DIMENSION == 2048u && SPARK_LLM_GDN_VALUE_DIMENSION == 6144u,"gdn projection widths per config");
+static_assert(SPARK_LLM_ATTN_QUERY_DIMENSION == 6144u && SPARK_LLM_ATTN_KV_DIMENSION == 512u,"attention projection widths per config");
+static_assert(SPARK_LLM_MXFP4_GROUP_SIZE == 32u,"mxfp4 group size must be 32");
+static_assert((SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION % SPARK_LLM_MXFP4_GROUP_SIZE) == 0u,"expert intermediate must tile for mxfp4 groups");
+static_assert((SPARK_LLM_HIDDEN_DIMENSION % SPARK_LLM_MXFP4_GROUP_SIZE) == 0u,"hidden must tile for mxfp4 groups");
+static_assert(SPARK_LLM_ROUTED_EXPERT_COUNT <= SPARK_LLM_ROUTER_SORT_CAPACITY,"expert count exceeds router sort capacity");
 
 static const SparkStagePackFamilySpec SparkLlmStagePackFamilySpec =
 {

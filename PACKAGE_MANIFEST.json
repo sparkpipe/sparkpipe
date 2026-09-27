@@ -123,13 +123,13 @@
     },
     {
       "path": "common/common_gdn_stage_kernels.cu",
-      "sha256": "4c90f186de03bb9553b29ac48f8ed862028ef45a16e85fe44072937ba1aaaf26",
-      "size_bytes": 74952
+      "sha256": "abb8017c2387c9af590a6a82de84775d28c9b1f2afa4420b7b393f8d1921c005",
+      "size_bytes": 74892
     },
     {
       "path": "common/common_gdn_stage_kernels.h",
-      "sha256": "25aab5296594f98bb64616f688802ee2324bfa81be64b429988bba7c27c2910b",
-      "size_bytes": 7549
+      "sha256": "9726671935b90c557e07e27a98de9a44fd0ce1185002621ca7db8a3ae4f64d8d",
+      "size_bytes": 7567
     },
     {
       "path": "common/common_glm_cuda_tree/spark_glm_batch_tuning.h",
@@ -178,8 +178,8 @@
     },
     {
       "path": "common/common_stagepack_format_ext.h",
-      "sha256": "9011fbdc9748f4a8caabeebf02e853d94f3bfa912ca687730c1eaca420cde287",
-      "size_bytes": 22446
+      "sha256": "335eceeff591f871c6207af1d04fdf36a41238a33dce618262129f843e3c5258",
+      "size_bytes": 22465
     },
     {
       "path": "common/glm_resident_stage_wrapper.mk",
@@ -4653,8 +4653,8 @@
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/llm_defines.h",
-      "sha256": "cf3c568c586bee74cb3c6f056815f9b20b5d98d1e22f3d039c10ff56b3bba62b",
-      "size_bytes": 7962
+      "sha256": "ae73b2050e31f4c5fb5a7d3882162cfe251ec30bba637606159f9c7c52d5fea0",
+      "size_bytes": 8004
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h",
@@ -4683,8 +4683,8 @@
     },
     {
       "path": "model-families/qwen4_flash/include/sparkpipe/llm_defines.h",
-      "sha256": "2b598a087b5759a7ce99e89797eaf9ec41dfc7864edc9d28d7d6e50d363792bf",
-      "size_bytes": 16097
+      "sha256": "27248cca49d87ec8163d58a7bd2f2d094490eed6544750bc9a679894145e5055",
+      "size_bytes": 16485
     },
     {
       "path": "model-families/qwen4_flash/include/sparkpipe/spark_qwen4_flash_model.h",
@@ -5998,8 +5998,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/include/sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h",
-      "sha256": "b1d4b62ff7e163cb204e1870f4e05cdeed6247839f404ec4de821e4b1098745a",
-      "size_bytes": 7288
+      "sha256": "f5191b43c40d0e959cf79fd78b189470420a39587e13276a15d7f3c1934aba3d",
+      "size_bytes": 7305
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/include/sparkpipe/spark_qwen4_flash_serving_adapter.h",
@@ -6008,8 +6008,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_cuda.cu",
-      "sha256": "18a430837e0ba4b380ca2e77542f2701a4d0df7461116798b7d98e310ede6400",
-      "size_bytes": 93871
+      "sha256": "f09442661a88b856f0ce6c7db7b2411d2b9e9733462bc83432075c7c84aded24",
+      "size_bytes": 84197
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74173437
+  "total_bytes": 74164187
 }
