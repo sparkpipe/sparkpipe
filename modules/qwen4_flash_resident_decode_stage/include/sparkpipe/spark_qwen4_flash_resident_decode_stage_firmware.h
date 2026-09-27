@@ -1,6 +1,7 @@
 #ifndef SPARKPIPE_SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FIRMWARE_H
 #define SPARKPIPE_SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_FIRMWARE_H
 
+#include <assert.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_qwen4_flash_model.h"
@@ -43,9 +44,9 @@ extern "C" {
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_I64 SPARK_STAGEPACK_FORMAT_WEIGHT_I64
 #define SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED
 
-_Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == 0u,"bf16 weight code must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 == 3u,"mxfp4 weight code must match the shared format");
-_Static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 == 6u,"e8m0 weight code must match the shared format");
+static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 == 0u,"bf16 weight code must match the shared format");
+static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 == 3u,"mxfp4 weight code must match the shared format");
+static_assert(SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 == 6u,"e8m0 weight code must match the shared format");
 
 #define SPARK_ABI_TYPE(name) SparkQwen4Flash##name
 #include "sparkpipe/family/abi/spark_abi_linear_view.h"

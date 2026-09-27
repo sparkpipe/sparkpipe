@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_hy4_model.h"
+#include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus

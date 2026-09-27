@@ -250,6 +250,77 @@ make -C "${repository_root}/modules/minimax_resident_decode_stage" \
 	CUDA_ARCH=sm_121a \
 	>> "${output_directory}/logs/minimax-archive.txt" 2>&1
 
+cuda_home="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")"
+make -C "${repository_root}" -j2 \
+	build/libsparkpipe_core.a build/libsparkpipe_runtime.a build/libsparkpipe_model_common.a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/runtime-libraries.txt" 2>&1
+
+module_codec()
+{
+	case "$1" in
+	gemma4_resident_decode_stage|hy4_resident_decode_stage|minimax_resident_decode_stage|muse_glimmer_resident_decode_stage)
+		echo bf16
+		;;
+	*)
+		echo fp8
+		;;
+	esac
+}
+
+link_module()
+{
+	local module_name="$1"
+	local archive_path="$2"
+	local entry_prefix entry_source
+	entry_prefix="$(sed -n 's/^MODULE_ENTRY_PREFIX[[:space:]]*:=[[:space:]]*//p' "${repository_root}/modules/${module_name}/Makefile")"
+	if [[ -z "${entry_prefix}" ]]; then
+		echo "module ${module_name} names no MODULE_ENTRY_PREFIX" >&2
+		exit 5
+	fi
+	entry_source="${output_directory}/modules/${module_name}/link_entries.c"
+	{
+		for entry in Initialize Execute Admit Snapshot Destroy; do
+			printf 'extern int %s%s();\n' "${entry_prefix}" "${entry}"
+		done
+		printf 'void *SparkLinkGateEntries[] = {(void *)%sInitialize,(void *)%sExecute,(void *)%sAdmit,(void *)%sSnapshot,(void *)%sDestroy};\n' \
+			"${entry_prefix}" "${entry_prefix}" "${entry_prefix}" "${entry_prefix}" "${entry_prefix}"
+	} > "${entry_source}"
+	if ! cc -shared -fPIC -Wl,-z,defs "${entry_source}" "${archive_path}" \
+		"${repository_root}/build/libsparkpipe_model_common.a" \
+		"${repository_root}/build/libsparkpipe_runtime.a" \
+		"${repository_root}/build/libsparkpipe_core.a" \
+		-L"${cuda_home}/lib64" -lcudart -lcuda -lstdc++ -ldl -lpthread -lm \
+		-o "${output_directory}/modules/${module_name}/driver_link_check.so" \
+		> "${output_directory}/logs/${module_name}-link.txt" 2>&1; then
+		echo "module ${module_name} does not link as a driver; see logs/${module_name}-link.txt" >&2
+		exit 5
+	fi
+}
+
+for module_makefile in "${repository_root}"/modules/*_resident_decode_stage/Makefile; do
+	module_name="$(basename "$(dirname "${module_makefile}")")"
+	module_build="${output_directory}/modules/${module_name}"
+	mkdir -p "${module_build}"
+	if ! make -C "${repository_root}/modules/${module_name}" -j2 archive \
+		EXPERT_CODEC="$(module_codec "${module_name}")" \
+		MODEL_REVISION=sm121a-gate \
+		CONTRACT_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+		NVCC="${nvcc_binary}" \
+		CUDA_ARCH=sm_121a \
+		BUILD_DIRECTORY="${module_build}" \
+		> "${output_directory}/logs/${module_name}-archive.txt" 2>&1; then
+		echo "module ${module_name} does not build for sm_121a; see logs/${module_name}-archive.txt" >&2
+		exit 5
+	fi
+	link_module "${module_name}" "$(find "${module_build}" -maxdepth 1 -name '*.a' -print -quit)"
+done
+make -C "${repository_root}/modules/glm52_dspark_draft_backend" archive \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	BUILD_DIRECTORY="${output_directory}/modules/glm52_dspark_draft_backend" \
+	> "${output_directory}/logs/glm52_dspark_draft_backend-archive.txt" 2>&1
+
 while IFS= read -r -d '' object_file; do
 	elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"
 	if [[ -n "${elf_listing}" ]] && ! grep -q 'sm_121a' <<<"${elf_listing}"; then
@@ -261,6 +332,7 @@ done < <(find \
 	"${repository_root}/build/modules/glm52_resident_decode_stage" \
 	"${repository_root}/build/modules/dsv4_resident_decode_stage" \
 	"${repository_root}/build/modules/minimax_resident_decode_stage" \
+	"${output_directory}/modules" \
 	-type f -name '*.o' -print0)
 
 for object_file in "${output_directory}"/objects/*.o; do

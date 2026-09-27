@@ -5,7 +5,8 @@ MODEL_HEADER := ../../model-families/hy4/include/sparkpipe/spark_hy4_model.h
 MODULE_ENTRY_PREFIX := SparkHy4ResidentDecodeStage
 MODULE_HOST_SOURCE := $(CURDIR)/source/spark_hy4_resident_decode_stage_module.c
 MODULE_CUDA_SOURCE := $(CURDIR)/source/spark_hy4_resident_decode_stage_cuda.cu
-MODULE_ADDITIONAL_HOST_SOURCES =
+MODULE_ADDITIONAL_HOST_SOURCES = \
+	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c
 HY4_MODEL_REVISION := 779242edccdedc2109a0b36b164263a88f015bfa
 HY4_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/hy4_authoritative.json | awk '{print $$1}')
 MODULE_COMPILE_FLAGS := \

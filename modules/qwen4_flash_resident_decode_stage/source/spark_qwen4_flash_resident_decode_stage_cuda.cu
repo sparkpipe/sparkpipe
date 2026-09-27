@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/frame_error.cuh"
@@ -1166,7 +1167,7 @@ extern "C" cudaError_t SparkQwen4FlashLaunchConvUpdate(cudaStream_t stream, cons
 
 extern "C" cudaError_t SparkQwen4FlashLaunchDecayBeta(cudaStream_t stream, const void *decay_pre_bf16, const void *beta_pre_bf16, const SparkQwen4FlashGdnLayerWeights *weights, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree)
 {
-	return(LmGdnStageLaunchDecayBeta(stream,decay_pre_bf16,beta_pre_bf16,weights->a_log_f32,weights->dt_bias_f32,log_decay_f32,beta_f32,row_count,tp_degree));
+	return(LmGdnStageLaunchDecayBeta(stream,decay_pre_bf16,beta_pre_bf16,weights->a_log_f32,weights->dt_bias_f32,log_decay_f32,beta_f32,row_count,tp_degree,0u));
 }
 
 extern "C" cudaError_t SparkQwen4FlashLaunchGdnStep(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, const SparkQwen4FlashGdnStatePool *pool, void *core_out_bf16, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal, uint32_t tp_degree)
@@ -1199,9 +1200,6 @@ extern "C" cudaError_t SparkQwen4FlashLaunchHeadTopScore(cudaStream_t stream, co
 	SparkQwen4FlashHeadTopScoreKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(normalized_bf16,head_weight_bf16,token_ids,score_f32,dimension,vocab_base,vocab_rows);
 	return(cudaGetLastError());
 }
-
-static __device__ __forceinline__ uint32_t SparkQwen4FlashHeadOrderKey(float score)
-
 
 extern "C" cudaError_t SparkQwen4FlashLaunchGatedNorm(cudaStream_t stream, const void *core_bf16, const void *z_bf16, const SparkQwen4FlashGdnLayerWeights *weights, void *output_bf16, uint32_t row_count, float epsilon, uint32_t tp_degree)
 {
@@ -1516,161 +1514,6 @@ extern "C" cudaError_t SparkQwen4FlashLaunchIndexerSelect(
         row_lane_indices,context_lengths,token_mask,score_keys_u32,row_count,table->lane_stride,mask_stride,score_stride);
     return(cudaGetLastError());
 }
-static_assert((SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
-#define SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT
-
-static __device__ __forceinline__ float SparkQwen4FlashWarpReduceMax(float value)
-{
-	#pragma unroll
-	for (uint32_t offset = SPARK_LM_WARP_LANES >> 1u; offset != 0u; offset >>= 1u)
-		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
-	return(value);
-}
-
-static __global__ void SparkQwen4FlashGateSelectKernel(
-    const float *scores_f32,
-    const float *bias_f32,
-    uint32_t row_count,
-    uint32_t expert_count,
-    uint32_t topk,
-    float route_scale,
-    uint32_t *indices_u32,
-    float *weights_f32)
-{
-    __shared__ uint64_t ordered_keys[SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY];
-    const float *row_scores;
-    uint64_t selected_key;
-    uint32_t row;
-    uint32_t expert;
-    uint32_t rank;
-    uint32_t selected_expert;
-    float selected_score;
-    float selected_total;
-
-    static_assert(
-        SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT <=
-            SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY,
-        "qwen38 expert count exceeds router sort capacity");
-    static_assert(
-        SPARK_LM_MOE_MAX_TOPK <= SPARK_LM_WARP_LANES,
-        "qwen38 router normalization requires one warp");
-    row = blockIdx.x;
-    if ( row >= row_count || expert_count == 0u ||
-        expert_count > SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT ||
-        topk == 0u || topk > SPARK_LM_MOE_MAX_TOPK || topk > expert_count )
-        return;
-    row_scores = scores_f32 + ((uint64_t)row * expert_count);
-    rank = threadIdx.x;
-    for (expert = threadIdx.x; expert < SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY;
-        expert += blockDim.x)
-    {
-        float choice_score;
-        choice_score = expert < expert_count
-            ? row_scores[expert] + (bias_f32 != 0 ? bias_f32[expert] : 0.0f)
-            : NAN;
-        if ( expert < expert_count && isnan(choice_score) )
-            choice_score = -INFINITY;
-        ordered_keys[expert] = expert < expert_count
-            ? SparkLmOrderedTopKKey(choice_score, expert)
-            : 0u;
-    }
-    __syncthreads();
-    SparkLmBitonicSortKeysAscending<SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY>(ordered_keys);
-    selected_key = rank < topk
-        ? ordered_keys[SPARK_QWEN4_FLASH_ROUTER_SORT_CAPACITY - 1u - rank]
-        : 0u;
-    selected_expert = selected_key != 0u
-        ? 0xffffffffu - (uint32_t)selected_key
-        : UINT32_MAX;
-    selected_score = rank < topk && selected_expert < expert_count &&
-        !isnan(row_scores[selected_expert])
-        ? row_scores[selected_expert]
-        : -INFINITY;
-    if ( threadIdx.x < SPARK_LM_WARP_LANES )
-    {
-        float max_score = SparkQwen4FlashWarpReduceMax(selected_score);
-        float exp_score;
-        max_score = __shfl_sync(0xffffffffu, max_score, 0u);
-        exp_score = __expf(selected_score - max_score);
-        selected_total = __shfl_sync(
-            0xffffffffu,
-            SparkLmWarpReduceSum(exp_score),
-            0u);
-        if ( rank < topk )
-        {
-            indices_u32[((uint64_t)row * topk) + rank] = selected_expert;
-            weights_f32[((uint64_t)row * topk) + rank] =
-                selected_total > 0.0f
-                ? route_scale * exp_score / selected_total
-                : 0.0f;
-        }
-    }
-}
-
-static __global__ void SparkQwen4FlashSwiGluKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
-{
-	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
-	float2 gate_pair,up_pair;
-	if ( pair >= pair_count )
-		return;
-	gate_pair = SparkLmLoadBf16Pair(gate_bf16,pair);
-	up_pair = SparkLmLoadBf16Pair(up_bf16,pair);
-	SparkLmStoreBf16Pair(up_bf16,pair,SparkLmSwish(gate_pair.x) * up_pair.x,SparkLmSwish(gate_pair.y) * up_pair.y);
-	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
-		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
-}
-
-static __global__ void SparkQwen4FlashSharedGateKernel(void *accum_bf16, const void *gate_weight_bf16, const void *gate_input_bf16, uint32_t row_count, uint32_t dimension)
-{
-	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
-	uint32_t row = blockIdx.x;
-	uint64_t row_base = (uint64_t)row * dimension;
-	uint64_t index;
-	float logit = 0.0f,gate;
-	if ( row >= row_count )
-		return;
-	for (index = threadIdx.x; index < dimension; index += blockDim.x)
-		logit = fmaf(SparkLmBf16ToFloat(gate_input_bf16,row_base + index),SparkLmBf16ToFloat(gate_weight_bf16,index),logit);
-	logit = SparkLmBlockReduceSum(logit,reduce_scratch);
-	gate = SparkLmSigmoid(logit);
-	for (index = threadIdx.x; index < dimension; index += blockDim.x)
-		SparkLmFloatToBf16(accum_bf16,row_base + index,gate * SparkLmBf16ToFloat(accum_bf16,row_base + index));
-}
-
-extern "C" cudaError_t SparkQwen4FlashLaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32)
-{
-	SparkQwen4FlashGateSelectKernel<<<row_count, SPARK_LM_CTA_THREADS, 0, stream>>>(scores_f32,bias_f32,row_count,expert_count,topk,route_scale,indices_u32,weights_f32);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkQwen4FlashLaunchMoeRoute(cudaStream_t stream, const uint32_t *route_expert, uint32_t rows, uint32_t expert_width, uint32_t *group_row_offset, uint32_t *route_packed_row, uint32_t *route_source_token, uint32_t *group_tile_prefix_w1, uint32_t *group_tile_prefix_w2)
-{
-	int32_t launch_status = LmRouteBuild<SPARK_LM_CTA_THREADS,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT>(route_expert,rows,rows * SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,group_row_offset,route_packed_row,route_source_token,expert_width,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,SPARK_LM_TILE_N,SPARK_LM_TILE_N,group_tile_prefix_w1,group_tile_prefix_w2,stream);
-	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
-}
-
-extern "C" cudaError_t SparkQwen4FlashLaunchFusedExpertW13Act(cudaStream_t stream, const SparkQwen4FlashLinearView *w1, const SparkQwen4FlashLinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count)
-{
-	cudaError_t status;
-	uint64_t required_rows = (uint64_t)SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT * expert_width;
-	uint32_t lm_format;
-	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || (w1->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && w1->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) || w1->weight_format != w3->weight_format || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION || w3->input_dimension != SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION )
-		return(cudaErrorInvalidValue);
-	lm_format = w1->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1;
-	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION,expert_width,limit,lm_format,multiprocessor_count);
-	return(status);
-}
-
-extern "C" cudaError_t SparkQwen4FlashLaunchExpertDown(cudaStream_t stream, const SparkQwen4FlashLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
-{
-	uint64_t required_rows = (uint64_t)SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT * hidden_dimension;
-	uint32_t lm_format;
-	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || (stacked->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 && stacked->weight_format != SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED) || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
-		return(cudaErrorInvalidValue);
-	lm_format = stacked->weight_format == SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_NVFP4_PACKED ? SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1;
-	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,lm_format,multiprocessor_count));
-}
-
 extern "C" cudaError_t SparkQwen4FlashLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension)
 {
 	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN,hidden_dimension));

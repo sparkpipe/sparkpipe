@@ -68,22 +68,16 @@ static __global__ void LmGdnStageConvUpdateKernel(const void *qkv_bf16, const vo
 static __global__ void LmGdnStageDecayBetaKernel(const void *decay_pre_bf16, const void *beta_pre_bf16, const float *a_log_f32, const float *dt_bias_f32, float *log_decay_f32, float *beta_f32, uint32_t row_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	uint32_t row = blockIdx.x,head = threadIdx.x;
-	uint32_t local_heads,full_heads;
+	uint32_t local_heads,row_heads,slice_rank;
 	uint64_t source,sink;
 	if ( row >= row_count || head >= SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree) )
 		return;
-	/* The decay/beta projections and the a_log/dt_bias tensors are
-	   REPLICATED in the stagepack (full head count on every rank - the
-	   manifest check enforces unsharded rows for these kinds), so the
-	   pre-buffers are row-major FULL-width and the rank reads ITS head
-	   slice: [tp_rank*local, tp_rank*local+local). The linear that fills
-	   them writes the full row; the local-width outputs keep the local
-	   row-major layout every downstream kernel already uses. */
 	local_heads = SPARK_LLM_GDN_LOCAL_VALUE_HEAD_COUNT(tp_degree);
-	full_heads = local_heads * tp_degree;
-	source = ((uint64_t)row * full_heads) + ((uint64_t)tp_rank * local_heads) + head;
+	row_heads = SPARK_LLM_GDN_DECAY_REPLICATED != 0u ? local_heads * tp_degree : local_heads;
+	slice_rank = SPARK_LLM_GDN_DECAY_REPLICATED != 0u ? tp_rank : 0u;
+	source = ((uint64_t)row * row_heads) + ((uint64_t)slice_rank * local_heads) + head;
 	sink = ((uint64_t)row * local_heads) + head;
-	log_decay_f32[sink] = -expf(a_log_f32[(uint64_t)tp_rank * local_heads + head]) * SparkLmSoftplus(SparkLmBf16ToFloat(decay_pre_bf16,source) + dt_bias_f32[(uint64_t)tp_rank * local_heads + head]);
+	log_decay_f32[sink] = -expf(a_log_f32[(uint64_t)slice_rank * local_heads + head]) * SparkLmSoftplus(SparkLmBf16ToFloat(decay_pre_bf16,source) + dt_bias_f32[(uint64_t)slice_rank * local_heads + head]);
 	beta_f32[sink] = SparkLmSigmoid(SparkLmBf16ToFloat(beta_pre_bf16,source));
 }
 
@@ -1541,22 +1535,31 @@ cudaError_t LmGdnStageLaunchMoeRoute(cudaStream_t stream, const uint32_t *route_
 	return(launch_status == LM_LAUNCH_OK ? cudaSuccess : cudaErrorLaunchFailure);
 }
 
+static uint32_t LmGdnStageExpertCodec(uint32_t weight_format)
+{
+	if ( weight_format == SPARK_LLM_WEIGHT_FORMAT_MXFP4_E2M1 )
+		return(SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1);
+	if ( weight_format == SPARK_LLM_WEIGHT_FORMAT_NVFP4_PACKED )
+		return(SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1);
+	return(0u);
+}
+
 cudaError_t LmGdnStageLaunchFusedExpertW13Act(cudaStream_t stream, const LmGdnStageLinearView *w1, const LmGdnStageLinearView *w3, const void *input_bf16, const uint32_t *route_source_token, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *activated_bf16, uint32_t rows, uint32_t expert_width, float limit, uint32_t multiprocessor_count)
 {
 	cudaError_t status;
 	uint64_t required_rows = (uint64_t)SPARK_LLM_ROUTED_EXPERT_COUNT * expert_width;
-	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || w1->weight_format != SPARK_LLM_WEIGHT_FORMAT_MXFP4_E2M1 || w3->weight_format != SPARK_LLM_WEIGHT_FORMAT_MXFP4_E2M1 || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_LLM_HIDDEN_DIMENSION || w3->input_dimension != SPARK_LLM_HIDDEN_DIMENSION )
+	if ( w1 == 0 || w3 == 0 || input_bf16 == 0 || route_source_token == 0 || group_row_offset == 0 || group_tile_prefix == 0 || activated_bf16 == 0 || LmGdnStageExpertCodec(w1->weight_format) == 0u || w3->weight_format != w1->weight_format || w1->weight_payload == 0 || w3->weight_payload == 0 || w1->weight_scale_e8m0 == 0 || w3->weight_scale_e8m0 == 0 || w1->output_dimension != required_rows || w3->output_dimension != required_rows || w1->input_dimension != SPARK_LLM_HIDDEN_DIMENSION || w3->input_dimension != SPARK_LLM_HIDDEN_DIMENSION )
 		return(cudaErrorInvalidValue);
-	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_LLM_EXPERTS_PER_TOKEN,SPARK_LLM_ROUTED_EXPERT_COUNT,SPARK_LLM_HIDDEN_DIMENSION,expert_width,limit,SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,multiprocessor_count);
+	status = SparkLmHostLaunchSm121FusedExpertW13(stream,w1->weight_payload,w1->weight_scale_e8m0,w3->weight_payload,w3->weight_scale_e8m0,input_bf16,route_source_token,group_row_offset,group_tile_prefix,activated_bf16,rows,SPARK_LLM_EXPERTS_PER_TOKEN,SPARK_LLM_ROUTED_EXPERT_COUNT,SPARK_LLM_HIDDEN_DIMENSION,expert_width,limit,LmGdnStageExpertCodec(w1->weight_format),multiprocessor_count);
 	return(status);
 }
 
 cudaError_t LmGdnStageLaunchExpertDown(cudaStream_t stream, const LmGdnStageLinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count)
 {
 	uint64_t required_rows = (uint64_t)SPARK_LLM_ROUTED_EXPERT_COUNT * hidden_dimension;
-	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || stacked->weight_format != SPARK_LLM_WEIGHT_FORMAT_MXFP4_E2M1 || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
+	if ( stacked == 0 || input_bf16 == 0 || group_row_offset == 0 || group_tile_prefix == 0 || output_bf16 == 0 || LmGdnStageExpertCodec(stacked->weight_format) == 0u || stacked->weight_payload == 0 || stacked->weight_scale_e8m0 == 0 || stacked->output_dimension != required_rows || stacked->input_dimension != expert_width )
 		return(cudaErrorInvalidValue);
-	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_LLM_EXPERTS_PER_TOKEN,SPARK_LLM_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,multiprocessor_count));
+	return(SparkLmHostLaunchSm121ExpertW2(stream,stacked->weight_payload,stacked->weight_scale_e8m0,input_bf16,group_row_offset,group_tile_prefix,output_bf16,rows,SPARK_LLM_EXPERTS_PER_TOKEN,SPARK_LLM_ROUTED_EXPERT_COUNT,expert_width,hidden_dimension,LmGdnStageExpertCodec(stacked->weight_format),multiprocessor_count));
 }
 
 cudaError_t LmGdnStageLaunchMoePairReduceOverwrite(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *output_bf16, uint32_t row_count, uint32_t hidden_dimension)

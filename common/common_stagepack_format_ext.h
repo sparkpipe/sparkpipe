@@ -1,5 +1,6 @@
 #pragma once
 
+#include <assert.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_stagepack_format.h"
@@ -30,7 +31,7 @@ typedef struct SparkStagePackEntry
 
 #define SPARK_STAGEPACK_ENTRY_BYTES 56u
 
-_Static_assert(sizeof(SparkStagePackEntry) == SPARK_STAGEPACK_ENTRY_BYTES,"stage pack directory entry must be 56 wire bytes");
+static_assert(sizeof(SparkStagePackEntry) == SPARK_STAGEPACK_ENTRY_BYTES,"stage pack directory entry must be 56 wire bytes");
 
 typedef enum SparkStagePackTensorRole
 {

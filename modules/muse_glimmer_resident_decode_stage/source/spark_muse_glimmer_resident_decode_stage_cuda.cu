@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "runtime/gemm.cuh"

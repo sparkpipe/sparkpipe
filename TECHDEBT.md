@@ -320,24 +320,19 @@ progress diary.
   migration proved by byte or behaviour identity.
 - Publish one driver per model with prewarmed row-count specializations
   instead of one module ID per `SPARK_BATCH_BUCKET`.
-- The qwen4_flash CUDA translation unit has not compiled since the
-  common-module adoption (`80773c04`), and no gate builds it. `nvcc` for
-  sm_121a reports 77 errors:
-  - C `_Static_assert` in `common/common_stagepack_format_ext.h` and the
-    family `llm_defines.h`, which the CUDA front end rejects;
-  - two launcher sets, the common-module delegates and the older family
-    bodies, both defining `SparkQwen4FlashLaunchGateSelect`, `MoeRoute`,
-    `FusedExpertW13Act` and `ExpertDown`;
-  - a second, bodiless `SparkQwen4FlashHeadOrderKey` that swallows the
-    `LaunchGatedNorm` launcher after it;
-  - `SPARK_LLM_WEIGHT_FORMAT_*` codes that `common_gdn_stage_kernels.cu`
-    uses but this family does not define;
-  - `LmGdnStageLaunchDecayBeta`, declared with 9 parameters and defined
-    with 10.
-
-  Pick one body per launcher against the behaviour each replaced (NVFP4
-  dispatch, router sort capacity), add the module to the sm_121a gate and
-  requalify it on hardware.
+- Every decode module now builds for sm_121a and links as a driver in
+  `tools/cuda13_sm121a_compile_gate.sh`, but four have changed since they
+  last ran on hardware. Requalify each of them:
+  - qwen4_flash now runs the common GDN decay kernel with its sharded-pack
+    layout (`SPARK_LLM_GDN_DECAY_REPLICATED 0`), and the common expert
+    launchers, which now also take NVFP4;
+  - hy4 links the stage-module lifecycle it calls, and did not link before;
+  - dsv4, muse_glimmer and qwen4_flash compile the common mesh kernels that
+    `tp_device_collective.c` calls, and did not link before.
+- dsv4, muse_glimmer and qwen4_flash still register their own BF16 combine
+  and none of the common FP32 combines. Call
+  `SparkTpMeshRegisterCommonCombines`, delete the private combine, and
+  record a precision receipt.
 - Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
   `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
   keep their own bucket ladders. `tests/test_template_adoption.py` lists
