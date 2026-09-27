@@ -8,6 +8,7 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
@@ -557,7 +558,7 @@ static int32_t Glm5NextLayerIndexerScore(
     }
     degree = Glm5NextIndexCpDegree(buffers, context);
     if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
-        buffers->head_candidate_token == 0 ||
+        buffers->selected_pools == 0 ||
         (degree > 1u && (buffers->index_local_scores == 0 || buffers->index_gathered_scores == 0 || buffers->index_owner_rank >= degree)))
     {
         return LM_LAUNCH_ERR_SHAPE;
@@ -619,7 +620,7 @@ static int32_t Glm5NextLayerIndexerSelect(
             (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, local_stride) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,
             degree);
     LM_LAUNCH(
-        (LmTopkHistogramKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmTopkExactKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -627,19 +628,7 @@ static int32_t Glm5NextLayerIndexerSelect(
         buffers->selection_scores,
         pools,
         GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
-        buffers->head_candidate_token);
-    LM_LAUNCH(
-        (LmTopkGatherKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->selection_scores,
-        pools,
-        GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
-        buffers->head_candidate_token,
-        buffers->selected_pools,
-        0);
+        buffers->selected_pools);
     LM_LAUNCH(
         (Glm5NextPoolExpandKernel<
             GLM5_NEXT_LAYER_THREADS,

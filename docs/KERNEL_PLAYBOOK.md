@@ -213,8 +213,14 @@ that could be mistaken for the qualified route (`mma.cuh:34-46`, `129-145`).
 - k=8/256 → bitonic sort in registers; k=2048/128k → radix; k=1/154880 → max
   reduction ("radix with one bucket") (`topk.cuh:14-19`).
 - **Radix on float bits:** IEEE bits are monotonic for non-negatives; flip sign +
-  invert negatives makes them monotonic everywhere → one pass over 8 bits narrows
-  128k candidates, a second finishes (`topk.cuh:22-27`, `57-67`).
+  invert negatives makes them monotonic everywhere (`LmTopkKey`). The DSA
+  selection (`topk_exact.cuh`) runs four 8-bit passes, each keeping the keys
+  that match the prefix so far, to find the exact k-th key, then compacts with
+  a block scan in index order: keys above it, then the lowest-index ties. The
+  answer is exact and the same on every run, and padding a row with `-inf`
+  after its end does not change which real entries it picks. The earlier
+  one-pass histogram kept whole 8-bit buckets in atomic order, so it was
+  neither exact nor repeatable.
 - **Bias selects, it does not weigh.** The router adds a correction bias to pick
   top-k but gathers mixture weights from the UNBIASED scores (KDA report); folding
   the bias into the sorted key leaks it into every mixture weight (`topk.cuh:91-99`).
@@ -450,7 +456,7 @@ The CUDA-KERNELS agent updates this table whenever a kernel lands or a number ch
 | `LmMoeFinalizeKernel` | `norm.cuh:337` | weighted fold of top_k rows | NOT_MEASURED |
 | `LmAttnResKernel` | `norm.cuh:490` | attention residual bank softmax | NOT_MEASURED |
 | `LmTopkSmallKernel` (bitonic) | `topk.cuh:82` | router top-k (k=8/256) | NOT_MEASURED |
-| `LmTopkHistogramKernel` / `LmTopkGatherKernel` | `topk.cuh:248`, `283` | radix top-k (k=2048/128k) | NOT_MEASURED |
+| `LmTopkExactKernel` | `topk_exact.cuh` | exact radix top-k in index order (glm5_next: 512 pools; GLM 5.2: 2048 tokens) | NOT_MEASURED |
 | `LmRouteBuildKernel` | `route.cuh:95` | 896-bucket counting sort | NOT_MEASURED |
 | `LmGqaKvStoreKernel` / `LmGqaAttentionDecodeKernel` | `gqa.cuh:102`, `136` | per-head KV store / GQA decode | NOT_MEASURED |
 | `LmBoundedDecayKernel` / `LmGdnGateKernel` | `linear_attn.cuh:106`, `135` | retention/gate producers | NOT_MEASURED |

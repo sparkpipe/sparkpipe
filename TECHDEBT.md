@@ -147,6 +147,11 @@ progress diary.
   chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
   without looking at queued prefill; shorten chains while prefill waits if
   time to first token suffers.
+- glm5_next: the exact DSA top-k (`LmTopkExactKernel`) runs four radix passes
+  and a block-scan compaction in one CTA per row. At 32K context a row has
+  8,192 pools, and the kernel's time there is unmeasured. If it shows in
+  `run_us` at long context, compact with warp ballots instead of the
+  Hillis-Steele scan.
 
 ## Resident TP4 x PP4 execution
 
