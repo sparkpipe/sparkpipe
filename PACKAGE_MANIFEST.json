@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "1ebcc3b9014b1d3ff0821f567ebe55379ccdeb2fd8b06ea64caf7a61e558d1c7",
-      "size_bytes": 136597
+      "sha256": "493bca1ddfc00159252452a989e94c9ea6ca54a1d5e381cae7fd73835b9b7801",
+      "size_bytes": 139017
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "6802f9eaa10e5882b2d78ef3da9cd15373fcc991cbdf1bdadd7f861a1ad212e7",
-      "size_bytes": 32100
+      "sha256": "9aaa566b8387170a236565cd4c8f6c031fac574e70c768be07ec5c4d3f84f242",
+      "size_bytes": 32334
     },
     {
       "path": "cache/cache.h",
@@ -5607,14 +5607,9 @@
       "size_bytes": 48040
     },
     {
-      "path": "modules/laguna_resident_decode_stage/validation/laguna_layer7_reference.py",
-      "sha256": "43c6b6a002ca1e0663ee3f667d1900f62ab0ce175574a7f92dfbfe2b0bef4277",
-      "size_bytes": 35018
-    },
-    {
       "path": "modules/laguna_resident_decode_stage/validation/run_laguna_layer7.sh",
-      "sha256": "4915549ea7b49a09e1d39d5c0ebefccc1f932d2623bcc76efc6818ddce0a8b69",
-      "size_bytes": 6198
+      "sha256": "d0fb6d70481c4f041738559542d22423b1bc76e92782d8ad3a48c1b2ca826838",
+      "size_bytes": 6156
     },
     {
       "path": "modules/laguna_resident_decode_stage/validation/spark_laguna_resident_decode_stage_cuda_validation.cu",
@@ -5765,11 +5760,6 @@
       "path": "modules/minimax_resident_decode_stage/validation/minimax_cpu_validate.c",
       "sha256": "643148d24af9c6a849c10637ee38baa7aaa0ca77ea98de214722a9a2d8cff15d",
       "size_bytes": 23923
-    },
-    {
-      "path": "modules/minimax_resident_decode_stage/validation/minimax_layer0_fixture_convert.py",
-      "sha256": "242920769f8cff5bbb42233cb91696052fde21fcb7346e296dc51d4bda8a9c91",
-      "size_bytes": 1399
     },
     {
       "path": "modules/minimax_resident_decode_stage/validation/spark_minimax_resident_decode_stage_cuda_validation.cu",
@@ -9218,8 +9208,8 @@
     },
     {
       "path": "tests/test_glm52_pack_nvfp4_passthrough.py",
-      "sha256": "43c6cfb6556eec2dc2022b73ba1142e7f08c4a30e97823e95006f9cc88d37eb2",
-      "size_bytes": 14841
+      "sha256": "cdc5399e2c2c441f50a47019b25797c25c425af760917ca25243432b6375ee2b",
+      "size_bytes": 14851
     },
     {
       "path": "tests/test_glm52_quantized_cuda_contract.py",
@@ -9253,8 +9243,8 @@
     },
     {
       "path": "tests/test_glm5_next_adapter_config_load.py",
-      "sha256": "b26b7252afebd525dd5f676b541b9a461fa573e94cd1668d5c3584c19cb923f9",
-      "size_bytes": 22675
+      "sha256": "edab3b514c0415741a9430eebb9a04b3d237a342b925a37671e54274a1c1917e",
+      "size_bytes": 22719
     },
     {
       "path": "tests/test_glm5_next_bench_wrap.py",
@@ -9263,8 +9253,8 @@
     },
     {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
-      "sha256": "5bdd2654c2418f4db62684c47c27cd02459fc5eb3ef090fad4b2a62164cdac97",
-      "size_bytes": 2601
+      "sha256": "27abeb09dd17ce2734868fb7c399515df6c454c4bf2b3847afb33deecda0404b",
+      "size_bytes": 2623
     },
     {
       "path": "tests/test_glm5_next_driver_probe.c",
@@ -9648,8 +9638,8 @@
     },
     {
       "path": "tests/test_k3_spec_verify.py",
-      "sha256": "2ad3254ed05e0737937f7d4e8d0a8a4b991a9b2178d25513d0f00b2cc93e65f7",
-      "size_bytes": 2263
+      "sha256": "f0ec8db505b2c996622b7ebb879712b21d13a4604307fce5eaaffc3ca8936f29",
+      "size_bytes": 2270
     },
     {
       "path": "tests/test_k3_swizzle_probe.cu",
@@ -9863,8 +9853,8 @@
     },
     {
       "path": "tests/test_memory_contracts_parked.txt",
-      "sha256": "8f32694f595a48f51b356f45464cabdea56c99a039c6a18b2bd12400d4e5b3da",
-      "size_bytes": 26309
+      "sha256": "64584fe201fd723eb5672444fe3fc8234a3e244c0ae554aaf5208e6589247dcd",
+      "size_bytes": 26267
     },
     {
       "path": "tests/test_mesh_lane_ladder_receipt.py",
@@ -9913,8 +9903,8 @@
     },
     {
       "path": "tests/test_model_api_queue_lifetime.py",
-      "sha256": "915a18f43961c30551bd362a3caf80bd49597aa55a0e8f05c33bbb60101c1c27",
-      "size_bytes": 7139
+      "sha256": "0fb27fbfd9a4b946e38d542d3aad183a826de3e1ac5de6fc7d8086481769d56b",
+      "size_bytes": 7238
     },
     {
       "path": "tests/test_model_api_text.c",
@@ -10043,8 +10033,8 @@
     },
     {
       "path": "tests/test_no_python_in_production.py",
-      "sha256": "c12797204c4bc34bd42e846a9585c387e1834b11f14e2b86d0194d02c2e24ac8",
-      "size_bytes": 1784
+      "sha256": "724a0310089c8f174b1590863ef3bf3378b1aa71b3a9783a1e723378519edec7",
+      "size_bytes": 1653
     },
     {
       "path": "tests/test_numerical_metrics.c",
@@ -10328,8 +10318,8 @@
     },
     {
       "path": "tests/test_spark_ssh_failover.py",
-      "sha256": "fe531155ffb38914551d1bb1768e62dca9645c8a1968432af5aaa968c9246b27",
-      "size_bytes": 9561
+      "sha256": "45825c776c8a2646f8fd1d19af61c6e42a5382a34d5266ff608ef560bf1df640",
+      "size_bytes": 9738
     },
     {
       "path": "tests/test_spark_station.py",
@@ -12532,6 +12522,11 @@
       "size_bytes": 16990
     },
     {
+      "path": "tools/laguna_layer7_reference.py",
+      "sha256": "43c6b6a002ca1e0663ee3f667d1900f62ab0ce175574a7f92dfbfe2b0bef4277",
+      "size_bytes": 35018
+    },
+    {
       "path": "tools/laguna_layer_reference.py",
       "sha256": "84f10efd6965fe61d11f37f3cbd23907d08c3ab3b9eb9706ae4be676c72b6abc",
       "size_bytes": 3794
@@ -12705,6 +12700,11 @@
       "path": "tools/mimo26_stagepack.py",
       "sha256": "ab2d60ec1558b0cb58a72dddf9ef8abeddf8fbccbb8fd323a17121de69041af8",
       "size_bytes": 44498
+    },
+    {
+      "path": "tools/minimax_layer0_fixture_convert.py",
+      "sha256": "242920769f8cff5bbb42233cb91696052fde21fcb7346e296dc51d4bda8a9c91",
+      "size_bytes": 1399
     },
     {
       "path": "tools/minimax_stagepack.py",
@@ -13363,8 +13363,8 @@
     },
     {
       "path": "tools/spark_serving_profile.py",
-      "sha256": "dd81d8f914a33fda2ace5856bff7566688f3dc7fd97b3c4f0f777bdee2c0c7c5",
-      "size_bytes": 5665
+      "sha256": "5d5aede4559213a31dd93268d98c159e904f88a9ab1d28b6df4ca1599e7ecf45",
+      "size_bytes": 5604
     },
     {
       "path": "tools/spark_ssh_proxy.py",
@@ -13603,8 +13603,8 @@
     },
     {
       "path": "tools/t1_reference_common.py",
-      "sha256": "04feab90e20b105f69a30d26e12c68366689bf40285ee4f1f6ebcd3b0dc48640",
-      "size_bytes": 11499
+      "sha256": "88ec01116410762fb8d0cc785e6ca598c2a819af2ca6b55c73a2ba2876cd90d2",
+      "size_bytes": 11510
     },
     {
       "path": "tools/t1_reference_compare.py",
@@ -15195,5 +15195,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74089332
+  "total_bytes": 74092080
 }

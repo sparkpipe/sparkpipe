@@ -44,6 +44,7 @@ def main() -> int:
          f"-I{ROOT}/model-families/glm5_next/include",
          f"-I{ROOT}/modules/glm5_next_resident_decode_stage/include",
          f"-I{ROOT}/modules/glm5_next_resident_decode_stage/source",
+         f"-I{ROOT}",
          str(VALIDATOR),
          "-o", str(BINARY)],
         capture_output=True, text=True)

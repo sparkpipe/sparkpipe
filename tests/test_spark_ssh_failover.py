@@ -195,6 +195,7 @@ class SparkSshFailoverTest(unittest.TestCase):
             self.assertFalse(ssh_config.exists())
             self.assertIn("Host spark0",stdout.getvalue())
 
+    @unittest.skipUnless(Path(json.loads(PROFILE.read_text(encoding="utf-8"))["ssh_binary"]).is_file(),"the installer validates the generated config with the profile's ssh -G")
     def test_install_writes_parseable_config_and_persistent_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

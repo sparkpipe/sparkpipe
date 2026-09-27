@@ -3,9 +3,10 @@
 
 The production tree ships to CUDA-only targets, so a new .py outside the
 support directories is either dead weight or a build step nobody can run.
-Three files predate this rule and are still load-bearing - the stage packers
-under runtime/pack/, which tests load by path, and the ds4 eval comparator -
-so they are whitelisted by exact path. Anything else fails.
+The ds4 eval comparator predates this rule, and the vendored publisher
+modeling files under model_contracts/references/ are pinned by path and
+sha256 from the contracts and name maps, so they are whitelisted by exact
+path. Anything else fails.
 """
 
 import sys
@@ -18,11 +19,8 @@ SKIP_DIRS = {".git", ".audit", "build", "__pycache__", ".pytest_cache",
              "diagnostics"}
 WHITELIST = {
     "qualification/ds4_eval/compare_runs.py",
-    "runtime/pack/fp8_resident_pack.py",
-    "runtime/pack/stage_pack.py",
-    # pinned publisher modeling references: vendored semantics ground
-    # truth for kernel ports (provenance + sha in the file's header
-    # dir README) — not executed, never linked into serving.
+    "model_contracts/references/modeling_ling_bailing_moe_v3.py",
+    "model_contracts/references/modeling_muse_glimmer.py",
     "model_contracts/references/modeling_qwen4_exp.py",
 }
 
@@ -41,7 +39,7 @@ def main():
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
-    print("no Python in the production tree beyond the whitelisted packers")
+    print("no Python in the production tree beyond the whitelist")
     return 0
 
 

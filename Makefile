@@ -540,7 +540,66 @@ PYTHON_TESTS := \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
 	tests/test_ling_cache_admission.py \
-	tests/test_stage_module_teardown.py
+	tests/test_stage_module_teardown.py \
+	tests/test_acc_parity_oracle.py \
+	tests/test_ds4_spark_brickproof.py \
+	tests/test_dsv41_flash_shared_lane.py \
+	tests/test_dsv41_flash_smoke_experts.py \
+	tests/test_dsv41_flash_stagepack.py \
+	tests/test_dsv4_hc_residual_fusion_source.py \
+	tests/test_dsv4_indexer_post_fusion_source.py \
+	tests/test_dsv4_pro_exact32k_stage.py \
+	tests/test_dsv4_pro_rank_pack_verify.py \
+	tests/test_dsv4_pro_tp4pp4_shared_lane.py \
+	tests/test_dsv4_pro_weightd_warm_identity.py \
+	tests/test_gemma4_adapter_selfcontained.py \
+	tests/test_gemma4_layer_scalar_coverage.py \
+	tests/test_gemma4_verify_existing.py \
+	tests/test_gemma4_workspace.py \
+	tests/test_glm52_pack_bf16_passthrough.py \
+	tests/test_glm52_pack_nvfp4_passthrough.py \
+	tests/test_glm53_contract.py \
+	tests/test_glm5_next_adapter_config_load.py \
+	tests/test_glm5_next_cuda_validator_tier2_oracle.py \
+	tests/test_glm5_next_geometry.py \
+	tests/test_glm5_next_module_host_syntax.py \
+	tests/test_head_host.py \
+	tests/test_hy4_fp8_scale_contract.py \
+	tests/test_k3_spec_verify.py \
+	tests/test_ling_verify_pack.py \
+	tests/test_mesh_lane_ladder_receipt.py \
+	tests/test_mimo26_census.py \
+	tests/test_mimo26_stagepack.py \
+	tests/test_mimo26_stagepack_format.py \
+	tests/test_model_api_queue_lifetime.py \
+	tests/test_module_build_release_adapter_gate.py \
+	tests/test_muse_glimmer_model_header.py \
+	tests/test_no_python_in_production.py \
+	tests/test_qwen27_mtp_workspace.py \
+	tests/test_qwen38_pack_verify.py \
+	tests/test_qwen38max_tp16_rank_verify.py \
+	tests/test_qwen4_flash_pack_verify_receipts.py \
+	tests/test_rtx5090_spec_node.py \
+	tests/test_serving_profile_derivation.py \
+	tests/test_spark_ssh_failover.py \
+	tests/test_spark_station.py \
+	tests/test_spark_tiktoken_compile.py \
+	tests/test_t1_reference_decoder.py \
+	tests/test_t1_reference_dsv41.py \
+	tests/test_t1_reference_engines.py \
+	tests/test_t1_reference_glm53flash.py \
+	tests/test_t1_reference_hy4.py \
+	tests/test_t1_reference_k3.py \
+	tests/test_t1_reference_minimax.py \
+	tests/test_t1_reference_muse.py \
+	tests/test_t1_reference_qwen38_27b.py \
+	tests/test_tp_cupti_trace_report.py \
+	tests/test_tp_standalone_configuration.py \
+	tests/test_weightd_map_fd_ownership.py \
+	tests/test_weightd_mesh_source.py \
+	tests/test_weightd_warm_family_dsv41_flash.py \
+	tests/test_weightd_warm_family_ling.py
+PYTHON_TEST_BINARIES := build/test_tiktoken_compiled
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
@@ -1516,7 +1575,7 @@ build/test_weight_codec: tests/test_weight_codec.c include/sparkpipe/spark_weigh
 
 TEST_EXCLUDE ?=
 
-test: all $(TEST_BINARIES)
+test: all $(TEST_BINARIES) $(PYTHON_TEST_BINARIES)
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
 		if [ ! -x "$$test_binary" ]; then echo "SKIP $$test_binary (host does not build it)"; continue; fi; \

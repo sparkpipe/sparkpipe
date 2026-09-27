@@ -417,12 +417,17 @@ progress diary.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- `tests/test_glm5_next_adapter_config_load.py` is not part of `make test`,
-  and its deployment section fails on `main`:
-  `tools/glm5_next_gen_deployment.py` writes nine `runtime_limits` members and
-  `SparkModelResidentDeploymentLoad` accepts exactly six. Its adapter unit
-  sections pass. Align the generator and the loader, then add the test to the
-  suite.
+- Nine Python tests stay outside `make test`:
+  - five drive the fleet over ssh: `test_expert_io_perf`,
+    `test_jit_kv_page_fault`, `test_lossless_doorbell`,
+    `test_memory_bandwidth_budget` and `test_transport_stability`;
+  - three read whole synthetic packs into memory and fail with
+    `MemoryError` on a 7 GB host: `test_dsv41_flash_layer0_anchor`,
+    `test_dsv41_verify_pack` and `test_glm52_validate_pack_stage`;
+  - `test_stagepack_mtp_strip_qwen36sp` fails removing its temporary
+    directory in a sandbox.
+
+  Give the fleet tests a runner, stream the packs, and register all nine.
 
 ## Hardware independence
 
