@@ -1,5 +1,5 @@
 {
-  "file_count": 3035,
+  "file_count": 3036,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9a86a06b35546b9d53d6d71ff960b0c6cf113d1b3182226d95a9218f30baec6d",
-      "size_bytes": 136486
+      "sha256": "2a44d7bc3c0031de2c4c5dfe26299caaa76e74b5666432f779f933d5ca7b7156",
+      "size_bytes": 136524
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -5688,8 +5688,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
-      "sha256": "c21c813d89fb51e8492356b40f2c95e2a7be8359ab7d0a9e2bc4ba34d0a0cfe7",
-      "size_bytes": 89516
+      "sha256": "ac6fa36624feb8cf2e54aa5a08e7b6c991f633b8e8d807e0060b3d846d30aa4f",
+      "size_bytes": 91255
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
@@ -9770,6 +9770,11 @@
       "path": "tests/test_layer_kinds.py",
       "sha256": "0ec94a0b57055421183eae6fef3865af770dd773a127f4c840cb271f636c2cdd",
       "size_bytes": 8792
+    },
+    {
+      "path": "tests/test_ling_cache_admission.py",
+      "sha256": "2b84d99b0a9dcadc566bb72445f650257f8fb0cc7d8fc1814d286815cb0a56aa",
+      "size_bytes": 5414
     },
     {
       "path": "tests/test_ling_model_header.py",
@@ -15180,5 +15185,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74108981
+  "total_bytes": 74116172
 }
