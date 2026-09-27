@@ -111,6 +111,27 @@ the passthrough stays the verified integration until one exists.
    (`curl http://spark0:8433/health`) or send a 1-token completion through
    the passthrough.
 
+## Browser clients (the sparkpipe.ai playground)
+
+`site/playground.html` calls the door from a browser. Checked on 2026-09-27
+against LiteLLM 1.74.0 and a mock upstream that speaks the chat contract
+above, with deployments as `tools/generate_litellm_config.py` writes them
+(`openai/` provider, `api_base` ending in `/v1`):
+
+- CORS allows any origin, and preflights pass for `authorization` and
+  `content-type`, so the page need not share the proxy's origin.
+- `GET /health/liveliness` needs no key; the page uses it for its status
+  light. `GET /v1/models` needs the key.
+- Streamed chat works. With `stream_options: {"include_usage": true}` the
+  last event before `[DONE]` carries `usage`, which the page uses for its
+  decode rate.
+- `seed`, `temperature`, `max_tokens` and `deadline_ms` reach the upstream.
+  `priority` does not: LiteLLM takes it for its own scheduler.
+- With `vllm/` deployments, as in the committed `config/litellm-config.yaml`,
+  the chat route fails with `No module named 'vllm'`: LiteLLM's `vllm/`
+  provider runs a local vLLM engine rather than calling the upstream. Chat
+  clients need the `openai/` deployments.
+
 ## Install (controller Mac)
 
 ```sh
