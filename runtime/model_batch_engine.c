@@ -1140,6 +1140,14 @@ static SparkStatus SparkModelBatchConnectPipeline(
 	return(SparkModelPipelineClientConnect(&pipeline_configuration,&engine->pipeline));
 }
 
+static uint32_t SparkModelBatchContextLimit(
+	const SparkModelBatchEngineConfiguration *configuration)
+{
+	uint32_t positions;
+	positions = configuration->deployment->max_sequence_positions;
+	return(positions != 0u && positions < configuration->max_context_tokens ? positions : configuration->max_context_tokens);
+}
+
 static SparkStatus SparkModelBatchInitialize(
 	const SparkModelBatchEngineConfiguration *configuration,
 	SparkModelBatchEngine *engine)
@@ -1151,7 +1159,7 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->resident_sequence_capacity = limits->resident_sequence_capacity;
 	engine->kv_logical_page_capacity = limits->kv_logical_page_capacity;
 	engine->kv_physical_page_capacity = limits->kv_physical_page_capacity;
-	engine->max_context_tokens = configuration->max_context_tokens;
+	engine->max_context_tokens = SparkModelBatchContextLimit(configuration);
 	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
 	engine->max_active_sequence_count = limits->max_active_sequence_count;

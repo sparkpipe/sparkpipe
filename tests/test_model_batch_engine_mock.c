@@ -143,11 +143,10 @@ static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *de
 	return(TestConnectRows(deployment,state,runtime_root,4u));
 }
 
-static void TestSubmitPrompt(SparkModelBatchEngine *engine, uint64_t request_id, uint64_t sequence_id, uint32_t budget,const uint32_t *prompt,uint32_t prompt_count)
+static SparkStatus TestSubmitPromptStatus(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t sequence_id,uint32_t budget,const uint32_t *prompt,uint32_t prompt_count)
 {
 	SparkModelBatchSubmitRequest request;
 	SparkModelBatchRequestHandle handle;
-	SparkStatus status;
 	memset(&request,0,sizeof(request));
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = sizeof(request);
@@ -157,8 +156,12 @@ static void TestSubmitPrompt(SparkModelBatchEngine *engine, uint64_t request_id,
 	request.prompt_token_count = prompt_count;
 	request.output_token_budget = budget;
 	handle = 0;
-	status = SparkModelBatchEngineSubmit(engine,&request,&handle);
-	CHECK(status == SPARK_STATUS_OK, "submit request");
+	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
+}
+
+static void TestSubmitPrompt(SparkModelBatchEngine *engine, uint64_t request_id, uint64_t sequence_id, uint32_t budget,const uint32_t *prompt,uint32_t prompt_count)
+{
+	CHECK(TestSubmitPromptStatus(engine,request_id,sequence_id,budget,prompt,prompt_count) == SPARK_STATUS_OK, "submit request");
 }
 
 static void TestSubmit(SparkModelBatchEngine *engine, uint64_t request_id, uint64_t sequence_id, uint32_t budget)
@@ -210,6 +213,28 @@ static void TestScenarioHappyPath(const SparkModelResidentDeployment *deployment
 		"happy: the request produced tokens through the full stack");
 	CHECK( state.completed_events[1] == 1u && state.error_events[1] == 0u,
 		"happy: the request completed cleanly");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioDeploymentPositionLimit(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	SparkModelResidentDeployment limited;
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	limited = *deployment;
+	limited.max_sequence_positions = 8u;
+	engine = TestConnect(&limited,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	CHECK(TestSubmitPromptStatus(engine,2u,502u,5u,prompt,4u) == SPARK_STATUS_CAPACITY_EXCEEDED,"positions: a budget past the deployment's positions is refused at admission");
+	CHECK(TestSubmitPromptStatus(engine,3u,503u,4u,prompt,4u) == SPARK_STATUS_OK,"positions: a budget ending at the deployment's positions is admitted");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[3] == 1u && state.error_events[3] == 0u && state.token_events[3] == 4u,"positions: the admitted request completes with its whole budget");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -863,6 +888,7 @@ int main(void)
 		deployment.nodes[0].runtime_root = coordinator_root;
 		TestScenarioEventDeadlines(&deployment,runtime_root);
 		TestScenarioHappyPath(&deployment,runtime_root);
+		TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
 		TestScenarioRankDiesMidDecode(&deployment,runtime_root);
 		TestScenarioRankKilledAndRevived(&deployment,runtime_root);
 		TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);

@@ -28,8 +28,6 @@
   "max_input_rows": 16,
   "kv_logical_page_capacity": 131072,
   "kv_physical_page_capacity": 131072,
-  "kv_backing_maximum_bytes": 2199023255552,
-  "execution_row_capacity": 128,
   "max_sequence_positions": 32768
  },
  "nodes": [

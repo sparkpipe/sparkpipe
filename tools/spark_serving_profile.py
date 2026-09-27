@@ -29,6 +29,19 @@ KV_PAGE_BYTES = 2 * 1024 * 1024
 # profile's headroom so regenerated configs match byte-for-byte.
 KV_BACKING_HEADROOM = 8
 
+# The runtime_limits members runtime/model_resident_deployment.c accepts;
+# the other derived values live in the stage config
+# (execution_row_capacity) and on each node (kv_backing_maximum_bytes).
+DEPLOYMENT_RUNTIME_MEMBERS = (
+    "max_active_sequences",
+    "resident_sequence_capacity",
+    "max_inflight_submissions",
+    "max_input_rows",
+    "kv_logical_page_capacity",
+    "kv_physical_page_capacity",
+    "max_sequence_positions",
+)
+
 PROFILES = {
     # name: (max_active_sequences, max_sequence_positions)
     "B1": (1, 512),
@@ -80,6 +93,8 @@ def verify(runtime_limits: dict, stage_config: dict, nodes_backing=None) -> list
     # runtime_limits; accept it from either position.
     if got.get("kv_backing_maximum_bytes") is None and nodes_backing is not None:
         got["kv_backing_maximum_bytes"] = nodes_backing
+    if got.get("kv_backing_maximum_bytes") == 0:
+        want.pop("kv_backing_maximum_bytes")
     findings = []
     for key, expected in want.items():
         actual = got.get(key)

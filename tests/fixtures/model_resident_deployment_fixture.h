@@ -24,6 +24,7 @@ typedef struct TestModelResidentDeploymentFixture
 	const uint32_t *stage_indices;
 	const SparkModelResidentEndpoint *control_endpoints;
 	SparkModelServingRuntimeLimits runtime_limits;
+	uint32_t max_sequence_positions;
 	uint32_t control_port_base;
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;

@@ -398,6 +398,16 @@ progress diary.
 - Carry `deadline_ms` into the batch engine and the serving submission
   (`deadline_time_ns` exists but is not populated) so the scheduler, not
   only the API, orders work by deadline.
+- The engine's position limit comes from the deployment's optional
+  `runtime_limits.max_sequence_positions`, while each adapter enforces its
+  own stage config's `max_sequence_positions`. Nothing compares them, so a
+  deployment without the member, or with a larger value, still fails
+  mid-decode instead of at admission. Report the adapter's limit in the
+  residentd hello and let the engine take the smallest across ranks.
+- Positions are sized for every resident sequence at full length
+  (`tools/spark_serving_profile.py`: B8 is 8 × 512 positions in 1,024
+  pages). A request cannot use the pages its neighbours leave idle. Size
+  positions for one long sequence and let paged admission share the pool.
 
 ## Provider network
 

@@ -32,6 +32,7 @@
 #endif
 
 #define TEST_RANK_COUNT 3u
+#define TEST_API_MAX_SEQUENCE_POSITIONS 64u
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
 {
@@ -193,6 +194,7 @@ static void TestApiWriteDeployment(const char *path,
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 32u;
+	fixture.max_sequence_positions = TEST_API_MAX_SEQUENCE_POSITIONS;
 	fixture.control_port_base = control_port_base;
 	fixture.node_count = TEST_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
@@ -579,6 +581,37 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 		"sidecar; token-id form intact)\n");
 }
 
+static void TestApiWritePromptRequest(char *request,size_t capacity,uint32_t prompt_count,uint32_t max_tokens)
+{
+	size_t length;
+	uint32_t index;
+	length = (size_t)snprintf(request,capacity,"{\"max_tokens\":%u,\"prompt_token_ids\":[",max_tokens);
+	for (index=0u; index<prompt_count; index++)
+		length += (size_t)snprintf(request + length,capacity - length,"%s%u",index == 0u ? "" : ",",11u + index);
+	assert(length + 3u < capacity);
+	memcpy(request + length,"]}",3u);
+}
+
+static void TestApiContextLimit(TestApiStack *stack)
+{
+	char request[1024],response[65536];
+	uint32_t tokens[64];
+	uint32_t token_count;
+	const char *body;
+	TestApiWritePromptRequest(request,sizeof(request),TEST_API_MAX_SEQUENCE_POSITIONS,1u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"context_length_exceeded"));
+	TestApiWritePromptRequest(request,sizeof(request),TEST_API_MAX_SEQUENCE_POSITIONS - 4u,32u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	token_count = TestApiScanTokenArray(body,tokens,64u);
+	assert(token_count >= 1u && token_count <= 4u);
+	printf("test_model_api_text: context limit OK (a full prompt is a 400; output stops at the deployment's positions)\n");
+}
+
 static void TestApiTextServingWithTokenizer(TestApiStack *stack)
 {
 	SparkTokenizerSidecar sidecar;
@@ -892,6 +925,7 @@ int main(void)
 	TestApiStartApi(&stack);
 	TestApiIdleWake(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
+	TestApiContextLimit(&stack);
 	TestApiStopApi(&stack);
 	TestApiStopResidents(stack.residents,stack.paths);
 	unlink(stack.deployment_path);
