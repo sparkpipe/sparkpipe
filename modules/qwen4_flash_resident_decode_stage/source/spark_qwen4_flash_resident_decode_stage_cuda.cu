@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/frame_error.cuh"

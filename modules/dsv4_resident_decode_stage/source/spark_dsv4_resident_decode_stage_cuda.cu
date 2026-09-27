@@ -1,3 +1,4 @@
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "sparkpipe/spark_row_compaction.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"

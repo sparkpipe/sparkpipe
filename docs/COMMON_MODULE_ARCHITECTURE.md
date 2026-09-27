@@ -313,5 +313,9 @@ uint64_t SparkHybridSlotBytes(const SparkLlmHybridPlan *plan);
 M-0 is the pilot of this system: extracted from glm5_next (fused FP32 sum by-value
 16-source kernel, seed/add/round fallback, u64 max, mesh publish/wait/guard), one-call
 registration via `SparkTpMeshRegisterCommonCombines`, glm5_next converted (private
-copies deleted). Remaining adopters with the OLD precision bug: glm52, dsv4, ling,
-laguna, qwen38_27b — each is: add include, call register, delete private kernels.
+copies deleted).
+
+Every module whose driver runs `tp_device_collective.c` compiles the header, because
+the collective calls its mesh launchers and a driver without them does not link. dsv4, muse_glimmer and
+qwen4_flash still register only their private BF16 combine: each still has to call
+the register function and delete its private kernel.
