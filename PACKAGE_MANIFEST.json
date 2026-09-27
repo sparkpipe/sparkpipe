@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "9b0d481848ea793a324825899db12f53186ab14676062590437a0e5644911d3e",
-      "size_bytes": 26196
+      "sha256": "38ce381fedc9acb0c1887561ec048a8fd6c8bd5f4218e97afa0db12b615eeb1c",
+      "size_bytes": 29642
     },
     {
       "path": "cache/cache.h",
@@ -15185,5 +15185,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74126040
+  "total_bytes": 74129486
 }
