@@ -818,6 +818,85 @@ slot and then terminate the engine. Now it marks only that row count
 as `GRAPH-CAPTURE-FAILED rows=N; this row count runs eager from now on`, and
 every other row count keeps its graph.
 
+## One answer on every path (#1230)
+
+In #1230's check, three cold runs of one prompt agreed with each other, three
+runs that hit the prefix cache agreed with each other but not with the cold
+runs, and three cold runs after another restart disagreed with each other.
+Head argmax already breaks ties by the lowest token id, and collectives add in
+rank order, so the flips come from logits that differ in their last bits
+between paths. Which path a wave takes depends on the session:
+
+- the first waves after a restart run eager until the experts are warm;
+- a rank that loses its graph path (`graph_path=2`) runs eager until restart;
+- a request runs on execution slot `request_id % 4`, whose graphs were
+  captured at whatever contexts that slot saw first.
+
+Three choices depended on the path instead of the context:
+
+- **Split-KV.** A graph was captured with the context bound `context + 256`,
+  and attention split its KV walk once that bound reached
+  `decode_split_context_threshold` (64 on the fleet). An eager wave at
+  context 20 did not split; a graph replay of the same wave did.
+- **DSA selection.** A graph captured at context 1,900 had bound 2,156. It ran
+  DSA selection, which starts above 2,048, for every context it later
+  replayed, where an eager wave attends to every position.
+- **The top-k.** Selection kept whole 8-bit histogram buckets and filled its
+  512 slots in atomic order, so which pools it kept, and their order, changed
+  from run to run.
+
+Two bugs changed which positions were attended above 2,048 tokens:
+
+- Attention read the selected positions with a row stride of 2,048, while the
+  expansion wrote 2,051 per row. The tail was never attended, and row `r`
+  read its list `3r` entries early, so later rows attended some of the
+  previous row's selections and missed some of their own.
+- A pool only partly inside a row's context got a score, so it could displace
+  a complete pool. The expansion then emitted its positions, which the tail
+  emits too, so they were attended twice. This happened on every graph replay
+  (whose pool count comes from the bound) and for every shorter row in a
+  multi-row wave.
+
+What changed:
+
+- **Graphs by regime.** Each slot keeps one graph per row count per regime:
+  unsplit (context below the split threshold), split (up to 2,048) and
+  selected (above 2,048). A bound stays inside its regime: `threshold - 1`
+  for unsplit, 2,048 for split, `context + 256` for selected, capped at
+  `max_sequence_positions`. Eager and graph waves decide split-KV with the
+  same function, `LmLatentAttentionContextSplits`. The capture log reads
+  `GRAPH-CAPTURE-OK rows=N regime=R bound=B`, with R 0, 1 or 2.
+- **Exact top-k.** `LmTopkExactKernel` (`topk_exact.cuh`) selects the exact
+  top 512 pools, breaks ties by the lowest pool index and writes them in index
+  order. It replaces the histogram and gather kernels in glm5_next and in
+  GLM 5.2.
+- **Complete pools.** A pool scores only when all four of its tokens are
+  inside the row's context. The expansion emits only complete pools, then the
+  tail (context mod 4 tokens) once.
+- **Stride.** Attention and the stage sideband read 2,051 positions per row.
+
+The tail and stride fixes change output above 2,048 tokens. At or below 2,048,
+output changes only where a graph replay used to split or select where an
+eager wave did not.
+
+Tests:
+
+- `tests/test_topk_exact_host.py` runs the top-k on 64 host threads against a
+  CPU reference: ties at the threshold, `-inf` padding, fewer candidates than
+  k, and 8,192 pools. Four runs of each case must be identical.
+- `tests/test_glm5_next_graph_regime.py` replays every context up to 4K and
+  32K, and 400 random request histories, for eight split thresholds. Every
+  replayed graph's bound covers the context and makes the same split and
+  selection choices as eager. The previous policy fails it.
+- `tests/test_glm5_next_index_kv.py` runs pool scores, top-k and expansion on
+  host. The selection is the same at the eager pool count and at the graph
+  bound, and a short row in a long wave attends each of its positions once.
+  The previous pool scores and expansion each fail it.
+
+Still open (TECHDEBT, Dynamic batching): a row's attention partitions depend
+on the other rows in its wave, and no GPU test yet compares a graph replay's
+logits with an eager wave's.
+
 ## B16 and larger
 
 The module's sequence cap is the compile-time batch bucket
@@ -873,8 +952,8 @@ work is split as follows:
 - **Gather.** The local score rows are all-gathered on the main collective:
   op 0, `active_sequence_count = ceil(rows * local_stride / 2048)`. A permute
   kernel then puts them back in global pool order.
-- **Selection.** The existing top-k, gather and expand kernels run unchanged
-  on the full score array, on every rank.
+- **Selection.** The top-k and expand kernels run on the full score array,
+  on every rank.
 - **Exactness.** Each pool is scored by exactly one rank, with the same code
   as the replicated path. The selection is therefore bitwise equal to
   replicated mode.

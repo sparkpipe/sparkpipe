@@ -520,6 +520,7 @@ PYTHON_TESTS := \
 	tests/test_generated_control_admission.py \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_topk_exact_host.py \
+	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \

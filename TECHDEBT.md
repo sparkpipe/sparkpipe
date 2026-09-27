@@ -251,6 +251,19 @@ progress diary.
   generated ones. Until batched rows equal B1, a warm and a cold run of the
   same prompt can differ (#1230). Make them equal, or keep checkpoints of
   generated tokens out of reuse for verified requests.
+- glm5_next: a row's attention still depends on the other rows in its wave.
+  The wave's longest row decides split-KV for every row, and a row at or
+  below 2,048 tokens, in a wave whose longest row is past 2,048, attends
+  through the 2,051-slot selected list (all its complete pools, then its
+  tail) instead of densely. Either way its partitions and summation order
+  differ from a one-row wave's. Graph and eager waves now agree with each
+  other, but not with the row run alone. Attention tiles fixed by absolute
+  key position (the TensorFold rule above) remove this.
+- glm5_next: no GPU test compares a replayed decode graph's logits with an
+  eager wave's at the same context. Host tests cover the choices (split-KV,
+  DSA selection, pool expansion) and run the selection kernels. Add the
+  logits comparison to the CUDA validation at contexts 63, 64, 2,048, 2,049
+  and 4,099.
 
 ## Model contracts
 

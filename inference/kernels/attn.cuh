@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include "inference/kernels/attn_split.h"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
@@ -706,7 +707,7 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     uint32_t partitions;
     partitions = rows == 0u || multiprocessor_count == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + rows - 1u) / rows;
     partitions = partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ? LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS : partitions;
-    if (split_context_threshold == 0u || split_partials == 0 || position_bound < split_context_threshold || partitions < 2u || (uint64_t)rows * heads * partitions > split_partial_blocks)
+    if (LmLatentAttentionContextSplits(position_bound, split_context_threshold) == 0u || split_partials == 0 || partitions < 2u || (uint64_t)rows * heads * partitions > split_partial_blocks)
         partitions = 1u;
     if (heads == 1u)
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
@@ -752,8 +753,8 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     {
         partitions = LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS;
     }
-    if (split_context_threshold == 0u || split_partials == 0 ||
-        position_bound < split_context_threshold || partitions < 2u ||
+    if (LmLatentAttentionContextSplits(position_bound, split_context_threshold) == 0u ||
+        split_partials == 0 || partitions < 2u ||
         blocks == 0u ||
         (uint64_t)blocks * partitions > split_partial_blocks)
     {

@@ -9,6 +9,7 @@
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
+#include "sparkpipe/spark_glm5_next_graph_regime.h"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
@@ -918,7 +919,7 @@ static int32_t Glm5NextLayerAttentionTail(
                 buffers->attention_latent_bf16,
                 buffers->row_positions,
                 rows,
-                context > GLM5_NEXT_DSA_SELECTED ? GLM5_NEXT_DSA_SELECTED : context,
+                SparkGlm5NextAttentionPositionBound(context),
                 buffers->decode_split_context_threshold,
                 buffers->attention_split_partials,
                 (uint32_t)buffers->attention_split_partial_blocks,
@@ -941,8 +942,7 @@ static int32_t Glm5NextLayerAttentionTail(
             buffers->attention_latent_bf16,
             buffers->row_positions,
             rows,
-            context > GLM5_NEXT_DSA_SELECTED ? GLM5_NEXT_DSA_SELECTED
-                                             : context,
+            SparkGlm5NextAttentionPositionBound(context),
             buffers->decode_split_context_threshold,
             buffers->attention_split_partials,
             (uint32_t)buffers->attention_split_partial_blocks,

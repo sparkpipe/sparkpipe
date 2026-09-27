@@ -1,5 +1,5 @@
 {
-  "file_count": 3039,
+  "file_count": 3042,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "8689a75d8a755200f70f8e398f7880f6e7fb3c9aa0a825d5e3d79fe8caa5eaad",
-      "size_bytes": 136557
+      "sha256": "1ebcc3b9014b1d3ff0821f567ebe55379ccdeb2fd8b06ea64caf7a61e558d1c7",
+      "size_bytes": 136597
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "8dfc46c2a2085f01a5d98f392d8f5b592144fd4d14bccbd97dc27d4d1e4aeb85",
-      "size_bytes": 29959
+      "sha256": "e62c71f91b58f9ee79cf3ccc0bc330f6e4c83c7f852875c0231b3eaab12ebf30",
+      "size_bytes": 30845
     },
     {
       "path": "cache/cache.h",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "8d1533f234a6771325b7e992249a9c272f81a43d8bfd3ea1b7f8cfa3e821c7a5",
-      "size_bytes": 57693
+      "sha256": "0f6c26c9f07c7ec7f0cc80c2d071dd43cfba86d134f7387781c57f3840478b09",
+      "size_bytes": 61991
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -3848,8 +3848,13 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "dec02bf3e9b3dcce7b19abdbc866e66019c1856c68f0aa70b45f23c7ed6b387b",
-      "size_bytes": 46317
+      "sha256": "621f33e8661742bd378ed11daf24b4ddbd38cc86a3bef14378d6a5bd500b76dc",
+      "size_bytes": 46367
+    },
+    {
+      "path": "inference/kernels/attn_split.h",
+      "sha256": "7be2623880736aea6c77b24076c79b94e46c311e9da4ae411c22d5980a48ec86",
+      "size_bytes": 246
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -4380,6 +4385,11 @@
       "path": "model-families/glm5_next/include/sparkpipe/llm_defines.h",
       "sha256": "1a7f4b06f303eda6dabc0a0c66245334261f26be2095c1d5c08301db96710895",
       "size_bytes": 2884
+    },
+    {
+      "path": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_graph_regime.h",
+      "sha256": "baa2217488d80c0643ee965a3dafc6c0a1e527d09e6eceb5f0d5b5620e07f181",
+      "size_bytes": 1705
     },
     {
       "path": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h",
@@ -5228,8 +5238,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "988232ddcd3210eb5fd45d79e8b4d9aa62689f26ca541a7971adc68addb36eb0",
-      "size_bytes": 94242
+      "sha256": "963139b1486a02d714de75d9b116f6216847fadf905cd87f1ca9b8417d8b71f1",
+      "size_bytes": 94203
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -5243,13 +5253,13 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "fc84af7f365392637852b4ed5a09a55ae7b7787a1d933eca3077c3dfe4c38f0a",
-      "size_bytes": 12185
+      "sha256": "e963dda939e38e1318cf6ec87c00611b0eaece9f9a4e195a7000ea0fd6ea5af0",
+      "size_bytes": 12309
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "e86958f2bc4ee78ca71f885f3a47378c89efd98128cef41dfc11b42d99518aa6",
-      "size_bytes": 246493
+      "sha256": "1dfa128f2c8a2d0dc82a56041967856fb305194fa09f414a824c26a017bef58d",
+      "size_bytes": 246770
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -9310,6 +9320,11 @@
       "path": "tests/test_glm5_next_graph_failure.py",
       "sha256": "a1f1f6b7b77255240c446bb91a727a91729b46d7f128798495b9882a22a753f9",
       "size_bytes": 7805
+    },
+    {
+      "path": "tests/test_glm5_next_graph_regime.py",
+      "sha256": "bdf093ba2afd08f199aa9baa4209ca60ae27090e7f529938955ce0166f700422",
+      "size_bytes": 3312
     },
     {
       "path": "tests/test_glm5_next_hc_boundary.py",
@@ -15200,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74139527
+  "total_bytes": 74150426
 }
