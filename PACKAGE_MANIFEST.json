@@ -5823,8 +5823,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu",
-      "sha256": "9f3d9259db479736ad379b0d2ba0618be1e28f6ea1f0c217ee3fda7d55081b81",
-      "size_bytes": 30389
+      "sha256": "14b7376a2fad171e7716ba730600926ab08084180a74a2a5b5765857190a313c",
+      "size_bytes": 30283
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/validation/validate_muse_glimmer_resident_decode_stage_cuda.sh",
@@ -5903,8 +5903,8 @@
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu",
-      "sha256": "f6afd471294501c90540072ffda2297731176f34d6eb7ad530e924fddfc6c0ee",
-      "size_bytes": 59371
+      "sha256": "e8176289bfd4a0fd1d63841745ad19649835c7a4a09ad96068d3553a95fcf5ac",
+      "size_bytes": 59257
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/validation/validate_qwen38_27b_resident_decode_stage_cuda.sh",
@@ -5958,8 +5958,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu",
-      "sha256": "82acbbaefe7124e2f41078b3aabfff4b53bc1d7a19e5e73bb14f76a2dee406f1",
-      "size_bytes": 72922
+      "sha256": "d8f411b209c6f40f61e0ae337847e44fec52fd0f4c6a40a2fc08ac6fd144a03e",
+      "size_bytes": 72808
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh",
@@ -6003,8 +6003,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu",
-      "sha256": "89af8db45289bff100de0a14cd7fb545be87ce7bf9c6a386102f2cc12cf7089a",
-      "size_bytes": 99532
+      "sha256": "7807c9364ff673568c40d8c79b3b7645f659ecf75f8fd8ac649a87708ee9ccd1",
+      "size_bytes": 99416
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/validation/validate_qwen4_flash_resident_decode_stage_cuda.sh",
@@ -15210,5 +15210,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74007442
+  "total_bytes": 74006992
 }

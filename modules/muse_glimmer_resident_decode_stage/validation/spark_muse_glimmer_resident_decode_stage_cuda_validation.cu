@@ -17,9 +17,6 @@
 
 #define SPARK_MUSE_GLIMMER_VALIDATION_ROWS 2u
 #define SPARK_MUSE_GLIMMER_VALIDATION_STEPS 8u
-#ifndef SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES
-#define SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES 8u
-#endif
 #define SPARK_MUSE_GLIMMER_VALIDATION_KV_LANES SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES
 #define SPARK_MUSE_GLIMMER_VALIDATION_LOCAL_HEADS 2u
 #define SPARK_MUSE_GLIMMER_VALIDATION_WINDOW_CONTEXT 2049u
@@ -504,7 +501,7 @@ static int SparkMuseGlimmerValModuleInitialize(SparkMuseGlimmerValModule *module
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
 	configuration.descriptor_bytes = sizeof(configuration);
-	configuration.model_id = "Qwen/Qwen3.8-27B";
+	configuration.model_id = "meta-models/Muse-Glimmer-30B";
 	configuration.model_revision = "validation";
 	configuration.stage_name = "muse_glimmer_resident_decode_stage";
 	configuration.program_name = "resident_decode";
