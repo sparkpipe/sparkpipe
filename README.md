@@ -373,7 +373,8 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
 | 16 Sparks | TP16 latency plans; TP4 × PP4 capacity plans |
-| DGX Station (1×, 2×, 4×, 8×) | standalone, or added to a Spark fabric under the same contracts |
+| 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
+| Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 
 **Fabric.** Every Spark uses two data rails:
 
@@ -383,6 +384,13 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 The GB10 PCIe path limits the direct link to about 100 Gb/s of useful
 payload, so the two rails are equal-rate. Neither is a fallback for the
 other. Management networks never carry inference traffic.
+
+**Mac Studios.** Studios link to each other over Thunderbolt 5 RDMA, in two
+fully meshed islands of four, and to the Sparks over a TCP bridge. No
+tensor-parallel collective crosses hardware classes: a mixed plan hands over
+the KV cache after prefill, or each token's residual stream at a pipeline
+stage boundary. The Studios need the Metal backend. See
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
 
 **Topology generation.** One deployment JSON generates the pinned
 interfaces, peers and topology tables for every rank. Startup rejects
@@ -426,6 +434,87 @@ algorithm.
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.
+
+## The provider network
+
+Anyone running SparkPipe can sell the capacity they are not using through
+sparkpipe.ai and keep 85% of what it earns. The economics are in
+[`docs/MARKETPLACE_PLAN.md`](docs/MARKETPLACE_PLAN.md).
+
+**Joining.** `sparkpipe provider register` binds an installation to a
+sparkpipe.ai account and joins its head node to the SparkPipe tailnet: one
+WireGuard mesh that connects every provider, the router and the reference
+nodes. The installation opens no port to the internet. The tailnet's access
+rules let only the router and the reference nodes reach the installation's
+model API. The provider chooses, in the dashboard or the agent's
+configuration:
+
+- which resident models to offer;
+- its own price per million input and output tokens for each model;
+- limits on concurrency, context length and hours of availability;
+- whether reselling is on at all. Switching it off stops new network work
+  at once.
+
+**The owner comes first.** Network requests run as the lowest priority class
+in the installation's own batch engine, on capacity the owner's traffic
+leaves idle. When the owner's traffic arrives, network work yields at the
+next frame boundary. A network request that is still running either finishes
+within the bound the router set when it placed the request, or goes back to
+the router, which resumes it on another provider. Offering a model that is
+not resident costs one model promotion.
+
+**Providers are interchangeable.** Every provider is verified (below), so
+all offers of the same model at the same quantization serve the same model.
+The router is a LiteLLM proxy, the same OpenAI-compatible door the fleet
+already uses. Each offer is one LiteLLM deployment of its model, at the
+provider's tailnet address and priced at the provider's price. The router
+spreads a buyer's requests across as many providers as it needs, choosing
+by price, measured latency, load and verification record, so one buyer can
+use more capacity than any single installation has. Requests that share a
+prompt prefix stay on one provider, so its KV cache is reused. A buyer who
+needs a seeded reply to replay bit for bit is pinned to one driver build and
+hardware type, because different kernels give different bits.
+
+**Metering.** Every completion carries a receipt signed by the provider,
+naming:
+
+- the driver hash and model contract hash;
+- the request identity and sampling seed;
+- the input and output token counts.
+
+Buyers pay the serving provider's own price, with nothing added. The
+provider is paid 85% of it and sparkpipe.ai keeps 15%.
+
+**Verification.** Every provider is verified the same way; there is no
+unverified tier. Nothing a provider's machine reports about itself is
+trusted, so about 2% of served tokens are computed again. The router
+secretly samples real completed requests, weighted by cost, and replays them
+on reference nodes. The reference nodes run the same pinned driver build and
+weights on the same hardware type.
+
+- **Greedy replays compare token for token.** Determinism (above) makes that
+  exact.
+- **Logprobs are recomputed for sampled tokens.** They cover sampled traffic,
+  and they catch quantization even where the tokens agree.
+- **Cheaper secondary checks:** weight fingerprints (trigger prompts whose
+  responses only the exact weights reproduce) and performance envelopes.
+
+A mismatch holds the payout through the challenge window and triggers one
+independent re-execution. If that confirms it, the provider forfeits its
+bond. The verification replays are paid for out of the 15%. A provider sees
+the prompts it serves, as with any hosted API; GB10 has no confidential
+computing mode.
+
+**sparkpipe.ai.** The site ([`site/`](site/)) holds:
+
+- the landing page, and the provider page with an earnings calculator;
+- the playground, which talks to the LiteLLM door: it lists the models,
+  streams replies with their time to first token and decode rate, and
+  writes the same request as curl or Python;
+- the public model catalog, with live prices and capacity;
+- the buyer console: keys, usage and billing;
+- the provider dashboard: registration, models and prices, the resale
+  switch, earnings and the verification record.
 
 ## Repository
 

@@ -101,10 +101,59 @@ steady-state decode hot-path audit, production qualification.
 
 ## M8. Beyond CUDA and Sparks
 
-Exit: modules run behind the device layer, with Metal and ROCm backends; the
-DGX Station profiles and the mixed Station-plus-Spark plan meet the B300
-comparison gate; the fleet grows from 4 to 8 to 16 Sparks with rollback
-receipts.
+Exit:
 
-TECHDEBT: hardware independence, DGX Station deployment, incremental
+- modules run behind the device layer, with Metal and ROCm backends;
+- eight Mac Studios serve the catalog as replicas and Thunderbolt 5 islands;
+- a mixed fleet that prefills on Sparks and decodes on Studios serves a
+  workload faster end to end than either pool alone;
+- the fleet grows from 4 to 8 to 16 Sparks with rollback receipts.
+
+The Studio pool needs the device layer and a Metal backend, not the GLM work
+of M1-M3, so it can proceed alongside them once the Studios arrive. Pipeline
+stages across the two classes also need M5's pipeline execution.
+
+TECHDEBT: hardware independence, Mac Studio deployment, incremental
 expansion.
+
+## M9. The provider network
+
+Exit, with an installation that sparkpipe.ai does not operate:
+
+- it registers, joins the tailnet, offers a model at its own price and
+  serves buyer traffic through the sparkpipe.ai router;
+- one buyer's requests for a model run on at least two providers at once;
+- the owner's own traffic takes over within one frame;
+- at least 2% of served tokens are replayed on reference nodes, with exact
+  greedy comparison and logprob comparison for sampled traffic, and a
+  planted quantized provider is caught;
+- payouts settle from signed receipts after the challenge window;
+- the catalog, buyer console and provider dashboard are live on
+  sparkpipe.ai.
+
+Work:
+
+- the tailnet: its control server, tagged keys and access rules;
+- the provider agent and registration;
+- an owner-first priority class, with preemption at frame boundaries;
+- network requests that finish within their bound or resume elsewhere;
+- signed completion receipts;
+- the router on LiteLLM: one deployment per offer at the provider's price,
+  routing by price, latency, load and verification record, and prefix
+  affinity;
+- the audit service (sampler, replay scheduler, comparator, challenge
+  state), and reference nodes for each hardware type;
+- bonds and payouts;
+- the site's catalog, buyer console and provider dashboard (its static
+  pages and playground are in `site/`).
+
+It depends on:
+
+- batch-invariant numerics, so replays compare bit for bit (M2);
+- logprobs (M3);
+- model promotion (M6).
+
+Revenue per provider scales with batched throughput, so M2 matters to this
+milestone as much as the network code does.
+
+TECHDEBT: provider network.
