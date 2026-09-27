@@ -65,6 +65,56 @@ static void TestEosMetadata(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
+static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
+{
+	SparkModelResidentDeployment deployment;
+	char buffer[8192],path[256];
+	const char *anchor;
+	FILE *file;
+	uint32_t count,prefix;
+	file = fopen("tests/fixtures/model_resident_deployment.json","rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer) - 1u,file);
+	assert(feof(file) != 0 && count > 1u);
+	assert(fclose(file) == 0);
+	buffer[count] = '\0';
+	anchor = strstr(buffer,"\"runtime_limits\": {");
+	assert(anchor != 0);
+	prefix = (uint32_t)(anchor - buffer) + (uint32_t)strlen("\"runtime_limits\": {");
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-runtime-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(buffer,1,prefix,file) == prefix);
+	assert(fprintf(file,"%s,",member) > 0);
+	assert(fwrite(buffer + prefix,1,count - prefix,file) == count - prefix);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
+	if ( expected == SPARK_STATUS_OK )
+		assert(deployment.max_sequence_positions == positions);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+}
+
+static void TestSequencePositions(void)
+{
+	SparkModelResidentDeployment deployment;
+	TestRuntimeMember("\"max_sequence_positions\": 512",SPARK_STATUS_OK,512u);
+	TestRuntimeMember("\"max_sequence_positions\": 0",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestRuntimeMember("\"max_sequence_positions\": 1",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestRuntimeMember("\"max_sequence_positions\": 512, \"max_sequence_positions\": 1024",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestRuntimeMember("\"max_sequence_position\": 512",SPARK_STATUS_SCHEMA_ERROR,0u);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.max_sequence_positions == 0u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("deployment/glm5_next_tp16/model_resident.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.node_count == 16u);
+	assert(deployment.max_sequence_positions == 32768u);
+	assert(deployment.runtime_limits.kv_physical_page_capacity == 131072u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+}
+
 int main(int argc,char **argv)
 {
 	SparkModelResidentDeployment deployment;
@@ -93,6 +143,7 @@ int main(int argc,char **argv)
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
+	TestSequencePositions();
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 3u);

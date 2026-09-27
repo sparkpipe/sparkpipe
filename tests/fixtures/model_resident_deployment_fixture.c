@@ -121,7 +121,11 @@ static int32_t TestModelResidentWriteBody(
 		status = -5;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->transport_mode);
-	if ( status == 0 && fprintf(stream,",\"control_port_base\":%u},\"runtime_limits\":{\"max_inflight_submissions\":%u,\"max_active_sequences\":%u,\"max_input_rows\":%u,\"resident_sequence_capacity\":%u,\"kv_logical_page_capacity\":%u,\"kv_physical_page_capacity\":%u},\"nodes\":[",fixture->control_port_base,fixture->runtime_limits.max_inflight_submission_count,fixture->runtime_limits.max_active_sequence_count,fixture->runtime_limits.max_input_row_count,fixture->runtime_limits.resident_sequence_capacity,fixture->runtime_limits.kv_logical_page_capacity,fixture->runtime_limits.kv_physical_page_capacity) < 0 )
+	if ( status == 0 && fprintf(stream,",\"control_port_base\":%u},\"runtime_limits\":{\"max_inflight_submissions\":%u,\"max_active_sequences\":%u,\"max_input_rows\":%u,\"resident_sequence_capacity\":%u,\"kv_logical_page_capacity\":%u,\"kv_physical_page_capacity\":%u",fixture->control_port_base,fixture->runtime_limits.max_inflight_submission_count,fixture->runtime_limits.max_active_sequence_count,fixture->runtime_limits.max_input_row_count,fixture->runtime_limits.resident_sequence_capacity,fixture->runtime_limits.kv_logical_page_capacity,fixture->runtime_limits.kv_physical_page_capacity) < 0 )
+		status = -6;
+	if ( status == 0 && fixture->max_sequence_positions != 0u && fprintf(stream,",\"max_sequence_positions\":%u",fixture->max_sequence_positions) < 0 )
+		status = -6;
+	if ( status == 0 && fputs("},\"nodes\":[",stream) == EOF )
 		status = -6;
 	for (rank=0u; status==0 && rank<fixture->node_count; rank++)
 		status = TestModelResidentWriteNode(stream,fixture,rank);

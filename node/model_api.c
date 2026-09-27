@@ -100,6 +100,7 @@ typedef struct ApiState
 	uint64_t served;
 	const char *runtime_root;
 	uint64_t seq_saved_ms;
+	uint32_t context_limit;
 } ApiState;
 
 static ApiState S;
@@ -528,6 +529,24 @@ static int send_all(int fd, const char *data, size_t len)
 		off += (size_t)n;
 	}
 	return 1;
+}
+
+static uint32_t api_context_limit(const SparkModelResidentDeployment *deployment)
+{
+	uint32_t limit;
+	limit = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
+	if ( deployment->max_sequence_positions != 0u && deployment->max_sequence_positions < limit )
+		limit = deployment->max_sequence_positions;
+	return(limit);
+}
+
+static int api_fit_context(uint32_t prompt_len, uint32_t *max_tokens)
+{
+	if ( prompt_len >= S.context_limit )
+		return(0);
+	if ( *max_tokens > S.context_limit - prompt_len )
+		*max_tokens = S.context_limit - prompt_len;
+	return(1);
 }
 
 static void send_response(int fd, int code, const char *body)
@@ -1276,10 +1295,13 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		send_response(fd, 400, "{\"error\":\"prompt_token_ids required\"}");
 		return;
 	}
-	if ((uint64_t)prompt_len + max_tokens > API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS)
+	if (!api_fit_context(prompt_len, &max_tokens))
 	{
+		char err[224];
 		free(prompt);
-		send_response(fd, 400, "{\"error\":\"prompt + max_tokens exceeds context limit\"}");
+		free(request_stops);
+		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, S.context_limit);
+		send_response(fd, 400, err);
 		return;
 	}
 	if (!api_resolve_seed(&options))
@@ -1446,7 +1468,9 @@ int main(int argc, char **argv)
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
 	cfg.request_capacity = 64;
-	cfg.max_context_tokens = API_MAX_PROMPT_TOKENS + API_MAX_OUTPUT_TOKENS;
+	cfg.max_context_tokens = api_context_limit(&dep);
+	S.context_limit = cfg.max_context_tokens;
+	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
 	{
 		const char *rows_env = getenv("SPARK_MODEL_API_MAX_PREFILL_ROWS");

@@ -318,6 +318,14 @@ correctness; everything else is review-only (charter: `AGENT_CHARTER.md:13-16`).
   **runtime/scheduler-owned limits** ("a JIT-KV driver only maps each page into its
   model-specific byte layout", `spark_model_serving_adapter.h:146-152`). The
   scheduler gates admission on them (`model_batch_engine.c:193-221, 1413-1441`).
+* Position budget — `runtime_limits.max_sequence_positions` (optional) is the
+  deployment's copy of the stage configs' `max_sequence_positions`. The engine
+  caps its context at it (`SparkModelBatchContextLimit`), and the API answers a
+  prompt that fills it with 400 `context_length_exceeded` and clamps
+  `max_tokens` to what is left. Without it, a request that outgrows the stage
+  configs' positions fails mid-decode in the adapter's row-order check
+  (`ROW-ORDER-POSITION`). The two values must match; nothing compares them at
+  runtime yet (TECHDEBT).
 
 ### 2.5 Current blur (what consolidation fixes)
 

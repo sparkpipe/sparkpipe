@@ -149,8 +149,10 @@ def resident_deployment() -> dict:
     # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
     import spark_serving_profile
     sequences = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
-    derived_runtime_limits = spark_serving_profile.derive(
+    derived = spark_serving_profile.derive(
         sequences, stage_config(0)["max_sequence_positions"])
+    derived_runtime_limits = {key: derived[key] for key in
+                              spark_serving_profile.DEPLOYMENT_RUNTIME_MEMBERS}
     nodes = []
     for rank, host in enumerate(HOSTS):
         nodes.append({
