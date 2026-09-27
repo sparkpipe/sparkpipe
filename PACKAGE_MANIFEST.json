@@ -1,5 +1,5 @@
 {
-  "file_count": 3035,
+  "file_count": 3041,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "9a86a06b35546b9d53d6d71ff960b0c6cf113d1b3182226d95a9218f30baec6d",
-      "size_bytes": 136486
+      "sha256": "f0eeb3461d1383794e7559844198b97aa4d23c8cd94de80be34acd248bcd79e6",
+      "size_bytes": 136508
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -48,8 +48,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "3ffae64c8816cf14ee88954e1f1da33b06865d98cb3c963628b455a6bec7ce6d",
-      "size_bytes": 23409
+      "sha256": "c48b6f50c6438be5c1eb924d906c7bea22facc93dc571726c2d465ad9e84c751",
+      "size_bytes": 24631
     },
     {
       "path": "SPEC.md",
@@ -63,13 +63,13 @@
     },
     {
       "path": "STRUCTURE.md",
-      "sha256": "f716879d44035ff97806f15a27e9e4b5dd7c3ffd1de1121bc76b8f340bc115af",
-      "size_bytes": 1592
+      "sha256": "f7bbff2fd0466c47b7f4550db2f551d421fbe2e782904670d5cfcdf26ff4a495",
+      "size_bytes": 1656
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "4a5b4633b3142657ea5376480cf088c08349bf65ebfdac85badceb0010304309",
-      "size_bytes": 26448
+      "sha256": "156e3e6546984bf6f1551ba254dcda03fba09327e647d00a3c222eb54d5e823c",
+      "size_bytes": 28155
     },
     {
       "path": "cache/cache.h",
@@ -848,8 +848,8 @@
     },
     {
       "path": "docs/LITELLM_FRONTEND.md",
-      "sha256": "0363d625a3c946a005b1c47b73dcccf5ea2dcbfd5fb1c69e07c9e0942616a023",
-      "size_bytes": 10481
+      "sha256": "8211eba1b207eb5a62291d4da6b566d94c2dfa29426ff364b4404948c42ff2c8",
+      "size_bytes": 11624
     },
     {
       "path": "docs/LITELLM_INTEGRATION.md",
@@ -858,8 +858,8 @@
     },
     {
       "path": "docs/MARKETPLACE_PLAN.md",
-      "sha256": "dd12934af7b1ed067f40cc305acdbe0b237a541fe1336a3f6c3b5dc0b4669594",
-      "size_bytes": 14382
+      "sha256": "5965d714489011213e9174432cf705eb9cd783c53993301b120d14f9ddc0b2db",
+      "size_bytes": 18057
     },
     {
       "path": "docs/MESH_INVENTORY.md",
@@ -943,8 +943,8 @@
     },
     {
       "path": "docs/ROADMAP.md",
-      "sha256": "6379b6236bcd2ac0a3613adf547faa25da4cda9b60559035cf4b9983128c008f",
-      "size_bytes": 5976
+      "sha256": "9f01d181d52b80ad0b053ca26f6e0fa7d101dd44ff40824d34bf883265361b51",
+      "size_bytes": 6351
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
@@ -8092,6 +8092,31 @@
       "size_bytes": 6491
     },
     {
+      "path": "site/favicon.svg",
+      "sha256": "2bb03abd270ebac994a06d7465b09b339330e801680be5106cb5a00b6460cc59",
+      "size_bytes": 385
+    },
+    {
+      "path": "site/index.html",
+      "sha256": "51dd30cf0de91bc5bacc2726d8d7774b4c88f1fef8894aee88d569f38e588507",
+      "size_bytes": 16684
+    },
+    {
+      "path": "site/playground.html",
+      "sha256": "280055bd43d3ca6e4156d5ac900caaf098fa27f4a45801183910dc65f46d11eb",
+      "size_bytes": 13481
+    },
+    {
+      "path": "site/providers.html",
+      "sha256": "c541f97cd4dbe4178976c7861dce71b71dd781d306b6cab18e019e5c3e990516",
+      "size_bytes": 12940
+    },
+    {
+      "path": "site/site.css",
+      "sha256": "104f3278881b910996432f608be5da6f950c3e53d7f1957314393680a38f1f62",
+      "size_bytes": 16283
+    },
+    {
       "path": "sources.mk",
       "sha256": "a1373a689830d408c7ed1ede0ca2c703028bfab59a10427da9dc1f1a5b266895",
       "size_bytes": 3739
@@ -10280,6 +10305,11 @@
       "path": "tests/test_sideband.c",
       "sha256": "d58fc1d22fad9ac18da5cc62f5172f980f14daea57418e64c842d638c7a7bc09",
       "size_bytes": 3016
+    },
+    {
+      "path": "tests/test_site.py",
+      "sha256": "eb5ccd324b9aed073116f8b60ea33a09cabdefd95a8e32cbc323b2b7bb93cacb",
+      "size_bytes": 2044
     },
     {
       "path": "tests/test_situ_activation.py",
@@ -15180,5 +15210,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74071902
+  "total_bytes": 74141927
 }

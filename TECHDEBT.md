@@ -306,13 +306,18 @@ progress diary.
 
 ## Provider network
 
-None of the provider network in `README.md` exists yet. The only piece in
-the tree is the LiteLLM front door.
+Of the provider network in `README.md`, the tree has only the LiteLLM front
+door and the static pages and playground in `site/`.
 
+- **Tailnet.** No tailnet exists yet. It needs a control server that scales
+  to hundreds of providers at a sane cost (Tailscale or a self-hosted
+  Headscale), tagged auth keys issued at registration, access rules that
+  let only the router and the reference nodes reach a provider's model API
+  port (and providers nothing of each other), key rotation, and removal of
+  a provider whose bond is forfeited.
 - **Provider agent.** `sparkpipe provider register` and an agent that
-  holds an outbound, mutually authenticated connection to the router. It
-  carries the provider's offers (models, prices, limits, the resale
-  switch) and signs completion receipts.
+  joins the tailnet, publishes the provider's offers (models, prices,
+  limits, the resale switch) to the router and signs completion receipts.
 - **Owner-first scheduling.** The batch engine has priorities but no
   preemptible class. Add a network class that runs only on capacity owner
   traffic leaves idle, and that yields at frame boundaries.
@@ -320,10 +325,30 @@ the tree is the LiteLLM front door.
   router set when it placed it, or resumes on another provider. Resuming
   mid-request needs KV transfer between installations; until then, a
   preempted network request restarts elsewhere.
-- **Router, metering, billing, payouts and bonds.** The router places
-  requests by model, price, latency and verification record. It bills
-  buyers from signed receipts, pays providers 85% after the challenge
-  window, and holds and forfeits bonds.
+- **Router on LiteLLM.** Each offer becomes a LiteLLM deployment at the
+  provider's tailnet address, with the provider's price as its per-token
+  cost. Missing:
+  - adding and removing deployments as offers change, without a restart;
+  - a routing strategy by price, latency, load and verification record;
+  - prefix affinity, so requests that share a prompt prefix reach the
+    provider holding that KV cache;
+  - pinning to one driver build and hardware type for buyers who need
+    seeded replays to match bit for bit;
+  - virtual keys and spend logs, which need LiteLLM's Postgres database;
+  - a logging callback that feeds the audit sampler.
+
+  Two limits of the door as it stands, found with LiteLLM 1.74 and a mock
+  upstream (`docs/LITELLM_FRONTEND.md`, browser clients):
+  - the committed `config/litellm-config.yaml` uses `vllm/` deployments,
+    which serve only the token-ID passthrough; LiteLLM's chat route fails on
+    them, so chat clients, the playground included, need the `openai/`
+    deployments that `tools/generate_litellm_config.py` writes;
+  - LiteLLM consumes a request's `priority` for its own scheduler and does
+    not forward it, so the batch engine's priorities do not cross the door.
+    `seed`, `temperature` and `deadline_ms` do.
+- **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
+  at the serving provider's price, pay providers 85% after the challenge
+  window, and hold and forfeit bonds.
 - **Audit service.** It needs:
   - a cost-weighted secret sampler over real completed requests (about 2% of
     tokens);
@@ -342,8 +367,9 @@ the tree is the LiteLLM front door.
 - **Every driver update splits audit cohorts.** Replays compare only against
   the same driver hash, so the router must track each provider's build, and
   releases need per-model cohort changeovers.
-- **The sparkpipe.ai site does not exist:** catalog, buyer console, provider
-  dashboard.
+- **sparkpipe.ai is static.** `site/` has the landing page, the provider page
+  and the playground. The catalog, the buyer console and the provider
+  dashboard need the router and the ledger behind them.
 - **Payments.** Provider identity checks, tax reporting and payout rails
   (fiat, crypto or both) are undecided.
 

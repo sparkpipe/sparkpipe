@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#08090a">
+<title>SparkPipe</title>
+<meta name="description" content="Private frontier-model serving that scales from four DGX Sparks to 1x, 2x, 4x, or 8x DGX Station fabrics.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32" fill="none"><path d="M0.5 16H7M25 16H31.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="7" y="6" width="18" height="20" rx="5.5" stroke="currentColor" stroke-width="1.8"/><path d="M17.8 9 12.2 17.4H15.4L14.2 23 19.8 14.6H16.6Z" fill="currentColor"/></symbol></svg>
+
+<nav class="nav">
+  <a class="brand" href="#top"><svg class="logo" width="30" height="30"><use href="#logo"/></svg><span>Spark<span class="accent">Pipe</span></span><span class="tag">open source</span></a>
+  <div class="links">
+    <a href="#models">Models</a>
+    <a href="#api">API</a>
+    <a href="providers.html">Providers</a>
+    <a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a>
+    <a class="btn ghost" href="playground.html">Open the playground →</a>
+    <a class="btn primary" href="#partner">Work with us</a>
+  </div>
+</nav>
+
+<main>
+<section id="top" class="wrap" style="padding-top:96px">
+  <div class="pill">Private frontier-model serving for business</div>
+  <h1>SparkPipe serves frontier models on your hardware.</h1>
+  <p class="lead">Start with four Sparks, grow to eight and sixteen, then add DGX Stations. One priority-aware serving engine keeps frontier models addressable, batches work automatically, and combines switched plus pairwise-direct fabrics to use the hardware fully.</p>
+  <div class="row">
+    <a class="btn primary" href="#partner">Build with SparkPipe →</a>
+    <a class="btn" href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">★ Star on GitHub</a>
+    <a class="btn ghost" href="playground.html">Open the playground →</a>
+  </div>
+  <div class="term">
+    <div class="term-head"><i></i><i></i><i></i><span>spark0 · dual-rail hardware profile</span></div>
+    <div class="term-body">
+      <p><span class="accent">$</span> fabric profile · TP4 · BF16</p>
+      <p class="dim">→ switch 100G + paired direct · both required</p>
+      <p class="dim">→ payload bytes select the calibrated collective</p>
+      <p><span class="accent">✓</span> 640 KiB · <b>split ring 122.962 μs</b></p>
+      <p class="gap"><span class="accent">$</span> large tensor · 14 MiB</p>
+      <p class="dim">→ direct TX/RX + switch TX/RX overlap</p>
+      <p><span class="accent">✓</span> <b>193.018 Gb/s</b> aggregate transport<span class="caret">▊</span></p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding-top:20px;padding-bottom:40px">
+  <div class="stats">
+    <div><small>Spark scale</small><strong>4 · 8 · 16</strong><span>incremental deployment profiles</span></div>
+    <div><small>Fabric</small><strong>2 rails</strong><span>switched + paired direct, both required</span></div>
+    <div><small>Model promotion</small><strong>≤60s</strong><span>architecture target, fully prewarmed</span></div>
+    <div><small>Model store</small><strong>20 Gb/s</strong><span>pooled external NVMe target</span></div>
+  </div>
+</section>
+
+<section id="engine" class="wrap">
+  <div class="eyebrow">The engine</div>
+  <h2>Written from scratch for small unified-memory machines.</h2>
+  <p class="sub">Sixteen DGX Sparks hold 2 TB of unified memory and stream about 4.4 TB/s. SparkPipe makes them behave like one machine. Its kernels, RDMA transport, tokenizer, scheduler and cache are its own C and CUDA, with no third-party inference framework underneath.</p>
+  <div class="cols c3">
+    <div class="card"><div class="k">FIRMWARE</div><h3>Models compile to drivers</h3><p>Each model links into one driver from content-addressed, validated modules. At runtime there is no graph interpreter, no kernel search and no fallback.</p></div>
+    <div class="card"><div class="k">EXACT</div><h3>Replayable tokens</h3><p>The same driver, weights, prompt and seed reproduce every token bit for bit, and each request logs what an off-node replay needs.</p></div>
+    <div class="card"><div class="k">B1 → B1024</div><h3>Built for every batch</h3><p>Kernels exist for every row count from 1 to 1024. One weight read serves every request in the step, so throughput grows with the batch.</p></div>
+    <div class="card"><div class="k">SCHEDULING</div><h3>Priorities and deadlines</h3><p>Every request carries a priority and a deadline. The batch engine ages priorities so nothing starves, and cancels work that runs past its deadline.</p></div>
+    <div class="card"><div class="k">OPENAI API</div><h3>One door for every model</h3><p>A LiteLLM proxy routes by model name, streams tokens and issues keys. Any OpenAI SDK works unchanged.</p></div>
+    <div class="card"><div class="k">2 TB</div><h3>Datacenter models, desk-side</h3><p>Sparks hold models that normally need a datacenter server. GLM 5.2, a 756 GB checkpoint, runs on eight of them.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="eyebrow">The dual fabric</div>
+  <h2>Two rails. One collective service.</h2>
+  <p class="sub">The CRS804 is the all-to-all rail, not a fallback. Pairwise direct links add a second active rail. SparkPipe pins both routes and selects a topology-aware all-reduce from the exact communicator, datatype, and payload bytes.</p>
+  <div class="cols c3">
+    <div class="card"><div class="k">01</div><h3>Switched rail</h3><p>100 Gb/s all-to-all through the CRS804</p></div>
+    <div class="card"><div class="k">02</div><h3>Direct rail</h3><p>XOR-1 pairs, nominal 200G and PCIe-limited near 100G</p></div>
+    <div class="card"><div class="k">03</div><h3>Small payload</h3><p>Topology-aware recursive doubling</p></div>
+    <div class="card"><div class="k">04</div><h3>Medium payload</h3><p>Recursive halving and doubling</p></div>
+    <div class="card"><div class="k">05</div><h3>Large payload</h3><p>Counter-rotating split rings over both rails</p></div>
+    <div class="card"><div class="k">06</div><h3>Route proof</h3><p>Interface counters verify every byte path</p></div>
+  </div>
+  <div class="flow"></div>
+  <div class="fabric">
+    <div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">Scale <span class="accent">4 → 8 → 16 Sparks</span></h3>
+      <span class="tag">CRS804 + XOR-1 direct pairs</span>
+    </div>
+    <p>Every size keeps complete direct pairs plus switched all-to-all. Add DGX Stations in 1x, 2x, 4x, or 8x configurations without changing the API or model packages.</p>
+    <div class="sparks">
+      <span style="--d:0">0</span><span style="--d:1">1</span><span style="--d:2">2</span><span style="--d:3">3</span><span style="--d:4">4</span><span style="--d:5">5</span><span style="--d:6">6</span><span style="--d:7">7</span>
+      <span style="--d:8">8</span><span style="--d:9">9</span><span style="--d:10">A</span><span style="--d:11">B</span><span style="--d:12">C</span><span style="--d:13">D</span><span style="--d:14">E</span><span style="--d:15">F</span>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding-top:50px">
+  <div class="cols c2" style="gap:44px;align-items:center">
+    <div>
+      <div class="eyebrow">Measured fabric</div>
+      <h2>The rails add. They do not substitute.</h2>
+      <p class="sub" style="margin-bottom:20px">For large tensors, two counter-rotating half-payload rings alternate direct and switched edges. Every Spark overlaps direct TX/RX with switch TX/RX, cutting switch-facing bytes in half while keeping the switch inside the active collective.</p>
+      <div class="note">The values shown are isolated hardware transport measurements, not model decode throughput. TP8 and TP16 receive independent three-algorithm crossover tables before qualification.</div>
+    </div>
+    <div class="card">
+      <div class="bars">
+        <div style="--h:43%"><b>91.7</b><i></i>Pair min</div>
+        <div style="--h:49%"><b>105.9</b><i></i>Pair max</div>
+        <div style="--h:90%"><b>193.0</b><i></i>Split ring</div>
+        <div class="top" style="--h:100%"><b>213.7</b><i></i>2-port ceiling</div>
+      </div>
+      <div class="bars-foot">Gb/s useful transport · measured 2026-08-13</div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="eyebrow">How it works</div>
+    <h2 style="margin-bottom:46px">Pin the routes. Profile the bytes. Select in O(1).</h2>
+    <div class="cols c3">
+      <div class="card"><div class="k">STEP 01</div><h3>Admit by priority</h3><p>Each request names a model, priority, and deadline. Interactive chat and agent populations enter the same scheduler.</p></div>
+      <div class="card"><div class="k">STEP 02</div><h3>Shape the work</h3><p>The scheduler chooses placement, batch width, stage microbatch, speculation, and collective from the ready work and measured profiles.</p></div>
+      <div class="card"><div class="k">STEP 03</div><h3>Keep hardware occupied</h3><p>Resident models run immediately; warm models promote atomically from verified NVMe tiers while unrelated ready work continues.</p></div>
+    </div>
+    <div class="cols c2" style="margin-top:20px">
+      <div class="card deep"><h3>One serving engine, every scale</h3><p>Deploy 4, 8, or 16 Sparks, then add DGX Stations in 1x, 2x, 4x, or 8x configurations. Large MoE models stay TP4 × PP4 on sixteen Sparks; smaller dense models can remain TP16. Expansion preserves the API, packages, scheduler, and evidence rules.</p></div>
+      <div class="card deep"><h3>Every frontier model stays addressable</h3><p>The scheduler mixes high-priority interactive chat with dense agent batches. Active models stay resident; others promote from verified NVMe tiers in at most 60 seconds. Targets include DeepSeek V4, GLM 5.2, Kimi K3, MiniMax H3, and Qwen 3.8 Pro and 27B.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="models" class="wrap">
+  <div class="eyebrow">Models</div>
+  <h2>Frontier open models, one serving stack.</h2>
+  <p class="sub">A model joins by passing the same package and qualification contract as every other, not by adding a second serving stack. Numbers below are fleet measurements with their dates.</p>
+  <div class="cols c4">
+    <div class="card model"><span class="chip live">In production</span><h3>GLM 5.3 Flash</h3><p>TP16 on 16 Sparks</p><p class="fig"><b>129.9 tok/s</b> across 8 streams · 2026-09-26</p></div>
+    <div class="card model"><span class="chip">Measured</span><h3>DeepSeek V4 Flash</h3><p>TP4 on 4 Sparks</p><p class="fig"><b>40.5 tok/s</b> single stream · 2026-08-15</p></div>
+    <div class="card model"><span class="chip">Measured</span><h3>GLM 5.2</h3><p>TP8 on 8 Sparks</p><p class="fig"><b>75.6 tok/s</b> across 16 streams · 2026-08-16</p></div>
+    <div class="card model"><span class="chip">Onboarding</span><h3>Next</h3><p>GLM 5.3 · DeepSeek V4 Pro · Kimi K3 · MiniMax H3 · Qwen 3.8 Max · Qwen 3.8 27B</p></div>
+  </div>
+  <p class="note" style="margin-top:28px">Batching is the throughput lever. At 256 streams and 1K context the memory-bound ceiling for GLM 5.3 Flash on sixteen Sparks is about 2,800 tok/s; the batch-serving milestone targets 2,200. That is a target, not a measurement.</p>
+</section>
+
+<section id="api" class="band">
+  <div class="wrap">
+    <div class="cols c2" style="gap:44px;align-items:center">
+      <div>
+        <div class="eyebrow">The API</div>
+        <h2>Any OpenAI client works.</h2>
+        <p class="sub" style="margin-bottom:24px">SparkPipe's front door is a LiteLLM proxy: one OpenAI-compatible endpoint that routes by model name, streams tokens and issues keys. SparkPipe adds exact seeds and per-request deadlines.</p>
+        <div class="row"><a class="btn primary" href="playground.html">Try it in the playground →</a></div>
+      </div>
+      <div class="term" style="margin:0">
+        <div class="term-head"><i></i><i></i><i></i><span>chat completion</span></div>
+        <div class="term-body">
+          <p><span class="accent">$</span> curl https://sparkpipe.ai/v1/chat/completions \</p>
+          <p class="dim">&nbsp;&nbsp;-H "Authorization: Bearer $SPARKPIPE_API_KEY" \</p>
+          <p class="dim">&nbsp;&nbsp;-H "Content-Type: application/json" \</p>
+          <p>&nbsp;&nbsp;-d '{"model": "glm-5.3-flash",</p>
+          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"messages": [{"role": "user", "content": "Hi"}],</p>
+          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"temperature": 0.7, <b>"seed": 42</b>,</p>
+          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>"deadline_ms": 30000</b>, "stream": true}'</p>
+          <p class="gap dim">→ the same seed replays the reply token for token</p>
+          <p class="dim">→ a request still running at its deadline is cancelled</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="network" class="wrap">
+  <div class="eyebrow">The provider network · in development</div>
+  <h2>Sell the capacity you are not using.</h2>
+  <p class="sub">Connect your SparkPipe installation to sparkpipe.ai and rent out the hours your own traffic leaves idle. You choose the models and set the price. Every provider is validated, so all offers of the same model and quantization are interchangeable, and one buyer's requests can run on many providers at once.</p>
+  <div class="cols c4">
+    <div class="card"><div class="k">85%</div><h3>Your price, your share</h3><p>You set the price per million tokens for each model. You keep 85% of what buyers pay; sparkpipe.ai keeps 15%.</p></div>
+    <div class="card"><div class="k">1 frame</div><h3>Your traffic comes first</h3><p>Network work runs at the lowest priority and yields at the next frame boundary when your own requests arrive.</p></div>
+    <div class="card"><div class="k">~2%</div><h3>Every provider validated</h3><p>About 2% of served tokens are recomputed on reference nodes with the exact published weights, to catch quantized or substituted models.</p></div>
+    <div class="card"><div class="k">1 fabric</div><h3>One private network</h3><p>Providers, the router and the reference nodes share one tailnet. Your installation opens no port to the internet.</p></div>
+  </div>
+  <div class="row" style="margin-top:28px"><a class="btn primary" href="providers.html">How selling works →</a></div>
+</section>
+
+<section id="partner" class="wrap" style="padding-top:88px;padding-bottom:88px">
+  <div class="cta">
+    <div class="eyebrow">For office-scale AI</div>
+    <h2>Grow the serving fabric with the business.</h2>
+    <p class="sub">Start with prosumer Sparks that can be expanded or resold. Add 1x, 2x, 4x, or 8x DGX Station capacity as demand grows. Four- and eight-Station fabrics target the largest models at roughly half matched DGX B300 throughput, without requiring a datacenter installation. This is a design target until hardware receipts close it.</p>
+    <div class="row">
+      <a class="btn primary" href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>
+      <a class="btn" href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">DM @sparkpipeai</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="foot-top">
+    <div>
+      <a class="brand" href="#top"><svg class="logo" width="22" height="22"><use href="#logo"/></svg><span>Spark<span class="accent">Pipe</span></span></a>
+      <p>Private frontier-model serving for business. Open source, model-agnostic, all C/CUDA.</p>
+    </div>
+    <div class="foot-cols">
+      <div><small>Project</small><a href="providers.html">Providers</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub ↗</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai ↗</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></div>
+      <div><small>Made by</small><span>HYOR AI Tech Ltd</span></div>
+    </div>
+  </div>
+  <div class="foot-base"><span>© 2026 HYOR AI Tech Ltd</span><span>Transport measurements and model projections are labelled separately.</span></div>
+</footer>
+</body>
+</html>

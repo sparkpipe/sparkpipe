@@ -1,6 +1,6 @@
 # SparkPipe Compute Marketplace — Business Plan Draft
 
-Status: DRAFT, 2026-08-28 (ratified into the repo 2026-08-29); fee model revised 2026-09-27
+Status: DRAFT, 2026-08-28 (ratified into the repo 2026-08-29); fee model, revenue basis and network design revised 2026-09-27
 Scope: business model, competitive pricing, anti-cheating architecture, unit economics.
 The system it describes is the provider network in `README.md`; its gaps are in `TECHDEBT.md`.
 
@@ -10,13 +10,14 @@ The system it describes is the provider network in `README.md`; its gaps are in 
 
 A two-sided marketplace for LLM inference:
 
-- **Supply side**: owners of compute (initially NVIDIA DGX Spark / GB10-class nodes) register their installations and serve open-weight models. Providers **choose the models, set their own per-token prices** and limits, and **switch reselling on or off** at will.
+- **Supply side**: owners of compute (initially NVIDIA DGX Spark / GB10-class nodes) register their installations and serve open-weight models. Providers **choose the models, set their own per-token prices** and limits, and **switch reselling on or off** at will. Registration joins the installation to the SparkPipe **tailnet**, one WireGuard mesh of providers, router and reference nodes, so no provider opens a port to the internet.
 - **Owner first**: the hardware stays the owner's. Network traffic runs only on capacity the owner's own traffic leaves idle and yields at the next frame boundary when the owner needs it, so a provider rents out exactly the time they are not using.
-- **Demand side**: customers reach the fleet through sparkpipe.ai's OpenAI-compatible API, behind the **liteLLM front end**, routing across registered providers.
-- **Platform fee**: the platform keeps **15% of token revenue, in cash**; providers keep **85%**. Verification (about 2% of served tokens re-executed, §4) is paid out of the 15%, so the platform clears about 12.5% (§5). This replaces the earlier draft's 10% taken in compute, which needed compute-credit accounting.
-- **Supply-side requirement**: providers must run **SparkPipe** firmware. This is both the quality floor (deterministic, qualified, exact-token serving) and the foundation of the anti-cheating system (§4).
+- **Demand side**: customers call sparkpipe.ai's OpenAI-compatible API, a **LiteLLM proxy** that is also the router. Every offer is one LiteLLM deployment at the provider's tailnet address, priced at the provider's price.
+- **Interchangeable providers**: every provider is validated (§4), so all offers of the same model and quantization are fungible. The router spreads one buyer's requests over as many providers as it needs, by price, latency, load and verification record, and keeps requests that share a prompt prefix on one provider for its KV cache. A buyer can therefore use more capacity than any single installation has.
+- **Platform fee**: providers set their prices; the platform keeps **15% of the provider's price** on every token sold, in cash, and providers keep **85%**. Buyers pay the serving provider's price with nothing added. Verification (about 2% of served tokens re-executed, §4) is paid out of the 15%, so the platform clears about 12.5% (§5). This replaces the earlier draft's 10% taken in compute, which needed compute-credit accounting.
+- **Supply-side requirement**: providers must run **SparkPipe** firmware, and **every provider is validated**. This is both the quality floor (deterministic, qualified, exact-token serving) and the foundation of the anti-cheating system (§4).
 
-Why providers join: monetize idle hardware at prices they set, with zero billing/gateway/demand-generation work, and take it back whenever they need it. Why customers come: verified-exact open-model inference, behind one API.
+Why providers join: monetize idle hardware at prices they set, with zero billing/gateway/demand-generation work, and take it back whenever they need it. Why customers come: verified-exact open-model inference behind one API, with the capacity of many installations at once.
 
 ## 2. What the industry charges
 
@@ -72,28 +73,39 @@ Goal: **keep 15% of token revenue in cash, pay verification out of it.**
 
 Illustrative: a provider selling $100k/yr of tokens keeps $85k. The platform keeps $15k, of which about $2.4k funds that provider's audit coverage.
 
-## 5a. Revenue per provider (2026-09)
+## 5a. Revenue per provider (revised 2026-09-27)
 
-The fee is only as large as what providers sell, and that is set by throughput and token prices.
+Revenue is throughput × time sold × the provider's price. Resold traffic is batched by nature, so the throughput that counts is the installation's aggregate at large batch, not one stream's speed.
 
-- **Throughput.** The fleet's GLM 5.3 Flash service measured 129.9 tok/s aggregate at 8 streams on sixteen Sparks (iteration 17, 2026-09-26).
-- **Price.** GLM 5.3 Flash sells for about $0.15 in and $0.50 out per million tokens at most providers ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.3-flash), 2026-09-26).
-- **Revenue.** A fully sold sixteen-Spark cluster makes about 337M output tokens a month, or about $170/month from output tokens, plus input tokens in proportion to prompt length. The 15% fee on that is on the order of $50/month.
-- **Cost.** At an assumed 200 W per Spark and $0.15/kWh, the same cluster's electricity is about $350/month. At today's speed, reselling a Flash model roughly breaks even for the provider.
+| Operating point | Aggregate tok/s | Basis | Price out ($/M) | Buyers pay per month, 50% sold | Provider keeps (85%) | Fee (15%) | 16-Spark clusters for $1M/yr of fees |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| GLM 5.3 Flash, 8 streams, 16 Sparks | 129.9 | measured, iteration 17 (2026-09-26) | 0.50 | $84 | $72 | $13 | 6,600 |
+| GLM 5.3 Flash, 8 streams, 16 Sparks | ~300 | M1 target | 0.50 | $194 | $165 | $29 | 2,860 |
+| GLM 5.3 Flash, 64 streams, 16 Sparks | ~750 | M2 target | 0.50 | $486 | $413 | $73 | 1,140 |
+| GLM 5.3 Flash, 256 streams, 16 Sparks | ~2,200 | M2 target | 0.50 | $1,426 | $1,212 | $214 | 390 |
+| GLM 5.2, 16 streams, 8 Sparks (TP8) | 75.55 | measured (2026-08-16) | 1.75–4.40 | $171–$431 | $146–$366 | $26–$65 | 645–1,620 |
+| GLM 5.3, 256 streams, 16 Sparks | ~1,900 | 80% of a weight-read bound, derived | 4.40 | ~$11,000 | ~$9,300 | ~$1,650 | ~51 |
 
-Three things move this:
+- A month is 30 days. Only output tokens are counted; input tokens are billed too, at the provider's input price, and add revenue in proportion to prompt length.
+- 50% sold is an assumption. The owner's own use and the network's demand both limit it.
+- Prices are the market references of 2026-09-26: GLM 5.3 Flash about $0.15 in and $0.50 out ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.3-flash)), GLM 5.2 $1.75–$4.40 out ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.2)), GLM 5.3 $4.40 out ([glm5.app](https://glm5.app/blog/glm-5-3-pricing)). Providers set their own.
+- The M1 and M2 targets are 80% of the batch roofline at 1K context ([`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md)): about 2,800 tok/s is the memory-bound ceiling at 256 streams. Each stream then sees about 11 tok/s, so that capacity sells to batch and agent traffic more than to chat.
+- The GLM 5.2 cluster figure counts two TP8 instances per sixteen Sparks.
+- The GLM 5.3 row is not a roadmap target. Its 465 GB NVFP4 checkpoint spread over sixteen Sparks is about 29 GB per rank; at 256 streams every expert is read once per step, which takes 106 ms at 273 GB/s and bounds throughput near 2,400 tok/s. It leaves out collectives, which at that batch cost about as much again unless they overlap compute (M2), and GLM 5.3 is still onboarding on the GLM 5.2 driver.
 
-- **Batched throughput.** M1's ~300 tok/s at B8 more than doubles revenue per cluster. M2's batch targets (~750 and ~2200 tok/s at B64 and B256) multiply it by 6 to 17.
-- **Model choice.** Large models sell for much more per token: GLM 5.2 at $1.75–$4.40 out ([pricepertoken](https://pricepertoken.com/pricing-page/model/z-ai-glm-5.2)), GLM 5.3 at $4.40 out ([glm5.app](https://glm5.app/blog/glm-5-3-pricing)). Unified memory makes Sparks a natural home for them, so the network should lead with large models.
+What this says:
+
+- **Today, reselling Flash barely covers electricity.** A sixteen-Spark cluster at an assumed 200 W per Spark and $0.15/kWh costs about $350 a month to run.
+- **At M2's batch throughput it pays.** A Flash cluster sold half the time earns its owner about $1,200 a month, the original pitch's $1k per installation, and 390 such clusters make $1M a year in fees.
+- **Large models are worth more per Spark, today and at scale.** GLM 5.2's measured rate already earns 4–10× Flash's per Spark. At large batch a step reads every expert once, so throughput follows the checkpoint's bytes per rank, not its active parameters: GLM 5.3 in NVFP4 is about 29 GB per rank against Flash's 25 GB, at up to 9× the price. Few installations can hold such models (GLM 5.2 is 756 GB, eight Sparks in practice), so their providers compete with the hosted APIs' prices more than with each other. The network should lead with large models.
 - **Supply growth.** Mac Studio support (M8) widens the pool of installations. Each hardware type needs its own reference nodes, because different kernels give different bits.
 
-The target in the original pitch was about $1k/month of sales per installation, which is $150/month of fee, so 500 installations make about $0.9M a year. At Flash prices that needs about 3–4× today's throughput, depending on prompt length. With large models it needs less.
+## 5b. Decisions (2026-09-27)
 
-## 5b. Other revenue options under consideration
-
-- **A license for private commercial use.** Free for personal use and for installations that sell through the network; a per-node monthly license for businesses running SparkPipe privately. This charges for the engine itself, whatever tokens sell for. At Flash prices, $20/node/month on sixteen nodes ($320) is about 6× the network fee from the same cluster fully sold.
-- **Split the fee across both sides.** For example, 5% on buyer credits (OpenRouter-style) plus 10% from providers: the same total take, but a smaller number on each side.
-- **A verified tier at a premium.** Replay-audited, pinned-weight inference sold at a premium to buyers who need the guarantee. Verification is what other decentralized networks cannot easily match.
+- **Price and fee.** Providers set their own price per model. sparkpipe.ai keeps 15% of that price on every token sold, and buyers pay the provider's price with nothing added. A split of the fee between buyers and providers was considered and dropped.
+- **Validation for all.** Every provider is validated the same way (§4). There is no unverified tier and no paid verified tier.
+- **No license fee.** A business can run vLLM for free, so a per-node fee for private use would send it there. SparkPipe stays free to run, and the network fee is the revenue.
+- **Interchangeable providers on one fabric.** Validation makes offers of the same model and quantization fungible, so one buyer's traffic spreads over many providers. A tailnet connects providers, the router and the reference nodes; the router is the LiteLLM proxy.
 
 ## 6. Risks and open questions
 
@@ -101,7 +113,9 @@ The target in the original pitch was about $1k/month of sales per installation, 
 - **Determinism boundary.** Exact-token replay audits only work while all providers run pinned driver builds for a model version. Driver updates need coordinated flag days per model, or per-driver-version audit cohorts. Seed logging is mandatory (see appendix).
 - **Replay cost at scale.** Long-context replays cost more than short ones; sampling should be weighted by request cost, not count, with caps (e.g. replay first N tokens + sampled continuation windows instead of full regenerations).
 - **Legal/settlement.** Payout and challenge windows belong in the provider agreement. Still to decide: provider identity checks, tax reporting, and fiat vs crypto settlement.
-- **Provider margin reality check.** If a provider can earn more per GPU-hour on Vast/Salad than by serving tokens here net of 15%, supply won't come. At today's throughput and Flash prices, reselling barely covers electricity (§5a). The answer is throughput, large models and demand density: a sold-out token market beats an idle rental listing.
+- **Provider margin reality check.** If a provider can earn more per GPU-hour on Vast/Salad than by serving tokens here net of 15%, supply won't come. At today's B8 throughput and Flash prices, reselling barely covers electricity (§5a). The network should open once M2's batch throughput lands, and lead with large models.
+- **Prompt privacy.** A provider sees the prompts it serves, as with any hosted API, and GB10 has no confidential-computing mode. Validation proves which model served a request, not who read it.
+- **Tailnet scale.** Hundreds of providers on one tailnet need a control server that fits the node count and cost: Tailscale, or a self-hosted Headscale. Access rules must let only the router and the reference nodes reach a provider's model API, and let providers reach nothing of each other.
 - **Sophisticated adversaries.** Someone can serve honestly except when they suspect an audit — which is why audits are replays of real traffic, never synthetic probes. Accept that this is economics, not cryptography: make cheating EV-negative and detection evidence objective.
 
 ## 7. Near-term build hooks
@@ -109,9 +123,11 @@ The target in the original pitch was about $1k/month of sales per installation, 
 1. liteLLM front end in front of the existing gateway (never expose `node/model_api.c` directly). **[STATUS: DONE — merged, docs/LITELLM_FRONTEND.md]**
 2. Request-logging pipeline keyed by (driver hash, model contract hash, request) — the audit substrate.
 3. Audit service: sampler → replay scheduler → comparator → challenge/slash state machine.
-4. Provider onboarding: `sparkpipe provider register`, the provider agent's outbound connection, bond, pinned driver distribution, fingerprinted checkpoints.
+4. Provider onboarding: `sparkpipe provider register`, joining the tailnet with a tagged key under access rules, bond, pinned driver distribution, fingerprinted checkpoints.
 5. Receipt ledger: signed per-completion receipts, per-provider sales, the 85/15 split, payouts after the challenge window.
 6. Owner-first scheduling: a preemptible network class in the batch engine that yields at frame boundaries, and hand-off of preempted network requests to the router.
+7. The router on LiteLLM: one deployment per offer at the provider's tailnet address with the provider's price as its per-token cost, routing by price, latency, load and verification record, prefix affinity, and virtual keys with spend logs (Postgres) for buyer billing. A logging callback feeds the audit sampler.
+8. sparkpipe.ai: the landing page, the provider page and the playground are in `site/`; the catalog, buyer console and provider dashboard come with the router.
 
 ---
 

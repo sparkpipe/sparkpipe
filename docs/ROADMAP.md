@@ -110,8 +110,9 @@ expansion.
 
 Exit, with an installation that sparkpipe.ai does not operate:
 
-- it registers, offers a model at its own price and serves buyer traffic
-  through the sparkpipe.ai router;
+- it registers, joins the tailnet, offers a model at its own price and
+  serves buyer traffic through the sparkpipe.ai router;
+- one buyer's requests for a model run on at least two providers at once;
 - the owner's own traffic takes over within one frame;
 - at least 2% of served tokens are replayed on reference nodes, with exact
   greedy comparison and logprob comparison for sampled traffic, and a
@@ -122,15 +123,19 @@ Exit, with an installation that sparkpipe.ai does not operate:
 
 Work:
 
+- the tailnet: its control server, tagged keys and access rules;
 - the provider agent and registration;
 - an owner-first priority class, with preemption at frame boundaries;
 - network requests that finish within their bound or resume elsewhere;
 - signed completion receipts;
-- the router's placement and metering;
+- the router on LiteLLM: one deployment per offer at the provider's price,
+  routing by price, latency, load and verification record, and prefix
+  affinity;
 - the audit service (sampler, replay scheduler, comparator, challenge
   state), and reference nodes for each hardware type;
 - bonds and payouts;
-- the site.
+- the site's catalog, buyer console and provider dashboard (its static
+  pages and playground are in `site/`).
 
 It depends on:
 
