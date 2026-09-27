@@ -1,0 +1,8 @@
+# GLM 5.3 Flash TP16 B8 8-stream aggregate — client receipts
+# host: rtx5090 (API 100.123.97.61:8433, i17 stack, glm-serving-b108de0c)
+# load: /tmp/long_output_test.py 8 — 8 concurrent streams, reference prompt, 512 output tokens, greedy
+# window: 2026-09-27T02:57:54Z .. 2026-09-27T02:59:12Z (four consecutive sweeps)
+{"streams": 8, "all_ok": true, "wall": 19.4, "tokens": 2348, "wall_aggregate_tps": 120.7, "per_stream_sec": [18.11, 18.23, 19.24]}
+{"streams": 8, "all_ok": true, "wall": 19.3, "tokens": 2424, "wall_aggregate_tps": 125.8, "per_stream_sec": [17.87, 17.95, 19.15]}
+{"streams": 8, "all_ok": true, "wall": 19.7, "tokens": 2371, "wall_aggregate_tps": 120.3, "per_stream_sec": [17.62, 18.2, 19.45]}
+{"streams": 8, "all_ok": true, "wall": 19.4, "tokens": 2427, "wall_aggregate_tps": 125.3, "per_stream_sec": [18.15, 18.2, 19.02]}

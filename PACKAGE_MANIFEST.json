@@ -1,5 +1,5 @@
 {
-  "file_count": 3041,
+  "file_count": 3042,
   "files": [
     {
       "path": ".gitattributes",
@@ -43,8 +43,8 @@
     },
     {
       "path": "PERFORMANCE_STATUS.md",
-      "sha256": "944876838a7504944cde91fce80cb26e8e6b112d0c79b892d3cda1016267dd8c",
-      "size_bytes": 37542
+      "sha256": "c378babfe7c629b3461c8f8c20e5170fc5781d2b152cde05b5470bf09a3bbee7",
+      "size_bytes": 39040
     },
     {
       "path": "README.md",
@@ -7195,6 +7195,11 @@
       "path": "qualification/glm5_next_m3_coldlaunch_20260923.json",
       "sha256": "39e8f301593856e5012d08f1bde4d24f1d2de96af639f4162220f904e86e2feb",
       "size_bytes": 4414
+    },
+    {
+      "path": "qualification/glm5next/performance/tp16_b8_20260927/client-8stream-sweeps.txt",
+      "sha256": "8f78436bc4734dd1f3f6d49ea67dd9c9283d7e75acbfd3c8b7b23b050bb223bd",
+      "size_bytes": 845
     },
     {
       "path": "qualification/hy4/v2_emission/old_rank_00.sha256",
@@ -15210,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74141927
+  "total_bytes": 74144270
 }
