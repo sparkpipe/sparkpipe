@@ -138,3 +138,31 @@ the wedge cause is now UNRESOLVED again:
    (i17 data: linear chunks 161ms, host_submit 76.6ms = launch-bound).
 5. Rescue the 6 down families (qwen27 first).
 6. M1 1b-1d per ROADMAP; b16 variant deploy still staged (build_b16.sh).
+
+## UPDATE — 2026-09-27 afternoon (supersedes "RETEST STATUS" above)
+
+- **#1229 record corrected** (comments 5851936994 + 5852110456): no bucket mismatch ever
+  existed — probed via dlopen/GetInterface: API `.so.i18`, API i17, node 042d6883, node
+  b108de0c adapters are ALL max_output=1024 (tarballs ship the Makefile:128 lastword
+  archive). Zero ADMIT9-RESIDENTD status=2 in 172k journal lines. 8-lane K=8 chains RAN
+  and completed during load (waves≈rows/8, steps≈8/wave; 123 chains, 25–51 ms/step).
+- **Wedge anatomy**: chain finishes (CHAIN-TIME status=0, claim+slot released) but the
+  route never completes residentd-side (active_owner held → status=15 storm, frozen
+  last_id). Zero failure/heartbeat lines — v1 has no CHAIN-HEARTBEAT. Leads: parked-
+  completion pool has no independent drain (module.c:4261; drains only from the next
+  CompleteOnWorker or MTP-resolve, which is off in production); async-slot-reuse race
+  (module.c:4247).
+- **NEW: the same wedge reproduces on i17** — API restart → ref176 OK → restart →
+  long400 (4-chunk) → HTTP 500 → frozen last_id=1000122 → restarted API hits
+  engine_connect_deadline until glm units are restarted on all 16 nodes. The 6/6 det
+  bench (single-chunk prompt) cannot catch it. Station restored + 6/6 verified.
+- **Issue #1230 (prefix cache) = the worse branch**: long300.prompt[100:128] vs
+  prefix100.tokens[0:28] → 0/28 match; the reused block's KV held prefix100's
+  degenerate [2435,8850] generation. Checkpoint identity is keyed on too little.
+- **v2 expected** (hello-ack max_output compare, bucket×8 capacity, hang fix). I asked
+  that the hang fix target the shared completion-delivery path — both lineages carry it.
+- **Retest kit staged** for v2: rtx5090 /tmp/cold_capture.py + /tmp/retest_prompts.json
+  (restart-per-prompt, retry-with-restart on 500, unit-restart unwedge). Still open:
+  1-stream K=8 token equality (first test was polluted by #1230).
+- Law added: zsh does not word-split unquoted variables — "restart all nodes" loops
+  silently no-op unless the node list is literal.
