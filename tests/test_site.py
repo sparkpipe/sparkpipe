@@ -20,7 +20,7 @@ class Page(HTMLParser):
             self.ids.add(values["id"])
         for name in ("href", "src"):
             if values.get(name) and not (tag == "use" or values[name].startswith(EXTERNAL)):
-                self.links.append(values[name])
+                self.links.append(values[name].split("?")[0])
         if tag == "script" and values.get("src"):
             self.scripts.append(values["src"])
         if tag == "link" and values.get("rel") == "stylesheet":
