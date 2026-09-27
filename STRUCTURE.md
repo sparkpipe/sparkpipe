@@ -20,6 +20,7 @@
 | `tools/` | Generators, packers, release tooling, and qualification runners |
 | `tests/` | Host, contract, source, and integration tests |
 | `text/` | Tokenizer and prompt-template primitives |
+| `site/` | sparkpipe.ai: the public pages and the playground |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width, or fallback implementation by name. A deployment package binds those

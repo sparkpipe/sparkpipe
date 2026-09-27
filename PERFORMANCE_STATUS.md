@@ -542,6 +542,47 @@ DSpark revisit slack, and high concurrency can vary stage-local microbatch
 width without moving weights or KV. TP16 is a B1-latency or smaller-dense-model
 layout, not a reason to reload the primary large model.
 
+### GLM 5.3 Flash TP16 decode
+
+The site's throughput figures come from this table. It assumes that the M1
+and M2 work lands, but short of their exit targets: kernels at 75% of memory
+bandwidth where M1 asks for 80%, and all-reduces that do not overlap compute.
+None of the projected values is measured.
+
+A step takes the bytes each rank reads, at 75% of 273 GB/s, plus 92
+all-reduces, plus 0.5 ms of host work:
+
+- **Kernels at 75% of memory bandwidth.** Today the batch harness reaches
+  128 GB/s (47%) at B1 and 151 GB/s (55%) at B8, and its last recorded B256
+  step, 302 ms, ran at about 30%. The skinny BF16 GEMV already runs at
+  234 GB/s, and the grouped expert kernel at 260 GB/s on its own.
+- **All-reduces on GPU-initiated RDMA**, at 25 µs per round: the "tens of
+  microseconds" that [`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md)
+  expects once the CPU relay leaves the critical path. B1 takes one direct
+  round. From B8 up, a reduce-scatter plus all-gather is cheaper: two rounds,
+  with 1.875 times the payload on the wire, 14/15 of it through the rank's
+  100 Gb/s switched port.
+- **0.5 ms of host work per step**, with several decode steps per submission.
+- 1K context, and no speculative decoding.
+
+| Streams | Bytes per rank | Kernels | All-reduces | Step | Projected tok/s | Per stream | Ceiling | Measured |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.18 GB | 10.7 ms | 3.2 ms | 14.4 ms | 70 | 70 | 125 | 27.6-29.8 |
+| 8 | 5.6 GB | 27.4 ms | 5.4 ms | 33.3 ms | 240 | 30 | 390 | 129.9 |
+| 64 | 18.6 GB | 90.8 ms | 11.4 ms | 102.7 ms | 623 | 9.7 | 940 | - |
+| 128 | 22.3 GB | 108.9 ms | 18.1 ms | 127.5 ms | 1,004 | 7.8 | 1,560 | - |
+| 256 | 25.1 GB | 122.6 ms | 31.6 ms | 154.7 ms | 1,655 | 6.5 | 2,780 | - |
+
+The bytes and the ceiling are from the batch roofline in
+`docs/GLM5_NEXT_ROOFLINE.md`. The measured column is the fleet after PR #1208
+(B1, 2026-09-25) and the 8-stream load reported with #1228 (2026-09-26).
+
+At 70% or 80% of bandwidth the projections move by about 5% either way: 66 to
+73 tok/s at B1, and 1,570 to 1,740 at B256. The M1 and M2 exit criteria in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) (100, 300, 750 and 2,200 tok/s) are 80% of
+the ceiling for the whole step, collectives included, so they sit above this
+projection. The site rounds it to 70, 240, 620, 1,000 and 1,650.
+
 ## Target gates
 
 These are architecture requirements, not measured results:
@@ -553,16 +594,17 @@ These are architecture requirements, not measured results:
 | Internal hot KV allocation | 2.5 TB per Spark |
 | Internal active model-shard allocation | 1.0 TB per Spark |
 | External direct model tier | at least 1.0 TB per Spark |
-| Four- or eight-Station largest-model throughput | roughly 50% of matched DGX B300 workload |
+| Mixed fleet: Spark prefill with Mac Studio decode | faster end to end than either pool alone |
 
 Promotion timing includes shard access, verification, rank-local placement,
 driver and communicator binding, prewarm, all-rank agreement, and atomic ready
 publication. A copy-only storage benchmark does not close the model-promotion
 gate.
 
-The Station comparison requires the same checkpoint, precision, request shape,
-context, output length, batching policy, and timing boundary on both systems.
-No analytical memory-bandwidth ratio closes that gate.
+The mixed-fleet comparison runs the same checkpoint, precision, request shape,
+context, output length, batching policy and timing boundary on the Sparks
+alone, the Studios alone and the mixed fleet. No analytical bandwidth ratio
+closes that gate.
 
 ### GLM 5.2 TP8 B1 single-stream + B8 multi-sequence (2026-08-16)
 
@@ -630,3 +672,29 @@ across sixteen rows. Sequence 1 emits the identical retained token stream.
 | [glm52-b16.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stderr) | 2d606c22af465762952d0f9ba51c82a14c8e8885a7a30df4985cca403c260b21 |
 | [glm52-b16-r1.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r1.stderr) | 9483ab63383a267903c771eb10caa182af3ff847543a7d080f198e512d51436a |
 | [glm52-b16-r2.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r2.stderr) | cdf2d247e59adce83d8102741786860be4a0b5f87ba086ecd11d74f361b873a5 |
+
+### GLM 5.3 Flash TP16 B8 8-stream aggregate (2026-09-26 / 2026-09-27)
+
+Scope: sixteen Spark nodes (spark0-f, MESH0005) serving the i17 stack
+(`glm-serving-b108de0c` driver, station core c0d54638, B8 profile, 128-row
+prefill); API host rtx5090. Load: 8 concurrent streams, reference prompt,
+512 output tokens per stream, greedy, four consecutive whole-station sweeps
+per session.
+
+| Session | Sweep tok/s | Best |
+| --- | --- | ---: |
+| 2026-09-26, #1228 qualification | 114.8 / 126.3 / 125.6 / 129.9 | 129.9 |
+| 2026-09-27, after full-station restart | 120.7 / 125.8 / 120.3 / 125.3 | 125.3 |
+
+The 2026-09-26 session is receipted in the #1228 thread (summarized outputs;
+identical load and stack). The 2026-09-27 session re-ran the same load after a
+full station restart and is committed below. Its rank-0 window shows zero
+`LINEAR-CHAIN-FAILED`, `MESH-DEFERRED-ROUNDS-FAILED` or `GRAPH-FAILED`; one
+interval recorded transient `busy[CHAIN]` retries (235) during ramp that
+self-recovered within the window — the persistent-freeze wedge under
+investigation on #1229 is a separate issue and did not occur here.
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [client-8stream-sweeps.txt](qualification/glm5next/performance/tp16_b8_20260927/client-8stream-sweeps.txt) | 8f78436bc4734dd1f3f6d49ea67dd9c9283d7e75acbfd3c8b7b23b050bb223bd |
+| [rank0-wave-window.log](qualification/glm5next/performance/tp16_b8_20260927/rank0-wave-window.log) | dcb332ecc624198ffc52f202c6521fa4466192230f9d67e346addf4a0d2b76f3 |

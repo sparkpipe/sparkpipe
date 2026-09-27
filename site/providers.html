@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Providers</title>
+<meta name="description" content="Sell the SparkPipe capacity you are not using through sparkpipe.ai. You set the price and keep 85%; every provider is validated by replay.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">providers</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#fabric">One fabric</a>
+      <a href="#validation">Validation</a>
+      <a href="#earnings">Earnings</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn small" href="playground.html">Playground</a>
+      <a class="btn small solid" href="#join">Sell capacity</a>
+    </div>
+  </div>
+</header>
+
+<main>
+<section class="wrap hero">
+  <p class="label hero-kicker">Provider network · in development</p>
+  <h1>Sell the Spark time you are not using.</h1>
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <p class="lead">Connect your SparkPipe installation to sparkpipe.ai, pick the models and your price, and switch reselling on whenever the hardware would otherwise sit idle. Your own traffic always comes first.</p>
+      <div class="actions">
+        <a class="btn solid" href="#join">Tell us about your installation</a>
+        <a class="btn" href="#earnings">Estimate your earnings</a>
+      </div>
+    </div>
+    <div class="specs plate">
+      <div><strong>85%</strong><span>of your own price is yours; sparkpipe.ai keeps 15% and pays for validation out of it</span></div>
+      <div><strong>~2%</strong><span>of served tokens replayed on reference nodes, secretly sampled from real requests</span></div>
+      <div><strong>1 frame</strong><span>to take the hardware back when your own requests arrive</span></div>
+      <div><strong>0 ports</strong><span>opened to the internet: providers, router and reference nodes share one tailnet</span></div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+<section id="how" class="sec">
+  <div class="sec-rail">
+    <p class="label">How it works</p>
+    <p class="label">Four steps</p>
+  </div>
+  <div class="sec-body">
+    <h2>Your hardware, your prices, your hours.</h2>
+    <ol class="steps">
+      <li><h3>Register</h3><p><code>sparkpipe provider register</code> binds the installation to your account and joins it to the SparkPipe tailnet.</p></li>
+      <li><h3>Offer</h3><p>Pick the resident models to sell, your price per million input and output tokens, and limits on concurrency, context and hours. One switch turns reselling on or off.</p></li>
+      <li><h3>Serve</h3><p>Network requests run at the lowest priority on capacity your traffic leaves idle, and yield at the next frame boundary when it arrives.</p></li>
+      <li><h3>Get paid</h3><p>Each completion carries a receipt signed by your agent. Buyers pay your price with nothing added; you are paid 85% of it after the challenge window.</p></li>
+    </ol>
+  </div>
+</section>
+
+<section id="fabric" class="sec">
+  <div class="sec-rail">
+    <p class="label">One fabric</p>
+    <p class="label">Interchangeable offers</p>
+  </div>
+  <div class="sec-body">
+    <h2>Many providers behind one model name.</h2>
+    <p class="prose">Every provider is validated, so every offer of a model at the same quantization serves the same model. The router is a LiteLLM proxy that treats each offer as a deployment of that model at its provider's price. It spreads a buyer's requests over as many providers as needed, by price, latency, load and verification record, and keeps requests that share a prompt prefix on one provider so its KV cache is reused.</p>
+    <div class="diagram-wrap">
+      <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="A buyer calls the sparkpipe.ai router, which spreads requests over three providers on the tailnet and sends a sample to reference nodes for replay">
+        <rect class="box" x="16" y="118" width="120" height="64" rx="2"/>
+        <text class="strong" x="76" y="146" text-anchor="middle">buyer</text>
+        <text x="76" y="166" text-anchor="middle">one model name</text>
+        <path class="wire" d="M136 150H182"/>
+        <polygon class="head" points="190,150 181,145 181,155"/>
+        <rect class="router" x="190" y="108" width="170" height="84" rx="2"/>
+        <text class="router-text" x="275" y="144" text-anchor="middle">sparkpipe.ai</text>
+        <text class="router-text" x="275" y="164" text-anchor="middle">LiteLLM router</text>
+        <text x="275" y="214" text-anchor="middle">routes by price · latency</text>
+        <text x="275" y="230" text-anchor="middle">load · verification record</text>
+        <rect class="tailnet" x="400" y="14" width="304" height="272" rx="8"/>
+        <text class="signal-text" x="418" y="38">tailnet · no open ports</text>
+        <text x="418" y="54">three offers of glm-5.3-flash</text>
+        <path class="wire" d="M360 140C392 140 392 82 418 82"/>
+        <path class="wire" d="M360 150C392 150 392 132 418 132"/>
+        <path class="wire" d="M360 160C392 160 392 182 418 182"/>
+        <path class="replay" d="M360 176C392 176 392 242 418 242"/>
+        <rect class="box" x="424" y="62" width="262" height="40" rx="2"/>
+        <text class="strong" x="438" y="87">provider A · $0.45/M</text>
+        <text class="signal-text" x="674" y="87" text-anchor="end">28 req</text>
+        <rect class="box" x="424" y="112" width="262" height="40" rx="2"/>
+        <text class="strong" x="438" y="137">provider B · $0.48/M</text>
+        <text class="signal-text" x="674" y="137" text-anchor="end">22 req</text>
+        <rect class="box" x="424" y="162" width="262" height="40" rx="2"/>
+        <text class="strong" x="438" y="187">provider C · $0.50/M</text>
+        <text class="signal-text" x="674" y="187" text-anchor="end">14 req</text>
+        <rect class="box dashed" x="424" y="222" width="262" height="40" rx="2"/>
+        <text class="replay-text" x="438" y="247">reference nodes · replay ~2%</text>
+      </svg>
+    </div>
+    <p class="caption">Example: one buyer's 64 requests for GLM 5.3 Flash spread across three providers. Each provider sets its own price.</p>
+  </div>
+</section>
+
+<section id="validation" class="sec">
+  <div class="sec-rail">
+    <p class="label">Validation</p>
+    <p class="label">Every provider</p>
+  </div>
+  <div class="sec-body">
+    <h2>Every provider is validated. No exceptions.</h2>
+    <p class="prose">Nothing a provider's machine reports about itself is trusted. About 2% of served tokens, drawn secretly from real completed requests, are computed again on reference nodes that run the same driver build and weights on the same hardware type. Buyers get the model they pay for, and honest providers are not undercut by a quantized copy.</p>
+    <div class="check-list">
+      <div><b>Greedy requests</b><span>Compared token for token.</span></div>
+      <div><b>Sampled requests</b><span>Compared on logprobs, which quantization shifts even when the tokens agree.</span></div>
+      <div><b>Cheap checks</b><span>Weight fingerprints, prompts only the exact weights answer correctly, and qualified speed ranges.</span></div>
+      <div><b>On a mismatch</b><span>The payout is held and an independent re-execution decides. A confirmed mismatch forfeits the provider's bond.</span></div>
+      <div><b>Who pays</b><span>The replays come out of sparkpipe.ai's 15%.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="earnings" class="sec">
+  <div class="sec-rail">
+    <p class="label">Earnings</p>
+    <p class="label">Output tokens only</p>
+  </div>
+  <div class="sec-body">
+    <h2>What an installation can earn.</h2>
+    <p class="prose">Revenue is throughput × time sold × your price. Resold traffic fills large batches, so the installation's aggregate throughput counts, not one stream's speed.</p>
+    <div class="calc">
+      <div class="form">
+        <label for="preset">Model and operating point
+          <select id="preset">
+            <option value="300,0.50">GLM 5.3 Flash · B8 · projected</option>
+            <option value="2200,0.50" selected>GLM 5.3 Flash · B256 · projected</option>
+            <option value="">Custom</option>
+          </select>
+        </label>
+        <label for="tps">Throughput, output tok/s<input id="tps" type="number" min="0" step="any" inputmode="decimal"></label>
+        <label for="price">Your price, $ per million output tokens<input id="price" type="number" min="0" step="any" inputmode="decimal"></label>
+        <label for="util">Share of the month resold · <output id="util-out" for="util">50%</output><input id="util" type="range" min="0" max="100" value="50"></label>
+      </div>
+      <div class="readout" aria-live="polite">
+        <div><span>Output tokens a month</span><strong id="tokens">–</strong></div>
+        <div><span>Buyers pay</span><strong id="paid">–</strong></div>
+        <div class="you"><span>You keep, 85%</span><strong id="keep">–</strong></div>
+        <div><span>sparkpipe.ai, 15%</span><strong id="fee">–</strong></div>
+      </div>
+    </div>
+    <p class="caption">Projected, not measured: GLM 5.3 Flash on 16 Sparks at 1K context, the M1/M2 exit criteria after the planned kernel and collective work, where each of 256 streams runs at about 8.6 tok/s. A month is 30 days. Input tokens are billed on top at your input price. Prices are examples.</p>
+  </div>
+</section>
+
+<section id="questions" class="sec">
+  <div class="sec-rail">
+    <p class="label">Questions</p>
+  </div>
+  <div class="sec-body">
+    <h2>Before you sign up.</h2>
+    <div class="faq">
+      <details><summary>Can I take the hardware back whenever I want?</summary><p>Yes. Your own traffic always runs first, and switching reselling off stops new network work at once. Requests already running either finish within the router's bound or go back to the router, which resumes them elsewhere.</p></details>
+      <details><summary>Who can reach my installation?</summary><p>Only the router and the reference nodes, over the tailnet. Its access rules let them reach your model API's port and nothing else, and buyers only ever see a model name at sparkpipe.ai. The provider that serves a request does see its prompt, as with any hosted API: GB10 has no confidential-computing mode.</p></details>
+      <details><summary>Why is validation mandatory for everyone?</summary><p>Buyers pay for a specific model at its published precision. Without replays, a provider could serve a quantized copy and charge for the real one, and honest providers would be undercut. Validating every provider is also what makes providers interchangeable.</p></details>
+      <details><summary>Which models can I sell?</summary><p>Any resident model your installation serves with a released SparkPipe driver. Large models pay best per token, and few installations can hold them, so fewer providers share their demand.</p></details>
+      <details><summary>What hardware is supported?</summary><p>DGX Spark installations of 4, 8 or 16 Sparks. Mac Studio support (M5 Ultra) is planned, on its own or alongside Sparks. Each hardware type gets its own reference nodes, because different kernels produce different bits.</p></details>
+      <details><summary>When does it open?</summary><p>The network is milestone M9 on the <a href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener">public roadmap</a>. It opens after batched serving lands (milestone M2), because batch throughput is what makes reselling pay.</p></details>
+    </div>
+  </div>
+</section>
+
+<section id="join" class="cta">
+  <div>
+    <p class="label signal">Provider network</p>
+    <h2>Want to sell capacity when it opens?</h2>
+    <p class="prose">Tell us what you run: how many Sparks, which models, and when the hardware is usually idle.</p>
+  </div>
+  <div class="contact">
+    <p class="label">Write to</p>
+    <code>hyor@sparkpipe.ai</code>
+    <div class="actions">
+      <a class="btn solid" href="mailto:hyor@sparkpipe.ai?subject=SparkPipe%20provider%20network">Email us</a>
+      <a class="btn" href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">DM @sparkpipeai</a>
+    </div>
+  </div>
+</section>
+</div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>© 2026 HYOR AI Tech Ltd · SparkPipe is open source, all C and CUDA</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="playground.html">Playground</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai</a></nav>
+    <span>Measurements carry their dates. Throughput figures are projections and say so.</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const usd = (n) => '$' + Math.round(n).toLocaleString('en-US');
+  const count = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : Math.round(n / 1e6) + 'M';
+  const update = () => {
+    const tokens = $('tps').value * 2592000 * $('util').value / 100, paid = tokens * $('price').value / 1e6;
+    $('util-out').value = $('util').value + '%';
+    $('tokens').textContent = count(tokens);
+    $('paid').textContent = usd(paid);
+    $('keep').textContent = usd(paid * .85);
+    $('fee').textContent = usd(paid * .15);
+  };
+  const choose = () => {
+    if (!$('preset').value) return;
+    [$('tps').value, $('price').value] = $('preset').value.split(',');
+    update();
+  };
+  $('preset').addEventListener('change', choose);
+  ['tps', 'price'].forEach((id) => $(id).addEventListener('input', () => { $('preset').value = ''; update(); }));
+  $('util').addEventListener('input', update);
+  choose();
+})();
+</script>
+</body>
+</html>
