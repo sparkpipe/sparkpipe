@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "e62c71f91b58f9ee79cf3ccc0bc330f6e4c83c7f852875c0231b3eaab12ebf30",
-      "size_bytes": 30845
+      "sha256": "2f392dd62ba015b885cdacac9d174a569a9c2288f6a8daa9352e5842e9e81ef0",
+      "size_bytes": 31252
     },
     {
       "path": "cache/cache.h",
@@ -88,8 +88,8 @@
     },
     {
       "path": "cache/kv_page_cache.c",
-      "sha256": "87d43c7bbf6814841be94c0ee15012187c67257fa1fee4ddd0ab8374af768f66",
-      "size_bytes": 64194
+      "sha256": "9dc269aad120d79101256d522e22b78500d2703177087245f3bd8d3c6c9b4d57",
+      "size_bytes": 64794
     },
     {
       "path": "cache/kv_page_store.c",
@@ -9718,8 +9718,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "47345ac45b4d6196e85c474f4b1fce8c66f668aa8863ce030add19361147b57a",
-      "size_bytes": 102345
+      "sha256": "fbc21b0f3b14e33020c59b432f08c74fc949a04e68cdd440d244b67738ff2acc",
+      "size_bytes": 103415
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74150426
+  "total_bytes": 74152503
 }

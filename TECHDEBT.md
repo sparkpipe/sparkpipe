@@ -222,6 +222,12 @@ progress diary.
   `SparkGlm5NextBuildPageTable` and the cache allocation code in
   `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
   contracts to admit against resident demand; do not merely raise the limit.
+- The KV page cache keeps every published block until an allocation finds the
+  logical pool full, then evicts one. It picks the victim by scanning every
+  entry, so once the pool is full each new page costs a pass over the whole
+  table. Keep unreferenced entries on an LRU list instead. Nothing reports how
+  full the pool is either; add used pages, retained entries and evictions to
+  the wave timeline.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
 - Select the smallest validated specialization for effective rows, including
