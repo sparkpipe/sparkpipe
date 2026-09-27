@@ -203,13 +203,15 @@
       <table>
         <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Projected</th></tr></thead>
         <tbody>
-          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>2,200</b>tok/s · 256 streams</td></tr>
-          <tr><td class="model">GLM 5.2</td><td>TP8 · 8 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">GLM 5.3</td><td>on the GLM 5.2 driver</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>2,200</b>tok/s projected · 256 streams</td></tr>
+          <tr><td class="model">GLM 5.3 Full</td><td>model-profiled TP/PP</td><td><span class="state">Onboarding · NVFP4/FP8/BF16 repack</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state">Onboarding</span></td><td class="figure"><b>40.5</b>tok/s measured · B1 · 2026-08-15</td></tr>
           <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Kimi K3 · MiniMax H3</td><td>profiled per model</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Qwen 3.8 Max · 27B</td><td>profiled per model</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Kimi K3</td><td>model-profiled TP/PP</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">MiniMax H3</td><td>model-profiled TP/PP</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Qwen 3.8 Max</td><td>model-profiled TP/PP</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Qwen 3.8 27B</td><td>global TP</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Qwen 3.8 Flash</td><td>global TP</td><td><span class="state">Onboarding · Qwen4-exp arch</span></td><td class="muted">–</td></tr>
         </tbody>
       </table>
     </div>
