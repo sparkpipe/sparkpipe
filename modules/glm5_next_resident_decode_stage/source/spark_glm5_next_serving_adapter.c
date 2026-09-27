@@ -1058,6 +1058,8 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
+
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1174,7 +1176,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	}
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);
-	SPARK_RETURN(status);
+	SPARK_RETURN(SparkGlm5NextServingAbortUnexecuted(state,submission,status));
 }
 
 static SparkStatus SparkGlm5NextServingProgress(
@@ -1267,8 +1269,6 @@ static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t contro
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
 	SPARK_RETURN(status);
 }
-
-#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 {

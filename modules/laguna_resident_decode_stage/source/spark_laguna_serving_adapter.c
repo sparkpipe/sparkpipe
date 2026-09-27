@@ -565,29 +565,7 @@ static SparkStatus SparkLagunaServingValidateSubmission(
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
-static SparkStatus SparkLagunaServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t count)
-{
-	SparkLagunaServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkLagunaServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkLagunaServingCacheContext(state,SparkLagunaServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkLagunaServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkLagunaServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkLagunaServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkLagunaServingCacheContext(state,SparkLagunaServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 #include "sparkpipe/family/serving/spark_serving_progress.h"
 
@@ -715,7 +693,7 @@ static SparkStatus SparkLagunaServingSubmit(
 	}
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);
-	return(status);
+	return(SparkLagunaServingAbortUnexecuted(state,submission,status));
 }
 
 static SparkStatus SparkLagunaServingQuiesce(

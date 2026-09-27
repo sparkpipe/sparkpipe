@@ -3283,8 +3283,8 @@
     },
     {
       "path": "include/sparkpipe/family/serving/spark_serving_prefetch.h",
-      "sha256": "96750d6360f08566df3c68b6a42e01f4b2ed02428ff013095b1291c75f1bf0fe",
-      "size_bytes": 1380
+      "sha256": "ada48f056bbc69591a95616d9de6524715231fc85a3894b9e70bee1d2ef252f5",
+      "size_bytes": 2011
     },
     {
       "path": "include/sparkpipe/family/serving/spark_serving_progress.h",
@@ -5248,8 +5248,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "16a15bc5e6e13bfef1fd37b7e6dbadbc2b3b307df0b057c374a219c427f0f851",
-      "size_bytes": 61866
+      "sha256": "3d275ab7a1ed72e418e48d45003614cc7c0fd402d3296db53bbf6d97be69df90",
+      "size_bytes": 61920
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -5593,8 +5593,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c",
-      "sha256": "ef34feaa7f6da0eaab7fe4a7cab91a658db14d07b876629f90e0837ed7eb5a68",
-      "size_bytes": 41676
+      "sha256": "7645ce67f7102d14a630275470cabdf672e580f939f1e5aaa64a49aee08b5e9e",
+      "size_bytes": 40445
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_stagepack_format.h",
@@ -5693,8 +5693,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
-      "sha256": "514082fe2753ae3ee85ab62045191ffd949423076199a2534893d3aa5e3d0c30",
-      "size_bytes": 34148
+      "sha256": "346d8310e6607b57d106824bb132d23cb6730bc2201dd37d44a92d154c089111",
+      "size_bytes": 34198
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_stagepack_format.h",
@@ -8293,8 +8293,8 @@
     },
     {
       "path": "tests/fixtures/ling_serving_adapter_driver.c",
-      "sha256": "a730a304f888af20f9da038ba65e03620ec10254f3e672dc2743dd75c917dd4e",
-      "size_bytes": 8102
+      "sha256": "d87a3316b0e8cd9d68964fbc6cea5df219983ac8ec95f8f4733e1f2b65218dcf",
+      "size_bytes": 8702
     },
     {
       "path": "tests/fixtures/model_resident_deployment.json",
@@ -9783,8 +9783,8 @@
     },
     {
       "path": "tests/test_ling_serving_adapter.c",
-      "sha256": "7237c2c1ee26c0aacd97463469c6d7ce174041268cd35a92e29b02b782a199e3",
-      "size_bytes": 11864
+      "sha256": "ab09da89a54f8d1c6281c2e4d3023c79c82f7b3d073be1005a6034168238bfed",
+      "size_bytes": 12896
     },
     {
       "path": "tests/test_ling_smoke_experts.py",
@@ -15180,5 +15180,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74107845
+  "total_bytes": 74108981
 }
