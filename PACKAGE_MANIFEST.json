@@ -11598,8 +11598,8 @@
     },
     {
       "path": "tools/gemma4_stagepack.py",
-      "sha256": "c4734eb0647be35fa74d0cbafb8b56fbbc13033a3cd537dbb61cec4725deace4",
-      "size_bytes": 43001
+      "sha256": "b49eb8e5553c09411b22fb336b414085b954bb430920d538b764367a30dffcec",
+      "size_bytes": 49149
     },
     {
       "path": "tools/gemma4_t1_launch.sh",
@@ -15195,5 +15195,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74083184
+  "total_bytes": 74089332
 }
