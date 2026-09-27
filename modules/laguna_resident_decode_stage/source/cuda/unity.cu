@@ -46,21 +46,6 @@ static_assert(
     LmTileKIsSwizzleable(LAGUNA_UNITY_TILE_K, LmBf16Format::kStoredBits),
     "laguna BF16 activation tile must be TMA-swizzleable");
 
-extern "C" int32_t LagunaLayerAttentionBf16(
-    const LagunaLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t context,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    return LagunaLayerAttention(
-        buffers,
-        rows,
-        context,
-        multiprocessors,
-        stream);
-}
-
 extern "C" int32_t LagunaHeadFullVocab(
     const LagunaLayerBuffers *buffers,
     const void *norm_weight_bf16,
@@ -76,70 +61,6 @@ extern "C" int32_t LagunaHeadFullVocab(
         LAGUNA_VOCAB,
         rows,
         stream);
-}
-
-extern "C" int32_t LagunaLayerAttentionBf16Graphed(
-    LmGraphCache *graphs,
-    const LagunaLayerBuffers *buffers,
-    uint32_t rows,
-    uint32_t context,
-    uint32_t multiprocessors,
-    cudaStream_t stream)
-{
-    LmGraphKey key;
-    int32_t status;
-
-    if (graphs == 0)
-    {
-        return LagunaLayerAttention(
-            buffers,
-            rows,
-            context,
-            multiprocessors,
-            stream);
-    }
-
-    key.rows = rows;
-    key.layer_kind = LAGUNA_LAYER_IS_SLIDING(buffers->layer_index) ? 1u : 0u;
-    key.format = 0u;
-    key.sparse = LAGUNA_LAYER_IS_SLIDING(buffers->layer_index) ? 1u : 0u;
-    key.context_bucket = LmGraphContextBucket(context, LAGUNA_WINDOW);
-    if (LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK)
-    {
-        return LM_LAUNCH_OK;
-    }
-    if (LmGraphBeginCapture(stream) != LM_GRAPH_OK)
-    {
-        return LagunaLayerAttention(
-            buffers,
-            rows,
-            context,
-            multiprocessors,
-            stream);
-    }
-    status = LagunaLayerAttention(
-        buffers,
-        rows,
-        context,
-        multiprocessors,
-        stream);
-    if ( status != LM_LAUNCH_OK )
-    {
-        LmGraphEndCapture(graphs, &key, stream);
-        return status;
-    }
-    if ( LmGraphEndCapture(graphs, &key, stream) != LM_GRAPH_OK )
-    {
-        return LagunaLayerAttention(
-            buffers,
-            rows,
-            context,
-            multiprocessors,
-            stream);
-    }
-    return LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
 }
 
 #include "sparkpipe/family/glm/spark_glm_unity_gemm.cuh"

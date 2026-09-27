@@ -96,11 +96,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchEmbeddingGather(cudaStream_t stream, 
 	return(LmGdnStageLaunchEmbeddingGather(stream,token_ids,embedding_bf16,hidden_bf16,row_count));
 }
 
-extern "C" cudaError_t SparkQwen38MaxLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	return(LmGdnStageLaunchTpCombineAdd(stream,destination_bf16,source_bf16,row_count,width));
-}
-
 extern "C" cudaError_t SparkQwen38MaxLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
 	return(LmGdnStageLaunchResidualAdd(stream,hidden_bf16,delta_bf16,row_count,dimension));
@@ -153,14 +148,6 @@ extern "C" cudaError_t SparkQwen38MaxLaunchHeadTopScore(cudaStream_t stream, con
 }
 static_assert((SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT & (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u)) == 0u,"router sort capacity needs a power-of-two expert count");
 #define SPARK_QWEN38_ROUTER_SORT_CAPACITY SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT
-
-static __device__ __forceinline__ float SparkQwen38WarpReduceMax(float value)
-{
-	#pragma unroll
-	for (uint32_t offset = SPARK_LM_WARP_LANES >> 1u; offset != 0u; offset >>= 1u)
-		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
-	return(value);
-}
 
 extern "C" cudaError_t SparkQwen38MaxLaunchGateScores(cudaStream_t stream, const SparkQwen38MaxLinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
 {

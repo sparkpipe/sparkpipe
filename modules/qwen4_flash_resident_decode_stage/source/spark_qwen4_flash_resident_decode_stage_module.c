@@ -23,6 +23,7 @@
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_qwen4_flash_work_control.h"
 #include "common/common_kv_frame.h"
 #include "common/common_stagepack_format_ext.h"
@@ -769,8 +770,6 @@ extern cudaError_t SparkQwen4FlashLaunchHeadScreenedArgmaxScore(cudaStream_t str
 extern cudaError_t SparkQwen4FlashLaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
 extern cudaError_t SparkQwen4FlashLaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
 extern cudaError_t SparkQwen4FlashLaunchEmbeddingGatherSharded(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
-extern cudaError_t SparkQwen4FlashLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
-extern cudaError_t SparkQwen4FlashLaunchTpCombineU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 extern cudaError_t SparkQwen4FlashLaunchHcStreamReplicate(cudaStream_t stream, const void *input_bf16, void *streams_bf16, uint32_t row_count);
 extern cudaError_t SparkQwen4FlashLaunchHcGroupNorm(cudaStream_t stream, const void *streams_bf16, const void *weight_bf16, void *normed_bf16, uint32_t row_count, float epsilon);
 extern cudaError_t SparkQwen4FlashLaunchHcSiluQuarter(cudaStream_t stream, void *lowrank_bf16, uint32_t row_count);
@@ -784,8 +783,6 @@ extern cudaError_t SparkQwen4FlashLaunchPleConvUpdate(cudaStream_t stream, const
 extern cudaError_t SparkQwen4FlashLaunchPleConvChunk(cudaStream_t stream, const void *input_bf16, const SparkQwen4FlashPleWeights *ple, void *output_bf16, void *tail_bf16, uint32_t token_count);
 
 #include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
-
-#include "sparkpipe/family/module/spark_module_tp_combine_bf16.h"
 
 static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashModuleState *state)
 {
@@ -807,8 +804,7 @@ static SparkStatus SparkQwen4FlashModuleInitializeTpCollective(SparkQwen4FlashMo
 	configuration.local_hidden_dimension = SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.combine_bf16_function = SparkQwen4FlashModuleTpCombineBf16;
-	configuration.combine_u64_max_function = SparkQwen4FlashModuleTpCombineU64Max;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )

@@ -51,7 +51,7 @@ def environment_setup(prefix: str, degree: str, rank: str) -> str:
     return "\n".join(lines)
 
 
-def glm_cluster(family: str, tag: str, codec: str, lazy: bool, extra: str = "", creates: int = 1, u64: int = 1) -> dict:
+def glm_cluster(family: str, tag: str, codec: str, lazy: bool, extra: str = "", creates: int = 1, u64: int = 1, common: int = 1) -> dict:
     return {
         "family": family,
         "codec": codec,
@@ -65,10 +65,11 @@ def glm_cluster(family: str, tag: str, codec: str, lazy: bool, extra: str = "", 
         "creates": creates,
         "regions": creates if lazy else 0,
         "u64": u64,
+        "common": common,
     }
 
 
-def qwen_cluster(family: str, tag: str, prefix: str, codec: str, lazy: bool, degree: str, rank: str, u64: int) -> dict:
+def qwen_cluster(family: str, tag: str, prefix: str, codec: str, lazy: bool, degree: str, rank: str) -> dict:
     return {
         "family": family,
         "codec": codec,
@@ -80,7 +81,8 @@ def qwen_cluster(family: str, tag: str, prefix: str, codec: str, lazy: bool, deg
         "call": f"Spark{tag}ModuleInitializeTpCollective(&state)",
         "creates": 1,
         "regions": 1 if lazy else 0,
-        "u64": u64,
+        "u64": 1,
+        "common": 1,
     }
 
 
@@ -94,16 +96,17 @@ CASES = (
         "creates": 1,
         "regions": 0,
         "u64": 1,
+        "common": 1,
     },
     glm_cluster("glm52", "Glm52", "fp8", True),
     glm_cluster("ling", "Ling", "fp8", False),
     glm_cluster("laguna", "Laguna", "fp8", True),
-    glm_cluster("glm5_next", "Glm5Next", "fp8", True, "state.pipeline_slot_count = 2u;\nstate.lane_client = (SparkWeightdClient *)&state;\n", 2, 1),
-    qwen_cluster("qwen38_max", "Qwen38Max", "QWEN38_MAX", "fp8", True, "STAGE_TP_DEGREE", "STAGE_TP_RANK", 0),
-    qwen_cluster("qwen4_flash", "Qwen4Flash", "QWEN4_FLASH", "fp8", True, "TP_DEGREE", "TP_RANK", 1),
-    qwen_cluster("gemma4", "Gemma4", "GEMMA4", "bf16", False, "TP_DEGREE", "TP_RANK", 1),
-    qwen_cluster("muse_glimmer", "MuseGlimmer", "MUSE_GLIMMER", "bf16", False, "STAGE_TP_DEGREE", "STAGE_TP_RANK", 0),
-    qwen_cluster("minimax", "Minimax", "MINIMAX", "bf16", False, "TP_DEGREE", "TP_RANK", 1),
+    glm_cluster("glm5_next", "Glm5Next", "fp8", True, "state.pipeline_slot_count = 2u;\nstate.lane_client = (SparkWeightdClient *)&state;\n", 2, 1, 0),
+    qwen_cluster("qwen38_max", "Qwen38Max", "QWEN38_MAX", "fp8", True, "STAGE_TP_DEGREE", "STAGE_TP_RANK"),
+    qwen_cluster("qwen4_flash", "Qwen4Flash", "QWEN4_FLASH", "fp8", True, "TP_DEGREE", "TP_RANK"),
+    qwen_cluster("gemma4", "Gemma4", "GEMMA4", "bf16", False, "TP_DEGREE", "TP_RANK"),
+    qwen_cluster("muse_glimmer", "MuseGlimmer", "MUSE_GLIMMER", "bf16", False, "STAGE_TP_DEGREE", "STAGE_TP_RANK"),
+    qwen_cluster("minimax", "Minimax", "MINIMAX", "bf16", False, "TP_DEGREE", "TP_RANK"),
     {
         "family": "qwen38_27b",
         "codec": "bf16",
@@ -113,6 +116,7 @@ CASES = (
         "creates": 1,
         "regions": 0,
         "u64": 1,
+        "common": 1,
     },
 )
 
@@ -121,14 +125,18 @@ HARNESS = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include "@INCLUDE@"
+#include "sparkpipe/spark_tp_mesh_register.h"
 static uint32_t TpOpenCreates,TpOpenAttaches,TpOpenRegions;
 SparkStatus SparkTpOpenMeshCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out);
 SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out)
 {
 	SparkStatus status;
+	uint32_t fp32,common;
 	status = SparkTpOpenMeshCreate(config,collective_out);
-	printf("TP-OPEN create mesh_status=%d bf16_combine=%u u64_combine=%u\n",(int)status,config->combine_bf16_function != 0 ? 1u : 0u,config->combine_u64_max_function != 0 ? 1u : 0u);
-	if ( status != SPARK_STATUS_UNSUPPORTED || config->combine_bf16_function == 0 )
+	fp32 = config->combine_fused_bf16_function != 0 && config->combine_f32_seed_function != 0 && config->combine_f32_add_function != 0 && config->round_f32_function != 0 && config->combine_bf16_function != 0;
+	common = config->combine_fused_bf16_function == SparkTpMeshCombineFusedBf16 && config->combine_f32_seed_function == SparkTpMeshCombineF32Seed && config->combine_f32_add_function == SparkTpMeshCombineF32Add && config->round_f32_function == SparkTpMeshRoundF32 && config->combine_bf16_function == SparkTpMeshCombineBf16 && config->combine_u64_max_function == SparkTpMeshCombineU64Max;
+	printf("TP-OPEN create mesh_status=%d fp32_combines=%u common_combines=%u u64_combine=%u\n",(int)status,fp32,common,config->combine_u64_max_function != 0 ? 1u : 0u);
+	if ( status != SPARK_STATUS_UNSUPPORTED || fp32 == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	collective_out->implementation = &TpOpenCreates;
 	TpOpenCreates++;
@@ -222,8 +230,9 @@ def run_case(case: dict, mesh_object: Path, directory: Path) -> str | None:
     ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
     expected = f"TP-OPEN status=0 creates={case['creates']} attaches={case['creates']} regions={case['regions']}"
     u64 = ran.stdout.count("u64_combine=1")
-    if ran.returncode != 0 or expected not in ran.stdout or u64 != case["u64"]:
-        return f"{case['family']}: expected '{expected}' and {case['u64']} U64 max combine(s)\n{ran.stdout[-800:]}{ran.stderr[-800:]}"
+    common = ran.stdout.count("common_combines=1")
+    if ran.returncode != 0 or expected not in ran.stdout or u64 != case["u64"] or common != case["common"]:
+        return f"{case['family']}: expected '{expected}', {case['u64']} U64 max combine(s) and {case['common']} common combine set(s)\n{ran.stdout[-800:]}{ran.stderr[-800:]}"
     return None
 
 
@@ -243,11 +252,11 @@ def main() -> int:
             if failure is not None:
                 failures.append(failure)
             else:
-                print(f"  ok {case['family']}: {case['creates']} collective(s) pass the mesh's own validation and attach")
+                print(f"  ok {case['family']}: {case['creates']} collective(s) pass the mesh's own validation, reduce in FP32 and attach")
     if failures:
         print("\n".join("FAIL " + failure for failure in failures))
         return 1
-    print(f"PASS every TP module ({len(CASES)}) opens the weightd mesh with only the settings the mesh reads")
+    print(f"PASS every TP module ({len(CASES)}) opens the weightd mesh with only the settings the mesh reads and the FP32 combines")
     return 0
 
 

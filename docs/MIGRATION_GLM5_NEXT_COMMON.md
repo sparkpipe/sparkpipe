@@ -54,10 +54,10 @@ deleted in the same commit that flips the include.
    The KDA + HC sinkhorn + indexer-kv arms (~1,200 LOC that only exist in
    glm5_next's layer.cuh) move to a family-local
    `spark_glm5_next_cuda_layer_ext.cuh` included right after the common
-   layer, keyed off `GLM_LAYER_KIND`/`LM_LAYER_LINEAR`. The common
-   `GlmLayerAttentionBf16Graphed` covers the graph-capture wrapper; glm5_next's
-   extra `SparkGraph*` entry points stay family-side until the stage-module
-   step.
+   layer, keyed off `GLM_LAYER_KIND`/`LM_LAYER_LINEAR`. The per-layer
+   graph-capture wrappers are gone, because the whole-step graph engine
+   captures the step; glm5_next's extra `SparkGraph*` entry points stay
+   family-side until the stage-module step.
    Caution: glm5_next's config asserts `SPARK_LLM_MLA_QK_ROPE_HEAD_DIMENSION
    == 0`; keep that assert in the family shim, not the common tree.
 5. Stage module: define the `SPARK_GLM_STAGE_*` bindings against the

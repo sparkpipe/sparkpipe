@@ -1,6 +1,7 @@
 #include "spark_qwen38_27b_tp.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 
 #include <errno.h>
 #include <sched.h>
@@ -15,21 +16,6 @@
 #define SPARK_QWEN38_27B_TP_TAG "qwen38_27b_tp"
 
 #define SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI 120000u
-
-extern cudaError_t SparkQwen38_27bLaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
-
-static SparkStatus SparkQwen38_27bTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineU64Max(void *combine_context, uint64_t *destination_device, const uint64_t *source_device, uint32_t element_count, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
 
 static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
@@ -97,8 +83,7 @@ static SparkStatus SparkQwen38_27bTpOpen(SparkQwen38_27bTpState *tp,uint32_t max
 	configuration.local_hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = max_active_sequence_count;
 	configuration.operation_timeout_milli = SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI;
-	configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
-	configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = tp;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&tp->collective);
 	if ( status != SPARK_STATUS_OK )

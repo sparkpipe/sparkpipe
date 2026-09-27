@@ -33,6 +33,7 @@ def main() -> int:
         "-Isrc",
         "-Itests/cuda_stub",
         "-Imodel-families/dsv4/include",
+        "-Imodel-families/common/include",
         "-Imodules/dsv4_resident_decode_stage/include",
         "-Imodules/dsv4_resident_decode_stage/source",
         "-include",

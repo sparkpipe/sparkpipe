@@ -17,6 +17,7 @@
 #include "common/common_kv_frame.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_qwen38_max_work_control.h"
 #include "spark_qwen38_max_stagepack_format.h"
 #include "sparkpipe/spark_weightd_attach.h"
@@ -675,10 +676,7 @@ static SparkStatus SparkQwen38MaxModuleOpenKvTier(SparkQwen38MaxModuleState *sta
 extern cudaError_t SparkQwen38MaxLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen38MaxLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38MaxLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
-extern cudaError_t SparkQwen38MaxLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkQwen38MaxLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension);
-
-#include "sparkpipe/family/module/spark_module_tp_combine_bf16.h"
 
 static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModuleState *state)
 {
@@ -700,7 +698,7 @@ static SparkStatus SparkQwen38MaxModuleInitializeTpCollective(SparkQwen38MaxModu
 	configuration.local_hidden_dimension = SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.combine_bf16_function = SparkQwen38MaxModuleTpCombineBf16;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )

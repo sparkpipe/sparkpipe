@@ -1101,23 +1101,6 @@ static int LmGdnStageAttnDegreeOk(uint32_t tp_degree)
 	return (group % (SPARK_LLM_ATTN_QUERY_HEAD_COUNT / tp_degree)) == 0u;
 }
 
-static __global__ void LmGdnStageTpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	uint32_t row = blockIdx.x;
-	uint64_t pair_base = ((uint64_t)row * width) >> 1u;
-	uint64_t pair_count = width >> 1u;
-	uint64_t pair;
-	float2 dst,src;
-	if ( row >= row_count )
-		return;
-	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
-	{
-		dst = SparkLmLoadBf16Pair(destination_bf16,pair_base + pair);
-		src = SparkLmLoadBf16Pair(source_bf16,pair_base + pair);
-		SparkLmStoreBf16Pair(destination_bf16,pair_base + pair,dst.x + src.x,dst.y + src.y);
-	}
-}
-
 static __device__ __forceinline__ float LmGdnStageWarpReduceMax(float value)
 {
 	#pragma unroll
@@ -1464,14 +1447,6 @@ cudaError_t LmGdnStageLaunchEmbeddingGather(cudaStream_t stream, const uint32_t 
 {
 	uint64_t elements = (uint64_t)row_count * SPARK_LLM_HIDDEN_DIMENSION;
 	LmGdnStageEmbeddingGatherKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(token_ids,embedding_bf16,hidden_bf16,row_count);
-	return(cudaGetLastError());
-}
-
-cudaError_t LmGdnStageLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	LmGdnStageTpCombineAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
 	return(cudaGetLastError());
 }
 
