@@ -511,14 +511,14 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	configuration.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
 	SparkTpMeshRegisterCommonCombines(&configuration);
-	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
-	return(SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0));
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
+	SPARK_RETURN(status);
 }
 
 static uint32_t SparkDsv4ModuleDsparkContextEnabled(

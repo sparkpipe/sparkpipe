@@ -1286,7 +1286,6 @@ static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	configuration.max_active_sequence_count = state->execution_row_capacity;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
 	SparkTpMeshRegisterCommonCombines(&configuration);
-	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);

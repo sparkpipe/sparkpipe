@@ -84,7 +84,6 @@ static SparkStatus SparkQwen38_27bTpOpen(SparkQwen38_27bTpState *tp,uint32_t max
 	configuration.max_active_sequence_count = max_active_sequence_count;
 	configuration.operation_timeout_milli = SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI;
 	SparkTpMeshRegisterCommonCombines(&configuration);
-	configuration.combine_context = tp;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&tp->collective);
 	if ( status != SPARK_STATUS_OK )
 	{

@@ -435,49 +435,7 @@ static SparkStatus SparkGemma4ModuleInitializeTpCollective(SparkGemma4ModuleStat
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGemma4ModuleTpSubmitOrdered(SparkGemma4ModuleState *state, void *device_buffer, uint32_t count, SparkGemma4ModuleSlot *slot, uint32_t u64_max)
-{
-	SparkTpDeviceCollectiveSubmission submission;
-	struct timespec pause;
-	uint32_t polls,flag;
-	SparkStatus status;
-	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
-		return(SPARK_STATUS_OK);
-	if ( state->tp_collective_initialized == 0u )
-		return(SPARK_STATUS_INTERNAL_ERROR);
-	atomic_store_explicit(&state->tp_completion_flag,0u,memory_order_relaxed);
-	memset(&submission,0,sizeof(submission));
-	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	submission.descriptor_bytes = sizeof(submission);
-	submission.slot_index = 0u;
-	submission.active_sequence_count = count;
-	submission.logical_sequence_count = slot->logical_sequence_count;
-	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
-	submission.local_device = device_buffer;
-	submission.full_device = device_buffer;
-	submission.cuda_stream = slot->cuda_stream;
-	submission.completion_function = SparkStageModuleTpCompletionFlag;
-	submission.completion_context = &state->tp_completion_flag;
-	status = u64_max != 0u
-		? SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission)
-		: SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	pause.tv_sec = 0u;
-	pause.tv_nsec = 100000;
-	for (polls = 0u; polls < 100000u; polls++)
-	{
-		flag = atomic_load_explicit(&state->tp_completion_flag,memory_order_acquire);
-		if ( flag == 1u )
-			return(SPARK_STATUS_OK);
-		if ( flag == 2u )
-			return(SPARK_STATUS_IO_ERROR);
-		nanosleep(&pause,0);
-	}
-	fprintf(stderr,"%s tp_all_reduce_stall\n",SPARK_GEMMA4_MODULE_TAG);
-	return(SPARK_STATUS_IO_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
 
 static SparkStatus SparkGemma4ModuleInitializeGate(void)
 {

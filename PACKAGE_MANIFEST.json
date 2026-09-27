@@ -5013,8 +5013,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
-      "sha256": "5aedb67a682052ccdb5f7ae024fcaf47c4cb47b2b619e7309492359cc5249c7b",
-      "size_bytes": 278585
+      "sha256": "63890a9db0ce8712e883f6adf0530fd8f884826d2e570ab27d0b060127788d4f",
+      "size_bytes": 278569
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
@@ -5073,8 +5073,8 @@
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c",
-      "sha256": "157366386cee0cc4ea0ffd83da82cd06334d23d1baedb4f6072a98ce0d648fa6",
-      "size_bytes": 82576
+      "sha256": "cec71f58f6c9bf1d44c27d232f52065d5898ff04aff039ed96df0e0ba5df141d",
+      "size_bytes": 80730
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
@@ -5163,8 +5163,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
-      "sha256": "7c8c4fa2d2120720a1222a83d17afe7f32fa5a424b420b1f6e684f3fc8b6de11",
-      "size_bytes": 94012
+      "sha256": "c3037f841111b6c7f677320bf3b3d0922ba2ca93fa49cb3bb51633ecf5748471",
+      "size_bytes": 93972
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
@@ -5578,8 +5578,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c",
-      "sha256": "c99a8e6bfe15cd56eafd3c64dbedd288db77fe3a8d422cbb547e0588622ec768",
-      "size_bytes": 100554
+      "sha256": "f706f12c147cb147a42d6a77837334e38477be841cf7333328d50a2a7265ae6a",
+      "size_bytes": 100514
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c",
@@ -5673,8 +5673,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
-      "sha256": "972f6dbfd3955d4b544143a4b8145668d05589b611480129551d9caeb8e69fe3",
-      "size_bytes": 89523
+      "sha256": "d49613f57bbb88bd0f7714e904bc09ad5b51f127b2a11b0c9b997141852a4e5f",
+      "size_bytes": 89483
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
@@ -5733,8 +5733,8 @@
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c",
-      "sha256": "1edef0e356bfba003e1fa3e077874e409c6784d37ed124f3e569eb2eb064aa9f",
-      "size_bytes": 69082
+      "sha256": "39c9715953a7dc0d9ec13c973e5d433a19c487335465d7ba1e841ac058a26a63",
+      "size_bytes": 69042
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c",
@@ -5788,8 +5788,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c",
-      "sha256": "8dd83ae15c9a4b929914c0e0799ac2ca8f2315af9b866bd917825ee1314b6200",
-      "size_bytes": 85665
+      "sha256": "a5ea99535ba89be4189708e2de69b1b389a5d2d9f081308d7681b673eb15f33c",
+      "size_bytes": 85625
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
@@ -5878,8 +5878,8 @@
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c",
-      "sha256": "788a561254ac0c2d0a6108287963bb6b3d21636deaa2115c6fb7a6069f093371",
-      "size_bytes": 7560
+      "sha256": "bb7bd8ccf1fdf3f38184b3d7288a85c895dd20b366159ca2f94a19b2d57fea92",
+      "size_bytes": 7523
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.h",
@@ -5923,8 +5923,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "366c39e53129f636544766decd8e1dc59d6c20d1ecfcbe0718fe05d6419f7973",
-      "size_bytes": 100646
+      "sha256": "33b4219349601abc5f826059722f9b1cb8e6692d9c78c5b85c1e6364df3853ef",
+      "size_bytes": 100606
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -5978,8 +5978,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c",
-      "sha256": "5018473e4a3b5e09173fdb829e64c5c49e603fb25923ab3f9a41e6326c4966de",
-      "size_bytes": 148208
+      "sha256": "4cc206078ebf32dd4a5f0d215c57402e808b76e9918e79d61be2174224931d41",
+      "size_bytes": 148168
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_serving_adapter.c",
@@ -15200,5 +15200,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74017206
+  "total_bytes": 74015027
 }
