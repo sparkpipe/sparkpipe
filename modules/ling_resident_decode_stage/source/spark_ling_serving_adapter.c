@@ -538,6 +538,8 @@ static _Thread_local SparkModelDriverCacheLane SparkLingServingCacheScratch[SPAR
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
+
 static void SparkLingServingBuildFrame(
 	const SparkLingServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -632,7 +634,7 @@ static SparkStatus SparkLingServingSubmit(
 	}
 	if ( status != SPARK_STATUS_OK )
 		pending->active = 0u;
-	return(status);
+	return(SparkLingServingAbortUnexecuted(state,submission,status));
 }
 
 static SparkStatus SparkLingServingQuiesce(
@@ -707,8 +709,6 @@ static SparkStatus SparkLingServingSnapshot(
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	return(SPARK_STATUS_OK);
 }
-
-#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 #include "sparkpipe/family/serving/spark_serving_progress.h"
 

@@ -94,6 +94,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *host_resident_slots;
 	uint32_t *host_positions;
 	uint32_t *host_output_token_ids;
+	uint32_t *host_chain_token_ids;
 	uint32_t *host_kv_access_error;
 	uint32_t *host_group_row_offset;
 	uint32_t *token_ids;

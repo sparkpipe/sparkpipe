@@ -190,6 +190,12 @@ flight at the pipeline depth: 1 for fanout TP, `stage_count` for PP. A
 request that becomes ready during a step joins the next wave instead of
 running as a separate one-row chain.
 
+**Resident decode chains.** A decode submission runs up to eight steps on
+the resident stages. Each step's tokens feed the next step on the device, and
+cache blocks completed inside the chain are published from it, so the host
+protocol between submissions is paid once per chain rather than once per
+token.
+
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
 top-8 routing, B64 already touches 240 experts. From there, weight traffic

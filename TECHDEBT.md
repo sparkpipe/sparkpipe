@@ -126,8 +126,27 @@ progress diary.
   arena fits them, and move MTP and speculative verify onto the linear walk.
 - glm5_next: between two waves every rank ends and restarts mesh activity
   (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
-  the other ranks spin on, and two host callbacks run. Keep the activity and
-  the epoch across the waves of a session.
+  the other ranks spin on, and two host callbacks run. Resident decode chains
+  pay this once per K decode steps instead of once per step; prefill chunks,
+  publish frames and single-step waves still pay it every time. Keep the
+  activity and the epoch across the waves of a session.
+- glm5_next: a resident decode chain feeds each step's tokens back through the
+  host. Between steps it synchronizes the stream, copies the sampled tokens
+  into the pinned input arrays and advances the positions. On the linear path
+  that wait runs on residentd's thread, which a single-step linear chain never
+  blocks. Feed the next step on the device (copy the head's tokens into the
+  input rows and advance the positions in a kernel) so K steps are one enqueue
+  or one graph.
+- glm5_next: the engine ends a chain at the nearest block end of any lane in
+  the batch, so chains shorten as the batch grows: a mean of about 5.4 steps
+  at 8 lanes against 8 at one lane, by simulation of random lane offsets. Each
+  lane's block end is also still a separate publish frame. Publishing block
+  checkpoints from inside a chain would keep chains at 8 steps and remove
+  those frames.
+- glm5_next: a decode chain holds the rank for all of its steps, so a prefill
+  chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
+  without looking at queued prefill; shorten chains while prefill waits if
+  time to first token suffers.
 
 ## Resident TP4 x PP4 execution
 
@@ -212,6 +231,21 @@ progress diary.
   and batched-decode logits are not bitwise equal to B1. Extend the
   row-blocked kernels that keep the skinny order wherever they match the
   tensor-core throughput.
+- Provider-network replay verification needs batched rows to be bitwise
+  equal to B1: a verifier replays a request alone and must reproduce what a
+  provider served at B8 or B256. TensorFold (MIT, `ashhart/TensorFold`) shows
+  the rules: the reduction split is fixed by the weight's shape and never by
+  the row count, attention tiles are fixed by absolute key position with an
+  fp32 online softmax merged in key order, router ties break by token id, and
+  cross-GPU partial sums are added in rank order. It also compares multi-row
+  with one-row output at load and turns drafting off when they differ. Adopt
+  the same rules, and make that load-time comparison the gate for verified
+  serving.
+- A prefix-cache hit reuses KV and KDA state computed however the source
+  request ran: one-row prefill for prompt tokens, batched decode rows for
+  generated ones. Until batched rows equal B1, a warm and a cold run of the
+  same prompt can differ (#1230). Make them equal, or keep checkpoints of
+  generated tokens out of reuse for verified requests.
 
 ## Model contracts
 
@@ -236,6 +270,11 @@ progress diary.
 - Build the tournament provider over the provider slot, with per-drafter
   acceptance telemetry, after the single-drafter agreement matrix is
   measured.
+- glm5_next resident decode chains run no MTP draft: a frame of more than
+  one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
+  whenever the adapter offers them, so with MTP enabled drafts only run on
+  single-step frames. Choose between MTP and chains per batch in the engine,
+  or verify drafts inside a chain.
 
 ## Packaging and provenance
 
@@ -284,6 +323,30 @@ progress diary.
 
 - Add bounded cancellation and drain for terminal client I/O failures so every
   resident sequence slot is released.
+- A failed residentd route whose driver cache abort also fails stops the
+  residentd so its unit restarts, because the driver's transaction state for
+  those slots is unknown. Give the driver a per-slot reset so one slot can be
+  recovered without restarting the unit.
+- residentd's completion callback marks any route it finds by submission id
+  READY_COMPLETION after an identity or state mismatch, even a route that is
+  not waiting on the adapter. Limit that to WAIT_ADAPTER routes.
+- ROUTE-STUCK reports a route once per state. Repeat it on an interval with
+  the route's committed-FIFO position and slot claims.
+- Pipeline-parallel stages still wedge after a failure on another rank. When
+  one rank fails a submission's COMMIT or frame, the next stage's route has
+  already posted its hidden-transport receive and waits in WAIT_INPUT for data
+  that never comes. Only a deadline moves it, and the engine sets none, so the
+  route keeps its slot claim and blocks the reset the reconnect needs. The
+  in-tree test transport completes receives without a peer, so no test sees
+  this. On client-generation change, cancel abandoned WAIT_INPUT/WAIT_OUTPUT
+  routes through the transport before releasing their boundary buffers, and
+  add a test transport that needs a real peer. Tensor-parallel deployments
+  (glm5_next TP16) post no inter-stage receives and are not affected.
+- A failed route that the driver had already run (for example a PP output
+  send that failed) releases its slot claims but leaves residentd's `bound`
+  flag as it was, so the driver and residentd can disagree about the slot
+  until the next session reset. Settle the slot the way an error completion
+  does.
 - Produce one immutable qualification bundle containing merged commit, release
   generation, package and driver hashes, all-rank identities, token stream,
   accuracy, performance, route counters, and drained queue state.
@@ -300,6 +363,10 @@ progress diary.
   the head choice, and drafts are keyed by relative positions. Noise the
   screen bounds, key drafts by absolute position, and capture sampled
   graphs to lift all three.
+- Draw sampled tokens as the argmax of logit/T plus Gumbel noise keyed by
+  (seed, absolute position, token id), as TensorFold's exact sampler does, so
+  a seeded sampled stream replays exactly and a draft is accepted exactly
+  when it equals the serial draw.
 - Carry `deadline_ms` into the batch engine and the serving submission
   (`deadline_time_ns` exists but is not populated) so the scheduler, not
   only the API, orders work by deadline.
@@ -379,6 +446,18 @@ door and the static pages and playground in `site/`.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
+- `tests/test_glm5_next_adapter_config_load.py` is not part of `make test`,
+  and its deployment section fails on `main`:
+  `tools/glm5_next_gen_deployment.py` writes nine `runtime_limits` members and
+  `SparkModelResidentDeploymentLoad` accepts exactly six. Its adapter unit
+  sections pass. Align the generator and the loader, then add the test to the
+  suite.
+- `tests/test_glm5_next_module_host_syntax.py` fails outside CI. With clang,
+  `validation/spark_glm5_next_resident_decode_stage_tap_ring.cu` no longer
+  compiles against the module (no `tap_stage_bf16` in the execution slot, and
+  the drafter tap-layer count is 0). With gcc, the C++ sources fail earlier
+  because the command passes `-std=c11` before `-x c++ -std=c++17`. Align the
+  validator with the module and make the command compiler-neutral.
 
 ## Hardware independence
 

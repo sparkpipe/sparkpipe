@@ -1069,8 +1069,8 @@ static void TestModelBatchEngineRun(
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
 	fprintf(stderr,"TT-PREFILL lanes=%u rows=%u\n",state.first_prefill_lane_count,state.first_prefill_row_count);
-	assert(state.first_prefill_lane_count == 2u);
-	assert(state.first_prefill_row_count == 4u);
+	assert(state.first_prefill_lane_count == 1u);
+	assert(state.first_prefill_row_count == 3u);
 	assert(third != first);
 	reused = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,1u);
 	assert(reused != first);
@@ -1552,6 +1552,37 @@ static void TestModelPipelineFailedPrefillFreesSlot(SparkModelPipelineClient *pi
 	assert(state->completions[2].status == SPARK_STATUS_OK);
 }
 
+static void TestModelPipelineFailedCommitRecovers(const SparkModelResidentDeployment *deployment,TestModelPipelineState *state)
+{
+	SparkModelPipelineClient *pipeline;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4];
+	uint64_t positions[4],sequences[4];
+	uint8_t failure;
+	failure = 1u;
+	memset(state,0,sizeof(*state));
+	pipeline = TestModelPipelineConnect(deployment,state);
+	state->pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,601u);
+	submission.model_extension_kind = 93u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	assert(TestModelPipelineWaitForFailure(pipeline) == SPARK_STATUS_IO_ERROR);
+	assert(state->completion_count == 1u && state->completions[0].status == SPARK_STATUS_IO_ERROR);
+	SparkModelPipelineClientDestroy(pipeline);
+	memset(state,0,sizeof(*state));
+	pipeline = TestModelPipelineConnect(deployment,state);
+	state->pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,602u);
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	TestModelPipelineWaitForCompletion(pipeline,state,1u);
+	assert(state->result_statuses[0] == SPARK_STATUS_OK && state->completions[0].status == SPARK_STATUS_OK);
+	SparkModelPipelineClientDestroy(pipeline);
+	memset(state,0,sizeof(*state));
+}
+
 static void TestModelPipelineAssertExecutionOrder(const TestModelPipelineState *state,uint64_t first,uint64_t second)
 {
 	const SparkModelPipelineStageCompletion *early,*late;
@@ -1724,6 +1755,7 @@ int main(void)
 	state.pipeline = pipeline;
 	TestModelPipelineFailedPrefillFreesSlot(pipeline,&state);
 	SparkModelPipelineClientDestroy(pipeline);
+	TestModelPipelineFailedCommitRecovers(&deployment,&state);
 	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;

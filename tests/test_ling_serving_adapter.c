@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,30 @@ static void TestLingServingConfiguration(
 	configuration->execution_stream = test_state->execution_stream;
 	configuration->completion_function = TestLingServingCompletion;
 	configuration->completion_context = test_state;
+}
+
+static void TestLingServingFailedSubmitAbortsCache(
+	const SparkModelServingAdapterInterface *adapter,
+	void *adapter_state,
+	SparkModelServingSubmission *submission)
+{
+	uint64_t (*abort_count)(void);
+	uint64_t aborts,request_id;
+	void *driver;
+	driver = dlopen(TEST_LING_SERVING_DRIVER_PATH,RTLD_NOW | RTLD_NOLOAD);
+	assert(driver != 0);
+	*(void **)&abort_count = dlsym(driver,"TestLingServingDriverAbortCount");
+	assert(abort_count != 0);
+	request_id = submission->request_id;
+	aborts = abort_count();
+	submission->request_id = 7778u;
+	assert(adapter->submit(adapter_state,submission) == SPARK_STATUS_BUSY);
+	assert(abort_count() == aborts);
+	submission->request_id = 7777u;
+	assert(adapter->submit(adapter_state,submission) == SPARK_STATUS_VALIDATION_FAILED);
+	assert(abort_count() == aborts + 1u);
+	submission->request_id = request_id;
+	assert(dlclose(driver) == 0);
 }
 
 static void TestLingServingDecodeSubmission(
@@ -274,6 +299,8 @@ int main(void)
 		SPARK_STATUS_OK);
 	assert(library.adapter_interface.submit(adapter_state,&submission) ==
 		SPARK_STATUS_OK);
+	assert(test_state.completion_count == 2u);
+	TestLingServingFailedSubmitAbortsCache(&library.adapter_interface,adapter_state,&submission);
 	assert(test_state.completion_count == 2u);
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);

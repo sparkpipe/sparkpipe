@@ -236,6 +236,82 @@ static int32_t TestDeferredFrameLifetime(void)
     return(TestSubmitControl(&state,SPARK_MODEL_SERVING_WORK_KIND_RELEASE));
 }
 
+static int32_t TestSubmitChain(SparkGlm5NextServingState *state,uint32_t steps)
+{
+    SparkModelServingSubmission submissions[2] = {0};
+    SparkModelServingLane lanes[3] = {0};
+    uint32_t tokens[3] = {11,12,13},indices[3] = {2,0,1},lane;
+    uint64_t positions[3] = {64,64,64},sequences[3] = {102,100,101};
+    TestBuildSubmissions(submissions,lanes);
+    submissions[0].request_id = submissions[0].sequence_id = 100u;
+    submissions[0].dispatch_generation = 1u;
+    submissions[0].row_count = submissions[0].token_count = 3u;
+    submissions[0].tokens_per_sequence = steps;
+    submissions[0].token_ids = tokens;
+    submissions[0].row_lane_indices = indices;
+    submissions[0].row_positions = positions;
+    submissions[0].row_sequence_ids = sequences;
+    for (lane=0u; lane<3u; lane++)
+    {
+        lanes[lane].request_id = 100u + lane;
+        lanes[lane].flags |= SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+    }
+    DeferredFrame = 0;
+    return(SparkGlm5NextServingSubmit(state,submissions) == SPARK_STATUS_OK && DeferredFrame == &state->pending[0].frame ? 0 : -1);
+}
+
+static int32_t TestChainFrame(void)
+{
+    static SparkGlm5NextServingState state;
+    SparkModelDriverInterface driver = {0};
+    SparkModelDriverProgramDescriptor program = {0};
+    SparkModelDriverCompletion completion = {0};
+    SparkGlm5NextServingPending *pending = &state.pending[0];
+    TestState observed = {0};
+    uint32_t index,lane,step;
+    state.runtime_limits = (SparkModelServingRuntimeLimits){.abi_version=SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,.descriptor_bytes=SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES,.max_inflight_submission_count=1u,.max_active_sequence_count=3u,.max_input_row_count=3u,.resident_sequence_capacity=8u,.kv_logical_page_capacity=8u,.kv_physical_page_capacity=8u};
+    state.node_context.max_sequence_positions = 128u;
+    state.pipeline_slot_count = 1u;
+    driver.admit = TestLifecycleAdmit;
+    program.program_id = 1u;
+    program.submit = TestDeferredSubmit;
+    state.program = &program;
+    state.driver.interface = &driver;
+    state.driver_instance = &observed;
+    state.completion_function = TestDeferredComplete;
+    if ( (SparkGlm5NextServingDescriptor.capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) == 0u )
+        return(-40);
+    if ( TestSubmitChain(&state,3u) != 0 || DeferredFrame->tokens_per_sequence != 3u || pending->buffer.bytes != 9u * sizeof(uint32_t) || pending->last_row_by_lane[0] != 1u || pending->last_row_by_lane[2] != 0u )
+        return(-41);
+    for (index=0u; index<9u; index++)
+        pending->output_token_ids[index] = 200u + index;
+    completion.request_id = completion.sequence_id = 100u;
+    completion.sequence_position = 64u;
+    completion.program_id = 1u;
+    completion.accepted_token_count = 3u;
+    completion.tokens_per_sequence = 3u;
+    DeferredFrame->completion_function(DeferredFrame->completion_context,&completion);
+    if ( DeferredCompletion.status != SPARK_STATUS_OK || DeferredCompletion.tokens_per_sequence != 3u || DeferredCompletion.token_count != 9u )
+        return(-42);
+    for (lane=0u; lane<3u; lane++)
+        for (step=0u; step<3u; step++)
+            if ( DeferredCompletion.token_ids[lane * 3u + step] != 200u + pending->last_row_by_lane[lane] * 3u + step )
+                return(-43);
+    if ( TestSubmitChain(&state,3u) != 0 )
+        return(-44);
+    completion.tokens_per_sequence = 4u;
+    DeferredFrame->completion_function(DeferredFrame->completion_context,&completion);
+    if ( DeferredCompletion.status != SPARK_STATUS_SCHEMA_ERROR || pending->active != 0u )
+        return(-45);
+    if ( TestSubmitChain(&state,1u) != 0 || pending->buffer.bytes != 3u * sizeof(uint32_t) )
+        return(-46);
+    completion.tokens_per_sequence = 2u;
+    DeferredFrame->completion_function(DeferredFrame->completion_context,&completion);
+    if ( DeferredCompletion.status != SPARK_STATUS_SCHEMA_ERROR )
+        return(-47);
+    return(0);
+}
+
 static uint32_t ResetCalls,ResetSnapshotActive;
 static SparkStatus ResetStatus;
 
@@ -319,6 +395,8 @@ int main(int argc, char **argv)
         return(8);
     if ( TestDeferredFrameLifetime() != 0 )
         return(3);
+    if ( TestChainFrame() != 0 )
+        return(10);
     if ( TestConcurrentReservation() != 0 )
         return(4);
     static SparkGlm5NextServingState state;
@@ -394,7 +472,7 @@ def main() -> int:
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
             return 1
-        print("PASS actual GLM B3 admission, deferred lifetime, release and concurrent reservation; "
+        print("PASS actual GLM B3 admission, deferred lifetime, release, K-token chains and concurrent reservation; "
               "adapter loads the generator's deployment config")
         return 0
 

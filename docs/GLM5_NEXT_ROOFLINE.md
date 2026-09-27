@@ -219,7 +219,7 @@ Each rank's glm5_next module prints one line every 10 s from its completion
 worker:
 
 ```
-G5N-WAVE-TIMING rank=R waves=N rows=N prefill=N graph=N eager=N linear=N graph_path=P retries=N busy=C/S/L/A/O captures=N capture_ms=T idle_us=p50/p99 wait_us=p50/p99 key_us=p50/p99 setup_us=p50/p99 run_us=p50/p99 post_us=p50/p99 idle_ms=T wait_ms=T key_ms=T setup_ms=T run_ms=T post_ms=T graph_run_ms=T eager_run_ms=T linear_run_ms=T decode_wait_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/wait/key/setup/run/post
+G5N-WAVE-TIMING rank=R waves=N rows=N steps=N prefill=N graph=N eager=N linear=N graph_path=P retries=N busy=C/S/L/A/O captures=N capture_ms=T idle_us=p50/p99 wait_us=p50/p99 key_us=p50/p99 setup_us=p50/p99 run_us=p50/p99 post_us=p50/p99 idle_ms=T wait_ms=T key_ms=T setup_ms=T run_ms=T post_ms=T graph_run_ms=T eager_run_ms=T linear_run_ms=T linear_walk_ms=T decode_wait_ms=T source_wait_ms=T peer_wait_ms=T copy_ms=T combine_ms=T worst_ms=W worst_request=Q worst_epochs=M/H worst_us=idle/wait/key/setup/run/post
 ```
 
 The six intervals follow one frame, each starting where the previous one
@@ -234,17 +234,19 @@ ends:
 | `run` | the first launch | the host finishing the chain; for a linear chain, the completion worker finding the stream drained |
 | `post` | the chain finished | the completion handed to residentd: host callback, completion worker, end of the collective chain |
 
-`run` is the wave's GPU time as the host sees it. The graph path waits for
-the whole graph on the residentd thread before it finishes the chain, and the
-chain state machine synchronizes the stream at every collective round, so on
-that path `run` also holds the host work between rounds. A linear chain
-enqueues the whole wave and returns, so its `run` ends when the completion
-worker finds the stream drained, one host callback after the GPU finished.
+`run` is the wave's GPU time as the host sees it, over every step of a
+resident decode chain. The graph path waits for the whole graph on the
+residentd thread before it finishes the chain, and the chain state machine
+synchronizes the stream at every collective round, so on that path `run` also
+holds the host work between rounds. A linear chain enqueues the whole wave and
+returns, so its `run` ends when the completion worker finds the stream
+drained, one host callback after the GPU finished.
 
 The other fields:
 
 | Field | Meaning |
 | --- | --- |
+| `steps` | decode steps the frames ran: one per frame, K for a resident decode chain of K steps |
 | `prefill` | frames that were prefill chunks; the rest are decode waves |
 | `graph`, `eager` | frames run as one CUDA graph, and the rest |
 | `linear` | eager frames enqueued as one linear chain; the other eager frames ran the chain state machine |
@@ -253,6 +255,7 @@ The other fields:
 | `captures`, `capture_ms` | graph captures and their time, inside `setup` |
 | `graph_run_ms`, `eager_run_ms` | `run` split by path |
 | `linear_run_ms` | the part of `eager_run_ms` that linear chains ran |
+| `linear_walk_ms` | the part of `linear_run_ms` the host spent enqueueing the linear steps |
 | `decode_wait_ms` | `wait` of decode waves only: the time they queue behind other chains, such as prefill chunks |
 
 `wait` overlaps the `run` and `post` of the chain the frame queued behind, so
@@ -268,7 +271,10 @@ chain epochs, which match `worst_tag` in `WD-MESH-TIMING`.
 rank's per-frame budget with the busy reasons and path split, and the slowest
 frames across ranks. Its `eager_run` column counts only the chain state
 machine, `linear_run` the linear chains; lines printed before linear chains
-existed count every non-graph frame as eager.
+existed count every non-graph frame as eager. `steps/decode` is the mean
+number of steps per decode wave, 1.0 on lines printed before resident decode
+chains. `linear_walk` is the host's share of `linear_run`; the difference is
+the GPU still running after the host finished enqueueing.
 
 ### Iteration 15's `pre` held the GPU time
 
@@ -344,6 +350,68 @@ so the same prompts under both settings compare the two. What stays: a decode
 wave that arrives behind a prefill chunk still waits for the chunk's GPU
 time. Capturing prefill graphs, or ordering decode ahead of prefill, removes
 that.
+
+## Resident decode chains
+
+After iteration 17, each of 8 streams got a token about every 62 ms, while a
+graph chain ran for 46.3 ms. Most of the difference is work outside the chain
+run that every frame pays: residentd and engine turns, the chain keys and
+epoch, the host callbacks and the publish frames. The rest is queueing behind
+prefill chunks. A decode frame now runs up to 8 decode steps
+(`tokens_per_sequence`), so the per-frame work is paid once per chain.
+
+How a chain runs:
+
+- The adapter advertises `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN`,
+  and the engine asks for K steps: the smallest of 8,
+  `max_output_token_count` divided by the lane count, the budget left, the
+  context left, and the positions left in each lane's 64-token block.
+- `SparkGlm5NextValidateChain` accepts K > 1 only on a decode frame whose
+  stage owns both the embedding and the head (every TP16 rank does). The frame
+  must also have no state capture and no cache prefix or publish lane, and
+  every row's K positions must fit in one KV page and under
+  `max_sequence_positions`.
+- Each step takes whichever path its `BEGIN` picks (graph replay, linear
+  chain or state machine), at that step's positions. `BuildWave` recomputes
+  the context bound every step, so a replay that would outgrow its captured
+  bound recaptures, as it would between frames.
+- At the end of a step, `SparkGlm5NextFinishChain` starts the next one.
+  `SparkGlm5NextSettleStep` releases the step's expert lease, drains the
+  stream (bounded at 35 s) and verifies both bands' deferred rounds. Then
+  `SparkGlm5NextFeedStep` stores each row's token in the chain buffer,
+  advances the row's position, and makes the token the row's next input.
+- After the last step, `SparkGlm5NextGatherSteps` lays the tokens out
+  lane-major (row × K + step). The frame completes with `tokens_per_sequence`
+  = K, keeps K − 1 extra cache tokens per lane (as MTP's accepted drafts do),
+  and advances each lane's next position by K − 1.
+- The adapter sizes the output buffer and bounds the completion burst per
+  frame with `SparkGlm5NextServingBurstLimit`: K for a chain, MTP depth + 1
+  for a lone MTP sequence, 1 otherwise. It copies each lane's K tokens from
+  that lane's row.
+- Sampling noise is keyed by seed, position and token, so a sampled step
+  draws what a single-step frame at that position would.
+
+Cache publication: the engine used to queue a zero-row publish frame after
+every chain. It now queues one only when the chain ended at a block boundary
+or finished the request (`SparkModelBatchChainCheckpoint`), so a chain inside
+a block costs one frame, not two. A chain cut short by EOS still publishes
+nothing, because the resident state has run past the emitted tokens.
+
+What chains leave in place, each tracked in [TECHDEBT](../TECHDEBT.md):
+
+- the graph path waits for every replay on residentd's thread;
+- a linear chain waits for each step's tokens before it enqueues the next
+  step;
+- chain frames run no MTP draft;
+- the block cap shortens chains as batches grow. With random lane offsets
+  the mean chain is 8 steps at 1 lane, 7.2 at 2, 6.5 at 4 and 5.4 at 8.
+
+A chain also holds the rank for all K steps, so a prefill chunk that arrives
+mid-chain waits for the whole chain.
+
+To check a deployment: `steps/decode` in `tools/wave_timeline_report.py` is
+the mean chain length of decode waves, and `CHAIN-TIME` lines carry
+`steps=K`. At one stream, greedy tokens must match the single-step build's.
 
 ## Batching
 

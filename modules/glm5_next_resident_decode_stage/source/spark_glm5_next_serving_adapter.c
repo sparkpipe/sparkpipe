@@ -231,6 +231,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
@@ -770,6 +771,15 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkGlm5NextServingBurstLimit(const SparkGlm5NextServingState *state,uint32_t work_kind,uint32_t active_sequence_count,uint32_t tokens_per_sequence)
+{
+	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		return(1u);
+	if ( tokens_per_sequence > 1u )
+		return(tokens_per_sequence);
+	return(state->mtp_enabled != 0u && active_sequence_count == 1u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u : 1u);
+}
+
 static void SparkGlm5NextServingDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -836,8 +846,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	{
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
-		if ( burst > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u ||
-			(burst > 1u && (pending->active_sequence_count != 1u || state->mtp_enabled == 0u)) )
+		if ( burst > SparkGlm5NextServingBurstLimit(state,pending->work_kind,pending->active_sequence_count,pending->frame.tokens_per_sequence) )
 		{
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
@@ -849,12 +858,8 @@ static void SparkGlm5NextServingDriverCompletion(
 		completion.tokens_per_sequence = burst;
 		completion.token_count = pending->active_sequence_count * burst;
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-		if ( burst == 1u )
-			for (index=0u; index<completion.token_count; index++)
-				completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
-		else
-			for (index=0u; index<completion.token_count; index++)
-				completion.token_ids[index] = pending->output_token_ids[index];
+		for (index=0u; index<completion.token_count; index++)
+			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index / burst] * burst + index % burst];
 	}
 	atomic_store_explicit(&pending->active,0u,memory_order_release);
 	state->completion_function(state->completion_context,&completion);
@@ -1053,6 +1058,8 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
+
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1091,9 +1098,7 @@ static void SparkGlm5NextServingBuildFrame(
 	memset(buffer,0,sizeof(*buffer));
 	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	buffer->address = pending->output_token_ids;
-	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
-	if ( state->mtp_enabled != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		buffer->bytes *= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u;
+	buffer->bytes = (uint64_t)submission->row_count * SparkGlm5NextServingBurstLimit(state,submission->work_kind,submission->active_sequence_count,submission->tokens_per_sequence) * sizeof(uint32_t);
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
@@ -1171,7 +1176,7 @@ static SparkStatus SparkGlm5NextServingSubmit(
 	}
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);
-	SPARK_RETURN(status);
+	SPARK_RETURN(SparkGlm5NextServingAbortUnexecuted(state,submission,status));
 }
 
 static SparkStatus SparkGlm5NextServingProgress(
@@ -1264,8 +1269,6 @@ static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t contro
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
 	SPARK_RETURN(status);
 }
-
-#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 {

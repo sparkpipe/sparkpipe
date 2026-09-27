@@ -19,6 +19,10 @@
 
 #define TEST_LING_DRIVER_PROGRAM_ID 1u
 #define TEST_LING_DRIVER_KV_BLOCKS 16u
+#define TEST_LING_DRIVER_FAILING_REQUEST 7777u
+#define TEST_LING_DRIVER_BUSY_REQUEST 7778u
+
+static uint64_t TestLingServingDriverAbortAdmissions;
 
 typedef struct TestLingServingDriver
 {
@@ -102,6 +106,8 @@ static SparkStatus TestLingServingDriverAdmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->descriptor_bytes != (uint32_t)sizeof(*request) || request->program_id == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT )
+		TestLingServingDriverAbortAdmissions++;
 	memset(decision,0,sizeof(*decision));
 	decision->descriptor_bytes = sizeof(*decision);
 	decision->accepted = 1u;
@@ -122,6 +128,10 @@ static SparkStatus TestLingServingDriverSubmit(
 	driver = (TestLingServingDriver *)driver_instance;
 	if ( driver == 0 || frame == 0 || frame->user_context == 0 || frame->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->request_id == TEST_LING_DRIVER_FAILING_REQUEST )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	if ( frame->request_id == TEST_LING_DRIVER_BUSY_REQUEST )
+		return(SPARK_STATUS_BUSY);
 	context = (SparkLingResidentDecodeStageFrameContext *)frame->user_context;
 	if ( context->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) || context->batch == 0 )
 		return(SPARK_STATUS_ABI_MISMATCH);
@@ -175,6 +185,12 @@ static const SparkModelDriverInterface TestLingServingDriverInterface =
 	.admit = TestLingServingDriverAdmit,
 	.snapshot = TestLingServingDriverSnapshot
 };
+
+__attribute__((visibility("default")))
+uint64_t TestLingServingDriverAbortCount(void)
+{
+	return(TestLingServingDriverAbortAdmissions);
+}
 
 __attribute__((visibility("default")))
 const SparkModelDriverInterface *SparkModelDriverGetInterface(void)

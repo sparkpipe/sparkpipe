@@ -71,6 +71,8 @@ struct SparkModelResidentClient
 static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
 static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
+static SparkModelServingLane mock_lane_log[256];
+static uint32_t mock_lane_log_count;
 static uint32_t mock_token_start = 11u;
 
 static int MockTraceEnabled(void)
@@ -111,6 +113,14 @@ uint64_t MockResidentClientGeneration(uint32_t stage_index)
 {
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	return( c != 0 ? c->client_generation : 0u );
+}
+
+uint32_t MockResidentClientLaneLog(uint32_t index,SparkModelServingLane *lane)
+{
+	if ( index >= mock_lane_log_count || lane == 0 )
+		return(0u);
+	*lane = mock_lane_log[index];
+	return(1u);
 }
 
 uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *lane)
@@ -244,6 +254,7 @@ void MockResidentClientReset(void)
 		if ( mock_registry[i] != 0 )
 			free(mock_registry[i]);
 	mock_registry_count = 0u;
+	mock_lane_log_count = 0u;
 	mock_auto_tokens = 0u;
 	mock_token_start = 11u;
 	memset(mock_registry,0,sizeof(mock_registry));
@@ -336,6 +347,7 @@ static SparkStatus MockResidentClientEnqueue(
 {
 	MockInflight *slot;
 	SparkStatus connect_status;
+	uint32_t lane;
 	connect_status = MockResidentClientEnsureConnected(client);
 	if ( connect_status != SPARK_STATUS_OK )
 		return(connect_status);
@@ -356,6 +368,8 @@ static SparkStatus MockResidentClientEnqueue(
 	client->last_submission_id = submission->submission_id;
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
+	for (lane=0u; client->stage_index == 0u && submission->lanes != 0 && lane<submission->lane_count && mock_lane_log_count<256u; lane++)
+		mock_lane_log[mock_lane_log_count++] = submission->lanes[lane];
 	if ( MockTraceEnabled() )
 		fprintf(stderr,"MOCK rank=%u %s id=%llu kind=%u rows=%u seq=%llu inflight=%u\n",
 			client->stage_index,op,
