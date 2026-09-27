@@ -204,22 +204,23 @@
         <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Projected</th></tr></thead>
         <tbody>
                     <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>129.9</b>tok/s measured · 8 streams · 2026-09-26 · <b>2,200</b> tok/s projected · 256 streams · FP8 experts / BF16 attn+KV</td></tr>
-          <tr><td class="model">GLM 5.3 Full</td><td>glm52 module · NVFP4/FP8/BF16 repack</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">DeepSeek V4.1 Flash</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Kimi K3</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Qwen 3.8 Max</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Qwen 3.8 27B</td><td>global TP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Qwen4 Flash</td><td>global TP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">MiniMax H3</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">MiMo 2.6</td><td>Flash · Pro</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Gemma 4</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Ling</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Laguna</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Hunyuan HY4</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
-          <tr><td class="model">Muse Glimmer</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">GLM 5.3 Full</td><td>glm52 module · NVFP4/FP8/BF16 repack</td><td><span class="state">Driver in progress</span></td><b>~1,050</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">DeepSeek V4.1 Flash</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~690</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Driver in progress</span></td><b>~240</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">Kimi K3</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~270</b>tok/s est · 256 streams · NVFP4</td></tr>
+          <tr><td class="model">Qwen 3.8 Max</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~210</b>tok/s est · 256 streams · INT6</td></tr>
+          <tr><td class="model">Qwen 3.8 27B</td><td>global TP</td><td><span class="state">Driver in progress</span></td><b>~31,000</b>tok/s est · 256 streams · weight-read bound</td></tr>
+          <tr><td class="model">Qwen4 Flash</td><td>global TP</td><td><span class="state">Driver in progress</span></td><b>~3,000</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">MiniMax H3</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~1,200</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">MiMo 2.6</td><td>Flash · Pro</td><td><span class="state">Driver in progress</span></td><b>~1,200 / ~550</b>tok/s est · Flash / Pro · 256 streams</td></tr>
+          <tr><td class="model">Gemma 4</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~27,000</b>tok/s est · 256 streams · weight-read bound</td></tr>
+          <tr><td class="model">Ling</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~2,900</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">Laguna</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td>contract pending</td></tr>
+          <tr><td class="model">Hunyuan HY4</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~500</b>tok/s est · 256 streams</td></tr>
+          <tr><td class="model">Muse Glimmer</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><b>~14,000</b>tok/s est · 256 streams · weight-read bound</td></tr>
         </tbody>
       </table>
+      <p class="caption">Estimates, not measurements: parameters derived from each family's model contract; deployed bytes at FP8 expert weights (NVFP4 for Kimi K3 and INT6 for Qwen 3.8 Max, to fit sixteen Sparks), one weight read per step at 273 GB/s per Spark, 256 streams, 1K context, scaled to the GLM 5.3 Flash roofline (which includes KV and collective terms; models under ~100B params are shown as weight-read bounds and may be compute-bound below them). The GLM 5.3 Flash row is the qualified roofline projection. Every figure will be replaced by a measured number as each family qualifies.</p>
     </div>
   </div>
 </section>
