@@ -155,7 +155,7 @@ json.dump(plan, open(work + "/plan.json", "w"), indent=1)
 print("plan written")
 PYEOF
 
-python3 "$REPO/modules/laguna_resident_decode_stage/validation/laguna_layer7_reference.py" \
+python3 "$REPO/tools/laguna_layer7_reference.py" \
 	--checkpoint "$CKPT" --dumps "$DUMPS" --plan "$WORK/plan.json" 2>&1 | tee -a "$LOG"
 
 mkdir -p "$WORK/retained"

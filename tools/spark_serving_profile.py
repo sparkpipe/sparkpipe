@@ -18,8 +18,7 @@ from __future__ import annotations
 MESH_MAX_BATCH_ROWS = 128
 FIRMWARE_MAX_INPUT_ROWS = 65536
 KV_PAGE_TOKENS = 64
-# 16 rank-pages per sequence-page (the multi-rank KV layout; module contract).
-KV_RANK_PAGES_PER_PAGE = 16
+KV_POOL_PAGES_PER_RESIDENT_PAGE = 16
 # Bytes per KV page (payload + recurrent state; module formula — the
 # module recomputes this and rejects a smaller backing budget).
 KV_PAGE_BYTES = 2 * 1024 * 1024
@@ -53,7 +52,7 @@ def derive(sequences: int, positions: int = 512) -> dict:
     if sequences < 1 or positions < 1:
         raise ValueError("sequences and positions must be positive")
     pages_per_sequence = (positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS
-    kv_pages = KV_RANK_PAGES_PER_PAGE * sequences * pages_per_sequence
+    kv_pages = KV_POOL_PAGES_PER_RESIDENT_PAGE * sequences * pages_per_sequence
     row_capacity = min(MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)
     return {
         "max_active_sequences": sequences,

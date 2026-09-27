@@ -33,7 +33,7 @@ def main():
         build = subprocess.run(
             ["cc", "-std=c11", "-O1", "-I", str(ROOT),
              str(ROOT / "tests" / "host_cuda" / "k3_spec_verify_host.c"),
-             "-o", str(binary)],
+             "-o", str(binary), "-lm"],
             capture_output=True, text=True)
         if build.returncode != 0:
             print("FAIL host build:", build.stderr[:400])

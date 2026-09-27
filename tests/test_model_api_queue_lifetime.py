@@ -113,6 +113,7 @@ static void TestQueueOrder(uint64_t first,const uint32_t *done,uint32_t count)
 int32_t main(int argc,char **argv)
 {
 	TestClient a,b,c;
+	SparkModelResidentDeployment deployment = {0};
 	pthread_t loggers[8];
 	uint32_t index,round,seed = 1u;
 	uint64_t next_id = 100004u;
@@ -131,6 +132,7 @@ int32_t main(int argc,char **argv)
 	assert(fcntl(S.wake_fds[0],F_SETFL,O_NONBLOCK) == 0);
 	assert(fcntl(S.wake_fds[1],F_SETFL,O_NONBLOCK) == 0);
 	S.running = 1;
+	S.context_limit = api_context_limit(&deployment);
 	a = TestEnqueue(100001u);
 	b = TestEnqueue(100002u);
 	TestComplete(&b,100002u,22u);

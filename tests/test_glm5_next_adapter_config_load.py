@@ -381,7 +381,7 @@ static int32_t TestDeployment(const char *path,uint32_t positions)
         return(-31);
     pages = deployment.runtime_limits.resident_sequence_capacity * ((positions + SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS - 1u) / SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS);
     status = SparkModelResidentDeploymentValidateForAdapter(&deployment,&SparkGlm5NextServingDescriptor);
-    if ( deployment.runtime_limits.kv_logical_page_capacity != pages || deployment.runtime_limits.kv_physical_page_capacity != pages )
+    if ( deployment.runtime_limits.kv_physical_page_capacity < pages || deployment.runtime_limits.kv_logical_page_capacity < deployment.runtime_limits.kv_physical_page_capacity )
         status = SPARK_STATUS_VALIDATION_FAILED;
     SparkModelResidentDeploymentDestroy(&deployment);
     return(status == SPARK_STATUS_OK ? 0 : -32);

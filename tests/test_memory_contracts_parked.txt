@@ -50,7 +50,6 @@
 13 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: SparkGlm52ValAllocZeroed uses a raw byte-width multiplier
 9 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c: memcpy uses a direct size/count literal
-1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_tap_ring.c: malloc uses a raw byte-width multiplier
 29 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: SparkGlm5NextValAllocZeroed uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu: SparkGlm5NextMtpParityAlloc uses a raw byte-width multiplier
@@ -78,7 +77,6 @@
 7 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: malloc uses a raw byte-width multiplier
 5 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: memcpy uses a direct size/count literal
 1 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: memset uses a direct size/count literal
-1 modules/laguna_resident_decode_stage/validation/laguna_layer7_reference.py: GLM model literal 12288 is outside the model contract
 1 modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c: malloc uses a raw byte-width multiplier
 42 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: SparkLingValAllocZeroed uses a raw byte-width multiplier
 5 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
@@ -203,6 +201,7 @@
 1 tools/k3_tp4pp4_perf_estimate.py: GLM model literal 576 is outside the model contract
 1 tools/laguna_gen_name_map.py: GLM model literal 12288 is outside the model contract
 1 tools/laguna_gen_name_map.py: GLM model literal 576 is outside the model contract
+1 tools/laguna_layer7_reference.py: GLM model literal 12288 is outside the model contract
 1 tools/laguna_stagepack.py: GLM model literal 12288 is outside the model contract
 1 tools/lazy_attach_harness.c: memcpy uses a direct size/count literal
 4 tools/ling_gen_deployment.py: GLM model literal 12288 is outside the model contract

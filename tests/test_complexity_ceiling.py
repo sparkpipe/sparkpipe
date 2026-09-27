@@ -102,6 +102,11 @@ Ledger (exact counts, newest last):
   5258 to 4900. The removed copies were mostly small, so the means rise:
   production 7.73 -> 7.99 (4005 -> 3758 functions) and validation
   9.00 -> 9.88 (584 -> 496 functions). The max is unchanged.
+- 2026-09-27 glm5_next DFlash2 tap ring retired: its gate leaves the
+  validation scope (31 functions, 219 decision points, mean 7.06), so
+  validation decision points fall from 4900 to 4681 and the mean rises
+  9.88 -> 10.07 (496 -> 465 functions). Production loses the ring itself
+  (8 functions, 64 decision points). Both maxes are unchanged.
 """
 import pathlib
 import sys
@@ -124,7 +129,7 @@ MEAN_CEILING_X100 = 800
 # metric; it exists so harness complexity is at least VISIBLE and bounded.
 # At landing: max 90 (SparkGlm52ValFixtureSetup), mean 8.98.
 VALIDATION_MAX_BUDGET = 90
-VALIDATION_MEAN_CEILING_X100 = 988
+VALIDATION_MEAN_CEILING_X100 = 1007
 
 
 def main() -> int:

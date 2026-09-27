@@ -71,7 +71,7 @@ def write_synthetic_nvfp4_store(root: Path, experts: int = 256,
         scale = ((np.arange(16 * 2, dtype=np.uint32) + expert * 5)
                  .astype(np.uint8).reshape(16, 2) % 254)
         scale[0, 0] = 0x38  # 1.0 anchor
-        value = np.float32(7.5e-5) * (1 + expert)
+        value = np.float32(7.5e-5) * np.float32(1 + expert)
         for proj in ("up_proj", "gate_proj", "down_proj"):
             base = f"model.layers.5.mlp.experts.{expert}.{proj}"
             add(f"{base}.weight", "U8", [16, 16], payload.tobytes())
