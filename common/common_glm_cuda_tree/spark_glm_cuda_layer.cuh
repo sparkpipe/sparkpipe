@@ -4,6 +4,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
@@ -349,8 +350,7 @@ static int32_t GlmLayerIndexer(
             ? LM_LAUNCH_OK
             : LM_LAUNCH_ERR_LAUNCH;
     }
-    if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
-        buffers->head_candidate_token == 0)
+    if (buffers->selection_scores == 0 || buffers->selected_positions == 0)
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
@@ -371,7 +371,7 @@ static int32_t GlmLayerIndexer(
         GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
         buffers->selection_scores);
     LM_LAUNCH(
-        (LmTopkHistogramKernel<GLM_LAYER_THREADS>),
+        (LmTopkExactKernel<GLM_LAYER_THREADS>),
         rows,
         GLM_LAYER_THREADS,
         0,
@@ -379,19 +379,7 @@ static int32_t GlmLayerIndexer(
         buffers->selection_scores,
         context,
         GLM_DSA_SELECTED,
-        buffers->head_candidate_token);
-    LM_LAUNCH(
-        (LmTopkGatherKernel<GLM_LAYER_THREADS>),
-        rows,
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->selection_scores,
-        context,
-        GLM_DSA_SELECTED,
-        buffers->head_candidate_token,
-        buffers->selected_positions,
-        0);
+        buffers->selected_positions);
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;

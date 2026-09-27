@@ -1,5 +1,5 @@
 {
-  "file_count": 3043,
+  "file_count": 3049,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "ec49725203388c99991564a5149bc3d18423756b5d4398a1087a420a953e1953",
-      "size_bytes": 136546
+      "sha256": "9c324e27efdef3270890f87e138c57e433a1edf237aaa7b885dacc2f5d7e25b4",
+      "size_bytes": 136619
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "9115f6aa5c182a3c07735546216512c745bcae76a49b6ea56cd82153768cb147",
-      "size_bytes": 34448
+      "sha256": "8037fd3bc5af6b418ec3d5bfb3bbe9a8a921c78c474f08acb9f1425b86c1ec52",
+      "size_bytes": 36295
     },
     {
       "path": "cache/cache.h",
@@ -88,8 +88,8 @@
     },
     {
       "path": "cache/kv_page_cache.c",
-      "sha256": "87d43c7bbf6814841be94c0ee15012187c67257fa1fee4ddd0ab8374af768f66",
-      "size_bytes": 64194
+      "sha256": "9dc269aad120d79101256d522e22b78500d2703177087245f3bd8d3c6c9b4d57",
+      "size_bytes": 64794
     },
     {
       "path": "cache/kv_page_store.c",
@@ -153,8 +153,8 @@
     },
     {
       "path": "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh",
-      "sha256": "35686348324709b4f338e9408f14c0515c009ce28d079023a70b111f1f7e86b6",
-      "size_bytes": 39406
+      "sha256": "5b7b190bd40a753329e8ff99a6d8571044ee03151aa7b8f6d679be6527654eef",
+      "size_bytes": 39100
     },
     {
       "path": "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu",
@@ -728,8 +728,8 @@
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
-      "sha256": "8d1533f234a6771325b7e992249a9c272f81a43d8bfd3ea1b7f8cfa3e821c7a5",
-      "size_bytes": 57693
+      "sha256": "0f6c26c9f07c7ec7f0cc80c2d071dd43cfba86d134f7387781c57f3840478b09",
+      "size_bytes": 61991
     },
     {
       "path": "docs/GLM_FLASH_HILLCLIMB.md",
@@ -838,8 +838,8 @@
     },
     {
       "path": "docs/KERNEL_PLAYBOOK.md",
-      "sha256": "7794af19d05f125327b1079120a53bcd0cce22c031ffd7cc81197b9556aedd35",
-      "size_bytes": 33242
+      "sha256": "bad8c7c7f62f2e218d29728eb04efebf5da74976e0f4dc1af7e675f8dc60f1aa",
+      "size_bytes": 33673
     },
     {
       "path": "docs/KVCACHE_SUBSYSTEM_BOUNDARY.md",
@@ -3848,8 +3848,13 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "dec02bf3e9b3dcce7b19abdbc866e66019c1856c68f0aa70b45f23c7ed6b387b",
-      "size_bytes": 46317
+      "sha256": "621f33e8661742bd378ed11daf24b4ddbd38cc86a3bef14378d6a5bd500b76dc",
+      "size_bytes": 46367
+    },
+    {
+      "path": "inference/kernels/attn_split.h",
+      "sha256": "7be2623880736aea6c77b24076c79b94e46c311e9da4ae411c22d5980a48ec86",
+      "size_bytes": 246
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -4003,8 +4008,13 @@
     },
     {
       "path": "inference/kernels/topk.cuh",
-      "sha256": "5b95d1a9833311c7a32bfb235cbdf473975ff38b7432ebd383ee00abbf3e2c81",
-      "size_bytes": 6849
+      "sha256": "070b251ba80b4bbec229f254c4e16a1a333deae9130ed7143aea52b6e61cbcad",
+      "size_bytes": 5071
+    },
+    {
+      "path": "inference/kernels/topk_exact.cuh",
+      "sha256": "d372f63f78d4160b0463d6e32477c9bc3633eefb6febef0239c76ecac4b0a80d",
+      "size_bytes": 4171
     },
     {
       "path": "inference/kernels/topk_warp.cuh",
@@ -4375,6 +4385,11 @@
       "path": "model-families/glm5_next/include/sparkpipe/llm_defines.h",
       "sha256": "1a7f4b06f303eda6dabc0a0c66245334261f26be2095c1d5c08301db96710895",
       "size_bytes": 2884
+    },
+    {
+      "path": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_graph_regime.h",
+      "sha256": "baa2217488d80c0643ee965a3dafc6c0a1e527d09e6eceb5f0d5b5620e07f181",
+      "size_bytes": 1705
     },
     {
       "path": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h",
@@ -5223,8 +5238,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh",
-      "sha256": "1b31a23029dc28476ea1486b70a0fa28ce996d5d9c104c2fac624a4e09f58bfe",
-      "size_bytes": 94753
+      "sha256": "963139b1486a02d714de75d9b116f6216847fadf905cd87f1ca9b8417d8b71f1",
+      "size_bytes": 94203
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu",
@@ -5233,18 +5248,18 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu",
-      "sha256": "f0a94e8ef1b8156c463a17c85d4be357eab7cb0afae5486240c4f6f4d25d5608",
-      "size_bytes": 42670
+      "sha256": "e8397fc18e8bbbeacda7909d9a22c495ff2d0034e97b8bbc96c43b4f282b660e",
+      "size_bytes": 42778
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h",
-      "sha256": "fc84af7f365392637852b4ed5a09a55ae7b7787a1d933eca3077c3dfe4c38f0a",
-      "size_bytes": 12185
+      "sha256": "e963dda939e38e1318cf6ec87c00611b0eaece9f9a4e195a7000ea0fd6ea5af0",
+      "size_bytes": 12309
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "e86958f2bc4ee78ca71f885f3a47378c89efd98128cef41dfc11b42d99518aa6",
-      "size_bytes": 246493
+      "sha256": "1dfa128f2c8a2d0dc82a56041967856fb305194fa09f414a824c26a017bef58d",
+      "size_bytes": 246770
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -6053,8 +6068,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "aca1f05dd8045d726bda7e8542bc9dfcb2e3dbff3a307995e3d656d60c4cd237",
-      "size_bytes": 133365
+      "sha256": "a91be096548e26c310205260adff6da7847c96e879d87f962f4c49891073466b",
+      "size_bytes": 133554
     },
     {
       "path": "node/weightd.c",
@@ -8528,8 +8543,8 @@
     },
     {
       "path": "tests/host_cuda/glm_index_kv_host.cu",
-      "sha256": "c356230ccda1f188419957f2ee5179e9e6ed67defbf22fd543004ce04cc5855b",
-      "size_bytes": 6345
+      "sha256": "c7776d50eb592a25bcd659ee0e60d1795d241f0b1f0cb2213a811ed162102d0b",
+      "size_bytes": 9149
     },
     {
       "path": "tests/host_cuda/glm_rows_kernels_host.cu",
@@ -8598,8 +8613,8 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "75c90b259f94f369cf58a6dee6aa0805662ddb70811a2e9832c66a62c69424d7",
-      "size_bytes": 6814
+      "sha256": "2ea0587775e4b88823ec4c47ce25f2b522877eec54460ab4dcfcbb998409df25",
+      "size_bytes": 6819
     },
     {
       "path": "tests/host_cuda/lm_host_threads.cuh",
@@ -8655,6 +8670,11 @@
       "path": "tests/host_cuda/skinny_grouped_host.cu",
       "sha256": "e3cb3da1c2b20880482b267194996bab666bf0a3449f52c6396f8dfdbf1bcb60",
       "size_bytes": 5365
+    },
+    {
+      "path": "tests/host_cuda/topk_exact_host.cu",
+      "sha256": "d9ba00e8b7ac09695dcac8bd99c3308355b6f2fa056a68f06acfebb0d1c6a6bb",
+      "size_bytes": 3994
     },
     {
       "path": "tests/host_cuda/tp_reduce_host.cu",
@@ -9332,6 +9352,11 @@
       "size_bytes": 7805
     },
     {
+      "path": "tests/test_glm5_next_graph_regime.py",
+      "sha256": "bdf093ba2afd08f199aa9baa4209ca60ae27090e7f529938955ce0166f700422",
+      "size_bytes": 3312
+    },
+    {
       "path": "tests/test_glm5_next_hc_boundary.py",
       "sha256": "3f88d7dfb2ef901298bda7b1e28af26a85cefb2836d2d4b82980145a0107021c",
       "size_bytes": 5764
@@ -9723,8 +9748,8 @@
     },
     {
       "path": "tests/test_kv_cache.c",
-      "sha256": "47345ac45b4d6196e85c474f4b1fce8c66f668aa8863ce030add19361147b57a",
-      "size_bytes": 102345
+      "sha256": "fbc21b0f3b14e33020c59b432f08c74fc949a04e68cdd440d244b67738ff2acc",
+      "size_bytes": 103415
     },
     {
       "path": "tests/test_kv_failure_host.py",
@@ -9983,8 +10008,8 @@
     },
     {
       "path": "tests/test_model_resident_deadline.c",
-      "sha256": "f253d8390ca3e9bd9b07c0cd0f90b7da322d615798e3f6db8765b95eb2699996",
-      "size_bytes": 6308
+      "sha256": "4544b94cf4f912ae2c8c59ee1e33c256b926423274672ddc9438479c67e61a22",
+      "size_bytes": 12837
     },
     {
       "path": "tests/test_model_resident_deployment.c",
@@ -10555,6 +10580,11 @@
       "path": "tests/test_tokenizer_sidecar.c",
       "sha256": "4b18cc79e24852e9a4b47b45ba02d9c2ec1de141767813597a4a8d066719973f",
       "size_bytes": 20526
+    },
+    {
+      "path": "tests/test_topk_exact_host.py",
+      "sha256": "ecd574b66eb63dd48b475308f1c3e81ab2b8810a7c5c29090a844d2a76a02eea",
+      "size_bytes": 773
     },
     {
       "path": "tests/test_topology_switch.c",
@@ -15220,5 +15250,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74262795
+  "total_bytes": 74292767
 }

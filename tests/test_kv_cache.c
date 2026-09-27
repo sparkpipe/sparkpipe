@@ -1906,6 +1906,27 @@ static void SparkTestKvPageCacheReclaimsColdPrefixUnderPressure(void)
 	assert(fixture.cache.evicted_entry_count == 1u);
 }
 
+static void SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	uint32_t sequence;
+	SparkTestKvPageInitialize(&fixture);
+	for (sequence=1u; sequence<=SPARK_TEST_LOGICAL_BLOCK_COUNT; sequence++)
+	{
+		SparkTestKvPageLane(&lane,sequence,0u,0u,SPARK_TEST_BLOCK_TOKENS);
+		SparkTestKvPagePublish(&lane,SPARK_TEST_BLOCK_TOKENS,(uint8_t)(40u + sequence));
+		(void)SparkTestKvPageBegin(&fixture,&lane);
+		assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+		assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,sequence) == SPARK_STATUS_OK);
+	}
+	assert(fixture.kv.arena.free_logical_block_head == SPARK_KV_CACHE_NO_BLOCK && fixture.cache.evicted_entry_count == 0u);
+	SparkTestKvPageLane(&lane,99u,0u,0u,1u);
+	assert(SparkTestKvPageBegin(&fixture,&lane) != SPARK_KV_CACHE_NO_BLOCK);
+	assert(fixture.cache.evicted_entry_count == 1u);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,99u) == SPARK_STATUS_OK);
+}
+
 static int32_t SparkTestKvPairedEviction(SparkKvPageStore *stores,uint8_t *source,uint8_t *output)
 {
 	SparkTestKvPageFixture fixture;
@@ -2161,5 +2182,6 @@ int main(void)
 	SparkTestKvPageCacheNonMutatingResolutionAndDemand();
 	SparkTestKvPageCachePrefetchAndBeginAreTransactional();
 	SparkTestKvPageCacheReclaimsColdPrefixUnderPressure();
+	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	return(0);
 }

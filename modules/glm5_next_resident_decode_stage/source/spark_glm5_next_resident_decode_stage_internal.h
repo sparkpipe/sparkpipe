@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
+#include "sparkpipe/spark_glm5_next_graph_regime.h"
 #include "sparkpipe/spark_status.h"
 
 typedef struct SparkGlm5NextLayerWeights
@@ -83,8 +84,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *route_ready_event;
 	uint32_t route_recorded;
 	void *graph_exec_a;
-	void *graph_exec_rows[SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
-	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
+	void *graph_exec_rows[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
+	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
 	uint64_t graph_failed_rows;
 	uint32_t graph_disabled;
 	void *host_staging;

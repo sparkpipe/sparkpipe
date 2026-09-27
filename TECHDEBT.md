@@ -147,6 +147,11 @@ progress diary.
   chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
   without looking at queued prefill; shorten chains while prefill waits if
   time to first token suffers.
+- glm5_next: the exact DSA top-k (`LmTopkExactKernel`) runs four radix passes
+  and a block-scan compaction in one CTA per row. At 32K context a row has
+  8,192 pools, and the kernel's time there is unmeasured. If it shows in
+  `run_us` at long context, compact with warp ballots instead of the
+  Hillis-Steele scan.
 
 ## Resident TP4 x PP4 execution
 
@@ -217,6 +222,12 @@ progress diary.
   `SparkGlm5NextBuildPageTable` and the cache allocation code in
   `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
   contracts to admit against resident demand; do not merely raise the limit.
+- The KV page cache keeps every published block until an allocation finds the
+  logical pool full, then evicts one. It picks the victim by scanning every
+  entry, so once the pool is full each new page costs a pass over the whole
+  table. Keep unreferenced entries on an LRU list instead. Nothing reports how
+  full the pool is either; add used pages, retained entries and evictions to
+  the wave timeline.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
 - Select the smallest validated specialization for effective rows, including
@@ -246,6 +257,19 @@ progress diary.
   generated ones. Until batched rows equal B1, a warm and a cold run of the
   same prompt can differ (#1230). Make them equal, or keep checkpoints of
   generated tokens out of reuse for verified requests.
+- glm5_next: a row's attention still depends on the other rows in its wave.
+  The wave's longest row decides split-KV for every row, and a row at or
+  below 2,048 tokens, in a wave whose longest row is past 2,048, attends
+  through the 2,051-slot selected list (all its complete pools, then its
+  tail) instead of densely. Either way its partitions and summation order
+  differ from a one-row wave's. Graph and eager waves now agree with each
+  other, but not with the row run alone. Attention tiles fixed by absolute
+  key position (the TensorFold rule above) remove this.
+- glm5_next: no GPU test compares a replayed decode graph's logits with an
+  eager wave's at the same context. Host tests cover the choices (split-KV,
+  DSA selection, pool expansion) and run the selection kernels. Add the
+  logits comparison to the CUDA validation at contexts 63, 64, 2,048, 2,049
+  and 4,099.
 
 ## Model contracts
 
@@ -327,9 +351,13 @@ progress diary.
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
   recovered without restarting the unit.
-- residentd's completion callback marks any route it finds by submission id
-  READY_COMPLETION after an identity or state mismatch, even a route that is
-  not waiting on the adapter. Limit that to WAIT_ADAPTER routes.
+- The serving completion ABI accepts statuses up to UNSUPPORTED, but weightd
+  can fail a glm5_next expert lease with NO_LANE or EVICT_DENIED, and the
+  chain passes that status up. residentd now names it
+  (`COMPLETION-REJECTED ... completion_status=20`) and fails the route with
+  invalid_argument. Map those statuses in the adapter, to BUSY where the step
+  can be retried without having advanced any recurrent state, otherwise to
+  CAPACITY_EXCEEDED.
 - ROUTE-STUCK reports a route once per state. Repeat it on an interval with
   the route's committed-FIFO position and slot claims.
 - Pipeline-parallel stages still wedge after a failure on another rank. When

@@ -100,11 +100,11 @@ static inline unsigned long long __cvta_generic_to_global(const void *p) { retur
 
 static inline unsigned atomicAdd(unsigned *address, unsigned value)
 {
-	unsigned old = *address; *address = old + value; return old;
+	return __atomic_fetch_add(address, value, __ATOMIC_SEQ_CST);
 }
 static inline int atomicAdd(int *address, int value)
 {
-	int old = *address; *address = old + value; return old;
+	return __atomic_fetch_add(address, value, __ATOMIC_SEQ_CST);
 }
 static inline float atomicAdd(float *address, float value)
 {

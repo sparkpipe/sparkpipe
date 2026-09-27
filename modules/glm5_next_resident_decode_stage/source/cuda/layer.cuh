@@ -8,6 +8,8 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/topk_exact.cuh"
+#include "sparkpipe/spark_glm5_next_graph_regime.h"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
@@ -92,7 +94,7 @@ void Glm5NextPoolScoreKernel(
     uint32_t index, slot_in_pool, head;
     if (local >= local_stride)
         return;
-    if (pool >= pools || first >= context)
+    if (pool >= pools || first + KPOOL > context)
     {
         if (threadIdx.x == 0u)
             pool_scores[(uint64_t)row * local_stride + local] = -INFINITY;
@@ -107,11 +109,6 @@ void Glm5NextPoolScoreKernel(
         for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
         {
             uint32_t position = first + slot_in_pool;
-            if (position >= context)
-            {
-                logits[slot_in_pool] = -INFINITY;
-                continue;
-            }
             const uint16_t *slot = (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(
                 index_cache, sequence, position, row, LM_KV_ACCESS_READ);
             if (slot == 0)
@@ -199,6 +196,7 @@ void Glm5NextPoolExpandKernel(
         return;
     uint32_t sequence = sequence_of_row[row];
     uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
+    uint32_t pooled = context - context % KPOOL;
     uint32_t select = TOPK / KPOOL;
     for (index = threadIdx.x; index < WIDTH; index += THREADS)
     {
@@ -209,16 +207,11 @@ void Glm5NextPoolExpandKernel(
                                            index / KPOOL];
             uint32_t within = index % KPOOL;
             position = pool * KPOOL + within;
-            if (position >= context)
+            if (position >= pooled)
                 position = 0xFFFFFFFFu;
         }
-        else
-        {
-            uint32_t tail_count = context % KPOOL;
-            uint32_t tail_index = index - TOPK;
-            if (tail_index < tail_count)
-                position = context - tail_count + tail_index;
-        }
+        else if (pooled + index - TOPK < context)
+            position = pooled + index - TOPK;
         selected_positions[(uint64_t)row * WIDTH + index] = position;
     }
 }
@@ -557,7 +550,7 @@ static int32_t Glm5NextLayerIndexerScore(
     }
     degree = Glm5NextIndexCpDegree(buffers, context);
     if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
-        buffers->head_candidate_token == 0 ||
+        buffers->selected_pools == 0 ||
         (degree > 1u && (buffers->index_local_scores == 0 || buffers->index_gathered_scores == 0 || buffers->index_owner_rank >= degree)))
     {
         return LM_LAUNCH_ERR_SHAPE;
@@ -619,7 +612,7 @@ static int32_t Glm5NextLayerIndexerSelect(
             (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, local_stride) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,
             degree);
     LM_LAUNCH(
-        (LmTopkHistogramKernel<GLM5_NEXT_LAYER_THREADS>),
+        (LmTopkExactKernel<GLM5_NEXT_LAYER_THREADS>),
         rows,
         GLM5_NEXT_LAYER_THREADS,
         0,
@@ -627,19 +620,7 @@ static int32_t Glm5NextLayerIndexerSelect(
         buffers->selection_scores,
         pools,
         GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
-        buffers->head_candidate_token);
-    LM_LAUNCH(
-        (LmTopkGatherKernel<GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->selection_scores,
-        pools,
-        GLM5_NEXT_DSA_SELECTED / GLM5_NEXT_DSA_KPOOL,
-        buffers->head_candidate_token,
-        buffers->selected_pools,
-        0);
+        buffers->selected_pools);
     LM_LAUNCH(
         (Glm5NextPoolExpandKernel<
             GLM5_NEXT_LAYER_THREADS,
@@ -751,7 +732,7 @@ static int32_t Glm5NextLayerAttentionHead(
         buffers->query_latent_bf16 == 0 ||
         (context > GLM5_NEXT_DSA_SELECTED &&
          (buffers->selected_positions == 0 ||
-          buffers->selected_position_count != GLM5_NEXT_DSA_SELECTED)))
+          buffers->selected_position_count != SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH)))
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
@@ -938,7 +919,7 @@ static int32_t Glm5NextLayerAttentionTail(
                 buffers->attention_latent_bf16,
                 buffers->row_positions,
                 rows,
-                context > GLM5_NEXT_DSA_SELECTED ? GLM5_NEXT_DSA_SELECTED : context,
+                SparkGlm5NextAttentionPositionBound(context),
                 buffers->decode_split_context_threshold,
                 buffers->attention_split_partials,
                 (uint32_t)buffers->attention_split_partial_blocks,
@@ -961,8 +942,7 @@ static int32_t Glm5NextLayerAttentionTail(
             buffers->attention_latent_bf16,
             buffers->row_positions,
             rows,
-            context > GLM5_NEXT_DSA_SELECTED ? GLM5_NEXT_DSA_SELECTED
-                                             : context,
+            SparkGlm5NextAttentionPositionBound(context),
             buffers->decode_split_context_threshold,
             buffers->attention_split_partials,
             (uint32_t)buffers->attention_split_partial_blocks,

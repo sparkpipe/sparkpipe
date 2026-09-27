@@ -775,39 +775,42 @@ static SparkStatus SparkKvPageCacheBindLane(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvPageCacheAllocateMutable(
-	SparkKvPageCache *cache,
-	SparkKvPageCacheSequence *sequence,
-	uint32_t first_token_index)
+static SparkStatus SparkKvPageCacheAcquireLogicalPage(SparkKvPageCache *cache,uint32_t *logical_page_index)
+{
+	SparkStatus status;
+	status = SparkKvCacheArenaAcquireBlock(cache->kv_cache_arena,logical_page_index);
+	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED && SparkKvPageCacheEvictUnused(cache) == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaAcquireBlock(cache->kv_cache_arena,logical_page_index);
+	return(status);
+}
+
+static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint32_t logical_page_index)
+{
+	uint32_t victim;
+	SparkStatus status;
+	status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
+	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED && status != SPARK_STATUS_BUSY )
+		return(status);
+	victim = SparkKvPageCacheEvictionCandidate(cache,1u);
+	if ( victim == SPARK_KV_PAGE_CACHE_NO_INDEX || SparkKvPageCacheEvictEntry(cache,victim) != SPARK_STATUS_OK )
+		return(status);
+	return(SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index));
+}
+
+static SparkStatus SparkKvPageCacheAllocateMutable(SparkKvPageCache *cache,SparkKvPageCacheSequence *sequence,uint32_t first_token_index)
 {
 	uint32_t logical_page_index;
 	SparkStatus status;
 	logical_page_index = SPARK_KV_CACHE_NO_BLOCK;
-	status = SparkKvCacheArenaAcquireBlock(cache->kv_cache_arena,
-		&logical_page_index);
+	status = SparkKvPageCacheAcquireLogicalPage(cache,&logical_page_index);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,
-			logical_page_index);
+		status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,logical_page_index);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,
-			logical_page_index);
-	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED ||
-		status == SPARK_STATUS_BUSY )
-	{
-		uint32_t victim;
-		victim = SparkKvPageCacheEvictionCandidate(cache,1u);
-		if ( victim != SPARK_KV_PAGE_CACHE_NO_INDEX &&
-			SparkKvPageCacheEvictEntry(cache,victim) == SPARK_STATUS_OK )
-			status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,
-				logical_page_index);
-	}
+		status = SparkKvPageCacheMarkPageResident(cache,logical_page_index);
 	if ( status != SPARK_STATUS_OK )
 	{
-		if ( logical_page_index != SPARK_KV_CACHE_NO_BLOCK &&
-			logical_page_index < cache->kv_cache_arena->logical_block_count &&
-			cache->kv_cache_arena->blocks[logical_page_index].reference_count != 0u )
-			(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,
-				logical_page_index);
+		if ( logical_page_index != SPARK_KV_CACHE_NO_BLOCK && logical_page_index < cache->kv_cache_arena->logical_block_count && cache->kv_cache_arena->blocks[logical_page_index].reference_count != 0u )
+			(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,logical_page_index);
 		if ( logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
 			(void)SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,logical_page_index);
 		SPARK_RETURN(status);
