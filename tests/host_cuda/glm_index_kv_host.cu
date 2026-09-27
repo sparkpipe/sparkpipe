@@ -10,8 +10,24 @@ LmHostDim3 blockIdx,threadIdx,blockDim,gridDim;
 #undef LM_WARP_LANES
 #define LM_WARP_LANES 1u
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/topk_exact.cuh"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "glm_pool_kernels.h"
+
+static uint32_t check_row_positions(const uint32_t *expanded,uint32_t width,uint32_t context,uint32_t kpool)
+{
+	uint32_t seen[192] = {},valid = 0u;
+	for (uint32_t i=0u; i<width; i++)
+		if ( expanded[i] != UINT32_MAX )
+		{
+			assert(expanded[i] < context && seen[expanded[i]] == 0u);
+			seen[expanded[i]] = 1u;
+			valid++;
+		}
+	for (uint32_t p=context - context % kpool; p<context; p++)
+		assert(seen[p] == 1u);
+	return(valid);
+}
 
 static void check_causal_pools(void)
 {
@@ -35,14 +51,54 @@ static void check_causal_pools(void)
 		context[0] = positions[row] + 1u;
 		LM_LAUNCH((Glm5NextPoolScoreKernel<1u,dim,2u,1u>),dim3(2u,1u),1u,0,0,query+row*dim,weight+row,view,sequence,context,positions+row,ape,2u,0u,1u,2u,1.0f,1.0f,reference+row*2u);
 	}
-	assert(scores[0] == 128.0f && scores[1] == -INFINITY && scores[2] == 192.0f && scores[3] == 384.0f);
+	assert(scores[0] == -INFINITY && scores[1] == -INFINITY && scores[2] == 192.0f && scores[3] == -INFINITY);
 	assert(memcmp(scores,reference,sizeof(scores)) == 0);
 	context[0] = 4u;
 	LM_LAUNCH((Glm5NextPoolExpandKernel<1u,2u,4u,6u>),dim3(2u),1u,0,0,selected,sequence,context,positions,expanded,2u);
 	for (uint32_t row=0u; row<2u; row++)
-		for (uint32_t i=0u; i<6u; i++)
-			assert(expanded[row*6u+i] == UINT32_MAX || expanded[row*6u+i] <= positions[row]);
-	assert(expanded[0] == 0u && expanded[1] == UINT32_MAX && expanded[6+2] == 2u);
+		assert(check_row_positions(expanded + row * 6u,6u,positions[row] + 1u,2u) == positions[row] + 1u);
+}
+
+static void select_positions(LmKvView view,const uint16_t *query,const uint16_t *weight,const float *ape,const uint32_t *positions,uint32_t rows,uint32_t context,uint32_t pools,uint32_t *expanded)
+{
+	uint32_t sequence[2] = {0u,0u},selected[4];
+	float scores[2u * 96u];
+	assert(rows <= 2u && pools <= 96u);
+	LM_LAUNCH((Glm5NextPoolScoreKernel<1u,128u,2u,1u>),dim3(pools,rows),1u,0,0,query,weight,view,sequence,&context,positions,ape,pools,0u,1u,pools,1.0f,1.0f,scores);
+	LM_LAUNCH((LmTopkExactKernel<1u>),dim3(rows),1u,0,0,scores,pools,2u,selected);
+	LM_LAUNCH((Glm5NextPoolExpandKernel<1u,2u,4u,5u>),dim3(rows),1u,0,0,selected,sequence,&context,positions,expanded,rows);
+}
+
+static void check_selection_independent_of_bound(void)
+{
+	constexpr uint32_t dim = 128u;
+	static uint16_t pool[3u * 64u * (2u * dim + 1u)];
+	uint16_t query[2u * dim],weight[2] = {0x3f80u,0x3f80u};
+	uint32_t table[3] = {2u,0u,1u},positions[2],eager[5],graph[5],mixed[10],state = 11u;
+	float ape[2u * dim];
+	LmKvAccessError error = {};
+	LmKvView view = {};
+	view.pool = (uint8_t *)pool;
+	view.access_error = &error;
+	view.page_table = table;
+	view.page_table_stride = 3u;
+	view.sequence_count = 1u;
+	view.pool_page_count = 3u;
+	for (uint32_t i=0u; i<sizeof(pool) / sizeof(pool[0]); i++) { state = state * 1664525u + 1013904223u; pool[i] = LmFloatToBf16((float)((int32_t)(state >> 20u) - 2048) / 2048.0f); }
+	for (uint32_t i=0u; i<2u * dim; i++) { state = state * 1664525u + 1013904223u; query[i] = LmFloatToBf16((float)((int32_t)(state >> 20u) - 2048) / 2048.0f); }
+	for (uint32_t i=0u; i<2u * dim; i++) ape[i] = (float)(i % 5u) / 32.0f;
+	for (uint32_t context=5u; context<=160u; context++)
+	{
+		positions[0] = context - 1u;
+		positions[1] = 2u;
+		select_positions(view,query,weight,ape,positions,1u,context,context / 2u,eager);
+		select_positions(view,query,weight,ape,positions,1u,context,(context + 32u) / 2u,graph);
+		select_positions(view,query,weight,ape,positions,2u,context,context / 2u,mixed);
+		assert(memcmp(eager,graph,sizeof(eager)) == 0 && memcmp(eager,mixed,sizeof(eager)) == 0);
+		assert(check_row_positions(eager,5u,context,2u) == 4u + context % 2u);
+		assert(check_row_positions(mixed + 5u,5u,3u,2u) == 3u);
+	}
+	assert(error.error_code == LM_KV_ACCESS_ERROR_NONE);
 }
 
 static void check_context_parallel_pools(void)
@@ -83,6 +139,7 @@ static void check_context_parallel_pools(void)
 int main(void)
 {
 	check_causal_pools();
+	check_selection_independent_of_bound();
 	check_context_parallel_pools();
 	constexpr uint32_t sequences = 3u,pages_per_sequence = 2u;
 	constexpr uint32_t page_count = (sequences * pages_per_sequence);
@@ -132,6 +189,6 @@ int main(void)
 	assert(LmKvSlotMutable<Glm5NextIndexKv>(view,0u,0u) == 0);
 	table[0] = 1u;
 	assert(LmKvSlotMutable<Glm5NextIndexKv>(view,0u,0u) == pool + 64u * slot_bytes);
-	puts("PASS GLM index KV: physical bounds, per-row causal pool scores/selection, and context-parallel pool scores equal to replicated for degrees 2-16");
+	puts("PASS GLM index KV: physical bounds, per-row causal pool scores/selection over complete pools, every row position selected once, selection independent of the captured pool bound and of other rows, and context-parallel pool scores equal to replicated for degrees 2-16");
 	return(0);
 }

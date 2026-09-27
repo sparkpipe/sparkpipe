@@ -178,8 +178,8 @@ static int32_t SparkGlm5NextStageWaveBoundary(const SparkGlm5NextCudaWave *wave)
 	}
 	if ( error != cudaSuccess || wave->sideband_input == 0u || wave->maximum_context <= GLM5_NEXT_DSA_SELECTED )
 		return(SparkGlm5NextCudaStatus(error));
-	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM5_NEXT_DSA_SELECTED;
-	error = cudaMemcpyAsync(slot->selected_positions,(const uint32_t *)wave->sideband_input_u32 + sideband_offset,(uint64_t)wave->row_count * GLM5_NEXT_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
+	sideband_offset = wave->sideband_row_offset * (uint64_t)SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
+	error = cudaMemcpyAsync(slot->selected_positions,(const uint32_t *)wave->sideband_input_u32 + sideband_offset,(uint64_t)wave->row_count * SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 	return(SparkGlm5NextCudaStatus(error));
 }
 static void SparkGlm5NextBuildKvView(
@@ -347,7 +347,7 @@ static void SparkGlm5NextBindLayer(
 	buffers->row_sampling = wave->sampled != 0u ? slot->row_sampling : 0;
 	buffers->head_token_offset = wave->tp_rank * buffers->head_vocabulary;
 	buffers->selected_positions = slot->selected_positions;
-	buffers->selected_position_count = GLM5_NEXT_DSA_SELECTED;
+	buffers->selected_position_count = SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
 	buffers->fused_qkvb_bf16 = slot->fused_qkvb_bf16;
 	buffers->fused_decay_gate_bf16 = slot->fused_decay_gate_bf16;
 	buffers->kda_decay_latent_bf16 = slot->kda_decay_latent_bf16;
@@ -551,11 +551,11 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 	}
 	if ( error != cudaSuccess || wave->sideband_output == 0u )
 		return(SparkGlm5NextCudaStatus(error));
-	sideband_offset = wave->sideband_row_offset * (uint64_t)GLM5_NEXT_DSA_SELECTED;
+	sideband_offset = wave->sideband_row_offset * (uint64_t)SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
 	if ( wave->maximum_context > GLM5_NEXT_DSA_SELECTED )
-		error = cudaMemcpyAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,slot->selected_positions,(uint64_t)wave->row_count * GLM5_NEXT_DSA_SELECTED * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
+		error = cudaMemcpyAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,slot->selected_positions,(uint64_t)wave->row_count * SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH * sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 	else
-		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * GLM5_NEXT_DSA_SELECTED * sizeof(uint32_t),stream);
+		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH * sizeof(uint32_t),stream);
 	return(SparkGlm5NextCudaStatus(error));
 }
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
