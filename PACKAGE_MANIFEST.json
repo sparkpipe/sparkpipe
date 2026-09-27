@@ -7893,8 +7893,8 @@
     },
     {
       "path": "runtime/model_batch_engine.c",
-      "sha256": "b5812e401abb35011f26e565e13af4c5aa01f0f12acf1e90b6e05853439d9248",
-      "size_bytes": 102372
+      "sha256": "062b2c966413c20412d48d32c5520f6a4273eebadcd923379efcb736302f6b36",
+      "size_bytes": 101728
     },
     {
       "path": "runtime/model_batch_scheduler.h",
@@ -8658,13 +8658,13 @@
     },
     {
       "path": "tests/mock_model_resident_client.c",
-      "sha256": "74720699507c9a0f2495ce45afbd4e059cf9f1856c9376404ae3d006c3b37a97",
-      "size_bytes": 22073
+      "sha256": "044a5702e5a0b88008e9320935b806a610543c2f8d90bbb5f9d0a1b2d5f3515f",
+      "size_bytes": 22595
     },
     {
       "path": "tests/mock_model_resident_client.h",
-      "sha256": "2e7787e416f293005401ee3e92d52b8d10d78f7005651160b80da865fd9a605f",
-      "size_bytes": 2252
+      "sha256": "fd5b6ef633f651c821e970682898ba38b31911cb2f4c31751da9cf7235fca950",
+      "size_bytes": 2332
     },
     {
       "path": "tests/rdma_syntax_stub/cuda_runtime_api.h",
@@ -9918,8 +9918,8 @@
     },
     {
       "path": "tests/test_model_batch_engine_mock.c",
-      "sha256": "5dfe1a1893e870808f34c3ff70d03e1d3d19d010b0b9367e67bce192df2d201d",
-      "size_bytes": 37953
+      "sha256": "6b39e4eca095278361e7382d1bf0384d6028c4e44e7421d2148452be94a63617",
+      "size_bytes": 39874
     },
     {
       "path": "tests/test_model_description.c",
@@ -9938,7 +9938,7 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "92aa4214da4604ce872b0ba052257851dbb5df7b6ed73398cbfae78bb6664e2c",
+      "sha256": "84b1c219ae6cbeb81019eb97e63f58830726074e5d4a0e54554451abd5254d78",
       "size_bytes": 83918
     },
     {
@@ -15185,5 +15185,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74124161
+  "total_bytes": 74126040
 }

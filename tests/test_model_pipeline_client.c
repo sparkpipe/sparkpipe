@@ -1069,8 +1069,8 @@ static void TestModelBatchEngineRun(
 	assert(state.cancelled_count == 0u);
 	assert(state.error_count == 0u);
 	fprintf(stderr,"TT-PREFILL lanes=%u rows=%u\n",state.first_prefill_lane_count,state.first_prefill_row_count);
-	assert(state.first_prefill_lane_count == 2u);
-	assert(state.first_prefill_row_count == 4u);
+	assert(state.first_prefill_lane_count == 1u);
+	assert(state.first_prefill_row_count == 3u);
 	assert(third != first);
 	reused = TestModelBatchSubmit(engine,1004u,2004u,prompt_c,1u,1u);
 	assert(reused != first);

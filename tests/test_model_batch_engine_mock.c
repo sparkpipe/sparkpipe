@@ -114,7 +114,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root)
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
-static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *deployment, TestBatchState *state, const char *runtime_root)
+static SparkModelBatchEngine *TestConnectRows(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows)
 {
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
@@ -125,7 +125,7 @@ static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *de
 	configuration.connect_timeout_ms = 1000u;
 	configuration.request_capacity = 8u;
 	configuration.max_context_tokens = 256u;
-	configuration.max_prefill_rows_per_submission = 4u;
+	configuration.max_prefill_rows_per_submission = prefill_rows;
 	configuration.maximum_messages_per_rank_per_progress = 8u;
 	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration.deployment = deployment;
@@ -136,6 +136,11 @@ static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *de
 	status = SparkModelBatchEngineConnect(&configuration,&engine);
 	CHECK(status == SPARK_STATUS_OK, "batch engine connect");
 	return(engine);
+}
+
+static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root)
+{
+	return(TestConnectRows(deployment,state,runtime_root,4u));
 }
 
 static void TestSubmitPrompt(SparkModelBatchEngine *engine, uint64_t request_id, uint64_t sequence_id, uint32_t budget,const uint32_t *prompt,uint32_t prompt_count)
@@ -463,6 +468,43 @@ static void TestScenarioGeneratedCheckpointIdentity(const SparkModelResidentDepl
 	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 8u && lane.sequence_position == 8u && lane.input_token_id == extended[8],"generated identity: a prompt that repeats the generated tokens reuses the generated checkpoint");
 	TestDriveUntilTerminal(engine,&state,3u,400u);
 	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 8u,"generated identity: the extending request reports the generated checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static uint32_t TestPrefillChunksAreCanonical(uint64_t request_id,uint32_t block,uint32_t prompt_count)
+{
+	SparkModelServingLane lane;
+	uint32_t index,chunks;
+	chunks = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != request_id || lane.context_token_count <= lane.sequence_position || lane.context_token_count > prompt_count )
+			continue;
+		if ( lane.sequence_position % block != 0u || (lane.context_token_count % block != 0u && lane.context_token_count != prompt_count) )
+			return(0u);
+		chunks++;
+	}
+	return(chunks);
+}
+
+static void TestScenarioCanonicalPrefillChunks(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t longer[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	uint32_t shorter[3] = {21u,22u,23u};
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,6u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,650u,1u,longer,8u);
+	TestSubmitPrompt(engine,2u,651u,1u,shorter,3u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"canonical chunks: both prompts complete");
+	CHECK(TestPrefillChunksAreCanonical(1u,4u,8u) == 2u,"canonical chunks: a prompt sharing the row budget still prefills whole blocks");
+	CHECK(TestPrefillChunksAreCanonical(2u,4u,3u) == 1u,"canonical chunks: a short prompt prefills in one chunk");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -831,6 +873,7 @@ int main(void)
 		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
+		TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 		TestScenarioSamplingValidation(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);

@@ -1414,6 +1414,13 @@ static uint32_t SparkModelBatchPrefillSpan(
 	return(remaining < block_remaining ? remaining : block_remaining);
 }
 
+static uint32_t SparkModelBatchCanonicalPrefillSpan(const SparkModelBatchEngine *engine,const SparkModelBatchRequestState *request)
+{
+	uint32_t span;
+	span = SparkModelBatchPrefillSpan(engine,request);
+	return(span < engine->max_prefill_rows ? span : engine->max_prefill_rows);
+}
+
 static uint32_t SparkModelBatchRequestContextTokenCount(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request,
@@ -1422,7 +1429,7 @@ static uint32_t SparkModelBatchRequestContextTokenCount(
 {
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		return(request->computed_prompt_token_count + (prefill_count != 0u ?
-			prefill_count : SparkModelBatchPrefillSpan(engine,request)));
+			prefill_count : SparkModelBatchCanonicalPrefillSpan(engine,request)));
 	return(request->prompt_token_count + request->generated_token_count - (work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? 1u : 0u));
 }
 
@@ -1664,6 +1671,8 @@ static uint32_t SparkModelBatchSelectRequestPass(
 			SparkModelBatchRefreshQueuedPrefix(engine,request);
 		if ( request->state != state )
 			continue;
+		if ( prefill_span_budget != 0 && SparkModelBatchCanonicalPrefillSpan(engine,request) > *prefill_span_budget )
+			continue;
 		resident_bound = request->resident_sequence_slot !=
 			SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT ? 1u : 0u;
 		if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
@@ -1684,8 +1693,7 @@ static uint32_t SparkModelBatchSelectRequestPass(
 		engine->scratch_request_slots[selected++] = slot;
 		if ( prefill_span_budget != 0 )
 		{
-			uint32_t span = SparkModelBatchPrefillSpan(engine,request);
-			*prefill_span_budget = span < *prefill_span_budget ? *prefill_span_budget - span : 0u;
+			*prefill_span_budget -= SparkModelBatchCanonicalPrefillSpan(engine,request);
 			if ( *prefill_span_budget == 0u )
 				break;
 		}
@@ -1765,45 +1773,16 @@ static uint32_t SparkModelBatchSelectRequests(
 	return(selected);
 }
 
-static uint32_t SparkModelBatchAssignPrefillCounts(
-	SparkModelBatchEngine *engine,
-	uint32_t lane_count)
+static uint32_t SparkModelBatchAssignPrefillCounts(SparkModelBatchEngine *engine,uint32_t lane_count)
 {
-	uint32_t assigned,lane,remaining_prompt,remaining_rows,row_budget,total_remaining;
-	total_remaining = 0u;
+	uint32_t lane,total;
+	total = 0u;
 	for (lane=0u; lane<lane_count; lane++)
 	{
-		SparkModelBatchRequestState *request;
-		request = &engine->requests[engine->scratch_request_slots[lane]];
-		remaining_prompt = SparkModelBatchPrefillSpan(engine,request);
-		total_remaining = remaining_prompt <= UINT32_MAX - total_remaining ? total_remaining + remaining_prompt : UINT32_MAX;
+		engine->scratch_prefill_counts[lane] = SparkModelBatchCanonicalPrefillSpan(engine,&engine->requests[engine->scratch_request_slots[lane]]);
+		total += engine->scratch_prefill_counts[lane];
 	}
-	row_budget = total_remaining < engine->max_prefill_rows ?
-		total_remaining : engine->max_prefill_rows;
-	if ( row_budget < lane_count )
-		row_budget = lane_count;
-	remaining_rows = row_budget - lane_count;
-	for (lane=0u; lane<lane_count; lane++)
-		engine->scratch_prefill_counts[lane] = 1u;
-	while ( remaining_rows != 0u )
-	{
-		SparkModelBatchRequestState *request;
-		assigned = 0u;
-		for (lane=0u; lane<lane_count && remaining_rows!=0u; lane++)
-		{
-			request = &engine->requests[engine->scratch_request_slots[lane]];
-			remaining_prompt = SparkModelBatchPrefillSpan(engine,request);
-			if ( engine->scratch_prefill_counts[lane] < remaining_prompt )
-			{
-				engine->scratch_prefill_counts[lane]++;
-				remaining_rows--;
-				assigned++;
-			}
-		}
-		if ( assigned == 0u )
-			break;
-	}
-	return(row_budget - remaining_rows);
+	return(total);
 }
 
 static void SparkModelBatchInitializeSubmission(
