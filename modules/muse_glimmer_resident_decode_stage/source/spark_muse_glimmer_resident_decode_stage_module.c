@@ -795,39 +795,9 @@ extern cudaError_t SparkMuseGlimmerLaunchHeadArgmax(cudaStream_t stream, const v
 extern cudaError_t SparkMuseGlimmerLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMuseGlimmerLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 
-static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmerModuleState *state)
-{
-	SparkTpDeviceCollectiveConfig configuration;
-	SparkStatus status;
-	if ( state->tp_degree == 1u )
-		return(SPARK_STATUS_OK);
-	if ( state->tp_standalone != 0u )
-	{
-		fprintf(stderr,"%s tp_collective_skipped standalone=1 degree=%u rank=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
-		return(SPARK_STATUS_OK);
-	}
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	configuration.tp_degree = state->tp_degree;
-	configuration.tp_rank = state->tp_rank;
-	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	SparkTpMeshRegisterCommonCombines(&configuration);
-	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_MUSE_GLIMMER_MODULE_TAG,(int)status);
-		SPARK_RETURN(status);
-	}
-	state->tp_collective_initialized = 1u;
-	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
-	if ( status == SPARK_STATUS_OK )
-		fprintf(stderr,"%s tp_collective_open degree=%u rank=%u\n",SPARK_MUSE_GLIMMER_MODULE_TAG,state->tp_degree,state->tp_rank);
-	SPARK_RETURN(status);
-}
+#define SPARK_MUSE_GLIMMER_MODULE_TP_HIDDEN_DIMENSION SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION
+#define SPARK_MUSE_GLIMMER_MODULE_TP_MESH_REGION(state) 0
+#include "sparkpipe/family/module/spark_module_tp_open_environment.h"
 
 static SparkStatus SparkMuseGlimmerModuleTpAllReduceHidden(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, void *device_bf16, uint32_t rows)
 {

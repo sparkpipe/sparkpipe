@@ -1157,35 +1157,10 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 		state->execution_row_capacity,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree);
 }
 
-static SparkStatus SparkGlm52ModuleInitializeTpCollective(
-	SparkGlm52ModuleState *state,
-	const SparkGlm52ResidentDecodeStageNodeContext *context)
-{
-	SparkTpDeviceCollectiveConfig configuration;
-	SparkStatus status;
-	if ( state == 0 || context == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
-		return(SPARK_STATUS_OK);
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind = context->tp_collective_backend_kind;
-	configuration.tp_degree = state->tp_degree;
-	configuration.tp_rank = state->tp_rank;
-	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	SparkTpMeshRegisterCommonCombines(&configuration);
-	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	state->tp_device_collective_initialized = 1u;
-	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,state->lazy_pack != 0 ? (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr : 0);
-	SPARK_RETURN(status);
-}
+#define SPARK_GLM52_MODULE_TP_DISABLED(state) ((state)->tp_collective_disabled != 0u)
+#define SPARK_GLM52_MODULE_TP_ROW_CAPACITY(state) ((state)->execution_row_capacity)
+#define SPARK_GLM52_MODULE_TP_MESH_REGION(state) ((state)->lazy_pack != 0 ? (void *)(uintptr_t)(state)->lazy_pack->attached.mesh_send_buffer_addr : 0)
+#include "sparkpipe/family/module/spark_module_tp_open_node_context.h"
 
 SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkGlm52ModuleTpCompletion,SparkGlm52TpChain,SparkGlm52TpChainAdvance)
 

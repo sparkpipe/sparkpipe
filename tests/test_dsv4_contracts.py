@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from family_source import read_source
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -177,10 +179,9 @@ def main() -> int:
                    for value in tp4_release["roles"][0]["env"])
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     assert "DSV4_TP4_B1_SERVING_ADAPTER" in makefile
-    stage_source = (
+    stage_source = read_source(
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
-        "spark_dsv4_resident_decode_stage_module.c").read_text(
-            encoding="utf-8")
+        "spark_dsv4_resident_decode_stage_module.c")
     assert "SparkTpDeviceCollectiveApplyTopology(" in stage_source
     adapter_source = (
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /

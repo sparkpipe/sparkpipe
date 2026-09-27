@@ -364,11 +364,13 @@ progress diary.
   every other kernel's SASS identical but changes GCC's inlining in four
   live host launch functions, so it waits for a measured glm5_next
   deployment.
-- dsv4's GPU validator and source tests still exercise launchers that no
-  dsv4 driver build calls: `Hadamard`, `HeadArgmax`, `HeadScreenedArgmax`
-  and its sharded form, `QuantSim`, `QueryHeadRmsRope`, `ExpertUp`,
-  `HcSplitSinkhorn`, `MoePairReduceStrided` and `SwigluClamp`. Point those
-  checks at the kernels the driver runs, then delete the launchers.
+- dsv4's `.cu` carries launchers that no dsv4 driver build calls. `QuantSim`,
+  `Hadamard`, `HeadArgmax` and `HeadScreenedArgmax` are the GPU validator's
+  unfused reference paths for fused kernels the driver runs: move them into
+  the validator's translation unit. `QueryHeadRmsRope` is the query fusion
+  the B1 stack rejected, still validated; `ExpertUp`, `HcSplitSinkhorn`,
+  `MoePairReduceStrided`, `SwigluClamp` and `HeadScreenedArgmaxSharded` are
+  kept only by source tests. Delete those with their checks.
 - Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
   `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
   keep their own bucket ladders. `tests/test_template_adoption.py` lists

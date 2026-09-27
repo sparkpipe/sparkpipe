@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from family_source import read_source
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -68,7 +70,7 @@ def main() -> None:
 	common = read("model-families/common/include/sparkpipe/spark_lm_kernels.cuh")
 	row_compaction = read("model-families/common/include/sparkpipe/spark_row_compaction.cuh")
 	row_layout = read("include/sparkpipe/spark_row_layout.h")
-	module = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
+	module = read_source(ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c")
 	stage_common = read("runtime/stage_module_common.c")
 	stage_common_header = read("include/sparkpipe/spark_stage_module_common.h")
 	pool_layout = read("modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h")

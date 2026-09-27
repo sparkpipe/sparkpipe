@@ -85,6 +85,19 @@ SASS, both at `-O3` and with inlining and IPA disabled. A copy that compiles
 differently is drift, not duplication. It stays in its family until someone
 decides which behaviour is right.
 
+Compare host objects with `tools/host_codegen_diff.py` and cubins with
+`tools/kernel_codegen_diff.py`. Build both host objects with
+`-ffunction-sections -fdata-sections`, and define `__FILE__` as `"F"` and
+`__LINE__` as `0` in both builds (with `-w`), so the error sites that move
+with the code compare equal. Make any behaviour change a family needs first,
+in its own commit, so the move itself compares identical.
+
+A value that differs by family reaches the template through a macro the
+family defines just before the include, named with `SPARK_FAMILY_CONST`: for
+example `SPARK_GLM52_MODULE_TP_MESH_REGION(state)` in
+`module/spark_module_tp_open_node_context.h`. A family that omits one does not
+compile.
+
 A declaration (a struct, a typedef or a prototype) moves only if every
 translation unit that includes it preprocesses to the same tokens before
 and after the move, line markers aside. That covers the host `.c` files, the
