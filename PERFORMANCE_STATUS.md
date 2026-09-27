@@ -630,3 +630,29 @@ across sixteen rows. Sequence 1 emits the identical retained token stream.
 | [glm52-b16.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16.stderr) | 2d606c22af465762952d0f9ba51c82a14c8e8885a7a30df4985cca403c260b21 |
 | [glm52-b16-r1.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r1.stderr) | 9483ab63383a267903c771eb10caa182af3ff847543a7d080f198e512d51436a |
 | [glm52-b16-r2.stderr](qualification/glm52/performance/tp8_b16_20260816/glm52-b16-r2.stderr) | cdf2d247e59adce83d8102741786860be4a0b5f87ba086ecd11d74f361b873a5 |
+
+### GLM 5.3 Flash TP16 B8 8-stream aggregate (2026-09-26 / 2026-09-27)
+
+Scope: sixteen Spark nodes (spark0-f, MESH0005) serving the i17 stack
+(`glm-serving-b108de0c` driver, station core c0d54638, B8 profile, 128-row
+prefill); API host rtx5090. Load: 8 concurrent streams, reference prompt,
+512 output tokens per stream, greedy, four consecutive whole-station sweeps
+per session.
+
+| Session | Sweep tok/s | Best |
+| --- | --- | ---: |
+| 2026-09-26, #1228 qualification | 114.8 / 126.3 / 125.6 / 129.9 | 129.9 |
+| 2026-09-27, after full-station restart | 120.7 / 125.8 / 120.3 / 125.3 | 125.3 |
+
+The 2026-09-26 session is receipted in the #1228 thread (summarized outputs;
+identical load and stack). The 2026-09-27 session re-ran the same load after a
+full station restart and is committed below. Its rank-0 window shows zero
+`LINEAR-CHAIN-FAILED`, `MESH-DEFERRED-ROUNDS-FAILED` or `GRAPH-FAILED`; one
+interval recorded transient `busy[CHAIN]` retries (235) during ramp that
+self-recovered within the window — the persistent-freeze wedge under
+investigation on #1229 is a separate issue and did not occur here.
+
+| Receipt | SHA-256 |
+| --- | --- |
+| [client-8stream-sweeps.txt](qualification/glm5next/performance/tp16_b8_20260927/client-8stream-sweeps.txt) | 8f78436bc4734dd1f3f6d49ea67dd9c9283d7e75acbfd3c8b7b23b050bb223bd |
+| [rank0-wave-window.log](qualification/glm5next/performance/tp16_b8_20260927/rank0-wave-window.log) | dcb332ecc624198ffc52f202c6521fa4466192230f9d67e346addf4a0d2b76f3 |
