@@ -1114,85 +1114,71 @@ static SparkStatus SparkModelResidentdQueueCompletionLocked(
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkModelResidentdCompletion(
-	void *completion_context,
-	const SparkModelServingCompletion *completion)
+static SparkStatus SparkModelResidentdValidateRouteCompletion(const SparkModelResidentdRuntime *runtime,const SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion,uint32_t *failure_reason)
+{
+	const SparkModelServingAdapterDescriptor *descriptor = runtime->adapter_library.adapter_interface.descriptor;
+	SparkStatus status;
+	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
+	status = SparkModelServingAdapterValidateCompletionResidency(descriptor,&route->submission.residency,completion);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY;
+	if ( route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS;
+	if ( completion->accepted_token_count > route->submission.new_token_count + descriptor->max_speculative_token_count )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS;
+	if ( completion->status != SPARK_STATUS_OK )
+		return((SparkStatus)completion->status);
+	*failure_reason = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkModelResidentdAcceptCompletionLocked(const SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion)
+{
+	uint64_t completed_time_ns;
+	route->completion = *completion;
+	if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
+	{
+		completed_time_ns = SparkModelResidentdMonotonicTimeNs();
+		if ( completed_time_ns >= route->adapter_submit_time_ns )
+			route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
+	}
+	route->state = SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT : SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+}
+
+static void SparkModelResidentdCompletion(void *completion_context,const SparkModelServingCompletion *completion)
 {
 	SparkModelResidentdRuntime *runtime;
 	SparkModelResidentdRoute *route;
 	SparkStatus status;
-	uint64_t completed_time_ns;
 	uint32_t failure_reason;
 	runtime = (SparkModelResidentdRuntime *)completion_context;
 	if ( runtime == 0 || completion == 0 )
 		return;
 	pthread_mutex_lock(&runtime->mutex);
 	route = SparkModelResidentdFindRoute(runtime,completion->submission_id);
-	status = route == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_OK;
-	if ( route == 0 )
-		fprintf(stderr,
-			"COMPLETION-NOROUTE id=%llu status=%u — completion arrived, no route\n",
-			(unsigned long long)completion->submission_id,
-			(unsigned)completion->status);
-	failure_reason = route == 0 ? SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE : 0u;
-	if ( status == SPARK_STATUS_OK )
+	if ( route == 0 || route->state != SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
 	{
-		status = SparkModelServingAdapterValidateCompletionResidency(runtime->adapter_library.adapter_interface.descriptor,&route->submission.residency,completion);
-		if ( status != SPARK_STATUS_OK )
-			failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
-	}
-	if ( status == SPARK_STATUS_OK && (route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation) )
-	{
-		status = SPARK_STATUS_SCHEMA_ERROR;
-		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY;
-	}
-	if ( status == SPARK_STATUS_OK && completion->accepted_token_count > route->submission.new_token_count + runtime->adapter_library.adapter_interface.descriptor->max_speculative_token_count )
-	{
-		status = SPARK_STATUS_SCHEMA_ERROR;
-		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS;
-	}
-	if ( status == SPARK_STATUS_OK && route->state != SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER )
-	{
-		status = SPARK_STATUS_SCHEMA_ERROR;
-		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATE;
-	}
-	if ( status == SPARK_STATUS_OK && completion->status != SPARK_STATUS_OK )
-	{
-		status = (SparkStatus)completion->status;
-		failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS;
-	}
-	if ( route != 0 && status != SPARK_STATUS_OK &&
-		failure_reason == SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS )
-	{
-		route->completion = *completion;
-		route->completion.status = status;
-		route->completion.accepted_token_count = 0u;
-		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+		fprintf(stderr,"COMPLETION-STRAY id=%llu status=%u reason=%u — no route waits on the adapter for it; dropped\n",(unsigned long long)completion->submission_id,(unsigned)completion->status,route == 0 ? SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE : SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATE);
 		pthread_mutex_unlock(&runtime->mutex);
-		SparkModelResidentdWake(runtime);
 		return;
 	}
-	if ( route != 0 && status == SPARK_STATUS_OK )
+	status = SparkModelResidentdValidateRouteCompletion(runtime,route,completion,&failure_reason);
+	if ( status == SPARK_STATUS_OK )
+		SparkModelResidentdAcceptCompletionLocked(runtime,route,completion);
+	else if ( failure_reason == SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS )
 	{
 		route->completion = *completion;
-		if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
-		{
-			completed_time_ns = SparkModelResidentdMonotonicTimeNs();
-			if ( completed_time_ns >= route->adapter_submit_time_ns )
-				route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
-		}
-		route->state = SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ?
-			SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT :
-			SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
-	}
-	if ( status != SPARK_STATUS_OK && route != 0 )
-	{
-		route->completion.status = status;
-		route->completion.token_count = 0u;
+		route->completion.accepted_token_count = 0u;
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
-	else if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"model_residentd late completion: no route for submission, dropping (status=%d reason=%u) — NOT fatal\n",(int)status,failure_reason);
+	else
+	{
+		fprintf(stderr,"COMPLETION-REJECTED id=%llu kind=%u reason=%u completion_status=%u status=%s — failing the route\n",(unsigned long long)route->submission_id,route->submission.work_kind,failure_reason,completion->status,SparkStatusToString(status));
+		(void)SparkModelResidentdFailRouteLocked(route,status,0u);
+	}
 	pthread_mutex_unlock(&runtime->mutex);
 	SparkModelResidentdWake(runtime);
 }
@@ -2569,10 +2555,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(SparkModelResidentdRuntime *
 	else
 	{
 		result = SparkModelResidentdRemoveCommittedLocked(runtime,route);
-		if ( result == SPARK_STATUS_OK &&
-			state != SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER &&
-			state != SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT &&
-			state != SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION )
+		if ( result == SPARK_STATUS_OK && state != SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER && state != SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT && state != SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION && state != SPARK_MODEL_RESIDENTD_ROUTE_FAILED )
 			result = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	pthread_mutex_unlock(&runtime->mutex);

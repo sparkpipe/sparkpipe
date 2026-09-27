@@ -351,9 +351,13 @@ progress diary.
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
   recovered without restarting the unit.
-- residentd's completion callback marks any route it finds by submission id
-  READY_COMPLETION after an identity or state mismatch, even a route that is
-  not waiting on the adapter. Limit that to WAIT_ADAPTER routes.
+- The serving completion ABI accepts statuses up to UNSUPPORTED, but weightd
+  can fail a glm5_next expert lease with NO_LANE or EVICT_DENIED, and the
+  chain passes that status up. residentd now names it
+  (`COMPLETION-REJECTED ... completion_status=20`) and fails the route with
+  invalid_argument. Map those statuses in the adapter, to BUSY where the step
+  can be retried without having advanced any recurrent state, otherwise to
+  CAPACITY_EXCEEDED.
 - ROUTE-STUCK reports a route once per state. Repeat it on an interval with
   the route's committed-FIFO position and slot claims.
 - Pipeline-parallel stages still wedge after a failure on another rank. When

@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "2f392dd62ba015b885cdacac9d174a569a9c2288f6a8daa9352e5842e9e81ef0",
-      "size_bytes": 31252
+      "sha256": "9e3b2a66a7bc40868cb7bd59e0f4a82c9b3c4674b270ae5b315ff73e32b7d064",
+      "size_bytes": 31489
     },
     {
       "path": "cache/cache.h",
@@ -6068,8 +6068,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "aca1f05dd8045d726bda7e8542bc9dfcb2e3dbff3a307995e3d656d60c4cd237",
-      "size_bytes": 133365
+      "sha256": "a91be096548e26c310205260adff6da7847c96e879d87f962f4c49891073466b",
+      "size_bytes": 133554
     },
     {
       "path": "node/weightd.c",
@@ -9978,8 +9978,8 @@
     },
     {
       "path": "tests/test_model_resident_deadline.c",
-      "sha256": "f253d8390ca3e9bd9b07c0cd0f90b7da322d615798e3f6db8765b95eb2699996",
-      "size_bytes": 6308
+      "sha256": "4544b94cf4f912ae2c8c59ee1e33c256b926423274672ddc9438479c67e61a22",
+      "size_bytes": 12837
     },
     {
       "path": "tests/test_model_resident_deployment.c",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74152503
+  "total_bytes": 74159458
 }
