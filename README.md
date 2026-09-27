@@ -367,7 +367,8 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
 | 16 Sparks | TP16 latency plans; TP4 × PP4 capacity plans |
-| DGX Station (1×, 2×, 4×, 8×) | standalone, or added to a Spark fabric under the same contracts |
+| 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
+| Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 
 **Fabric.** Every Spark uses two data rails:
 
@@ -377,6 +378,13 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 The GB10 PCIe path limits the direct link to about 100 Gb/s of useful
 payload, so the two rails are equal-rate. Neither is a fallback for the
 other. Management networks never carry inference traffic.
+
+**Mac Studios.** Studios link to each other over Thunderbolt 5 RDMA, in two
+fully meshed islands of four, and to the Sparks over a TCP bridge. No
+tensor-parallel collective crosses hardware classes: a mixed plan hands over
+the KV cache after prefill, or each token's residual stream at a pipeline
+stage boundary. The Studios need the Metal backend. See
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
 
 **Topology generation.** One deployment JSON generates the pinned
 interfaces, peers and topology tables for every rank. Startup rejects

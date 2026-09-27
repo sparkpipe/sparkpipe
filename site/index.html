@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe</title>
-<meta name="description" content="Private frontier-model serving that scales from four DGX Sparks to 1x, 2x, 4x, or 8x DGX Station fabrics.">
-<meta name="theme-color" content="#eef0ec">
+<meta name="description" content="Private frontier-model serving on prosumer hardware: four to sixteen DGX Sparks today, with Mac Studios planned.">
+<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,7 +14,7 @@
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32" fill="none"><path d="M0.5 16H7M25 16H31.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="7" y="6" width="18" height="20" rx="5.5" stroke="currentColor" stroke-width="1.8"/><path d="M17.8 9 12.2 17.4H15.4L14.2 23 19.8 14.6H16.6Z" fill="currentColor"/></symbol></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
 
 <header class="nav">
   <div class="wrap">
@@ -21,6 +22,7 @@
     <nav class="nav-links" aria-label="Sections">
       <a href="#throughput">Throughput</a>
       <a href="#fabric">Fabric</a>
+      <a href="#hardware">Hardware</a>
       <a href="#models">Models</a>
       <a href="#api">API</a>
       <a href="providers.html">Providers</a>
@@ -43,7 +45,7 @@
       <a class="btn solid" href="playground.html">Open the playground</a>
       <a class="btn" href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">Star on GitHub</a>
     </div>
-    <p class="note">Start with four Sparks, grow to eight and sixteen, then add DGX Stations.</p>
+    <p class="note">Start with four Sparks and grow to eight and sixteen. Mac Studio support is planned.</p>
   </div>
   <figure class="screen" aria-label="Schematic of the sixteen-Spark fabric">
     <div class="screen-bar"><span><b>●</b> spark0 – sparkf · two rails</span><span>schematic</span></div>
@@ -71,35 +73,33 @@
   <div class="sec-rail">
     <p class="label">Throughput</p>
     <p class="label">GLM 5.3 Flash · TP16</p>
+    <p class="label">Projected</p>
   </div>
   <div class="sec-body">
     <h2>Batching is the lever.</h2>
-    <p class="prose">Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once, and one read serves every request in the step. So aggregate throughput climbs with the batch. On sixteen Sparks at 1K context the memory-bound ceiling runs from 125 tok/s for one stream to about 2,800 tok/s for 256.</p>
+    <p class="prose">Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once, and one read serves every request in the step. So aggregate throughput climbs with the batch. On sixteen Sparks at 1K context the memory-bound ceiling runs from 125 tok/s for one stream to about 2,800 tok/s for 256. SparkPipe is projected to reach about 70 and 1,650.</p>
     <div class="chart-wrap">
-      <svg class="chart" viewBox="0 0 720 384" role="img" aria-label="Aggregate tokens per second against concurrent streams, log scales: memory-bound ceiling, roadmap targets and measured points">
+      <svg class="chart" viewBox="0 0 720 384" role="img" aria-label="Aggregate tokens per second against concurrent streams, log scales: the memory-bound ceiling and SparkPipe's projected throughput">
         <path class="grid" d="M64 94.3H696M64 211.2H696M156.5 24V328M231 24V328M305.5 24V328M380 24V328M454.5 24V328M529 24V328M603.5 24V328M678 24V328"/>
         <path class="axis" d="M64 24V328H696"/>
         <path class="ceiling-area" d="M82,328 L82,199.8 L305.5,142.1 L529,97.5 L603.5,71.8 L678,42.5 L678,328 Z"/>
         <polyline class="ceiling" points="82,199.8 305.5,142.1 529,97.5 603.5,71.8 678,42.5"/>
-        <polyline class="target" points="82,211.2 305.5,155.4 529,108.9 678,54.3"/>
-        <circle class="target-dot" cx="82" cy="211.2" r="4"/>
-        <circle class="target-dot" cx="305.5" cy="155.4" r="4"/>
-        <circle class="target-dot" cx="529" cy="108.9" r="4"/>
-        <circle class="target-dot" cx="678" cy="54.3" r="4"/>
-        <line class="measured-range" x1="82" y1="276.5" x2="82" y2="272.6"/>
-        <circle class="measured-dot" cx="82" cy="274.6" r="5.5"/>
-        <circle class="measured-dot" cx="305.5" cy="197.9" r="5.5"/>
+        <polyline class="projected" points="82,229.3 305.5,166.7 529,118.6 603.5,94.3 678,68.9"/>
+        <circle class="projected-dot" cx="82" cy="229.3" r="4.5"/>
+        <circle class="projected-dot" cx="305.5" cy="166.7" r="4.5"/>
+        <circle class="projected-dot" cx="529" cy="118.6" r="4.5"/>
+        <circle class="projected-dot" cx="603.5" cy="94.3" r="4.5"/>
+        <circle class="projected-dot" cx="678" cy="68.9" r="4.5"/>
         <text x="82" y="190" text-anchor="middle">125</text>
         <text x="305.5" y="132" text-anchor="middle">390</text>
         <text x="529" y="87" text-anchor="middle">940</text>
         <text x="603.5" y="62" text-anchor="middle">1,560</text>
         <text class="strong" x="678" y="32" text-anchor="middle">2,780</text>
-        <text class="target-text" x="94" y="228">100</text>
-        <text class="target-text" x="317" y="172">~300</text>
-        <text class="target-text" x="541" y="125">~750</text>
-        <text class="target-text" x="678" y="77" text-anchor="middle">~2,200</text>
-        <text class="signal-text" x="96" y="278">27.6–29.8 · 1 stream · 2026-09-25</text>
-        <text class="signal-text" x="319" y="202">129.9 · 8 streams · 2026-09-26</text>
+        <text class="projected-text" x="94" y="247">70 projected</text>
+        <text class="projected-text" x="317" y="184">240</text>
+        <text class="projected-text" x="541" y="136">620</text>
+        <text class="projected-text" x="615" y="112">1,000</text>
+        <text class="projected-text" x="678" y="91" text-anchor="middle">1,650</text>
         <text x="56" y="332" text-anchor="end">10</text>
         <text x="56" y="215" text-anchor="end">100</text>
         <text x="56" y="98" text-anchor="end">1,000</text>
@@ -116,8 +116,8 @@
         <text x="14" y="176" text-anchor="middle" transform="rotate(-90 14 176)">aggregate tok/s</text>
       </svg>
     </div>
-    <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="t"></i>roadmap target, 80% of ceiling</span><span><i class="m"></i>measured on the fleet</span></div>
-    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Targets: milestones M1 (8 streams) and M2 (64 and 256). Each of 256 streams would still see about 11 tok/s.</p>
+    <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="p"></i>projected, after the planned kernel and collective work</span></div>
+    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Projected: kernels at 75% of memory bandwidth, all-reduces on GPU-initiated RDMA that do not overlap compute, 0.5 ms of host work per step, no speculative decoding. These are projections, not measurements; the arithmetic is in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode" target="_blank" rel="noopener">PERFORMANCE_STATUS.md</a>. At 256 streams each stream sees about 6.5 tok/s.</p>
   </div>
 </section>
 
@@ -164,6 +164,35 @@
   </div>
 </section>
 
+<section id="hardware" class="sec">
+  <div class="sec-rail">
+    <p class="label">Hardware</p>
+    <p class="label">Prosumer, off the shelf</p>
+  </div>
+  <div class="sec-body">
+    <h2>Machines you can buy, stack and resell.</h2>
+    <p class="prose">SparkPipe runs on desk-side machines with a resale market, not on a datacenter appliance. Each kind does the work it is best at: Sparks bring tensor cores and a two-rail RDMA fabric, Mac Studios bring the most memory bandwidth per box. Grow in steps; the API, the catalog and the model packages stay the same.</p>
+    <div class="machines">
+      <div class="machine">
+        <div class="machine-head"><h3>NVIDIA DGX Spark</h3><span class="state live">In production</span></div>
+        <dl><div><dt>Memory</dt><dd>128<small>GB</small></dd></div><div><dt>Bandwidth</dt><dd>273<small>GB/s</small></dd></div></dl>
+        <p>Blackwell tensor cores for prefill. Two network ports per Spark, about 100 Gb/s useful each, form the switched-plus-direct fabric that runs one model across 4, 8 or 16 Sparks.</p>
+      </div>
+      <div class="machine">
+        <div class="machine-head"><h3>Apple Mac Studio</h3><span class="state building">Planned</span></div>
+        <dl><div><dt>Memory</dt><dd>256<small>GB</small></dd></div><div><dt>Bandwidth</dt><dd>1.2<small>TB/s</small></dd></div></dl>
+        <p>M5 Ultra: more than four Sparks' worth of memory bandwidth in one box, for decode and whole-model replicas. Thunderbolt 5 with RDMA links Studios to each other. Added one at a time, up to eight.</p>
+      </div>
+    </div>
+    <div class="facts">
+      <div><p class="label">Sixteen Sparks</p><p>2 TB of memory at 4.4 TB/s.</p></div>
+      <div><p class="label">Eight Mac Studios</p><p>2 TB of memory at 9.6 TB/s.</p></div>
+      <div><p class="label">Mixed fleet · planned</p><p>Sparks prefill and stream the KV cache to Studios, which decode. A 16K-token prompt's cache is about 430 MB: a third of a second at 10 Gb/s.</p></div>
+    </div>
+    <p class="caption">Hardware figures are the vendors' specifications, for the Mac Studio with M5 Ultra and 256 GB. Mac Studio support, including the mixed fleet, is designed but not built: it needs SparkPipe's Metal backend.</p>
+  </div>
+</section>
+
 <section id="models" class="sec">
   <div class="sec-rail">
     <p class="label">Models</p>
@@ -171,14 +200,14 @@
   </div>
   <div class="sec-body">
     <h2>Frontier open models, one serving stack.</h2>
-    <p class="prose">A model joins by passing the same package and qualification contract as every other. Figures are fleet measurements with their dates.</p>
+    <p class="prose">A model joins by passing the same package and qualification contract as every other. Throughput is projected where a roofline exists to project from.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Measured</th></tr></thead>
+        <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Projected</th></tr></thead>
         <tbody>
-          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>129.9</b>tok/s · 8 streams · 2026-09-26</td></tr>
-          <tr><td class="model">GLM 5.2</td><td>TP8 · 8 Sparks</td><td><span class="state measured">Measured</span></td><td class="figure"><b>75.6</b>tok/s · 16 streams · 2026-08-16</td></tr>
-          <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state measured">Measured</span></td><td class="figure"><b>40.5</b>tok/s · 1 stream · 2026-08-15</td></tr>
+          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>1,650</b>tok/s · 256 streams</td></tr>
+          <tr><td class="model">GLM 5.2</td><td>TP8 · 8 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
           <tr><td class="model">GLM 5.3</td><td>on the GLM 5.2 driver</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
           <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
           <tr><td class="model">Kimi K3 · MiniMax H3</td><td>profiled per model</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
@@ -203,7 +232,7 @@
       <div><p class="label">Priorities and deadlines</p><p>Each request carries a priority and a deadline. The engine ages priorities so nothing starves, and cancels work that runs past its deadline.</p></div>
       <div><p class="label">One door</p><p>A LiteLLM proxy routes by model name, streams tokens and issues keys. Any OpenAI SDK works unchanged.</p></div>
       <div><p class="label">Promotion · target</p><p>Active models stay resident; others promote from verified NVMe tiers within 60 seconds, from a pooled store read at 20 Gb/s.</p></div>
-      <div><p class="label">Scale in steps</p><p>Deploy 4, 8 or 16 Sparks, then add DGX Stations in 1x, 2x, 4x or 8x configurations without changing the API or model packages.</p></div>
+      <div><p class="label">Scale in steps</p><p>Deploy 4, 8 or 16 Sparks without changing the API or model packages. Adding Mac Studios one at a time is planned.</p></div>
     </div>
   </div>
 </section>
@@ -266,7 +295,7 @@ print(reply.choices[0].message.content)</pre>
   <div>
     <p class="label signal">For office-scale AI</p>
     <h2>Grow the serving fabric with the business.</h2>
-    <p class="prose">Start with prosumer Sparks that can be expanded or resold. Add 1x, 2x, 4x or 8x DGX Station capacity as demand grows. Four- and eight-Station fabrics target the largest models at roughly half matched DGX B300 throughput, without a datacenter installation. That is a design target until hardware receipts close it.</p>
+    <p class="prose">Start with prosumer machines that can be expanded or resold: four DGX Sparks, then eight and sixteen, with Mac Studios planned. They are desk-side machines on ordinary power, with no datacenter and no rack, behind one API.</p>
   </div>
   <div class="contact">
     <p class="label">Talk to us</p>
@@ -284,7 +313,7 @@ print(reply.choices[0].message.content)</pre>
   <div class="wrap">
     <span>© 2026 HYOR AI Tech Ltd · SparkPipe is open source, all C and CUDA</span>
     <nav aria-label="Footer"><a href="playground.html">Playground</a><a href="providers.html">Providers</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai</a></nav>
-    <span>Measurements carry their dates; targets are labelled.</span>
+    <span>Measurements carry their dates. Throughput figures are projections and say so.</span>
   </div>
 </footer>
 
@@ -302,7 +331,11 @@ print(reply.choices[0].message.content)</pre>
   const context = canvas.getContext && canvas.getContext('2d');
   if (!context) return;
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let nodes = [], hub = { x: 0, y: 0 }, packets = [], width = 0, height = 0, running = false, last = 0;
+  let nodes = [], hub = { x: 0, y: 0 }, packets = [], tone = {}, width = 0, height = 0, running = false, last = 0;
+  const readTone = () => {
+    const css = getComputedStyle(document.documentElement), get = (name) => css.getPropertyValue(name).trim();
+    tone = { brand: get('--brand'), ink: get('--screen-ink'), dim: get('--screen-dim'), panel: get('--screen-panel') };
+  };
   const layout = () => {
     const box = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, radius = Math.min(box.width, box.height) * .36;
     width = box.width;
@@ -319,8 +352,8 @@ print(reply.choices[0].message.content)</pre>
   const at = (index) => index < 0 ? hub : nodes[index];
   const spawn = (t) => {
     const from = Math.random() * 16 | 0;
-    if (Math.random() < .6) packets.push({ path: [from, -1, (from + 1 + (Math.random() * 15 | 0)) % 16], t, speed: .45 + Math.random() * .3, color: '#7ce23f' });
-    else packets.push({ path: [from, from ^ 1], t, speed: 1 + Math.random() * .5, color: '#e8f0e3' });
+    if (Math.random() < .6) packets.push({ path: [from, -1, (from + 1 + (Math.random() * 15 | 0)) % 16], t, speed: .45 + Math.random() * .3, hot: true });
+    else packets.push({ path: [from, from ^ 1], t, speed: 1 + Math.random() * .5, hot: false });
   };
   const position = (packet) => {
     const legs = packet.path.length - 1, leg = Math.min(legs - 1, Math.floor(packet.t * legs)), local = packet.t * legs - leg, a = at(packet.path[leg]), b = at(packet.path[leg + 1]);
@@ -329,38 +362,43 @@ print(reply.choices[0].message.content)</pre>
   const draw = () => {
     context.clearRect(0, 0, width, height);
     context.lineWidth = 1;
-    context.strokeStyle = 'rgba(217, 228, 211, .13)';
+    context.globalAlpha = .13;
+    context.strokeStyle = tone.ink;
     nodes.forEach((node) => { context.beginPath(); context.moveTo(hub.x, hub.y); context.lineTo(node.x, node.y); context.stroke(); });
     context.lineWidth = 2;
-    context.strokeStyle = 'rgba(124, 226, 63, .5)';
+    context.globalAlpha = .5;
+    context.strokeStyle = tone.brand;
     for (let index = 0; index < 16; index += 2) { context.beginPath(); context.moveTo(nodes[index].x, nodes[index].y); context.lineTo(nodes[index + 1].x, nodes[index + 1].y); context.stroke(); }
+    context.globalAlpha = 1;
     context.font = '500 10px "Martian Mono", ui-monospace, monospace';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.lineWidth = 1;
     nodes.forEach((node, index) => {
-      context.fillStyle = '#121713';
+      context.fillStyle = tone.panel;
       context.fillRect(node.x - 7, node.y - 7, 14, 14);
-      context.strokeStyle = '#7ce23f';
+      context.strokeStyle = tone.brand;
       context.strokeRect(node.x - 7, node.y - 7, 14, 14);
-      context.fillStyle = '#6f7d72';
+      context.fillStyle = tone.dim;
       context.fillText(index.toString(16), node.lx, node.ly);
     });
     packets.forEach((packet) => {
-      const point = position(packet);
-      context.fillStyle = packet.color;
-      context.shadowColor = packet.color;
+      const point = position(packet), color = packet.hot ? tone.brand : tone.ink;
+      context.fillStyle = color;
+      context.shadowColor = color;
       context.shadowBlur = 8;
       context.beginPath();
       context.arc(point.x, point.y, 2.4, 0, Math.PI * 2);
       context.fill();
       context.shadowBlur = 0;
     });
-    context.fillStyle = '#121713';
-    context.strokeStyle = 'rgba(217, 228, 211, .45)';
+    context.fillStyle = tone.panel;
     context.fillRect(hub.x - 38, hub.y - 13, 76, 26);
+    context.globalAlpha = .45;
+    context.strokeStyle = tone.ink;
     context.strokeRect(hub.x - 38, hub.y - 13, 76, 26);
-    context.fillStyle = '#d9e4d3';
+    context.globalAlpha = 1;
+    context.fillStyle = tone.ink;
     context.fillText('CRS804', hub.x, hub.y + 1);
   };
   const frame = (now) => {
@@ -373,10 +411,12 @@ print(reply.choices[0].message.content)</pre>
     if (running) requestAnimationFrame(frame);
   };
   const start = () => { if (running || still) return; running = true; last = 0; requestAnimationFrame(frame); };
+  readTone();
   layout();
   for (let index = 0; index < 24; index++) spawn(Math.random());
   draw();
   window.addEventListener('resize', () => { layout(); draw(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { readTone(); draw(); });
   if (still) return;
   if ('IntersectionObserver' in window) new IntersectionObserver((entries) => { if (entries[0].isIntersecting) start(); else running = false; }).observe(canvas);
   else start();
