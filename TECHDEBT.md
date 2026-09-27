@@ -304,6 +304,49 @@ progress diary.
   (`deadline_time_ns` exists but is not populated) so the scheduler, not
   only the API, orders work by deadline.
 
+## Provider network
+
+None of the provider network in `README.md` exists yet. The only piece in
+the tree is the LiteLLM front door.
+
+- **Provider agent.** `sparkpipe provider register` and an agent that
+  holds an outbound, mutually authenticated connection to the router. It
+  carries the provider's offers (models, prices, limits, the resale
+  switch) and signs completion receipts.
+- **Owner-first scheduling.** The batch engine has priorities but no
+  preemptible class. Add a network class that runs only on capacity owner
+  traffic leaves idle, and that yields at frame boundaries.
+- **Hand-off.** A network request either finishes within the bound the
+  router set when it placed it, or resumes on another provider. Resuming
+  mid-request needs KV transfer between installations; until then, a
+  preempted network request restarts elsewhere.
+- **Router, metering, billing, payouts and bonds.** The router places
+  requests by model, price, latency and verification record. It bills
+  buyers from signed receipts, pays providers 85% after the challenge
+  window, and holds and forfeits bonds.
+- **Audit service.** It needs:
+  - a cost-weighted secret sampler over real completed requests (about 2% of
+    tokens);
+  - a replay scheduler, and reference nodes for each hardware type and
+    driver build;
+  - a comparator: exact tokens for greedy traffic, logprobs within a stated
+    tolerance for sampled traffic;
+  - the challenge and dispute state machine;
+  - weight fingerprints.
+- **Exact replays need batch-invariant numerics.** Batched decode is not
+  bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
+  bitwise, replays of batched requests can only compare logprobs within a
+  tolerance, which is weaker against mild quantization.
+- **Logprobs do not exist yet** (see Serving API), so sampled traffic cannot
+  be audited.
+- **Every driver update splits audit cohorts.** Replays compare only against
+  the same driver hash, so the router must track each provider's build, and
+  releases need per-model cohort changeovers.
+- **The sparkpipe.ai site does not exist:** catalog, buyer console, provider
+  dashboard.
+- **Payments.** Provider identity checks, tax reporting and payout rails
+  (fiat, crypto or both) are undecided.
+
 ## Production qualification
 
 - Repeat accepted transport and model measurements from clean merged `main`,

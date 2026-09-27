@@ -105,3 +105,40 @@ receipts.
 
 TECHDEBT: hardware independence, DGX Station deployment, incremental
 expansion.
+
+## M9. The provider network
+
+Exit, with an installation that sparkpipe.ai does not operate:
+
+- it registers, offers a model at its own price and serves buyer traffic
+  through the sparkpipe.ai router;
+- the owner's own traffic takes over within one frame;
+- at least 2% of served tokens are replayed on reference nodes, with exact
+  greedy comparison and logprob comparison for sampled traffic, and a
+  planted quantized provider is caught;
+- payouts settle from signed receipts after the challenge window;
+- the catalog, buyer console and provider dashboard are live on
+  sparkpipe.ai.
+
+Work:
+
+- the provider agent and registration;
+- an owner-first priority class, with preemption at frame boundaries;
+- network requests that finish within their bound or resume elsewhere;
+- signed completion receipts;
+- the router's placement and metering;
+- the audit service (sampler, replay scheduler, comparator, challenge
+  state), and reference nodes for each hardware type;
+- bonds and payouts;
+- the site.
+
+It depends on:
+
+- batch-invariant numerics, so replays compare bit for bit (M2);
+- logprobs (M3);
+- model promotion (M6).
+
+Revenue per provider scales with batched throughput, so M2 matters to this
+milestone as much as the network code does.
+
+TECHDEBT: provider network.

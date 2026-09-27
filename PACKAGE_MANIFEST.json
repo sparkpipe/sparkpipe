@@ -48,8 +48,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "52f7c9ab6f11cd959a3f8ed0a96047480436c9515e3a6c1da280a20b4dafa315",
-      "size_bytes": 20455
+      "sha256": "3ffae64c8816cf14ee88954e1f1da33b06865d98cb3c963628b455a6bec7ce6d",
+      "size_bytes": 23409
     },
     {
       "path": "SPEC.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "32d0f1aecd466867f932366346e4edbe2c8e0b02751d3e482033a87a55d007de",
-      "size_bytes": 24186
+      "sha256": "4a5b4633b3142657ea5376480cf088c08349bf65ebfdac85badceb0010304309",
+      "size_bytes": 26448
     },
     {
       "path": "cache/cache.h",
@@ -858,8 +858,8 @@
     },
     {
       "path": "docs/MARKETPLACE_PLAN.md",
-      "sha256": "15bcc5ff3d2b689db30c53939985e535683d9552cb26f1f0f12985c618337986",
-      "size_bytes": 11110
+      "sha256": "dd12934af7b1ed067f40cc305acdbe0b237a541fe1336a3f6c3b5dc0b4669594",
+      "size_bytes": 14382
     },
     {
       "path": "docs/MESH_INVENTORY.md",
@@ -943,8 +943,8 @@
     },
     {
       "path": "docs/ROADMAP.md",
-      "sha256": "09670ea664f23b449bc2a2e185272774080a57a26125e34f243f40ac53e4d335",
-      "size_bytes": 4702
+      "sha256": "6379b6236bcd2ac0a3613adf547faa25da4cda9b60559035cf4b9983128c008f",
+      "size_bytes": 5976
     },
     {
       "path": "docs/ROADMAP_TP16_FLEET.md",
@@ -15180,5 +15180,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74062140
+  "total_bytes": 74071902
 }
