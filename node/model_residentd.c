@@ -46,6 +46,8 @@
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS 4u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATE 5u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS 6u
+#define SPARK_MODEL_RESIDENTD_LOG_LANES 16u
+#define SPARK_MODEL_RESIDENTD_LOG_ROWS 16u
 #define SPARK_MODEL_RESIDENTD_FAILURE_DEACTIVATE_ROUTE 7u
 #define SPARK_MODEL_RESIDENTD_FAILURE_CONTINUE_LEASE 8u
 #define SPARK_MODEL_RESIDENTD_FAILURE_CLIENT_LEASE_DISCONNECT 9u
@@ -1956,6 +1958,29 @@ static SparkStatus SparkModelResidentdQueueSubmitResult(
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkModelResidentdIdentityPresent(const SparkModelServingCacheIdentity *identity)
+{
+	uint32_t index,present;
+	present = 0u;
+	for (index=0u; index<sizeof(identity->sha256); index++)
+		present |= identity->sha256[index];
+	return(present != 0u ? 1u : 0u);
+}
+
+static void SparkModelResidentdLogSubmission(const char *tag,const SparkModelServingSubmission *submission,SparkStatus status)
+{
+	const SparkModelServingLane *lane;
+	uint32_t index;
+	fprintf(stderr,"%s id=%llu kind=%u status=%s lanes=%u/%u rows=%u tokens_per_sequence=%u position=%llu\n",tag,(unsigned long long)submission->submission_id,submission->work_kind,SparkStatusToString(status),submission->active_sequence_count,submission->lane_count,submission->row_count,submission->tokens_per_sequence,(unsigned long long)submission->sequence_position);
+	for (index=0u; submission->lanes != 0 && index<submission->lane_count && index<SPARK_MODEL_RESIDENTD_LOG_LANES; index++)
+	{
+		lane = &submission->lanes[index];
+		fprintf(stderr,"%s-LANE id=%llu lane=%u slot=%u request=%llu/%llu step=%llu sequence=%llu position=%llu context=%u flags=0x%x prefix=%u/%u publish=%u/%u\n",tag,(unsigned long long)submission->submission_id,index,lane->resident_sequence_slot,(unsigned long long)lane->request_id,(unsigned long long)lane->request_generation,(unsigned long long)lane->step_generation,(unsigned long long)lane->sequence_id,(unsigned long long)lane->sequence_position,lane->context_token_count,lane->flags,lane->cache_prefix_token_count,SparkModelResidentdIdentityPresent(&lane->cache_prefix_identity),lane->cache_publish_token_count,SparkModelResidentdIdentityPresent(&lane->cache_publish_identity));
+	}
+	for (index=0u; submission->row_lane_indices != 0 && submission->row_positions != 0 && submission->row_sequence_ids != 0 && index<submission->row_count && index<SPARK_MODEL_RESIDENTD_LOG_ROWS; index++)
+		fprintf(stderr,"%s-ROW id=%llu row=%u lane=%u sequence=%llu position=%llu\n",tag,(unsigned long long)submission->submission_id,index,submission->row_lane_indices[index],(unsigned long long)submission->row_sequence_ids[index],(unsigned long long)submission->row_positions[index]);
+}
+
 static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -1966,12 +1991,13 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelServingSubmission submission;
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
-	uint32_t cache_committed,cache_prepared;
+	uint32_t cache_committed,cache_prepared,decoded;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u decision=%u\n",
 		(unsigned long long)(message_bytes >= 24u ? wire->submission_id : 0ull),
 		(unsigned)message_bytes,(unsigned)decision_required);
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
+	decoded = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (runtime->client.hello_complete == 0u ||
 		runtime->client.pending_client_reset != 0u) )
 		status = SPARK_STATUS_BUSY;
@@ -2038,6 +2064,8 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
 			submission.row_count,submission.active_sequence_count,
 			(unsigned long long)runtime->client.last_submission_id);
+	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE )
+		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
 		decision_required == 0u )
@@ -2612,6 +2640,7 @@ static SparkStatus SparkModelResidentdPrepareContinuation(
 		SPARK_RETURN(status);
 	if ( status != SPARK_STATUS_OK )
 	{
+		SparkModelResidentdLogSubmission("CONTINUATION-REJECTED",&route->submission,status);
 		pthread_mutex_lock(&runtime->mutex);
 		status = SparkModelResidentdFailRouteLocked(route,status,0u);
 		pthread_mutex_unlock(&runtime->mutex);
