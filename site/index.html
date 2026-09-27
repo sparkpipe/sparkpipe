@@ -2,218 +2,385 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#08090a">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe</title>
 <meta name="description" content="Private frontier-model serving that scales from four DGX Sparks to 1x, 2x, 4x, or 8x DGX Station fabrics.">
+<meta name="theme-color" content="#eef0ec">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32" fill="none"><path d="M0.5 16H7M25 16H31.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="7" y="6" width="18" height="20" rx="5.5" stroke="currentColor" stroke-width="1.8"/><path d="M17.8 9 12.2 17.4H15.4L14.2 23 19.8 14.6H16.6Z" fill="currentColor"/></symbol></svg>
 
-<nav class="nav">
-  <a class="brand" href="#top"><svg class="logo" width="30" height="30"><use href="#logo"/></svg><span>Spark<span class="accent">Pipe</span></span><span class="tag">open source</span></a>
-  <div class="links">
-    <a href="#models">Models</a>
-    <a href="#api">API</a>
-    <a href="providers.html">Providers</a>
-    <a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a>
-    <a class="btn ghost" href="playground.html">Open the playground →</a>
-    <a class="btn primary" href="#partner">Work with us</a>
-  </div>
-</nav>
-
-<main>
-<section id="top" class="wrap" style="padding-top:96px">
-  <div class="pill">Private frontier-model serving for business</div>
-  <h1>SparkPipe serves frontier models on your hardware.</h1>
-  <p class="lead">Start with four Sparks, grow to eight and sixteen, then add DGX Stations. One priority-aware serving engine keeps frontier models addressable, batches work automatically, and combines switched plus pairwise-direct fabrics to use the hardware fully.</p>
-  <div class="row">
-    <a class="btn primary" href="#partner">Build with SparkPipe →</a>
-    <a class="btn" href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">★ Star on GitHub</a>
-    <a class="btn ghost" href="playground.html">Open the playground →</a>
-  </div>
-  <div class="term">
-    <div class="term-head"><i></i><i></i><i></i><span>spark0 · dual-rail hardware profile</span></div>
-    <div class="term-body">
-      <p><span class="accent">$</span> fabric profile · TP4 · BF16</p>
-      <p class="dim">→ switch 100G + paired direct · both required</p>
-      <p class="dim">→ payload bytes select the calibrated collective</p>
-      <p><span class="accent">✓</span> 640 KiB · <b>split ring 122.962 μs</b></p>
-      <p class="gap"><span class="accent">$</span> large tensor · 14 MiB</p>
-      <p class="dim">→ direct TX/RX + switch TX/RX overlap</p>
-      <p><span class="accent">✓</span> <b>193.018 Gb/s</b> aggregate transport<span class="caret">▊</span></p>
-    </div>
-  </div>
-</section>
-
-<section class="wrap" style="padding-top:20px;padding-bottom:40px">
-  <div class="stats">
-    <div><small>Spark scale</small><strong>4 · 8 · 16</strong><span>incremental deployment profiles</span></div>
-    <div><small>Fabric</small><strong>2 rails</strong><span>switched + paired direct, both required</span></div>
-    <div><small>Model promotion</small><strong>≤60s</strong><span>architecture target, fully prewarmed</span></div>
-    <div><small>Model store</small><strong>20 Gb/s</strong><span>pooled external NVMe target</span></div>
-  </div>
-</section>
-
-<section id="engine" class="wrap">
-  <div class="eyebrow">The engine</div>
-  <h2>Written from scratch for small unified-memory machines.</h2>
-  <p class="sub">Sixteen DGX Sparks hold 2 TB of unified memory and stream about 4.4 TB/s. SparkPipe makes them behave like one machine. Its kernels, RDMA transport, tokenizer, scheduler and cache are its own C and CUDA, with no third-party inference framework underneath.</p>
-  <div class="cols c3">
-    <div class="card"><div class="k">FIRMWARE</div><h3>Models compile to drivers</h3><p>Each model links into one driver from content-addressed, validated modules. At runtime there is no graph interpreter, no kernel search and no fallback.</p></div>
-    <div class="card"><div class="k">EXACT</div><h3>Replayable tokens</h3><p>The same driver, weights, prompt and seed reproduce every token bit for bit, and each request logs what an off-node replay needs.</p></div>
-    <div class="card"><div class="k">B1 → B1024</div><h3>Built for every batch</h3><p>Kernels exist for every row count from 1 to 1024. One weight read serves every request in the step, so throughput grows with the batch.</p></div>
-    <div class="card"><div class="k">SCHEDULING</div><h3>Priorities and deadlines</h3><p>Every request carries a priority and a deadline. The batch engine ages priorities so nothing starves, and cancels work that runs past its deadline.</p></div>
-    <div class="card"><div class="k">OPENAI API</div><h3>One door for every model</h3><p>A LiteLLM proxy routes by model name, streams tokens and issues keys. Any OpenAI SDK works unchanged.</p></div>
-    <div class="card"><div class="k">2 TB</div><h3>Datacenter models, desk-side</h3><p>Sparks hold models that normally need a datacenter server. GLM 5.2, a 756 GB checkpoint, runs on eight of them.</p></div>
-  </div>
-</section>
-
-<section class="wrap">
-  <div class="eyebrow">The dual fabric</div>
-  <h2>Two rails. One collective service.</h2>
-  <p class="sub">The CRS804 is the all-to-all rail, not a fallback. Pairwise direct links add a second active rail. SparkPipe pins both routes and selects a topology-aware all-reduce from the exact communicator, datatype, and payload bytes.</p>
-  <div class="cols c3">
-    <div class="card"><div class="k">01</div><h3>Switched rail</h3><p>100 Gb/s all-to-all through the CRS804</p></div>
-    <div class="card"><div class="k">02</div><h3>Direct rail</h3><p>XOR-1 pairs, nominal 200G and PCIe-limited near 100G</p></div>
-    <div class="card"><div class="k">03</div><h3>Small payload</h3><p>Topology-aware recursive doubling</p></div>
-    <div class="card"><div class="k">04</div><h3>Medium payload</h3><p>Recursive halving and doubling</p></div>
-    <div class="card"><div class="k">05</div><h3>Large payload</h3><p>Counter-rotating split rings over both rails</p></div>
-    <div class="card"><div class="k">06</div><h3>Route proof</h3><p>Interface counters verify every byte path</p></div>
-  </div>
-  <div class="flow"></div>
-  <div class="fabric">
-    <div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">Scale <span class="accent">4 → 8 → 16 Sparks</span></h3>
-      <span class="tag">CRS804 + XOR-1 direct pairs</span>
-    </div>
-    <p>Every size keeps complete direct pairs plus switched all-to-all. Add DGX Stations in 1x, 2x, 4x, or 8x configurations without changing the API or model packages.</p>
-    <div class="sparks">
-      <span style="--d:0">0</span><span style="--d:1">1</span><span style="--d:2">2</span><span style="--d:3">3</span><span style="--d:4">4</span><span style="--d:5">5</span><span style="--d:6">6</span><span style="--d:7">7</span>
-      <span style="--d:8">8</span><span style="--d:9">9</span><span style="--d:10">A</span><span style="--d:11">B</span><span style="--d:12">C</span><span style="--d:13">D</span><span style="--d:14">E</span><span style="--d:15">F</span>
-    </div>
-  </div>
-</section>
-
-<section class="wrap" style="padding-top:50px">
-  <div class="cols c2" style="gap:44px;align-items:center">
-    <div>
-      <div class="eyebrow">Measured fabric</div>
-      <h2>The rails add. They do not substitute.</h2>
-      <p class="sub" style="margin-bottom:20px">For large tensors, two counter-rotating half-payload rings alternate direct and switched edges. Every Spark overlaps direct TX/RX with switch TX/RX, cutting switch-facing bytes in half while keeping the switch inside the active collective.</p>
-      <div class="note">The values shown are isolated hardware transport measurements, not model decode throughput. TP8 and TP16 receive independent three-algorithm crossover tables before qualification.</div>
-    </div>
-    <div class="card">
-      <div class="bars">
-        <div style="--h:43%"><b>91.7</b><i></i>Pair min</div>
-        <div style="--h:49%"><b>105.9</b><i></i>Pair max</div>
-        <div style="--h:90%"><b>193.0</b><i></i>Split ring</div>
-        <div class="top" style="--h:100%"><b>213.7</b><i></i>2-port ceiling</div>
-      </div>
-      <div class="bars-foot">Gb/s useful transport · measured 2026-08-13</div>
-    </div>
-  </div>
-</section>
-
-<section class="band">
+<header class="nav">
   <div class="wrap">
-    <div class="eyebrow">How it works</div>
-    <h2 style="margin-bottom:46px">Pin the routes. Profile the bytes. Select in O(1).</h2>
-    <div class="cols c3">
-      <div class="card"><div class="k">STEP 01</div><h3>Admit by priority</h3><p>Each request names a model, priority, and deadline. Interactive chat and agent populations enter the same scheduler.</p></div>
-      <div class="card"><div class="k">STEP 02</div><h3>Shape the work</h3><p>The scheduler chooses placement, batch width, stage microbatch, speculation, and collective from the ready work and measured profiles.</p></div>
-      <div class="card"><div class="k">STEP 03</div><h3>Keep hardware occupied</h3><p>Resident models run immediately; warm models promote atomically from verified NVMe tiers while unrelated ready work continues.</p></div>
+    <a class="brand" href="#top"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">open source</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#throughput">Throughput</a>
+      <a href="#fabric">Fabric</a>
+      <a href="#models">Models</a>
+      <a href="#api">API</a>
+      <a href="providers.html">Providers</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn small" href="#partner">Work with us</a>
+      <a class="btn small solid" href="playground.html">Playground</a>
     </div>
-    <div class="cols c2" style="margin-top:20px">
-      <div class="card deep"><h3>One serving engine, every scale</h3><p>Deploy 4, 8, or 16 Sparks, then add DGX Stations in 1x, 2x, 4x, or 8x configurations. Large MoE models stay TP4 × PP4 on sixteen Sparks; smaller dense models can remain TP16. Expansion preserves the API, packages, scheduler, and evidence rules.</p></div>
-      <div class="card deep"><h3>Every frontier model stays addressable</h3><p>The scheduler mixes high-priority interactive chat with dense agent batches. Active models stay resident; others promote from verified NVMe tiers in at most 60 seconds. Targets include DeepSeek V4, GLM 5.2, Kimi K3, MiniMax H3, and Qwen 3.8 Pro and 27B.</p></div>
+  </div>
+</header>
+
+<main id="top">
+<section class="wrap hero">
+  <p class="label hero-kicker">Private frontier-model serving · open source</p>
+  <h1>Sixteen Sparks.<br>One machine.</h1>
+  <div class="hero-grid">
+  <div class="hero-copy">
+    <p class="lead">SparkPipe serves frontier open models on hardware you own. Written from scratch in C and CUDA, it makes a cluster of NVIDIA DGX Sparks behave like one datacenter server.</p>
+    <div class="actions">
+      <a class="btn solid" href="playground.html">Open the playground</a>
+      <a class="btn" href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">Star on GitHub</a>
     </div>
+    <p class="note">Start with four Sparks, grow to eight and sixteen, then add DGX Stations.</p>
+  </div>
+  <figure class="screen" aria-label="Schematic of the sixteen-Spark fabric">
+    <div class="screen-bar"><span><b>●</b> spark0 – sparkf · two rails</span><span>schematic</span></div>
+    <canvas id="fabric-canvas" role="img" aria-label="Sixteen Sparks around a CRS804 switch, each also linked directly to its pair"></canvas>
+    <div class="screen-read">
+      <div><small>Switched rail</small><strong>100 Gb/s</strong></div>
+      <div><small>Direct pairs</small><strong>0↔1 … e↔f</strong></div>
+      <div><small>Split ring</small><strong>193.0 Gb/s</strong></div>
+    </div>
+  </figure>
   </div>
 </section>
 
-<section id="models" class="wrap">
-  <div class="eyebrow">Models</div>
-  <h2>Frontier open models, one serving stack.</h2>
-  <p class="sub">A model joins by passing the same package and qualification contract as every other, not by adding a second serving stack. Numbers below are fleet measurements with their dates.</p>
-  <div class="cols c4">
-    <div class="card model"><span class="chip live">In production</span><h3>GLM 5.3 Flash</h3><p>TP16 on 16 Sparks</p><p class="fig"><b>129.9 tok/s</b> across 8 streams · 2026-09-26</p></div>
-    <div class="card model"><span class="chip">Measured</span><h3>DeepSeek V4 Flash</h3><p>TP4 on 4 Sparks</p><p class="fig"><b>40.5 tok/s</b> single stream · 2026-08-15</p></div>
-    <div class="card model"><span class="chip">Measured</span><h3>GLM 5.2</h3><p>TP8 on 8 Sparks</p><p class="fig"><b>75.6 tok/s</b> across 16 streams · 2026-08-16</p></div>
-    <div class="card model"><span class="chip">Onboarding</span><h3>Next</h3><p>GLM 5.3 · DeepSeek V4 Pro · Kimi K3 · MiniMax H3 · Qwen 3.8 Max · Qwen 3.8 27B</p></div>
+<div class="wrap">
+  <div class="specs">
+    <div><strong>2 TB</strong><span>unified memory across sixteen Sparks, 128 GB each</span></div>
+    <div><strong>4.4 TB/s</strong><span>memory bandwidth, 273 GB/s per Spark</span></div>
+    <div><strong>2 rails</strong><span>100 Gb/s switched all-to-all, plus a direct link to each node's pair</span></div>
+    <div><strong>0</strong><span>third-party inference frameworks or kernel libraries</span></div>
   </div>
-  <p class="note" style="margin-top:28px">Batching is the throughput lever. At 256 streams and 1K context the memory-bound ceiling for GLM 5.3 Flash on sixteen Sparks is about 2,800 tok/s; the batch-serving milestone targets 2,200. That is a target, not a measurement.</p>
+</div>
+
+<div class="wrap">
+<section id="throughput" class="sec">
+  <div class="sec-rail">
+    <p class="label">Throughput</p>
+    <p class="label">GLM 5.3 Flash · TP16</p>
+  </div>
+  <div class="sec-body">
+    <h2>Batching is the lever.</h2>
+    <p class="prose">Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once, and one read serves every request in the step. So aggregate throughput climbs with the batch. On sixteen Sparks at 1K context the memory-bound ceiling runs from 125 tok/s for one stream to about 2,800 tok/s for 256.</p>
+    <div class="chart-wrap">
+      <svg class="chart" viewBox="0 0 720 384" role="img" aria-label="Aggregate tokens per second against concurrent streams, log scales: memory-bound ceiling, roadmap targets and measured points">
+        <path class="grid" d="M64 94.3H696M64 211.2H696M156.5 24V328M231 24V328M305.5 24V328M380 24V328M454.5 24V328M529 24V328M603.5 24V328M678 24V328"/>
+        <path class="axis" d="M64 24V328H696"/>
+        <path class="ceiling-area" d="M82,328 L82,199.8 L305.5,142.1 L529,97.5 L603.5,71.8 L678,42.5 L678,328 Z"/>
+        <polyline class="ceiling" points="82,199.8 305.5,142.1 529,97.5 603.5,71.8 678,42.5"/>
+        <polyline class="target" points="82,211.2 305.5,155.4 529,108.9 678,54.3"/>
+        <circle class="target-dot" cx="82" cy="211.2" r="4"/>
+        <circle class="target-dot" cx="305.5" cy="155.4" r="4"/>
+        <circle class="target-dot" cx="529" cy="108.9" r="4"/>
+        <circle class="target-dot" cx="678" cy="54.3" r="4"/>
+        <line class="measured-range" x1="82" y1="276.5" x2="82" y2="272.6"/>
+        <circle class="measured-dot" cx="82" cy="274.6" r="5.5"/>
+        <circle class="measured-dot" cx="305.5" cy="197.9" r="5.5"/>
+        <text x="82" y="190" text-anchor="middle">125</text>
+        <text x="305.5" y="132" text-anchor="middle">390</text>
+        <text x="529" y="87" text-anchor="middle">940</text>
+        <text x="603.5" y="62" text-anchor="middle">1,560</text>
+        <text class="strong" x="678" y="32" text-anchor="middle">2,780</text>
+        <text class="target-text" x="94" y="228">100</text>
+        <text class="target-text" x="317" y="172">~300</text>
+        <text class="target-text" x="541" y="125">~750</text>
+        <text class="target-text" x="678" y="77" text-anchor="middle">~2,200</text>
+        <text class="signal-text" x="96" y="278">27.6–29.8 · 1 stream · 2026-09-25</text>
+        <text class="signal-text" x="319" y="202">129.9 · 8 streams · 2026-09-26</text>
+        <text x="56" y="332" text-anchor="end">10</text>
+        <text x="56" y="215" text-anchor="end">100</text>
+        <text x="56" y="98" text-anchor="end">1,000</text>
+        <text x="82" y="348" text-anchor="middle">1</text>
+        <text x="156.5" y="348" text-anchor="middle">2</text>
+        <text x="231" y="348" text-anchor="middle">4</text>
+        <text x="305.5" y="348" text-anchor="middle">8</text>
+        <text x="380" y="348" text-anchor="middle">16</text>
+        <text x="454.5" y="348" text-anchor="middle">32</text>
+        <text x="529" y="348" text-anchor="middle">64</text>
+        <text x="603.5" y="348" text-anchor="middle">128</text>
+        <text x="678" y="348" text-anchor="middle">256</text>
+        <text x="380" y="374" text-anchor="middle">concurrent streams</text>
+        <text x="14" y="176" text-anchor="middle" transform="rotate(-90 14 176)">aggregate tok/s</text>
+      </svg>
+    </div>
+    <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="t"></i>roadmap target, 80% of ceiling</span><span><i class="m"></i>measured on the fleet</span></div>
+    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Targets: milestones M1 (8 streams) and M2 (64 and 256). Each of 256 streams would still see about 11 tok/s.</p>
+  </div>
 </section>
 
-<section id="api" class="band">
-  <div class="wrap">
-    <div class="cols c2" style="gap:44px;align-items:center">
-      <div>
-        <div class="eyebrow">The API</div>
-        <h2>Any OpenAI client works.</h2>
-        <p class="sub" style="margin-bottom:24px">SparkPipe's front door is a LiteLLM proxy: one OpenAI-compatible endpoint that routes by model name, streams tokens and issues keys. SparkPipe adds exact seeds and per-request deadlines.</p>
-        <div class="row"><a class="btn primary" href="playground.html">Try it in the playground →</a></div>
+<section id="exact" class="sec">
+  <div class="sec-rail">
+    <p class="label">Determinism</p>
+    <p class="label">Receipt, not a claim</p>
+  </div>
+  <div class="sec-body">
+    <h2>Same inputs, same tokens, to the bit.</h2>
+    <p class="prose">Repeat a request on the same driver build and weights and it returns the same tokens, bit for bit. Every request logs its seed and every output token, which is exactly what an off-node replay needs. That is what lets the provider network verify its providers. Batched runs repeat when the batch does; making them independent of the batch is on the roadmap.</p>
+    <div class="receipt">
+      <div class="receipt-head"><span class="label">SHA-256 of the 128-token output · DeepSeek V4 Flash · TP4</span><span class="label">2026-08-14 → 15</span></div>
+      <p class="receipt-hash"><span>211462f2</span> <span>525f73b7</span> <span>6137ee1c</span> <span>e9bd4e01</span> <span>5ad8a3fd</span> <span>825a7c45</span> <span>d38fff04</span> <span>88598083</span></p>
+      <div class="receipt-foot">
+        <div><span class="label">Workload</span>One request, 128 tokens, greedy</div>
+        <div><span class="label">Hardware</span>spark4 – spark7</div>
+        <div><span class="label">Result</span>Every control and candidate run emitted this vector</div>
       </div>
-      <div class="term" style="margin:0">
-        <div class="term-head"><i></i><i></i><i></i><span>chat completion</span></div>
-        <div class="term-body">
-          <p><span class="accent">$</span> curl https://sparkpipe.ai/v1/chat/completions \</p>
-          <p class="dim">&nbsp;&nbsp;-H "Authorization: Bearer $SPARKPIPE_API_KEY" \</p>
-          <p class="dim">&nbsp;&nbsp;-H "Content-Type: application/json" \</p>
-          <p>&nbsp;&nbsp;-d '{"model": "glm-5.3-flash",</p>
-          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"messages": [{"role": "user", "content": "Hi"}],</p>
-          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"temperature": 0.7, <b>"seed": 42</b>,</p>
-          <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>"deadline_ms": 30000</b>, "stream": true}'</p>
-          <p class="gap dim">→ the same seed replays the reply token for token</p>
-          <p class="dim">→ a request still running at its deadline is cancelled</p>
-        </div>
-      </div>
     </div>
   </div>
 </section>
 
-<section id="network" class="wrap">
-  <div class="eyebrow">The provider network · in development</div>
-  <h2>Sell the capacity you are not using.</h2>
-  <p class="sub">Connect your SparkPipe installation to sparkpipe.ai and rent out the hours your own traffic leaves idle. You choose the models and set the price. Every provider is validated, so all offers of the same model and quantization are interchangeable, and one buyer's requests can run on many providers at once.</p>
-  <div class="cols c4">
-    <div class="card"><div class="k">85%</div><h3>Your price, your share</h3><p>You set the price per million tokens for each model. You keep 85% of what buyers pay; sparkpipe.ai keeps 15%.</p></div>
-    <div class="card"><div class="k">1 frame</div><h3>Your traffic comes first</h3><p>Network work runs at the lowest priority and yields at the next frame boundary when your own requests arrive.</p></div>
-    <div class="card"><div class="k">~2%</div><h3>Every provider validated</h3><p>About 2% of served tokens are recomputed on reference nodes with the exact published weights, to catch quantized or substituted models.</p></div>
-    <div class="card"><div class="k">1 fabric</div><h3>One private network</h3><p>Providers, the router and the reference nodes share one tailnet. Your installation opens no port to the internet.</p></div>
+<section id="fabric" class="sec">
+  <div class="sec-rail">
+    <p class="label">Fabric</p>
+    <p class="label">Measured 2026-08-13</p>
   </div>
-  <div class="row" style="margin-top:28px"><a class="btn primary" href="providers.html">How selling works →</a></div>
+  <div class="sec-body">
+    <h2>Two rails. One collective service.</h2>
+    <p class="prose">The CRS804 is the all-to-all rail, not a fallback. Pairwise direct links add a second active rail. SparkPipe pins both routes and picks a topology-aware all-reduce from the exact communicator, datatype and payload bytes. For large tensors, two counter-rotating half-payload rings alternate direct and switched edges, so every Spark sends and receives on both ports at once.</p>
+    <div class="bars" aria-label="Useful transport in Gb/s">
+      <div class="bar"><span>Pair, slowest</span><i style="--w:41.7%"></i><b>91.7</b></div>
+      <div class="bar"><span>Pair, fastest</span><i style="--w:48.1%"></i><b>105.9</b></div>
+      <div class="bar top"><span>Split ring</span><i style="--w:87.7%"></i><b>193.0</b></div>
+      <div class="bar"><span>Two-port ceiling</span><i style="--w:97.1%"></i><b>213.7</b></div>
+      <div class="bars-scale"><span></span><span><span>0</span><span>110</span><span>220 Gb/s</span></span><span></span></div>
+    </div>
+    <div class="facts">
+      <div><p class="label">Small payloads</p><p>Topology-aware recursive doubling</p></div>
+      <div><p class="label">Medium payloads</p><p>Recursive halving and doubling</p></div>
+      <div><p class="label">Proof</p><p>Interface counters confirm every byte took its route</p></div>
+    </div>
+  </div>
 </section>
 
-<section id="partner" class="wrap" style="padding-top:88px;padding-bottom:88px">
-  <div class="cta">
-    <div class="eyebrow">For office-scale AI</div>
+<section id="models" class="sec">
+  <div class="sec-rail">
+    <p class="label">Models</p>
+    <p class="label">One driver per model</p>
+  </div>
+  <div class="sec-body">
+    <h2>Frontier open models, one serving stack.</h2>
+    <p class="prose">A model joins by passing the same package and qualification contract as every other. Figures are fleet measurements with their dates.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Measured</th></tr></thead>
+        <tbody>
+          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>129.9</b>tok/s · 8 streams · 2026-09-26</td></tr>
+          <tr><td class="model">GLM 5.2</td><td>TP8 · 8 Sparks</td><td><span class="state measured">Measured</span></td><td class="figure"><b>75.6</b>tok/s · 16 streams · 2026-08-16</td></tr>
+          <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state measured">Measured</span></td><td class="figure"><b>40.5</b>tok/s · 1 stream · 2026-08-15</td></tr>
+          <tr><td class="model">GLM 5.3</td><td>on the GLM 5.2 driver</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Kimi K3 · MiniMax H3</td><td>profiled per model</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+          <tr><td class="model">Qwen 3.8 Max · 27B</td><td>profiled per model</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="engine" class="sec">
+  <div class="sec-rail">
+    <p class="label">Engine</p>
+    <p class="label">C and CUDA, from scratch</p>
+  </div>
+  <div class="sec-body">
+    <h2>Models compile to drivers.</h2>
+    <p class="prose">The kernels, the RDMA transport, the tokenizer, the scheduler and the cache all live in one tree. A model is not interpreted at runtime; it is linked.</p>
+    <div class="defs">
+      <div><p class="label">Firmware modules</p><p>Each model links into one driver from content-addressed, validated modules. At runtime there is no graph interpreter, no kernel search and no fallback.</p></div>
+      <div><p class="label">Every batch size</p><p>Kernels are built for every row count from 1 to 1024, so a step's weight read serves the whole batch.</p></div>
+      <div><p class="label">Priorities and deadlines</p><p>Each request carries a priority and a deadline. The engine ages priorities so nothing starves, and cancels work that runs past its deadline.</p></div>
+      <div><p class="label">One door</p><p>A LiteLLM proxy routes by model name, streams tokens and issues keys. Any OpenAI SDK works unchanged.</p></div>
+      <div><p class="label">Promotion · target</p><p>Active models stay resident; others promote from verified NVMe tiers within 60 seconds, from a pooled store read at 20 Gb/s.</p></div>
+      <div><p class="label">Scale in steps</p><p>Deploy 4, 8 or 16 Sparks, then add DGX Stations in 1x, 2x, 4x or 8x configurations without changing the API or model packages.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="api" class="sec">
+  <div class="sec-rail">
+    <p class="label">API</p>
+    <p class="label">OpenAI-compatible</p>
+  </div>
+  <div class="sec-body">
+    <h2>Any OpenAI client works.</h2>
+    <p class="prose">Point your client at SparkPipe's endpoint. Two extras come with it: a seed that replays a sampled reply token for token, and a deadline after which the engine cancels the request.</p>
+    <div class="code">
+      <div class="code-tabs" role="tablist">
+        <button type="button" role="tab" id="tab-curl" aria-selected="true" aria-controls="code-curl">curl</button>
+        <button type="button" role="tab" id="tab-python" aria-selected="false" aria-controls="code-python">Python</button>
+      </div>
+      <pre id="code-curl" role="tabpanel" aria-labelledby="tab-curl"><span class="k">curl</span> https://sparkpipe.ai/v1/chat/completions \
+  -H <span class="d">"Authorization: Bearer $SPARKPIPE_API_KEY"</span> \
+  -H <span class="d">"Content-Type: application/json"</span> \
+  -d '{"model": "glm-5.3-flash",
+       "messages": [{"role": "user", "content": "Hello"}],
+       "temperature": 0.7, <span class="k">"seed": 42</span>,
+       <span class="k">"deadline_ms": 30000</span>, "stream": true}'</pre>
+      <pre id="code-python" role="tabpanel" aria-labelledby="tab-python" hidden><span class="k">import</span> os
+<span class="k">from</span> openai <span class="k">import</span> OpenAI
+
+client = OpenAI(base_url=<span class="d">"https://sparkpipe.ai/v1"</span>, api_key=os.environ[<span class="d">"SPARKPIPE_API_KEY"</span>])
+reply = client.chat.completions.create(
+    model=<span class="d">"glm-5.3-flash"</span>,
+    messages=[{<span class="d">"role"</span>: <span class="d">"user"</span>, <span class="d">"content"</span>: <span class="d">"Hello"</span>}],
+    temperature=0.7,
+    <span class="k">seed=42</span>,
+    <span class="k">extra_body={"deadline_ms": 30000}</span>,
+)
+print(reply.choices[0].message.content)</pre>
+    </div>
+    <div class="actions"><a class="btn" href="playground.html">Try it in the playground</a></div>
+  </div>
+</section>
+
+<section id="network" class="sec">
+  <div class="sec-rail">
+    <p class="label">Provider network</p>
+    <p class="label">In development</p>
+  </div>
+  <div class="sec-body">
+    <h2>Sell the Spark time you are not using.</h2>
+    <p class="prose">Connect your installation to sparkpipe.ai and rent out the hours your own traffic leaves idle, at your own price. Every provider is validated, so all offers of the same model and quantization are interchangeable, and one buyer's requests can run on many providers at once.</p>
+    <div class="facts">
+      <div><p class="label">85% of your price</p><p>You set the price per million tokens. sparkpipe.ai keeps 15%.</p></div>
+      <div><p class="label">About 2% replayed</p><p>Reference nodes recompute a secret sample of served tokens to catch quantized or substituted weights.</p></div>
+      <div><p class="label">Yours first</p><p>Network work yields at the next frame boundary when your own requests arrive.</p></div>
+    </div>
+    <div class="actions"><a class="btn solid" href="providers.html">How selling works</a></div>
+  </div>
+</section>
+
+<section id="partner" class="cta">
+  <div>
+    <p class="label signal">For office-scale AI</p>
     <h2>Grow the serving fabric with the business.</h2>
-    <p class="sub">Start with prosumer Sparks that can be expanded or resold. Add 1x, 2x, 4x, or 8x DGX Station capacity as demand grows. Four- and eight-Station fabrics target the largest models at roughly half matched DGX B300 throughput, without requiring a datacenter installation. This is a design target until hardware receipts close it.</p>
-    <div class="row">
-      <a class="btn primary" href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>
+    <p class="prose">Start with prosumer Sparks that can be expanded or resold. Add 1x, 2x, 4x or 8x DGX Station capacity as demand grows. Four- and eight-Station fabrics target the largest models at roughly half matched DGX B300 throughput, without a datacenter installation. That is a design target until hardware receipts close it.</p>
+  </div>
+  <div class="contact">
+    <p class="label">Talk to us</p>
+    <code>hyor@sparkpipe.ai</code>
+    <div class="actions">
+      <a class="btn solid" href="mailto:hyor@sparkpipe.ai">Email us</a>
       <a class="btn" href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">DM @sparkpipeai</a>
     </div>
   </div>
 </section>
+</div>
 </main>
 
 <footer class="foot">
-  <div class="foot-top">
-    <div>
-      <a class="brand" href="#top"><svg class="logo" width="22" height="22"><use href="#logo"/></svg><span>Spark<span class="accent">Pipe</span></span></a>
-      <p>Private frontier-model serving for business. Open source, model-agnostic, all C/CUDA.</p>
-    </div>
-    <div class="foot-cols">
-      <div><small>Project</small><a href="providers.html">Providers</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub ↗</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai ↗</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></div>
-      <div><small>Made by</small><span>HYOR AI Tech Ltd</span></div>
-    </div>
+  <div class="wrap">
+    <span>© 2026 HYOR AI Tech Ltd · SparkPipe is open source, all C and CUDA</span>
+    <nav aria-label="Footer"><a href="playground.html">Playground</a><a href="providers.html">Providers</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="https://twitter.com/sparkpipeai" target="_blank" rel="noopener">@sparkpipeai</a></nav>
+    <span>Measurements carry their dates; targets are labelled.</span>
   </div>
-  <div class="foot-base"><span>© 2026 HYOR AI Tech Ltd</span><span>Transport measurements and model projections are labelled separately.</span></div>
 </footer>
+
+<script>
+(() => {
+  const tabs = document.querySelectorAll('.code-tabs button');
+  tabs.forEach((tab) => tab.addEventListener('click', () => {
+    tabs.forEach((other) => {
+      const on = other === tab;
+      other.setAttribute('aria-selected', on ? 'true' : 'false');
+      document.getElementById(other.getAttribute('aria-controls')).hidden = !on;
+    });
+  }));
+  const canvas = document.getElementById('fabric-canvas');
+  const context = canvas.getContext && canvas.getContext('2d');
+  if (!context) return;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let nodes = [], hub = { x: 0, y: 0 }, packets = [], width = 0, height = 0, running = false, last = 0;
+  const layout = () => {
+    const box = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, radius = Math.min(box.width, box.height) * .36;
+    width = box.width;
+    height = box.height;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    hub = { x: width / 2, y: height / 2 };
+    nodes = Array.from({ length: 16 }, (_, index) => {
+      const angle = -Math.PI / 2 + (index + .5) * Math.PI / 8;
+      return { x: hub.x + radius * Math.cos(angle), y: hub.y + radius * Math.sin(angle), lx: hub.x + (radius + 22) * Math.cos(angle), ly: hub.y + (radius + 22) * Math.sin(angle) };
+    });
+  };
+  const at = (index) => index < 0 ? hub : nodes[index];
+  const spawn = (t) => {
+    const from = Math.random() * 16 | 0;
+    if (Math.random() < .6) packets.push({ path: [from, -1, (from + 1 + (Math.random() * 15 | 0)) % 16], t, speed: .45 + Math.random() * .3, color: '#7ce23f' });
+    else packets.push({ path: [from, from ^ 1], t, speed: 1 + Math.random() * .5, color: '#e8f0e3' });
+  };
+  const position = (packet) => {
+    const legs = packet.path.length - 1, leg = Math.min(legs - 1, Math.floor(packet.t * legs)), local = packet.t * legs - leg, a = at(packet.path[leg]), b = at(packet.path[leg + 1]);
+    return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
+  };
+  const draw = () => {
+    context.clearRect(0, 0, width, height);
+    context.lineWidth = 1;
+    context.strokeStyle = 'rgba(217, 228, 211, .13)';
+    nodes.forEach((node) => { context.beginPath(); context.moveTo(hub.x, hub.y); context.lineTo(node.x, node.y); context.stroke(); });
+    context.lineWidth = 2;
+    context.strokeStyle = 'rgba(124, 226, 63, .5)';
+    for (let index = 0; index < 16; index += 2) { context.beginPath(); context.moveTo(nodes[index].x, nodes[index].y); context.lineTo(nodes[index + 1].x, nodes[index + 1].y); context.stroke(); }
+    context.font = '500 10px "Martian Mono", ui-monospace, monospace';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.lineWidth = 1;
+    nodes.forEach((node, index) => {
+      context.fillStyle = '#121713';
+      context.fillRect(node.x - 7, node.y - 7, 14, 14);
+      context.strokeStyle = '#7ce23f';
+      context.strokeRect(node.x - 7, node.y - 7, 14, 14);
+      context.fillStyle = '#6f7d72';
+      context.fillText(index.toString(16), node.lx, node.ly);
+    });
+    packets.forEach((packet) => {
+      const point = position(packet);
+      context.fillStyle = packet.color;
+      context.shadowColor = packet.color;
+      context.shadowBlur = 8;
+      context.beginPath();
+      context.arc(point.x, point.y, 2.4, 0, Math.PI * 2);
+      context.fill();
+      context.shadowBlur = 0;
+    });
+    context.fillStyle = '#121713';
+    context.strokeStyle = 'rgba(217, 228, 211, .45)';
+    context.fillRect(hub.x - 38, hub.y - 13, 76, 26);
+    context.strokeRect(hub.x - 38, hub.y - 13, 76, 26);
+    context.fillStyle = '#d9e4d3';
+    context.fillText('CRS804', hub.x, hub.y + 1);
+  };
+  const frame = (now) => {
+    const step = Math.min(.05, last ? (now - last) / 1000 : 0);
+    last = now;
+    if (packets.length < 40 && Math.random() < .6) spawn(0);
+    packets.forEach((packet) => { packet.t += step * packet.speed; });
+    packets = packets.filter((packet) => packet.t < 1);
+    draw();
+    if (running) requestAnimationFrame(frame);
+  };
+  const start = () => { if (running || still) return; running = true; last = 0; requestAnimationFrame(frame); };
+  layout();
+  for (let index = 0; index < 24; index++) spawn(Math.random());
+  draw();
+  window.addEventListener('resize', () => { layout(); draw(); });
+  if (still) return;
+  if ('IntersectionObserver' in window) new IntersectionObserver((entries) => { if (entries[0].isIntersecting) start(); else running = false; }).observe(canvas);
+  else start();
+})();
+</script>
 </body>
 </html>

@@ -8103,23 +8103,23 @@
     },
     {
       "path": "site/index.html",
-      "sha256": "51dd30cf0de91bc5bacc2726d8d7774b4c88f1fef8894aee88d569f38e588507",
-      "size_bytes": 16684
+      "sha256": "bd17cbd8e2e7bbd1defb8d33852e2abfbabd5ec548e3bb142529b819d34ede24",
+      "size_bytes": 22973
     },
     {
       "path": "site/playground.html",
-      "sha256": "280055bd43d3ca6e4156d5ac900caaf098fa27f4a45801183910dc65f46d11eb",
-      "size_bytes": 13481
+      "sha256": "f6b3606709cb29d11e62961103be866027ea803e8b38c5393d47655ca816a225",
+      "size_bytes": 13694
     },
     {
       "path": "site/providers.html",
-      "sha256": "c541f97cd4dbe4178976c7861dce71b71dd781d306b6cab18e019e5c3e990516",
-      "size_bytes": 12940
+      "sha256": "08d46c0f5e413fcdc7c8758e7ac230d7468f89dfb93a78b9c2cb7d48b477606f",
+      "size_bytes": 14880
     },
     {
       "path": "site/site.css",
-      "sha256": "104f3278881b910996432f608be5da6f950c3e53d7f1957314393680a38f1f62",
-      "size_bytes": 16283
+      "sha256": "5876dd1b8946b7ee89ea942e905477242b45a5c89165b8fe6abdd9b5823dc529",
+      "size_bytes": 24379
     },
     {
       "path": "sources.mk",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74144270
+  "total_bytes": 74160808
 }
