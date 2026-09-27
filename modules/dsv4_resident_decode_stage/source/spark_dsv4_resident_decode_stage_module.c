@@ -23,6 +23,7 @@
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "spark_dsv4_lane_continuity.h"
 #include "spark_dsv4_hc_splitk.h"
 #include "spark_dsv4_sparse_attention_split.h"
@@ -446,7 +447,6 @@ extern cudaError_t SparkDsv4LaunchHeadCertifiedFp8B1Sharded(cudaStream_t stream,
 extern cudaError_t SparkDsv4LaunchHeadMaxlocPack(cudaStream_t stream, const float *scores, const uint32_t *token_ids, uint64_t *maxloc, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchResidentTokenFeedback(cudaStream_t stream, const uint32_t *output_token_ids, uint32_t *resident_token_ids, uint32_t *input_token_ids, uint64_t *row_positions, uint64_t *row_emit_positions, uint64_t *row_emit_positions_hca, uint32_t row_count, uint32_t tokens_per_sequence, uint32_t step_index, uint32_t advance);
-extern cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 extern cudaError_t SparkDsv4LaunchGatherHeadRows(cudaStream_t stream, const void *source_bf16, const uint32_t *source_row_indices, void *destination_bf16, uint32_t row_count, uint32_t row_width);
 extern cudaError_t SparkDsv4LaunchScatterHeadTokens(cudaStream_t stream, const uint32_t *source, const uint32_t *destination_lane_indices, uint32_t *destination, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchQuantSim(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t row_stride, uint32_t width, uint32_t block, uint32_t fp4);
@@ -479,7 +479,6 @@ extern cudaError_t SparkDsv4LaunchFusedSharedW13Act(cudaStream_t stream, const S
 extern cudaError_t SparkDsv4LaunchExpertDown(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *group_row_offset, uint32_t *group_tile_prefix, void *output_bf16, uint32_t rows, uint32_t expert_width, uint32_t hidden_dimension, uint32_t multiprocessor_count);
 extern cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchMoePairReduceStrided(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint64_t accum_row_stride, uint32_t accum_offset, uint32_t row_count, uint32_t hidden_dimension);
-extern cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim);
 extern cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchHcMix(cudaStream_t stream, const void *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t row_count, uint32_t flat_dimension, uint32_t mix_rows, float epsilon);
@@ -491,8 +490,6 @@ extern cudaError_t SparkDsv4LaunchHcPreReduce(
 	uint32_t dimension);
 extern cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
 extern cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const void *streams_bf16, const float *mixes_f32, float scale, const float *base_f32, float epsilon, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
-
-#include "sparkpipe/family/module/spark_module_combine.h"
 
 static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	SparkDsv4ModuleState *state,
@@ -513,8 +510,7 @@ static SparkStatus SparkDsv4ModuleInitializeTpCollective(
 	configuration.local_hidden_dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	configuration.combine_bf16_function = SparkDsv4ModuleCombineBf16;
-	configuration.combine_u64_max_function = SparkDsv4ModuleCombineU64Max;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )

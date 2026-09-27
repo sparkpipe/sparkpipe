@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_minimax_resident_decode_stage_firmware.h"
 #include "spark_minimax_stagepack_format.h"
 #define SPARK_FAMILY_CAMEL Minimax
@@ -139,10 +140,6 @@ extern cudaError_t SparkMinimaxLaunchAttentionPrefill(cudaStream_t stream,const 
 extern cudaError_t SparkMinimaxLaunchProjection(cudaStream_t stream,const SparkMinimaxLinearView *view,const void *input_bf16,void *output_bf16,uint32_t row_count);
 extern cudaError_t SparkMinimaxLaunchSwiGlu(cudaStream_t stream,const void *gate_bf16,const void *up_bf16,void *activated_bf16,uint32_t row_count,uint32_t dimension);
 extern cudaError_t SparkMinimaxLaunchVocabArgmax(cudaStream_t stream,const void *lm_head_bf16,const void *input_bf16,uint64_t *argmax_reduce_u64,uint32_t row_count,uint32_t local_vocab_rows,uint32_t input_dimension,uint32_t local_vocab_base);
-extern cudaError_t SparkMinimaxLaunchTpCombineBf16(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count);
-extern cudaError_t SparkMinimaxLaunchTpCombineU64Max(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count);
-static SparkStatus SparkMinimaxModuleTpCombineBf16(void *combine_context,void *destination_device,const void *source_device,uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream);
-static SparkStatus SparkMinimaxModuleTpCombineU64Max(void *combine_context,uint64_t *destination_device,const uint64_t *source_device,uint32_t count,void *cuda_stream);
 
 static void SparkMinimaxModuleFillLinearView(SparkMinimaxLinearView *view,const SparkMinimaxStagePackEntry *entry,void *payload)
 {
@@ -566,8 +563,7 @@ static SparkStatus SparkMinimaxModuleInitializeTpCollective(SparkMinimaxModuleSt
 	configuration.local_hidden_dimension = SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_MINIMAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.combine_bf16_function = SparkMinimaxModuleTpCombineBf16;
-	configuration.combine_u64_max_function = SparkMinimaxModuleTpCombineU64Max;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
@@ -580,13 +576,6 @@ static SparkStatus SparkMinimaxModuleInitializeTpCollective(SparkMinimaxModuleSt
 	if ( status == SPARK_STATUS_OK )
 		fprintf(stderr,"%s tp_collective_open degree=%u rank=%u\n",SPARK_MINIMAX_MODULE_TAG,state->tp_degree,state->tp_rank);
 	SPARK_RETURN(status);
-}
-
-static SparkStatus SparkMinimaxModuleTpCombineBf16(void *combine_context,void *destination_device,const void *source_device,uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
-{
-	(void)combine_context;
-	(void)hidden_dimension;
-	return(SparkStageModuleCudaStatus(SPARK_MINIMAX_MODULE_TAG,SparkMinimaxLaunchTpCombineBf16((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count * SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),"tp_combine_bf16"));
 }
 
 static SparkStatus SparkMinimaxModuleTpReduceArgmax(SparkMinimaxModuleState *state,SparkMinimaxModuleSlot *slot,uint64_t *device_u64,uint32_t count)

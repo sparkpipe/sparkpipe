@@ -220,9 +220,9 @@ cudaError_t SparkGlm5NextLaunchMeshPublish/Wait/Guard(stream, ...);  /* transpor
 void SparkTpMeshRegisterCommonCombines(SparkTpDeviceCollectiveConfig *configuration);
 ```
 Params (llm_defines): none beyond `SPARK_LLM_TILE_THREADS`-class constants. Adoption:
-delete the private kernel copies in cuda.cu (glm5_next done; glm52/dsv4/ling/laguna/
-qwen38_27b carry the same copies with the OLD bf16-per-step precision bug — adopting
-this module FIXES their numerics class).
+delete the private kernel copies in cuda.cu. Done for every TP driver except k3: the
+private copies summed rank by rank in BF16, and the common combines sum all ranks in
+FP32 and round once.
 
 ### M-1 `common_gdn_stage_kernels.cu` — qwen decode kernel suite
 Entry points mirror the 22-kernel suite (AttnDecode/Prepare/ChunkStep/MoE gather/
@@ -320,6 +320,8 @@ registration via `SparkTpMeshRegisterCommonCombines`, glm5_next converted (priva
 copies deleted).
 
 Every module whose driver runs `tp_device_collective.c` compiles the header, because
-the collective calls its mesh launchers and a driver without them does not link. dsv4, muse_glimmer and
-qwen4_flash still register only their private BF16 combine: each still has to call
-the register function and delete its private kernel.
+the collective calls its mesh launchers and a driver without them does not link. Every
+TP driver except glm5_next and k3 registers the combines through
+`SparkTpMeshRegisterCommonCombines`; glm5_next registers its own wrappers over the same
+kernels, and k3 still runs the hidden transport. `tests/test_tp_collective_open.py`
+checks the registration for every mesh driver.

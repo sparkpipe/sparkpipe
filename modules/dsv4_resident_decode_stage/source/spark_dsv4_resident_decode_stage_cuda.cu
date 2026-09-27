@@ -109,17 +109,6 @@ static __global__ void SparkDsv4ResidentTokenFeedbackKernel(
 		SPARK_DSV4_MODEL_HCA_COMPRESS_RATIO : 0u;
 }
 
-static __global__ void SparkDsv4AccumU64MaxKernel(
-	uint64_t *destination,
-	const uint64_t *source,
-	uint32_t element_count)
-{
-	uint32_t element;
-	element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < element_count && source[element] > destination[element] )
-		destination[element] = source[element];
-}
-
 static cudaError_t SparkDsv4RequireNativeSm121(void)
 {
 	static thread_local int32_t checked = 0;
@@ -1464,80 +1453,6 @@ static __global__ void SparkDsv4SwigluClampKernel(const void *gate_bf16, void *u
 	}
 }
 
-static __global__ void SparkDsv4AccumAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element = threadIdx.x; element < (width >> 1u); element += blockDim.x)
-	{
-		destination_pair = SparkLmLoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkLmLoadBf16Pair(source_bf16,offset + element);
-		SparkLmStoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
-	}
-}
-
-static __global__ void SparkDsv4AccumAddRelayKernel(void *destination_bf16,
-	const void *source_bf16,void *relay_bf16,uint32_t row_count,
-	uint32_t width)
-{
-	__nv_bfloat162 packed;
-	uint32_t raw,row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	float2 destination_pair,source_pair;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		destination_pair = SparkLmLoadBf16Pair(destination_bf16,offset + element);
-		source_pair = SparkLmLoadBf16Pair(source_bf16,offset + element);
-		packed = __floats2bfloat162_rn(destination_pair.x + source_pair.x,
-			destination_pair.y + source_pair.y);
-		raw = *(const uint32_t *)&packed;
-		((uint32_t *)destination_bf16)[offset + element] = raw;
-		((uint32_t *)relay_bf16)[offset + element] = raw;
-	}
-}
-
-static __global__ void SparkDsv4AccumAddTp4TreeKernel(
-	void *destination_bf16,
-	const void *rank0_bf16,
-	const void *rank1_bf16,
-	const void *rank2_bf16,
-	const void *rank3_bf16,
-	uint32_t tp_rank,
-	uint32_t row_count,
-	uint32_t width)
-{
-	__nv_bfloat162 pair01_bf16,pair23_bf16;
-	float2 pair01,pair23,rank0,rank1,rank2,rank3;
-	uint32_t row = blockIdx.x,element;
-	uint64_t offset = ((uint64_t)row * width) >> 1u;
-	if ( row >= row_count )
-		return;
-	for (element=threadIdx.x; element<(width >> 1u); element+=blockDim.x)
-	{
-		rank0 = SparkLmLoadBf16Pair(rank0_bf16,offset + element);
-		rank1 = SparkLmLoadBf16Pair(rank1_bf16,offset + element);
-		rank2 = SparkLmLoadBf16Pair(rank2_bf16,offset + element);
-		rank3 = SparkLmLoadBf16Pair(rank3_bf16,offset + element);
-		pair01_bf16 = __floats2bfloat162_rn(
-			rank0.x + rank1.x,rank0.y + rank1.y);
-		pair23_bf16 = __floats2bfloat162_rn(
-			rank2.x + rank3.x,rank2.y + rank3.y);
-		pair01 = __bfloat1622float2(pair01_bf16);
-		pair23 = __bfloat1622float2(pair23_bf16);
-		if ( tp_rank < 2u )
-			SparkLmStoreBf16Pair(destination_bf16,offset + element,
-				pair01.x + pair23.x,pair01.y + pair23.y);
-		else
-			SparkLmStoreBf16Pair(destination_bf16,offset + element,
-				pair23.x + pair01.x,pair23.y + pair01.y);
-	}
-}
-
 static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
     static const uint32_t maximum_pairs_per_lane =
@@ -2546,15 +2461,6 @@ extern "C" cudaError_t SparkDsv4LaunchResidentTokenFeedback(
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
-{
-	if ( stream == 0 || destination == 0 || source == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	SparkDsv4AccumU64MaxKernel<<<(element_count + 255u) / 256u,256u,0u,
-		stream>>>(destination,source,element_count);
-	return(cudaGetLastError());
-}
-
 extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,hidden_dimension,candidate_count);
@@ -3353,44 +3259,6 @@ extern "C" cudaError_t SparkDsv4LaunchMoePairReduceStrided(
 		inverse_map,pair_weights_f32,accum_bf16,accum_row_stride,
 		accum_offset,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,
 		hidden_dimension));
-}
-
-extern "C" cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	SparkDsv4AccumAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkDsv4LaunchAccumAddRelay(cudaStream_t stream,
-	void *destination_bf16,const void *source_bf16,void *relay_bf16,
-	uint32_t row_count,uint32_t width)
-{
-	if ( stream == 0 || destination_bf16 == 0 || source_bf16 == 0 ||
-		relay_bf16 == 0 || row_count == 0u || width == 0u ||
-		(width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkDsv4AccumAddRelayKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
-		destination_bf16,source_bf16,relay_bf16,row_count,width);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkDsv4LaunchAccumAddTp4Tree(
-	cudaStream_t stream,
-	void *destination_bf16,
-	const void *const rank_devices[4],
-	uint32_t tp_rank,
-	uint32_t row_count,
-	uint32_t width)
-{
-	if ( stream == 0 || destination_bf16 == 0 || rank_devices == 0 ||
-		rank_devices[0] == 0 || rank_devices[1] == 0 ||
-		rank_devices[2] == 0 || rank_devices[3] == 0 || tp_rank >= 4u ||
-		row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkDsv4AccumAddTp4TreeKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(
-		destination_bf16,rank_devices[0],rank_devices[1],rank_devices[2],
-		rank_devices[3],tp_rank,row_count,width);
-	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_page_table_indices, const uint32_t *physical_page_table, uint32_t page_table_stride, uint32_t entries_per_page, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)

@@ -70,10 +70,8 @@ progress diary.
   (`ApplyTopology` copies the degree, `ProbeMemoryMode`,
   `CreditBindingRouteCount`) and the adapters' `tp_collective` stage-config
   section that feeds them predate the mesh. Remove them together with a
-  fleet stage-config migration. The relay and TP4-tree combine kernels in
-  dsv4, qwen38_27b and k3, and
-  `tools/hardware/spark_dsv4_tp4_tree_bitwise.cu`, serve the same
-  pre-mesh algorithms.
+  fleet stage-config migration. k3's relay and TP4 combine callbacks serve
+  the same pre-mesh algorithms.
 - The weightd mesh is wired on one interface (the switched rail). Build the
   pair-link hierarchical all-reduce (pair sum over `rank XOR 1`, 8-way
   switched exchange, pair return) designed in
@@ -353,11 +351,24 @@ progress diary.
     mesh rewrite left unsatisfiable), and dsv4 and muse_glimmer never
     attached the mesh, so every TP round would have been refused;
   - glm52, laguna, qwen38_max and qwen4_flash attached the mesh only with a
-    lazy pack, and now map it themselves without one.
-- dsv4, muse_glimmer and qwen4_flash still register their own BF16 combine
-  and none of the common FP32 combines. Call
-  `SparkTpMeshRegisterCommonCombines`, delete the private combine, and
-  record a precision receipt.
+    lazy pack, and now map it themselves without one;
+  - dsv4, minimax, muse_glimmer, qwen38_max, qwen4_flash and qwen38_27b now
+    reduce through the common combines, which sum all ranks in FP32 and
+    round once, where their private kernels summed rank by rank in BF16.
+    Record a precision receipt with each requalification.
+- glm5_next still carries host code its driver never reaches: the per-layer
+  attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
+  `LayerAttentionBf16` entry in
+  `family/glm/spark_glm_unity_glm5_next_ling.cuh` (ling carries it too) and
+  `SparkGlm5NextLaunchEpochSample` with its kernel. Deleting them leaves
+  every other kernel's SASS identical but changes GCC's inlining in four
+  live host launch functions, so it waits for a measured glm5_next
+  deployment.
+- dsv4's GPU validator and source tests still exercise launchers that no
+  dsv4 driver build calls: `Hadamard`, `HeadArgmax`, `HeadScreenedArgmax`
+  and its sharded form, `QuantSim`, `QueryHeadRmsRope`, `ExpertUp`,
+  `HcSplitSinkhorn`, `MoePairReduceStrided` and `SwigluClamp`. Point those
+  checks at the kernels the driver runs, then delete the launchers.
 - Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
   `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
   keep their own bucket ladders. `tests/test_template_adoption.py` lists

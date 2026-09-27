@@ -22,84 +22,6 @@ extern "C" int32_t SparkGlm52T1Enabled(void)
 	return(t1_enabled);
 }
 
-__device__ __forceinline__ unsigned long long SparkGlm52GlobalTimerNs()
-{
-	unsigned long long t;
-	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-	return t;
-}
-
-__global__ void SparkGlm52MeshGuardKernel(
-	volatile unsigned long long *error_word,
-	unsigned long long *output)
-{
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	if ( *error_word != 0ull )
-	{
-		output[0] = 0xFFFFFFFFFFFFFFFFull;
-		*error_word = 0ull;
-		printf("MESH-GUARD-POISON\n");
-	}
-}
-
-__global__ void SparkGlm52MeshPublishKernel(
-	volatile uint64_t *entry,
-	unsigned long long *seq_cell,
-	unsigned long long *round_seq,
-	uint64_t bytes,
-	uint64_t slot_index)
-{
-	unsigned long long sequence;
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	sequence = 1ull + atomicAdd((unsigned long long *)seq_cell,1ull);
-	round_seq[0] = sequence;
-	entry[2] = slot_index;
-	entry[1] = bytes;
-	__threadfence_system();
-	entry[0] = sequence;
-}
-
-__global__ void SparkGlm52MeshWaitKernel(
-	volatile uint64_t *band_base,
-	uint64_t slot_bytes,
-	const unsigned long long *round_seq,
-	uint64_t slots_per_rank,
-	uint64_t ring,
-	uint32_t rank,
-	uint32_t degree,
-	unsigned long long *error_word,
-	unsigned long long deadline_ns)
-{
-	uint32_t peer;
-	volatile uint64_t *end_word;
-	uint64_t sequence;
-	unsigned long long stop_at;
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
-		return;
-	sequence = round_seq[0];
-	stop_at = SparkGlm52GlobalTimerNs() + deadline_ns;
-	for ( peer = 0u; peer < degree - 1u; peer++ )
-	{
-		uint32_t peer_rank = peer < rank ? peer : peer + 1u;
-		end_word = (volatile uint64_t *)
-			((uint8_t *)band_base +
-			((uint64_t)peer_rank * slots_per_rank +
-				(ring & (slots_per_rank - 1ull))) * slot_bytes +
-			slot_bytes - 8u);
-		while ( *end_word < sequence )
-		{
-			if ( SparkGlm52GlobalTimerNs() >= stop_at )
-			{
-				atomicExch((unsigned long long *)error_word,sequence);
-				return;
-			}
-			__nanosleep(200u);
-		}
-	}
-}
-
 __global__ static void SparkGlm52BoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *hidden,
@@ -156,22 +78,6 @@ __global__ static void SparkGlm52EmbeddingKernel(
 	destination = row * (uint64_t)GLM_HIDDEN + element;
 	hidden[destination] = (token >= rank_offset && token < rank_offset + vocab_per_rank) ? embedding[source] : 0u;
 	residual[destination] = 0u;
-}
-
-static __device__ __forceinline__ float2 SparkGlm52LoadBf16Pair(const void *base,uint64_t element)
-{
-	uint32_t packed = ((const uint32_t *)base)[element];
-	float2 pair;
-	pair.x = __int_as_float((int32_t)((packed & UINT32_C(0x0000ffff)) << 16u));
-	pair.y = __int_as_float((int32_t)(packed & UINT32_C(0xffff0000)));
-	return(pair);
-}
-
-static __device__ __forceinline__ void SparkGlm52StoreBf16Pair(void *base,uint64_t element,float x,float y)
-{
-	uint32_t packed = (__float_as_uint(y) & UINT32_C(0xffff0000)) |
-		(__float_as_uint(x) >> 16u);
-	((uint32_t *)base)[element] = packed;
 }
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc.cuh"

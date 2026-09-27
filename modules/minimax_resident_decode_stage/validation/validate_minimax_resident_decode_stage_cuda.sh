@@ -8,8 +8,9 @@ set -euo pipefail
 # runs its component fixture with the supplied configuration identity:
 # embedding gather, RMSNorm (determinism rerun), residual add, per-head
 # norm + rope at the TP4 local geometry, SwiGLU, vocabulary argmax through
-# the sortable-u64 packing with the u64 max combine, and the two TP combine
-# kernels - each against a host mirror of the same math.
+# the sortable-u64 packing with the u64 max combine, and the common TP
+# combine kernels the driver registers (fused FP32 sum, u64 max) - each
+# against a host mirror of the same math.
 #
 # It does NOT consume a stage pack and does not run the linear projections,
 # attention dataflow, KV write path, multi-row decode, TP collectives over

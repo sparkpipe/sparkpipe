@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_muse_glimmer_work_control.h"
 #include "spark_muse_glimmer_stagepack_format.h"
 #define SPARK_FAMILY_CAMEL MuseGlimmer
@@ -793,9 +794,6 @@ static void SparkMuseGlimmerModuleKvMarkWritten(SparkMuseGlimmerModuleState *sta
 extern cudaError_t SparkMuseGlimmerLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkMuseGlimmerLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMuseGlimmerLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
-extern cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
-
-#include "sparkpipe/family/module/spark_module_tp_combine_bf16.h"
 
 static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmerModuleState *state)
 {
@@ -817,7 +815,7 @@ static SparkStatus SparkMuseGlimmerModuleInitializeTpCollective(SparkMuseGlimmer
 	configuration.local_hidden_dimension = SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.combine_bf16_function = SparkMuseGlimmerModuleTpCombineBf16;
+	SparkTpMeshRegisterCommonCombines(&configuration);
 	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
@@ -1066,7 +1064,6 @@ extern cudaError_t SparkMuseGlimmerLaunchAttentionDecode(cudaStream_t stream, co
 extern cudaError_t SparkMuseGlimmerLaunchOutputGate(cudaStream_t stream, void *head_out_bf16, const void *gate_bf16, uint32_t row_count, uint32_t local_query_dimension);
 extern cudaError_t SparkMuseGlimmerLaunchSiluMul(cudaStream_t stream, const void *gate_up_bf16, void *intermediate_bf16, uint32_t row_count, uint32_t local_intermediate);
 extern cudaError_t SparkMuseGlimmerLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension);
-extern cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkMuseGlimmerLaunchHeadArgmaxPack(cudaStream_t stream, const float *scores_f32, uint32_t *local_token_ids, uint64_t *maxloc, uint32_t row_count, uint32_t candidate_count, uint32_t tp_degree, uint32_t tp_rank);
 extern cudaError_t SparkMuseGlimmerLaunchHeadMaxlocUnpack(cudaStream_t stream, const uint64_t *maxloc, uint32_t *token_ids, uint32_t row_count);
 #define SPARK_MUSE_GLIMMER_MODULE_HOST_ROW_CAPACITY \

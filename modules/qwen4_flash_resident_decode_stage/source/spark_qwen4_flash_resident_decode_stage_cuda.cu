@@ -562,17 +562,6 @@ static __global__ void SparkQwen4FlashHeadMaxLocUnpackKernel(const uint64_t *key
 	token_ids_u32[row] = (uint32_t)keys_u64[row];
 }
 
-static __global__ void SparkQwen4FlashTpCombineU64MaxKernel(uint64_t *destination, const uint64_t *source, uint32_t element_count)
-{
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	uint64_t value;
-	if ( index >= (uint64_t)element_count )
-		return;
-	value = source[index];
-	if ( value > destination[index] )
-		destination[index] = value;
-}
-
 static __global__ void SparkQwen4FlashEmbeddingGatherShardedKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows)
 {
 	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
@@ -1221,11 +1210,6 @@ extern "C" cudaError_t SparkQwen4FlashLaunchEmbeddingGather(cudaStream_t stream,
 	return(LmGdnStageLaunchEmbeddingGather(stream,token_ids,embedding_bf16,hidden_bf16,row_count));
 }
 
-extern "C" cudaError_t SparkQwen4FlashLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	return(LmGdnStageLaunchTpCombineAdd(stream,destination_bf16,source_bf16,row_count,width));
-}
-
 extern "C" cudaError_t SparkQwen4FlashLaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
 	return(LmGdnStageLaunchResidualAdd(stream,hidden_bf16,delta_bf16,row_count,dimension));
@@ -1350,15 +1334,6 @@ extern "C" cudaError_t SparkQwen4FlashLaunchHeadMaxLocPack(cudaStream_t stream, 
 extern "C" cudaError_t SparkQwen4FlashLaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count)
 {
 	SparkQwen4FlashHeadMaxLocUnpackKernel<<<row_count,1u,0,stream>>>(keys_u64,token_ids_u32,row_count);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkQwen4FlashLaunchTpCombineU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count)
-{
-	uint32_t blocks = (element_count + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS;
-	if ( destination == 0 || source == 0 || element_count == 0u )
-		return(cudaErrorInvalidValue);
-	SparkQwen4FlashTpCombineU64MaxKernel<<<blocks == 0u ? 1u : blocks,SPARK_LM_CTA_THREADS,0,stream>>>(destination,source,element_count);
 	return(cudaGetLastError());
 }
 

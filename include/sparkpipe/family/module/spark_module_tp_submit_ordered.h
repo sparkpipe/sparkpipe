@@ -1,11 +1,5 @@
 #pragma once
 
-static SparkStatus SPARK_FAMILY(ModuleTpCombineU64Max)(void *combine_context,uint64_t *destination_device,const uint64_t *source_device,uint32_t count,void *cuda_stream)
-{
-	(void)combine_context;
-	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),SPARK_FAMILY(LaunchTpCombineU64Max)((cudaStream_t)cuda_stream,destination_device,source_device,count),"tp_combine_u64_max"));
-}
-
 static SparkStatus SPARK_FAMILY(ModuleTpSubmitOrdered)(SPARK_FAMILY(ModuleState) *state,void *device_buffer,uint32_t count,SPARK_FAMILY(ModuleSlot) *slot,uint32_t u64_max)
 {
 	SparkTpDeviceCollectiveSubmission submission;

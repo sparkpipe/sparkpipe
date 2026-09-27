@@ -58,23 +58,6 @@ static __global__ void SparkMuseGlimmerEmbeddingGatherKernel(const uint32_t *tok
 		: 0.0f);
 }
 
-static __global__ void SparkMuseGlimmerTpCombineAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	uint32_t row = blockIdx.x;
-	uint64_t pair_base = ((uint64_t)row * width) >> 1u;
-	uint64_t pair_count = width >> 1u;
-	uint64_t pair;
-	float2 dst,src;
-	if ( row >= row_count )
-		return;
-	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
-	{
-		dst = SparkLmLoadBf16Pair(destination_bf16,pair_base + pair);
-		src = SparkLmLoadBf16Pair(source_bf16,pair_base + pair);
-		SparkLmStoreBf16Pair(destination_bf16,pair_base + pair,dst.x + src.x,dst.y + src.y);
-	}
-}
-
 extern "C" cudaError_t SparkMuseGlimmerLaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t tp_degree, uint32_t tp_rank)
 {
 	uint32_t vocab_per_rank = SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT / tp_degree;
@@ -287,14 +270,6 @@ extern "C" cudaError_t SparkMuseGlimmerLaunchOutputGate(cudaStream_t stream, voi
 extern "C" cudaError_t SparkMuseGlimmerLaunchSiluMul(cudaStream_t stream, const void *gate_up_bf16, void *intermediate_bf16, uint32_t row_count, uint32_t local_intermediate)
 {
 	LmSiluMulKernel<SPARK_MUSE_GLIMMER_CUDA_THREADS><<<row_count,SPARK_MUSE_GLIMMER_CUDA_THREADS,0,stream>>>((const uint16_t *)gate_up_bf16,(uint16_t *)intermediate_bf16,local_intermediate,true);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkMuseGlimmerLaunchTpCombineAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
-{
-	if ( destination_bf16 == 0 || source_bf16 == 0 || row_count == 0u || width == 0u || (width & 1u) != 0u )
-		return(cudaErrorInvalidValue);
-	SparkMuseGlimmerTpCombineAddKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_count,width);
 	return(cudaGetLastError());
 }
 

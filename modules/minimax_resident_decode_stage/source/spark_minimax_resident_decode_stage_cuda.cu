@@ -400,22 +400,6 @@ __global__ void SparkMinimaxArgmaxResolveKernel(const uint64_t *argmax_reduce_u6
 	token_ids[row] = (uint32_t)(argmax_reduce_u64[row] & 0xffffffffu);
 }
 
-__global__ void SparkMinimaxTpCombineBf16Kernel(__nv_bfloat16 *destination,const __nv_bfloat16 *source,uint32_t element_count)
-{
-	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( index >= element_count )
-		return;
-	destination[index] = SparkMinimaxFloatToBf16(SparkMinimaxBf16ToFloat(destination,index) + SparkMinimaxBf16ToFloat(source,index));
-}
-
-__global__ void SparkMinimaxTpCombineU64MaxKernel(uint64_t *destination,const uint64_t *source,uint32_t element_count)
-{
-	uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( index >= element_count )
-		return;
-	destination[index] = destination[index] > source[index] ? destination[index] : source[index];
-}
-
 static cudaError_t SparkMinimaxDispatchLinear(cudaStream_t stream,const SparkMinimaxLinearView *view,const void *input_bf16,void *output_bf16,uint32_t row_count)
 {
 	uint32_t outputs_per_block = 8u;
@@ -538,17 +522,5 @@ extern "C" cudaError_t SparkMinimaxLaunchVocabArgmax(cudaStream_t stream,const v
 extern "C" cudaError_t SparkMinimaxLaunchArgmaxResolve(cudaStream_t stream,const uint64_t *argmax_reduce_u64,uint32_t *token_ids,uint32_t row_count)
 {
 	SparkMinimaxArgmaxResolveKernel<<<(row_count + SPARK_MINIMAX_KERNEL_THREADS - 1u) / SPARK_MINIMAX_KERNEL_THREADS,SPARK_MINIMAX_KERNEL_THREADS,0,stream>>>(argmax_reduce_u64,token_ids,row_count);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkMinimaxLaunchTpCombineBf16(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count)
-{
-	SparkMinimaxTpCombineBf16Kernel<<<(element_count + SPARK_MINIMAX_KERNEL_THREADS - 1u) / SPARK_MINIMAX_KERNEL_THREADS,SPARK_MINIMAX_KERNEL_THREADS,0,stream>>>((__nv_bfloat16 *)destination_device,(const __nv_bfloat16 *)source_device,element_count);
-	return(cudaGetLastError());
-}
-
-extern "C" cudaError_t SparkMinimaxLaunchTpCombineU64Max(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count)
-{
-	SparkMinimaxTpCombineU64MaxKernel<<<(element_count + SPARK_MINIMAX_KERNEL_THREADS - 1u) / SPARK_MINIMAX_KERNEL_THREADS,SPARK_MINIMAX_KERNEL_THREADS,0,stream>>>((uint64_t *)destination_device,(const uint64_t *)source_device,element_count);
 	return(cudaGetLastError());
 }

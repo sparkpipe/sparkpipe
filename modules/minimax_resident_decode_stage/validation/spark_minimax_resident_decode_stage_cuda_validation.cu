@@ -35,8 +35,8 @@ extern "C" cudaError_t SparkMinimaxLaunchHeadNormRope(cudaStream_t stream,void *
 extern "C" cudaError_t SparkMinimaxLaunchSwiGlu(cudaStream_t stream,const void *gate_bf16,const void *up_bf16,void *activated_bf16,uint32_t row_count,uint32_t dimension);
 extern "C" cudaError_t SparkMinimaxLaunchVocabArgmax(cudaStream_t stream,const void *lm_head_bf16,const void *input_bf16,uint64_t *argmax_reduce_u64,uint32_t row_count,uint32_t local_vocab_rows,uint32_t input_dimension,uint32_t local_vocab_base);
 extern "C" cudaError_t SparkMinimaxLaunchArgmaxResolve(cudaStream_t stream,const uint64_t *argmax_reduce_u64,uint32_t *token_ids,uint32_t row_count);
-extern "C" cudaError_t SparkMinimaxLaunchTpCombineBf16(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count);
-extern "C" cudaError_t SparkMinimaxLaunchTpCombineU64Max(cudaStream_t stream,void *destination_device,const void *source_device,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
+extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 
 static uint32_t validation_seed = 20260923u;
 
@@ -404,6 +404,7 @@ static int ValidationVocabArgmax(const struct ValidationBuffers *buffers,cudaStr
 static int ValidationTpCombine(const struct ValidationBuffers *buffers,cudaStream_t stream,double *worst)
 {
 	const uint32_t elements = 4096u;
+	const void *sources[2] = {buffers->device_a,buffers->device_b};
 	for (uint32_t index = 0u; index < elements; index++)
 	{
 		buffers->host_a[index] = ValidationFloatToBf16(ValidationNextRandom());
@@ -413,11 +414,11 @@ static int ValidationTpCombine(const struct ValidationBuffers *buffers,cudaStrea
 		return(1);
 	if ( ValidationCheckCuda(cudaMemcpy(buffers->device_b,buffers->host_b,elements * sizeof(uint16_t),cudaMemcpyHostToDevice),"combine upload b") != 0 )
 		return(1);
-	if ( ValidationCheckCuda(SparkMinimaxLaunchTpCombineBf16(stream,buffers->device_a,buffers->device_b,elements),"combine bf16 launch") != 0 )
+	if ( ValidationCheckCuda(SparkGlm5NextLaunchSumRanksF32(stream,buffers->device_out,sources,2u,elements),"combine bf16 launch") != 0 )
 		return(1);
 	if ( ValidationCheckCuda(cudaStreamSynchronize(stream),"combine bf16 sync") != 0 )
 		return(1);
-	if ( ValidationCheckCuda(cudaMemcpy(buffers->host_out,buffers->device_a,elements * sizeof(uint16_t),cudaMemcpyDeviceToHost),"combine bf16 download") != 0 )
+	if ( ValidationCheckCuda(cudaMemcpy(buffers->host_out,buffers->device_out,elements * sizeof(uint16_t),cudaMemcpyDeviceToHost),"combine bf16 download") != 0 )
 		return(1);
 	for (uint32_t index = 0u; index < elements; index++)
 	{
@@ -438,7 +439,7 @@ static int ValidationTpCombine(const struct ValidationBuffers *buffers,cudaStrea
 			return(1);
 		if ( ValidationCheckCuda(cudaMemcpy(buffers->device_u64_second,host_u64_second,sizeof(host_u64_second),cudaMemcpyHostToDevice),"combine u64 upload second") != 0 )
 			return(1);
-		if ( ValidationCheckCuda(SparkMinimaxLaunchTpCombineU64Max(stream,buffers->device_u64,buffers->device_u64_second,64u),"combine u64 launch") != 0 )
+		if ( ValidationCheckCuda(SparkGlm5NextLaunchAccumU64Max(stream,buffers->device_u64,buffers->device_u64_second,64u),"combine u64 launch") != 0 )
 			return(1);
 		if ( ValidationCheckCuda(cudaStreamSynchronize(stream),"combine u64 sync") != 0 )
 			return(1);
