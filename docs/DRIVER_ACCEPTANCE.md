@@ -48,7 +48,7 @@ specialization of hot math while sharing its dispatch and scheduling policy.
 
 Keep model geometry, state layout and math in model hooks. Keep device
 allocation, execution, copies and events in backend hooks. Shared policy
-must remain portable to the eight Mac Studios arriving in October 2026;
+must remain portable to the eight Mac Studios on order;
 CUDA/NCCL-specific assumptions do not belong in scheduler or cache policy.
 Existing backend abstractions still need audit and Metal qualification; this
 document does not claim that implementation is already complete.

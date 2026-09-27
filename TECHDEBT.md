@@ -409,6 +409,75 @@ progress diary.
   pages). A request cannot use the pages its neighbours leave idle. Size
   positions for one long sequence and let paged admission share the pool.
 
+## Provider network
+
+Of the provider network in `README.md`, the tree has only the LiteLLM front
+door and the static pages and playground in `site/`.
+
+- **Tailnet.** No tailnet exists yet. It needs a control server that scales
+  to hundreds of providers at a sane cost (Tailscale or a self-hosted
+  Headscale), tagged auth keys issued at registration, access rules that
+  let only the router and the reference nodes reach a provider's model API
+  port (and providers nothing of each other), key rotation, and removal of
+  a provider whose bond is forfeited.
+- **Provider agent.** `sparkpipe provider register` and an agent that
+  joins the tailnet, publishes the provider's offers (models, prices,
+  limits, the resale switch) to the router and signs completion receipts.
+- **Owner-first scheduling.** The batch engine has priorities but no
+  preemptible class. Add a network class that runs only on capacity owner
+  traffic leaves idle, and that yields at frame boundaries.
+- **Hand-off.** A network request either finishes within the bound the
+  router set when it placed it, or resumes on another provider. Resuming
+  mid-request needs KV transfer between installations; until then, a
+  preempted network request restarts elsewhere.
+- **Router on LiteLLM.** Each offer becomes a LiteLLM deployment at the
+  provider's tailnet address, with the provider's price as its per-token
+  cost. Missing:
+  - adding and removing deployments as offers change, without a restart;
+  - a routing strategy by price, latency, load and verification record;
+  - prefix affinity, so requests that share a prompt prefix reach the
+    provider holding that KV cache;
+  - pinning to one driver build and hardware type for buyers who need
+    seeded replays to match bit for bit;
+  - virtual keys and spend logs, which need LiteLLM's Postgres database;
+  - a logging callback that feeds the audit sampler.
+
+  Two limits of the door as it stands, found with LiteLLM 1.74 and a mock
+  upstream (`docs/LITELLM_FRONTEND.md`, browser clients):
+  - the committed `config/litellm-config.yaml` uses `vllm/` deployments,
+    which serve only the token-ID passthrough; LiteLLM's chat route fails on
+    them, so chat clients, the playground included, need the `openai/`
+    deployments that `tools/generate_litellm_config.py` writes;
+  - LiteLLM consumes a request's `priority` for its own scheduler and does
+    not forward it, so the batch engine's priorities do not cross the door.
+    `seed`, `temperature` and `deadline_ms` do.
+- **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
+  at the serving provider's price, pay providers 85% after the challenge
+  window, and hold and forfeit bonds.
+- **Audit service.** It needs:
+  - a cost-weighted secret sampler over real completed requests (about 2% of
+    tokens);
+  - a replay scheduler, and reference nodes for each hardware type and
+    driver build;
+  - a comparator: exact tokens for greedy traffic, logprobs within a stated
+    tolerance for sampled traffic;
+  - the challenge and dispute state machine;
+  - weight fingerprints.
+- **Exact replays need batch-invariant numerics.** Batched decode is not
+  bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
+  bitwise, replays of batched requests can only compare logprobs within a
+  tolerance, which is weaker against mild quantization.
+- **Logprobs do not exist yet** (see Serving API), so sampled traffic cannot
+  be audited.
+- **Every driver update splits audit cohorts.** Replays compare only against
+  the same driver hash, so the router must track each provider's build, and
+  releases need per-model cohort changeovers.
+- **sparkpipe.ai is static.** `site/` has the landing page, the provider page
+  and the playground. The catalog, the buyer console and the provider
+  dashboard need the router and the ledger behind them.
+- **Payments.** Provider identity checks, tax reporting and payout rails
+  (fiat, crypto or both) are undecided.
+
 ## Production qualification
 
 - Repeat accepted transport and model measurements from clean merged `main`,
@@ -441,18 +510,31 @@ progress diary.
 - Qualify the Metal backend on the Mac Studios and keep the host backend as
   a CI oracle for common policy, not only for kernels.
 
-## DGX Station deployment
+## Mac Studio deployment
 
-- Define exact 1x, 2x, 4x, and 8x Station hardware profiles, including memory
-  bandwidth, interconnect topology, power envelope, and storage.
-- Implement standalone placement and the mixed Station-plus-Spark execution
-  plan for every supported Station count without introducing model-specific
-  runtime branches.
-- Generate and calibrate Station collective profiles from exact model payloads
-  for each supported Station count.
-- Measure each Station-count profile against the selected DGX B300 comparison
-  workload and close the roughly one-half-throughput objective for the
-  four- and eight-Station largest-model workloads.
+The design is in
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+
+- Define hardware profiles for one to eight Studios: memory, bandwidth, the
+  Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
+- Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
+  only send and receive, on at most ten unreliable-connection queue pairs,
+  with no hardware acknowledgements and no routing, so the transport must
+  detect loss, retransmit, and forward between islands itself.
+- Place models on the pool: one replica per Studio when the model fits, TP
+  inside an island, TP4 x PP2 across the islands.
+- Serve disaggregated: a Spark TP group prefills and streams the KV cache
+  layer by layer to a Studio group, which decodes. This needs one KV wire
+  format per model, and the resumable request moves with its cache.
+- Run PP2 across hardware classes once routes waiting on transport input can
+  be cancelled when a peer rank fails.
+- Measure each bridge when the Studios arrive: Studio 10GbE into the fabric;
+  IP over Thunderbolt from a Studio to the RTX 5090 host, on that host's
+  controller; the host's ConnectX-6 into the CRS804. Record the winners as
+  named link classes in the deployment JSON.
+- Stand up reference nodes for every hardware combination the provider
+  network sells (Studios alone, and Spark prefill with Studio decode),
+  because different kernels produce different bits.
 - Validate office power, cooling, startup, failure recovery, and service
   operations as part of the deployment receipt.
 
@@ -462,8 +544,8 @@ progress diary.
   identities, catalog state, priority policy, and resumable request metadata.
 - Generate model placement and storage rebalance plans before nodes join the
   ready set; never improvise redistribution in the request path.
-- Support adding a Station as standalone capacity or as an explicit Spark
-  fabric enhancement under the same API and scheduler.
+- Support adding Mac Studios one at a time, as standalone replicas or as the
+  decode pool of a Spark fleet, under the same API and scheduler.
 - Retain upgrade and rollback receipts so a failed expansion returns to the
   prior ready deployment without mixed topology state.
 
