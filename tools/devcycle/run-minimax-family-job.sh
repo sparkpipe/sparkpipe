@@ -22,11 +22,9 @@
 #      still runs shared-socket mode (socket must be present) but exports no
 #      preload hook and requires no .experts sidecar (dense packs have none).
 #   2. The qwen38-lineage serving adapter takes a five-key stage config
-#      WITHOUT a tp_collective section: the module's TP collective is driven
-#      by SPARK_MINIMAX_STAGE_TP_* environment this wrapper exports (rail
-#      hosts of the spark8-b quartet, attempt-derived identifier, transport
-#      block as the control port base, session grid from the lane session
-#      block).
+#      WITHOUT a tp_collective section: the module opens its TP collective
+#      on weightd's mesh from the degree, rank and timeout this wrapper
+#      exports.
 #   3. Runtime lib/stages artifacts resolve against the verified firmware
 #      root (tools/module_build_release.sh output: SOURCE_COMMIT + SHA256SUMS
 #      + bin/ + lib/ + stages/), the qwen38_27b lane pattern.
@@ -65,9 +63,6 @@ COLLECTIVE_BASE=$((53000 + 16 * LANE))    # 53160..53175 (reserved; the module
                                           # TP sessions use the session block)
 TRANSPORT_BASE=$((64000 + 16 * LANE))     # 64160..64175
 SESSION_BASE=$((23168 + 64 * LANE))       # 23808..23871 (TP session grid)
-
-# Fabric rail 0 of the spark8-b quartet (host-rdma transport, rank order).
-RAIL_HOSTS="${MINIMAX_RAIL_HOSTS:-10.10.200.8,10.10.200.9,10.10.200.10,10.10.200.11}"
 
 DEVICE_MIB=18905   # dense interim (lane_budget_calc on smoke_experts.json):
                     # declared honestly at submission (NOT the 6400 lane table
@@ -263,32 +258,9 @@ fi
 
 # ------------------- MINIMAX ADAPTATION 2: TP ENVIRONMENT --------------------
 
-IFS=',' read -ra RAIL_ARRAY <<< "$RAIL_HOSTS"
-[ "${#RAIL_ARRAY[@]}" -eq "$SIZE" ] || {
-  echo "rail hosts (${#RAIL_ARRAY[@]}) must match topology size $SIZE" >&2; exit 2; }
-
-# Off-diagonal session grid inside the lane session block: SIZE*(SIZE-1)
-# ports above the first SIZE slots, row-major, diagonal exactly zero (the
-# module validates the shape).
-SESSION_MATRIX=""
-for row in $(seq 0 $((SIZE - 1))); do
-  for column in $(seq 0 $((SIZE - 1))); do
-    if [ "$row" -eq "$column" ]; then cell=0; else
-      cell=$((SESSION_BASE + SIZE + row * SIZE + column))
-    fi
-    if [ -z "$SESSION_MATRIX" ]; then SESSION_MATRIX="$cell"; else SESSION_MATRIX="$SESSION_MATRIX,$cell"; fi
-  done
-done
-
 export SPARK_MINIMAX_TP_DEGREE="$SIZE"
 export SPARK_MINIMAX_TP_RANK="$RANK"
-export SPARK_MINIMAX_STAGE_TP_BACKEND_PATH="$EXEC_PREFIX/lib/hidden_transport.so"
-export SPARK_MINIMAX_STAGE_TP_IDENTIFIER="$((0x$(printf '%.15s' "$ATTEMPT") + 1 + LANE))"
-export SPARK_MINIMAX_STAGE_TP_PORT_BASE="$TRANSPORT_BASE"
-export SPARK_MINIMAX_STAGE_TP_HOSTS="$RAIL_HOSTS"
-export SPARK_MINIMAX_STAGE_TP_LOCAL_HOST="${RAIL_ARRAY[$RANK]}"
 export SPARK_MINIMAX_STAGE_TP_TIMEOUT_MS="120000"
-export SPARK_MINIMAX_STAGE_TP_SESSION_PORTS="$SESSION_MATRIX"
 
 # ----------------------------- RESIDENT LAUNCH -------------------------------
 

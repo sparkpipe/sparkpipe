@@ -1360,35 +1360,6 @@ static void SparkLingT1Head(SparkLingTpChain *chain)
 		    ((const uint32_t *)scores_host)[i]);
 }
 
-static SparkStatus SparkLingModuleCombineDirectBf16(
-	void *combine_context,
-	void *destination_device,
-	const void *const rank_devices[
-		SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT],
-	uint32_t tp_rank,
-	uint32_t active_sequence_count,
-	uint32_t hidden_dimension,
-	void *cuda_stream)
-{
-	uint32_t index;
-	cudaError_t error;
-	(void)combine_context;
-	for (index=0u;
-		index<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT;
-		index++)
-	{
-		if (rank_devices[index] == 0 || index == tp_rank)
-			continue;
-		error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,
-			destination_device,rank_devices[index],
-			active_sequence_count,hidden_dimension);
-		if (error != cudaSuccess)
-			return(SparkStageModuleCudaStatus(
-				SPARK_LING_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
-	}
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkLingModuleInitializeTpCollective(
 	SparkLingModuleState *state,
 	const SparkLingResidentDecodeStageNodeContext *context)
@@ -1396,7 +1367,7 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	SparkTpDeviceCollectiveConfig configuration;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
 	memset(&configuration,0,sizeof(configuration));
@@ -1405,31 +1376,19 @@ static SparkStatus SparkLingModuleInitializeTpCollective(
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = state->pipeline_slot_count * SPARK_LING_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_LING_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.connect_timeout_milli = context->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	configuration.control_port_base = context->tp_collective_control_port_base;
-	configuration.collective_identifier = context->tp_collective_identifier;
-	configuration.backend_module_path = context->tp_collective_backend_module_path;
-	configuration.registration_cuda_stream = state->execution_stream;
-	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
 	SparkTpMeshRegisterCommonCombines(&configuration);
-	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		configuration.combine_tp4_bf16_function = SparkLingModuleCombineDirectBf16;
-		configuration.combine_context = state;
-	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
+	configuration.combine_context = state;
+	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
-	return(SparkTpDeviceCollectiveAttachMesh(&state->tp_device_collective));
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
+	SPARK_RETURN(status);
 }
 
 SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkLingModuleTpCompletion,SparkLingTpChain,SparkLingTpChainAdvance)

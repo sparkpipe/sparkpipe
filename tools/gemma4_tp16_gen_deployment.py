@@ -5,19 +5,13 @@ Topology: TP16 identity over spark0..sparkf (world rank = node index,
 SPARK_TP_MESH_RANKS=0..15). One stage per rank (tp16pp1 packs, landed and
 NVMe-verified: ~/sparkdata/gemma4_31b.bf16.tp16/packs).
 
-Lane 6 port blocks (tools/devcycle/lane_assignments.json, amended by
-PR #1094: the 67000-series collective block exceeded the TCP port ceiling
-and is renumbered into the 53000 series):
-control 23096-23111, collective 53200-53215 (one-off renumber-around: tailscaled
-squat on spark8 port 53100, manager ruling), transport 64096-64111.
+Lane 6 port blocks (tools/devcycle/lane_assignments.json): control
+23096-23111, transport 64096-64111. The TP collective rides weightd's mesh
+and needs no ports.
 
 Every emitted listener stays inside those blocks:
   control endpoint   23096+rank   (residentd control)
   transport base     64096        (host-rdma transport control, +rank)
-  collective base    53200        (TP collective control, +rank)
-The SPARK_GEMMA4_STAGE_TP_SESSION_PORTS matrix is column-derived
-(cell [a][b] = 53200+b, diagonal 0): the mesh collective backend ignores
-it, and any future per-pair binding still lands inside the reserved block.
 
 Runtime roots default to the literal ${SPARK_QUEUE_RUNTIME_ROOT} template;
 tools/gemma4_tp16_shared_socket.sh substitutes the queue-provided private
@@ -42,9 +36,7 @@ NODE_TARGET = "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
 PACK_TEMPLATE = "packs/gemma4_31b_tp16_rank%s_stage0.gemma4sp"  # rank in hex
 HOSTS = [f"spark{hex(r)[2:]}" for r in range(RANKS)]
 LANE_CONTROL_BASE = 23096
-LANE_COLLECTIVE_BASE = 53200
 LANE_TRANSPORT_BASE = 64096
-COLLECTIVE_ID = 6609642311120931
 EOS_TOKEN_IDS = [1, 106, 50]
 RUNTIME_ROOT_TEMPLATE = "${SPARK_QUEUE_RUNTIME_ROOT}"
 MAX_SEQUENCE_POSITIONS = 32768
@@ -66,26 +58,11 @@ def stage_config(rank: int) -> dict:
     }
 
 
-def session_matrix() -> list:
-    """Column-derived matrix inside the collective block (see module docstring)."""
-    return [
-        [0 if a == b else LANE_COLLECTIVE_BASE + b for b in range(TP_DEGREE)]
-        for a in range(TP_DEGREE)
-    ]
-
-
 def tp_environment(rank: int) -> dict:
     return {
         "SPARK_GEMMA4_TP_DEGREE": str(TP_DEGREE),
         "SPARK_GEMMA4_TP_RANK": str(rank),
         "SPARK_GEMMA4_TP_STANDALONE": "0",
-        "SPARK_GEMMA4_STAGE_TP_BACKEND_PATH": "lib/hidden_transport.so",
-        "SPARK_GEMMA4_STAGE_TP_IDENTIFIER": str(COLLECTIVE_ID),
-        "SPARK_GEMMA4_STAGE_TP_PORT_BASE": str(LANE_COLLECTIVE_BASE),
-        "SPARK_GEMMA4_STAGE_TP_HOSTS": ",".join(HOSTS),
-        "SPARK_GEMMA4_STAGE_TP_LOCAL_HOST": HOSTS[rank],
-        "SPARK_GEMMA4_STAGE_TP_SESSION_PORTS": ",".join(
-            str(cell) for row in session_matrix() for cell in row),
         "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS": "30000",
     }
 
@@ -168,7 +145,7 @@ def main() -> int:
                    indent=1) + "\n")
     print(f"{root}: {RANKS} stage configs + envs + model_resident.json "
           f"(TP16 spark0..sparkf, control {LANE_CONTROL_BASE}+, "
-          f"collective {LANE_COLLECTIVE_BASE}+, transport {LANE_TRANSPORT_BASE}+, "
+          f"transport {LANE_TRANSPORT_BASE}+, "
           f"weightd {arguments.weightd_socket})")
     return 0
 

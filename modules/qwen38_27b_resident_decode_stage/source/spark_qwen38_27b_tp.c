@@ -14,38 +14,15 @@
 
 #define SPARK_QWEN38_27B_TP_TAG "qwen38_27b_tp"
 
-#define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE 58700u
-#define SPARK_QWEN38_27B_TP_IDENTIFIER 0x513630545031ull
-#define SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY "libhidden_transport.so"
-static const char *SparkQwen38_27bTpRailHosts[2][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE] =
-{
-	{ "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
-	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "10.10.100.10", "10.10.100.11", "10.10.100.12", "10.10.100.13",
-	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
-};
+#define SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI 120000u
 
 extern cudaError_t SparkQwen38_27bLaunchAccumAdd(cudaStream_t stream, void *destination, const void *source, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumAddRelay(cudaStream_t stream, void *destination, const void *source, void *relay, uint32_t active_sequence_count, uint32_t hidden_dimension);
-extern cudaError_t SparkQwen38_27bLaunchAccumAddTp4(cudaStream_t stream, void *destination, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension);
 extern cudaError_t SparkQwen38_27bLaunchAccumU64Max(cudaStream_t stream, uint64_t *destination, const uint64_t *source, uint32_t element_count);
 
 static SparkStatus SparkQwen38_27bTpCombineBf16(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
 {
 	(void)combine_context;
 	return SparkQwen38_27bLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineRelayBf16(void *combine_context, void *destination_device, const void *source_device, void *relay_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAddRelay((cudaStream_t)cuda_stream,destination_device,source_device,relay_device,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkQwen38_27bTpCombineTp4Bf16(void *combine_context, void *destination_device, const void *const rank_devices[4], uint32_t tp_rank, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
-{
-	(void)combine_context;
-	return SparkQwen38_27bLaunchAccumAddTp4((cudaStream_t)cuda_stream,destination_device,rank_devices,tp_rank,active_sequence_count,hidden_dimension) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static SparkStatus SparkQwen38_27bTpCombineU64Max(void *combine_context, uint64_t *destination_device, const uint64_t *source_device, uint32_t element_count, void *cuda_stream)
@@ -107,6 +84,32 @@ static SparkStatus SparkQwen38_27bTpSubmit(SparkQwen38_27bTpState *tp, void *buf
 	return (SparkStatus)pending.status;
 }
 
+static SparkStatus SparkQwen38_27bTpOpen(SparkQwen38_27bTpState *tp,uint32_t max_active_sequence_count)
+{
+	SparkTpDeviceCollectiveConfig configuration;
+	SparkStatus status;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	configuration.tp_degree = tp->degree;
+	configuration.tp_rank = tp->rank;
+	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	configuration.local_hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
+	configuration.max_active_sequence_count = max_active_sequence_count;
+	configuration.operation_timeout_milli = SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI;
+	configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
+	configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
+	configuration.combine_context = tp;
+	status = SparkTpDeviceCollectiveCreate(&configuration,&tp->collective);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s create_failed status=%d degree=%u rank=%u\n",SPARK_QWEN38_27B_TP_TAG,(int)status,tp->degree,tp->rank);
+		return(status);
+	}
+	tp->initialized = 1u;
+	return(SparkTpDeviceCollectiveAttach(&tp->collective,0));
+}
+
 SparkStatus SparkQwen38_27bTpInitialize(
 	SparkQwen38_27bTpState *tp,
 	uint32_t degree,
@@ -115,12 +118,9 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	uint32_t pipeline_slot_count,
 	void *registration_cuda_stream)
 {
-	(void)pipeline_slot_count;
-	SparkTpDeviceCollectiveConfig configuration;
-	const char *library_path;
+	uint32_t standalone;
 	SparkStatus status;
-	uint32_t index;
-
+	(void)pipeline_slot_count;
 	if ( tp == 0 || degree == 0u || rank >= degree ||
 		max_active_sequence_count == 0u || registration_cuda_stream == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -153,99 +153,24 @@ SparkStatus SparkQwen38_27bTpInitialize(
 		SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION / degree;
 	tp->head_rows = SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT / degree;
 	if ( degree == 1u )
-		return SPARK_STATUS_OK;
-	uint32_t standalone = 0u;
+		return(SPARK_STATUS_OK);
+	standalone = 0u;
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_27B_TP_TAG,"SPARK_QWEN38_27B_TP_STANDALONE",0u,1u,0u,&standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( standalone != 0u )
 	{
-		fprintf(stderr, "%s standalone degree=%u rank=%u (collective skipped)\n",
-			SPARK_QWEN38_27B_TP_TAG, degree, rank);
-		return SPARK_STATUS_OK;
+		fprintf(stderr,"%s standalone degree=%u rank=%u (collective skipped)\n",SPARK_QWEN38_27B_TP_TAG,degree,rank);
+		return(SPARK_STATUS_OK);
 	}
-	memset(&configuration, 0, sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind =
-		SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	configuration.tp_degree = degree;
-	configuration.tp_rank = rank;
-	configuration.operation_kind =
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension =
-		SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = max_active_sequence_count;
-	configuration.connect_timeout_milli = 120000u;
-	configuration.operation_timeout_milli = 120000u;
-	configuration.collective_identifier = SPARK_QWEN38_27B_TP_IDENTIFIER;
-	configuration.registration_cuda_stream = registration_cuda_stream;
-	configuration.local_host = SparkQwen38_27bTpRailHosts[0][rank];
-	library_path = getenv("SPARK_QWEN38_27B_TP_TRANSPORT_LIBRARY");
-	configuration.backend_module_path = library_path != 0 ? library_path : SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_LIBRARY;
-	configuration.control_port_base =
-		SPARK_QWEN38_27B_TP_DEFAULT_TRANSPORT_PORT_BASE;
-	configuration.algorithm_mask =
-		SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
-	configuration.rail_count = 0u;
-	configuration.direct_all_to_all_max_payload_bytes = 0u;
-	configuration.split_ring_min_payload_bytes = 0u;
-	configuration.combine_bf16_function = SparkQwen38_27bTpCombineBf16;
-	configuration.combine_relay_bf16_function = SparkQwen38_27bTpCombineRelayBf16;
-	configuration.combine_tp4_bf16_function = SparkQwen38_27bTpCombineTp4Bf16;
-	configuration.combine_u64_max_function = SparkQwen38_27bTpCombineU64Max;
-	configuration.combine_context = tp;
-	for (index = 0u; index < 2u; index++)
-		memcpy(configuration.rail_rank_hosts[index],SparkQwen38_27bTpRailHosts[index],sizeof(SparkQwen38_27bTpRailHosts[index]));
-	for (index = 0u; index < degree; index++)
-		configuration.rank_hosts[index] = SparkQwen38_27bTpRailHosts[0][index];
-	configuration.credit_count = 8u;
-	{
-		const char *session_ports_text = getenv("SPARK_QWEN38_27B_TP_SESSION_PORTS");
-		const char *cell_scan;
-		uint32_t row_index,column_index;
-		unsigned long cell_value;
-		if ( session_ports_text == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		cell_scan = session_ports_text;
-		for (row_index = 0u; row_index < degree; row_index++)
-			for (column_index = 0u; column_index < degree; column_index++)
-			{
-				char *cell_end;
-				errno = 0;
-				cell_value = strtoul(cell_scan,&cell_end,10);
-				if ( cell_end == cell_scan || errno != 0 ||
-					cell_value > 65535u ||
-					(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
-					return SPARK_STATUS_INVALID_ARGUMENT;
-				configuration.session_ports[row_index][column_index] = (uint16_t)cell_value;
-				cell_scan = cell_end;
-				while ( *cell_scan == ',' )
-					cell_scan++;
-			}
-	}
-	fprintf(stderr, "%s config degree=%u rank=%u port=%u local=%s host0=%s\n",
-		SPARK_QWEN38_27B_TP_TAG, degree, rank,
-		configuration.control_port_base, configuration.local_host,
-		configuration.rank_hosts[0]);
-	status = SparkTpDeviceCollectiveCreate(&configuration, &tp->collective);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr, "%s create_failed status=%d degree=%u rank=%u\n",
-			SPARK_QWEN38_27B_TP_TAG, (int)status, degree, rank);
-		SparkQwen38_27bTpDestroy(tp);
-		return status;
-	}
-	tp->initialized = 1u;
-	status = SparkTpDeviceCollectiveAttachMesh(&tp->collective);
+	status = SparkQwen38_27bTpOpen(tp,max_active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkQwen38_27bTpDestroy(tp);
-		return status;
+		return(status);
 	}
-	tp->next_ordinal = 0u;
-	fprintf(stderr, "%s ready degree=%u rank=%u\n",
-		SPARK_QWEN38_27B_TP_TAG, degree, rank);
-	return SPARK_STATUS_OK;
+	fprintf(stderr,"%s ready degree=%u rank=%u\n",SPARK_QWEN38_27B_TP_TAG,degree,rank);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkQwen38_27bTpDestroy(SparkQwen38_27bTpState *tp)

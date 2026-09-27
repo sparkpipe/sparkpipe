@@ -1064,7 +1064,6 @@ static SparkStatus SparkLagunaValidateFrame(
 #define SPARK_LAGUNA_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LAGUNA_TP_CHAIN_OPERATIONS ((2u * SPARK_LAGUNA_MODEL_LAYER_COUNT + 16u) * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT)
 #define SPARK_LAGUNA_TP_COLLECTIVE_HC_PORT_STRIDE 512u
-#define SPARK_LAGUNA_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES 65536u
 
 typedef enum SparkLagunaChainStage
 {
@@ -1267,90 +1266,35 @@ static void SparkLagunaBuildWave(SparkLagunaTpChain *chain)
 	wave->decode_split_context_threshold = state->decode_split_context_threshold;
 }
 
-static SparkStatus SparkLagunaModuleCombineDirectBf16(
-	void *combine_context,
-	void *destination_device,
-	const void *const rank_devices[
-		SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT],
-	uint32_t tp_rank,
-	uint32_t active_sequence_count,
-	uint32_t hidden_dimension,
-	void *cuda_stream)
-{
-	cudaError_t error;
-	(void)combine_context;
-	error = SparkLagunaLaunchDirectSum((cudaStream_t)cuda_stream,destination_device,rank_devices,tp_rank,active_sequence_count,hidden_dimension);
-	return(SparkStageModuleCudaStatus(SPARK_LAGUNA_MODULE_TAG,error,"tp_d2d_all_reduce_sum"));
-}
-
 static SparkStatus SparkLagunaModuleInitializeTpCollective(
 	SparkLagunaModuleState *state,
 	const SparkLagunaResidentDecodeStageNodeContext *context)
 {
 	SparkTpDeviceCollectiveConfig configuration;
-	uint32_t probe_connect_timeout_milli,probe_operation_timeout_milli;
 	SparkStatus status;
 	if ( state == 0 || context == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
 		return(SPARK_STATUS_OK);
-	probe_connect_timeout_milli = context->tp_connect_timeout_milli;
-	probe_operation_timeout_milli = context->tp_operation_timeout_milli;
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = context->tp_collective_backend_kind;
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = state->pipeline_slot_count * SPARK_LAGUNA_TP_COLLECTIVE_CREDITS_PER_SLOT;
 	configuration.local_hidden_dimension = SPARK_LAGUNA_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = state->execution_row_capacity;
-	configuration.connect_timeout_milli = probe_connect_timeout_milli;
-	configuration.operation_timeout_milli = probe_operation_timeout_milli;
-	configuration.control_port_base = context->tp_collective_control_port_base;
-	configuration.collective_identifier = context->tp_collective_identifier;
-	configuration.backend_module_path = context->tp_collective_backend_module_path;
-	configuration.registration_cuda_stream = state->execution_stream;
-	/* ApplyTopology copies only the degree; the local host is this
-	 * rank's entry in the topology the serving adapter loaded from the
-	 * tp_collective config (peer_hosts[tp_rank]). The field was left
-	 * zeroed by the memset and the argument gate below rejected every
-	 * launch (lane-8 attach-008: invalid_argument at the collective
-	 * configuration check). */
-	configuration.local_host =
-		context->tp_collective_topology.rank_hosts[state->tp_rank];
+	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
+	SparkTpMeshRegisterCommonCombines(&configuration);
+	configuration.combine_context = state;
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
-	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		configuration.algorithm_mask |= SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_DIRECT_ALL_TO_ALL;
-		configuration.direct_all_to_all_max_payload_bytes =
-			SPARK_LAGUNA_TP_COLLECTIVE_D2A_MAX_PAYLOAD_BYTES;
-	}
-	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-	{
-		SparkTpMeshRegisterCommonCombines(&configuration);
-		configuration.combine_tp4_bf16_function = SparkLagunaModuleCombineDirectBf16;
-		configuration.combine_context = state;
-	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.control_port_base == 0u || configuration.collective_identifier == 0u || configuration.backend_module_path == 0 || configuration.local_host == 0 || configuration.backend_module_path[0] == '\0' || configuration.local_host[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	state->tp_device_collective_initialized = 1u;
-	if ( state->lazy_pack != 0 &&
-	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
-		status = SparkTpDeviceCollectivePrepareReceiveBf16(
-		    &state->tp_device_collective,
-		    (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
-		    0u,0u,0u,0u);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SPARK_STATUS_OK);
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,state->lazy_pack != 0 ? (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr : 0);
+	SPARK_RETURN(status);
 }
 
 SPARK_STAGE_MODULE_TP_CHAIN_COMPLETION(SparkLagunaModuleTpCompletion,SparkLagunaTpChain,SparkLagunaTpChainAdvance)

@@ -2006,6 +2006,13 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     return SparkTpDeviceCollectivePrepareHardware(implementation);
 }
 
+SparkStatus SparkTpDeviceCollectiveAttach(SparkTpDeviceCollective *collective,void *mesh_region)
+{
+    if ( mesh_region != 0 )
+        return SparkTpDeviceCollectivePrepareReceiveBf16(collective,mesh_region,0u,0u,0u,0);
+    return SparkTpDeviceCollectiveAttachMesh(collective);
+}
+
 static SparkStatus SparkTpDeviceCollectiveDiscardUnreadyCells(
     SparkTpDeviceCollectiveImplementation *implementation)
 {

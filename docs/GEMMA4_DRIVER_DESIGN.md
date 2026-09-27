@@ -311,9 +311,8 @@ inside the 110 GiB node ceiling.
 sparks (15 layers/stage). Port base **65100** — ledger
 (61500/62500/63500/64500/64630/64700/64800 laguna/64900 ling/65000 minimax)
 has no collision (checked modules/, model-families/, runtime/, tools/*.py,
-ROADMAP_TP16_FLEET.md). `SPARK_GEMMA4_STAGE_TP_SESSION_PORTS` = base +
-src·4 + sink, degree² uint16 row-major, diag 0; 31b root offset +0, 26b root
-offset +100 within the family allocation (the ~200/model convention).
+ROADMAP_TP16_FLEET.md). The TP collective rides weightd's mesh and binds no
+ports of its own.
 
 ## 7. Validation plan
 

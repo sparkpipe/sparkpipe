@@ -181,13 +181,6 @@ def main() -> int:
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /
         "spark_dsv4_resident_decode_stage_module.c").read_text(
             encoding="utf-8")
-    assert re.search(
-        r"if \( state->tp_credit_binding_count != 0u \)\s*\{\s*"
-        r"configuration\.credit_bindings = state->tp_credit_bindings;\s*"
-        r"configuration\.credit_binding_count = "
-        r"state->tp_credit_binding_count;\s*\}",
-        stage_source,
-    )
     assert "SparkTpDeviceCollectiveApplyTopology(" in stage_source
     adapter_source = (
         ROOT / "modules" / "dsv4_resident_decode_stage" / "source" /

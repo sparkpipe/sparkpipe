@@ -311,10 +311,6 @@ typedef struct SparkQwen38_27bServingState
 	uint32_t dflash2_draft_matrix[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_MAX_MULTI_BLOCKS * (SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u)];
 	SparkQwen38_27bServingPending pending[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 #if SPARK_QWEN38_27B_SERVING_TP
-	/* Loaded tp_collective topology: the module's TP layer consumes the
-	 * session-port matrix through SPARK_QWEN38_27B_TP_SESSION_PORTS at
-	 * driver-create time (SetEnvironment), so the config must survive the
-	 * JSON teardown. */
 	SparkTpCollectiveAdapterConfig tp_collective;
 	uint32_t tp_collective_loaded;
 #endif
@@ -641,22 +637,6 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_PACK_PATH",state->stage_pack_path);
 #if SPARK_QWEN38_27B_SERVING_TP
-	if ( state->tp_collective_loaded != 0u )
-	{
-		char matrix[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE *
-			SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE * 7u + 1u];
-		uint32_t row,column,cursor = 0u;
-		for (row=0u; row<state->tp_collective.topology.rank_count; row++)
-			for (column=0u; column<state->tp_collective.topology.rank_count; column++)
-			{
-				if (cursor != 0u)
-					matrix[cursor++] = ',';
-				cursor += (uint32_t)snprintf(matrix+cursor,sizeof(matrix)-cursor,"%u",
-					(unsigned)state->tp_collective.topology.session_ports[row][column]);
-			}
-		matrix[cursor] = '\0';
-		SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_TP_SESSION_PORTS",matrix);
-	}
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_COUNT",1u);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_INDEX",0u);
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_FIRST_LAYER",0u);

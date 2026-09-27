@@ -97,13 +97,6 @@ typedef struct SparkGemma4ModuleState
 	uint32_t tp_collective_initialized;
 	atomic_uint tp_completion_flag;
 	atomic_ullong tp_next_ordinal;
-	char tp_backend_path[SPARK_TP_DEVICE_COLLECTIVE_ROUTE_NAME_BYTES];
-	char tp_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
-	char tp_local_host[SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES];
-	uint16_t tp_session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE][SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
-	uint64_t tp_collective_identifier;
-	uint32_t tp_control_port_base;
-	uint32_t tp_connect_timeout_milli;
 	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
@@ -161,112 +154,39 @@ typedef struct SparkGemma4ModuleState
 #endif
 } SparkGemma4ModuleState;
 
+static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
+{
+	SparkStatus status;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_DEGREE",1u,SPARK_GEMMA4_MODULE_TP_MAX_DEGREE,SPARK_GEMMA4_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_RANK",0u,SPARK_GEMMA4_MODULE_TP_MAX_DEGREE - 1u,SPARK_GEMMA4_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->tp_rank >= state->tp_degree )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u || (SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+#if SPARK_GEMMA4_MODEL_MOE_BLOCK
+	if ( (SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+#endif
+	state->sliding_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT,state->tp_degree);
+	state->full_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT,state->tp_degree);
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
+	state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
+	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkGemma4ModuleConfigure(SparkGemma4ModuleState *state)
 {
 	SparkStatus status;
-	{
-		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_DEGREE",1u,SPARK_GEMMA4_MODULE_TP_MAX_DEGREE,SPARK_GEMMA4_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_RANK",0u,SPARK_GEMMA4_MODULE_TP_MAX_DEGREE - 1u,SPARK_GEMMA4_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( state->tp_rank >= state->tp_degree )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( (SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u || (SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-#if SPARK_GEMMA4_MODEL_MOE_BLOCK
-		if ( (SPARK_GEMMA4_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-#endif
-		state->sliding_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT,state->tp_degree);
-		state->full_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT,state->tp_degree);
-		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-		state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-		state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
-		state->tp_collective_identifier = 0u;
-		state->tp_control_port_base = 0u;
-		state->tp_connect_timeout_milli = SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
-		state->tp_operation_timeout_milli = SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT;
-		state->tp_backend_path[0] = '\0';
-		state->tp_local_host[0] = '\0';
-		{
-			uint32_t host_clear;
-			for (host_clear = 0u; host_clear < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; host_clear++)
-				state->tp_hosts[host_clear][0] = '\0';
-		}
-		if ( state->tp_degree > 1u && state->tp_standalone == 0u )
-		{
-			const char *tp_backend;
-			const char *tp_hosts;
-			const char *tp_local_host;
-			uint64_t tp_identifier;
-			const char *scan;
-			uint32_t host_index;
-			status = SparkStageModuleEnvironmentText(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_BACKEND_PATH",&tp_backend);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsigned64(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_IDENTIFIER",0u,UINT64_MAX,&tp_identifier);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_PORT_BASE",1u,65535u,&state->tp_control_port_base);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentText(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_HOSTS",&tp_hosts);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentText(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_LOCAL_HOST",&tp_local_host);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_connect_timeout_milli);
-			if ( status != SPARK_STATUS_OK )
-				return(status);
-			snprintf(state->tp_backend_path,sizeof(state->tp_backend_path),"%s",tp_backend);
-			snprintf(state->tp_local_host,sizeof(state->tp_local_host),"%s",tp_local_host);
-			state->tp_collective_identifier = tp_identifier;
-			state->tp_operation_timeout_milli = state->tp_connect_timeout_milli;
-			scan = tp_hosts;
-			host_index = 0u;
-			while ( *scan != '\0' && host_index < state->tp_degree )
-			{
-				const char *comma = strchr(scan,',');
-				size_t length = comma != 0 ? (size_t)(comma - scan) : strlen(scan);
-				if ( length >= SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES )
-					SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-				memcpy(state->tp_hosts[host_index],scan,length);
-				state->tp_hosts[host_index][length] = '\0';
-				host_index++;
-				scan = comma != 0 ? comma + 1 : scan + length;
-			}
-			if ( host_index != state->tp_degree )
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			{
-				const char *tp_session_ports;
-				const char *cell_scan;
-				uint32_t row_index,column_index,parsed_count;
-				unsigned long cell_value;
-				status = SparkStageModuleEnvironmentText(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_SESSION_PORTS",&tp_session_ports);
-				if ( status != SPARK_STATUS_OK )
-					return(status);
-				cell_scan = tp_session_ports;
-				parsed_count = 0u;
-				for (row_index = 0u; row_index < state->tp_degree; row_index++)
-					for (column_index = 0u; column_index < state->tp_degree; column_index++)
-					{
-						char *cell_end;
-						errno = 0;
-						cell_value = strtoul(cell_scan,&cell_end,10);
-						if ( cell_end == cell_scan || errno != 0 ||
-							cell_value > 65535u ||
-							(row_index == column_index ? cell_value != 0u : cell_value == 0u) )
-							SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-						state->tp_session_ports[row_index][column_index] = (uint16_t)cell_value;
-						parsed_count++;
-						cell_scan = cell_end;
-						while ( *cell_scan == ',' )
-							cell_scan++;
-					}
-				if ( parsed_count != state->tp_degree * state->tp_degree )
-					SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			}
-		}
-	}
+	status = SparkGemma4ModuleConfigureTp(state);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_COUNT",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_INDEX",0u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
@@ -484,66 +404,35 @@ static SparkStatus SparkGemma4ModuleOpenKvTier(SparkGemma4ModuleState *state, co
 static SparkStatus SparkGemma4ModuleInitializeTpCollective(SparkGemma4ModuleState *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
-	SparkTpDeviceCollectiveTopology topology;
-	uint32_t rank;
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
 	if ( state->tp_standalone != 0u )
 	{
-		fprintf(stderr,"%s tp_standalone degree=%u rank=%u (collective skipped; embedding/head results stay rank-partial)\n",
-			SPARK_GEMMA4_MODULE_TAG,state->tp_degree,state->tp_rank);
+		fprintf(stderr,"%s tp_collective_skipped standalone=1 degree=%u rank=%u\n",SPARK_GEMMA4_MODULE_TAG,state->tp_degree,state->tp_rank);
 		return(SPARK_STATUS_OK);
 	}
-	memset(&topology,0,sizeof(topology));
-	topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	topology.rank_count = state->tp_degree;
-	topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
-	topology.rail_count = 0u;
-	topology.direct_all_to_all_max_payload_bytes = 0u;
-	topology.split_ring_min_payload_bytes = 0u;
-	memcpy(topology.session_ports,state->tp_session_ports,
-		sizeof(topology.session_ports));
-	for (rank = 0u; rank < state->tp_degree; rank++)
-		memcpy(topology.rank_hosts[rank],state->tp_hosts[rank],SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	configuration.tp_degree = state->tp_degree;
 	configuration.tp_rank = state->tp_rank;
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.credit_count = 8u;
 	configuration.local_hidden_dimension = SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	configuration.connect_timeout_milli = state->tp_connect_timeout_milli;
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	configuration.control_port_base = state->tp_control_port_base;
-	configuration.collective_identifier = state->tp_collective_identifier;
-	configuration.backend_module_path = state->tp_backend_path;
-	configuration.local_host = state->tp_local_host;
-	configuration.registration_cuda_stream = state->slots[0].cuda_stream;
 	SparkTpMeshRegisterCommonCombines(&configuration);
-	status = SparkTpDeviceCollectiveApplyTopology(&topology,&configuration);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s tp_apply_topology_failed status=%d\n",SPARK_GEMMA4_MODULE_TAG,(int)status);
-		return(status);
-	}
-	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.collective_identifier == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_GEMMA4_MODULE_TAG,(int)status);
-		return(status);
+		SPARK_RETURN(status);
 	}
 	state->tp_collective_initialized = 1u;
-	status = SparkTpDeviceCollectiveAttachMesh(&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	fprintf(stderr,"%s tp_collective_open degree=%u rank=%u port_base=%u\n",SPARK_GEMMA4_MODULE_TAG,state->tp_degree,state->tp_rank,state->tp_control_port_base);
-	return(SPARK_STATUS_OK);
+	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
+	if ( status == SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_collective_open degree=%u rank=%u\n",SPARK_GEMMA4_MODULE_TAG,state->tp_degree,state->tp_rank);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGemma4ModuleTpSubmitOrdered(SparkGemma4ModuleState *state, void *device_buffer, uint32_t count, SparkGemma4ModuleSlot *slot, uint32_t u64_max)

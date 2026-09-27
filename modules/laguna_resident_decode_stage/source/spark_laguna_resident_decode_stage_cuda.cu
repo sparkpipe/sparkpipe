@@ -93,20 +93,6 @@ extern "C" cudaError_t SparkLagunaLaunchHeadMaxlocUnpack(cudaStream_t stream,con
 	return(cudaPeekAtLastError());
 }
 
-extern "C" cudaError_t SparkLagunaLaunchDirectSum(cudaStream_t stream,void *destination,const void *const *rank_devices,uint32_t local_rank,uint32_t rows,uint32_t width)
-{
-	LmTpBf16Contributions<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT> inputs = {};
-	uint32_t rank;
-	cudaError_t error;
-	if ( destination == 0 || rank_devices == 0 || local_rank >= SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT || rows == 0u || width == 0u )
-		return(cudaErrorInvalidValue);
-	for (rank=0u; rank<SPARK_TP_DEVICE_COLLECTIVE_DIRECT_ALL_TO_ALL_RANK_COUNT; rank++)
-		inputs.rank[rank] = (const uint16_t *)(rank == local_rank ? destination : rank_devices[rank]);
-	LmTpBf16SumKernel<<<rows,SPARK_LAGUNA_CUDA_THREADS,0u,stream>>>((uint16_t *)destination,inputs,rows,width);
-	error = cudaPeekAtLastError();
-	return(error);
-}
-
 static void SparkLagunaBindLayer(
 	const SparkLagunaCudaWave *wave,
 	uint32_t local_layer,
