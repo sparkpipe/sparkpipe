@@ -192,7 +192,7 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
-	if ( (submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
+	if ( (submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -408,6 +408,8 @@ static SparkStatus TestModelServingResolvePrefetch(
 		TestModelServingPreparedIdentityMatches(&state->prepared[index],
 			submission) == 0u )
 		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && submission->model_extension_kind == 93u && state->stage_index == 1u )
+		return(SPARK_STATUS_IO_ERROR);
 	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT )
 		state->prepared[index].committed = 1u;
 	else

@@ -6053,8 +6053,8 @@
     },
     {
       "path": "node/model_residentd.c",
-      "sha256": "29d2d3b8138d7e83561df791ba78892a7d65002c82fee61ec2278cc6944ef75d",
-      "size_bytes": 127176
+      "sha256": "aca1f05dd8045d726bda7e8542bc9dfcb2e3dbff3a307995e3d656d60c4cd237",
+      "size_bytes": 133365
     },
     {
       "path": "node/weightd.c",
@@ -8358,8 +8358,8 @@
     },
     {
       "path": "tests/fixtures/model_serving_adapter_module.c",
-      "sha256": "d98f891e3d20a2b335796f17b31e6000f2a66791fae96ae583991b09a6c9c84d",
-      "size_bytes": 22488
+      "sha256": "b5e057ab3d890f5e45c3b4a34a4a8dac98c5f2dc26f4a2f0f67ea25c22cb2bd1",
+      "size_bytes": 22704
     },
     {
       "path": "tests/fixtures/module_add_one.c",
@@ -9938,8 +9938,8 @@
     },
     {
       "path": "tests/test_model_pipeline_client.c",
-      "sha256": "39d587903124b8548ae88d910097d47ac587c197e0814bdd89d4033ffb428b0d",
-      "size_bytes": 82334
+      "sha256": "92aa4214da4604ce872b0ba052257851dbb5df7b6ed73398cbfae78bb6664e2c",
+      "size_bytes": 83918
     },
     {
       "path": "tests/test_model_pipeline_client_mock.c",
@@ -15185,5 +15185,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74116172
+  "total_bytes": 74124161
 }
