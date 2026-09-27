@@ -8103,8 +8103,8 @@
     },
     {
       "path": "site/index.html",
-      "sha256": "dbd7a8aa240e5803b25b020d16bcd16e24bb30657a7359c2fb42ecc440c6081a",
-      "size_bytes": 28308
+      "sha256": "16fc7575fa3af9058087ea2c7f39dd775da10e403f361f63bc48ccec42b1a811",
+      "size_bytes": 33026
     },
     {
       "path": "site/playground.html",
@@ -15220,5 +15220,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74257161
+  "total_bytes": 74261879
 }
