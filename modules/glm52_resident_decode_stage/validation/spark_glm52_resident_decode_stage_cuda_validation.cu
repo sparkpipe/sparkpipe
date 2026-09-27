@@ -88,16 +88,6 @@ static void SparkGlm52ValFillNorm(uint16_t *packed,float *exact,uint64_t count)
 	}
 }
 
-typedef struct SparkGlm52ValMetrics
-{
-	double difference_l2;
-	double reference_l2;
-	double actual_l2;
-	double dot;
-	double maximum_absolute;
-	uint64_t count;
-} SparkGlm52ValMetrics;
-
 #include "sparkpipe/family/validation/spark_val_fail.h"
 
 #define SPARK_GLM52_VAL_CODEC_BF16 1u

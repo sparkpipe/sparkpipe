@@ -45,7 +45,7 @@ that grep source text.
 | `cuda/` | CUDA host glue shared across lineages |
 | `glm/` | GLM-lineage CUDA host glue, layer and unity code, api.h |
 | `synth/` | pack synthesizer helpers |
-| `validation/` | GPU validator reference math |
+| `validation/` | GPU validator reference math, kernel checks and module drivers |
 | `abi/` | firmware ABI structs shared by the family firmware headers |
 
 A header holds only functions that every family including it shares. When
@@ -96,7 +96,11 @@ A value that differs by family reaches the template through a macro the
 family defines just before the include, named with `SPARK_FAMILY_CONST`: for
 example `SPARK_GLM52_MODULE_TP_MESH_REGION(state)` in
 `module/spark_module_tp_open_node_context.h`. A family that omits one does not
-compile.
+compile. A call whose trailing arguments differ by family goes through a
+function-like macro in the same way. qwen4_flash's GDN launchers take a
+tensor-parallel degree that qwen38_27b's do not, so both validators define
+`SPARK_<FAMILY>_VALIDATION_GDN_LAUNCH(launch,...)`: qwen38_27b's expands to
+`launch(__VA_ARGS__)` and qwen4_flash's to `launch(__VA_ARGS__,1u)`.
 
 A declaration (a struct, a typedef or a prototype) moves only if every
 translation unit that includes it preprocesses to the same tokens before

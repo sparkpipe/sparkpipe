@@ -328,6 +328,13 @@ progress diary.
   universal packer (`docs/UNIVERSAL_PACKER.md`): one CLI, one codec table,
   per-family byte-compatible emitters, each gated on byte identity with its
   existing packs.
+- The GPU validator digest (`SPARK_<FAMILY>_CUDA_VALIDATOR_SHA256`, computed
+  in each module Makefile, validate script and publish wrapper) hashes only
+  the validator's `.cu`. The validators include templates from
+  `include/sparkpipe/family/validation/`, so a template edit changes what
+  validates a pack without changing the digest its receipt records. Hash the
+  `.cu` together with the templates it includes, in one helper every pin
+  calls.
 
 ## Driver consolidation
 
