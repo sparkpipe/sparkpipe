@@ -9508,8 +9508,8 @@
     },
     {
       "path": "tests/test_host_codegen_diff.py",
-      "sha256": "ce815883dbf4879653c2ecc43adb5bacb1554f529ebdd5316964841f43d2f825",
-      "size_bytes": 3766
+      "sha256": "073bf6e5c59bff4fc67177d5814d12b34cecdc84a9386c8c4ee631d9630b289a",
+      "size_bytes": 4921
     },
     {
       "path": "tests/test_hy4_fp8_scale_contract.py",
@@ -12073,8 +12073,8 @@
     },
     {
       "path": "tools/host_codegen_diff.py",
-      "sha256": "9570e8512156342bbdb8aaec1da5a16193eddf6629c5af45c171cdf3b05028a2",
-      "size_bytes": 4363
+      "sha256": "f3f154b746f9f2b4b3440ad76fd8580087435ec6998d5305fd5ed7c128277303",
+      "size_bytes": 4793
     },
     {
       "path": "tools/hy4_attach_harness.c",
@@ -15250,5 +15250,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73941221
+  "total_bytes": 73942806
 }

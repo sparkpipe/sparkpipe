@@ -20,6 +20,17 @@ CHANGED = """
 const char *name_of(int code) { return code > 7 ? "large" : "small"; }
 int scale(int value) { int total = 0; for (int i = 0; i < value; i++) total += i * 5; return total; }
 """
+COUNTER = """
+int counter(int step) { static int count; static int calls; calls++; return count += step; }
+"""
+COUNTER_MOVED = """
+int counter(int step) { static int count; static int calls; calls++; return count += step; }
+int later(int step) { static int count; static int calls; calls += 2; return count -= step; }
+"""
+COUNTER_SWAPPED = """
+int counter(int step) { static int count; static int calls; count++; return calls += step; }
+int later(int step) { static int count; static int calls; calls += 2; return count -= step; }
+"""
 RENAMED_CONSTANT = """
 const char *name_of(int code) { return code > 7 ? "LARGE" : "small"; }
 int scale(int value) { int total = 0; for (int i = 0; i < value; i++) total += i * 3; return total; }
@@ -61,10 +72,15 @@ def main():
         packed = compile_object(directory, "packed", BASE, "-O2")
         code, output = run(packed, compile_object(directory, "packed_moved", MOVED, "-O2"), "--allow", "^(first|padding)$")
         check(code == 0 and "unexpected 0" in output, "branch targets compare relative to their function without -ffunction-sections", output)
+        counter = compile_object(directory, "counter", COUNTER, *sections)
+        code, output = run(counter, compile_object(directory, "counter_moved", COUNTER_MOVED, *sections), "--allow", "^later$")
+        check(code == 0 and "unexpected 0" in output, "function-local statics renumbered by another function compare equal", output)
+        code, output = run(counter, compile_object(directory, "counter_swapped", COUNTER_SWAPPED, *sections), "--allow", "^later$")
+        check(code == 1 and "UNEXPECTED changed counter" in output, "a function that swaps which local static it updates fails", output)
         empty = compile_object(directory, "empty", "typedef int nothing;\n", *sections)
         code, output = run(base, empty)
         check(code == 1 and "no functions parsed from %s" % empty in output, "an object without functions fails instead of comparing nothing", output)
-    print("PASS host codegen diff: local constants and branch targets normalize, changes and additions outside ALLOW fail, empty objects fail")
+    print("PASS host codegen diff: local constants, local statics and branch targets normalize, changes and additions outside ALLOW fail, empty objects fail")
     return 0
 
 

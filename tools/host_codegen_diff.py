@@ -13,6 +13,7 @@ RELOCATION = re.compile(r"^\s*[0-9a-f]+: (R_\S+)\s+(.*)$")
 SECTION = re.compile(r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)")
 BRANCH = re.compile(r"^(j\w*|call\w*|loop\w*|b\.?\w*)\s+([0-9a-f]+)$")
 INLINE_RELOCATION = re.compile(r"\s*[0-9a-f]+: (R_[A-Z0-9_]+)\s+(\S+)")
+STATIC_LOCAL = re.compile(r"(\.(?:bss|data|rodata|tbss|tdata)\.[A-Za-z_]\w*)\.(\d+)\b")
 
 
 def run(tool, *arguments):
@@ -54,13 +55,24 @@ def normalize(text, start, constants):
     return [text] + relocations
 
 
+def renumber(lines):
+    order = {}
+
+    def local(found):
+        if found.group(0) not in order:
+            order[found.group(0)] = "%s.#%d" % (found.group(1), sum(1 for key in order if key.rsplit(".", 1)[0] == found.group(1)))
+        return order[found.group(0)]
+
+    return [STATIC_LOCAL.sub(local, line) for line in lines]
+
+
 def functions(path):
     constants, table, name, start, lines = local_constants(path), {}, None, 0, []
     for line in run(OBJDUMP, "-d", "-r", "--no-show-raw-insn", "-w", path).splitlines() + ["0 <end>:"]:
         header = HEADER.match(line)
         if header:
             if name is not None:
-                table[name] = "\n".join(lines)
+                table[name] = "\n".join(renumber(lines))
             name, start, lines = header.group(2), int(header.group(1), 16), []
             continue
         relocation = RELOCATION.match(line)
