@@ -115,7 +115,7 @@
       </svg>
     </div>
     <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="p"></i>projected, after the planned kernel and collective work</span></div>
-    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Projected: the M1/M2 exit criteria from the roadmap — 80% of the ceiling for the whole step, after the planned kernel and collective work. These are projections, not measurements; the arithmetic is in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode" target="_blank" rel="noopener">PERFORMANCE_STATUS.md</a>. At 256 streams each stream sees about 8.6 tok/s.</p>
+    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context, at the deployment precision — FP8 expert weights, BF16 attention, KV cache and activations. Projected: the M1/M2 exit criteria from the roadmap — 80% of the ceiling for the whole step, after the planned kernel and collective work. These are projections, not measurements; the arithmetic is in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode" target="_blank" rel="noopener">PERFORMANCE_STATUS.md</a>. At 256 streams each stream sees about 8.6 tok/s.</p>
   </div>
 </section>
 
@@ -203,7 +203,7 @@
       <table>
         <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Projected</th></tr></thead>
         <tbody>
-                    <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>129.9</b>tok/s measured · 8 streams · 2026-09-26 · <b>2,200</b> projected · 256 streams</td></tr>
+                    <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>129.9</b>tok/s measured · 8 streams · 2026-09-26 · <b>2,200</b> tok/s projected · 256 streams · FP8 experts / BF16 attn+KV</td></tr>
           <tr><td class="model">GLM 5.3 Full</td><td>glm52 module · NVFP4/FP8/BF16 repack</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
           <tr><td class="model">DeepSeek V4.1 Flash</td><td>model-profiled TP/PP</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
           <tr><td class="model">DeepSeek V4 Pro</td><td>TP4 × PP4 · 16 Sparks</td><td><span class="state">Driver in progress</span></td><td class="muted">–</td></tr>
