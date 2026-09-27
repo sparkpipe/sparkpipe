@@ -8103,8 +8103,8 @@
     },
     {
       "path": "site/index.html",
-      "sha256": "1af5cfefbce5c3a3bb49ebc017855cc30e512b92b7c14a1dc9e733c3759aca0e",
-      "size_bytes": 26035
+      "sha256": "dd87234e2a75b73c4f7f73e88b4380197bbc026975d862003ac4cfb9520ddb7a",
+      "size_bytes": 25854
     },
     {
       "path": "site/playground.html",
@@ -8113,8 +8113,8 @@
     },
     {
       "path": "site/providers.html",
-      "sha256": "4e46d43be3fc6660d17f8e48100b71c95976bff48c0714abf471f656c9ef848d",
-      "size_bytes": 15056
+      "sha256": "002315e5ea93429e731fbc3ca1cd71e31939981177ce416fe85136522074f466",
+      "size_bytes": 15076
     },
     {
       "path": "site/site.css",
@@ -15220,5 +15220,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74254863
+  "total_bytes": 74254702
 }

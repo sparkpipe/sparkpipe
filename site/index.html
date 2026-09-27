@@ -73,33 +73,31 @@
   <div class="sec-rail">
     <p class="label">Throughput</p>
     <p class="label">GLM 5.3 Flash · TP16</p>
-    <p class="label">Projected</p>
+    <p class="label">Target</p>
   </div>
   <div class="sec-body">
     <h2>Batching is the lever.</h2>
-    <p class="prose">Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once, and one read serves every request in the step. So aggregate throughput climbs with the batch. On sixteen Sparks at 1K context the memory-bound ceiling runs from 125 tok/s for one stream to about 2,800 tok/s for 256. SparkPipe is projected to reach about 70 and 1,650.</p>
+    <p class="prose">Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once, and one read serves every request in the step. So aggregate throughput climbs with the batch. On sixteen Sparks at 1K context the memory-bound ceiling runs from 125 tok/s for one stream to about 2,800 tok/s for 256. SparkPipe targets 100 for one stream and 2,200 at 256.</p>
     <div class="chart-wrap">
-      <svg class="chart" viewBox="0 0 720 384" role="img" aria-label="Aggregate tokens per second against concurrent streams, log scales: the memory-bound ceiling and SparkPipe's projected throughput">
+      <svg class="chart" viewBox="0 0 720 384" role="img" aria-label="Aggregate tokens per second against concurrent streams, log scales: the memory-bound ceiling and SparkPipe's target throughput">
         <path class="grid" d="M64 94.3H696M64 211.2H696M156.5 24V328M231 24V328M305.5 24V328M380 24V328M454.5 24V328M529 24V328M603.5 24V328M678 24V328"/>
         <path class="axis" d="M64 24V328H696"/>
         <path class="ceiling-area" d="M82,328 L82,199.8 L305.5,142.1 L529,97.5 L603.5,71.8 L678,42.5 L678,328 Z"/>
         <polyline class="ceiling" points="82,199.8 305.5,142.1 529,97.5 603.5,71.8 678,42.5"/>
-        <polyline class="projected" points="82,229.3 305.5,166.7 529,118.6 603.5,94.3 678,68.9"/>
-        <circle class="projected-dot" cx="82" cy="229.3" r="4.5"/>
-        <circle class="projected-dot" cx="305.5" cy="166.7" r="4.5"/>
-        <circle class="projected-dot" cx="529" cy="118.6" r="4.5"/>
-        <circle class="projected-dot" cx="603.5" cy="94.3" r="4.5"/>
-        <circle class="projected-dot" cx="678" cy="68.9" r="4.5"/>
+        <polyline class="projected" points="82,211.2 305.5,155.5 529,109 678,54.4"/>
+        <circle class="projected-dot" cx="82" cy="211.2" r="4.5"/>
+        <circle class="projected-dot" cx="305.5" cy="155.5" r="4.5"/>
+        <circle class="projected-dot" cx="529" cy="109" r="4.5"/>
+        <circle class="projected-dot" cx="678" cy="54.4" r="4.5"/>
         <text x="82" y="190" text-anchor="middle">125</text>
         <text x="305.5" y="132" text-anchor="middle">390</text>
         <text x="529" y="87" text-anchor="middle">940</text>
         <text x="603.5" y="62" text-anchor="middle">1,560</text>
         <text class="strong" x="678" y="32" text-anchor="middle">2,780</text>
-        <text class="projected-text" x="94" y="247">70 projected</text>
-        <text class="projected-text" x="317" y="184">240</text>
-        <text class="projected-text" x="541" y="136">620</text>
-        <text class="projected-text" x="615" y="112">1,000</text>
-        <text class="projected-text" x="678" y="91" text-anchor="middle">1,650</text>
+        <text class="projected-text" x="94" y="229">100 target</text>
+        <text class="projected-text" x="317" y="173">300</text>
+        <text class="projected-text" x="541" y="127">750</text>
+        <text class="projected-text" x="678" y="76" text-anchor="middle">2,200</text>
         <text x="56" y="332" text-anchor="end">10</text>
         <text x="56" y="215" text-anchor="end">100</text>
         <text x="56" y="98" text-anchor="end">1,000</text>
@@ -116,8 +114,8 @@
         <text x="14" y="176" text-anchor="middle" transform="rotate(-90 14 176)">aggregate tok/s</text>
       </svg>
     </div>
-    <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="p"></i>projected, after the planned kernel and collective work</span></div>
-    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Projected: kernels at 75% of memory bandwidth, all-reduces on GPU-initiated RDMA that do not overlap compute, 0.5 ms of host work per step, no speculative decoding. These are projections, not measurements; the arithmetic is in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode" target="_blank" rel="noopener">PERFORMANCE_STATUS.md</a>. At 256 streams each stream sees about 6.5 tok/s.</p>
+    <div class="legend"><span><i></i>memory-bound ceiling</span><span><i class="p"></i>target, after the planned kernel and collective work</span></div>
+    <p class="caption">Ceiling: bytes read per step at 273 GB/s per Spark, 1K context. Target: the M1/M2 exit criteria from the roadmap — 80% of the ceiling for the whole step, after the planned kernel and collective work. These are targets, not measurements; the arithmetic is in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md#glm-53-flash-tp16-decode" target="_blank" rel="noopener">PERFORMANCE_STATUS.md</a>. At 256 streams each stream sees about 8.6 tok/s.</p>
   </div>
 </section>
 
@@ -200,12 +198,12 @@
   </div>
   <div class="sec-body">
     <h2>Frontier open models, one serving stack.</h2>
-    <p class="prose">A model joins by passing the same package and qualification contract as every other. Throughput is projected where a roofline exists to project from.</p>
+    <p class="prose">A model joins by passing the same package and qualification contract as every other. Throughput figures are targets where a roofline exists to derive them from.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Projected</th></tr></thead>
+        <thead><tr><th>Model</th><th>Placement</th><th>Status</th><th>Target</th></tr></thead>
         <tbody>
-          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>1,650</b>tok/s · 256 streams</td></tr>
+          <tr><td class="model">GLM 5.3 Flash</td><td>TP16 · 16 Sparks</td><td><span class="state live">In production</span></td><td class="figure"><b>2,200</b>tok/s · 256 streams</td></tr>
           <tr><td class="model">GLM 5.2</td><td>TP8 · 8 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
           <tr><td class="model">DeepSeek V4 Flash</td><td>TP4 · 4 Sparks</td><td><span class="state runs">Runs</span></td><td class="muted">–</td></tr>
           <tr><td class="model">GLM 5.3</td><td>on the GLM 5.2 driver</td><td><span class="state">Onboarding</span></td><td class="muted">–</td></tr>
