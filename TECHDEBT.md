@@ -299,6 +299,13 @@ progress diary.
   whenever the adapter offers them, so with MTP enabled drafts only run on
   single-step frames. Choose between MTP and chains per batch in the engine,
   or verify drafts inside a chain.
+- glm5_next has no DFlash2 source. Its hidden-tap capture (#931, `e60f690b`:
+  HC-mean of the post-MLP residual at global layers 5/14/24/33/42 into a
+  per-lane host ring) left the module with the whole-step graph engine
+  (`096f45ed`). The ring, its gate and the adapter's DFlash2 offer outlived
+  it; they are gone too, so a DFlash2 request is refused as unavailable.
+  Restore the capture inside the graph engine, with the ring and gate from
+  `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
 
 ## Packaging and provenance
 
@@ -416,12 +423,6 @@ progress diary.
   `SparkModelResidentDeploymentLoad` accepts exactly six. Its adapter unit
   sections pass. Align the generator and the loader, then add the test to the
   suite.
-- `tests/test_glm5_next_module_host_syntax.py` fails outside CI. With clang,
-  `validation/spark_glm5_next_resident_decode_stage_tap_ring.cu` no longer
-  compiles against the module (no `tap_stage_bf16` in the execution slot, and
-  the drafter tap-layer count is 0). With gcc, the C++ sources fail earlier
-  because the command passes `-std=c11` before `-x c++ -std=c++17`. Align the
-  validator with the module and make the command compiler-neutral.
 
 ## Hardware independence
 

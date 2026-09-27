@@ -75,9 +75,8 @@ deleted in the same commit that flips the include.
 7. Makefile: set `GLM_FAMILY`, `GLM_EXPERT_CODECS` (no bf16),
    `MODULE_IDENTIFIER_PREFIX` (shape tag `h4096.l45.kda34.e288.k8`) and the
    family sources, then `include ../../common/glm_resident_stage_wrapper.mk`
-   followed by `../resident_decode_stage_rules.mk`. The three extra
-   validators (mtp_parity, tap_ring) and the extra host sources stay in the
-   family Makefile.
+   followed by `../resident_decode_stage_rules.mk`. The extra validator
+   (mtp_parity) and the extra host sources stay in the family Makefile.
 8. Receipts: host `make contract` across the codec set, the sm_121a compile
    gate, the module tests in `tests/test_common_glm_modules.py` (they parse
    glm52's llm_defines.h; add the glm5_next path), plus behavior-identity

@@ -47,7 +47,6 @@ MODEL_HEADER := ../../model-families/glm5_next/include/sparkpipe/spark_glm5_next
 MODULE_ENTRY_PREFIX := SparkGlm5NextResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
-	source/spark_glm5_next_tap_ring.c \
 	../../runtime/stage_module_lifecycle.c \
 	../../src/spark_speculation_policy.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
@@ -91,7 +90,6 @@ RUNTIME_CONFIGURATION := \
 
 GPU_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_cuda.sh
 MTP_PARITY_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh
-TAP_RING_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_tap_ring.sh
 
 include ../resident_decode_stage_rules.mk
 
@@ -99,13 +97,6 @@ include ../resident_decode_stage_rules.mk
 validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)
 	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(MTP_PARITY_VALIDATOR) \
-		$(VALIDATION_CONFIGURATION_SHA256) \
-		$(MODULE_ARCHIVE)
-
-.PHONY: validate_tap_ring
-validate_tap_ring: require_cuda_target $(MODULE_ARCHIVE)
-	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
-		$(TAP_RING_VALIDATOR) \
 		$(VALIDATION_CONFIGURATION_SHA256) \
 		$(MODULE_ARCHIVE)
 

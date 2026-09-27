@@ -200,7 +200,6 @@ typedef struct SparkGlm5NextServingState
 	uint32_t max_input_row_count;
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
-	uint32_t tap_extraction;
 	uint32_t index_cp;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
@@ -397,6 +396,29 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	SPARK_RETURN(status);
 }
 
+static void SparkGlm5NextServingModelContract(SparkSpeculationModelContract *contract)
+{
+	contract->abi_version = SPARK_SPECULATION_ABI_VERSION;
+	contract->descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+	contract->verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
+	contract->draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
+	contract->draft_layer_count = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_LAYER_COUNT;
+	contract->block_size = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS;
+	contract->hidden_dimension = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	contract->intermediate_dimension = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION;
+	contract->attention_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
+	contract->kv_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
+	contract->head_dimension = SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION;
+	contract->vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	contract->draft_vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	contract->markov_rank = 0u;
+	contract->maximum_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
+	contract->verifier_accept_k = 1u;
+	contract->aux_layer_count = 0u;
+	contract->enable_confidence_head = 0u;
+	contract->confidence_head_with_markov = 0u;
+}
+
 static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	SparkGlm5NextServingState *state,
 	uint32_t max_sequence_positions)
@@ -407,8 +429,6 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	uint32_t enabled_sources;
 	SparkStatus status;
 	available_sources = SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES;
-	if ( state->bridge_host != 0 )
-		available_sources |= SPARK_SPECULATION_SEAM_SOURCE_DFLASH2;
 	if ( state->bridge_host == 0 )
 		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
 	control_value = 0;
@@ -417,7 +437,6 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->mtp_enabled = (enabled_sources & SPARK_SPECULATION_SEAM_SOURCE_MTP) != 0u ? 1u : 0u;
-	state->tap_extraction = (enabled_sources & SPARK_SPECULATION_SEAM_SOURCE_DFLASH2) != 0u ? 1u : 0u;
 	memset(&seam_configuration,0,sizeof(seam_configuration));
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
@@ -426,8 +445,7 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	seam_configuration.default_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
 	seam_configuration.lane_count = state->max_active_sequence_count;
 	seam_configuration.max_committed_token_count = max_sequence_positions;
-	seam_configuration.max_tap_row_count = state->tap_extraction != 0u ?
-		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_WINDOW_POSITIONS : 0u;
+	seam_configuration.max_tap_row_count = 0u;
 	seam_configuration.draft_time_budget_ms = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_TIME_BUDGET_MS;
 	seam_configuration.draft_max_depth = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_DEPTH;
 	seam_configuration.draft_max_node_count = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
@@ -437,26 +455,7 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	seam_configuration.bridge_host = state->bridge_host;
 	seam_configuration.bridge_port = state->bridge_port;
 	memcpy(seam_configuration.target_model,SPARK_GLM5_NEXT_SERVING_MODEL_ID,sizeof(SPARK_GLM5_NEXT_SERVING_MODEL_ID));
-	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
-	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;
-	seam_configuration.model_contract.verifier_hidden_dtype = SPARK_SPECULATION_VERIFIER_HIDDEN_DTYPE_BF16;
-	seam_configuration.model_contract.draft_dtype = SPARK_SPECULATION_DRAFT_DTYPE_BF16;
-	seam_configuration.model_contract.draft_layer_count = SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_LAYER_COUNT;
-	seam_configuration.model_contract.block_size = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS;
-	seam_configuration.model_contract.hidden_dimension = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
-	seam_configuration.model_contract.intermediate_dimension = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION;
-	seam_configuration.model_contract.attention_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
-	seam_configuration.model_contract.kv_head_count = SPARK_GLM5_NEXT_MODEL_HEAD_COUNT;
-	seam_configuration.model_contract.head_dimension = SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION;
-	seam_configuration.model_contract.vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
-	seam_configuration.model_contract.draft_vocab_size = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
-	seam_configuration.model_contract.markov_rank = 0u;
-	seam_configuration.model_contract.maximum_speculative_token_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
-	seam_configuration.model_contract.verifier_accept_k = 1u;
-	seam_configuration.model_contract.aux_layer_count = state->tap_extraction != 0u ?
-		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_TAP_LAYER_COUNT : 0u;
-	seam_configuration.model_contract.enable_confidence_head = 0u;
-	seam_configuration.model_contract.confidence_head_with_markov = 0u;
+	SparkGlm5NextServingModelContract(&seam_configuration.model_contract);
 	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -694,8 +693,6 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.flags = 0u;
 		if ( state->mtp_enabled != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP;
-		if ( state->tap_extraction != 0u )
-			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_TAP_EXTRACTION;
 		if ( state->index_cp != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
 		state->node_context.stage_pack_path = state->stage_pack_path;
