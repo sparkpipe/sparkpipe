@@ -180,13 +180,14 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
-static uint32_t UNPACK_COUNT;
+static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
 
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count)
 {
-	assert(stream == state.execution_stream && maxloc != 0 && token_ids != 0 && row_count == 2u);
-	token_ids[0] = 100u * UNPACK_COUNT + 11u;
-	token_ids[1] = 100u * UNPACK_COUNT + 12u;
+	uint32_t row;
+	assert(stream == state.execution_stream && maxloc != 0 && token_ids != 0 && row_count == UNPACK_ROWS);
+	for (row=0u; row<row_count; row++)
+		token_ids[row] = 100u * UNPACK_COUNT + 11u + row;
 	UNPACK_COUNT++;
 	return(walk_note('U') != 0 ? cudaErrorInvalidValue : cudaSuccess);
 }
@@ -205,13 +206,16 @@ int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const 
 SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
 {
 	assert((submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u);
-	assert(submission->cuda_stream == state.execution_stream && submission->active_sequence_count == 2u && submission->logical_sequence_count == 2u);
+	assert(submission->cuda_stream == state.execution_stream && submission->active_sequence_count == ENQUEUE_ROWS && submission->logical_sequence_count == ENQUEUE_SEQUENCES);
 	(void)walk_note(submission->completion_function != 0 ? 'c' : collective == &state.tp_device_collective_hc ? 'h' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ? 'g' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? 'x' : 'r');
 	return(SPARK_STATUS_OK);
 }
 
 const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifest *manifest,uint32_t layer,uint32_t expert) { (void)manifest;(void)layer;(void)expert;abort(); }
 uint64_t SparkTpDeviceCollectiveRoundIndex(SparkTpDeviceCollective *collective) { (void)collective;return(0u); }
+static uint64_t CHAIN_KEYS;
+SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,uint64_t chain_id) { (void)collective;(void)chain_id;CHAIN_KEYS++;return(SPARK_STATUS_OK); }
+uint64_t SparkTpDeviceCollectiveChainEpoch(const SparkTpDeviceCollective *collective) { (void)collective;return(1u); }
 SparkStatus SparkTpDeviceCollectiveArmCapture(SparkTpDeviceCollective *collective) { (void)collective;abort(); }
 cudaError_t cudaStreamBeginCapture(cudaStream_t stream,cudaStreamCaptureMode mode) { (void)stream;(void)mode;abort(); }
 cudaError_t cudaStreamEndCapture(cudaStream_t stream,cudaGraph_t *graph) { (void)stream;(void)graph;abort(); }
@@ -1983,6 +1987,199 @@ static void check_chain_steps(void)
 	linear_chain_teardown();
 }
 
+static uint32_t SEQ_TOKENS[8],SEQ_POSITIONS[8],SEQ_SLOTS[8],SEQ_OUTPUT[8],SEQ_HOST_OUTPUT[64],SEQ_CHAIN[64],SEQ_BEGIN[9],SEQ_INDICES[8],SEQ_RUNS[8],SEQ_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_HOST_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_TABLE[16],SEQ_SHADOW[16],SEQ_BUFFER[64],SEQ_DONE_COUNT;
+static uint64_t SEQ_MAXLOC[8],SEQ_REQUEST = 10u;
+static uint8_t SEQ_SIDEBAND[8u * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW];
+static SparkRowSampling SEQ_SAMPLING[8],SEQ_ROW_SAMPLING[8];
+static SparkModelDriverCompletion SEQ_DONE;
+static SparkTestKvTransactions SEQ_KV;
+
+static void sequence_done(void *context,const SparkModelDriverCompletion *completion)
+{
+	(void)context;
+	SEQ_DONE = *completion;
+	SEQ_DONE_COUNT++;
+}
+
+static void sequence_slot(SparkGlm5NextExecutionSlot *slot)
+{
+	linear_slot_fixture(slot);
+	slot->output_token = SEQ_OUTPUT;slot->head_maxloc_u64 = SEQ_MAXLOC;slot->host_output_token_ids = SEQ_HOST_OUTPUT;slot->host_chain_token_ids = SEQ_CHAIN;
+	slot->host_token_ids = SEQ_TOKENS;slot->host_positions = SEQ_POSITIONS;slot->host_resident_slots = SEQ_SLOTS;slot->host_row_sampling = SEQ_SAMPLING;
+	slot->host_run_begin = SEQ_BEGIN;slot->host_run_row_indices = SEQ_INDICES;slot->host_run_state_index = SEQ_RUNS;slot->kv_access_error = SEQ_ERRORS;slot->host_kv_access_error = SEQ_HOST_ERRORS;
+}
+
+static void sequence_fixture(void)
+{
+	memset(&state,0,sizeof(state));
+	SparkTestKvTransactionsInitialize(&SEQ_KV,1u);
+	state.pipeline_slot_count = 1u;state.execution_row_capacity = 8u;state.resident_sequence_capacity = 2u;state.pages_per_sequence = 4u;state.max_sequence_positions = 64u;
+	state.tp_degree = 16u;state.layer_count = 5u;state.owns_embedding = state.owns_final_head = 1u;
+	state.lazy_pack = &LINEAR_PACK;state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
+	state.tp_device_collective_initialized = state.tp_device_collective_hc_initialized = 1u;
+	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_transactions = SEQ_KV.transactions;state.kv_lane_transactions = SEQ_KV.owners;state.kv_lane_physical_pages = SEQ_KV.physical;
+	memset(SEQ_TABLE,0xff,sizeof(SEQ_TABLE));
+	memset(SEQ_SHADOW,0xff,sizeof(SEQ_SHADOW));
+	state.page_table = SEQ_TABLE;state.page_table_shadow = SEQ_SHADOW;
+	state.completions[0].state = &state;
+	sequence_slot(&state.slots[0]);
+	pin_fixture_experts();
+	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0 && pthread_mutex_init(&state.kv_mutex,0) == 0);
+	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
+	STREAM_ORDERED = 1u;HOST_MODE = 0u;HOST_COUNT = 0u;CANCEL_COUNT = EXPECTED_CANCEL_COUNT = 0u;WORK_STATUS = SPARK_STATUS_OK;DRAIN_STATUS = cudaSuccess;VERIFY_STATUS = SPARK_STATUS_OK;
+	WALK_LENGTH = 0u;WALK_TRACE[0] = 0;WALK_GATHER_LAYER = 99u;WALK_FAIL_CODE = 0u;UNPACK_COUNT = 0u;SEQ_DONE_COUNT = 0u;
+}
+
+static void sequence_admit(uint32_t flags,SparkModelDriverAdmissionDecision *decision)
+{
+	SparkModelDriverInitializeAdmissionDecision(decision);
+	SEQ_KV.request.admission_flags = flags;
+	assert(SparkGlm5NextAdmissionPredicate(&state,&SEQ_KV.request,decision) == SPARK_STATUS_OK);
+}
+
+static void sequence_lane(uint64_t sequence,uint64_t first,uint64_t next,uint32_t publish)
+{
+	SEQ_REQUEST++;
+	SEQ_KV.request.request_id = SEQ_KV.request.submission_id = SEQ_KV.request.transaction_id = SEQ_KV.request.step_generation = SEQ_REQUEST;
+	SEQ_KV.request.active_slot_count = SEQ_KV.request.cache_lane_count = 1u;
+	SparkTestKvPageLane(&SEQ_KV.lanes[0],sequence,0u,(uint32_t)first,(uint32_t)next);
+	if ( publish != 0u )
+		SparkTestKvPagePublish(&SEQ_KV.lanes[0],(uint32_t)next,(uint8_t)next);
+}
+
+static SparkModelDriverFrame *sequence_admitted_frame(uint32_t new_tokens,uint32_t frame_flags)
+{
+	static SparkModelDriverFrame frame;
+	SparkModelDriverAdmissionDecision decision;
+	SEQ_KV.request.new_token_count = new_tokens;
+	SEQ_KV.request.frame_flags = frame_flags;
+	sequence_admit(SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&decision);
+	sequence_admit(SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT,&decision);
+	sequence_admit(0u,&decision);
+	frame = SparkTestKvTransactionFrame(&SEQ_KV.request);
+	assert(SparkModelDriverApplyAdmissionDecision(&decision,&frame) == SPARK_STATUS_OK);
+	frame.flags |= frame_flags;
+	frame.execution_stream = state.execution_stream;
+	frame.completion_function = sequence_done;
+	return(&frame);
+}
+
+static void sequence_rows(uint64_t sequence,uint64_t first,uint32_t rows,SparkGlm5NextResidentDecodeStageBatchView *batch)
+{
+	static uint32_t tokens[8],slots[8];
+	static uint64_t positions[8],rows_sequence[8];
+	uint32_t row;
+	for (row=0u; row<rows; row++)
+	{
+		slots[row] = 0u;
+		positions[row] = first + row;
+		rows_sequence[row] = sequence;
+		tokens[row] = 500u + row;
+	}
+	memset(batch,0,sizeof(*batch));
+	batch->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;batch->descriptor_bytes = sizeof(*batch);
+	batch->row_count = rows;batch->active_sequence_count = 1u;
+	batch->token_ids = tokens;batch->row_resident_slots = slots;batch->row_positions = positions;batch->row_sequence_ids = rows_sequence;batch->row_sampling = SEQ_ROW_SAMPLING;
+}
+
+static void sequence_context(SparkGlm5NextResidentDecodeStageFrameContext *context,SparkGlm5NextResidentDecodeStageBatchView *batch,uint32_t prefill)
+{
+	memset(context,0,sizeof(*context));
+	context->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;context->descriptor_bytes = sizeof(*context);context->batch = batch;
+	context->flags = prefill != 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
+	if ( SparkGlm5NextResidentDecodeStageRequiresSidebandOutput(0u) == 0u )
+		return;
+	context->flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_FLAG_SIDEBAND_OUTPUT;
+	context->sideband_output = SEQ_SIDEBAND;
+	context->sideband_output_bytes = sizeof(SEQ_SIDEBAND);
+}
+
+static SparkStatus sequence_frame(uint64_t sequence,uint64_t first,uint32_t rows,uint32_t steps,uint32_t publish)
+{
+	static SparkModelDriverBuffer buffer;
+	static SparkGlm5NextResidentDecodeStageBatchView batch;
+	static SparkGlm5NextResidentDecodeStageFrameContext context;
+	SparkModelDriverFrame *frame;
+	SparkWeightdWorkFunction work;
+	SparkStatus status;
+	uint32_t prefill = rows > 1u || first == 0u ? 1u : 0u;
+	sequence_lane(sequence,first,first + rows,publish);
+	frame = sequence_admitted_frame(rows,prefill != 0u ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u);
+	sequence_rows(sequence,first,rows,&batch);
+	sequence_context(&context,&batch,prefill);
+	buffer.flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;buffer.address = SEQ_BUFFER;buffer.bytes = (uint64_t)rows * steps * sizeof(uint32_t);
+	frame->user_context = &context;frame->buffers = &buffer;frame->buffer_count = 1u;frame->tokens_per_sequence = steps;
+	UNPACK_ROWS = ENQUEUE_ROWS = rows;ENQUEUE_SEQUENCES = 1u;COMPLETION_WORK = 0;
+	status = SparkGlm5NextResidentDecodeStageExecute(&state,frame);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	assert(COMPLETION_WORK == SparkGlm5NextCompleteOnWorker);
+	work = COMPLETION_WORK;
+	COMPLETION_WORK = 0;
+	work(COMPLETION_CONTEXT);
+	return(SEQ_DONE.status);
+}
+
+static SparkStatus sequence_publish(uint64_t sequence,uint64_t at)
+{
+	SparkModelDriverFrame *frame;
+	uint32_t done = SEQ_DONE_COUNT;
+	SparkStatus status;
+	sequence_lane(sequence,at,at,1u);
+	frame = sequence_admitted_frame(0u,SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH);
+	frame->tokens_per_sequence = 0u;
+	status = SparkGlm5NextResidentDecodeStageExecute(&state,frame);
+	assert(status != SPARK_STATUS_OK || SEQ_DONE_COUNT == done + 1u);
+	return(status == SPARK_STATUS_OK ? SEQ_DONE.status : status);
+}
+
+static void sequence_idle(uint64_t next)
+{
+	assert(atomic_load(&state.tp_chain_active) == 0u && atomic_load(&state.slot_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE);
+	assert(atomic_load(&state.lane_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE && SEQ_KV.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	assert(atomic_load(&state.lane_next_positions[0]) == next && SEQ_KV.pages.cache.sequences[0].next_token_position == next);
+}
+
+static void sequence_release(uint64_t sequence,uint64_t at)
+{
+	SparkModelDriverAdmissionDecision decision;
+	sequence_lane(sequence,at,at,0u);
+	SEQ_KV.lanes[0].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	SEQ_KV.request.new_token_count = 0u;
+	SEQ_KV.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	sequence_admit(0u,&decision);
+	assert(atomic_load(&state.lane_bound[0]) == 0u && SEQ_KV.pages.cache.sequences[0].sequence_id == 0u);
+	SEQ_KV.request.frame_flags = 0u;
+}
+
+static void sequence_teardown(void)
+{
+	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
+	assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0 && pthread_mutex_destroy(&state.kv_mutex) == 0);
+	STREAM_ORDERED = 0u;UNPACK_ROWS = ENQUEUE_ROWS = ENQUEUE_SEQUENCES = 2u;
+	memset(&state,0,sizeof(state));
+}
+
+static void check_execute_sequence(void)
+{
+	sequence_fixture();
+	assert(sequence_frame(1u,0u,2u,1u,0u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 1u && SEQ_BUFFER[1] == 12u);
+	sequence_idle(2u);
+	assert(sequence_frame(1u,2u,2u,1u,1u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 2u);
+	sequence_idle(4u);
+	assert(sequence_frame(1u,4u,1u,2u,0u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 3u && SEQ_DONE.tokens_per_sequence == 2u && SEQ_BUFFER[0] == 211u && SEQ_BUFFER[1] == 311u);
+	sequence_idle(6u);
+	assert(sequence_frame(1u,6u,1u,2u,0u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 4u && SEQ_BUFFER[0] == 411u && SEQ_BUFFER[1] == 511u);
+	sequence_idle(8u);
+	assert(sequence_publish(1u,8u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 5u);
+	sequence_idle(8u);
+	sequence_release(1u,8u);
+	assert(sequence_frame(2u,0u,2u,1u,0u) == SPARK_STATUS_OK && SEQ_DONE_COUNT == 6u);
+	sequence_idle(2u);
+	sequence_teardown();
+}
+
 static void check_chain_validation(void)
 {
 	SparkModelDriverFrame frame = {0};
@@ -2242,6 +2439,7 @@ int32_t main(void)
 	check_linear_eligibility();
 	check_linear_chain();
 	check_chain_steps();
+	check_execute_sequence();
 	check_chain_validation();
 	check_frame_chain_validation();
 	check_mtp_skips_chains();
