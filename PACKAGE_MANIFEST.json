@@ -6043,8 +6043,8 @@
     },
     {
       "path": "modules/spark_resident_decode_stage_cuda_validation_common.sh",
-      "sha256": "eb49e0e93d53f2898929adacea82d9cde6a1f70a8f01bafd6f8e8d4540afaf31",
-      "size_bytes": 7123
+      "sha256": "eccb3adfe208fda3b52efbae2a7410b1ac3c2728e2ea28ded49982e97f49664e",
+      "size_bytes": 7148
     },
     {
       "path": "node/README",
@@ -15215,5 +15215,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74173412
+  "total_bytes": 74173437
 }

@@ -170,7 +170,8 @@ spark_cuda_validation_build_and_run() {
 		nvcc_args+=("-I${repository_root}/${include_dir}")
 	done < <(validation_include_dirs)
 	nvcc_args+=("-I${module_directory}/include"
-		"-I${module_directory}/source")
+		"-I${module_directory}/source"
+		"-I${repository_root}")
 	if [[ "${validation_nvcc_splice}" == "late" ]]; then
 		nvcc_args+=("${nvcc_extra_args[@]}")
 	fi
