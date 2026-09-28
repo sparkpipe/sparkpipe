@@ -12,7 +12,7 @@ static SparkStatus SPARK_FAMILY(ModuleKvPrepareFrame)(SPARK_FAMILY(ModuleState) 
 	frame_slot.host_row_positions = slot->host_row_positions;
 	frame_slot.host_context_lengths = slot->host_context_lengths;
 	frame_slot.host_slot_mapping = slot->host_slot_mapping;
-	frame_slot.slot_mapping = slot->slot_mapping;
+	frame_slot.slot_mapping = SPARK_FAMILY_CONST(MODULE_KV_DEVICE_SLOT_MAPPING)(slot);
 	frame_table.lane_count = table->lane_count;
 	frame_table.lane_stride = table->lane_stride;
 	frame_table.host_physical_block_indices = table->host_physical_block_indices;
@@ -33,6 +33,6 @@ static void SPARK_FAMILY(ModuleKvMarkWritten)(SPARK_FAMILY(ModuleState) *state, 
 	frame_slot.host_row_positions = slot->host_row_positions;
 	frame_slot.host_context_lengths = slot->host_context_lengths;
 	frame_slot.host_slot_mapping = slot->host_slot_mapping;
-	frame_slot.slot_mapping = slot->slot_mapping;
+	frame_slot.slot_mapping = SPARK_FAMILY_CONST(MODULE_KV_DEVICE_SLOT_MAPPING)(slot);
 	LmKvFrameMarkWritten(&state->kv,&frame_slot,rows);
 }

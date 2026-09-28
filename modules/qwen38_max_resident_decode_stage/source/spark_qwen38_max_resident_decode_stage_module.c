@@ -1187,6 +1187,7 @@ static SparkStatus SparkQwen38MaxModuleAllocatePools(SparkQwen38MaxModuleState *
 
 #include "sparkpipe/family/module/spark_module_lifecycle_entry.h"
 
+#define SPARK_QWEN38_MAX_MODULE_KV_DEVICE_SLOT_MAPPING(slot) ((slot)->slot_mapping)
 #include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 
 static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *state, SparkQwen38MaxModuleSlot *slot)

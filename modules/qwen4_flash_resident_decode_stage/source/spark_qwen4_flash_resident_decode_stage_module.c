@@ -1882,6 +1882,7 @@ static SparkStatus SparkQwen4FlashModuleRunMtpDraftChain(SparkQwen4FlashModuleSt
 }
 #endif
 
+#define SPARK_QWEN4_FLASH_MODULE_KV_DEVICE_SLOT_MAPPING(slot) ((slot)->slot_mapping)
 #include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 
 static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen4FlashResidentDecodeStageFrameContext *context, uint32_t rows)
