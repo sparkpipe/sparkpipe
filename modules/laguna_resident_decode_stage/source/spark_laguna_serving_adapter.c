@@ -624,24 +624,7 @@ static void SparkLagunaServingBuildFrame(
 	frame->completion_context = pending;
 }
 
-static SparkStatus SparkLagunaServingAdmit(
-	SparkLagunaServingState *state,
-	const SparkModelServingSubmission *submission,
-	SparkLagunaServingPending *pending,
-	SparkModelDriverFrame *frame)
-{
-	SparkServingCacheAdmission cache;
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	cache = SparkLagunaServingCacheContext(state,pending->cache_lanes);
-	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	frame->cache_lanes = pending->cache_lanes;
-	frame->cache_lane_count = request.cache_lane_count;
-	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
-}
+#include "sparkpipe/family/serving/spark_serving_admit_cache_lanes.h"
 
 static SparkStatus SparkLagunaServingSubmit(
 	void *adapter_state,
@@ -687,32 +670,7 @@ static SparkStatus SparkLagunaServingSubmit(
 
 #include "sparkpipe/family/serving/spark_serving_snapshot.h"
 
-static SparkStatus SparkLagunaServingResetControl(void *adapter_state,uint64_t control_generation)
-{
-	SparkLagunaServingState *state = (SparkLagunaServingState *)adapter_state;
-	SparkModelDriverAdmissionRequest request = {0};
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkLagunaServingQuiesce(state,UINT64_MAX);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.control_generation = control_generation;
-	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
-	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
-		status = SPARK_STATUS_VALIDATION_FAILED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
-		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
-	}
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset_control_atomic.h"
 
 #include "sparkpipe/family/serving/spark_serving_reset.h"
 

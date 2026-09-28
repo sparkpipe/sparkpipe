@@ -951,52 +951,7 @@ static SparkStatus SparkLingValidateRoundMajor(
 	return(row == batch->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static SparkStatus SparkLingValidateSequenceContinuity(
-	const SparkLingModuleState *state,
-	const SparkLingResidentDecodeStageBatchView *batch,
-	uint8_t *bound,
-	uint64_t *sequence_ids,
-	uint64_t *next_positions)
-{
-	uint8_t touched[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t position,sequence;
-	uint32_t lane,row,slot;
-	SparkStatus status;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-	{
-		slot = batch->row_resident_slots[lane];
-		if ( slot >= state->resident_sequence_capacity )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
-		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
-		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
-	}
-	for (row=0u; row<batch->row_count; row++)
-	{
-		slot = batch->row_resident_slots[row];
-		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,slot,&lane);
-		position = batch->row_positions[row];
-		sequence = batch->row_sequence_ids[row];
-		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( position == 0u )
-		{
-			if ( touched[lane] != 0u )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			bound[lane] = 1u;
-			sequence_ids[lane] = sequence;
-			next_positions[lane] = 1u;
-		}
-		else
-		{
-			if ( bound[lane] == 0u || sequence_ids[lane] != sequence || next_positions[lane] != position )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			next_positions[lane] = position + 1u;
-		}
-		touched[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_validate_sequence_continuity.h"
 
 typedef struct SparkLingClaimedContinuityContext
 {
@@ -1023,45 +978,7 @@ static SparkStatus SparkLingValidateFrameBuffers(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingValidateFrame(
-	const SparkLingModuleState *state,
-	const SparkModelDriverFrame *frame,
-	const SparkLingResidentDecodeStageFrameContext **context_out)
-{
-	const SparkLingResidentDecodeStageFrameContext *context;
-	const SparkLingResidentDecodeStageBatchView *batch;
-	uint32_t expected_flags,prefill;
-	uint64_t boundary_bytes;
-	SparkStatus status;
-	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (const SparkLingResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != sizeof(*context) || context->reserved0 != 0u || (context->flags & ~SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS) != 0u || context->batch == 0 )
-		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	batch = context->batch;
-	if ( batch->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != sizeof(*batch) || batch->row_count == 0u || batch->row_count > SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || batch->active_sequence_count == 0u || batch->active_sequence_count > state->resident_sequence_capacity || batch->row_resident_slots == 0 || batch->row_positions == 0 || batch->row_sequence_ids == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
-	if ( prefill == 0u && batch->row_count != batch->active_sequence_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->active_slot_count != batch->active_sequence_count || frame->new_token_count != batch->row_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	expected_flags = prefill != 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
-	expected_flags |= state->owns_embedding == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
-	expected_flags |= state->owns_final_head == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	if ( context->flags != expected_flags )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	boundary_bytes = (uint64_t)batch->row_count * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkLingValidateRoundMajor(state,batch);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingValidateFrameBuffers(state,frame,batch->row_count);
-	*context_out = status == SPARK_STATUS_OK ? context : 0;
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_validate_frame_laguna.h"
 
 #define SPARK_LING_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LING_TP_COLLECTIVE_HC_PORT_STRIDE 512u
@@ -1332,10 +1249,7 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 	return(SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16));
 }
 
-static SparkStatus SparkLingModuleReduceAttentionOut(SparkLingTpChain *chain,void *device_bf16)
-{
-	return(SparkLingModuleReduceHidden(chain,device_bf16));
-}
+#include "sparkpipe/family/module/spark_module_reduce_attention_out_laguna.h"
 
 static SparkStatus SparkLingModuleReduceHeadMax(SparkLingTpChain *chain)
 {
