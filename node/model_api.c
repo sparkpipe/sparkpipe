@@ -799,7 +799,13 @@ static int api_resolve_seed(ApiOptions *options)
 	if ( options->temperature == 0.0f )
 		options->seed = 0u;
 	else if ( options->seeded == 0u )
+	{
+#if defined(__APPLE__)
+		return getentropy(&options->seed,sizeof(options->seed)) == 0;
+#else
 		return getrandom(&options->seed,sizeof(options->seed),0) == (ssize_t)sizeof(options->seed);
+#endif
+	}
 	return 1;
 }
 

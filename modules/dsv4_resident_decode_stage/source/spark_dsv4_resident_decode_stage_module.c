@@ -491,35 +491,10 @@ extern cudaError_t SparkDsv4LaunchHcPreReduce(
 extern cudaError_t SparkDsv4LaunchHcPost(cudaStream_t stream, const void *out_bf16, const void *residual_bf16, const float *post_f32, const float *comb_f32, void *streams_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
 extern cudaError_t SparkDsv4LaunchHcHeadReduce(cudaStream_t stream, const void *streams_bf16, const float *mixes_f32, float scale, const float *base_f32, float epsilon, void *reduced_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension);
 
-static SparkStatus SparkDsv4ModuleInitializeTpCollective(
-	SparkDsv4ModuleState *state,
-	const SparkDsv4ResidentDecodeStageNodeContext *context)
-{
-	SparkTpDeviceCollectiveConfig configuration;
-	SparkStatus status;
-	if ( state == 0 || context == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->tp_degree == 1u )
-		return(SPARK_STATUS_OK);
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind = context->tp_collective_backend_kind;
-	configuration.tp_degree = state->tp_degree;
-	configuration.tp_rank = state->tp_rank;
-	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	SparkTpMeshRegisterCommonCombines(&configuration);
-	configuration.combine_context = state;
-	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	state->tp_device_collective_initialized = 1u;
-	return(SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0));
-}
+#define SPARK_DSV4_MODULE_TP_DISABLED(state) 0
+#define SPARK_DSV4_MODULE_TP_ROW_CAPACITY(state) SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT
+#define SPARK_DSV4_MODULE_TP_MESH_REGION(state) 0
+#include "sparkpipe/family/module/spark_module_tp_open_node_context.h"
 
 static uint32_t SparkDsv4ModuleDsparkContextEnabled(
 	const SparkDsv4ResidentDecodeStageNodeContext *context)

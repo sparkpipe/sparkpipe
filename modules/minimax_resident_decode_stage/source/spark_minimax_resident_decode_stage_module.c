@@ -543,40 +543,9 @@ SparkStatus SparkMinimaxModuleValidationView(const SparkMinimaxModuleState *stat
 
 #include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
 
-static SparkStatus SparkMinimaxModuleInitializeTpCollective(SparkMinimaxModuleState *state)
-{
-	SparkTpDeviceCollectiveConfig configuration;
-	SparkStatus status;
-	if ( state->tp_degree == 1u )
-		return(SPARK_STATUS_OK);
-	if ( state->tp_standalone != 0u )
-	{
-		fprintf(stderr,"%s tp_collective_skipped standalone=1 degree=%u rank=%u\n",SPARK_MINIMAX_MODULE_TAG,state->tp_degree,state->tp_rank);
-		return(SPARK_STATUS_OK);
-	}
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	configuration.tp_degree = state->tp_degree;
-	configuration.tp_rank = state->tp_rank;
-	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension = SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-	configuration.max_active_sequence_count = SPARK_MINIMAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
-	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
-	SparkTpMeshRegisterCommonCombines(&configuration);
-	configuration.combine_context = state;
-	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s tp_create_failed status=%d\n",SPARK_MINIMAX_MODULE_TAG,(int)status);
-		SPARK_RETURN(status);
-	}
-	state->tp_collective_initialized = 1u;
-	status = SparkTpDeviceCollectiveAttach(&state->tp_device_collective,0);
-	if ( status == SPARK_STATUS_OK )
-		fprintf(stderr,"%s tp_collective_open degree=%u rank=%u\n",SPARK_MINIMAX_MODULE_TAG,state->tp_degree,state->tp_rank);
-	SPARK_RETURN(status);
-}
+#define SPARK_MINIMAX_MODULE_TP_HIDDEN_DIMENSION SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION
+#define SPARK_MINIMAX_MODULE_TP_MESH_REGION(state) 0
+#include "sparkpipe/family/module/spark_module_tp_open_environment.h"
 
 static SparkStatus SparkMinimaxModuleTpReduceArgmax(SparkMinimaxModuleState *state,SparkMinimaxModuleSlot *slot,uint64_t *device_u64,uint32_t count)
 {

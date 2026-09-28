@@ -15,6 +15,8 @@ from pathlib import Path
 import re
 import sys
 
+from family_source import read_source
+
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
 DSV4 = ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
@@ -53,7 +55,7 @@ def forbid(source: str, needle: str, label: str) -> None:
 def main() -> int:
     common = COMMON.read_text(encoding="utf-8")
     dsv4 = DSV4.read_text(encoding="utf-8")
-    module = MODULE.read_text(encoding="utf-8")
+    module = read_source(MODULE)
     head_contract = HEAD_SCREEN.read_text(encoding="utf-8")
     mma = MMA.read_text(encoding="utf-8")
     route = ROUTE.read_text(encoding="utf-8")
