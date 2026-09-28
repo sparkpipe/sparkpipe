@@ -84,7 +84,7 @@ Per-node budgets TOTAL 9792 MiB / DEVICE 6400 MiB; lane envelope 8 Sparks
   ~2.3 GiB device headroom. TP16 fits device but doubles the envelope; TP4
   overflows DEVICE_MIB with spine+KV.
 - **flash -> TP4**: rank pack 39.6 GiB NVMe, device spine 2.14 GiB, half the
-  envelope; TP8 stays open as a co-residency fallback.
+  envelope. TP8 is closed: it cuts the TP4-interleaved qkv fp8 blocks.
 - Decode floor at B1 (native codecs, 218 GB/s effective): pro 38.4
   GiB/token -> ~5.3 tok/s; flash 13.0 GiB/token -> ~15.7 tok/s. Batch
   amortises the expert read; the spine read is the fixed cost.
@@ -97,12 +97,23 @@ entries (kind, layer, format, rows, cols, reserved, payload_offset,
 payload_bytes, scale_offset, scale_bytes) + 256-aligned payload/scale planes,
 magic 'M26P'. Weight codes: BF16/F32 shared codes, fp8 e4m3 block-128 = 4,
 **mxfp4 e2m1+e8m0 g32 = 9** (added to include/sparkpipe/spark_stagepack_format.h).
-Slicing: q row-sliced by head groups, k/v sections replicated whole (kv-head
-granules cannot cut the fp8 grid; ~16 MB/layer cost), o_proj col-sliced,
-embed/lm_head vocab-row-sliced, router/norms replicated, sink head-sliced,
-experts per-rank disjoint slabs expert-major. The fused scale grids' padding
-rows are measured (216/216, 108/116), sliced on block boundaries and dropped
-where they are not data. Emission is staged/resumable (`--emit`/`--assemble`
+Slicing (format version 2): the fused `qkv_proj` source is TP-rank
+interleaved, `[q_0|k_0|v_0|...|q_n|k_n|v_n]` with n = 4 (flash) / 8 (pro),
+and its fp8 scale grid is blocked per rank segment with each segment padded
+to whole 128-row blocks. That is where the "padding" rows come from: flash
+full 4 x ceil(3392/128) = 108, flash SWA 4 x 29 = 116, pro 8 x 27 = 216.
+Every block holds an e4m3 max code only under this map (flash layers 0/1/2/5
+measured: 108/108 and 116/116 blocks; the fused-order map fits 73/106), the
+per-rank row-norm profile shows 16 q heads, then the k head(s), then the v
+head(s) repeating every segment, and vLLM's mimo_v2 loader de-interleaves the
+same `[Q_0|K_0|V_0|...]` layout. A rank pack carries its own segment as one
+fused QKV entry (rows = segment rows, scale rows = segment blocks), so the
+pack TP must equal the interleave. o_proj is col-sliced, embed/lm_head are
+vocab-row-sliced, router/norms are replicated, sinks are head-sliced, and
+experts are per-rank disjoint slabs, expert-major. Packs emitted with format
+version 1 (separate q/k/v cut from the fused order, and the layer-0 dense
+slices fixed in the previous commit) are invalid.
+Emission is staged/resumable (`--emit`/`--assemble`
 /`--verify`, `--layer-window FIRST:COUNT` for TTL-bounded fanout); verify
 byte-compares every plane against the checkpoint.
 
