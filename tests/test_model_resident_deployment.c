@@ -65,6 +65,31 @@ static void TestEosMetadata(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
+static void TestPrefixReuse(const char *members,SparkStatus expected,uint32_t disabled)
+{
+	SparkModelResidentDeployment deployment;
+	char buffer[8192],path[256];
+	FILE *file;
+	uint32_t count;
+	file = fopen("tests/fixtures/model_resident_deployment.json","rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer),file);
+	assert(feof(file) != 0 && count > 1u && buffer[0] == '{');
+	assert(fclose(file) == 0);
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-prefix-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fprintf(file,"{%s",members) > 0);
+	assert(fwrite(buffer + 1u,1,count - 1u,file) == count - 1u);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
+	if ( expected == SPARK_STATUS_OK )
+		assert(deployment.prefix_reuse_disabled == disabled);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+}
+
 static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t positions)
 {
 	SparkModelResidentDeployment deployment;
@@ -143,6 +168,10 @@ int main(int argc,char **argv)
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
+	TestPrefixReuse("",SPARK_STATUS_OK,0u);
+	TestPrefixReuse("\"prefix_reuse\":true,",SPARK_STATUS_OK,0u);
+	TestPrefixReuse("\"prefix_reuse\":false,",SPARK_STATUS_OK,1u);
+	TestPrefixReuse("\"prefix_reuse\":0,",SPARK_STATUS_SCHEMA_ERROR,0u);
 	TestSequencePositions();
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);

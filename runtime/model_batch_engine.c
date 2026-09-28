@@ -89,6 +89,7 @@ typedef struct SparkModelBatchSubmissionState
 struct SparkModelBatchEngine
 {
 	SparkModelPipelineClient *pipeline;
+	uint32_t prefix_reuse_disabled;
 	const SparkModelServingAdapterDescriptor *adapter_descriptor;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
@@ -1170,6 +1171,7 @@ static SparkStatus SparkModelBatchInitialize(
 	memcpy(engine->stop_token_ids,configuration->stop_token_ids,engine->stop_token_count * sizeof(uint32_t));
 	memcpy(engine->stop_token_ids + engine->stop_token_count,configuration->deployment->eos_token_ids,configuration->deployment->eos_token_count * sizeof(uint32_t));
 	engine->stop_token_count += configuration->deployment->eos_token_count;
+	engine->prefix_reuse_disabled = configuration->deployment->prefix_reuse_disabled;
 	engine->event_function = configuration->event_function;
 	engine->event_context = configuration->event_context;
 	engine->admission_open = 1u;
@@ -1391,6 +1393,11 @@ static void SparkModelBatchRefreshQueuedPrefix(
 	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
+	if ( engine->prefix_reuse_disabled != 0u )
+	{
+		request->cache_lookup_epoch = engine->cache_publication_epoch;
+		return;
+	}
 	slot = (uint32_t)(request - engine->requests);
 	memset(&lookup,0,sizeof(lookup));
 	status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
