@@ -273,6 +273,13 @@ struct SparkGlm5NextModuleState
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
+	SparkKvSnapshotStore kv_snapshot_store;
+	SparkKvPageCacheSnapshot kv_snapshot;
+	SparkKvPageCacheSnapshotLink *kv_snapshot_links;
+	uint8_t *kv_snapshot_page;
+	uint8_t *kv_snapshot_state;
 	SparkGlm5NextExecutionSlot slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm5NextAsyncCompletion completions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	volatile uint64_t slot_alive_ns[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -376,6 +383,10 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
+	if ( (context->kv_snapshot_directory == 0 || context->kv_snapshot_directory[0] == '\0') != (context->kv_snapshot_maximum_bytes == 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->kv_snapshot_directory = context->kv_snapshot_maximum_bytes != 0u ? context->kv_snapshot_directory : 0;
+	state->kv_snapshot_maximum_bytes = context->kv_snapshot_maximum_bytes;
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
@@ -1270,6 +1281,41 @@ static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *st
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *state,const SparkKvModelTable *table)
+{
+	SparkSha256Context context;
+	char identity[768];
+	int length;
+	SparkStatus status;
+	if ( state->kv_snapshot_directory == 0 )
+		return(SPARK_STATUS_OK);
+	status = SparkKvSnapshotStoreOpen(&state->kv_snapshot_store,state->kv_snapshot_directory,state->kv_snapshot_maximum_bytes);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: directory=%s maximum_bytes=%llu status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(int)status);
+		SPARK_RETURN(status);
+	}
+	state->kv_snapshot_links = (SparkKvPageCacheSnapshotLink *)calloc(state->pages_per_sequence,sizeof(*state->kv_snapshot_links));
+	state->kv_snapshot_page = (uint8_t *)malloc((size_t)table->page_store_config.page_bytes);
+	state->kv_snapshot_state = state->recurrent_page_bytes != 0u ? (uint8_t *)malloc((size_t)state->recurrent_page_bytes) : 0;
+	if ( state->kv_snapshot_links == 0 || state->kv_snapshot_page == 0 || (state->recurrent_page_bytes != 0u && state->kv_snapshot_state == 0) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	length = snprintf(identity,sizeof(identity),"%s|%s|%s|tp=%u/%u|stage=%u/%u|layers=%u+%u|block=%u|page=%llu|state=%llu",table->model_id,table->model_revision,table->cache_layout_fingerprint,state->tp_rank,state->tp_degree,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,(unsigned)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT,(unsigned long long)table->page_store_config.page_bytes,(unsigned long long)state->recurrent_page_bytes);
+	if ( length <= 0 || (size_t)length >= sizeof(identity) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,identity,(size_t)length);
+	SparkSha256Finalize(&context,state->kv_snapshot.layout_sha256);
+	state->kv_snapshot.store = &state->kv_snapshot_store;
+	state->kv_snapshot.page_capacity = state->pages_per_sequence;
+	state->kv_snapshot.links = state->kv_snapshot_links;
+	state->kv_snapshot.page = state->kv_snapshot_page;
+	state->kv_snapshot.state = state->kv_snapshot_state;
+	status = SparkKvPageCacheAttachSnapshot(&state->kv_page_cache,&state->kv_snapshot);
+	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu used_bytes=%llu files=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,identity,(int)status);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 {
 	SparkKvModelTable table;
@@ -1387,7 +1433,10 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		(uint64_t)state->physical_page_count * block_bytes !=
 			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	return(SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path));
+	status = SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextSnapshotInitialize(state,&table);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
@@ -4705,6 +4754,9 @@ static SparkStatus SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 	free(state->kv_hash_bucket_heads);
 	free(state->kv_entry_indices_by_logical_page);
 	free(state->kv_page_staging);
+	free(state->kv_snapshot_links);
+	free(state->kv_snapshot_page);
+	free(state->kv_snapshot_state);
 	free(state->kv_lane_logical_pages);
 	free(state->page_table_shadow);
 	free(state->kv_lane_transactions);

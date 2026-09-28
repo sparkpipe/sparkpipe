@@ -406,9 +406,21 @@ int main(int argc, char **argv)
         argv[1], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr);
     printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u\n",
         (int)rc, msp, erc, dsct, tpd, tpr);
-    if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
+    if ( argc != 8 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
-    return rc == 0 ? 0 : 1;
+    if ( rc != 0 || state.kv_snapshot_directory[0] != '\0' || state.kv_snapshot_maximum_bytes != 0u )
+        return(1);
+    memset(&state, 0, sizeof(state));
+    if ( SparkGlm5NextServingLoadConfiguration(argv[5], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr) != SPARK_STATUS_OK || state.kv_snapshot_maximum_bytes != 1073741824u || strlen(state.kv_snapshot_directory) < 12u || strcmp(state.kv_snapshot_directory + strlen(state.kv_snapshot_directory) - 12u,"/kv_snapshot") != 0 )
+        return(11);
+    printf("kv_snapshot=%s\n", state.kv_snapshot_directory);
+    memset(&state, 0, sizeof(state));
+    if ( SparkGlm5NextServingLoadConfiguration(argv[6], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr) != SPARK_STATUS_SCHEMA_ERROR )
+        return(12);
+    memset(&state, 0, sizeof(state));
+    if ( SparkGlm5NextServingLoadConfiguration(argv[7], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr) != SPARK_STATUS_SCHEMA_ERROR )
+        return(13);
+    return 0;
 }
 """
 
@@ -461,9 +473,17 @@ def main() -> int:
             print("FAIL adapter harness did not compile")
             print(build.stderr[-600:])
             return 1
+        base = json.load(open(config))
+        variants = []
+        for name, extra in (("snapshot", {"kv_snapshot_directory": "kv_snapshot", "kv_snapshot_maximum_bytes": 1073741824}),
+                            ("snapshot_half", {"kv_snapshot_directory": "kv_snapshot"}),
+                            ("snapshot_zero", {"kv_snapshot_directory": "kv_snapshot", "kv_snapshot_maximum_bytes": 0})):
+            variant = tmpdir / ("stage_" + name + ".json")
+            variant.write_text(json.dumps(dict(base, **extra)))
+            variants.append(str(variant))
         run = subprocess.run([str(binary), str(config), str(ROOT),
                               str(tmpdir / "deploy/model_resident.json"),
-                              str(tmpdir / "tp4pp4/model_resident.json")],
+                              str(tmpdir / "tp4pp4/model_resident.json")] + variants,
                              capture_output=True, text=True)
         print(run.stdout.strip())
         print(run.stderr.strip()[-300:] if run.stderr else "", file=sys.stderr)
@@ -473,7 +493,7 @@ def main() -> int:
                   "drift gate cannot see: it compares member names, not shapes)")
             return 1
         print("PASS actual GLM B3 admission, deferred lifetime, release, K-token chains and concurrent reservation; "
-              "adapter loads the generator's deployment config")
+              "adapter loads the generator's deployment config; kv_snapshot members load together and reject half or zero budgets")
         return 0
 
 

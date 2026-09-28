@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 7u
+#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 8u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION 2u
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP UINT32_C(0x00000001)
@@ -92,6 +92,8 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	uint64_t kv_backing_maximum_bytes;
 	uint32_t decode_split_context_threshold;
 	uint32_t flags;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 } SparkGlm5NextResidentDecodeStageNodeContext;
 
 #define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \

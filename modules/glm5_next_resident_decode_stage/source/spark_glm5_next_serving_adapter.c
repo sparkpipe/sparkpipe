@@ -130,9 +130,9 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 };
 
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE (sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0]))
-#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 3u)
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 5u)
 
-static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,const char **list)
+static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,uint32_t snapshot,const char **list)
 {
 	uint32_t count;
 	for (count=0u; count<SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE; count++)
@@ -144,6 +144,11 @@ static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t i
 	}
 	if ( index_cp != 0u )
 		list[count++] = "dsa_index_context_parallel";
+	if ( snapshot != 0u )
+	{
+		list[count++] = "kv_snapshot_directory";
+		list[count++] = "kv_snapshot_maximum_bytes";
+	}
 	return(count);
 }
 
@@ -197,6 +202,8 @@ typedef struct SparkGlm5NextServingState
 	uint32_t resident_sequence_capacity;
 	uint32_t mtp_enabled;
 	uint32_t index_cp;
+	char kv_snapshot_directory[SPARK_INTERNAL_PATH_BYTES];
+	uint64_t kv_snapshot_maximum_bytes;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -325,12 +332,13 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 {
 	SparkJsonDocument document;
 	const char *members[SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX];
-	char *relative_stage_pack_path;
+	char *relative_stage_pack_path,*relative_snapshot_directory;
 	uint32_t schema_version;
-	int32_t root,token,index_cp_token;
+	int32_t root,token,index_cp_token,snapshot_directory_token,snapshot_bytes_token;
 	int32_t bridge_host_token,bridge_port_token;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
+	relative_snapshot_directory = 0;
 	SparkJsonDocumentReset(&document);
 	status = SparkJsonLoadFile(path,&document);
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
@@ -339,13 +347,32 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	bridge_host_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_host") : -1;
 	bridge_port_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_port") : -1;
 	index_cp_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"dsa_index_context_parallel") : -1;
+	snapshot_directory_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"kv_snapshot_directory") : -1;
+	snapshot_bytes_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"kv_snapshot_maximum_bytes") : -1;
 	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
 	{
 		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	}
+	if ( status == SPARK_STATUS_OK && (snapshot_directory_token < 0) != (snapshot_bytes_token < 0) )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER kv_snapshot_directory and kv_snapshot_maximum_bytes must both be present or both absent\n");
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,members));
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,snapshot_directory_token >= 0 ? 1u : 0u,members));
+	state->kv_snapshot_directory[0] = '\0';
+	state->kv_snapshot_maximum_bytes = 0u;
+	if ( status == SPARK_STATUS_OK && snapshot_directory_token >= 0 )
+	{
+		status = SparkJsonCopyString(&document,snapshot_directory_token,&relative_snapshot_directory);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonGetUInt64(&document,snapshot_bytes_token,&state->kv_snapshot_maximum_bytes);
+		if ( status == SPARK_STATUS_OK && (state->kv_snapshot_maximum_bytes == 0u || relative_snapshot_directory[0] == '\0') )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkResolveRuntimePath(runtime_root,relative_snapshot_directory,state->kv_snapshot_directory,sizeof(state->kv_snapshot_directory));
+	}
 	state->index_cp = 0u;
 	if ( status == SPARK_STATUS_OK && index_cp_token >= 0 )
 		status = SparkJsonGetUInt32(&document,index_cp_token,&state->index_cp);
@@ -388,7 +415,8 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
-	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadConfiguration rc=%d\n",(int)status);
+	free(relative_snapshot_directory);
+	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER LoadConfiguration rc=%d kv_snapshot=%s\n",(int)status,state->kv_snapshot_directory[0] != '\0' ? state->kv_snapshot_directory : "off");
 	SPARK_RETURN(status);
 }
 
@@ -702,6 +730,8 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
 		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
 		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+		state->node_context.kv_snapshot_directory = state->kv_snapshot_directory[0] != '\0' ? state->kv_snapshot_directory : 0;
+		state->node_context.kv_snapshot_maximum_bytes = state->kv_snapshot_maximum_bytes;
 		status = SparkGlm5NextServingLoadDriver(state,configuration);
 	}
 	if ( status != SPARK_STATUS_OK )

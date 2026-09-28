@@ -37,7 +37,7 @@ int32_t main(void)
 	uint32_t counts[5] = {1u,3u,17u,97u,100u},i,test,rows;
 	assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT == WIDTH);
 	assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION == 3u);
-	assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION == 7u);
+	assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION == 8u);
 	assert(SparkGlm5NextResidentDecodeStageSpanIsValid(1u,0u,0u,45u) == 1u);
 	assert(SparkGlm5NextResidentDecodeStageSpanIsValid(4u,0u,0u,12u) == 1u);
 	assert(SparkGlm5NextResidentDecodeStageSpanIsValid(4u,1u,12u,11u) == 1u);

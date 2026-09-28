@@ -17,6 +17,7 @@
 #define PROBE_INPUT_ROWS (PROBE_ROWS * PROBE_STEPS)
 #define PROBE_PREFIX_TOKENS 63u
 #define PROBE_TARGET "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
+#define PROBE_SNAPSHOT_BYTES (UINT64_C(16) << 30u)
 
 typedef struct probe_state
 {
@@ -33,6 +34,8 @@ typedef struct probe_state
 	SparkModelDriverCacheLane cache_lanes[PROBE_ROWS];
 	atomic_uint completed;
 	uint32_t prefix_probe;
+	const char *snapshot_directory;
+	uint32_t tp_rank;
 	SparkGlm5NextStateCapture capture;
 	SparkGlm5NextStateCaptureLane captured_lanes[PROBE_ROWS];
 	uint32_t logical_pages[PROBE_ROWS * 2u],physical_pages[PROBE_ROWS * 2u];
@@ -93,9 +96,11 @@ static void probe_node(probe_state_t *state,const char *pack,uint32_t rows)
 	node->max_sequence_positions = state->prefix_probe != 0u ? 128u : 64u;
 	node->execution_row_capacity = state->prefix_probe != 0u ? rows * PROBE_STEPS : rows;
 	node->tp_degree = 16u;
-	node->tp_rank = 0u;
+	node->tp_rank = state->tp_rank;
 	node->stage_pack_path = pack;
 	node->model_revision = state->driver.interface->descriptor->model_revision;
+	node->kv_snapshot_directory = state->snapshot_directory;
+	node->kv_snapshot_maximum_bytes = state->snapshot_directory != 0 ? PROBE_SNAPSHOT_BYTES : 0u;
 	// Explicit local differential execution: no collective transport.
 	node->tp_collective_identifier = 0u;
 }
@@ -153,7 +158,7 @@ static int32_t probe_open(probe_state_t *state,const char *driver,const char *pa
 	request.completion_function = probe_complete;
 	request.completion_context = state;
 	status = state->driver.interface->create(&request,&state->instance);
-	fprintf(stderr,"create status=%d revision=%s collective=disabled tp=16 rank=0\n",status,state->node.model_revision);
+	fprintf(stderr,"create status=%d revision=%s collective=disabled tp=16 rank=%u\n",status,state->node.model_revision,state->node.tp_rank);
 	return(status == SPARK_STATUS_OK && state->instance != 0 ? 0 : -7);
 }
 
@@ -538,15 +543,83 @@ static int32_t probe_prefix(probe_state_t *state,uint32_t rows)
 	return(probe_release(state,rows,UINT32_MAX));
 }
 
+
+static void probe_close(probe_state_t *state)
+{
+	free(state->capture.payload);
+	state->capture.payload = 0;
+	state->driver.interface->destroy(state->instance);
+	state->instance = 0;
+	(void)cudaStreamDestroy(state->stream);
+	SparkUnloadModelDriver(&state->driver);
+}
+
+static int32_t probe_snapshot(probe_state_t *state,const char *driver,const char *pack,uint32_t rows)
+{
+	uint32_t outputs[PROBE_STEPS][PROBE_ROWS],step,row;
+	float scores[PROBE_STEPS][PROBE_ROWS];
+	uint64_t hashes[PROBE_STEPS][PROBE_ROWS],start,cold_ns = 0u,restored_ns = 0u;
+	int32_t result = 0;
+	start = probe_time();
+	for (step=0u; result == 0 && step<PROBE_PREFIX_TOKENS + PROBE_STEPS; step++)
+	{
+		probe_checkpoint_frame(state,rows,step,0u);
+		result = probe_execute(state,rows,step);
+		if ( result != 0 || step < PROBE_PREFIX_TOKENS )
+			continue;
+		if ( step == PROBE_PREFIX_TOKENS )
+			cold_ns = probe_time() - start;
+		for (row=0u; row<rows; row++)
+		{
+			outputs[step - PROBE_PREFIX_TOKENS][row] = state->outputs[row];
+			scores[step - PROBE_PREFIX_TOKENS][row] = state->captured_lanes[row].output_score;
+			hashes[step - PROBE_PREFIX_TOKENS][row] = probe_payload_hash(state->capture.payload + state->captured_lanes[row].payload_offset,state->captured_lanes[row].payload_bytes);
+		}
+	}
+	if ( result == 0 )
+		result = probe_release(state,rows,PROBE_PREFIX_TOKENS + PROBE_STEPS);
+	if ( result != 0 )
+		return(result);
+	probe_close(state);
+	printf("SNAPSHOT saved rows=%u prefix=%u engine=destroyed\n",rows,PROBE_PREFIX_TOKENS);
+	result = probe_open(state,driver,pack,rows);
+	if ( result != 0 )
+		return(result);
+	start = probe_time();
+	for (step=0u; result == 0 && step<PROBE_STEPS; step++)
+	{
+		probe_checkpoint_frame(state,rows,PROBE_PREFIX_TOKENS + step,1u);
+		result = probe_execute(state,rows,PROBE_PREFIX_TOKENS + step);
+		if ( step == 0u )
+			restored_ns = probe_time() - start;
+		for (row=0u; result == 0 && row<rows; row++)
+		{
+			if ( state->outputs[row] != outputs[step][row] )
+				return(-30);
+			if ( memcmp(&scores[step][row],&state->captured_lanes[row].output_score,sizeof(float)) != 0 )
+				return(-31);
+			if ( hashes[step][row] != probe_payload_hash(state->capture.payload + state->captured_lanes[row].payload_offset,state->captured_lanes[row].payload_bytes) )
+				return(-32);
+		}
+	}
+	if ( result == 0 && state->capture.prefix_hit_count < rows )
+		return(-33);
+	if ( result == 0 )
+		result = probe_release(state,rows,PROBE_PREFIX_TOKENS + PROBE_STEPS);
+	if ( result == 0 )
+		printf("SNAPSHOT restored rows=%u prefix=%u continuation=%u tokens=exact selected-logit=exact state=exact first_token_after_restore_us=%llu first_token_cold_prefill_us=%llu engine=fresh-instance\n",rows,PROBE_PREFIX_TOKENS,PROBE_STEPS,(unsigned long long)(restored_ns / 1000u),(unsigned long long)(cold_ns / 1000u));
+	return(result);
+}
+
 int main(int argc,char **argv)
 {
 	probe_state_t state;
 	uint32_t rows,step;
 	int32_t result;
 	const char *socket;
-	if ( (argc != 5 && argc != 6) || (argc == 6 && strcmp(argv[5],"prefix") != 0) || (strcmp(argv[3],"resident") != 0 && strcmp(argv[3],"lazy") != 0) || (strcmp(argv[4],"1") != 0 && strcmp(argv[4],"3") != 0 && strcmp(argv[4],"5") != 0) )
+	if ( (argc != 5 && argc != 6 && argc != 8) || (argc == 6 && strcmp(argv[5],"prefix") != 0) || (argc == 8 && (strcmp(argv[5],"snapshot") != 0 || argv[6][0] != '/' || strlen(argv[7]) == 0u || strlen(argv[7]) > 2u || strspn(argv[7],"0123456789") != strlen(argv[7]) || atoi(argv[7]) > 15)) || (strcmp(argv[3],"resident") != 0 && strcmp(argv[3],"lazy") != 0) || (strcmp(argv[4],"1") != 0 && strcmp(argv[4],"3") != 0 && strcmp(argv[4],"5") != 0) )
 	{
-		fprintf(stderr,"usage: %s DRIVER TP16_RANK0_PACK resident|lazy 1|3|5 [prefix]\n",argv[0]);
+		fprintf(stderr,"usage: %s DRIVER TP16_RANK0_PACK resident|lazy 1|3|5 [prefix | snapshot ABSOLUTE_EMPTY_DIRECTORY PACK_TP_RANK]\n",argv[0]);
 		return(2);
 	}
 	socket = getenv("SPARK_WEIGHTD_SOCKET");
@@ -557,11 +630,15 @@ int main(int argc,char **argv)
 	}
 	rows = (uint32_t)(argv[4][0] - '0');
 	memset(&state,0,sizeof(state));
-	state.prefix_probe = argc == 6 ? 1u : 0u;
+	state.prefix_probe = argc >= 6 ? 1u : 0u;
+	state.snapshot_directory = argc == 8 ? argv[6] : 0;
+	state.tp_rank = argc == 8 ? (uint32_t)atoi(argv[7]) : 0u;
 	state.control_generation = 1u;
 	atomic_init(&state.completed,0u);
 	result = probe_open(&state,argv[1],argv[2],rows);
-	if ( result == 0 && state.prefix_probe != 0u )
+	if ( result == 0 && state.snapshot_directory != 0 )
+		result = probe_snapshot(&state,argv[1],argv[2],rows);
+	else if ( result == 0 && state.prefix_probe != 0u )
 		result = probe_prefix(&state,rows);
 	for (step=0u; state.prefix_probe == 0u && result == 0 && step<PROBE_STEPS; step++)
 		result = probe_step(&state,rows,step);
@@ -578,7 +655,9 @@ int main(int argc,char **argv)
 	if ( cudaStreamDestroy(state.stream) != cudaSuccess )
 		return(5);
 	SparkUnloadModelDriver(&state.driver);
-	if ( state.prefix_probe != 0u )
+	if ( state.snapshot_directory != 0 )
+		printf("PASS local-snapshot-restore mode=%s rows=%u prefix=63 continuation=4 store=nvme engine=fresh-instance tokens=exact selected-logit=exact state=exact; rank-local computation only\n",argv[3],rows);
+	else if ( state.prefix_probe != 0u )
 		printf("PASS local-prefix-reuse mode=%s rows=%u prefix=63 continuation=4 cow=required boundary64=published eviction=verified movement=verified state=exact reset=verified; rank-local computation only\n",argv[3],rows);
 	else
 		printf("PASS local-token-smoke mode=%s rows=%u steps=%u; not full-model numerical qualification\n",argv[3],rows,PROBE_STEPS);
