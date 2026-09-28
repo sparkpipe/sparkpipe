@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -13,17 +14,39 @@ import spec_verify_bench as bench
 
 
 class Handler(BaseHTTPRequestHandler):
+    omit_tokens = False
+    wrong_token = False
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/v1/chat/completions":
-            reply = {"tokens": [[0.1, token + 1] for token in body["prompt_token_ids"][-3:]]}
+            ids = [token + 1 for token in body["prompt_token_ids"][-3:]][:body["max_tokens"]]
+            if Handler.wrong_token:
+                ids[-1] += 1
         else:
-            reply = {"choices": [{"text": body["prompt"][-12:]}], "tokens": [7, 8, 9]}
-        data = json.dumps(reply).encode()
+            ids = [7, 8, 9]
+        if not body.get("stream"):
+            data = json.dumps({"tokens": [[0.1, token] for token in ids]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         self.send_response(200)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        self.wfile.write(data)
+        time.sleep(0.2)
+        for token in ids:
+            event = {"choices": [{"text": f"<{token}>"}]}
+            if not Handler.omit_tokens:
+                event["tokens"] = [token]
+            try:
+                self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            time.sleep(0.01)
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def log_message(self, *args):
         pass
@@ -42,11 +65,14 @@ def check_log():
     assert abs(report["frame_fill"] - 21 / 24) < 1e-9
 
 
+def entry(klass, tokens, text, decode_s, ids):
+    return {"class": klass, "index": 0, "decode_tokens": tokens, "decode_s": decode_s, "text": text, "token_ids": ids}
+
+
 def check_compare():
-    base = {"results": [{"class": "code", "index": 0, "wall_s": 2.0, "output_tokens": 100, "text": "a", "token_ids": [1, 2]},
-                        {"class": "prose", "index": 0, "wall_s": 4.0, "output_tokens": 100, "text": "b", "token_ids": None}]}
+    base = {"results": [entry("code", 100, "a", 2.0, [1, 2]), entry("prose", 100, "b", 4.0, [3])]}
     spec = json.loads(json.dumps(base))
-    spec["results"][0]["wall_s"] = 1.0
+    spec["results"][0]["decode_s"] = 1.0
     report = bench.compare_runs(base, spec)
     assert report["exact"] and abs(report["speedup"]["code"] - 2.0) < 1e-9 and abs(report["speedup"]["prose"] - 1.0) < 1e-9
     spec["results"][1]["text"] = "c"
@@ -54,6 +80,20 @@ def check_compare():
     spec["results"][1]["text"] = "b"
     spec["results"][0]["token_ids"] = [1, 3]
     assert not bench.compare_runs(base, spec)["exact"]
+    spec["results"][0]["token_ids"] = [1, 2]
+    spec["results"][1]["token_ids"] = None
+    report = bench.compare_runs(base, spec)
+    assert not report["exact"] and "no token ids" in report["mismatches"][0]
+    base["results"][1]["token_ids"] = None
+    assert not bench.compare_runs(base, spec)["exact"]
+
+
+def refused(argv):
+    try:
+        bench.main(argv)
+    except SystemExit as error:
+        return error.code != 0
+    return False
 
 
 def check_endpoint():
@@ -65,14 +105,26 @@ def check_endpoint():
         prompt = Path(directory) / "prompt.json"
         prompt.write_text(json.dumps([10, 20, 30, 40]))
         out = Path(directory) / "oracle.u32"
+        assert refused(["record", "--prompt-ids", str(prompt), "--out", str(out)])
+        assert refused(["run", "--label", "t", "--out", str(out)])
         assert bench.main(["record", "--endpoint", endpoint, "--prompt-ids", str(prompt), "--max-tokens", "3", "--out", str(out)]) == 0
         data = out.read_bytes()
         assert struct.unpack(f"<{len(data) // 4}I", data) == (10, 20, 30, 40, 21, 31, 41)
+        assert bench.main(["replay", "--endpoint", endpoint, "--prompt-ids", str(prompt), "--expect", str(out)]) == 0
+        Handler.wrong_token = True
+        assert bench.main(["replay", "--endpoint", endpoint, "--prompt-ids", str(prompt), "--expect", str(out)]) == 1
+        Handler.wrong_token = False
         results = Path(directory) / "run.json"
         assert bench.main(["run", "--endpoint", endpoint, "--classes", "code", "--max-tokens", "3", "--label", "t", "--out", str(results)]) == 0
         run = json.loads(results.read_text())
-        assert len(run["results"]) == len(bench.PROMPTS["code"]) and run["results"][0]["token_ids"] == [7, 8, 9]
+        first = run["results"][0]
+        assert len(run["results"]) == len(bench.PROMPTS["code"]) and first["token_ids"] == [7, 8, 9] and first["text"] == "<7><8><9>"
+        assert first["decode_tokens"] == 2 and first["ttft_s"] >= 0.0 and first["decode_s"] < first["wall_s"] - first["ttft_s"] + 1e-9
+        assert first["ttft_s"] >= 0.2 and first["decode_s"] < 0.1 and first["decode_tok_s"] > 2 / 0.1
         assert bench.main(["compare", str(results), str(results)]) == 0
+        Handler.omit_tokens = True
+        assert refused(["run", "--endpoint", endpoint, "--classes", "code", "--max-tokens", "3", "--label", "t", "--out", str(results)])
+        Handler.omit_tokens = False
     server.shutdown()
 
 
@@ -80,7 +132,7 @@ def main():
     check_log()
     check_compare()
     check_endpoint()
-    print("PASS spec_verify_bench records oracle sequences, runs content classes, checks exactness and parses VERIFY-FRAME logs")
+    print("PASS spec_verify_bench needs an explicit endpoint and token ids, replays recorded oracle sequences, measures decode rate after the first token and parses VERIFY-FRAME logs")
 
 
 if __name__ == "__main__":

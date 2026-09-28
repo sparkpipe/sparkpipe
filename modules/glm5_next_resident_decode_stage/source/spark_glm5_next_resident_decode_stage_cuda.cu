@@ -516,6 +516,24 @@ static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 
+static int32_t SparkGlm5NextHeadCertifiedRows(const SparkGlm5NextCudaWave *wave,const Glm5NextLayerBuffers *buffers,cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
+	Glm5NextLayerBuffers row_buffers;
+	int32_t status = LM_LAUNCH_OK;
+	uint32_t row;
+	for ( row = 0u; status == LM_LAUNCH_OK && row < wave->row_count; row++ )
+	{
+		row_buffers = *buffers;
+		row_buffers.hc_mean_bf16 = buffers->hc_mean_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN;
+		row_buffers.normed_bf16 = buffers->normed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN;
+		row_buffers.output_token = buffers->output_token + row;
+		row_buffers.output_score = buffers->output_score + row;
+		status = Glm5NextHeadCertifiedB1(&row_buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers->head_vocabulary,stream);
+	}
+	return(status);
+}
+
 static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -536,8 +554,8 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		if ( error != cudaSuccess )
 			return(SparkGlm5NextCudaStatus(error));
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 && wave->sampled == 0u )
-			status = Glm5NextHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+		if ( (wave->row_count == 1u || wave->mtp_verify != 0u) && wave->head_certified_fp8_payload != 0 && wave->sampled == 0u )
+			status = SparkGlm5NextHeadCertifiedRows(wave,&buffers,stream);
 		else
 			status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
