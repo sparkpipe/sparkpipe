@@ -341,6 +341,10 @@ stores under a fixed lock order before changing either. A busy read or a stale
 generation leaves both intact. `SparkKvPageCacheEvictUnused` reuses the existing
 LRU policy for backing-capacity pressure. Page-cache ABI is 4 because the cache
 now retains the attached store. GLM attaches that store at startup; GPU prefix reuse remains unqualified.
+Page-cache ABI 5 keeps unreferenced entries on a list ordered by last use, so
+eviction takes the list head instead of scanning every entry. An entry whose
+last reference drops is inserted at its place by last use, searching from both
+ends of the list.
 
 This work exposed an existing reclamation error: release dropped the logical
 reference before finding that the page remained pinned. The new regression
