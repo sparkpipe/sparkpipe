@@ -552,11 +552,11 @@ static void RoofExpertsLayer(const RoofState *state,uint32_t layer,cudaEvent_t *
 	if ( wave->first_layer_index + layer >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 	{
 		SparkGlm5NextBindLayer(wave,layer,&buffers);
-		ROOF_LAUNCH((Glm5NextLayerMoeUp<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,rows,packed,wave->multiprocessor_count,stream)));
+		ROOF_LAUNCH((Glm5NextLayerMoeUp<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,packed,stream)));
 		ROOF_CUDA(cudaEventRecord(events[1],stream));
-		ROOF_LAUNCH((Glm5NextLayerMoeDown<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,rows,packed,wave->multiprocessor_count,stream)));
+		ROOF_LAUNCH((Glm5NextLayerMoeDown<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(&buffers,packed,stream)));
 		ROOF_CUDA(cudaEventRecord(events[2],stream));
-		ROOF_LAUNCH(Glm5NextLayerMoeCombine(&buffers,rows,wave->multiprocessor_count,stream));
+		ROOF_LAUNCH(Glm5NextLayerMoeCombine(&buffers,rows,stream));
 	}
 	else
 	{

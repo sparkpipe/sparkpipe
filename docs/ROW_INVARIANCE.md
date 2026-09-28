@@ -15,7 +15,7 @@ intermediate):
 
 | Family | Entry | Sites |
 |---|---|---|
-| `dense_linear` | `Glm5NextLaunchBf16Linear` for the nine per-rank dense shapes | output |
+| `dense_linear` | `Glm5NextLaunchBf16LinearRows` for the nine per-rank dense shapes | output |
 | `dense_mlp` | `Glm5NextLayerDenseMlp` | output |
 | `moe` | `Glm5NextLayerMoeRoute` then `Glm5NextLayerMoeExperts` (FP8 experts, shared expert, finalize) | router logits, route (expert ids and weights), output |
 | `attention` | the stage's decode dispatch: one row takes the per-head split kernel, a decode wave the all-heads kernel, split on the wave's longest context against threshold 64 | latent output |
@@ -38,6 +38,10 @@ repairs in the same change.
 
 ## Baseline (origin/main 09fdad6, sparkf, 48 SMs)
 
+After the skinny-rows fix, 12 cells remain: attention and the greedy and
+mixed head maxloc words.
+
+
 38 of 80 cells break:
 
 - Dense projections, the dense MLP, the router logits, the route and the MoE
@@ -52,6 +56,44 @@ repairs in the same change.
   scores across ranks.
 - Greedy rows in a wave with a sampled row (`head_mixed`) move to the sampled
   kernel. Sampled rows alone are equal at every wave.
+
+## Fixes
+
+### Dense projections and router (skinny rows)
+
+`LmSkinnyDenseRows` (inference/kernels/skinny.cuh) keeps the one-row skinny
+arithmetic at every row count: lanes are chosen from the input width only, lane
+`sub` sums chunks `sub + i*LANES` in ascending order, every chunk starts from
++0, and the lanes meet in the same XOR butterfly. Rows 1-8 still take
+`LmSkinnyDense`. Above eight rows `LmSkinnyRowsKernel` gives each thread eight
+rows and one, two or four neurons; the grouping only changes reuse, never the
+per-element chain. There is no GEMM fallback: a shape it cannot take is an
+error. glm5_next uses it through `Glm5NextLaunchBf16LinearRows` for all 19
+dense sites, MTP `eh_proj` and the router. ling and laguna keep
+`LaunchBf16Linear` until they qualify their own change.
+
+The routed-expert GEMM fallbacks are removed: a mesh wave holds at most 128
+rows, so at most 1,024 routed pairs, and the grouped skinny kernel takes
+16 x 288 = 4,608 (a static assertion in the stage checks this).
+
+Cost on sparkf (GB10, `make bench-glm5-next-batch`, TP16 rank geometry,
+context 1,024, compute only, `--iterations 5 --copies 1`; the GPU was also
+serving production, so steps vary by about 1 ms). Main was measured before and
+after the branch:
+
+| Rows | main step ms | branch step ms | change |
+|---|---|---|---|
+| 1 | 20.22 / 18.66 | 18.95 | unchanged path |
+| 8 | 36.64 / 36.35 | 36.96 | unchanged path |
+| 16 | 59.05 / 58.10 | 53.86 | -4.2 ms |
+| 32 | 82.68 / 82.05 | 77.95 | -4.1 ms |
+| 64 | 115.82 / 114.96 | 113.55 | -1.4 ms |
+| 128 | 159.91 / 160.92 | 168.26 | +7.3 ms (about +57 us per prompt row) |
+
+Decode waves of 16-64 rows get faster because the tensor-core GEMM wastes
+most of its tile on the narrow projections (router, shared expert, indexer
+keys). 128-row prefill waves pay for the wide projections (q_a, index_q,
+attn_out, kda_qkv_beta). `make test-skinny-gemv` prints the per-shape table.
 
 ## Not yet covered
 

@@ -26,19 +26,6 @@ static const uint32_t roweq_waves[] = {1u,2u,8u,17u,64u};
 
 static const char *const roweq_known_breaks[] =
 {
-    "dense_linear.mla_q_a@17","dense_linear.mla_q_a@64",
-    "dense_linear.mla_q_b@17","dense_linear.mla_q_b@64",
-    "dense_linear.mla_kv_a@17","dense_linear.mla_kv_a@64",
-    "dense_linear.attn_out@17","dense_linear.attn_out@64",
-    "dense_linear.index_q@17","dense_linear.index_q@64",
-    "dense_linear.index_k@17","dense_linear.index_k@64",
-    "dense_linear.index_head@17","dense_linear.index_head@64",
-    "dense_linear.shared_gate_up@17","dense_linear.shared_gate_up@64",
-    "dense_linear.shared_down@17","dense_linear.shared_down@64",
-    "dense_mlp.output@17","dense_mlp.output@64",
-    "moe.router_logits@17","moe.router_logits@64",
-    "moe.route@17","moe.route@64",
-    "moe.output@17","moe.output@64",
     "attention.latent@2","attention.latent@8","attention.latent@17","attention.latent@64",
     "head_greedy.maxloc@2","head_greedy.maxloc@8","head_greedy.maxloc@17","head_greedy.maxloc@64",
     "head_mixed.maxloc@2","head_mixed.maxloc@8","head_mixed.maxloc@17","head_mixed.maxloc@64",
@@ -176,12 +163,11 @@ static const DenseShape roweq_dense_shapes[] =
     {"shared_down",GLM5_NEXT_EXPERT_INTERMEDIATE/ROWEQ_TP,GLM5_NEXT_HIDDEN},
 };
 
-static Family DenseLinearFamily(uint32_t multiprocessors)
+static Family DenseLinearFamily()
 {
     Family family;
     std::vector<uint16_t *> weights,pools;
     uint16_t *activation=Allocate<uint16_t>((uint64_t)ROWEQ_POOL*GLM5_NEXT_HIDDEN*2u),*output=Allocate<uint16_t>((uint64_t)ROWEQ_POOL*GLM5_NEXT_HIDDEN*2u);
-    uint32_t *row_offset=Allocate<uint32_t>(2u),*tile_prefix=Allocate<uint32_t>(2u);
     family.name="dense_linear";
     for (const DenseShape &shape : roweq_dense_shapes)
     {
@@ -193,12 +179,11 @@ static Family DenseLinearFamily(uint32_t multiprocessors)
     {
         const uint32_t rows=(uint32_t)members.size();
         sites.clear();
-        RowOffset(row_offset,rows);
         for (uint32_t index=0u; index<sizeof(roweq_dense_shapes)/sizeof(roweq_dense_shapes[0]); index++)
         {
             const DenseShape &shape=roweq_dense_shapes[index];
             Gather(activation,pools[index],(uint64_t)shape.input*2u,members);
-            REQUIRE(Glm5NextLaunchBf16Linear(activation,weights[index],output,row_offset,tile_prefix,rows,shape.input,shape.output,shape.output,0u,multiprocessors,0) == LM_LAUNCH_OK);
+            REQUIRE(Glm5NextLaunchBf16LinearRows(activation,weights[index],output,rows,shape.input,shape.output,shape.output,0u,0) == LM_LAUNCH_OK);
             sites.push_back(Scatter(output,(uint64_t)shape.output*2u,(uint64_t)shape.output*2u,rows));
         }
     };
@@ -503,7 +488,7 @@ int main(int argc,char **argv)
     CUDA(cudaGetDeviceProperties(&properties,0));
     const uint32_t multiprocessors=(uint32_t)properties.multiProcessorCount;
     std::vector<Family> families;
-    families.push_back(DenseLinearFamily(multiprocessors));
+    families.push_back(DenseLinearFamily());
     families.push_back(DenseMlpFamily(multiprocessors));
     families.push_back(MoeFamily(multiprocessors));
     families.push_back(AttentionFamily(multiprocessors));

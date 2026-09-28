@@ -109,6 +109,106 @@ static void DenseCase(const DenseShape *shape,uint32_t rows,cudaStream_t stream)
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out16)); CUDA(cudaFree(device_out32));
 }
 
+static void RowsCase(const DenseShape *shape,cudaStream_t stream)
+{
+    const uint32_t most=128u, counts[]={9u,16u,17u,32u,33u,64u,65u,127u,128u};
+    const uint64_t width=(uint64_t)shape->output*(shape->f32 ? 4u : 2u);
+    std::vector<uint16_t> weight((uint64_t)shape->output*shape->input),activation((uint64_t)most*shape->input);
+    std::vector<uint8_t> single(most*width),batched(most*width);
+    uint16_t *device_weight,*device_activation;
+    uint8_t *device_single,*device_batched;
+    for (auto &value : weight) value=Bf16(Signed()*0.0625f);
+    for (auto &value : activation) value=Bf16(Signed()*4.0f);
+    for (uint32_t k=0u; k<shape->input; k++) { activation[k]=0x0000u; activation[shape->input+k]=0x8000u; weight[k]=0x8000u; }
+    CUDA(cudaMalloc(&device_weight,weight.size()*2u)); CUDA(cudaMalloc(&device_activation,activation.size()*2u));
+    CUDA(cudaMalloc(&device_single,single.size())); CUDA(cudaMalloc(&device_batched,batched.size()));
+    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemset(device_single,0xa5,single.size()));
+    for (uint32_t row=0u; row<most; row++)
+        REQUIRE(LmSkinnyDense<LmBf16Format>(device_weight,device_activation+(uint64_t)row*shape->input,shape->f32 ? 0 : (uint16_t *)(device_single+row*width),shape->f32 ? (float *)(device_single+row*width) : 0,1u,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(single.data(),device_single,single.size(),cudaMemcpyDeviceToHost));
+    for (uint32_t rows : counts)
+    {
+        CUDA(cudaMemset(device_batched,0x5a,batched.size()));
+        REQUIRE(LmSkinnyDenseRows<LmBf16Format>(device_weight,device_activation,shape->f32 ? 0 : (uint16_t *)device_batched,shape->f32 ? (float *)device_batched : 0,rows,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
+        CUDA(cudaStreamSynchronize(stream));
+        CUDA(cudaMemcpy(batched.data(),device_batched,batched.size(),cudaMemcpyDeviceToHost));
+        for (uint32_t row=0u; row<rows; row++)
+            if (memcmp(single.data()+row*width,batched.data()+row*width,width) != 0)
+            {
+                fprintf(stderr,"MISMATCH rows shape=%s rows=%u row=%u differs from the one-row launch\n",shape->name,rows,row);
+                exit(1);
+            }
+    }
+    CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_single)); CUDA(cudaFree(device_batched));
+}
+
+static int32_t TensorCoreRows(const uint16_t *activation,const uint16_t *weight,void *output,uint32_t f32,const uint32_t *row_offset,uint32_t *tile_prefix,uint32_t rows,uint32_t input,uint32_t neurons,uint32_t multiprocessors,cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+    memset(&gemm,0,sizeof(gemm));
+    gemm.scale_a=LmScaleTensorNone(); gemm.scale_b=LmScaleTensorNone();
+    gemm.group_row_offset=row_offset; gemm.group_tile_prefix=tile_prefix;
+    if (f32) gemm.output_f32=(float *)output; else gemm.output_bf16=(uint16_t *)output;
+    return LmGemmLaunch<LmBf16Format,GLM5_NEXT_LAYER_TILE_N,LmBf16Format::kTileK,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,rows,rows,1u,1u,input,neurons,multiprocessors,false,stream);
+}
+
+static float RowsTime(const DenseShape *shape,bool skinny,uint32_t rows,const uint16_t *weights,const uint16_t *activation,void *output,const uint32_t *row_offset,uint32_t *tile_prefix,uint32_t matrices,uint32_t multiprocessors,cudaStream_t stream)
+{
+    cudaGraph_t graph; cudaGraphExec_t executable; cudaEvent_t begin,end;
+    std::vector<float> samples;
+    float ms;
+    CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
+    CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+    for (uint32_t i=0u; i<matrices; i++)
+        REQUIRE((skinny ? LmSkinnyDenseRows<LmBf16Format>(weights+(uint64_t)i*shape->input*shape->output,activation,shape->f32 ? 0 : (uint16_t *)output,shape->f32 ? (float *)output : 0,rows,shape->input,shape->output,0u,0u,stream)
+            : TensorCoreRows(activation,weights+(uint64_t)i*shape->input*shape->output,output,shape->f32,row_offset,tile_prefix,rows,shape->input,shape->output,multiprocessors,stream)) == LM_LAUNCH_OK);
+    CUDA(cudaStreamEndCapture(stream,&graph));
+    CUDA(cudaGraphInstantiate(&executable,graph,nullptr,nullptr,0u));
+    for (uint32_t i=0u; i<8u; i++)
+    {
+        CUDA(cudaEventRecord(begin,stream)); CUDA(cudaGraphLaunch(executable,stream)); CUDA(cudaEventRecord(end,stream));
+        CUDA(cudaEventSynchronize(end)); CUDA(cudaEventElapsedTime(&ms,begin,end));
+        if (i >= 2u) samples.push_back(ms/matrices);
+    }
+    std::sort(samples.begin(),samples.end());
+    CUDA(cudaGraphExecDestroy(executable)); CUDA(cudaGraphDestroy(graph)); CUDA(cudaEventDestroy(begin)); CUDA(cudaEventDestroy(end));
+    return samples[samples.size()/2u];
+}
+
+static void RowsTiming(uint32_t multiprocessors,cudaStream_t stream)
+{
+    const uint32_t counts[]={9u,16u,32u,64u,128u};
+    uint16_t *weights,*activation,*output; uint32_t *row_offset,*tile_prefix;
+    double total_skinny,total_tensor;
+    CUDA(cudaMalloc(&activation,128u*8192u*2u)); CUDA(cudaMemset(activation,0x3c,128u*8192u*2u));
+    CUDA(cudaMalloc(&output,128u*4097u*4u)); CUDA(cudaMalloc(&row_offset,8u)); CUDA(cudaMalloc(&tile_prefix,8u));
+    for (uint32_t rows : counts)
+    {
+        const uint32_t offsets[2]={0u,rows};
+        CUDA(cudaMemcpy(row_offset,offsets,8u,cudaMemcpyHostToDevice));
+        total_skinny=total_tensor=0.0;
+        for (const DenseShape &shape : dense_shapes)
+        {
+            const uint64_t bytes=(uint64_t)shape.input*shape.output*2u;
+            const uint32_t matrices=std::max(4u,(uint32_t)((256ull<<20)/bytes));
+            float skinny,tensor;
+            if ((shape.input % LmBf16Format::kTileK) != 0u)
+                continue;
+            CUDA(cudaMalloc(&weights,matrices*bytes)); CUDA(cudaMemset(weights,0x3c,matrices*bytes));
+            skinny=RowsTime(&shape,true,rows,weights,activation,output,row_offset,tile_prefix,matrices,multiprocessors,stream);
+            tensor=RowsTime(&shape,false,rows,weights,activation,output,row_offset,tile_prefix,matrices,multiprocessors,stream);
+            total_skinny+=skinny; total_tensor+=tensor;
+            printf("TIMING rows shape=%s k=%u n=%u rows=%u skinny_rows_us=%.2f skinny_rows_gbps=%.1f tensor_core_us=%.2f tensor_core_gbps=%.1f skinny_over_tensor=%.2f\n",shape.name,shape.input,shape.output,rows,skinny*1e3,bytes/(skinny*1e6),tensor*1e3,bytes/(tensor*1e6),skinny/tensor);
+            CUDA(cudaFree(weights));
+        }
+        printf("TIMING rows_total rows=%u shapes_sum_skinny_rows_us=%.2f shapes_sum_tensor_core_us=%.2f skinny_over_tensor=%.3f\n",rows,total_skinny*1e3,total_tensor*1e3,total_skinny/total_tensor);
+    }
+    CUDA(cudaFree(activation)); CUDA(cudaFree(output)); CUDA(cudaFree(row_offset)); CUDA(cudaFree(tile_prefix));
+}
+
 static void ExpertReference(const std::vector<uint8_t> &weight,const std::vector<float> &scale,const std::vector<uint16_t> &activation,uint32_t expert,uint32_t neuron,uint32_t input,uint32_t output,uint32_t row,double *total,double *magnitude)
 {
     double term;
@@ -225,30 +325,22 @@ static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uin
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out));
 }
 
-static float GroupedTime(uint32_t neurons,uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,const uint8_t *weight,const float *scale,const uint16_t *activation,uint16_t *out,const GroupedRoute *route,uint32_t multiprocessors,cudaStream_t stream)
+static float GroupedTime(uint32_t neurons,uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,const uint8_t *weight,const float *scale,const uint16_t *activation,uint16_t *out,const GroupedRoute *route,cudaStream_t stream)
 {
     const uint32_t experts=288u,top_k=8u,pairs=tokens*top_k;
+    const LmScaleTensor scale_b=LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(scale,experts,output,input);
     cudaGraph_t graph; cudaGraphExec_t executable; cudaEvent_t begin,end;
     std::vector<float> samples;
-    LmGemmArguments gemm;
     float ms;
-    memset(&gemm,0,sizeof(gemm));
-    gemm.scale_a=LmScaleTensorNone(); gemm.scale_b=LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(scale,experts,output,input);
-    gemm.prefix_built=1u; gemm.group_row_offset=route->offset; gemm.group_tile_prefix=input == 4096u ? route->prefix_up : route->prefix_down; gemm.output_bf16=out;
-    gemm.source_row_map=activation_packed ? 0 : route->source; gemm.source_row_count=tokens;
     CUDA(cudaEventCreate(&begin)); CUDA(cudaEventCreate(&end));
     CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
     for (uint32_t i=0u; i<16u; i++)
         if (neurons == 1u)
-            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,1u>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
+            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,1u>(weight,scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
         else if (neurons == 2u)
-            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,2u>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
-        else if (neurons != 0u)
-            REQUIRE(LmSkinnyGroupedExperts<LmFp8>(weight,gemm.scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
-        else if (activation_packed)
-            REQUIRE((LmGemmWeightOnlyLaunch<LmFp8,GLM5_NEXT_LAYER_TILE_N,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,pairs,tokens,top_k,experts,input,output,multiprocessors,true,stream)) == LM_LAUNCH_OK);
+            REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,2u>(weight,scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
         else
-            REQUIRE((LmGemmWeightOnlyIndirectLaunch<LmFp8,GLM5_NEXT_LAYER_TILE_N,GLM5_NEXT_LAYER_STAGES,GLM5_NEXT_LAYER_WARPS>(&gemm,activation,weight,pairs,tokens,top_k,experts,input,output,multiprocessors,stream)) == LM_LAUNCH_OK);
+            REQUIRE(LmSkinnyGroupedExperts<LmFp8>(weight,scale_b,activation,out,route->offset,route->source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamEndCapture(stream,&graph));
     CUDA(cudaGraphInstantiate(&executable,graph,nullptr,nullptr,0u));
     for (uint32_t i=0u; i<8u; i++)
@@ -262,14 +354,14 @@ static float GroupedTime(uint32_t neurons,uint32_t input,uint32_t output,uint32_
     return samples[samples.size()/2u];
 }
 
-static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t multiprocessors,cudaStream_t stream)
+static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,cudaStream_t stream)
 {
     const uint32_t experts=288u,pairs=tokens*8u;
     const uint64_t expert_bytes=(uint64_t)output*input+(uint64_t)output*(input/128u)*4u;
     uint8_t *weight; float *scale; uint16_t *activation,*out;
     GroupedRoute route;
     uint32_t distinct=0u;
-    float skinny,single,pair,tensor;
+    float skinny,single,pair;
     GroupedRouteBuild(&route,tokens,input,output,0u,stream);
     for (uint32_t expert=0u; expert<experts; expert++)
         distinct+=route.host_offset[expert+1u] != route.host_offset[expert] ? 1u : 0u;
@@ -277,11 +369,10 @@ static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_
     CUDA(cudaMalloc(&scale,(uint64_t)experts*output*(input/128u)*4u)); CUDA(cudaMemset(scale,0,(uint64_t)experts*output*(input/128u)*4u));
     CUDA(cudaMalloc(&activation,(uint64_t)pairs*input*2u)); CUDA(cudaMemset(activation,0x3c,(uint64_t)pairs*input*2u));
     CUDA(cudaMalloc(&out,(uint64_t)pairs*output*2u));
-    skinny=GroupedTime(LM_SKINNY_GROUPED_NEURONS,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    single=GroupedTime(1u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    pair=GroupedTime(2u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    tensor=GroupedTime(0u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,multiprocessors,stream);
-    printf("TIMING grouped_experts %s tokens=%u distinct=%u skinny_ms=%.4f skinny_gbps=%.1f one_neuron_ms=%.4f one_neuron_gbps=%.1f two_neuron_ms=%.4f two_neuron_gbps=%.1f tensor_core_ms=%.4f tensor_core_gbps=%.1f speedup_vs_one_neuron=%.2f speedup_vs_tensor_core=%.2f\n",activation_packed ? "w2" : "w1",tokens,distinct,skinny,distinct*expert_bytes/(skinny*1e6),single,distinct*expert_bytes/(single*1e6),pair,distinct*expert_bytes/(pair*1e6),tensor,distinct*expert_bytes/(tensor*1e6),single/skinny,tensor/skinny);
+    skinny=GroupedTime(LM_SKINNY_GROUPED_NEURONS,input,output,tokens,activation_packed,weight,scale,activation,out,&route,stream);
+    single=GroupedTime(1u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,stream);
+    pair=GroupedTime(2u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,stream);
+    printf("TIMING grouped_experts %s tokens=%u distinct=%u skinny_ms=%.4f skinny_gbps=%.1f one_neuron_ms=%.4f one_neuron_gbps=%.1f two_neuron_ms=%.4f two_neuron_gbps=%.1f speedup_vs_one_neuron=%.2f\n",activation_packed ? "w2" : "w1",tokens,distinct,skinny,distinct*expert_bytes/(skinny*1e6),single,distinct*expert_bytes/(single*1e6),pair,distinct*expert_bytes/(pair*1e6),single/skinny);
     GroupedRouteFree(&route);
     CUDA(cudaFree(weight)); CUDA(cudaFree(scale)); CUDA(cudaFree(activation)); CUDA(cudaFree(out));
 }
@@ -410,6 +501,9 @@ int main(int argc,char **argv)
         for (uint32_t rows : {1u,2u,3u,4u,5u,8u})
             DenseCase(&shape,rows,stream);
     puts("PASS skinny dense bf16 shapes=19 rows=1,2,3,4,5,8 reference=f64");
+    for (const DenseShape &shape : dense_shapes)
+        RowsCase(&shape,stream);
+    puts("PASS skinny dense rows bf16 shapes=19 rows=9,16,17,32,33,64,65,127,128 every_row_bitwise_equal_to_one_row_launch=yes zero_and_negative_zero_rows=yes");
     for (uint32_t tokens : {1u,2u,8u})
     {
         ExpertCase(4096u,256u,tokens,0u,stream);
@@ -428,14 +522,17 @@ int main(int argc,char **argv)
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,9u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,9u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
-    puts("PASS skinny declines rows>8, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
+    REQUIRE(LmSkinnyDenseRows<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,9u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(LmSkinnyDenseRows<LmBf16Format>((const void *)16,(const uint16_t *)16,(uint16_t *)16,0,65u,4100u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
+    puts("PASS the one-to-eight-row skinny kernel declines rows>8, more than eight routed tokens and misaligned weights; the rows entry refuses misaligned weights and ragged inputs at every row count");
     for (const DenseShape &shape : dense_shapes)
         if ((shape.input % LmBf16Format::kTileK) == 0u)
             TimeShape(&shape,stream);
+    RowsTiming(multiprocessors,stream);
     for (uint32_t tokens : {9u,32u,64u,256u})
     {
-        GroupedTiming(4096u,256u,tokens,0u,multiprocessors,stream);
-        GroupedTiming(128u,4096u,tokens,1u,multiprocessors,stream);
+        GroupedTiming(4096u,256u,tokens,0u,stream);
+        GroupedTiming(128u,4096u,tokens,1u,stream);
     }
     TopkCase(stream);
     CUDA(cudaStreamDestroy(stream));

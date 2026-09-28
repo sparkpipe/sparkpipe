@@ -246,12 +246,15 @@ progress diary.
   pressure, cancellation, and starvation bounds.
 - Make priority and deadline enforcement span admission, prefill, decode,
   speculation, gang scheduling, model promotion, and storage I/O.
-- Dense projections above eight rows leave the skinny kernel for
-  tensor-core GEMM with a different accumulation order, and batched latent
-  attention sums in a different order from the per-head kernel, so prefill
-  and batched-decode logits are not bitwise equal to B1. Extend the
-  row-blocked kernels that keep the skinny order wherever they match the
-  tensor-core throughput.
+- glm5_next dense projections and the router keep the one-row skinny order at
+  every row count (`LmSkinnyDenseRows`, docs/ROW_INVARIANCE.md). ling and
+  laguna still leave the skinny kernel above eight rows for the tensor-core
+  GEMM. Batched latent attention still sums in a different order from the
+  per-head kernel, and the greedy head uses different arithmetic at one row
+  and at more, so prefill and batched-decode logits are not yet bitwise equal
+  to B1. 128-row prefill waves cost about 4.6% more with the skinny order;
+  keeping prompt rows on the tensor-core order (and generated-token
+  checkpoints out of prefix reuse for verified requests) would remove that.
 - `make test-glm5-next-row-invariance` (docs/ROW_INVARIANCE.md) compares
   each row of waves of 2, 8, 17 and 64 with the row run alone, for the dense,
   MoE, attention and head entries of glm5_next on a GB10. Its
