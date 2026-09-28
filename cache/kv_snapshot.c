@@ -15,12 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
 #define SPARK_KV_SNAPSHOT_NO_ENTRY UINT32_MAX
+#define SPARK_KV_SNAPSHOT_BUFFER_ALIGNMENT (UINT64_C(2) << 20u)
 
 typedef struct SparkKvSnapshotIndexEntry
 {
@@ -75,6 +77,17 @@ typedef struct SparkKvSnapshotRuntime
 	pthread_cond_t prefetch_idle;
 	SparkKvSnapshotPrefetchJob *prefetch_jobs;
 } SparkKvSnapshotRuntime;
+
+static void *SparkKvSnapshotAllocate(uint64_t bytes)
+{
+	void *data = 0;
+	if ( posix_memalign(&data,(size_t)SPARK_KV_SNAPSHOT_BUFFER_ALIGNMENT,(size_t)bytes) != 0 )
+		return(0);
+#ifdef MADV_HUGEPAGE
+	(void)madvise(data,(size_t)bytes,MADV_HUGEPAGE);
+#endif
+	return(data);
+}
 
 static uint64_t SparkKvSnapshotNowNs(void)
 {
@@ -896,7 +909,7 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 		status = SPARK_STATUS_BUSY;
 	}
 	job = 0;
-	if ( status == SPARK_STATUS_OK && (job = SparkKvSnapshotTakeSpareJob(runtime,payload)) == 0 && (job = (SparkKvSnapshotJob *)malloc(sizeof(*job) + (size_t)payload)) != 0 )
+	if ( status == SPARK_STATUS_OK && (job = SparkKvSnapshotTakeSpareJob(runtime,payload)) == 0 && (job = (SparkKvSnapshotJob *)SparkKvSnapshotAllocate(sizeof(*job) + payload)) != 0 )
 		job->capacity = payload;
 	if ( status == SPARK_STATUS_OK && job == 0 )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1083,7 +1096,7 @@ static SparkStatus SparkKvSnapshotPrefetchRun(SparkKvSnapshotStore *store,SparkK
 	const SparkKvSnapshotPrefetchRequest *request = &job->request;
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t index;
-	job->buffer = (uint8_t *)malloc((size_t)job->bytes);
+	job->buffer = (uint8_t *)SparkKvSnapshotAllocate(job->bytes);
 	if ( job->buffer == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (index=0u; status == SPARK_STATUS_OK && index<request->key_count; index++)
