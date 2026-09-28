@@ -1909,8 +1909,12 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 		SparkGlm52TpChainFail(chain,status);
 		return;
 	}
-	if ( SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52ChainSettle,chain) != SPARK_STATUS_OK )
+	status = SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52ChainSettle,chain);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM52-CHAIN-SETTLE-INLINE mode=%s slot=%u status=%s: the lazy worker refused the settle; settling on the submitting thread\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index,SparkStatusToString(status));
 		SparkGlm52ChainSettle(chain);
+	}
 }
 
 static SparkStatus SparkGlm52ProjectionSplitConfigure(SparkGlm52ModuleState *state)

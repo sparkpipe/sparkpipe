@@ -14,7 +14,8 @@ HARNESS = r'''
 static char LOG[LOG_CAPACITY][40];
 static uint32_t LOG_COUNT;
 static uint32_t T1_ENABLED,STREAM_ORDERED = 1u,CAPTURING,CAPTURES,LAUNCHES,WORKER_INLINE = 1u;
-static SparkStatus VERIFY_STATUS,ENQUEUE_STATUS;
+static SparkStatus VERIFY_STATUS,ENQUEUE_STATUS,WORKER_STATUS,CHAIN_KEY_STATUS = SPARK_STATUS_IO_ERROR;
+static cudaError_t STREAM_QUERY = cudaSuccess;
 static uint32_t ENQUEUE_FAIL_AT = UINT32_MAX,ENQUEUE_COUNT;
 static uint64_t GRAPH_ERROR;
 static SparkWeightdWorkFunction PENDING_WORK;
@@ -64,7 +65,7 @@ cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,en
 	return(cudaSuccess);
 }
 cudaError_t cudaStreamSynchronize(cudaStream_t stream) { (void)stream; return(cudaSuccess); }
-cudaError_t cudaStreamQuery(cudaStream_t stream) { (void)stream; return(cudaSuccess); }
+cudaError_t cudaStreamQuery(cudaStream_t stream) { (void)stream; return(STREAM_QUERY); }
 cudaError_t cudaGetLastError(void) { return(cudaSuccess); }
 const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub"); }
 cudaError_t cudaLaunchHostFunc(cudaStream_t stream,cudaHostFn_t function,void *context) { (void)stream; function(context); return(cudaSuccess); }
@@ -108,6 +109,8 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 {
 	(void)worker;
 	Log("worker",0u);
+	if ( WORKER_STATUS != SPARK_STATUS_OK )
+		return(WORKER_STATUS);
 	if ( WORKER_INLINE != 0u )
 		function(context);
 	else
@@ -119,7 +122,7 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 }
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t lease,uint64_t timeout) { (void)map; (void)lease; (void)timeout; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t lease,cudaStream_t stream) { (void)map; (void)lease; (void)stream; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
-SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,uint64_t request_id) { (void)collective; (void)request_id; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
+SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,uint64_t request_id) { (void)collective; (void)request_id; Log("chain-key",0u); return(CHAIN_KEY_STATUS); }
 cudaError_t cudaEventSynchronize(cudaEvent_t event) { (void)event; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,enum cudaMemcpyKind kind) { (void)destination; (void)source; (void)bytes; (void)kind; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemsetAsync(void *destination,int value,size_t bytes,cudaStream_t stream) { (void)destination; (void)value; (void)bytes; (void)stream; assert(0); return(cudaErrorUnknown); }
@@ -357,6 +360,58 @@ static void TestGraph(void)
 	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 }
 
+static void TestGraphMultiWave(void)
+{
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	CAPTURES = 0u;
+	LAUNCHES = 0u;
+	batch.row_count = 2u;
+	host_slots[0] = 0u;
+	host_slots[1] = 0u;
+	host_positions[1] = 10u;
+	atomic_store(&state.lane_states[0],1u);
+	SparkGlm52RunChain(NewChain(9u));
+	atomic_store(&state.lane_states[0],0u);
+	batch.row_count = 1u;
+	assert(CAPTURES == 0u && LAUNCHES == 0u && Count("capture-begin0") == 0u);
+	assert(Find("begin10",0u) >= 0 && Find("begin11",0u) > Find("begin10",0u) && Count("unpack1") == 2u && Count("verify0") == 1u);
+	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_MULTI_WAVE] == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+}
+
+static void TestStreamFailure(void)
+{
+	uint32_t mode;
+	for (mode=SPARK_TP_CHAIN_MODE_LINEAR; mode<=SPARK_TP_CHAIN_MODE_GRAPH; mode++)
+	{
+		Reset(mode,0u,1u);
+		SparkTpChainGraphTableDestroy(&state.graphs[0]);
+		STREAM_QUERY = cudaErrorUnknown;
+		SparkGlm52RunChain(NewChain(9u));
+		STREAM_QUERY = cudaSuccess;
+		assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_IO_ERROR && Count("cancel0") == 1u && atomic_load(&state.chain_busy) == 0u);
+		assert(Count("verify0") == 0u && Count("graph-error0") == 0u);
+		assert(Count("disarm0") == (mode == SPARK_TP_CHAIN_MODE_GRAPH ? 2u : 0u));
+	}
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+}
+
+static void TestWorkerRefusal(void)
+{
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	WORKER_STATUS = SPARK_STATUS_BUSY;
+	SparkGlm52RunChain(NewChain(9u));
+	WORKER_STATUS = SPARK_STATUS_OK;
+	assert(Count("worker0") == 1u && Count("verify0") == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+}
+
+static void TestSubmitFailureClearsBusy(void)
+{
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	atomic_store(&state.chain_busy,0u);
+	assert(SparkGlm52ExecuteChain(&state,&frame,&context) == CHAIN_KEY_STATUS);
+	assert(Count("chain-key0") == 1u && atomic_load(&state.chain_busy) == 0u && COMPLETED_COUNT == 0u);
+}
+
 static void TestBusy(void)
 {
 	WORKER_INLINE = 0u;
@@ -377,6 +432,10 @@ int main(void)
 	TestLinearSettleFailure();
 	TestLinearWalkFailure();
 	TestGraph();
+	TestGraphMultiWave();
+	TestStreamFailure();
+	TestWorkerRefusal();
+	TestSubmitFailureClearsBusy();
 	TestBusy();
 	printf("glm52 chain modes: ok\n");
 	return(0);
@@ -398,7 +457,7 @@ def main():
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
                         str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle failures, busy gate")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate")
 
 
 if __name__ == "__main__":

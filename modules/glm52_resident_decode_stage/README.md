@@ -239,7 +239,8 @@ head and its max-loc reduce (158 collectives per token at 78 layers).
 lazy attach worker, pinned experts (`SPARK_GLM52_PIN_EXPERTS=1`), stream-ordered
 collectives (`SPARK_TP_WAIT_MODE=hardware`) or with `SPARK_GLM52_T1`. One chain
 is in flight at a time; a second submission returns BUSY until the first has
-settled. The shared pieces (mode parse, arm/disarm, capture, pre-launch seed,
+settled. If the lazy worker refuses the settle, the submitting thread settles
+the chain itself and logs `GLM52-CHAIN-SETTLE-INLINE`. The shared pieces (mode parse, arm/disarm, capture, pre-launch seed,
 settle) are model-neutral in `include/sparkpipe/spark_tp_chain_graph.h`.
 
 ## Split q_a/kv_a projections (`SPARK_GLM52_PROJECTION_SPLIT=1`)
@@ -264,4 +265,7 @@ stage), a linear walk, replayed graphs, and the projection split with the
 16-rank gather emulated on one GPU. Hidden and residual outputs must be
 bit-identical to the staged walk. Two controls must differ: every step replayed
 with the other regime's bound, and the split gather missing one rank.
-`tests/test_glm52_chain_modes.py` drives the real chain runner on the host.
+`tests/test_glm52_chain_modes.py` drives the real chain runner on the host:
+walk order, capture and replay per regime, the selected-context and multi-wave
+gates, settle, walk and stream failures, a refused worker, and the busy gate
+(including its release when a submission fails before the chain starts).
