@@ -804,6 +804,13 @@ build/test_causal_conv_streams: tests/test_causal_conv_streams.cu inference/kern
 test-causal-conv-streams: build/test_causal_conv_streams
 	./build/test_causal_conv_streams --run
 
+build/test_skinny_dense_multi: tests/test_skinny_dense_multi.cu inference/kernels/skinny.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-skinny-dense-multi
+test-skinny-dense-multi: build/test_skinny_dense_multi
+	./build/test_skinny_dense_multi --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 

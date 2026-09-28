@@ -1278,34 +1278,42 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
-    status = Glm5NextLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->kda_qkv_beta_weight,
-        buffers->fused_qkvb_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        rank_qk * 2u + rank_v + rank_heads,
-        rank_qk * 2u + rank_v + rank_heads,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    status = Glm5NextLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->kda_decay_gate_down_weight,
-        buffers->fused_decay_gate_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        2u * GLM5_NEXT_KDA_LOW_RANK,
-        2u * GLM5_NEXT_KDA_LOW_RANK,
-        0u,
-        multiprocessors,
-        stream);
+    {
+        const LmSkinnyDenseTarget targets[2] = {
+            {buffers->kda_qkv_beta_weight, buffers->fused_qkvb_bf16, 0, rank_qk * 2u + rank_v + rank_heads, rank_qk * 2u + rank_v + rank_heads, 0u},
+            {buffers->kda_decay_gate_down_weight, buffers->fused_decay_gate_bf16, 0, 2u * GLM5_NEXT_KDA_LOW_RANK, 2u * GLM5_NEXT_KDA_LOW_RANK, 0u}};
+        status = LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, buffers->normed_bf16, rows, GLM5_NEXT_HIDDEN, stream);
+    }
+    if (status == LM_LAUNCH_ERR_SHAPE)
+    {
+        status = Glm5NextLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->kda_qkv_beta_weight,
+            buffers->fused_qkvb_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            rank_qk * 2u + rank_v + rank_heads,
+            rank_qk * 2u + rank_v + rank_heads,
+            0u,
+            multiprocessors,
+            stream);
+        if (status == LM_LAUNCH_OK)
+            status = Glm5NextLaunchBf16Linear(
+                buffers->normed_bf16,
+                buffers->kda_decay_gate_down_weight,
+                buffers->fused_decay_gate_bf16,
+                buffers->dense_row_offset,
+                buffers->dense_tile_prefix,
+                rows,
+                GLM5_NEXT_HIDDEN,
+                2u * GLM5_NEXT_KDA_LOW_RANK,
+                2u * GLM5_NEXT_KDA_LOW_RANK,
+                0u,
+                multiprocessors,
+                stream);
+    }
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH(
