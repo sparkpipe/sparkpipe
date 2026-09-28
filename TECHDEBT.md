@@ -363,6 +363,11 @@ progress diary.
     reduce through the common combines, which sum all ranks in FP32 and
     round once, where their private kernels summed rank by rank in BF16.
     Record a precision receipt with each requalification.
+  - qwen4_flash refused every prefill frame from 2026-09-19 to 2026-09-28:
+    its KV frame wrapper demanded a decode batch before asking whether the
+    KV tier was on;
+  - muse_glimmer's JIT KV tier (`SPARK_MUSE_GLIMMER_STAGE_KV_STORE`) now
+    runs the common KV frame.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
