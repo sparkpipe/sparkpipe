@@ -162,16 +162,17 @@ def group_hosts(rank: int) -> list[str]:
     return HOSTS[first:first + TP]
 
 
-def adapter_config(rank: int, kv_pages: int = 64) -> dict:
+def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
+                   sequences: int = 16) -> dict:
     tp = tp_rank_of(rank)
     return {
         "stage_pack_path": deployed_pack(rank),
         "tp_degree": TP,
         "tp_rank": tp,
         "world_size": WORLD,
-        "max_sequences": 16,
-        "max_rows": 16,
-        "resident_capacity": 16,
+        "max_sequences": sequences,
+        "max_rows": sequences,
+        "resident_capacity": sequences,
         "kv_pages": kv_pages,
         "capture_graphs": 1,
         "hidden": 7168,
@@ -202,7 +203,9 @@ def adapter_config(rank: int, kv_pages: int = 64) -> dict:
 
 
 def resident_deployment(runtime_root: str, weightd_socket: str,
-                        kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES) -> dict:
+                        kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
+                        sequences: int = 16,
+                        kv_pages: int = KV_PAGES_PER_SEQUENCE) -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
         root = runtime_root.format(host=host)
@@ -250,12 +253,12 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
         # kv_pages_per_sequence (64 pages x 64 tokens = the 4096-token
         # per-sequence ceiling the seam already commits to).
         "runtime_limits": {
-            "max_inflight_submissions": 16,
-            "max_active_sequences": 16,
-            "max_input_rows": 16,
-            "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 16 * KV_PAGES_PER_SEQUENCE,
-            "kv_physical_page_capacity": 16 * KV_PAGES_PER_SEQUENCE,
+            "max_inflight_submissions": sequences,
+            "max_active_sequences": sequences,
+            "max_input_rows": sequences,
+            "resident_sequence_capacity": sequences,
+            "kv_logical_page_capacity": sequences * kv_pages,
+            "kv_physical_page_capacity": sequences * kv_pages,
         },
         "nodes": nodes,
     }
@@ -299,6 +302,12 @@ def main() -> int:
     parser.add_argument("--lane", type=int, default=LANE,
                         help="weightd mesh lane and port block "
                              "(default %(default)d)")
+    parser.add_argument("--sequences", type=int, default=16,
+                        help="concurrent sequences per rank; KDA state and "
+                             "KV scale with it (default %(default)d)")
+    parser.add_argument("--kv-pages", type=int, default=KV_PAGES_PER_SEQUENCE,
+                        help="64-token KV pages per sequence "
+                             "(default %(default)d)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
@@ -307,6 +316,10 @@ def main() -> int:
     select_lane(arguments.lane)
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv-backing-bytes must be positive and finite")
+    if not 1 <= arguments.sequences <= 16:
+        raise SystemExit("sequences must be within 1..16")
+    if not 1 <= arguments.kv_pages <= 64:
+        raise SystemExit("kv-pages must be within 1..64")
 
     output = Path(arguments.output_dir)
     if not arguments.check:
@@ -314,13 +327,14 @@ def main() -> int:
 
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
-        arguments.kv_backing_bytes))
+        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)
 
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
-        text = render(adapter_config(rank))
+        text = render(adapter_config(rank, arguments.kv_pages,
+                                     arguments.sequences))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

@@ -33,6 +33,8 @@ join_ranks() {
 
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
+    --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
+    --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
     --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
 }
