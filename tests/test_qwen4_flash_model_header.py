@@ -5,19 +5,23 @@ The contract (model_contracts/qwen4_flash_authoritative.json) is digest-
 frozen against the warm checkpoint by tools/qwen4_flash_verify_source.py
 (verify mode, run on a spark node); this test binds
 model-families/qwen4_flash/include/sparkpipe/llm_defines.h (the single
-parameter carrier the common modules consume) to that contract so header, contract and checkpoint config stay in lockstep.
+parameter carrier the common modules consume) to that contract so header,
+contract and checkpoint config stay in lockstep. The C compiler evaluates
+every macro, including the per-layer GDN predicate.
 Run: python3 tests/test_qwen4_flash_model_header.py
 """
 
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
+from c_macro_values import MacroProbeError, c_macro_values, value_matches
+
 REPOSITORY = Path(__file__).resolve().parents[1]
-HEADER = REPOSITORY / "model-families/qwen4_flash/include/sparkpipe/llm_defines.h"
+INCLUDE_DIRECTORIES = [REPOSITORY / "model-families/qwen4_flash/include", REPOSITORY,
+                       REPOSITORY / "include"]
 CONTRACT = REPOSITORY / "model_contracts/qwen4_flash_authoritative.json"
 
 # contract section/key -> header macro
@@ -61,76 +65,62 @@ BINDINGS = {
 }
 
 
-def macro(header: str, name: str) -> float:
-    """Resolve one #define to a number: numeric defines directly, composed
-    defines by evaluating their expression over previously resolved names
-    (line continuations joined first)."""
-    joined = header.replace("\\\n", " ")
-    defines: dict[str, str] = {}
-    # [ \t] after the name keeps valueless include guards from swallowing
-    # the next line; continuations are already joined.
-    for match in re.finditer(r"^#define\s+(\w+)[ \t]+([^\n]+?)\s*$", joined, re.M):
-        defines[match.group(1)] = match.group(2).strip()
-    if name not in defines:
-        raise AssertionError(f"header missing #define {name}")
-
-    def resolve(target: str, seen: frozenset) -> float:
-        text = defines[target]
-        if target in seen:
-            raise AssertionError(f"cyclic define {target}")
-        try:
-            return float(text.rstrip("uf"))
-        except ValueError:
-            pass
-        expression = re.sub(r"\w+", lambda m: (
-            str(resolve(m.group(0), seen | {target}))
-            if m.group(0) in defines and m.group(0) != target else m.group(0)), text)
-        expression = re.sub(r"(\d)[uf]\b", r"\1", expression)  # strip C suffixes
-        return float(eval(expression, {"__builtins__": {}}, {}))  # noqa: S307 - header constants only
-
-    return resolve(name, frozenset())
+def composed_expectations(contract: dict) -> dict[str, int]:
+    model = contract["model"]
+    linear = contract["linear_attn"]
+    qk_dimension = linear["key_head_count"] * linear["key_dimension"]
+    value_dimension = linear["value_head_count"] * linear["value_dimension"]
+    return {
+        "SPARK_LLM_GDN_VALUE_HEADS_PER_KEY_HEAD": linear["value_head_count"] // linear["key_head_count"],
+        "SPARK_LLM_GDN_QK_DIMENSION": qk_dimension,
+        "SPARK_LLM_GDN_VALUE_DIMENSION": value_dimension,
+        "SPARK_LLM_GDN_CONV_CHANNELS": 2 * qk_dimension + value_dimension,
+        "SPARK_LLM_ATTN_QUERY_DIMENSION": model["attention_head_count"] * model["head_dimension"],
+        "SPARK_LLM_ATTN_KV_DIMENSION": model["kv_head_count"] * model["head_dimension"],
+        "SPARK_LLM_ATTN_CACHE_TOKEN_ELEMENTS": 2 * model["kv_head_count"] * model["head_dimension"],
+        "SPARK_LLM_HC_STREAM_WIDTH": contract["hyper_connection"]["stream_count"] * model["hidden_dimension"],
+    }
 
 
 def main() -> int:
-    header = HEADER.read_text(encoding="utf-8")
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-    failures = 0
+    layer_count = contract["model"]["layer_count"]
+    composed = composed_expectations(contract)
+    gdn_flags = [f"SPARK_LLM_LAYER_IS_GDN({layer}u)" for layer in range(layer_count)]
+    try:
+        values = c_macro_values(INCLUDE_DIRECTORIES, "sparkpipe/llm_defines.h",
+                                list(BINDINGS.values()) + list(composed) + gdn_flags,
+                                ("SPARK_LLM_MTP_LAYER_COUNT=0u",))
+    except MacroProbeError as error:
+        print(f"FAILED {error}")
+        return 1
+    failures = []
     for (section, key), name in BINDINGS.items():
         expected = contract[section][key]
-        actual = macro(header, name)
-        if float(expected) != actual:
-            print(f"MISMATCH {name}: header {actual} contract {expected}")
-            failures += 1
-    # composed geometry the kernels and packer derive from the macros
-    composed = {
-        "SPARK_LLM_GDN_VALUE_HEADS_PER_KEY_HEAD": 48 / 16,
-        "SPARK_LLM_GDN_QK_DIMENSION": 16 * 128,
-        "SPARK_LLM_GDN_VALUE_DIMENSION": 48 * 128,
-        "SPARK_LLM_GDN_CONV_CHANNELS": 2 * 2048 + 6144,
-        "SPARK_LLM_ATTN_QUERY_DIMENSION": 24 * 256,
-        "SPARK_LLM_ATTN_KV_DIMENSION": 2 * 256,
-        "SPARK_LLM_ATTN_CACHE_TOKEN_ELEMENTS": 2 * (2 * 256),
-        "SPARK_LLM_HC_STREAM_WIDTH": 4 * 2560,
-    }
+        if not value_matches(expected, values[name]):
+            failures.append(f"{name}: header {values[name]!r} contract {expected!r}")
     for name, expected in composed.items():
-        actual = macro(header, name)
-        if float(expected) != actual:
-            print(f"MISMATCH composed {name}: header {actual} expected {expected}")
-            failures += 1
-    # invariants the module's stagepack static asserts restate in C
-    if 36 + 12 != 48 or 48 % 4 != 0:
-        print("MISMATCH hybrid layer split does not cover the stack in whole periods")
-        failures += 1
-    if 48 % 16 != 0:
-        print("MISMATCH linear value heads must group evenly onto key heads")
-        failures += 1
-    if 640 % 128 != 0 or 2560 % 128 != 0:
-        print("MISMATCH expert geometry must tile 128-block FP8 scales")
-        failures += 1
+        if not value_matches(expected, values[name]):
+            failures.append(f"composed {name}: header {values[name]!r} expected {expected!r}")
+    period = values["SPARK_LLM_ATTN_PERIOD"]
+    phase = values["SPARK_LLM_FULL_ATTENTION_PHASE"]
+    gdn_layers = [layer for layer, flag in enumerate(gdn_flags) if values[flag] != 0.0]
+    if gdn_layers != [layer for layer in range(layer_count) if layer % period != phase]:
+        failures.append(f"LAYER_IS_GDN marks layers {gdn_layers}")
+    if len(gdn_layers) != values["SPARK_LLM_GDN_LAYER_COUNT"] or \
+            layer_count - len(gdn_layers) != values["SPARK_LLM_FULL_ATTENTION_LAYER_COUNT"]:
+        failures.append(f"{len(gdn_layers)} GDN layers disagree with the header layer counts")
+    if values["SPARK_LLM_GDN_VALUE_HEAD_COUNT"] % values["SPARK_LLM_GDN_KEY_HEAD_COUNT"]:
+        failures.append("linear value heads must group evenly onto key heads")
+    if values["SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION"] % 128 or values["SPARK_LLM_HIDDEN_DIMENSION"] % 128:
+        failures.append("expert geometry must tile 128-block FP8 scales")
     if failures:
-        print(f"FAILED {failures} binding(s)")
+        for failure in failures:
+            print(f"MISMATCH {failure}")
+        print(f"FAILED {len(failures)} binding(s)")
         return 1
-    print("PASS qwen4_flash header matches the authoritative contract (36 bindings + 8 composed)")
+    print(f"PASS qwen4_flash header matches the authoritative contract ({len(BINDINGS)} bindings + "
+          f"{len(composed)} composed + {layer_count} layer kinds, evaluated by the C compiler)")
     return 0
 
 

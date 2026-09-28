@@ -34,7 +34,7 @@ import mimo26_stagepack as packer  # noqa: E402
 
 MINI = dict(
     hidden=256, layers=5, heads=8, head_dim=64, v_head_dim=64,
-    kv_full=2, kv_swa=2, vocab=512, dense_inter=256,
+    kv_full=2, kv_swa=2, vocab=512, dense_inter=512,
     experts=8, experts_per_token=2, expert_inter=128,
     swa_window=8, default_tp=2,
 )
@@ -145,6 +145,32 @@ def build_checkpoint(directory: Path) -> dict:
     return tensors
 
 
+def source_bytes(checkpoint: Path, name: str, start: int, count: int) -> bytes:
+    index = json.loads((checkpoint / "model.safetensors.index.json").read_text())
+    with open(checkpoint / index["weight_map"][name], "rb") as file:
+        (n,) = struct.unpack("<Q", file.read(8))
+        header = json.loads(file.read(n))
+        file.seek(8 + n + header[name]["data_offsets"][0] + start)
+        return file.read(count)
+
+
+def check_dense_slices(checkpoint: Path, pack: Path, rank: int, entries: list) -> None:
+    rows = MINI["dense_inter"] // 2
+    blocks = (rows // 128) * (MINI["hidden"] // 128)
+    for kind, mat in ((packer.KIND_DENSE_MLP_GATE, "gate_proj"), (packer.KIND_DENSE_MLP_UP, "up_proj")):
+        (entry,) = [e for e in entries if e[0] == kind]
+        assert entry[1:5] == (0, packer.WEIGHT_FP8_E4M3_F32B128, rows, MINI["hidden"]), entry
+        assert (entry[7], entry[9]) == (rows * MINI["hidden"], blocks * 4), entry
+        name = f"model.layers.0.mlp.{mat}.weight"
+        with open(pack, "rb") as file:
+            file.seek(entry[6])
+            payload = file.read(entry[7])
+            file.seek(entry[8])
+            scale = file.read(entry[9])
+        assert payload == source_bytes(checkpoint, name, rank * rows * MINI["hidden"], entry[7])
+        assert scale == source_bytes(checkpoint, name + "_scale_inv", rank * blocks * 4, entry[9])
+
+
 class Args:
     def __init__(self, **kw):
         self.arm = "pro"
@@ -200,6 +226,7 @@ def main() -> int:
                            (MINI["expert_inter"] if mat_kind != packer.KIND_EXPERT_DOWN
                             else MINI["hidden"]) for e in slabs)
             assert (packer.KIND_SINK_BIAS, ) not in kinds
+            check_dense_slices(tmp / "ckpt", out, rank, entries)
             expert_bytes.append(sum(e[3] * e[4] // 2 for e in entries
                                     if e[0] in (packer.KIND_EXPERT_GATE,
                                                 packer.KIND_EXPERT_UP,
@@ -249,23 +276,51 @@ def main() -> int:
         assert victim.exists() and victim.stat().st_size > 0
         assert survivor.stat().st_mtime_ns == before
 
-        # wrong shape: break one expert tensor, expect a hard failure
         index = json.loads((ckpt / "model.safetensors.index.json").read_text())
-        shard = ckpt / index["weight_map"]["model.layers.1.mlp.experts.0.gate_proj.weight"]
+        expert = "model.layers.1.mlp.experts.0.gate_proj.weight"
+        shard = ckpt / index["weight_map"][expert]
+        original_shard = shard.read_bytes()
+        (header_bytes,) = struct.unpack_from("<Q", original_shard)
+        header = json.loads(original_shard[8:8 + header_bytes])
+        expected_shape = header[expert]["shape"]
+        header[expert]["shape"] = [7, 64]
+        blob = json.dumps(header).encode()
+        if len(blob) > header_bytes:
+            raise AssertionError("the wrong-shape header no longer fits the original header")
         with open(shard, "r+b") as file:
-            file.seek(0)
-            (n,) = struct.unpack("<Q", file.read(8))
-            header = json.loads(file.read(n))
-            header["model.layers.1.mlp.experts.0.gate_proj.weight"]["shape"] = [7, 64]
-            blob = json.dumps(header).encode()
-            file.seek(0)
-            file.write(struct.pack("<Q", len(blob)))
-            file.write(blob)
-        try:
-            packer.do_verify(Args(checkpoint=str(ckpt), tp=2, rank=0, out=str(packs[0])))
-            raise AssertionError("wrong shape verified")
-        except (packer.PackFailure, SystemExit, json.JSONDecodeError, struct.error):
-            pass
+            file.seek(8)
+            file.write(blob + b" " * (header_bytes - len(blob)))
+        shape_reason = f"{expert}: checkpoint shape [7, 64], pack expects {expected_shape}"
+        for operation, arguments in (
+                (packer.do_verify, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                        out=str(packs[0]))),
+                (packer.do_emit, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                      out=str(tmp / "shape.sp"),
+                                      stage_dir=str(tmp / "stage_shape")))):
+            try:
+                operation(arguments)
+                raise AssertionError(f"{operation.__name__} accepted a wrong source shape")
+            except packer.PackFailure as failure:
+                if str(failure) != shape_reason:
+                    raise AssertionError(f"{operation.__name__}: {failure}") from failure
+        shard.write_bytes(original_shard)
+
+        shard.rename(str(shard) + ".away")
+        missing_reason = f"missing shard {shard.name}"
+        for operation, arguments in (
+                (packer.do_verify, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                        out=str(packs[0]))),
+                (packer.do_emit, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                      out=str(tmp / "missing.sp"),
+                                      stage_dir=str(tmp / "stage_missing")))):
+            try:
+                operation(arguments)
+                raise AssertionError(f"{operation.__name__} ran without shard {shard.name}")
+            except packer.PackFailure as failure:
+                if str(failure) != missing_reason:
+                    raise AssertionError(f"{operation.__name__}: {failure}") from failure
+        if (tmp / "stage_missing").exists() or (tmp / "stage_shape").exists():
+            raise AssertionError("a refused emission staged payloads")
 
     print("PASS mimo26 stagepack round-trip")
     return 0

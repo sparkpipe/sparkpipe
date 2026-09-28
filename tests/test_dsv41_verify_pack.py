@@ -9,9 +9,10 @@ DeepSeek-V4 NO-TOOL sweep families.
   tools/dsv4_tp16_stagepack.py, rebuilt from the contract records through
   plan_entry's sharding rules.
 
-Receipt emission is exercised on a tiny summary (the placed packs are tens
-of GiB; the digest pass dominates the real runs and is already covered
-there).
+The synthetic packs have the real geometry and are sparse files of tens of
+GiB, so the structural checks run in process, patch corrupted fields in
+place, and never read or digest the payload. The command line is exercised
+on a small file, and receipt emission on a tiny summary.
 """
 
 import hashlib
@@ -129,58 +130,76 @@ def build_dsv4flash_pack(path: Path, rank: int) -> None:
         handle.write(directory)
 
 
-def run_tool(pack: Path, *extra: str):
-    done = subprocess.run(
-        [sys.executable, str(TOOL), "--pack", str(pack), *extra],
-        capture_output=True, text=True)
-    return done.returncode, done.stdout + done.stderr
+def verifier():
+    return load("dsv41_verify_pack_under_test", "dsv41_verify_pack.py")
+
+
+def patch_u32(pack: Path, offset: int, value: int) -> None:
+    with pack.open("r+b") as handle:
+        handle.seek(offset)
+        handle.write(struct.pack("<I", value))
+
+
+def expect_failure(check, reason: str) -> None:
+    V = verifier()
+    try:
+        check(V)
+    except V.Fail as failure:
+        assert str(failure).startswith(f"FAIL {reason}:"), str(failure)
+        return
+    raise AssertionError(f"expected FAIL {reason}")
 
 
 def test_dsv41flash_pack_passes():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "rank3.spstage"
         build_dsv41_pack(pack, 8, 3)
-        code, output = run_tool(pack)
-        assert code == 0, output
-        assert "1038 directory entries" in output
+        summary = verifier().verify_dsv41(pack)
+        assert summary["tensor_count"] == 1038, summary
+        assert (summary["tp_degree"], summary["tp_rank"]) == (8, 3), summary
 
 
 def test_dsv41flash_corrupted_entry_fails():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "rank3.spstage"
         build_dsv41_pack(pack, 8, 3)
-        raw = bytearray(pack.read_bytes())
-        struct.pack_into("<I", raw, 512 + 5 * 64 + 24, 12345)
-        pack.write_bytes(bytes(raw))
-        code, output = run_tool(pack)
-        assert code == 1, output
+        patch_u32(pack, 512 + 5 * 64 + 24, 12345)
+        expect_failure(lambda V: V.verify_dsv41(pack), "directory")
 
 
 def test_dsv41flash_wrong_tp_fails():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "rank3.spstage"
         build_dsv41_pack(pack, 8, 3)
-        raw = bytearray(pack.read_bytes())
-        struct.pack_into("<I", raw, 68, 4)
-        pack.write_bytes(bytes(raw))
-        code, output = run_tool(pack)
-        assert code == 1, output
+        patch_u32(pack, 68, 4)
+        expect_failure(lambda V: V.verify_dsv41(pack), "extent")
 
 
 def test_dsv4flash_pack_passes():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "dsv4flash.tp16.rank3.spstage"
         build_dsv4flash_pack(pack, 3)
-        code, output = run_tool(pack, "--family", "dsv4flash")
-        assert code == 0, output
+        summary = verifier().verify_dsv4flash(pack, CONTRACT, None)
+        assert summary["tp_rank"] == 3, summary
 
 
 def test_dsv4flash_rank_mismatch_fails():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "dsv4flash.tp16.rank3.spstage"
         build_dsv4flash_pack(pack, 0)
-        code, output = run_tool(pack, "--family", "dsv4flash", "--rank", "3")
-        assert code == 1, output
+        expect_failure(lambda V: V.verify_dsv4flash(pack, CONTRACT, 3),
+                       "extent")
+
+
+def test_command_line_fails_closed():
+    with tempfile.TemporaryDirectory() as tmp:
+        pack = Path(tmp) / "rank0.spstage"
+        pack.write_bytes(b"tiny")
+        done = subprocess.run(
+            [sys.executable, str(TOOL), "--pack", str(pack)],
+            capture_output=True, text=True)
+        assert done.returncode == 1, done.stdout + done.stderr
+        assert "FAIL header" in done.stderr, done.stderr
 
 
 def test_receipt_emission_pair():

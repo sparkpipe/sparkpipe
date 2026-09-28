@@ -30,7 +30,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SOCKET="${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+SOCKET="${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 RUNS="${QMAX_WARM_RUNS:-5}"
 POOL="${QMAX_EXPERT_POOL_BYTES:-0}"   # 0 = this rank's chunked default
 

@@ -23,8 +23,8 @@ HEADER = ROOT / "modules/mimo26_resident_decode_stage/source/spark_mimo26_stagep
 def main() -> int:
     cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     if cc is None:
-        print("no C compiler available; skipping (CI always has one)")
-        return 0
+        print("FAIL no C compiler on PATH; the header probe cannot run")
+        return 1
     with tempfile.TemporaryDirectory(prefix="mimo26-fmt-") as raw:
         tmp = Path(raw)
         source = tmp / "probe.c"

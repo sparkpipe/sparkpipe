@@ -33,6 +33,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_weightd import FLEET_WEIGHTD_SOCKET, fleet_weightd_socket_error  # noqa: E402
+
 LANE_FAMILY = "qwen38_27b"
 LANE_TOPOLOGY = "TP4"
 LANE_HOSTS_DEFAULT = "spark0,spark1,spark2,spark3"
@@ -40,7 +43,8 @@ LANE_CONTROL_BASE_DEFAULT = 23016
 LANE_COLLECTIVE_BASE_DEFAULT = 53016
 LANE_TRANSPORT_BASE_DEFAULT = 64016
 LANE_WEIGHTD_LANE_DEFAULT = 1
-LANE_SHARED_SOCKET_DEFAULT = "/run/sparkpipe-weightd-shared/weightd.sock"
+LANE_SHARED_SOCKET_DEFAULT = FLEET_WEIGHTD_SOCKET
+LANE_EOS_TOKEN_IDS = (248046, 248044)
 LANE_MESH_RANKS_DEFAULT = "0,1,2,3"
 LANE_PACK_DIR_DEFAULT = "/home/{host}/sparkdata/qwen38-27b.nvfp4a16.tp4/packs"
 LANE_PACK_TEMPLATE_DEFAULT = "tp4-rank{rank:02d}.q38sp"
@@ -237,6 +241,7 @@ def resident_deployment(hosts: list[str], runtime_root: str, kv_root: str,
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": list(LANE_EOS_TOKEN_IDS),
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": LANE_ADAPTER_PATH},
         "driver": {
@@ -429,8 +434,9 @@ def prepare(environment: dict[str, str] | None = None) -> dict:
         raise LaneError("set QWEN38_27B_LANE_FIRMWARE_ROOT to a verified module build")
     firmware = verify_firmware(firmware_root)
     shared_socket = env_str(env, "QWEN38_27B_LANE_SHARED_SOCKET", LANE_SHARED_SOCKET_DEFAULT)
-    if not shared_socket.startswith("/"):
-        raise LaneError("the shared weightd socket must be an absolute path")
+    socket_error = fleet_weightd_socket_error(shared_socket)
+    if socket_error:
+        raise LaneError(socket_error)
     max_sequence_positions = env_int(env, "QWEN38_27B_LANE_MAX_SEQUENCE_POSITIONS",
                                      LANE_MAX_SEQUENCE_POSITIONS_DEFAULT)
     if not 1 <= max_sequence_positions <= 8192:

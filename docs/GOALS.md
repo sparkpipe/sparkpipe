@@ -322,7 +322,7 @@ GLM 5.3 Flash now serves on the Sparks. Agents' own inference (drafting,
 analysis, doc summarization) should run on the fleet rather than on paid
 APIs. The live GLM API is the `g53-api` user unit on the rtx5090 hub, port
 8433. It is an x86 build of the engines' source commit, and every Spark runs
-with `G5_API_DISABLED=1` (`tools/fleet_node_agent.sh`, `ensure_api`). The
+no API: `tools/fleet_node_agent.sh` no longer starts one (#1261). The
 LiteLLM front door is the seam: `config/litellm-config.yaml` routes
 `glm-5.3-flash` to the hub's `g53-api`, but no completion through the proxy
 has a receipt yet ([`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md)). The pivot

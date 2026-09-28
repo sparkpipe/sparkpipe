@@ -1,5 +1,9 @@
 #include "sparkpipe/spark_qwen38_27b_work_control.h"
 
+#ifdef NDEBUG
+#error "this test checks every call with assert()"
+#endif
+
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -181,7 +185,7 @@ static void SparkTestTierRoundtrip(void)
 	pending[0].sequence_id = 888u;
 	assert(SparkQwen38_27bWorkControlBuildRestoreBatch(&config,pending,1u,packet_lane_counts,1u,restore_block_staging,2u,restore_gdn_staging,1u,blocks,8u,&block_count,&lanes_built) == SPARK_STATUS_OK);
 	assert(SparkQwen38_27bWorkControlSubmit(&client,&kv.restore,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,0u) == SPARK_STATUS_OK);
-	assert(SparkTestWaitReady(&client,&kv,&kv.restore) != SPARK_STATUS_OK);
+	assert(SparkTestWaitReady(&client,&kv,&kv.restore) == SPARK_STATUS_NOT_FOUND);
 	assert(SparkQwen38_27bWorkControlAcknowledge(&kv.restore) == SPARK_STATUS_OK);
 	store_interface->destroy(client.store_state);
 }

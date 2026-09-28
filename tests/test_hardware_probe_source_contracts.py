@@ -7,6 +7,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CUDA_SOURCE = ROOT / "tools" / "hardware" / "spark_cuda_characterize.cu"
@@ -103,6 +104,11 @@ def main() -> int:
         "CUDA 13 gate does not compile the GLM resident module",
     )
     require(
+        "modules/glm5_next_resident_decode_stage/source/"
+        "spark_glm5_next_resident_decode_stage_cuda.cu" in gate,
+        "CUDA 13 gate does not compile the GLM 5.3 Flash resident module",
+    )
+    require(
         "glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)" in gate,
         "CUDA 13 gate does not qualify every selectable GLM expert codec",
     )
@@ -119,21 +125,15 @@ def main() -> int:
         "CUDA 13 gate still compiles the removed DSV4 inference path",
     )
 
-    if sys.platform.startswith("linux"):
-        run([
-            "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-            "-Itools/hardware", "-fsyntax-only", str(PMTU_SOURCE),
-        ])
-    else:
-        # The PMTU probe is Linux networking (endian.h, the PMTU socket
-        # options); there is nothing to syntax-check on another OS.
-        print("SKIP PMTU probe syntax: Linux-only probe source")
+    run([
+        "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-Itools/hardware", "-fsyntax-only", str(PMTU_SOURCE),
+    ])
 
     nvcc = shutil.which("nvcc")
     if nvcc is not None:
         # The real compiler for the real probes: CUDA launch syntax needs a
         # CUDA toolchain, and nvcc is also the production compiler.
-        import tempfile
         with tempfile.TemporaryDirectory() as objects:
             for source in (CUDA_SOURCE, NVME_SOURCE):
                 run([
@@ -165,14 +165,24 @@ def main() -> int:
                 "-Itools/hardware",
                 "-fsyntax-only",
             ]
-            try:
+            with tempfile.TemporaryDirectory() as scratch:
+                capability = pathlib.Path(scratch) / "launch.cu"
+                capability.write_text(
+                    "#include <cuda_runtime.h>\n"
+                    "__global__ void probe_kernel(void) {}\n"
+                    "void probe_launch(void) { probe_kernel<<<1, 1>>>(); }\n",
+                    encoding="utf-8",
+                )
+                launch_check = subprocess.run(
+                    common_command + [str(capability)],
+                    cwd=ROOT, text=True, capture_output=True, check=False,
+                )
+            if launch_check.returncode != 0:
+                print(f"SKIP CUDA probe syntax: {clang} cannot compile a stub kernel launch "
+                      f"(status {launch_check.returncode})")
+            else:
                 run(common_command + [str(CUDA_SOURCE)])
                 run(common_command + [str(NVME_SOURCE)])
-            except AssertionError:
-                # Host clang without CUDA launch support (Apple clang, or
-                # <<< >>> against a stub): the check needs a CUDA toolchain,
-                # and none is present - a skip, not a pass and not a failure.
-                print("SKIP CUDA probe syntax: no CUDA-capable compiler")
         else:
             print("SKIP Clang CUDA host syntax: clang++ unavailable")
 

@@ -7,10 +7,12 @@ lane contract:
   1. the deployment keeps the identity rank_index == stage_index ==
      0..15 with 16 unique per-host control endpoints inside the lane-2
      control block 23032..23047;
-  2. the weightd socket is the operator's shared unit wired through
-     deployment.weightd.socket_path, and the KV backing stays a finite
-     cap under the private runtime root (never the shared sparkdata
-     tree);
+  2. the deployment carries the model EOS tokens, the weightd socket is
+     the fleet weightd the fleet agent starts on every Spark
+     (/tmp/spark_weightd.sock) wired through deployment.weightd.socket_path,
+     any other socket (including the retired /run/sparkpipe-weightd-shared
+     unit) is refused, and the KV backing stays a finite cap under the
+     private runtime root (never the shared sparkdata tree);
   3. the adapter configuration keeps the qwen38_max serving adapter's
      EXACT member set (schema_version, model_revision, stage_pack_path,
      max_sequence_positions, tp_degree — an extra member is a load
@@ -23,11 +25,11 @@ lane contract:
   6. the .wset hook emits the smoke-expert working set from the
      committed manifest (PR #1085 census receipt) as deduplicated
      sorted (layer, expert) u32 pairs;
-  7. the family wrapper upholds the shared-socket template queue
-     contract: attempt id, job namespace, size/rank bounds and
-     queue-reserved port membership all fail closed before any
-     filesystem work, and a fully reserved lane reaches the
-     shared-socket liveness check;
+  7. the family wrapper, run with synthetic queue environments, fails
+     closed with its stated reason before any filesystem work on a bad
+     attempt id, job namespace, size/rank, unreserved control, collective
+     or transport port and a dead weightd socket, and defaults to the
+     fleet weightd socket;
   8. the deployment runtime limits sit inside the family adapter
      descriptor caps (max_inflight 1), and the firmware description
      carries the adapter's driver model id and the pinned source
@@ -46,6 +48,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import qwen38max_multidev_lane as lane  # noqa: E402
+from lane_wrapper_contract import (  # noqa: E402
+    FLEET_WEIGHTD_SOCKET, STALE_SHARED_UNIT_SOCKET, LaneWrapper)
 
 LANE_BLOCKS = (
     set(range(lane.CONTROL_BASE, lane.CONTROL_BASE + 16)),
@@ -56,7 +60,8 @@ ALL_LANE_PORTS = LANE_BLOCKS[0] | LANE_BLOCKS[1] | LANE_BLOCKS[2]
 EXACT_STAGE_MEMBERS = {
     "schema_version", "model_revision", "stage_pack_path",
     "max_sequence_positions", "tp_degree"}
-SHARED_SOCKET = "/run/sparkpipe-weightd-shared/weightd.sock"
+SHARED_SOCKET = FLEET_WEIGHTD_SOCKET
+EOS_TOKEN_IDS = [248046, 248044]
 
 
 def check(condition, failures, message):
@@ -67,10 +72,12 @@ def check(condition, failures, message):
 def deployment_gates(deployment, runtime_root, socket, failures):
     check(deployment["schema_version"] == 2, failures,
           "deployment schema must be 2")
+    check(deployment["eos_token_ids"] == EOS_TOKEN_IDS, failures,
+          "qwen eos tokens <|im_end|> 248046 and <|endoftext|> 248044")
     check(deployment["coordinator_rank_index"] == 0, failures,
           "coordinator must be rank 0")
     check(deployment["weightd"]["socket_path"] == socket, failures,
-          "weightd socket must be the shared unit")
+          "weightd socket must be the fleet weightd")
     check(deployment["adapter"]["shared_object_path"]
           == "lib/model_serving_adapter.so", failures, "adapter path")
     check(deployment["driver"]["shared_object_path"]
@@ -150,6 +157,26 @@ def firmware_identity_gates(failures):
           "(adapter_initialize identity compare)")
 
 
+def wrapper_gates(failures):
+    wrapper = LaneWrapper(ROOT / "tools/qwen38max_multidev_run_family.sh",
+                          "QMAX_")
+    blocks = (f"{lane.CONTROL_BASE}:{lane.CONTROL_BASE + 15}",
+              f"{lane.COLLECTIVE_BASE}:{lane.COLLECTIVE_BASE + 15}",
+              f"{lane.TRANSPORT_BASE}:{lane.TRANSPORT_BASE + 15}")
+    reserved = ",".join(blocks)
+    with tempfile.TemporaryDirectory() as directory:
+        base = wrapper.base(Path(directory) / "absent.sock")
+        cases = wrapper.queue_cases(base, reserved)
+        for index, name in enumerate(("control", "collective", "transport")):
+            cases.append((f"{name} block unreserved",
+                          dict(base, SPARK_QUEUE_PORTS=",".join(
+                              block for position, block in enumerate(blocks)
+                              if position != index)),
+                          "not inside a queue-reserved range"))
+        wrapper.check_cases(cases, failures)
+        wrapper.check_default_socket(base, reserved, None, failures)
+
+
 def main() -> int:
     failures = []
     runtime_root = "/tmp/sparkqueue-" + "0" * 31 + "1"
@@ -207,14 +234,28 @@ def main() -> int:
               f"generator --check: {proc.stdout}{proc.stderr}")
         base = [sys.executable, str(ROOT / "tools/qwen38max_multidev_lane.py"),
                 "--weightd-socket", SHARED_SOCKET, "--output-dir", str(out)]
-        for extra in (["--rank", "16"], ["--rank", "-1"],
-                      ["--rank", "7", "--runtime-root", "/tmp/elsewhere"],
-                      ["--rank", "7", "--runtime-root", runtime_root,
-                       "--kv-backing-bytes", "0"]):
+        for extra, reason in (
+                (["--rank", "16", "--runtime-root", runtime_root],
+                 "rank must be 0..15"),
+                (["--rank", "-1", "--runtime-root", runtime_root],
+                 "rank must be 0..15"),
+                (["--rank", "7", "--runtime-root", "/tmp/elsewhere"],
+                 "runtime root must be the private queue namespace"),
+                (["--rank", "7", "--runtime-root", runtime_root,
+                  "--kv-backing-bytes", "0"],
+                 "kv backing must be a finite positive cap"),
+                (["--rank", "7", "--runtime-root", runtime_root,
+                  "--weightd-socket", "/tmp/other.sock"],
+                 "weightd socket /tmp/other.sock is not the fleet weightd"),
+                (["--rank", "7", "--runtime-root", runtime_root,
+                  "--weightd-socket", STALE_SHARED_UNIT_SOCKET],
+                 f"weightd socket {STALE_SHARED_UNIT_SOCKET} is not the "
+                 "fleet weightd")):
             proc = subprocess.run(base + extra, capture_output=True,
                                   text=True, env=env)
-            check(proc.returncode != 0, failures,
-                  f"generator must fail closed on {extra}")
+            check(proc.returncode != 0 and reason in proc.stderr, failures,
+                  f"generator must fail closed on {extra} with '{reason}': "
+                  f"rc={proc.returncode} {proc.stderr.strip()}")
 
         # .wset hook from the committed manifest.
         wset = Path(tmp) / "smoke.wset"
@@ -237,21 +278,14 @@ def main() -> int:
             check(set(pairs) == expected, failures,
                   "wset matches the census manifest exactly")
 
-    # Wrapper scripts parse (bash -n) and hold the template contract text.
     for script in ("tools/qwen38max_multidev_run_family.sh",
                    "tools/qwen38max_multidev_experts_manifest.sh"):
         path = ROOT / script
         proc = subprocess.run(["bash", "-n", str(path)],
                               capture_output=True, text=True)
         check(proc.returncode == 0, failures, f"bash -n {script}: {proc.stderr}")
+    wrapper_gates(failures)
     wrapper = (ROOT / "tools/qwen38max_multidev_run_family.sh").read_text()
-    for token in ("SPARK_QUEUE_ATTEMPT", "SPARK_QUEUE_RUNTIME_ROOT",
-                  "SPARK_QUEUE_RANK", "SPARK_QUEUE_SIZE", "reserved_ok",
-                  "SPARK_WEIGHTD_ATTACH=1", "SPARK_WEIGHTD_LANE",
-                  "SPARK_TP_MESH_RANKS", "/run/sparkpipe-weightd-shared/weightd.sock",
-                  "53000 + 16 * LANE", "23000 + 16 * LANE", "64000 + 16 * LANE",
-                  "QMAX_EXPERT_POOL_BYTES", "QMAX_SPINE_BUDGET_BYTES"):
-        check(token in wrapper, failures, f"wrapper missing {token}")
     check("67000" not in wrapper and "19600" not in wrapper
           and "61000" not in wrapper, failures,
           "wrapper must never emit legacy collective/control bases")

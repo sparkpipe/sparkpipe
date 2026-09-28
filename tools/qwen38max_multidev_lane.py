@@ -63,6 +63,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_weightd import fleet_weightd_socket_error  # noqa: E402
 
 LANE = 2
 WORLD = 16
@@ -81,6 +85,7 @@ MESH_RANKS = ",".join(str(i) for i in range(WORLD))
 # against the module build; a drifted revision refuses to load.
 MODEL_REVISION = "d2dc35658bcf77e66643428cb52e774cc3b5bd29"
 NODE_TARGET = "cuda.sm121.qwen38.resident_decode_stage.fp8"
+EOS_TOKEN_IDS = (248046, 248044)
 
 # Placed-set pack names carry the HEX rank suffix (ranka..rankf for ranks
 # 10-15, matching host names spark0..sparkf — the operator placement
@@ -131,6 +136,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
         })
     return {
         "schema_version": 2,
+        "eos_token_ids": list(EOS_TOKEN_IDS),
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
@@ -348,8 +354,9 @@ def main() -> int:
         raise SystemExit("runtime root must be the private queue namespace")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive cap")
-    if not arguments.weightd_socket.startswith("/run/sparkpipe-weightd-shared/"):
-        raise SystemExit("weightd socket must be the operator's shared unit")
+    socket_error = fleet_weightd_socket_error(arguments.weightd_socket)
+    if socket_error:
+        raise SystemExit(socket_error)
 
     files = render(arguments.rank, arguments.runtime_root,
                    arguments.weightd_socket, arguments.kv_backing_bytes)

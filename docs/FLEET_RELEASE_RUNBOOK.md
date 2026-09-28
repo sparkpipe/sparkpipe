@@ -38,9 +38,9 @@ Network (lead-dev facts and read-only checks, 2026-09-28):
 - Busy-polled 64 B UDP round trip: sparkf to hub 22.6 µs p50 and 25.2 µs p99;
   other Sparks, forwarded by sparkf, about 300 µs p50.
 - Agents do not use this link for releases. They fetch over tailscale from
-  `http://100.123.97.61:8802` (`:263`, `FLEET_HTTP_RELEASE` overrides) and scp
+  `http://100.123.97.61:8802` (`:218`, `FLEET_HTTP_RELEASE` overrides) and scp
   heartbeats and mesh records to the `HUB` argument, `spec@100.123.97.61`
-  (`:102-103`, `:273-293`). A `HUB` of `sparkf` is a legacy alias that the agent
+  (`:101-102`, `:228-248`). A `HUB` of `sparkf` is a legacy alias that the agent
   maps to the same address (`:5-6`).
 
 The hub also runs unrelated workloads, the chess/nnue training among them.
@@ -63,7 +63,7 @@ RestartSec=3
 ```
 
 The agent must run from `~/sparkdata/core/bin/`, the file that `sync_core`
-replaces and `self_update` executes (`:415-424`).
+replaces and `self_update` executes (`:370-379`).
 
 Every Spark carries the same drop-in,
 `~/.config/systemd/user/fleet-agent.service.d/20-serving.conf` (sha256 prefix
@@ -82,11 +82,11 @@ Environment=SPARK_TP_WAIT_MODE=hardware
 
 | Variable | Effect |
 | --- | --- |
-| `G5_GRAPH_PATH=1` | Passed to the engine as `SPARK_GLM5_NEXT_GRAPH_PATH` (`:200`): CUDA-graph chains. |
-| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS` (`:199`). The module pins every expert at boot (`spark_glm5_next_resident_decode_stage_module.c:664`). Graphs require full pinning since `78c2c21`. |
+| `G5_GRAPH_PATH=1` | Passed to the engine as `SPARK_GLM5_NEXT_GRAPH_PATH` (`:199`): CUDA-graph chains. |
+| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS` (`:198`). The module pins every expert at boot (`spark_glm5_next_resident_decode_stage_module.c:664`). Graphs require full pinning since `78c2c21`. |
 | `SPARK_TP_WAIT_MODE=hardware` | Inherited by the engine and read by the device collective (`ring/transport/tp_device_collective.c:1420`). |
-| `G5_API_DISABLED=1` | Rank 0 does not start the root's API (`:219`); the API is `g53-api` on the hub. The agent runs under `set -u` (`:2`), so the variable must be defined on spark0. If it is unset, rank 0 exits at `ensure_api`, and systemd's restart takes weightd and the engine down with it (see below). |
-| `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:574`, `:595`). |
+| `G5_API_DISABLED=1` | No longer read. Since #1261 the agent has no `ensure_api` and never starts an API; the API is `g53-api` on the hub. The line is inert and can leave the drop-in. |
+| `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:529`, `:550`). |
 
 With this drop-in, GLM 5.3 Flash measured 36 tok/s at B1: 23-24.5 ms/token,
 8-step graph chains, all 12096 experts pinned (lead-dev measurement,
@@ -94,8 +94,8 @@ With this drop-in, GLM 5.3 Flash measured 36 tok/s at B1: 23-24.5 ms/token,
 that `sha256sum ~/.config/systemd/user/fleet-agent.service.d/20-serving.conf`
 matches on all sixteen.
 
-The agent starts weightd with `setsid nohup` (`:509`) and the engine with
-`nohup ... &` (`:201`). Neither leaves the unit's cgroup, and the unit uses
+The agent starts weightd with `setsid nohup` (`:464`) and the engine with
+`nohup ... &` (`:200`). Neither leaves the unit's cgroup, and the unit uses
 the default `KillMode=control-group`. On spark0 on 2026-09-28, the cgroup held
 the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
 `./bin/sparkpipe_model_residentd`. Therefore:
@@ -104,7 +104,7 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
   (which needs `daemon-reload` and a restart), and any exit of the agent all
   take down weightd and the engine on that node. The engine then comes back
   cold and pins every expert again. Treat each of these as a planned outage.
-- A new agent restarts nothing: `self_update` is an `exec` in place (`:423`).
+- A new agent restarts nothing: `self_update` is an `exec` in place (`:378`).
 - The user manager must linger (`sudo loginctl enable-linger <user>`).
   Without it, systemd stops the user manager, and with it fleet-agent,
   weightd and the engine, when the user's last login session ends, and does
@@ -113,39 +113,39 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
   sparkf had no `/var/lib/systemd/linger` entry and were running on open
   sessions (read-only check).
 
-### 2.2 One loop pass (every 1 s, `:604-624`)
+### 2.2 One loop pass (every 1 s, `:559-578`)
 
 1. `sync_core` (and `sync_root` per root in step 6) fetches the root's
    `MANIFEST`. If it differs from `.applied_manifest`, the agent fetches only the
    entries whose sha changed, verifies each sha, moves the file into place and
-   sets `bin/*` to mode 755 (`:316-354`). Files are not re-verified while the
-   MANIFEST is unchanged (`:324`). A file replaced on a node by hand stays until
+   sets `bin/*` to mode 755 (`:271-309`). Files are not re-verified while the
+   MANIFEST is unchanged (`:279`). A file replaced on a node by hand stays until
    the hub changes that entry.
 2. `install_core` acts when `core/WEIGHTSD_BIN` equals the sha16 of
    `core/bin/sparkpipe_weightd` and differs from the installed weightd. It
    installs the binary into `~/sparkdata/weightd/` (temp + `mv`) and restarts
-   nothing (`:401-413`).
+   nothing (`:356-368`).
 3. `self_update` executes a changed `core/bin/fleet_node_agent.sh`
-   (`:415-424`).
+   (`:370-379`).
 4. `node_doctor` flaps the netdev of `rocep1s0f1` when the port is not
-   `PORT_ACTIVE` (`:426-440`). `janitor` sends `kill -9` to every duplicate
+   `PORT_ACTIVE` (`:381-395`). `janitor` sends `kill -9` to every duplicate
    engine in the same root that is more than 1800 s old, keeping the
-   longest-running one; its log line says the opposite (`:442-460`).
-5. `ensure_weightd` (`:462-516`). If it fails, the pass only reports and stops
-   there (`:610-614`): no root sync, engine start, API or warmup runs on that
+   longest-running one; its log line says the opposite (`:397-415`).
+5. `ensure_weightd` (`:417-471`). If it fails, the pass only reports and stops
+   there (`:565-569`): no root sync, engine start, API or warmup runs on that
    node. It fails when:
    - a `sparkpipe_weightd` runs from any other path ("unknown owner",
-     `:473-475`);
+     `:428-430`);
    - the installed weightd differs from the running one while an engine runs
-     ("requires dependent engines to drain", `:485-489`). With no engine
+     ("requires dependent engines to drain", `:440-444`). With no engine
      running, it sends TERM and starts the new binary on a later pass
-     (`:490-492`);
+     (`:445-447`);
    - the control socket is not accepting yet, or weightd was just started.
 
    weightd is launched with `--socket /tmp/spark_weightd.sock --mesh-rank R
    --mesh-rank-mask 0xffff --mesh-interface rocep1s0f1 --mesh-sgid-index 3`
-   (`:509-511`).
-6. `sync_root` decides the restart scope (`:356-393`):
+   (`:464-466`).
+6. `sync_root` decides the restart scope (`:311-348`):
    - a changed engine binary, `lib/*`, `stages/*` or
      `config/model_resident.json` restarts the root: TERM, 15 s grace,
      `kill -9` fallback, memory gate, start;
@@ -153,25 +153,25 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
    - a changed `config/stage_*.json` only relinks `config/stage.json`.
 
    The root's deployment file is `model_resident.json` at the top of the root
-   (`:187`, `:202`, and the hub MANIFEST), which matches none of these patterns.
+   (`:186`, `:201`, and the hub MANIFEST), which matches none of these patterns.
    A change to that file alone lands on disk without a restart. Ship it with an
    engine, library or stage change, or drain the root (section 4.3).
 7. `sync_rendezvous` ships this node's mesh record to the hub and fetches the
-   peers' records (`:265-314`).
+   peers' records (`:220-269`).
 8. `ensure_root` starts a down root. It also recycles an engine whose binary or
-   driver changed since boot (`:527-568`). The guards:
-   - a node up less than 900 s does not start engines (`:561`);
-   - a per-class backoff doubles up to 60 s (`:165-176`);
-   - `MemAvailable` must reach the packs' `du -sBG` plus 8 GB (`:151-159`).
+   driver changed since boot (`:482-523`). The guards:
+   - a node up less than 900 s does not start engines (`:516`);
+   - a per-class backoff doubles up to 60 s (`:164-175`);
+   - `MemAvailable` must reach the packs' `du -sBG` plus 8 GB (`:150-158`).
      `du -sBG` rounds small files up, so the threshold reads high;
-   - a multi-rank root waits for `/tmp/weightd-mesh/.ready` (`:187-191`).
-9. `ensure_api` and `warmup_hook` run on rank 0 only; the drop-in turns both
-   off.
-10. `report_if_changed` (`:106-119`).
+   - a multi-rank root waits for `/tmp/weightd-mesh/.ready` (`:186-190`).
+9. `warmup_hook` runs on rank 0 only; `G5_WARMUP=0` turns it off. The agent
+   never starts an API.
+10. `report_if_changed` (`:105-118`).
 
 The agent writes its heartbeat locally and copies it to the hub only at agent
 start, when an engine starts, and when a root's state or pid changes
-(`:106-119`, `:204`, `:526`). A steady node does not report again, and a dead
+(`:105-118`, `:203`, `:481`). A steady node does not report again, and a dead
 node leaves its last `ready` file on the hub. The `epoch` field is therefore
 not a liveness signal; check the nodes themselves (section 4.3).
 
@@ -203,6 +203,27 @@ That script runs `tools/module_build_release.sh glm5_next_resident_decode_stage
 fp8 glm53_release 84c6a6aa9497188e15a635ba793b0f95a79b1033
 model_contracts/glm53_flash_authoritative.json`
 (`glm5_next_build_release.sh:7`).
+
+From the workstation checkout (the controller's ledger is
+`~/.sparkpipe/queue`), the release lane runs:
+
+```sh
+SHA=<MERGED_MAIN_SHA>; S7=${SHA:0:7}
+python3 tools/spark_queue.py sync --id release-glm53-$S7 --nodes sparkf --ref $SHA
+python3 tools/spark_queue.py add --id release-glm53-$S7-build --nodes sparkf \
+    --resources gpu --memory-mib 32768 --ttl-min 15 --by lane-release \
+    --cwd /home/sparkf/srcdata/sparkqueue/release-glm53-$S7/$SHA \
+    --cmd 'bash tools/glm5_next_build_release.sh'
+python3 tools/spark_queue.py status --id release-glm53-$S7-build
+```
+
+On 2026-09-28 the job for `09fdad6` was admitted in under 10 s and finished
+in about 50 s with `BUILD-PASS`. The job log is
+`/tmp/sparkqueue-<attempt>.log` on sparkf. `build/glm53_release.tar.gz.sha256`
+names the tarball relative to the checkout root, so run `sha256sum -c` from
+there. The queue is used only for this build, because
+`module_build_release.sh` requires `SPARK_QUEUE_ID`; do not set it by hand
+and do not edit the guard.
 
 `module_build_release.sh` takes exactly five arguments. It requires
 `SPARK_QUEUE_ID`, a clean tracked tree, and no `build/obj` or `build/modules`
@@ -361,7 +382,7 @@ cd ~/release/core && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp &&
 ### 5.1 Agent
 
 An agent publish needs no announce and reaches every node within seconds,
-because each `self_update` executes the new file (`:415-424`). On 09-28 a
+because each `self_update` executes the new file (`:370-379`). On 09-28 a
 stale agent in the hub core, one without `--mesh-rank-mask`, reached every
 node this way and replaced the fixed agent. weightd refuses a mesh identity
 unless all four mesh fields are given (`node/weightd.c:258-265`, exit 2), so the
@@ -402,11 +423,11 @@ A weightd change restarts every engine cold.
 4. On every node, verify that the running weightd is the announced sha:
    `sha256sum < /proc/$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16`.
    The heartbeat's `weightd` field is the installed file, not the running
-   process (`:81-83`).
+   process (`:80-82`).
 
 weightd reclaims a stale `/tmp/spark_weightd.sock` itself before `bind`
 (`runtime/spark_weightd.c:3419-3420`), and the agent recycles weightd with
-TERM only (`:490-492`). That code contradicts the 09-28 handoff's stale-socket
+TERM only (`:445-447`). That code contradicts the 09-28 handoff's stale-socket
 diagnosis. When a new weightd will not start, look for a surviving weightd pid
 and for a holder of the latch port (`ss -ltnp | grep 61900`).
 
@@ -497,7 +518,7 @@ systemctl --user restart g53-api && sleep 5 && systemctl --user is-active g53-ap
 ```
 
 The unit has `Restart=no`, so a crashed API stays down until someone restarts
-it. For a smoke check, send the agent's warmup request (`:595-598`):
+it. For a smoke check, send the agent's warmup request (`:550-553`):
 
 ```sh
 curl -s --max-time 900 http://127.0.0.1:8433/v1/completions -H 'Content-Type: application/json' \
@@ -547,7 +568,7 @@ To bootstrap one node:
 1. Check the prerequisites:
    - `sparkpipe-hub-route.service` (section 1);
    - the node's SSH key is authorized for `spec@100.123.97.61` (the agent adds
-     the host key itself, `:260-262`);
+     the host key itself, `:215-217`);
    - linger is enabled for the user (section 2.1);
    - the root's packs are in `~/sparkdata/<root>/packs/`, because the channel
      never syncs packs.
@@ -594,10 +615,10 @@ To bootstrap one node:
     [SERVING_RELEASE_RECOVERY_20260924.md](SERVING_RELEASE_RECOVERY_20260924.md).
 - **Cores.** They are written to `~/sparkdata/<root>/core.*` (`ulimit -c
   unlimited`, `:3`). Get a backtrace with `sudo -n gdb -p PID -batch -ex bt`.
-  The engine runs with `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` (`:196`), because
+  The engine runs with `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` (`:195`), because
   the in-process GPU dump wedged engines past TERM on 09-18.
 - **Logs.** The engine logs to `~/sparkdata/<root>/residentd.log`, rotated at
-  each start with 20 kept (`:518-522`). weightd logs to `~/weightd.log`. The API
+  each start with 20 kept (`:473-477`). weightd logs to `~/weightd.log`. The API
   logs to `~/g53-api-channel/api.log` on the hub.
 
 ## 9. Laws
@@ -630,7 +651,7 @@ Each of these was paid for in an incident.
    capped at MemoryHigh 100G and MemoryMax 108G
    (`tools/devcycle/ds4_spark_brickproof.py:98-99`).
 10. Commit tool scripts with the exec bit (`git update-index --chmod=+x`). The
-    agent restores `bin/*` modes itself (`:346`).
+    agent restores `bin/*` modes itself (`:301`).
 11. `strings | grep -q` under `pipefail` exits 141 (SIGPIPE). Redirect to
     `/dev/null` instead.
 12. Warm storage (Ceph, `/mnt/model-warm`) is a pack source only, never a

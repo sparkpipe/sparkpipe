@@ -17,9 +17,8 @@ below used a mock upstream.
   `sparkpipe_model_api` in the systemd user unit `g53-api` on the rtx5090,
   port 8433, an x86 build of the engines' source commit
   ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md) §6; the COMPSEC-17
-  receipt below lists the build). No Spark serves an API: the serving drop-in sets
-  `G5_API_DISABLED=1`, and `ensure_api` in `tools/fleet_node_agent.sh` then
-  starts none.
+  receipt below lists the build). No Spark serves an API: `tools/fleet_node_agent.sh`
+  has not started one since #1261.
 - Nothing changes on the Sparks or the hub to add the door.
 
 ## The model_api contract (read first)
@@ -55,9 +54,21 @@ Optional request fields:
 | `temperature` | `0` (the default) decodes greedily; `0.0001` to `2` samples from softmax(logits / T) with Gumbel-max noise keyed by (seed, position, token) |
 | `seed` | unsigned 64-bit; the same seed, prompt and deployment reproduce a sampled completion token for token. Without one, the API draws a random seed and logs it |
 | `top_p` | accepted only as `1`: nucleus sampling is not implemented |
+| `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
-A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed` or
-`top_p` is a `400 invalid_option`, never a silent default. A nonzero
+`messages` are rendered as `[gMASK]<sop>`, then `<|system|>\n`,
+`<|user|>\n` or `<|observation|>\n` plus the content for each turn. The
+assistant header is `<|assistant|>\n<think></think>\n` with thinking off,
+the layout the COMPSEC-17 quality gate validates
+(`tools/glm5_next_compsec17.py --thinking off`), and `<|assistant|>\n<think>`
+with `enable_thinking`. Past assistant turns and the generation prompt use
+the same header, so the next turn's prompt extends the previous prompt and
+reply and reuses its cached prefix.
+
+A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
+`top_p` or `chat_template_kwargs`, or `chat_template_kwargs` on a
+`prompt` or `prompt_token_ids` request, is a `400 invalid_option`, never a
+silent default. A nonzero
 temperature on a deployment whose adapter cannot sample is a `400
 sampling_unsupported`. A prompt plus `max_tokens` that the
 deployment's context or KV pages cannot hold is a `400

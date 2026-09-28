@@ -204,22 +204,22 @@ else bad "report: fleet_view_serve schema emitted"; fi
 echo "== J. publish_local.sh: staging + no staging left + MANIFEST consistent"
 TREE="$HOME/sparkpipe-build"
 PUBREL="$HOME/release/$ROOT"
-mkdir -p "$TREE/build/modules/fam/codec" "$TREE/build" "$HOME/sparkdata/out/stages/stage_000" "$PUBREL/config"
+mkdir -p "$TREE/build/modules/glm5_next_resident_decode_stage/codec" "$TREE/build" "$HOME/sparkdata/out/stages/stage_000" "$PUBREL/config"
 echo residentd-bin > "$TREE/build/sparkpipe_model_residentd"
 echo api-bin > "$TREE/build/sparkpipe_model_api"
 echo transport > "$TREE/build/libhidden_transport_spark_host_rdma_verbs.so"
-echo adapter > "$TREE/build/modules/fam/codec/libglm5_next_serving_adapter_codec.so"
+echo adapter > "$TREE/build/modules/glm5_next_resident_decode_stage/codec/libglm5_next_serving_adapter_codec.so"
 echo driver > "$HOME/sparkdata/out/stages/stage_000/model_driver.so"
 echo stagecfg-live > "$PUBREL/config/stage_00.json"
 echo '{"runtime_root":"sparkdata/example.fp8.tp16"}' > "$PUBREL/model_resident.json"
-if bash tools/publish_local.sh fam codec "$ROOT"; then
+if bash tools/publish_local.sh glm5_next_resident_decode_stage codec "$ROOT"; then
     ok "publish_local: exited clean"
 else
     bad "publish_local: exited clean"
 fi
 [ -d "$PUBREL/.staging" ] && bad "publish: .staging removed" || ok "publish: .staging removed"
 [ -x "$PUBREL/bin/sparkpipe_model_residentd" ] && ok "publish: residentd installed" || bad "publish: residentd installed"
-[ -f "$PUBREL/lib/model_serving_adapter.so" ] && ok "publish: adapter installed" || bad "publish: adapter installed"
+[ "$(cat "$PUBREL/lib/model_serving_adapter.so" 2>/dev/null)" = adapter ] && ok "publish: family adapter installed" || bad "publish: family adapter installed"
 grep -q "  bin/sparkpipe_model_residentd" "$PUBREL/MANIFEST" && ok "publish: MANIFEST lists artifacts" || bad "publish: MANIFEST lists artifacts"
 grep -q "  config/stage_00.json" "$PUBREL/MANIFEST" && ok "publish: MANIFEST covers pre-existing configs" || bad "publish: MANIFEST covers pre-existing configs"
 disk=$(sha256sum < "$PUBREL/bin/sparkpipe_model_api" | cut -d' ' -f1)

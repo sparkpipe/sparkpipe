@@ -14,8 +14,8 @@ Hub operations (publishing roots, heartbeats) are governed by
   (`~/release`, `~/current`, `~/g53-api-channel`, `~/draft_service`,
   `/srv/workspace/drafters`). Never kill or restart anything else: the host runs
   unrelated jobs (FLEET_RELEASE_RUNBOOK.md §1, and AGENTS.md).
-- Do not install the output of `tools/rtx5090_spec_node.py plan` or
-  `render-netplan`: it predates the hub role (see [Tooling](#tooling)).
+- Review the output of `tools/rtx5090_spec_node.py plan` against the live
+  host before installing any of it (see [Tooling](#tooling)).
 - Do not run `tools/hardware/rtx5090_qualify.cu` on a busy host: it
   allocates all free VRAM minus 2 GiB, capped at 28 GiB (rtx5090_qualify.cu:47-49),
   then runs a 60 s cuBLAS GEMM stress (:139). Rerun only with an idle GPU and
@@ -89,17 +89,18 @@ GEMM for 60 s averaged 233.89 TFLOP/s with correct output; peak 384 W and
 ## Tooling
 
 `tools/rtx5090_spec_node.py` and `deployment/rtx5090_speculation/node.example.json`
-describe the 09-03 draft-only box and no longer match the host:
+model the hub role since `7a0940e` (#1297, profile format
+`ds4-auxiliary-node-v2`): the netplan render carries the route to the Spark
+fabric through sparkf, the sparkf `nmcli` render names
+`ds4-speculation-link`, and `plan` also renders the Spark hub-route unit.
+`verify` is read-only (ssh probes and pings) and checks the hub's release
+endpoint, API unit and heartbeats. Two parts still predate the host:
 
-- `render-netplan` emits an address with no routes (rtx5090_spec_node.py:110-128).
-  Installed on the hub it would drop the static route to 10.10.100.0/24 and
-  cut the hub and API off from the fleet.
-- The sparkf `nmcli` render modifies connection `ds4-uplink-wired`
-  (:167-186); that connection was already renamed `ds4-speculation-link`.
-- `verify` is read-only (ssh probes and pings), but its storage gate checks
-  the profile's `drafters_path`; the example's `/srv/drafters` now fails the
-  600 GiB capacity check, and `runtime.transport` still says
-  `not_implemented` although the DFT3 client exists.
+- `validate_profile` requires `drafters_path` to be `/srv/drafters`
+  (rtx5090_spec_node.py:115-116), so the storage gate checks the empty
+  directory and not the drafter LV at `/srv/workspace`.
+- `runtime.transport` must be `not_implemented` (:109-110) although the DFT3
+  client exists.
 
 `deployment/rtx5090_speculation/spark_ssh_failover.example.json` is used by
 [SPARK_MANAGEMENT_FAILOVER.md](SPARK_MANAGEMENT_FAILOVER.md) and is not

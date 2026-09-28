@@ -25,7 +25,6 @@ PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
 LAST_REPORT=""
 LAST_PIDS=""
-LAST_API_START=0
 
 sha16() {
     local s=""
@@ -202,50 +201,6 @@ start_root() {
         --deployment model_resident.json --rank-index "$RANK" \
         > residentd.log 2>&1 < /dev/null &
     report
-}
-
-api_root() {
-    local r
-    [ -n "${G5_API_ROOT:-}" ] && { echo "$G5_API_ROOT"; return; }
-    IFS=, read -ra RA <<< "$ROOTS"
-    for r in "${RA[@]}"; do
-        [ -x "$HOME/sparkdata/$r/bin/sparkpipe_model_api" ] && { echo "$r"; return; }
-    done
-    echo "${RA[0]}"
-}
-
-ensure_api() {
-    [ "$RANK" = 0 ] || return 0
-    [ -n "$G5_API_DISABLED" ] && return 0
-    local rr="$HOME/sparkdata/$(api_root)"
-    [ -x "$rr/bin/sparkpipe_model_api" ] || return 0
-    local ready_count now
-    ready_count=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$HUB" \
-        "grep -l '\"state\":\"ready' current/*.json 2>/dev/null | wc -l" 2>/dev/null)
-    [ "${ready_count:-0}" -ge 16 ] || return 0
-    local p rpid
-    proc_start() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null || echo 0; }
-    for p in $(pgrep -f "bin/sparkpipe_model_api"); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$rr" ] || continue
-        rpid=$(pgrep -f "bin/sparkpipe_model_residentd" | head -1)
-        if [ -n "$rpid" ] && [ "$(proc_start "$rpid")" -gt "$(proc_start "$p")" ]; then
-            echo "$(date +%T) api: predates residentd; draining"
-            drain_match "bin/sparkpipe_model_api" "$rr" 10 || kill_match "bin/sparkpipe_model_api" "$rr"
-            return 0
-        fi
-        return 0
-    done
-    now=$(date +%s)
-    [ $((now - LAST_API_START)) -lt 15 ] && return 0
-    LAST_API_START=$now
-    echo "$(date +%T) api: starting"
-    cd "$rr" || return 1
-    [ -s api.log ] && mv api.log "api-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
-    ${G5_MAX_PREFILL_ROWS:+SPARK_MODEL_API_MAX_PREFILL_ROWS="$G5_MAX_PREFILL_ROWS"} \
-    ${G5_INFLIGHT_BUDGET_NS:+SPARK_BATCH_INFLIGHT_BUDGET_NS="$G5_INFLIGHT_BUDGET_NS"} \
-    LD_LIBRARY_PATH="$rr/lib" setsid nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_api \
-        --deployment model_resident.json --runtime-root "$rr" --port "${G5_API_PORT:-8433}" \
-        > api.log 2>&1 < /dev/null &
 }
 
 restart_root() {
@@ -617,7 +572,6 @@ while true; do
     for r in "${RA[@]}"; do sync_rendezvous "$r"; done
     for r in "${RA[@]}"; do ensure_root "$r"; done
     for r in "${RA[@]}"; do prune_logs "$HOME/sparkdata/$r"; done
-    ensure_api
     warmup_hook
     report_if_changed
     sleep 1

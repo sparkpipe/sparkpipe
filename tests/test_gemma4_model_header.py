@@ -5,7 +5,8 @@ One family, one parameter file: model-families/gemma4/include/sparkpipe/llm_defi
 carries the 31B values under SPARK_GEMMA4_MODEL_* and the 26B-A4B values under
 SPARK_GEMMA4_MOE_*; the SPARK_GEMMA4_MODEL_* alias fold under
 SPARK_GEMMA4_MOE_BUILD re-points the generic namespace at the MoE values at
-compile time. Each contract binds to its own prefix in this single file.
+compile time. Each contract binds to its own prefix in this single file, and
+the C compiler evaluates every macro.
 Run: python3 tests/test_gemma4_model_header.py
 """
 
@@ -16,9 +17,14 @@ import re
 import sys
 from pathlib import Path
 
+from c_macro_values import MacroProbeError, c_macro_values, value_matches
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 FAMILY_DEFINES = REPOSITORY / "model-families/gemma4/include/sparkpipe/llm_defines.h"
+INCLUDE_DIRECTORIES = [REPOSITORY / "model-families/gemma4/include",
+                       REPOSITORY / "model-families/common/include", REPOSITORY,
+                       REPOSITORY / "include"]
 
 CONTRACTS = [
     {
@@ -76,74 +82,47 @@ COMPOSED_BINDINGS = {
 }
 
 
-def macro(header: str, name: str) -> float:
-    """Resolve one #define to a number: numeric defines directly, composed
-    defines by evaluating their expression over previously resolved names
-    (line continuations joined first)."""
-    joined = header.replace("\\\n", " ")
-    defines: dict[str, str] = {}
-    for match in re.finditer(r"^#define\s+(\w+)[ \t]+([^\n]+?)\s*$", joined, re.M):
-        defines[match.group(1)] = match.group(2).strip()
-    if name not in defines:
-        raise AssertionError(f"header missing #define {name}")
-
-    def resolve(target: str, seen: frozenset) -> float:
-        text = defines[target]
-        if target in seen:
-            raise AssertionError(f"cyclic define {target}")
-        try:
-            return float(text.rstrip("uf"))
-        except ValueError:
-            pass
-        expression = re.sub(r"\w+", lambda m: (
-            str(resolve(m.group(0), seen | {target}))
-            if m.group(0) in defines and m.group(0) != target else m.group(0)), text)
-        expression = re.sub(r"(\d)[uf]\b", r"\1", expression)  # strip C suffixes
-        return float(eval(expression, {"__builtins__": {}}, {}))  # noqa: S307 - header constants only
-
-    return resolve(name, frozenset())
+EOS_SUFFIXES = ("EOS_TOKEN_ID", "EOS_ALTERNATE_TOKEN_ID", "EOS_ALTERNATE_2_TOKEN_ID")
 
 
-def check_contract(entry: dict) -> list[str]:
+def contract_expressions(prefix: str, model: dict) -> list[str]:
+    names = [prefix + suffix for suffix in BINDINGS.values()]
+    names += [prefix + suffix for key, suffix in MOE_ONLY_BINDINGS.items() if key in model]
+    names += [prefix + suffix for suffix in COMPOSED_BINDINGS]
+    names += [prefix + suffix for suffix in EOS_SUFFIXES]
+    return names
+
+
+def check_contract(entry: dict, values: dict) -> list[str]:
     prefix = entry["prefix"]
     contract = json.loads(entry["path"].read_text(encoding="utf-8"))
-    header = entry["header"].read_text(encoding="utf-8")
     model = contract["model"]
     tag = contract["model_id"]
     failures: list[str] = []
     for key, suffix in BINDINGS.items():
         expected = model[key]
-        actual = macro(header, prefix + suffix)
-        if float(expected) != actual:
-            failures.append(f"{tag} {prefix}{suffix}: header {actual} contract {expected}")
+        actual = values[prefix + suffix]
+        if not value_matches(expected, actual):
+            failures.append(f"{tag} {prefix}{suffix}: header {actual!r} contract {expected!r}")
     for key, suffix in MOE_ONLY_BINDINGS.items():
         if key not in model:
             continue
         expected = model[key]
-        actual = macro(header, prefix + suffix)
-        if float(expected) != actual:
-            failures.append(f"{tag} {prefix}{suffix}: header {actual} contract {expected}")
+        actual = values[prefix + suffix]
+        if not value_matches(expected, actual):
+            failures.append(f"{tag} {prefix}{suffix}: header {actual!r} contract {expected!r}")
     for suffix, derive in COMPOSED_BINDINGS.items():
         expected = derive(model)
-        actual = macro(header, prefix + suffix)
-        if float(expected) != actual:
-            failures.append(f"{tag} {prefix}{suffix}: header {actual} derived {expected}")
-    for token in model["eos_token_ids"]:
-        name = (prefix + "EOS_TOKEN_ID") if token == model["eos_token_ids"][0] else None
-        alternates = [prefix + "EOS_ALTERNATE_TOKEN_ID", prefix + "EOS_ALTERNATE_2_TOKEN_ID"]
-        if name is None:
-            continue
-        matched = any(float(model["eos_token_ids"][0]) == macro(header, name)
-                      or token == macro(header, alt) for alt in alternates)
-        if not matched:
-            failures.append(f"{tag}: eos {token} not bound in header")
-    header_eos = {
-        macro(header, prefix + "EOS_TOKEN_ID"),
-        macro(header, prefix + "EOS_ALTERNATE_TOKEN_ID"),
-        macro(header, prefix + "EOS_ALTERNATE_2_TOKEN_ID"),
-    }
-    if header_eos != set(model["eos_token_ids"]):
-        failures.append(f"{tag}: header eos set {sorted(header_eos)} != contract {model['eos_token_ids']}")
+        actual = values[prefix + suffix]
+        if not value_matches(expected, actual):
+            failures.append(f"{tag} {prefix}{suffix}: header {actual!r} derived {expected!r}")
+    eos = model["eos_token_ids"]
+    if values[prefix + "EOS_TOKEN_ID"] != float(eos[0]):
+        failures.append(f"{tag}: {prefix}EOS_TOKEN_ID {values[prefix + 'EOS_TOKEN_ID']!r} "
+                        f"is not the first contract eos {eos[0]}")
+    header_eos = {values[prefix + suffix] for suffix in EOS_SUFFIXES}
+    if header_eos != {float(token) for token in eos}:
+        failures.append(f"{tag}: header eos set {sorted(header_eos)} != contract {eos}")
     if contract["source_revision"] == "pending-warm-download":
         failures.append(f"{tag}: source_revision still pending-warm-download")
     elif not re.fullmatch(r"[0-9a-f]{40}", contract["source_revision"]):
@@ -164,11 +143,20 @@ def main() -> int:
         return 1
     failures: list[str] = []
     bindings = 0
+    expressions: list[str] = []
+    for entry in CONTRACTS:
+        model = json.loads(entry["path"].read_text(encoding="utf-8"))["model"]
+        expressions += contract_expressions(entry["prefix"], model)
+    try:
+        values = c_macro_values(INCLUDE_DIRECTORIES, "sparkpipe/llm_defines.h", expressions)
+    except MacroProbeError as error:
+        print(f"FAILED {error}")
+        return 1
     for entry in CONTRACTS:
         contract = json.loads(entry["path"].read_text(encoding="utf-8"))
         model = contract["model"]
         bindings += len(BINDINGS) + sum(1 for k in MOE_ONLY_BINDINGS if k in model) + len(COMPOSED_BINDINGS)
-        failures.extend(check_contract(entry))
+        failures.extend(check_contract(entry, values))
         digest = contract.get("digest_freeze", {})
         files = digest.get("files", {})
         for name in ("config.json", "model.safetensors.index.json"):
