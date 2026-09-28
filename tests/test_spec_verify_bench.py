@@ -40,8 +40,11 @@ class Handler(BaseHTTPRequestHandler):
             event = {"choices": [{"text": f"<{token}>"}]}
             if not Handler.omit_tokens:
                 event["tokens"] = [token]
-            self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
-            self.wfile.flush()
+            try:
+                self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
             time.sleep(0.01)
         self.wfile.write(b"data: [DONE]\n\n")
 
