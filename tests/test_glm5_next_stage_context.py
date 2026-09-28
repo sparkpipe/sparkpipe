@@ -223,7 +223,23 @@ cudaError_t cudaGraphInstantiate(cudaGraphExec_t *exec,cudaGraph_t graph,...) { 
 cudaError_t cudaGraphUpload(cudaGraphExec_t exec,cudaStream_t stream) { (void)exec;(void)stream;abort(); }
 cudaError_t cudaGraphDestroy(cudaGraph_t graph) { (void)graph;abort(); }
 cudaError_t cudaEventSynchronize(cudaEvent_t event) { (void)event;abort(); }
-SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count) { (void)layer;(void)offsets;(void)expert_count;(void)packed_rows;(void)keys;(void)capacity;(void)count;abort(); }
+SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count)
+{
+	uint32_t expert;
+	*count = 0u;
+	if ( offsets[0] != 0u || offsets[expert_count] != packed_rows )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	for (expert=0u; expert<expert_count; expert++)
+		if ( offsets[expert] != offsets[expert + 1u] )
+		{
+			if ( *count >= capacity )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			keys[*count].layer = layer;
+			keys[*count].expert = expert;
+			(*count)++;
+		}
+	return(SPARK_STATUS_OK);
+}
 
 cudaError_t cudaMalloc(void **pointer,size_t bytes)
 {
@@ -379,7 +395,7 @@ static void check_graph_epoch_ownership(void)
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].graph_exec_a = (void *)(uintptr_t)9u;
 	state.slots[0].host_output_token_ids = &output;
-	state.decode_miss_host = (uint32_t *)EPOCH_WORDS;
+	state.slots[0].miss_ring = (uint32_t *)EPOCH_WORDS;
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] = 41u;
 	LEGACY_EPOCH_SETUP
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
@@ -391,16 +407,30 @@ static void check_graph_epoch_ownership(void)
 	assert(status == SPARK_STATUS_OK && position == 7u && token == 3u);
 	assert(GRAPH_LAUNCHES == 1u && EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] == 42u);
 	assert(state.completions[0].graph == 1u && state.completions[0].launch_ns != 0u);
-	state.decode_miss_host[0] = 1u;
+	state.slots[0].miss_ring[SPARK_STEP_MISS_FLAG] = 1u;state.slots[0].miss_ring[SPARK_STEP_MISS_COUNT] = 3u;
 	SparkGlm5NextGraphStep(&chain,&status);
-	assert(status == SPARK_STATUS_BUSY && position == 7u);
-	state.decode_miss_host[0] = 0u;GRAPH_ERROR = 7u;
+	assert(status == SPARK_STATUS_INTERNAL_ERROR && chain.step_verdict == SPARK_STEP_VERDICT_POISON_LOST && position == 7u);
+	assert(state.slots[0].miss_ring[SPARK_STEP_MISS_FLAG] == 0u && state.slots[0].miss_ring[SPARK_STEP_MISS_COUNT] == 0u);
+	output = SPARK_STEP_POISON_TOKEN;state.slots[0].miss_ring[SPARK_STEP_MISS_FLAG] = 1u;
+	SparkGlm5NextGraphStep(&chain,&status);
+	assert(status == SPARK_STATUS_UNSUPPORTED && chain.step_verdict == SPARK_STEP_VERDICT_ROLLBACK_LOCAL && position == 7u && token == 3u);
+	SparkGlm5NextGraphStep(&chain,&status);
+	assert(status == SPARK_STATUS_UNSUPPORTED && chain.step_verdict == SPARK_STEP_VERDICT_ROLLBACK_REMOTE && position == 7u);
+	assert(SparkGlm5NextGraphResult(&chain,status) == 1u && atomic_load(&state.terminal_status) == SPARK_STATUS_OK);
+	assert(state.step_verdicts[SPARK_STEP_VERDICT_POISON_LOST] == 1u && state.step_verdicts[SPARK_STEP_VERDICT_ROLLBACK_LOCAL] == 1u && state.step_verdicts[SPARK_STEP_VERDICT_ROLLBACK_REMOTE] == 1u);
+	output = 123u;
+	SparkGlm5NextGraphStep(&chain,&status);
+	assert(status == SPARK_STATUS_OK && chain.step_verdict == SPARK_STEP_VERDICT_COMMIT && state.step_verdicts[SPARK_STEP_VERDICT_COMMIT] == 0u);
+	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_UNSUPPORTED) == 0u && atomic_load(&state.terminal_status) == SPARK_STATUS_OK);
+	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_INTERNAL_ERROR) == 1u && atomic_load(&state.terminal_status) == SPARK_STATUS_INTERNAL_ERROR);
+	atomic_store(&state.terminal_status,SPARK_STATUS_OK);
+	GRAPH_ERROR = 7u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_INTERNAL_ERROR && position == 7u);
 	GRAPH_ERROR = 0u;
 	state.lane_client = (SparkWeightdClient *)(uintptr_t)1u;HEALTH_DEAD_MASK = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
-	assert(status == SPARK_STATUS_IO_ERROR && position == 7u && GRAPH_LAUNCHES == 3u);
+	assert(status == SPARK_STATUS_IO_ERROR && position == 7u && GRAPH_LAUNCHES == 6u);
 	HEALTH_DEAD_MASK = 0u;
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 }
@@ -870,7 +900,7 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 	state.execution_stream = (void *)(uintptr_t)7u;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0);
-	state.decode_miss_host = (uint32_t *)EPOCH_WORDS;
+	state.slots[0].miss_ring = (uint32_t *)EPOCH_WORDS;
 	memset(EPOCH_WORDS,0,sizeof(EPOCH_WORDS));
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] = 42u;
 	LEGACY_EPOCH_SETUP
@@ -2428,6 +2458,46 @@ static void check_wave_timing(void)
 	assert(timing.waves == 0u && timing.worst_ns == 0u && timing.delivered_ns == UINT64_C(12061500000) && timing.window_ns == timing.delivered_ns);
 }
 
+static void check_route_trace(void)
+{
+	static uint32_t offsets[4u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u)];
+	SparkGlm5NextTpChain chain = {0};
+	uint32_t position = 41u,expert,*layer_offsets = offsets + 3u * (SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 1u);
+	char directory[] = "/tmp/g5n-route-XXXXXX",prefix[128],path[160],line[256];
+	FILE *file;
+	memset(&state,0,sizeof(state));
+	assert(unsetenv("SPARK_GLM5_NEXT_ROUTE_TRACE") == 0 && unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS") == 0);
+	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_OK && state.route_trace == 0);
+	assert(mkdtemp(directory) != 0);
+	(void)snprintf(prefix,sizeof(prefix),"%s/run",directory);
+	assert(setenv("SPARK_GLM5_NEXT_ROUTE_TRACE",prefix,1) == 0);
+	state.lazy_pack = &OPEN_PACK;state.graph_path_requested = 1u;
+	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
+	state.graph_path_requested = 0u;
+	assert(setenv("SPARK_GLM5_NEXT_PIN_EXPERTS","1",1) == 0);
+	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS") == 0);
+	state.lazy_pack = 0;
+	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
+	state.lazy_pack = &OPEN_PACK;state.stage_index = 1u;state.tp_rank = 7u;
+	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_OK && state.route_trace != 0);
+	for (expert=0u; expert<=SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT; expert++)
+		layer_offsets[expert] = expert <= 5u ? 0u : expert <= 17u ? 3u : SPARK_GLM5_NEXT_MODEL_MOE_TOP_K;
+	state.slots[0].host_group_row_offset = offsets;
+	chain.state = &state;chain.slot = &state.slots[0];chain.next_layer = 3u;chain.wave.row_count = 1u;chain.wave.host_positions = &position;
+	assert(SparkGlm5NextRouteTraceWrite(&chain) == SPARK_STATUS_OK);
+	layer_offsets[SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT] = 9u;
+	assert(SparkGlm5NextRouteTraceWrite(&chain) == SPARK_STATUS_SCHEMA_ERROR);
+	SparkGlm5NextRouteTraceClose(&state);
+	assert(state.route_trace == 0);
+	(void)snprintf(path,sizeof(path),"%s.stage01.rank07.trace",prefix);
+	file = fopen(path,"r");
+	assert(file != 0 && fgets(line,sizeof(line),file) != 0);
+	assert(strcmp(line,"G5N-ROUTE rank=7 rows=1 pos=41 layer=3 n=2 e=5,17\n") == 0 && fgets(line,sizeof(line),file) == 0);
+	assert(fclose(file) == 0 && unlink(path) == 0 && rmdir(directory) == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_ROUTE_TRACE") == 0);
+}
+
 int32_t main(void)
 {
 	SparkGlm5NextResidentDecodeStageNodeContext context = {0};
@@ -2448,6 +2518,7 @@ int32_t main(void)
 	check_wave_timing();
 	check_graph_epoch_ownership();
 	check_lazy_open_retained_owner();
+	check_route_trace();
 	check_graph_expert_ownership(0u,45u,3u,0u,0u);
 	check_graph_expert_ownership(12u,12u,12u,0u,0u);
 	check_graph_expert_ownership(12u,12u,12u,2u,0u);
@@ -2574,7 +2645,7 @@ def main():
                         str(source), str(args.common_source.resolve()), "cache/kv_cache.c", "cache/kv_page_cache.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership and terminal CUDA receipts")
+    print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership, terminal CUDA receipts, step verdicts and route trace")
 
 
 if __name__ == "__main__":

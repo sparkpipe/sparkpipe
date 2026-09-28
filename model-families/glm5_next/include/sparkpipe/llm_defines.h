@@ -54,7 +54,7 @@
 #define SPARK_LLM_STAGE_INDEX                   0u
 
 #define SPARK_LLM_MISS_PACK_STRIDE              512u
-#define SPARK_LLM_MISS_RING_CAPACITY            64u
+#define SPARK_LLM_MISS_RING_CAPACITY            1024u
 #define SPARK_LLM_ROUTE_UNION_MAX               2400u
 #define SPARK_LLM_ROUTE_UNION_TRIM              1888u
 
