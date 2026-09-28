@@ -66,7 +66,8 @@ extern LmHostDim3 gridDim;
 #define __tanf(x) tanf(x)
 #define __fdividef(x, y) ((x) / (y))
 
-static inline float rsqrtf(float value) { return 1.0f / sqrtf(value); }
+static inline float LmHostRsqrtf(float value) { return 1.0f / sqrtf(value); }
+#define rsqrtf(x) LmHostRsqrtf(x)
 
 static inline float __uint_as_float(unsigned bits)
 {
