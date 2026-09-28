@@ -106,7 +106,7 @@ def main():
                     "modules/ling_resident_decode_stage/source"]
         subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O2", "-ffunction-sections", "-fdata-sections",
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
-                        *["-I" + p for p in includes], "-DLING_EXPERT_WEIGHT_CODEC=1u",
+                        *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DLING_EXPERT_WEIGHT_CODEC=1u",
                         '-DLING_EXPERT_CODEC_NAME="bf16"', '-DLING_MODEL_REVISION="fixture"',
                         '-DLING_CONTRACT_SHA256="fixture"', str(source), "runtime/stage_module_common.c",
                         "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_page_store.c",

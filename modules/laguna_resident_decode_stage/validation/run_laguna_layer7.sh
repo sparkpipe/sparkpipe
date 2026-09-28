@@ -19,7 +19,7 @@ gpu() {
 	sudo -n sparkcap --mem 8192 "$@" 2>&1 | tee -a "$LOG"
 }
 
-nvcc -O2 -std=c++17 -gencode arch=compute_121a,code=sm_121a -DLAGUNA_EXPERT_WEIGHT_CODEC=1 \
+nvcc -O2 -std=c++17 -gencode arch=compute_121a,code=sm_121a -DSPARK_BATCH_BUCKET=1024u -DLAGUNA_EXPERT_WEIGHT_CODEC=1 \
 	-DLAGUNA_EXPERT_CODEC_NAME='"bf16"' \
 	-I"$REPO" -I"$REPO/include" \
 	-I"$REPO/model-families/laguna/include" \

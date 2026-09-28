@@ -52,7 +52,7 @@ class DriverProbeTests(unittest.TestCase):
                         "model-families/glm5_next/include",
                         "modules/glm5_next_resident_decode_stage/include"]
             command = shlex.split(os.environ.get("CC", "cc")) + [
-                "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror"]
+                "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-DSPARK_BATCH_BUCKET=1024u", "-Wall", "-Wextra", "-Werror"]
             command += ["-I" + item for item in includes]
             command += ["tests/test_glm5_next_driver_probe.c", "src/spark_admission.c", "-o", binary]
             subprocess.run(command, cwd=ROOT, check=True, timeout=60)

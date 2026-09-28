@@ -30,8 +30,8 @@ MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 QWEN38_27B_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38_27b/include
 QWEN38_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen38_max/include
-DSV4_DEFAULT_BATCH_FLAGS := -DSPARK_BATCH_BUCKET=1024u
-DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(DSV4_DEFAULT_BATCH_FLAGS)
+DEFAULT_BATCH_FLAGS := -DSPARK_BATCH_BUCKET=1024u
+DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include $(DEFAULT_BATCH_FLAGS)
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
 MIMO25_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mimo25/include
 MODEL_FAMILY_INCLUDE_FLAGS := \
@@ -43,7 +43,7 @@ MODEL_FAMILY_INCLUDE_FLAGS := \
     -Imodel-families/k3/include \
     -Imodel-families/mimo25/include
 DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
-CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src $(DSV4_DEFAULT_BATCH_FLAGS)
+CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src $(DEFAULT_BATCH_FLAGS)
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
 LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
@@ -719,7 +719,7 @@ $(QWEN38_LINK_TARGETS): $(QWEN38_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LI
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
-GLM5_NEXT_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"
+GLM5_NEXT_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"
 GLM5_NEXT_CUDA_LINK = -L$(CUDA_HOME)/lib64 -lcudart -lcuda
 GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h
 
@@ -830,7 +830,7 @@ build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRA
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/glm5_next_driver_probe: tools/glm5_next_driver_probe.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/sparkpipe_dsv4_driver_cuda_smoke: tools/sparkpipe_dsv4_driver_cuda_smoke.c modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY)
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -I$(CUDA_HOME)/include $< modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(MODEL_COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -lstdc++ -lm -o $@
@@ -1087,7 +1087,7 @@ $(TEST_LING_SERVING_DRIVER_MODULE): tests/fixtures/ling_serving_adapter_driver.c
 	$(CC) $(CPPFLAGS) -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 $(TEST_LAGUNA_SERVING_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) | build/test_modules
-	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1024 $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_defines: tests/test_gemma4_defines.c model-families/gemma4/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_hybrid_state.h model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/gemma4/include -Imodel-families/k3/include -DSPARK_GEMMA4_MODULE_BUILD=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -1211,10 +1211,10 @@ build/test_ling_serving_adapter: tests/test_ling_serving_adapter.c tests/fixture
 	$(CC) $(CPPFLAGS) -I tests/cuda_stub -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DTEST_LING_SERVING_ADAPTER_PATH=\"$(LING_SERVING_ADAPTER)\" -DTEST_LING_SERVING_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIVER_MODULE)\" -DTEST_LING_SERVING_CONFIG_PATH=\"tests/fixtures/ling_serving_adapter_config.json\" $(CFLAGS) tests/test_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 $(LAGUNA_SERVING_ADAPTER): modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=1024 $(CFLAGS) -shared -fPIC $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -shared -fPIC $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_laguna_serving_adapter: tests/test_laguna_serving_adapter.c tests/fixtures/laguna_serving_adapter_config.json $(LAGUNA_SERVING_ADAPTER) $(TEST_LAGUNA_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(DEFAULT_BATCH_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_serving_adapter: tests/test_gemma4_serving_adapter.c tests/fixtures/gemma4_serving_adapter_config.json tests/fixtures/gemma4_moe_serving_adapter_config.json $(GEMMA4_SERVING_ADAPTER) $(GEMMA4_MOE_SERVING_ADAPTER) $(TEST_GEMMA4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(GEMMA4_INCLUDE_FLAGS) -DTEST_GEMMA4_SERVING_ADAPTER_PATH=\"$(GEMMA4_SERVING_ADAPTER)\" -DTEST_GEMMA4_MOE_SERVING_ADAPTER_PATH=\"$(GEMMA4_MOE_SERVING_ADAPTER)\" -DTEST_GEMMA4_SERVING_DRIVER_PATH=\"$(TEST_GEMMA4_SERVING_DRIVER_MODULE)\" -DTEST_GEMMA4_SERVING_CONFIG_PATH=\"tests/fixtures/gemma4_serving_adapter_config.json\" -DTEST_GEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" -DTEST_GEMMA4_MOE_MODEL_REVISION=\"$(GEMMA4_MOE_MODEL_REVISION)\" $(CFLAGS) tests/test_gemma4_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -1511,7 +1511,7 @@ build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c $(RUNTIME_L
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c runtime/spark_weightd_manifest.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,5,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,5,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
 
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c,$^)) $(LDFLAGS) -o $@
