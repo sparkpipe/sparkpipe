@@ -582,10 +582,10 @@ static void TpOpenPack(const char *path, const char *sha256, uint64_t expert_poo
 		TpFail("pack-directory",path);
 	close(fd);
 	TpStatus(SparkMimo26RankPackBind(&header,tp.entries,header.tensor_count,(uint64_t)info.st_size,TP_DEGREE,&tp.layout),"pack-bind");
-	if ( strlen(sha256) != 64u || strlen(path) >= sizeof(request.pack_path) )
+	if ( strlen(sha256) != SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u || strlen(path) >= sizeof(request.pack_path) )
 		TpFail("pack-identity","sha256 must be 64 hex characters");
 	memset(&request,0,sizeof(request));
-	memcpy(request.identity.pack_sha256,sha256,64u);
+	memcpy(request.identity.pack_sha256,sha256,SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u);
 	snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_MIMO26_TP_MODULE_TAG);
 	snprintf(request.identity.revision,sizeof(request.identity.revision),"%s","mimo26flash.mxfp4.tp4.v2");
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;

@@ -70,11 +70,11 @@ static int32_t RangeWrite(FILE *pack, FILE *out, uint32_t layer, uint32_t expert
 			return(-2);
 		SparkCk128Update(&ck,buffer,piece);
 	}
-	memcpy(record,&layer,4u);
-	memcpy(record + 4u,&expert,4u);
-	memcpy(record + 8u,&kind,4u);
-	memcpy(record + 16u,&offset,8u);
-	memcpy(record + 24u,&bytes,8u);
+	memcpy(record,&layer,sizeof(layer));
+	memcpy(record + 4u,&expert,sizeof(expert));
+	memcpy(record + 8u,&kind,sizeof(kind));
+	memcpy(record + 16u,&offset,sizeof(offset));
+	memcpy(record + 24u,&bytes,sizeof(bytes));
 	SparkCk128Finalize(&ck,record + 32u);
 	return(fwrite(record,1u,sizeof(record),out) == sizeof(record) ? 0 : -3);
 }
