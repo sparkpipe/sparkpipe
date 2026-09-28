@@ -1030,7 +1030,7 @@ build/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c inc
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# Fleet startup protocol phase 1+1b registrar (docs/FLEET_STARTUP_PROTOCOL.md):
+# Fleet startup protocol phase 1+1b registrar (docs/archive/FLEET_STARTUP_PROTOCOL.md):
 # pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
 # must start in milliseconds on every node with zero library dependencies.
 build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
