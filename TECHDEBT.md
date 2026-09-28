@@ -1,9 +1,9 @@
 # SparkPipe Technical Debt
 
-This file contains only unfinished work against
-[`ARCHITECTURE.md`](ARCHITECTURE.md) and the system described in
-[`README.md`](README.md). Completed work is removed rather than retained as a
-progress diary.
+This file contains only unfinished work against the system described in
+[`README.md`](README.md) and the contracts in [`SPEC.md`](SPEC.md) and
+[`sparkpipe_invariants.md`](sparkpipe_invariants.md). Completed work is
+removed rather than retained as a progress diary.
 
 ## Dual-fabric topology contract
 

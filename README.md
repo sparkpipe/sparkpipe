@@ -132,6 +132,12 @@ arenas:
   space; experts are acquired on demand under leases and reclaimed within a
   declared budget. A missing or corrupt expert manifest is an error, never a
   reason to load the whole pack eagerly.
+- Captured decode graphs work with lazy residency. A graph records which
+  kernel arguments are expert pointers and has them patched when leases
+  move, so a graph never forces the whole expert set to stay resident.
+  Pinning every expert is a separate resident mode, selected explicitly and
+  reported with its memory cost. GLM graphs currently require that mode
+  (invariants I28-I30, [`TECHDEBT.md`](TECHDEBT.md)).
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:
@@ -141,7 +147,12 @@ external:
   across the fleet as a striped model store.
 
 Every tier caches the same content-addressed pack bytes. A nonresident model
-is promoted to serving in at most one minute.
+is promoted to serving in at most one minute. Promotion installs rank-local
+shards, binds stable pointers, prewarms kernels and graphs, constructs
+communicators and then publishes readiness atomically. It never converts or
+guesses a weight layout. Activating a model changes an execution plan and a
+residency assignment, not the public endpoint, and eviction keeps resumable
+KV and model artifacts in the storage tiers.
 
 ## The mesh
 
@@ -262,14 +273,26 @@ every step. Under pressure, admission queues work instead of thrashing.
 **Placement.** Tensor, pipeline and hybrid parallelism share one topology
 layer. It owns partitioning, collective identity, credits and progress; the
 model hooks supply only stage math and boundary shapes. Placement is chosen
-per model and per hardware:
+per model, hardware and workload by measured tokens/s and latency, not fixed
+in advance. On sixteen Sparks the candidates include:
 
-- TP16 is the latency topology.
-- TP4 × PP4 is the capacity topology, with each TP group containing two
-  complete direct pairs.
+- TP16, which spreads every layer's bytes over all sixteen nodes and pays a
+  16-rank collective per reduction;
+- TP4 × PP4 (stage `s` on ranks `4s` to `4s+3`), in which each TP group holds
+  two complete direct pairs;
+- PP16 and other TP × PP splits, which trade per-token latency for fewer
+  collectives and more concurrent micro-batches.
 
-Each catalog entry pairs a checkpoint with a topology, a resource envelope
-and qualification receipts for one hardware configuration.
+Each candidate is qualified separately before it serves. Each catalog entry
+pairs a checkpoint with a topology, a resource envelope and qualification
+receipts for one hardware configuration.
+
+**Package identity.** One generic resident process runs on each rank. A
+model package binds one exact adapter, driver, stage pack, weight format, KV
+contract, topology and hardware profile, and startup rejects any identity
+mismatch. Batch width, speculation mode and collective algorithm change per
+dispatch without reloading weights, drivers, KV, communicators or resident
+processes.
 
 **Execution order.** Submissions run in the same order on every rank.
 Collective sequence numbers are therefore identical across the fleet, and a
@@ -282,7 +305,10 @@ reordering cannot deadlock the mesh.
   on a node.
 - A model that is loading does not stop one that is serving.
 - Co-resident models run bounded, gang-scheduled quanta, and priorities and
-  deadlines apply across models.
+  deadlines apply across models. No collective of one model is interleaved
+  inside another model's committed kernel sequence.
+- Short high-priority quanta bound interactive latency, and agent work fills
+  the remaining compute, memory and network capacity.
 
 ## Speculative decoding
 
@@ -372,7 +398,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | --- | --- |
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
-| 16 Sparks | TP16 latency plans; TP4 × PP4 capacity plans |
+| 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
 | 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 
@@ -396,6 +422,17 @@ stage boundary. The Studios need the Metal backend. See
 interfaces, peers and topology tables for every rank. Startup rejects
 missing, duplicated or misrouted rails.
 
+**Office hardware.** The fleet runs on desks and ordinary office power.
+Capacity grows by adding nodes, storage and generated deployment plans,
+without changing the API, package identities, scheduler semantics or
+evidence rules.
+
+**Hub.** One host outside the Sparks publishes release roots, collects node
+heartbeats and serves the model API. In the reference fleet it is an x86
+workstation with an RTX 5090, so the API is built for x86 separately from
+the aarch64 Spark binaries. Host roles and the release procedure are in
+[`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
+
 ## Models
 
 Drivers exist in `modules/` for these families:
@@ -406,14 +443,14 @@ Drivers exist in `modules/` for these families:
 - Kimi K3;
 - Qwen 3.8 Max, Qwen 3.8 27B and Qwen4 Flash;
 - MiniMax;
-- MiMo 2.5 and 2.6 (Flash, Pro);
 - Gemma 4;
-- Ling;
+- Ling 3.0 Flash and its finance fine-tune;
 - Laguna;
 - Hunyuan HY4;
 - Muse Glimmer.
 
-A driver in the tree is not a readiness claim. Each exact checkpoint needs
+MiMo 2.6 Flash and Pro have contracts and a stage-pack format, but no decode
+driver yet. A driver in the tree is not a readiness claim. Each exact checkpoint needs
 its own contract, pack, numerical result, transport profile and service
 receipt. Status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
 and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
@@ -520,29 +557,52 @@ computing mode.
 
 | Path | Contents |
 | --- | --- |
-| `node/` | `model_residentd` (per-rank serving process), `weightd` (weights and mesh), `model_api`, batch client |
+| `node/` | `model_residentd` (per-rank serving process), `weightd` (weights and mesh), `model_api` (HTTP server), batch client |
 | `runtime/` | batch engine, serving adapter template, stage-module lifecycle, weightd client, module library and compiler |
+| `src/` | status codes, hashing, admission, driver loader, orchestrator, speculation policy and seam |
+| `scheduler/` | the batch client's continuous-batch queue and topology-switch tables |
 | `cache/` | paged KV cache, prefix cache, page store, pager, NVMe tier |
 | `ring/transport/` | RDMA transport, device collectives, fabric topology |
 | `inference/kernels/` | shared CUDA kernels: GEMM/MMA/TMA, skinny and row-blocked GEMV, attention, routing, top-k, norms, speculation |
+| `inference/llms/` | older per-checkpoint device code (K3, MiMo 2.5, Qwen 3.6) |
 | `modules/` | per-family resident decode stages (firmware modules and serving adapters) |
+| `common/` | GLM-lineage stage module and CUDA tree, GDN stage kernels, KV frame and geometry headers; the GLM files are pending moves in `tests/test_dry_law.py` |
 | `model-families/`, `model_contracts/` | model geometry headers and authoritative checkpoint contracts |
 | `include/sparkpipe/` | public ABIs and family templates |
+| `schema/` | model-description and hardware-topology JSON schemas |
+| `text/` | tokenizer |
+| `deployment/`, `examples/`, `config/` | release assembly and topology tables, example descriptions and deployments, LiteLLM configuration |
+| `qualification/` | retained receipts: transport, numerical, evaluation and performance runs |
+| `validation/` | reference implementations for numerical checks |
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
+| `experiments/` | research code outside the code-size ratchet; no serving path links it |
+| `site/` | sparkpipe.ai: public pages and the playground |
+
+Common runtime code does not choose a model family, codec, topology, batch
+width or fallback implementation by name. A deployment package binds those
+decisions through exact model, hardware and release contracts.
 
 ## Documentation
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): deployment ladder, fabric and
-  storage contracts.
-- [`SPEC.md`](SPEC.md): firmware, module library and compiler contract.
+Each document is the authority for one thing:
+
+- this file: the system SparkPipe is built to be;
+- [`SPEC.md`](SPEC.md): the firmware, module library and compiler contract;
 - [`sparkpipe_invariants.md`](sparkpipe_invariants.md): the rules every
-  driver must satisfy.
-- [`TECHDEBT.md`](TECHDEBT.md): unfinished work against this description.
+  driver must satisfy;
+- [`TECHDEBT.md`](TECHDEBT.md): unfinished work against this description;
 - [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md): measurements, kept
-  separate from projections.
+  separate from projections;
+- [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md): host
+  roles, releases and fleet operations;
 - [`docs/README.md`](docs/README.md): index of maintained technical
   references.
+
+Production readiness is evaluated per exact model checkpoint and deployment.
+It requires matching source and package identity, host and CUDA gates,
+physical route evidence, numerical correctness, end-to-end service results
+and retained receipts from a merged-main release.
 
 Superseded designs and experiment logs are kept under
 [`docs/archive/`](docs/archive/) as history, not authority.
@@ -556,7 +616,10 @@ make test
 sh tools/gates.sh
 ```
 
-`make test` runs without a GPU. GPU tests and harnesses have their own
+`make test` runs without a GPU. On a host with a CUDA toolkit it does not
+pass yet: one serving adapter links the TP transport without the mesh
+launchers it calls (see [`TECHDEBT.md`](TECHDEBT.md), Production
+qualification). GPU tests and harnesses have their own
 targets, for example `make test-glm5-next-rows-kernels` and
 `make bench-glm5-next-batch`. Hardware qualification requires CUDA,
 transport, numerical and service receipts from an exact committed revision.
