@@ -21,7 +21,8 @@ Every emitted listener stays inside those blocks:
 Runtime roots default to the literal ${SPARK_QUEUE_RUNTIME_ROOT} template;
 tools/gemma4_tp16_shared_socket.sh substitutes the queue-provided private
 root when materializing the deployment. --runtime-root emits a fixed
-layout instead (persistent trees outside the queue).
+layout instead (persistent trees outside the queue); "{host}" in it names
+each node's own home.
 
 Usage:
   python3 tools/gemma4_tp16_gen_deployment.py --output deployment/gemma4_31b_tp16_lane6 \
@@ -42,7 +43,8 @@ DEFAULT_LANE = 6
 SERVING_TP_DEGREES = (4, 16)
 EOS_TOKEN_IDS = [1, 106, 50]
 RUNTIME_ROOT_TEMPLATE = "${SPARK_QUEUE_RUNTIME_ROOT}"
-MAX_SEQUENCE_POSITIONS = 32768
+DEFAULT_MAX_SEQUENCE_POSITIONS = 32768
+DEFAULT_RESIDENT_SEQUENCES = 16
 DEFAULT_WEIGHTD_SOCKET = "/run/sparkpipe-weightd-shared/weightd.sock"
 KV_PAGE_TOKENS = 64
 
@@ -51,12 +53,12 @@ def rank_hex(rank: int) -> str:
     return hex(rank)[2:]
 
 
-def stage_config(rank: int, tp_degree: int) -> dict:
+def stage_config(rank: int, tp_degree: int, positions: int) -> dict:
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "stage_pack_path": PACK_TEMPLATE % (tp_degree, rank_hex(rank)),
-        "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
+        "max_sequence_positions": positions,
         "tp_degree": tp_degree,
     }
 
@@ -71,8 +73,8 @@ def tp_environment(rank: int, tp_degree: int) -> dict:
 
 
 def resident_deployment(runtime_root: str, weightd_socket: str, hosts: list,
-                        lane: int) -> dict:
-    page_capacity = 16 * ((MAX_SEQUENCE_POSITIONS + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS)
+                        lane: int, positions: int, sequences: int) -> dict:
+    page_capacity = sequences * ((positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS)
     nodes = []
     for rank, host in enumerate(hosts):
         nodes.append({
@@ -81,11 +83,11 @@ def resident_deployment(runtime_root: str, weightd_socket: str, hosts: list,
             # a TP16 identity deployment numbers each rank as its own
             # transport stage (the GLM TP16 convention) - stage_index = rank.
             "stage_index": rank,
-            "runtime_root": runtime_root,
+            "runtime_root": runtime_root.replace("{host}", host),
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
-            "kv_backing_directory": runtime_root.rstrip("/") + "/kv",
+            "kv_backing_directory": runtime_root.replace("{host}", host).rstrip("/") + "/kv",
             "kv_backing_maximum_bytes": 0,
             "control_endpoint": {
                 "kind": "tcp",
@@ -117,9 +119,9 @@ def resident_deployment(runtime_root: str, weightd_socket: str, hosts: list,
         # launch-6 lesson).
         "runtime_limits": {
             "max_inflight_submissions": 1,
-            "max_active_sequences": 16,
+            "max_active_sequences": sequences,
             "max_input_rows": 32,
-            "resident_sequence_capacity": 16,
+            "resident_sequence_capacity": sequences,
             "kv_logical_page_capacity": page_capacity,
             "kv_physical_page_capacity": page_capacity,
         },
@@ -137,6 +139,10 @@ def main() -> int:
     parser.add_argument("--weightd-socket", default=DEFAULT_WEIGHTD_SOCKET)
     parser.add_argument("--hosts", default=DEFAULT_HOSTS)
     parser.add_argument("--lane", type=int, default=DEFAULT_LANE)
+    parser.add_argument("--max-sequence-positions", type=int,
+                        default=DEFAULT_MAX_SEQUENCE_POSITIONS)
+    parser.add_argument("--resident-sequences", type=int,
+                        default=DEFAULT_RESIDENT_SEQUENCES)
     arguments = parser.parse_args()
     hosts = [h for h in arguments.hosts.split(",") if h]
     tp_degree = len(hosts)
@@ -149,12 +155,14 @@ def main() -> int:
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(tp_degree):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            json.dumps(stage_config(rank, tp_degree), indent=1) + "\n")
+            json.dumps(stage_config(rank, tp_degree, arguments.max_sequence_positions), indent=1) + "\n")
         (root / "config" / ("env_%02d.json" % rank)).write_text(
             json.dumps(tp_environment(rank, tp_degree), indent=1, sort_keys=True) + "\n")
     (root / "model_resident.json").write_text(
         json.dumps(resident_deployment(runtime_root, arguments.weightd_socket,
-                                       hosts, arguments.lane),
+                                       hosts, arguments.lane,
+                                       arguments.max_sequence_positions,
+                                       arguments.resident_sequences),
                    indent=1) + "\n")
     print(f"{root}: {tp_degree} stage configs + envs + model_resident.json "
           f"(TP{tp_degree} {hosts[0]}..{hosts[-1]}, lane {arguments.lane}, "
