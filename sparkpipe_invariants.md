@@ -147,7 +147,7 @@ changes to common code. Track implementation evidence in
   declared budget, protect in-flight mappings, and reclaim only unowned data.
   Reuse the common loader/weight daemon rather than driver-specific substitutes.
 - **I30 — Developers can debug independently.** Assigned-node component tests
-  use strict lazy loading and builds installed from the release channel (see
+  use strict lazy loading and the queue's verified sync and build path (see
   I33). Independent jobs interleave within real resource budgets. Full-fleet
   reservations are for tests that actually require the full topology, including
   distributed correctness and isolated performance measurements.
@@ -171,14 +171,18 @@ changes to common code. Track implementation evidence in
   not merely after a client exits. Reconcile interrupted attempts without
   duplicate launches or killing unrelated developers' jobs.
 - **I33 — Deployment evidence has zero drift.** Test PR builds before merge.
-  Build the exact committed revision once on the build host, publish it as its
-  own release root on the hub, and let the node agents on the participating
-  Sparks install it ([fleet release runbook](docs/FLEET_RELEASE_RUNBOOK.md)).
-  Record source, artifact (the root `MANIFEST` sha256), configuration
-  (including the serving environment) and pack hashes. Receipts identify the
-  tested PR/commit and running binaries. Dirty trees, hand-started daemons or
-  copied driver hotpatches cannot stand in for that source. Production rollout
-  follows validation; merging is not a prerequisite for hardware tests.
+  Sync the exact committed revision into a separate test root on the
+  participating Sparks through the queue (`spark_queue.py sync`), rebuild it
+  coherently there ([parallel driver debugging](docs/PARALLEL_DRIVER_DEBUG.md)),
+  and never into the production root. The node agents sync only the roots
+  named in their unit, so the hub is not a PR test path; it carries builds of
+  merged main ([fleet release runbook](docs/FLEET_RELEASE_RUNBOOK.md)).
+  Record source, artifact (for a hub release, the root `MANIFEST` sha256),
+  configuration (including the serving environment) and pack hashes. Receipts
+  identify the tested PR/commit and running binaries. Dirty trees,
+  hand-started daemons or copied driver hotpatches cannot stand in for that
+  source. Production rollout follows validation; merging is not a
+  prerequisite for hardware tests.
 - **I34 — CI and Spark testing proceed independently.** Run focused checks and
   review, let CI run, and test pinned PR builds on Sparks in parallel. Do not
   serialize hardware testing behind CI completion or merge. Retain and resolve

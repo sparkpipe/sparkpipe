@@ -41,7 +41,9 @@ the MLP), so at that latency (arithmetic):
 - 49.5 - 2.8 + 31.1 = 77.8 ms per token, ~12.9 tok/s.
 
 This assumes K3's collective matches GLM's weightd-mesh latency; the K3 runner
-uses its own `device_collective` tier (NCCL or hidden transport). K3's phase
+is the last user of the residentd hidden transport (`SparkTpCollectiveCreate`),
+not the mesh, and the device collective accepts only `hidden_transport` since
+the NCCL backend was deleted (`b31761e`). K3's phase
 payloads are larger than 8 KiB, so ~12.9 tok/s is optimistic. At TP16 the
 collective, not weight bandwidth, is the dominant cost, as it is for GLM.
 

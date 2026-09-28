@@ -80,8 +80,11 @@ or production clamp may substitute for implementing the required behavior.
 Behavior-changing diagnostic clamps belong behind #ifdef DEBUG and must be
 reported; DEBUG does not excuse missing mandatory implementations.
 
-Implement B1 contribution broadcast with local reduction and B2+ tree
-reduction overlapped with independent compute. Preserve logical batch identity
+Select the collective algorithm by regime from the logical batch and payload
+(invariant I36: direct all-to-all when latency-bound, reduce-scatter plus
+all-gather for bandwidth-bound sums, the pair-link hierarchical exchange for
+prefill and large batches), overlapped with independent compute. The wait
+mode must not pick the algorithm. Preserve logical batch identity
 across microbatches, collective ordering, independent workspaces and GPU
 completion lifetimes. Measure exposed communication, launch gaps and the
 weight-reuse cost of splitting. Use topology-specific rank balance and
@@ -205,7 +208,8 @@ has no DFlash2 source, and its MTP drafts skip multi-step decode chains
 ## Medium-term (weeks)
 
 1. All product-set models serving honest perf+quality cells, each
-   recorded in PERFORMANCE_STATUS.md (Flash x2, Pro, then Max).
+   recorded in PERFORMANCE_STATUS.md, in the order the model direction
+   above sets (DSV4 Pro 0813 last).
 2. Qwen Max served from the official FP8 or vetted MXFP4 source.
 3. Phase-1 PLATFORM work resumed as first-class lanes, not backlog:
    DRY adapter template (one lifecycle, not seven), the device API
@@ -290,8 +294,9 @@ future UI (operator + request console) reads — never the UI's own
 state. Multi-island federation routes through liteLLM (priority/
 health/load in its config, not our runtime). Named dependency for
 text-in island routing: the Phase-4 tokenizer sidecar at the island
-edge (today's token-ID contract works via LiteLLM's /vllm/ passthrough
-— proven, merged).
+edge. The API now carries that tokenizer, and the LiteLLM door uses the
+`openai/` provider; the `/vllm/` token-ID passthrough was retired on
+2026-09-28 ([`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md), History).
 
 ## Long-term
 
@@ -318,6 +323,7 @@ analysis, doc summarization) should run on the fleet rather than on paid
 APIs. The live GLM API is the `g53-api` user unit on the rtx5090 hub, port
 8433. It is an x86 build of the engines' source commit, and every Spark runs
 with `G5_API_DISABLED=1` (`tools/fleet_node_agent.sh`, `ensure_api`). The
-LiteLLM front door is the seam. [`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md)
-still routes `glm-5.3-flash` to spark0:8433 and has to be repointed. The
-pivot also covers GLM 5.3 Full (the glm52 module) once it serves.
+LiteLLM front door is the seam: `config/litellm-config.yaml` routes
+`glm-5.3-flash` to the hub's `g53-api`, but no completion through the proxy
+has a receipt yet ([`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md)). The pivot
+also covers GLM 5.3 Full (the glm52 module) once it serves.

@@ -1,8 +1,8 @@
 # Topology Guide
 
-Why we start at TP4×PP4, what the alternatives cost, and how to hill-climb
-to the right topology per model. Written 2026-08-28 after the pack-agent
-fleet made multi-topology packs practical.
+Why TP4×PP4 was the first candidate, what the alternatives cost, and how to
+hill-climb to the right topology per model. Written 2026-08-28 after the
+pack-agent fleet made multi-topology packs practical.
 
 Updated 2026-09-28. GLM 5.3 Flash production runs TP16; its anchor is below.
 No topology is settled for any model. The deliverables are tok/s and latency,
@@ -11,10 +11,11 @@ through the largest batch that still scales.
 
 ## The "center": TP4 × PP4
 
-**16 sparks, 4 pipeline stages × 4 tensor-parallel ranks.** The default for
-large models (DSV4 Pro, Qwen Max, K3).
+**16 sparks, 4 pipeline stages × 4 tensor-parallel ranks.** The first
+candidate tried for large models (DSV4 Pro, Qwen Max, K3). It is not a
+default: the placement that measures best on tok/s and latency serves.
 
-Why it is the center:
+Why it was the center:
 - TP4 divides every supported model's dimensions cleanly (heads, experts,
   FFN intermediate all divide by 4).
 - PP4 splits layers into 4 stages — small enough that pipeline bubbles are

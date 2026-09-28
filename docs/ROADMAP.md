@@ -104,7 +104,7 @@ TECHDEBT: speculation, serving API, runtime completion.
 ## M4. One collective platform
 
 Exit: one predeclared collective program per resident slot; one transport for
-every family, with DSV4 moved onto the mesh; algorithms chosen from measured
+every family, with k3 moved onto the mesh; algorithms chosen from measured
 TP4, TP8 and TP16 profiles; one topology schema for both rails.
 
 TECHDEBT: TP collective control plane, adaptive all-reduce, dual-fabric
