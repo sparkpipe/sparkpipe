@@ -358,6 +358,7 @@ TEST_NAMES := \
     test_weightd_expert \
     test_stage_module_weightd \
     test_weightd_map \
+    test_expert_working_set \
     test_weightd_mesh_doorbell \
     test_weightd_mesh_mock \
     test_module_library \
@@ -763,6 +764,15 @@ build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inferenc
 .PHONY: test-glm5-next-rows-kernels
 test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
 	./build/test_glm5_next_rows_kernels --run
+
+WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
+
+build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build
+	$(WORKING_SET_NVCC) tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
+.PHONY: test-working-set-rollback
+test-working-set-rollback: build/test_working_set_rollback
+	./build/test_working_set_rollback
 
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
@@ -1535,6 +1545,9 @@ build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage
 # export over SCM_RIGHTS and the consumer's import/map, including a real
 # forked consumer process for the cross-process receipt. Stub-pinned like
 # its W2 siblings.
+build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
