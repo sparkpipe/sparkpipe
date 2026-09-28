@@ -291,7 +291,7 @@ PR #865 removes full-head KDA allocation on each TP rank and the repeated Q/K/V
 window factor, using the shared kernel's existing stride parameter. At TP16,
 the calculated recurrent-plus-window allocation per resident sequence falls
 from 155.125 MiB to 8.8984375 MiB across 34 KDA layers. See
-`docs/GLM_KDA_STATE_LAYOUT.md` for formulas and the actual allocator host test.
+`docs/archive/GLM_KDA_STATE_LAYOUT.md` for formulas and the actual allocator host test.
 The draft includes this merged layout for checkpoint integration.
 
 Clean main `d62e93e` passed GPU build (`82ef7d87dae8435c80a1d2a34639a107`),
@@ -582,7 +582,7 @@ this defect alone does not explain the existing rank-zero-range output stream.
    PR #862 fixes the identified layer-major/backing-page mismatch and missing
    index payload; its merged-main component checks pass. The payload tests do
    not establish full prefix restoration.
-   See that PR's `docs/GLM_KV_PAYLOAD.md` for the regression and reusable lesson.
+   See that PR's `docs/archive/GLM_KV_PAYLOAD.md` for the regression and reusable lesson.
 2. Qualify true batched distributed computation and clean release/reconnect.
    A continuation-lease teardown failure was observed on the old baseline;
    preserve the safety guard and fix ownership rather than suppressing it.
