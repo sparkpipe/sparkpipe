@@ -13,7 +13,7 @@ Hub operations (publishing roots, heartbeats) are governed by
 - SparkPipe owns only its units (`g53-api`, `fleet-release`) and paths
   (`~/release`, `~/current`, `~/g53-api-channel`, `~/draft_service`,
   `/srv/workspace/drafters`). Never kill or restart anything else: the host runs
-  unrelated jobs (FLEET_RELEASE_RUNBOOK.md §0 and law 6).
+  unrelated jobs (FLEET_RELEASE_RUNBOOK.md §1, and AGENTS.md).
 - Do not install the output of `tools/rtx5090_spec_node.py plan` or
   `render-netplan`: it predates the hub role (see [Tooling](#tooling)).
 - Do not run `tools/hardware/rtx5090_qualify.cu` on a busy host: it
@@ -25,7 +25,7 @@ Hub operations (publishing roots, heartbeats) are governed by
 
 | Role | What runs | Source |
 | --- | --- | --- |
-| Fleet hub | user unit `fleet-release.service` (`python3 ~/fleet_release_serve.py`) serves `~/release/<root>/` on `:8802`; nodes write `~/current/<host>.json` heartbeats | FLEET_RELEASE_RUNBOOK.md §0; `systemctl --user`, `ss -ltn` |
+| Fleet hub | user unit `fleet-release.service` (`python3 ~/fleet_release_serve.py`) serves `~/release/<root>/` on `:8802`; nodes write `~/current/<host>.json` heartbeats | FLEET_RELEASE_RUNBOOK.md §1; `systemctl --user`, `ss -ltn` |
 | GLM API | user unit `g53-api.service`: `~/g53-api-channel/bin/sparkpipe_model_api --port 8433`, with a tokenizer sidecar (`tokenizer/tokenizer.json` in its `model_resident.json`) | `systemctl --user show g53-api`; lead-dev facts |
 | Draft farm | `~/draft_service` (not in this repo): `farm_server.py`, DFT3 protocol in `draft_protocol.py`, measurements in its `README.md`; not running | `ls`, `pgrep` |
 | Drafter store | LV `ubuntu--vg-drafters` (700 GiB ext4) mounted at `/srv/workspace` by fstab: `drafters/`, `.qualification/`, `.staging/` | `lsblk`, `findmnt`, `/etc/fstab` |
@@ -49,8 +49,12 @@ the root filesystem; the drafter LV moved to `/srv/workspace`.
 
 sparkf NATs the /30 to the fleet (lead-dev facts; sparkf's nftables ruleset
 held 3 masquerade rules). The `rtx5090` host alias resolves to 192.168.50.4 on spark0
-and to 10.10.250.2 on sparkf; fleet traffic to the hub uses 10.10.250.2
-either way.
+and to 10.10.250.2 on sparkf. The fleet agents do not use this link: they
+fetch releases from `http://100.123.97.61:8802` and copy heartbeats and mesh
+records to `spec@100.123.97.61`, both over Tailscale
+(`tools/fleet_node_agent.sh`, `RELEASE_HTTP` and `HUB`;
+FLEET_RELEASE_RUNBOOK.md §1). Only traffic addressed to 10.10.250.2 takes the
+/30.
 
 Measured round trip (lead-dev, 2026-09-28): busy-polled 64 B UDP between
 sparkf and rtx5090 is 22.6 us p50 / 25.2 us p99; forwarded from other Sparks

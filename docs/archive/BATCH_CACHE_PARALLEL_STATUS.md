@@ -7,7 +7,7 @@
 > inference services were stopped. That was temporary. Today `fleet-agent`
 > (`tools/fleet_node_agent.sh`, a systemd user unit on every Spark) is the
 > production serving unit, with weightd and residentd running in its cgroup
-> (`docs/FLEET_RELEASE_RUNBOOK.md` §1). Stopping it, or treating it as an
+> (`docs/FLEET_RELEASE_RUNBOOK.md` §2.1). Stopping it, or treating it as an
 > unknown consumer, takes GLM serving down on all 16 nodes.
 >
 > Other statements that have changed:

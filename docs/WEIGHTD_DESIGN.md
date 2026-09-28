@@ -54,7 +54,7 @@ These rules follow from that code:
 - Daemon death invalidates every consumer (crash semantics below), so a restart
   takes GLM serving down. The agent replaces its weightd only after a new
   binary is announced through the hub's `core/WEIGHTSD_BIN` and every residentd
-  on the node has drained (FLEET_RELEASE_RUNBOOK.md §2.4). Never restart it by
+  on the node has drained (FLEET_RELEASE_RUNBOOK.md §5.2). Never restart it by
   hand.
 - The per-node execute-receipt rig (`tools/weightd_execute_receipt.py` with
   `build/weightd_execute_probe`) starts its own daemon, so the first rule

@@ -13,7 +13,7 @@
 >   with graph chains and all experts pinned (lead-dev measurement,
 >   2026-09-28), not 78 ms/token.
 > - **Fleet agent.** The fleet agent now syncs by MANIFEST diff
->   (`docs/FLEET_RELEASE_RUNBOOK.md` §1), not by an UPDATE sentinel.
+>   (`docs/FLEET_RELEASE_RUNBOOK.md` §2.2), not by an UPDATE sentinel.
 > - **Deleted references.** The lane owners and the `reports/` files cited
 >   here were removed in 27a2620.
 >

@@ -22,7 +22,7 @@ module, never from common infrastructure back to a model family.
 | Deployment | Built and published release roots, and node convergence by MANIFEST diff ([FLEET_RELEASE_RUNBOOK](FLEET_RELEASE_RUNBOOK.md)) | `deployment/`, `tools/module_build_release.sh`, `tools/fleet_release_serve.py`, `tools/fleet_node_agent.sh`, `tools/fleet-agent.service` |
 | Qualification | Source, host, CUDA, hardware, and evaluation gates | `tests/`, `qualification/`, `tools/hardware/` |
 
-**Host roles.** These come from `docs/FLEET_RELEASE_RUNBOOK.md` §0 and the
+**Host roles.** These come from `docs/FLEET_RELEASE_RUNBOOK.md` §1 and the
 lead dev's 2026-09-28 facts:
 
 - **Build host: sparkf.** It builds for aarch64 and sm_121a in

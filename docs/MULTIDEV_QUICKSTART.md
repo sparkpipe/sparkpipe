@@ -49,7 +49,7 @@ Spark:
 
 Never restart `/tmp/spark_weightd.sock` or the agent by hand; either takes GLM
 serving down. weightd changes only through the hub's `core/WEIGHTSD_BIN`
-announce and a drain (`FLEET_RELEASE_RUNBOOK.md` §2.4). weightd bugs are fixed
+announce and a drain (`FLEET_RELEASE_RUNBOOK.md` §5.2). weightd bugs are fixed
 on main and redeployed; do not patch a node's binary in place.
 
 ## Lanes
