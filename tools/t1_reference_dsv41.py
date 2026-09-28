@@ -68,7 +68,7 @@ def _grid_round_magnitude(a, grid, codes):
     dlo = v - grid[lo]
     dhi = grid[hi] - v
     pick_hi = dhi < dlo
-    pick_hi = pick_hi | ((dhi == dlo) & ((codes[hi] & 1) == 1))
+    pick_hi = pick_hi | ((dhi == dlo) & ((codes[hi] & 1) == 0))
     out[nz] = np.where(pick_hi, grid[hi], grid[lo])
     return out
 
@@ -172,6 +172,17 @@ def _config_value(config, path):
         else:
             node = node[part]
     return node
+
+
+def engram_gate(streams, key, value, weight, eps):
+    h = streams.astype(np.float32)
+    hidden = h.shape[-1]
+    rstd = (1.0 / np.sqrt((h * h).mean(-1) + eps)) \
+        * (1.0 / np.sqrt((key * key).mean(-1) + eps))
+    dot = (h * weight * key).sum(-1) * rstd * np.float32(hidden ** -0.5)
+    gate = sigmoid(np.copysign(
+        np.sqrt(np.maximum(np.abs(dot), 1e-6)), dot))
+    return bf16_round_f32(h + gate[:, None] * value[None, :])
 
 
 class Dsv41ConfigError(ValueError):
@@ -995,14 +1006,7 @@ class Dsv41FlashEngine:
         value = kv[split:]
         weight = bf16_to_f32(self.st.pread(p + "q_weight")) \
             * bf16_to_f32(self.st.pread(p + "k_weight"))
-        h = streams.astype(np.float32)
-        rstd = (1.0 / np.sqrt((h * h).mean(-1) + self.eps)) \
-            * (1.0 / np.sqrt((key * key).mean(-1) + self.eps))
-        dot = (h * weight * key).sum(-1) * rstd * np.float32(
-            self.hidden ** -0.5)
-        gate = sigmoid(np.copysign(
-            np.sqrt(np.maximum(np.abs(dot), 1e-6)), dot))
-        return bf16_round_f32(h + gate[:, None] * value[None, :])
+        return engram_gate(streams, key, value, weight, self.eps)
 
     def _forward_layer(self, layer, streams, pre_mix, position, cache,
                        shared):

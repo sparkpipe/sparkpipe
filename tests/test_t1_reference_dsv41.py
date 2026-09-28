@@ -341,7 +341,20 @@ def check_hc_post_orientation():
            "hc_post fixture comb must be asymmetric enough to separate the orientations")
 
 
+def check_round_half_even():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from t1_reference_dsv41 import _fp4_round_abs, _fp8_round_abs
+    fp4 = _fp4_round_abs(np.array([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0],
+                                  dtype=np.float32))
+    expect(fp4.tolist() == [0.0, 1.0, 1.0, 2.0, 2.0, 4.0, 4.0],
+           f"fp4 ties must round to the even code (cvt.rn), got {fp4}")
+    fp8 = _fp8_round_abs(np.array([0.96875, 1.0625, 17.0], dtype=np.float32))
+    expect(fp8.tolist() == [1.0, 1.0, 16.0],
+           f"fp8 e4m3 ties must round to the even code (cvt.rn), got {fp8}")
+
+
 def main():
+    check_round_half_even()
     check_hc_post_orientation()
     workspace = tempfile.mkdtemp(prefix="t1ref-dsv41-")
     try:
