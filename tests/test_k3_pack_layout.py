@@ -15,9 +15,14 @@ are LAYOUT, and layout is integer arithmetic:
   a checkpoint the grid does not divide, or an E8M0 0xff, is refused loudly
 
 and the whole thing is proven end to end by packing a synthetic mini
-checkpoint through the real CLI with no numpy installed.
+checkpoint through the real CLI with numpy blocked from the packer. Where
+numpy is installed the same checkpoint is packed again with it, and every
+tensor must match the stdlib pack byte for byte, except the MLA q-fold,
+whose f32 accumulation order differs (tests/test_k3_pack.py holds its
+values to the einsum).
 """
 import json
+import os
 import random
 import struct
 import subprocess
@@ -291,136 +296,164 @@ def read_pack(path):
     return version, manifest, base, tensor
 
 
+def run_packer(checkpoint, out, env):
+    return subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
+                           str(checkpoint), str(out)],
+                          capture_output=True, text=True, env=env)
+
+
+def numpy_blocked_env(scratch):
+    blocker = scratch / "numpy_blocked" / "numpy"
+    blocker.mkdir(parents=True)
+    (blocker / "__init__.py").write_text(
+        'raise ImportError("numpy blocked by test_k3_pack_layout")\n')
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(blocker.parent), env.get("PYTHONPATH")) if part)
+    return env
+
+
+def verify_pack(label, src, out):
+    def expect(ok, message):
+        check(ok, f"{label}: {message}")
+
+    version, manifest, base, tensor = read_pack(out)
+    expect(version == 2, f"pack version is {version}, not 2")
+    expect(base % 128 == 0, "payload base is not 128-aligned")
+    fmt = manifest["format"]
+    expect(fmt["alignment"] == 128 and fmt["version"] == 2,
+           "format block is wrong")
+    expect(fmt["mxfp4_interleave"]["cell_rows"] == 17
+           and fmt["mxfp4_interleave"]["row_bytes"] == 64,
+           "format block interleave parameters are wrong")
+
+    entries = manifest["tensors"]
+    ordered = sorted(entries.items(), key=lambda kv: kv[1]["offset"])
+    expect(all(e["offset"] % 128 == 0 for _, e in ordered),
+           "a tensor offset is not 128-aligned")
+    expect(all(a[1]["offset"] + a[1]["bytes"] <= b[1]["offset"]
+               for a, b in zip(ordered, ordered[1:])),
+           "tensor extents overlap")
+    names = [n for n, _ in ordered]
+    expect(names[0] == "model.embed_tokens.weight",
+           "embedding is not the first tensor")
+    expect(names[-3:] == ["model.norm.weight", "model.attnres_out_weight",
+                          "lm_head.weight"],
+           f"closing tensors are not last: {names[-3:]}")
+    layer_of = [int(n.split(".")[2]) for n in names
+                if n.startswith("model.layers.")]
+    expect(layer_of == sorted(layer_of), "layers are not emitted in order")
+
+    p, a = "model.layers.0.", "model.layers.0.self_attn."
+    want = b"".join(src[a + n][2] for n in
+                    ("q_proj.weight", "k_proj.weight", "v_proj.weight",
+                     "b_proj.weight"))
+    expect(tensor(p + "kda_qkv_beta_weight") == want,
+           "fused qkv|beta bytes are not the section concatenation")
+    entry = entries[p + "kda_qkv_beta_weight"]
+    expect(entry["shard_class"] == "output_dim_heads",
+           "fused qkv|beta shard class is wrong")
+    expect([s["row_offset"] for s in entry["sections"]] == [0, 128, 256, 384]
+           and entry["shape"] == [386, 64],
+           "fused qkv|beta section table does not tile the tensor")
+    expect(tensor(p + "kda_decay_down_weight") == src[a + "f_a_proj.weight"][2],
+           "decay_down bytes are not the checkpoint's f_a_proj")
+    expect(entries[p + "kda_decay_down_weight"]["shard_class"] == "replicated",
+           "decay_down shard class is wrong")
+    expect(tensor(p + "kda_gate_weight") == src[a + "g_proj.weight"][2],
+           "gate bytes are not the checkpoint's full-rank g_proj")
+    expect(entries[p + "kda_gate_weight"]["shard_class"] == "output_dim_heads",
+           "gate shard class is wrong")
+    for gone in ("kda_q_weight", "kda_k_weight", "kda_v_weight",
+                 "kda_beta_weight", "kda_decay_gate_down_weight",
+                 "kda_gate_down_weight", "expert_w1_scale",
+                 "expert_w2_scale"):
+        expect(p + gone not in entries, f"{gone} should not exist in V2")
+
+    geom = k3_pack.interleave_geometry(2 * MINI["inter"], MINI["latent"],
+                                       MINI["experts"])
+    got = tensor(p + "expert_w1_weight")
+    expect(len(got) == geom["tensor_bytes"],
+           "interleaved w1 byte count is off")
+    mismatches = 0
+    for e in range(MINI["experts"]):
+        pay = src[f"{p}block_sparse_moe.experts.{e}.w1.weight"][2] + \
+            src[f"{p}block_sparse_moe.experts.{e}.w3.weight"][2]
+        sc = src[f"{p}block_sparse_moe.experts.{e}.w1.weight_scale"][2] + \
+            src[f"{p}block_sparse_moe.experts.{e}.w3.weight_scale"][2]
+        for n in range(0, 2 * MINI["inter"], 16):
+            prow = n * (MINI["latent"] // 2)
+            at = k3_pack.interleave_byte_offset(geom, e, 0, n, "payload", 0)
+            mismatches += got[at:at + 64] != pay[prow:prow + 64]
+            srow = n * (MINI["latent"] // 32)
+            at = k3_pack.interleave_byte_offset(geom, e, 0, n, "scale", 0)
+            mismatches += got[at:at + 4] != sc[srow:srow + 4]
+    expect(mismatches == 0,
+           f"interleaved w1 misplaces {mismatches} sampled rows")
+
+    gamma = struct.iter_unpack("<H", src[p + "self_attention_res_norm.weight"][2])
+    proj = struct.iter_unpack("<H", src[p + "self_attention_res_proj.weight"][2])
+    fused = tensor(p + "attnres_attn_weight")
+    mismatches = 0
+    for i, ((gv,), (pv,)) in enumerate(zip(gamma, proj)):
+        gf = struct.unpack("<f", struct.pack("<I", gv << 16))[0]
+        pf = struct.unpack("<f", struct.pack("<I", pv << 16))[0]
+        want = k3_pack.f32_list_to_bf16_raw([k3_pack.f32_round(gf * pf)])
+        mismatches += fused[2 * i:2 * i + 2] != want
+    expect(mismatches == 0, "gamma fold is not the f32-exact product")
+
+    expect(tensor(p + "kda_head_log_scale") ==
+           src[a + "A_log"][2][:MINI["kda_heads"] * 4],
+           "A_log was not narrowed")
+    return {name: tensor(name) for name in manifest["tensors"]}
+
+
 def end_to_end():
     with tempfile.TemporaryDirectory() as scratch:
-        root = Path(scratch)
-        src = mini_checkpoint(root)
-        out = root / "mini.pack"
-        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
-                              str(root), str(out)],
-                             capture_output=True, text=True)
-        if run.returncode != 0:
-            print("  FAIL packer:", (run.stdout + run.stderr)[-400:])
-            return
-        version, manifest, base, tensor = read_pack(out)
-        check(version == 2, f"pack version is {version}, not 2")
-        check(base % 128 == 0, "payload base is not 128-aligned")
-        fmt = manifest["format"]
-        check(fmt["alignment"] == 128 and fmt["version"] == 2,
-              "format block is wrong")
-        check(fmt["mxfp4_interleave"]["cell_rows"] == 17
-              and fmt["mxfp4_interleave"]["row_bytes"] == 64,
-              "format block interleave parameters are wrong")
+        scratch = Path(scratch)
+        modes = [("numpy blocked", numpy_blocked_env(scratch))]
+        if k3_pack.np is not None:
+            modes.append(("numpy", dict(os.environ)))
+        checkpoint = scratch / "checkpoint"
+        checkpoint.mkdir()
+        src = mini_checkpoint(checkpoint)
+        packed = {}
+        for index, (label, env) in enumerate(modes):
+            out = scratch / f"mini{index}.pack"
+            run = run_packer(checkpoint, out, env)
+            check(run.returncode == 0,
+                  f"{label}: the packer failed on the valid mini checkpoint: "
+                  f"{(run.stdout + run.stderr)[-400:]}")
+            if run.returncode != 0:
+                continue
+            advisory = "ADVISORY numpy not importable" in run.stdout
+            check(advisory == (label == "numpy blocked"),
+                  f"{label}: the packer ran the "
+                  f"{'stdlib' if advisory else 'numpy'} q-fold")
+            packed[label] = verify_pack(label, src, out)
+        if len(packed) == 2:
+            stdlib, accelerated = packed["numpy blocked"], packed["numpy"]
+            check(sorted(stdlib) == sorted(accelerated),
+                  "the stdlib and numpy packers emit different tensor sets")
+            differing = [name for name in stdlib
+                         if name in accelerated
+                         and not name.endswith("mla_q_up_weight")
+                         and stdlib[name] != accelerated[name]]
+            check(not differing,
+                  f"the stdlib and numpy packers disagree on {differing[:4]}")
 
-        entries = manifest["tensors"]
-        ordered = sorted(entries.items(), key=lambda kv: kv[1]["offset"])
-        check(all(e["offset"] % 128 == 0 for _, e in ordered),
-              "a tensor offset is not 128-aligned")
-        check(all(a[1]["offset"] + a[1]["bytes"] <= b[1]["offset"]
-                  for a, b in zip(ordered, ordered[1:])),
-              "tensor extents overlap")
-        # consumption order: embed first; layers ascending; closers last
-        names = [n for n, _ in ordered]
-        check(names[0] == "model.embed_tokens.weight",
-              "embedding is not the first tensor")
-        check(names[-3:] == ["model.norm.weight", "model.attnres_out_weight",
-                             "lm_head.weight"],
-              f"closing tensors are not last: {names[-3:]}")
-        layer_of = [int(n.split(".")[2]) for n in names
-                    if n.startswith("model.layers.")]
-        check(layer_of == sorted(layer_of), "layers are not emitted in order")
-
-        # the fused KDA tensors: bytes are the section concatenation, tables tile
-        p, a = "model.layers.0.", "model.layers.0.self_attn."
-        want = b"".join(src[a + n][2] for n in
-                        ("q_proj.weight", "k_proj.weight", "v_proj.weight",
-                         "b_proj.weight"))
-        check(tensor(p + "kda_qkv_beta_weight") == want,
-              "fused qkv|beta bytes are not the section concatenation")
-        entry = entries[p + "kda_qkv_beta_weight"]
-        check(entry["shard_class"] == "output_dim_heads",
-              "fused qkv|beta shard class is wrong")
-        check([s["row_offset"] for s in entry["sections"]] == [0, 128, 256, 384]
-              and entry["shape"] == [386, 64],
-              "fused qkv|beta section table does not tile the tensor")
-        # 55cd2f9 full-rank gate reconciliation: no fused decay|gate tensor;
-        # the standalone replicated decay_down (f_a_proj) and the full-rank
-        # head-split gate (g_proj) are separate pack tensors.
-        check(tensor(p + "kda_decay_down_weight") == src[a + "f_a_proj.weight"][2],
-              "decay_down bytes are not the checkpoint's f_a_proj")
-        check(entries[p + "kda_decay_down_weight"]["shard_class"] == "replicated",
-              "decay_down shard class is wrong")
-        check(tensor(p + "kda_gate_weight") == src[a + "g_proj.weight"][2],
-              "gate bytes are not the checkpoint's full-rank g_proj")
-        check(entries[p + "kda_gate_weight"]["shard_class"] == "output_dim_heads",
-              "gate shard class is wrong")
-        for gone in ("kda_q_weight", "kda_k_weight", "kda_v_weight",
-                     "kda_beta_weight", "kda_decay_gate_down_weight",
-                     "kda_gate_down_weight", "expert_w1_scale",
-                     "expert_w2_scale"):
-            check(p + gone not in entries, f"{gone} should not exist in V2")
-
-        # the interleaved expert tensor, held to the checkpoint through the
-        # published addressing, cell by cell - not through the packer's relay
-        geom = k3_pack.interleave_geometry(2 * MINI["inter"], MINI["latent"],
-                                           MINI["experts"])
-        got = tensor(p + "expert_w1_weight")
-        check(len(got) == geom["tensor_bytes"],
-              "interleaved w1 byte count is off")
-        mismatches = 0
-        for e in range(MINI["experts"]):
-            pay = src[f"{p}block_sparse_moe.experts.{e}.w1.weight"][2] + \
-                src[f"{p}block_sparse_moe.experts.{e}.w3.weight"][2]
-            sc = src[f"{p}block_sparse_moe.experts.{e}.w1.weight_scale"][2] + \
-                src[f"{p}block_sparse_moe.experts.{e}.w3.weight_scale"][2]
-            for n in range(0, 2 * MINI["inter"], 16):
-                prow = n * (MINI["latent"] // 2)
-                at = k3_pack.interleave_byte_offset(geom, e, 0, n, "payload", 0)
-                mismatches += got[at:at + 64] != pay[prow:prow + 64]
-                srow = n * (MINI["latent"] // 32)
-                at = k3_pack.interleave_byte_offset(geom, e, 0, n, "scale", 0)
-                mismatches += got[at:at + 4] != sc[srow:srow + 4]
-        check(mismatches == 0,
-              f"interleaved w1 misplaces {mismatches} sampled rows")
-
-        # the gamma fold, recomputed independently in f64: f32-exact then RNE
-        gamma = struct.iter_unpack("<H", src[p + "self_attention_res_norm.weight"][2])
-        proj = struct.iter_unpack("<H", src[p + "self_attention_res_proj.weight"][2])
-        fused = tensor(p + "attnres_attn_weight")
-        mismatches = 0
-        for i, ((gv,), (pv,)) in enumerate(zip(gamma, proj)):
-            gf = struct.unpack("<f", struct.pack("<I", gv << 16))[0]
-            pf = struct.unpack("<f", struct.pack("<I", pv << 16))[0]
-            want = k3_pack.f32_list_to_bf16_raw([k3_pack.f32_round(gf * pf)])
-            mismatches += fused[2 * i:2 * i + 2] != want
-        check(mismatches == 0, "gamma fold is not the f32-exact product")
-
-        # A_log narrows to the runtime head count
-        check(tensor(p + "kda_head_log_scale") ==
-              src[a + "A_log"][2][:MINI["kda_heads"] * 4],
-              "A_log was not narrowed")
-
-        # a checkpoint the interleave grid does not divide is refused
-        for stale in root.iterdir():
-            if stale.suffix == ".pack":
-                stale.unlink()
-        mini_checkpoint(root, latent=96)
-        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
-                              str(root), str(out)],
-                             capture_output=True, text=True)
-        check(run.returncode != 0 and "interleave tiles" in run.stdout,
-              "a K that is not whole interleave tiles was not refused")
-
-        # a poisoned scale is refused even though it sits inside the fused stream
-        for stale in root.iterdir():
-            if stale.suffix == ".pack":
-                stale.unlink()
-        mini_checkpoint(root, poison_scale=True)
-        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
-                              str(root), str(out)],
-                             capture_output=True, text=True)
-        check(run.returncode != 0 and "0xff" in run.stdout,
-              "an E8M0 0xff was not refused")
+        for index, (label, env) in enumerate(modes):
+            for case, (kwargs, marker, what) in enumerate((
+                    (dict(latent=96), "interleave tiles",
+                     "a K that is not whole interleave tiles"),
+                    (dict(poison_scale=True), "0xff", "an E8M0 0xff"))):
+                refused = scratch / f"refused{index}_{case}"
+                refused.mkdir()
+                mini_checkpoint(refused, **kwargs)
+                run = run_packer(refused, scratch / f"refused{index}_{case}.pack",
+                                 env)
+                check(run.returncode != 0 and marker in run.stdout,
+                      f"{label}: {what} was not refused")
 
 
 def main():
