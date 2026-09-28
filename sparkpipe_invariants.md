@@ -10,8 +10,9 @@ GLM 5.3 Flash is the current implementation and optimization focus. Other
 drivers must follow the same contract; their qualification is not implied by
 changes to common code. Track implementation evidence in
 [driver acceptance](docs/DRIVER_ACCEPTANCE.md), the
-[GLM hill-climbing log](docs/GLM_FLASH_HILLCLIMB.md), and
-[performance gates](docs/GLM_PERFORMANCE_GATES.md).
+[GLM roofline](docs/GLM5_NEXT_ROOFLINE.md),
+[performance gates](docs/GLM_PERFORMANCE_GATES.md) and the
+[performance ledger](PERFORMANCE_STATUS.md).
 
 ## 1. One fixed serving contract
 
@@ -146,10 +147,19 @@ changes to common code. Track implementation evidence in
   declared budget, protect in-flight mappings, and reclaim only unowned data.
   Reuse the common loader/weight daemon rather than driver-specific substitutes.
 - **I30 — Developers can debug independently.** Assigned-node component tests
-  use strict lazy loading and the automatic verified rsync/build path.
-  Independent jobs interleave within real resource budgets. Full-fleet
+  use strict lazy loading and builds installed from the release channel (see
+  I33). Independent jobs interleave within real resource budgets. Full-fleet
   reservations are for tests that actually require the full topology, including
   distributed correctness and isolated performance measurements.
+- **Full expert pinning under I28-I30.** A captured GLM 5.3 Flash graph bakes
+  expert pointers into its kernel arguments, and since `78c2c21` it refuses to
+  run unless every routed expert is leased. Production therefore pins all
+  12096 experts (`G5_PIN_EXPERTS=1`). That is the explicit resident mode I28
+  allows: selected by configuration, reported with its memory cost, and held
+  only until working-set graphs patch expert pointers on lease
+  ([`TECHDEBT.md`](TECHDEBT.md), Model residency and storage). Eager chains
+  keep strict lazy loading, and pinning is not a substitute for I29 in any
+  other driver.
 - **I31 — One authoritative resource ledger.** Queue jobs and persistent
   engines both count toward memory/device reservations. An empty queue does
   not prove idle hardware. Notes, stale locks or observation timeouts cannot
@@ -159,11 +169,14 @@ changes to common code. Track implementation evidence in
   not merely after a client exits. Reconcile interrupted attempts without
   duplicate launches or killing unrelated developers' jobs.
 - **I33 — Deployment evidence has zero drift.** Test PR builds before merge.
-  Sync an exact committed revision into a separate test root on participating
-  Sparks, rebuild coherently and record source, artifact, configuration and pack
-  hashes. Receipts identify the tested PR/commit and running binaries. Dirty
-  trees or copied driver hotpatches cannot stand in for that source. Production
-  rollout follows validation; merging is not a prerequisite for hardware tests.
+  Build the exact committed revision once on the build host, publish it as its
+  own release root on the hub, and let the node agents on the participating
+  Sparks install it ([fleet release runbook](docs/FLEET_RELEASE_RUNBOOK.md)).
+  Record source, artifact (the root `MANIFEST` sha256), configuration
+  (including the serving environment) and pack hashes. Receipts identify the
+  tested PR/commit and running binaries. Dirty trees, hand-started daemons or
+  copied driver hotpatches cannot stand in for that source. Production rollout
+  follows validation; merging is not a prerequisite for hardware tests.
 - **I34 — CI and Spark testing proceed independently.** Run focused checks and
   review, let CI run, and test pinned PR builds on Sparks in parallel. Do not
   serialize hardware testing behind CI completion or merge. Retain and resolve
@@ -174,18 +187,26 @@ changes to common code. Track implementation evidence in
 - **I35 — Topology policy is shared.** TP, PP and hybrid orchestration own
   partitioning, dependencies, collective identity, credits and progress in
   common topology code. Model hooks supply stage math and boundary geometry.
-- **I36 — Use the required batch-dependent collective strategy.** B1 uses
-  contribution broadcast with local reduction; B2+ uses tree reduction with
-  independent compute overlap. Preserve every contribution and numerical
-  semantics. Prove overlap on the execution timeline, not from asynchronous
-  API names or stream counts.
+- **I36 — Select the collective algorithm by regime.** Common collective code
+  chooses from degree, operation, datatype, logical batch, payload bytes and
+  the measured crossover profile, as in README's regime table: one-round
+  direct all-to-all for latency-bound payloads, reduce-scatter plus
+  all-gather over slice routes for bandwidth-bound sums, and the pair-link
+  hierarchical exchange for prefill and large batches. The wait mode (spin or
+  hardware) is a deployment input and must not change which algorithm runs.
+  Preserve every contribution; every algorithm sums peers in the same fixed
+  order. Prove overlap on the execution timeline, not from asynchronous API
+  names or stream counts.
 - **I37 — Overlap cannot break ownership.** Collective identity is deterministic
   across ranks, steps and generations. Workspaces and credits remain valid
   through GPU and transport completion. Measure exposed communication, rank
   imbalance and weight reuse lost through splitting; splitting is not free.
-- **I38 — Qualify each topology.** GLM's default is TP4xPP4; TP16 is the speed
-  topology. A TP16 component pass cannot qualify TP4xPP4 boundaries or a filled
-  pipeline. A single-rank probe with collectives disabled is component evidence.
+- **I38 — Qualify each topology.** TP16 is the topology GLM 5.3 Flash serves
+  in today. TP4xPP4, PP16 and any other placement must be qualified
+  separately before it serves, and placement is chosen by measured tokens/s
+  and latency, not fixed in advance. A TP16 pass cannot qualify TP4xPP4
+  boundaries or a filled pipeline. A single-rank probe with collectives
+  disabled is component evidence.
 
 ## 8. Numerical and performance acceptance
 
@@ -243,10 +264,11 @@ changes to common code. Track implementation evidence in
 - **I50 — Collective policy preserves the logical batch.** Every collective
   submission carries the full logical request count separately from its
   execution-row count. Missing logical metadata is an error. Splitting a
-  B2+ batch into one-row chunks must not select the B1 direct algorithm.
-  Direct B1 transfers must fit registered payload capacity; larger prefill
-  transfers use the bounded tree path. Algorithm selection belongs in common
-  collective code, and callers carry the count from the original frame.
+  batch into smaller execution chunks must not change the algorithm I36
+  selects for the logical batch. A payload larger than one registered slot
+  runs as chunked rounds of the selected algorithm; it is never truncated or
+  refused for its size. Algorithm selection belongs in common collective
+  code, and callers carry the count from the original frame.
 
 ## Applying this document
 
