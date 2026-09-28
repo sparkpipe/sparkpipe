@@ -43,16 +43,53 @@ def post(endpoint: str, path: str, body: dict, timeout: int) -> tuple[dict, floa
     return payload, time.monotonic() - start
 
 
+def token_ids(tokens) -> list[int]:
+    return [int(t[1]) if isinstance(t, list) else int(t) for t in tokens]
+
+
 def output_tokens(payload: dict) -> list[int]:
     tokens = payload.get("tokens")
     if tokens is None:
         raise SystemExit("the endpoint response carries no 'tokens' field; exactness needs token ids")
-    return [int(t[1]) if isinstance(t, list) else int(t) for t in tokens]
+    return token_ids(tokens)
 
 
-def output_text(payload: dict) -> str:
-    choice = (payload.get("choices") or [{}])[0]
-    return choice.get("text") or (choice.get("message") or {}).get("content") or ""
+def stream(endpoint: str, path: str, body: dict, timeout: int) -> dict:
+    request = urllib.request.Request(endpoint.rstrip("/") + path, data=json.dumps(dict(body, stream=True)).encode(),
+                                     headers={"Content-Type": "application/json", "Accept": "text/event-stream"}, method="POST")
+    start = time.monotonic()
+    ids: list[int] = []
+    text: list[str] = []
+    events: list[tuple[float, int]] = []
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        for raw in response:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:") or line[5:].strip() == "[DONE]":
+                continue
+            event = json.loads(line[5:])
+            if "tokens" not in event:
+                raise SystemExit(f"a stream event carries no 'tokens' field; exactness needs token ids: {line[:200]}")
+            chunk = token_ids(event["tokens"])
+            choice = (event.get("choices") or [{}])[0]
+            text.append(choice.get("text") or (choice.get("delta") or {}).get("content") or "")
+            if chunk:
+                events.append((time.monotonic() - start, len(chunk)))
+                ids.extend(chunk)
+    wall = time.monotonic() - start
+    if not ids:
+        raise SystemExit("the stream produced no token ids")
+    ttft = events[0][0]
+    decode_tokens = len(ids) - events[0][1]
+    decode_s = events[-1][0] - ttft
+    return {"token_ids": ids, "text": "".join(text), "wall_s": wall, "ttft_s": ttft, "decode_tokens": decode_tokens,
+            "decode_s": decode_s, "decode_tok_s": decode_tokens / decode_s if decode_s > 0 and decode_tokens > 0 else None}
+
+
+def read_u32(path: str) -> list[int]:
+    data = Path(path).read_bytes()
+    if len(data) % 4 != 0:
+        raise SystemExit(f"{path} is not a u32 token file")
+    return list(struct.unpack(f"<{len(data) // 4}I", data))
 
 
 def record(args: argparse.Namespace) -> int:
@@ -65,22 +102,36 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
+def replay(args: argparse.Namespace) -> int:
+    prompt = [int(t) for t in json.loads(Path(args.prompt_ids).read_text())]
+    expected = read_u32(args.expect)
+    if expected[:len(prompt)] != prompt:
+        raise SystemExit(f"{args.expect} does not start with the prompt in {args.prompt_ids}")
+    result = stream(args.endpoint, "/v1/chat/completions",
+                    {"prompt_token_ids": prompt, "max_tokens": len(expected) - len(prompt), "temperature": 0.0}, args.timeout)
+    output = expected[len(prompt):]
+    first = next((index for index, (a, b) in enumerate(zip(result["token_ids"], output)) if a != b), None)
+    exact = result["token_ids"] == output
+    report = {"exact": exact, "expected_tokens": len(output), "output_tokens": len(result["token_ids"]),
+              "first_mismatch": first if first is not None or exact else min(len(output), len(result["token_ids"])),
+              "ttft_s": result["ttft_s"], "decode_tok_s": result["decode_tok_s"]}
+    print(json.dumps(report))
+    return 0 if exact else 1
+
+
 def run(args: argparse.Namespace) -> int:
     results = []
     for content_class in args.classes.split(","):
         if content_class not in PROMPTS:
             raise SystemExit(f"unknown content class {content_class}; choose from {sorted(PROMPTS)}")
         for index, prompt in enumerate(PROMPTS[content_class]):
-            payload, wall = post(args.endpoint, "/v1/completions",
-                                 {"prompt": GLM_PREFIX + prompt + GLM_ASSISTANT, "max_tokens": args.max_tokens,
-                                  "temperature": 0.0}, args.timeout)
-            tokens = payload.get("tokens")
-            text = output_text(payload)
-            count = len(tokens) if tokens is not None else int((payload.get("usage") or {}).get("completion_tokens", 0))
-            results.append({"class": content_class, "index": index, "wall_s": wall, "output_tokens": count,
-                            "tokens_per_s": count / wall if wall > 0 else 0.0, "text": text,
-                            "token_ids": [int(t[1]) if isinstance(t, list) else int(t) for t in tokens] if tokens is not None else None})
-            print(f"{content_class}[{index}] {count} tokens in {wall:.2f}s = {count / wall:.1f} tok/s", flush=True)
+            result = stream(args.endpoint, "/v1/completions",
+                            {"prompt": GLM_PREFIX + prompt + GLM_ASSISTANT, "max_tokens": args.max_tokens, "temperature": 0.0},
+                            args.timeout)
+            results.append(dict(result, **{"class": content_class, "index": index, "output_tokens": len(result["token_ids"])}))
+            rate = result["decode_tok_s"]
+            print(f"{content_class}[{index}] {len(result['token_ids'])} tokens, ttft {result['ttft_s']:.3f}s, decode "
+                  f"{'n/a' if rate is None else f'{rate:.1f} tok/s'}", flush=True)
     Path(args.out).write_text(json.dumps({"label": args.label, "max_tokens": args.max_tokens, "results": results}, indent=1))
     return 0
 
@@ -88,10 +139,10 @@ def run(args: argparse.Namespace) -> int:
 def summarize(results: list[dict]) -> dict:
     classes: dict[str, dict] = {}
     for entry in results:
-        total = classes.setdefault(entry["class"], {"tokens": 0, "wall_s": 0.0})
-        total["tokens"] += entry["output_tokens"]
-        total["wall_s"] += entry["wall_s"]
-    return {name: total["tokens"] / total["wall_s"] if total["wall_s"] > 0 else 0.0 for name, total in classes.items()}
+        total = classes.setdefault(entry["class"], {"tokens": 0, "decode_s": 0.0})
+        total["tokens"] += entry["decode_tokens"]
+        total["decode_s"] += entry["decode_s"]
+    return {name: total["tokens"] / total["decode_s"] if total["decode_s"] > 0 else None for name, total in classes.items()}
 
 
 def compare_runs(base: dict, spec: dict) -> dict:
@@ -102,12 +153,15 @@ def compare_runs(base: dict, spec: dict) -> dict:
         if other is None:
             mismatches.append(f"{entry['class']}[{entry['index']}] missing from the baseline")
             continue
-        same_ids = entry["token_ids"] is None or other["token_ids"] is None or entry["token_ids"] == other["token_ids"]
-        if entry["text"] != other["text"] or not same_ids:
+        if not entry.get("token_ids") or not other.get("token_ids"):
+            mismatches.append(f"{entry['class']}[{entry['index']}] has no token ids; exactness cannot be judged from text")
+            continue
+        if entry["token_ids"] != other["token_ids"] or entry["text"] != other["text"]:
             mismatches.append(f"{entry['class']}[{entry['index']}] output differs")
     base_rates, spec_rates = summarize(base["results"]), summarize(spec["results"])
-    speedups = {name: spec_rates[name] / base_rates[name] for name in spec_rates if base_rates.get(name)}
-    return {"exact": not mismatches, "mismatches": mismatches, "base_tok_s": base_rates, "spec_tok_s": spec_rates, "speedup": speedups}
+    speedups = {name: spec_rates[name] / base_rates[name] for name in spec_rates if base_rates.get(name) and spec_rates[name] is not None}
+    return {"exact": not mismatches, "mismatches": mismatches, "base_decode_tok_s": base_rates, "spec_decode_tok_s": spec_rates,
+            "speedup": speedups}
 
 
 def compare(args: argparse.Namespace) -> int:
@@ -143,14 +197,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="spec_verify_bench")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("record")
-    p.add_argument("--endpoint", default="http://127.0.0.1:8433")
+    p.add_argument("--endpoint", required=True)
     p.add_argument("--prompt-ids", required=True)
     p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--out", required=True)
     p.set_defaults(function=record)
+    p = sub.add_parser("replay")
+    p.add_argument("--endpoint", required=True)
+    p.add_argument("--prompt-ids", required=True)
+    p.add_argument("--expect", required=True)
+    p.add_argument("--timeout", type=int, default=900)
+    p.set_defaults(function=replay)
     p = sub.add_parser("run")
-    p.add_argument("--endpoint", default="http://127.0.0.1:8433")
+    p.add_argument("--endpoint", required=True)
     p.add_argument("--classes", default="prose,code,repetitive")
     p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--timeout", type=int, default=900)
