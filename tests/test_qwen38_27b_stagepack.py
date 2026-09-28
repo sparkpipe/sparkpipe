@@ -204,28 +204,28 @@ def main() -> int:
         except packer.PackFailure:
             pass
 
-    # The C synthesizer's pack passes the same verifier.
-    synthesizer_bin = Path("/tmp/qwen38_27b_pack_synthesize_test")
-    build = subprocess.run(
-        ["cc", "-std=c11", "-O1",
-         f"-I{ROOT}/include", f"-I{ROOT}/model-families/common/include",
-         f"-I{ROOT}/model-families/qwen38_27b/include",
-         f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/include",
-         f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/source",
-         str(ROOT / "runtime/stagepack_format.c"),
-         str(SYNTHESIZER), "-o", str(synthesizer_bin)],
-        capture_output=True, text=True)
-    check(build.returncode == 0, f"synthesizer build: {build.stderr[:200]}")
-    if build.returncode == 0:
-        synth_pack = Path("/tmp/qwen38_27b_synth_slice.qwen38_27bsp")
-        run = subprocess.run(
-            [str(synthesizer_bin), "--output", str(synth_pack),
-             "--first-layer", "1", "--layer-count", "2", "--bf16"],
+    with tempfile.TemporaryDirectory(prefix="qwen38-27b-synth-") as synthesis:
+        synthesizer_bin = Path(synthesis) / "qwen38_27b_pack_synthesize_test"
+        build = subprocess.run(
+            ["cc", "-std=c11", "-O1",
+             f"-I{ROOT}/include", f"-I{ROOT}/model-families/common/include",
+             f"-I{ROOT}/model-families/qwen38_27b/include",
+             f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/include",
+             f"-I{ROOT}/modules/qwen38_27b_resident_decode_stage/source",
+             str(ROOT / "runtime/stagepack_format.c"),
+             str(SYNTHESIZER), "-o", str(synthesizer_bin)],
             capture_output=True, text=True)
-        check(run.returncode == 0, f"synthesizer run: {run.stderr[:200]}")
-        if run.returncode == 0:
-            result = packer.verify(synth_pack)
-            check(result["tensor_count"] == 28, "synthesizer pack failed the python verifier")
+        check(build.returncode == 0, f"synthesizer build: {build.stderr}")
+        if build.returncode == 0:
+            synth_pack = Path(synthesis) / "qwen38_27b_synth_slice.qwen38_27bsp"
+            run = subprocess.run(
+                [str(synthesizer_bin), "--output", str(synth_pack),
+                 "--first-layer", "1", "--layer-count", "2", "--bf16"],
+                capture_output=True, text=True)
+            check(run.returncode == 0, f"synthesizer run: {run.stderr}")
+            if run.returncode == 0:
+                result = packer.verify(synth_pack)
+                check(result["tensor_count"] == 28, "synthesizer pack failed the python verifier")
 
     if failures:
         print(f"\nFAIL ({failures})")
