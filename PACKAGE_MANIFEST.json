@@ -978,8 +978,8 @@
     },
     {
       "path": "docs/SPARKDEV_HANDOFF_GLM53FLASH.md",
-      "sha256": "ac054938f61893b766a07dbf7a28be5145bc2733ac93aaad9be03aaf7c3fc1bf",
-      "size_bytes": 16953
+      "sha256": "e759bd5ffce56472f7d1fdcf96e4aece4f4a76a7e37c050dce06e55c5f67fbae",
+      "size_bytes": 16947
     },
     {
       "path": "docs/SPARKPIPE_SERVING_CHARTER.md",
@@ -1058,8 +1058,8 @@
     },
     {
       "path": "docs/TP_CUPTI_TRACE.md",
-      "sha256": "ef0d065c176c61ee102b438a2dd6c7e6b766054ce410400333ea9eb591b978f0",
-      "size_bytes": 4205
+      "sha256": "ee853a41a4f4d0978cb2c0e475cdb68fe30b62ae040458432e49f0e6c6228e89",
+      "size_bytes": 4199
     },
     {
       "path": "docs/TP_STREAM_MEMOP_QUALIFICATION.md",
@@ -13953,8 +13953,8 @@
     },
     {
       "path": "tools/tp_cupti_trace_report.py",
-      "sha256": "9be7d33c4e74e6edb6629acdf2cc1c10431594efbcc3436e878656d7175ec730",
-      "size_bytes": 6887
+      "sha256": "02d827f18ad67d0a3c50bb5b8381b8df79e83bab621795ef14ca99405b73469b",
+      "size_bytes": 6881
     },
     {
       "path": "tools/tp_mesh_hardware_probe.cu",
@@ -15445,5 +15445,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74090499
+  "total_bytes": 74090481
 }

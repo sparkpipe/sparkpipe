@@ -52,7 +52,7 @@ def report(path, clock='cupti', start=None, end=None):
                 if first == 0 or last <= first or duration != last - first:
                     invalid += 1
                     continue
-                category = ('host_memcpy' if copy_kind == 'HtoH' else 'memcpy') if kind == 'MEMCPY' else 'memset' if kind == 'MEMSET' else 'mesh' if 'SparkGlm5NextMesh' in (name or '') else 'compute'
+                category = ('host_memcpy' if copy_kind == 'HtoH' else 'memcpy') if kind == 'MEMCPY' else 'memset' if kind == 'MEMSET' else 'mesh' if 'SparkTpMesh' in (name or '') else 'compute'
                 if kind in ('KERNEL', 'CONCURRENT_KERNEL') and not name:
                     invalid += 1
                     continue
