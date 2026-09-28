@@ -1,5 +1,13 @@
 # Qwen3.8-27B DFlash2 serving — ops runbook
 
+> Archived 2026-09-28. Do not run any command in this file. spark2 is GLM
+> 5.3 Flash TP16 rank 2 (`deployment/glm5_next_tp16/model_resident.json`), and
+> its "kill first" steps would stop the fleet-agent's residentd and `kill -9`
+> weightd, which holds the pinned experts, taking down the TP16 service. The
+> `qwen38.fp8.tp1` roots were deleted fleet-wide on 2026-08-31. A new 27B
+> DFlash2 procedure starts from `tools/qwen38_27b_dflash2_serve.sh` on a node
+> reserved through the queue.
+
 Everything a developer needs to find the model, build, deploy, launch,
 benchmark, and verify the release tagged `qwen38-dflash2-20260821`.
 Deep internals (kernel ledgers, experiment history, perf analysis) live in

@@ -1,5 +1,13 @@
 # Stagepack Fleet Audit — 2026-08-31
 
+> Archived 2026-09-28: a dated audit snapshot. It records the
+> `qwen38.fp8.tp1` deletion and the pack identity baseline that
+> `docs/DRY_PACKBUILDER_PROPOSAL.md` cites. Its serving-set labels are stale
+> (GLM 5.3 Flash serves from `glm53flash.fp8.tp16`), and its no-symlink gate
+> fails on every fleet-agent node because the agent links
+> `config/stage.json` under each root (`tools/fleet_node_agent.sh`). Pack
+> naming authority: `docs/STAGEPACK_NAMING.md`.
+
 Scope: every model dir in warm storage ↔ placed stagepacks on all 16
 sparks; deprecated/misleading set removal. Trigger: operator directive
 ("audit all the stagepacks … a completely clean set of 16 sparks with all
