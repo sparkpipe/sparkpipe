@@ -380,6 +380,16 @@ SparkStatus SparkGraphRelocRebase(const SparkGraphRelocImage *image,const SparkG
 	return(status);
 }
 
+SparkStatus SparkGraphRelocHeldReset(const SparkGraphRelocImage *image,uint8_t *held,uint64_t held_capacity)
+{
+	if ( image == 0 || held == 0 || held == image->blob )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( image->blob_bytes > held_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memcpy(held,image->blob,(size_t)image->blob_bytes);
+	return(SPARK_STATUS_OK);
+}
+
 static uint64_t SparkGraphRelocCarve(uint64_t *cursor,uint64_t bytes,uint8_t *base,void **out)
 {
 	uint64_t offset = SparkGraphRelocAlign(*cursor);
@@ -405,7 +415,7 @@ static void SparkGraphRelocBindImage(SparkGraphRelocImage *image,const SparkGrap
 static uint64_t SparkGraphRelocLayout(const SparkGraphRelocCapacity *capacity,uint8_t *base,SparkGraphRelocWorkspace *workspace)
 {
 	uint64_t cursor = sizeof(SparkGraphRelocWorkspace),total;
-	void *regions = 0,*keys = 0,*patch = 0;
+	void *regions = 0,*keys = 0,*patch = 0,*held[2] = {0,0};
 	uint32_t index;
 	(void)SparkGraphRelocCarve(&cursor,(uint64_t)capacity->regions * sizeof(SparkGraphRelocRegion),base,&regions);
 	(void)SparkGraphRelocCarve(&cursor,(uint64_t)capacity->regions * sizeof(SparkGraphRelocKey),base,&keys);
@@ -417,8 +427,12 @@ static uint64_t SparkGraphRelocLayout(const SparkGraphRelocCapacity *capacity,ui
 		(void)SparkGraphRelocCarve(&cursor,(uint64_t)capacity->params * sizeof(SparkGraphRelocParam),base,&parts[2]);
 		(void)SparkGraphRelocCarve(&cursor,(uint64_t)capacity->sites * sizeof(SparkGraphRelocSite),base,&parts[3]);
 		(void)SparkGraphRelocCarve(&cursor,capacity->blob_bytes,base,&parts[4]);
+		(void)SparkGraphRelocCarve(&cursor,capacity->blob_bytes,base,&held[index]);
 		if ( base != 0 )
+		{
 			SparkGraphRelocBindImage(&workspace->images[index],capacity,parts);
+			workspace->held_blob[index] = held[index];
+		}
 	}
 	total = SparkGraphRelocCarve(&cursor,capacity->blob_bytes,base,&patch);
 	if ( base != 0 )

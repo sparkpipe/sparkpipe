@@ -171,6 +171,7 @@ typedef struct SparkGraphRelocWorkspace
 {
 	SparkGraphRelocRegistry registry;
 	SparkGraphRelocImage images[2];
+	uint8_t *held_blob[2];
 	uint8_t *patch_blob;
 	uint64_t reference_key;
 	uint32_t reference_valid;
@@ -189,12 +190,13 @@ uint8_t *SparkGraphRelocImageTail(SparkGraphRelocImage *image,uint32_t bytes);
 SparkStatus SparkGraphRelocImageCommit(SparkGraphRelocImage *image,const SparkGraphRelocRegistry *registry,const SparkGraphRelocNodeInput *input,SparkGraphRelocFault *fault);
 SparkStatus SparkGraphRelocValidatePair(const SparkGraphRelocImage *first,const SparkGraphRelocImage *second,SparkGraphRelocFault *fault);
 SparkStatus SparkGraphRelocRebase(const SparkGraphRelocImage *image,const SparkGraphRelocRegistry *target,uint32_t target_slot,uint8_t *blob,uint64_t blob_capacity,SparkGraphRelocFault *fault);
+SparkStatus SparkGraphRelocHeldReset(const SparkGraphRelocImage *image,uint8_t *held,uint64_t held_capacity);
 SparkStatus SparkGraphRelocWorkspaceCreate(const SparkGraphRelocCapacity *capacity,uint64_t window_margin,SparkGraphRelocWorkspace **out);
 void SparkGraphRelocWorkspaceDestroy(SparkGraphRelocWorkspace *workspace);
 
 uint32_t SparkGraphRelocCudaProbe(void *context,uint64_t word);
 SparkStatus SparkGraphRelocCaptureCuda(void *graph,const SparkGraphRelocRegistry *registry,uint32_t slot,SparkGraphRelocImage *image,SparkGraphRelocFault *fault);
-SparkStatus SparkGraphRelocApplyCuda(void *exec,const SparkGraphRelocImage *image,const uint8_t *blob,uint32_t force,uint32_t *applied,SparkGraphRelocFault *fault);
+SparkStatus SparkGraphRelocApplyCuda(void *exec,const SparkGraphRelocImage *image,uint8_t *held,uint64_t held_capacity,const uint8_t *blob,uint32_t force,uint32_t *applied,SparkGraphRelocFault *fault);
 
 #ifdef __cplusplus
 }

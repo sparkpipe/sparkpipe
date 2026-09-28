@@ -209,23 +209,26 @@ static SparkStatus SparkGraphRelocCudaSet(cudaGraphExec_t exec,const SparkGraphR
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkGraphRelocApplyCuda(void *exec,const SparkGraphRelocImage *image,const uint8_t *blob,uint32_t force,uint32_t *applied,SparkGraphRelocFault *fault)
+SparkStatus SparkGraphRelocApplyCuda(void *exec,const SparkGraphRelocImage *image,uint8_t *held,uint64_t held_capacity,const uint8_t *blob,uint32_t force,uint32_t *applied,SparkGraphRelocFault *fault)
 {
 	const SparkGraphRelocNode *node;
 	uint32_t index;
-	if ( exec == 0 || image == 0 || blob == 0 || applied == 0 )
+	if ( exec == 0 || image == 0 || held == 0 || blob == 0 || applied == 0 || held == blob )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*applied = 0u;
+	if ( image->blob_bytes > held_capacity )
+		return(SparkGraphRelocCudaRefuse(fault,SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_GRAPH_RELOC_REASON_CAPACITY,SPARK_GRAPH_RELOC_NONE,image->blob_bytes,0u));
 	for (index=0u; index<image->node_count; index++)
 	{
 		node = &image->nodes[index];
-		if ( node->site_count == 0u || (force == 0u && memcmp(blob + node->blob_offset,image->blob + node->blob_offset,node->blob_bytes) == 0) )
+		if ( node->site_count == 0u || (force == 0u && memcmp(blob + node->blob_offset,held + node->blob_offset,node->blob_bytes) == 0) )
 			continue;
 		if ( SparkGraphRelocCudaSet((cudaGraphExec_t)exec,image,index,blob + node->blob_offset) != SPARK_STATUS_OK )
 		{
 			(void)cudaGetLastError();
 			return(SparkGraphRelocCudaRefuse(fault,SPARK_STATUS_IO_ERROR,SPARK_GRAPH_RELOC_REASON_APPLY,index,0u,node->kind));
 		}
+		memcpy(held + node->blob_offset,blob + node->blob_offset,node->blob_bytes);
 		(*applied)++;
 	}
 	return(SPARK_STATUS_OK);

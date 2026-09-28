@@ -153,6 +153,7 @@ int main(void)
 	cudaGraph_t graph0,graph1,graph_moved,graph_rogue;
 	cudaGraphExec_t exec0,exec1,exec_moved;
 	uint32_t applied = 0u,index;
+	uint8_t *held;
 	double start,capture_us,patch_us;
 	CUDA_CHECK(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
 	CUDA_CHECK(cudaMalloc((void **)&weight,WEIGHT_COUNT * sizeof(float) + GUARD));
@@ -167,6 +168,7 @@ int main(void)
 	CHECK(SparkGraphRelocWorkspaceCreate(&capacity,UINT64_C(1) << 30,&workspace) == SPARK_STATUS_OK);
 	CHECK(SparkGraphRelocWorkspaceCreate(&capacity,UINT64_C(1) << 30,&target) == SPARK_STATUS_OK);
 	Register(&workspace->registry,weight,slots);
+	held = workspace->held_blob[0];
 	graph0 = Capture(stream,&slots[0],weight,0);
 	graph1 = Capture(stream,&slots[1],weight,0);
 	CHECK(Walk(graph0,&workspace->registry,0u,&workspace->images[0],&fault) == SPARK_STATUS_OK);
@@ -182,21 +184,34 @@ int main(void)
 	CHECK(memcmp(own,fresh,sizeof(fresh)) != 0);
 	CHECK(SparkGraphRelocRebase(&workspace->images[0],&workspace->registry,1u,workspace->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
 	CHECK(memcmp(workspace->patch_blob,workspace->images[1].blob,(size_t)workspace->images[1].blob_bytes) == 0);
-	CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	CHECK(SparkGraphRelocHeldReset(&workspace->images[0],held,workspace->images[0].blob_capacity) == SPARK_STATUS_OK);
+	CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],held,workspace->images[0].blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
 	CHECK(applied == 4u);
 	Run(exec0,stream,&slots[1],patched);
 	CHECK(memcmp(patched,fresh,sizeof(fresh)) == 0);
 	printf("ok slot-0 exec patched in place to slot 1 (%u nodes) gives output bit-identical to a fresh slot-1 capture\n",applied);
+	CHECK(SparkGraphRelocRebase(&workspace->images[0],&workspace->registry,0u,workspace->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
+	CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],held,workspace->images[0].blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	CHECK(applied == 4u);
+	Run(exec0,stream,&slots[1],patched);
+	CHECK(memcmp(patched,fresh,sizeof(fresh)) != 0);
+	Run(exec0,stream,&slots[0],patched);
+	CHECK(memcmp(patched,own,sizeof(own)) == 0);
+	CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],held,workspace->images[0].blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	CHECK(applied == 0u);
+	printf("ok round trip 0->1->0 without force: %u nodes patched back, output bit-identical to the slot-0 capture; re-applying the held target patches 0 nodes\n",4u);
 	SparkGraphRelocRegistryReset(&target->registry);
 	Register(&target->registry,weight_moved,slots);
-	CHECK(SparkGraphRelocRebase(&workspace->images[0],&target->registry,1u,target->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
 	start = Now();
 	for (index=0u; index<REPEATS; index++)
 	{
-		CHECK(SparkGraphRelocRebase(&workspace->images[0],&target->registry,1u,target->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
-		CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],target->patch_blob,1u,&applied,&fault) == SPARK_STATUS_OK);
+		CHECK(SparkGraphRelocRebase(&workspace->images[0],&target->registry,(index & 1u) != 0u ? 0u : 1u,target->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
+		CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],held,workspace->images[0].blob_capacity,target->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+		CHECK(applied == 4u);
 	}
 	patch_us = (Now() - start) * 1e6 / REPEATS;
+	CHECK(SparkGraphRelocRebase(&workspace->images[0],&target->registry,1u,target->patch_blob,workspace->images[0].blob_capacity,&fault) == SPARK_STATUS_OK);
+	CHECK(SparkGraphRelocApplyCuda(exec0,&workspace->images[0],held,workspace->images[0].blob_capacity,target->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
 	graph_moved = Capture(stream,&slots[1],weight_moved,0);
 	CUDA_CHECK(cudaGraphInstantiate(&exec_moved,graph_moved,0));
 	Run(exec_moved,stream,&slots[1],fresh);

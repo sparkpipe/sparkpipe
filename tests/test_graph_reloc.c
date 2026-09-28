@@ -303,6 +303,7 @@ static void TestTwoCaptures(void)
 {
 	SparkGraphRelocWorkspace *workspace = Workspace(16u,UINT64_C(1) << 30);
 	SparkGraphRelocImage *first = &workspace->images[0],*second = &workspace->images[1];
+	uint8_t *held = workspace->held_blob[0];
 	SparkGraphRelocFault fault;
 	uint32_t applied = 0u;
 	FakeArgs args;
@@ -317,14 +318,28 @@ static void TestTwoCaptures(void)
 	assert(SparkGraphRelocRebase(first,&workspace->registry,1u,workspace->patch_blob,first->blob_capacity,&fault) == SPARK_STATUS_OK);
 	assert(memcmp(workspace->patch_blob,second->blob,(size_t)second->blob_bytes) == 0);
 	assert(memcmp(workspace->patch_blob,first->blob,(size_t)first->blob_bytes) != 0);
-	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,workspace->patch_blob,first->blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGraphRelocHeldReset(first,held,first->blob_capacity) == SPARK_STATUS_OK);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,held,8u,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,held,first->blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
 	assert(applied == 2u);
 	assert(GRAPHS[0].nodes[0].applied_count == 1u && GRAPHS[0].nodes[1].applied_count == 1u && GRAPHS[0].nodes[2].applied_count == 0u);
 	memcpy(&args,GRAPHS[0].nodes[0].applied + 16u,sizeof(args));
 	assert(args.staging == STAGING_SLOT1 + 16u && args.a == 3u && args.b == 4u);
 	assert((uint64_t)(uintptr_t)GRAPHS[0].nodes[1].copy.dstPtr.ptr == STAGING_SLOT1);
 	assert((uint64_t)(uintptr_t)GRAPHS[0].nodes[1].copy.srcPtr.ptr == WEIGHT_BASE + 128u);
-	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,workspace->patch_blob,1u,&applied,&fault) == SPARK_STATUS_OK);
+	assert(memcmp(held,second->blob,(size_t)second->blob_bytes) == 0);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,held,first->blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	assert(applied == 0u && GRAPHS[0].nodes[0].applied_count == 1u && GRAPHS[0].nodes[1].applied_count == 1u);
+	assert(SparkGraphRelocRebase(first,&workspace->registry,0u,workspace->patch_blob,first->blob_capacity,&fault) == SPARK_STATUS_OK);
+	assert(memcmp(workspace->patch_blob,first->blob,(size_t)first->blob_bytes) == 0);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,held,first->blob_capacity,workspace->patch_blob,0u,&applied,&fault) == SPARK_STATUS_OK);
+	assert(applied == 2u && GRAPHS[0].nodes[0].applied_count == 2u && GRAPHS[0].nodes[1].applied_count == 2u && GRAPHS[0].nodes[2].applied_count == 0u);
+	memcpy(&args,GRAPHS[0].nodes[0].applied + 16u,sizeof(args));
+	assert(args.staging == STAGING_SLOT0 + 16u && args.a == 3u && args.b == 4u);
+	assert((uint64_t)(uintptr_t)GRAPHS[0].nodes[1].copy.dstPtr.ptr == STAGING_SLOT0);
+	assert(memcmp(held,first->blob,(size_t)first->blob_bytes) == 0);
+	assert(SparkGraphRelocApplyCuda((void *)&GRAPHS[0],first,held,first->blob_capacity,workspace->patch_blob,1u,&applied,&fault) == SPARK_STATUS_OK);
 	assert(applied == 3u && GRAPHS[0].nodes[2].applied_count == 1u && GRAPHS[0].nodes[3].applied_count == 0u);
 	SparkGraphRelocWorkspaceDestroy(workspace);
 }

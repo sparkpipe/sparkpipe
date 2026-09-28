@@ -45,6 +45,17 @@ The code is model-neutral: `include/sparkpipe/spark_graph_reloc.h`,
 - **Rebase and apply.** `Rebase` writes each site as the target registry's
   `base + offset` for the target slot. `ApplyCuda` pushes the changed nodes
   with `cudaGraphExec{Kernel,Memcpy,Memset,Host}NodeSetParams`.
+  - Every exec owns a **held** blob: the parameter bytes that exec holds right
+    now. `HeldReset` seeds it from the capture image when the exec is
+    instantiated. `ApplyCuda` compares the target blob with the held blob, not
+    with the capture, and copies each node it patched into the held blob. A
+    round trip (slot 0 → 1 → 0, or a base moved and moved back) therefore
+    patches the nodes back. Diffing against the capture would report 0
+    changes on the way back and leave the exec on the other slot's buffers.
+  - `force=1` patches every node that has a site, whatever the held blob says.
+  - The held blob must not alias the target blob or the capture image.
+    `SparkGraphRelocWorkspace` carves one held blob per image
+    (`held_blob[0]`, `held_blob[1]`).
 
 ## Tests
 
@@ -60,8 +71,24 @@ The code is model-neutral: `include/sparkpipe/spark_graph_reloc.h`,
   - The shared weight base moves to a copy while the old base is poisoned with
     NaN. The patched exec matches a fresh capture on the new base bitwise.
   - An unregistered device pointer in a kernel argument is refused.
-  - Timing for this 4-node graph: capture+instantiate 6.6 us, rebase+patch
-    0.9 us.
+  - Round trip: the exec patched to slot 1 is patched back to slot 0 with
+    `force=0`. All 4 nodes are re-patched, and the output is bit-identical to
+    the original slot-0 run. Re-applying the same target patches 0 nodes.
+  - Timing for this 4-node graph: capture+instantiate against rebase+patch.
+    The patch loop alternates slot 0 and slot 1 with `force=0`, so every
+    iteration really patches all 4 nodes.
+
+## Integration prerequisites
+
+- **Keep the template graph alive.** `cudaGraphExec*NodeSetParams` takes node
+  handles from the source `cudaGraph_t`. The image stores those handles, so
+  the template graph must outlive every patch of every exec made from it. A
+  caller that destroys the graph right after instantiate must stop doing so
+  before it uses `ApplyCuda`.
+- **No adjacent regions.** A word equal to one region's inclusive end and the
+  next region's base is refused as ambiguous. Sub-allocations of a ledger
+  that sit back to back need a guard gap between them, or must be registered
+  as one region, before a graph that uses them can be walked.
 
 ## Not yet
 
