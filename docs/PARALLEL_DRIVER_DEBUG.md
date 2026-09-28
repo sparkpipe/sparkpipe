@@ -12,13 +12,13 @@ generator and tp_device_collective. Do not fork these protocols per model.
 ## When to use the queue
 
 Owner ruling, 2026-09-28:
-- `tools/spark_queue.py` is only for dedicated, exclusive 16-Spark performance runs, meaning measurements that need the whole fleet quiet.
-- Development and validation runs do not go through the queue. They run directly on the node or nodes assigned to the developer.
-- Each such run uses its own runtime root, its own weightd mesh lane (lane 0 is production), its own ports, a memory budget from `tools/devcycle/lane_budget_calc.py`, and a `.wset` working set for MoE models.
+- `tools/spark_queue.py` is retired for day-to-day work. Its stale owners froze progress, so the lead dev cleared its state on 2026-09-28.
+- Developers work in parallel, directly on their assigned nodes. Each uses its own runtime root, its own weightd mesh lane (lane 0 is production), its own ports, a memory budget from `tools/devcycle/lane_budget_calc.py`, and a `.wset` working set for MoE models.
 - Start every process in its own transient unit (`systemd-run --user --unit=...`) so cleanup is exact. Never start one inside the `fleet-agent` cgroup.
-- Before a load benchmark, check that no exclusive perf window is held.
+- Performance measurements on the Sparks are serialized by the lead dev, one at a time, in short windows. This covers tok/s, TTFT, prefill time, concurrency sweeps and timed evals. Functional and correctness checks need no window.
+- The one remaining queue use is `tools/module_build_release.sh`, which still demands a `SPARK_QUEUE_ID`. A release build runs as a single queue job until that guard is changed.
 
-The queue mechanics below apply to those exclusive runs, and to CI-style jobs that want its bookkeeping. They are not a gate on day-to-day driver work. Node assignments for driver and core lanes are kept by the lead dev.
+The queue mechanics below are kept for that release build and for reference.
 
 ## Queue v2 contract
 
