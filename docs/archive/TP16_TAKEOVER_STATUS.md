@@ -4,9 +4,12 @@
 > merged. The numerics problem below is solved: COMPSEC-17 scores 14/17 with
 > the chat template
 > (`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`),
-> and B1 decode measured 36 tok/s on 2026-09-28 (lead-dev measurement). Fleet
-> operations: [`FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md). GLM
-> status: [`GLM5_NEXT_ROOFLINE.md`](../GLM5_NEXT_ROOFLINE.md).
+> and B1 decode measured 36 tok/s on 2026-09-28 (lead-dev measurement). Also
+> stale: `SPARK_GLM5_NEXT_GRAPH_PATH` has no default (unset fails module init;
+> the fleet sets 1 through `G5_GRAPH_PATH`), and the mesh now has 2 slots per
+> rank in a 268,500,992-byte slot area (`include/sparkpipe/spark_weightd.h`).
+> Fleet operations: [`FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
+> GLM status: [`GLM5_NEXT_ROOFLINE.md`](../GLM5_NEXT_ROOFLINE.md).
 
 Branch: `lane/glm53-takeover` (all pushed). Fleet: serving mechanically end-to-end on TP16.
 
