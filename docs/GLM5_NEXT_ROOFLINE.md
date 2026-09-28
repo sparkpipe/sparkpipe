@@ -864,8 +864,12 @@ What changed:
   selected (above 2,048). A bound stays inside its regime: `threshold - 1`
   for unsplit, 2,048 for split, `context + 256` for selected, capped at
   `max_sequence_positions`. Eager and graph waves decide split-KV with the
-  same function, `LmLatentAttentionContextSplits`. The capture log reads
-  `GRAPH-CAPTURE-OK rows=N regime=R bound=B`, with R 0, 1 or 2.
+  same function, `LmLatentAttentionContextSplits`. Each regime has one
+  graph for greedy waves and one for waves with a sampled row, because the
+  head binds the per-row sampling rules only when the wave samples
+  (`SparkGlm5NextGraphKey`). The capture log reads
+  `GRAPH-CAPTURE-OK rows=N regime=R sampled=S bound=B`, with R 0, 1 or 2 and
+  S 0 or 1.
 - **Exact top-k.** `LmTopkExactKernel` (`topk_exact.cuh`) selects the exact
   top 512 pools, breaks ties by the lowest pool index and writes them in index
   order. It replaces the histogram and gather kernels in glm5_next and in

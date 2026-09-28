@@ -84,9 +84,9 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *route_ready_event;
 	uint32_t route_recorded;
 	void *graph_exec_a;
-	void *graph_exec_rows[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
-	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
-	uint64_t graph_failed_rows;
+	void *graph_exec_rows[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
+	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
+	uint64_t graph_failed_rows[SPARK_GLM5_NEXT_GRAPH_HEAD_COUNT];
 	uint32_t graph_disabled;
 	void *host_staging;
 	SparkRowSampling *host_row_sampling;

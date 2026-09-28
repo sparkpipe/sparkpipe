@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A replayed glm5_next decode graph makes the same context-dependent attention choices as an eager wave at the same context, whatever the capture history."""
+"""A replayed glm5_next decode graph makes the same context-dependent attention choices as an eager wave at the same context, and draws tokens with the same head (greedy or sampled), whatever the capture history."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -29,33 +29,50 @@ static void check_replay(uint32_t context,uint32_t bound,uint32_t threshold,uint
 	}
 }
 
-static void run_wave(uint32_t *bounds,uint32_t context,uint32_t threshold,uint32_t max_positions)
+static void run_wave(uint32_t *bounds,uint32_t *heads,uint32_t context,uint32_t sampled,uint32_t threshold,uint32_t max_positions)
 {
-	uint32_t regime;
-	regime = SparkGlm5NextGraphRegime(context,threshold);
-	if ( bounds[regime] != 0u && context > bounds[regime] )
-		bounds[regime] = 0u;
-	if ( bounds[regime] == 0u )
-		bounds[regime] = SparkGlm5NextGraphBound(context,threshold,max_positions);
-	check_replay(context,bounds[regime],threshold,max_positions);
+	uint32_t key;
+	key = SparkGlm5NextGraphKey(context,threshold,sampled);
+	if ( key >= SPARK_GLM5_NEXT_GRAPH_KEY_COUNT || key % SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT != SparkGlm5NextGraphRegime(context,threshold) )
+	{
+		fprintf(stderr,"FAIL threshold=%u: context %u sampled %u maps to graph key %u\n",threshold,context,sampled,key);
+		exit(1);
+	}
+	if ( bounds[key] != 0u && context > bounds[key] )
+		bounds[key] = 0u;
+	if ( bounds[key] == 0u )
+	{
+		bounds[key] = SparkGlm5NextGraphBound(context,threshold,max_positions);
+		heads[key] = sampled;
+	}
+	if ( heads[key] != sampled )
+	{
+		fprintf(stderr,"FAIL threshold=%u: a %s wave at context %u replays a graph captured for a %s head\n",threshold,sampled != 0u ? "sampled" : "greedy",context,heads[key] != 0u ? "sampled" : "greedy");
+		exit(1);
+	}
+	check_replay(context,bounds[key],threshold,max_positions);
 }
 
 static void check_every_context(uint32_t threshold,uint32_t max_positions)
 {
-	uint32_t bounds[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT] = {0u,0u,0u},context;
+	uint32_t bounds[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT] = {0u},heads[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT] = {0u},context;
 	for (context=1u; context<=max_positions; context++)
-		run_wave(bounds,context,threshold,max_positions);
+	{
+		run_wave(bounds,heads,context,0u,threshold,max_positions);
+		run_wave(bounds,heads,context,1u,threshold,max_positions);
+	}
 }
 
 static void check_histories(uint32_t threshold,uint32_t max_positions)
 {
-	uint32_t bounds[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT] = {0u,0u,0u},request,prompt,length,position;
+	uint32_t bounds[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT] = {0u},heads[SPARK_GLM5_NEXT_GRAPH_KEY_COUNT] = {0u},request,prompt,length,position,sampled;
 	for (request=0u; request<400u; request++)
 	{
 		prompt = 1u + next_random(next_random(4u) == 0u ? max_positions : 600u);
 		length = prompt + next_random(64u);
+		sampled = next_random(2u);
 		for (position=prompt; position<=length && position<=max_positions; position++)
-			run_wave(bounds,position,threshold,max_positions);
+			run_wave(bounds,heads,position,sampled,threshold,max_positions);
 	}
 }
 
@@ -84,7 +101,7 @@ def main():
         subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Werror", "-I.", "-Iinclude",
                         "-Imodel-families/glm5_next/include", str(source), "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True, timeout=600)
-    print("PASS replayed decode graphs choose split-KV and DSA selection exactly as an eager wave at the same context")
+    print("PASS replayed decode graphs choose split-KV, DSA selection and the greedy or sampled head exactly as an eager wave at the same context")
 
 
 if __name__ == "__main__":

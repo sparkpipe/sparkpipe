@@ -512,11 +512,12 @@ progress diary.
   which need a cross-rank log-sum-exp, and port the sampled head
   (`LmHeadSampledCandidate*Kernel`) to the other families.
 - Sampled rows take the full-vocab BF16 head instead of the certified FP8
-  B1 head, run eagerly instead of replaying a CUDA graph, and get no MTP
-  drafts: the certified screen prunes with un-noised bounds, graphs freeze
-  the head choice, and drafts are keyed by relative positions. Noise the
-  screen bounds, key drafts by absolute position, and capture sampled
-  graphs to lift all three.
+  B1 head and get no MTP drafts: the certified screen prunes with
+  un-noised bounds, and drafts are keyed by relative positions. Noise the
+  screen bounds and key drafts by absolute position to lift both. Sampled
+  waves replay their own CUDA graphs (the graph key carries the head mode);
+  a GPU check that a sampled replay draws the linear chain's tokens for the
+  same seed is still owed.
 - Draw sampled tokens as the argmax of logit/T plus Gumbel noise keyed by
   (seed, absolute position, token id), as TensorFold's exact sampler does, so
   a seeded sampled stream replays exactly and a draft is accepted exactly

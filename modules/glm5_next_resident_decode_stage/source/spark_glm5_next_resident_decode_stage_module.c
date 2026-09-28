@@ -836,16 +836,16 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 
 static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
 {
-	uint32_t regime,index;
-	for ( regime = 0u; regime < SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT; regime++ )
+	uint32_t key,index;
+	for ( key = 0u; key < SPARK_GLM5_NEXT_GRAPH_KEY_COUNT; key++ )
 		for ( index = 0u; index < SPARK_GLM5_NEXT_GRAPH_ROWS_MAX; index++ )
 		{
-			if ( slot->graph_exec_rows[regime][index] != 0 )
-				(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[regime][index]);
-			slot->graph_exec_rows[regime][index] = 0;
-			slot->graph_bound_rows[regime][index] = 0u;
+			if ( slot->graph_exec_rows[key][index] != 0 )
+				(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[key][index]);
+			slot->graph_exec_rows[key][index] = 0;
+			slot->graph_bound_rows[key][index] = 0u;
 		}
-	slot->graph_failed_rows = 0u;
+	memset(slot->graph_failed_rows,0,sizeof(slot->graph_failed_rows));
 	slot->graph_exec_a = 0;
 }
 
@@ -1726,6 +1726,11 @@ static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
 	SparkGlm5NextExecutionSlot *slot,
 	uint32_t slot_index);
 
+static uint32_t SparkGlm5NextGraphHead(const SparkGlm5NextTpChain *chain)
+{
+	return(chain->state->owns_final_head != 0u && chain->slot->sampled != 0u ? SPARK_GLM5_NEXT_GRAPH_HEAD_SAMPLED : SPARK_GLM5_NEXT_GRAPH_HEAD_GREEDY);
+}
+
 static SparkStatus SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextModuleState *state;
@@ -1774,7 +1779,7 @@ static SparkStatus SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->host_resident_slots = slot->host_resident_slots + chain->first_row;
 	wave->host_positions = slot->host_positions + chain->first_row;
 	wave->host_row_sampling = state->owns_final_head != 0u ? slot->host_row_sampling + chain->first_row : 0;
-	wave->sampled = state->owns_final_head != 0u ? slot->sampled : 0u;
+	wave->sampled = SparkGlm5NextGraphHead(chain);
 	wave->hidden_input_bf16 = context->hidden_input_bf16;
 	wave->hidden_output_bf16 = context->hidden_output_bf16;
 	wave->sideband_input_u32 = context->sideband_input;
@@ -3119,7 +3124,7 @@ static void SparkGlm5NextGraphDisarm(
 			&state->tp_device_collective_hc);
 }
 
-static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uint32_t regime,uint32_t index,uint32_t bound)
+static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uint32_t key,uint32_t index,uint32_t bound)
 {
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextExecutionSlot *slot = chain->slot;
@@ -3135,21 +3140,21 @@ static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uin
 	SparkGlm5NextGraphDisarm(state);
 	if ( exec == 0 )
 	{
-		fprintf(stderr,"GRAPH-CAPTURE-FAILED rows=%u; this row count runs eager from now on\n",index + 1u);
-		slot->graph_failed_rows |= UINT64_C(1) << index;
+		fprintf(stderr,"GRAPH-CAPTURE-FAILED rows=%u sampled=%u; this row count runs eager from now on\n",index + 1u,key / SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT);
+		slot->graph_failed_rows[key / SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT] |= UINT64_C(1) << index;
 		return(SPARK_STATUS_UNSUPPORTED);
 	}
-	slot->graph_exec_rows[regime][index] = exec;
-	slot->graph_bound_rows[regime][index] = bound;
-	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u bound=%u\n",index + 1u,regime,bound);
+	slot->graph_exec_rows[key][index] = exec;
+	slot->graph_bound_rows[key][index] = bound;
+	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u sampled=%u bound=%u\n",index + 1u,key % SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT,key / SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT,bound);
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_t regime,uint32_t index,uint32_t bound)
+static SparkStatus SparkGlm5NextGraphCapture(SparkGlm5NextTpChain *chain,uint32_t key,uint32_t index,uint32_t bound)
 {
 	SparkGlm5NextAsyncCompletion *async = &chain->state->completions[chain->slot_index];
 	uint64_t started_ns = SparkGlm5NextNowNs();
-	SparkStatus status = SparkGlm5NextGraphCaptureRows(chain,regime,index,bound);
+	SparkStatus status = SparkGlm5NextGraphCaptureRows(chain,key,index,bound);
 	async->captures++;
 	async->capture_ns += SparkGlm5NextNowNs() - started_ns;
 	return(status);
@@ -3161,7 +3166,7 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextExecutionSlot *slot = chain->slot;
 	SparkStatus status;
-	uint32_t bound,regime,index = chain->wave_rows - 1u;
+	uint32_t bound,key,index = chain->wave_rows - 1u;
 	if ( slot->graph_disabled != 0u )
 	{
 		*status_out = SPARK_STATUS_BUSY;
@@ -3175,21 +3180,21 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 		*status_out = status;
 		return;
 	}
-	regime = SparkGlm5NextGraphRegime(chain->wave.maximum_context,state->decode_split_context_threshold);
+	key = SparkGlm5NextGraphKey(chain->wave.maximum_context,state->decode_split_context_threshold,SparkGlm5NextGraphHead(chain));
 	bound = SparkGlm5NextGraphBound(chain->wave.maximum_context,state->decode_split_context_threshold,chain->wave.max_sequence_positions);
-	if ( slot->graph_exec_rows[regime][index] != 0 && chain->wave.maximum_context > slot->graph_bound_rows[regime][index] )
+	if ( slot->graph_exec_rows[key][index] != 0 && chain->wave.maximum_context > slot->graph_bound_rows[key][index] )
 	{
-		(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[regime][index]);
-		slot->graph_exec_rows[regime][index] = 0;
+		(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->graph_exec_rows[key][index]);
+		slot->graph_exec_rows[key][index] = 0;
 	}
-	if ( slot->graph_exec_rows[regime][index] == 0 )
-		status = SparkGlm5NextGraphCapture(chain,regime,index,bound);
-	if ( slot->graph_exec_rows[regime][index] == 0 )
+	if ( slot->graph_exec_rows[key][index] == 0 )
+		status = SparkGlm5NextGraphCapture(chain,key,index,bound);
+	if ( slot->graph_exec_rows[key][index] == 0 )
 	{
 		*status_out = status == SPARK_STATUS_UNSUPPORTED ? status : SPARK_STATUS_BUSY;
 		return;
 	}
-	slot->graph_exec_a = slot->graph_exec_rows[regime][index];
+	slot->graph_exec_a = slot->graph_exec_rows[key][index];
 	SparkGlm5NextGraphStep(chain,&status);
 	if ( status == SPARK_STATUS_OK )
 		SparkGlm5NextGraphDisarm(state);
@@ -3374,9 +3379,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			fprintf(stderr,
 			    "GRAPH-GATE-COLD experts not warm; eager first\n");
 		if ( chain->wave_rows >= 1u && chain->wave_rows <= SPARK_GLM5_NEXT_GRAPH_ROWS_MAX &&
-		     (chain->slot->graph_failed_rows & (UINT64_C(1) << (chain->wave_rows - 1u))) == 0u &&
+		     (chain->slot->graph_failed_rows[SparkGlm5NextGraphHead(chain)] & (UINT64_C(1) << (chain->wave_rows - 1u))) == 0u &&
 		     chain->first_row == 0u && chain->spec_verify == 0u &&
-		     chain->slot->sampled == 0u &&
 		     chain->batch->active_sequence_count == chain->wave_rows &&
 		     state->tp_device_collective_initialized != 0u &&
 		     state->lazy_pack != 0 && state->tp_degree > 1u &&
