@@ -172,6 +172,7 @@ typedef struct SparkGlm5NextMtpParityFixture
 	uint32_t host_resident_slots[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t host_run_begin[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY + 1u];
 	uint32_t host_run_state_index[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
+	uint32_t host_run_row_indices[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t host_output[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t reference_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS];
 	uint8_t *snapshots;
@@ -565,6 +566,7 @@ static int SparkGlm5NextMtpParityBuildScratch(SparkGlm5NextMtpParityFixture *fix
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(dense_tile_prefix,4u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_begin,rows + 1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_state_index,rows)
+	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_row_indices,rows)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(output_token,rows)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_F32(output_score,rows,1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_F32(head_candidate_score,rows,SPARK_GLM5_NEXT_MTP_PARITY_HEAD_TILES)
@@ -690,6 +692,7 @@ static void SparkGlm5NextMtpParityBuildWave(
 		fixture->host_token_ids[row] = tokens[row];
 		fixture->host_positions[row] = first_position + row;
 		fixture->host_resident_slots[row] = 0u;
+		fixture->host_run_row_indices[row] = row;
 	}
 	fixture->host_run_begin[0] = 0u;
 	fixture->host_run_begin[1] = row_count;
@@ -737,6 +740,8 @@ static void SparkGlm5NextMtpParityBuildWave(
 	wave->run_state_index = fixture->slot.run_state_index;
 	wave->host_sequence_row_begin = fixture->host_run_begin;
 	wave->host_run_state_index = fixture->host_run_state_index;
+	wave->sequence_row_indices = fixture->slot.run_row_indices;
+	wave->host_sequence_row_indices = fixture->host_run_row_indices;
 	wave->commit = commit;
 	wave->mtp_verify = mtp_verify;
 	wave->mtp_draft_depth = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
@@ -747,6 +752,7 @@ static void SparkGlm5NextMtpParityBuildWave(
 	wave->mtp_shared_norm_bf16 = fixture->weights.norm_hidden_bf16;
 	wave->kda_replay_layer_bytes = fixture->kda_replay_layer_bytes;
 	wave->page_table = fixture->page_table;
+	wave->physical_page_count = SPARK_GLM5_NEXT_MTP_PARITY_PAGES;
 	wave->multiprocessor_count = fixture->multiprocessor_count;
 	wave->decode_split_context_threshold = 0u;
 	wave->attention_split_partials_f32 = fixture->slot.attention_split_partials_f32;
