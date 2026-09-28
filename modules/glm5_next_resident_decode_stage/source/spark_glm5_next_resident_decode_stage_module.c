@@ -4005,8 +4005,8 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	{
 		uint64_t round_count = 0u,round_ns = 0u,chain_ns = SparkGlm5NextNowNs();
 		SparkTpDeviceCollectiveRoundStats(&state->tp_device_collective,&round_count,&round_ns,1u);
-		fprintf(stderr,"CHAIN-TIME slot=%u path=%s steps=%u status=%d total_ms=%.2f walk_ms=%.2f collective_host_submit_ms=%.2f collective_host_submissions=%llu stage_ms=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f\n",
-			(unsigned)async->slot_index,SparkGlm5NextChainPath(async),async->steps,(int)async->completion.status,
+		fprintf(stderr,"CHAIN-TIME slot=%u path=%s steps=%u rows=%u epoch=%llu status=%d total_ms=%.2f walk_ms=%.2f collective_host_submit_ms=%.2f collective_host_submissions=%llu stage_ms=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f\n",
+			(unsigned)async->slot_index,SparkGlm5NextChainPath(async),async->steps,async->row_count,(unsigned long long)async->epoch[0],(int)async->completion.status,
 			async->chain_start_ns != 0u ? (double)(chain_ns - async->chain_start_ns) / 1000000.0 : 0.0,(double)async->walk_ns / 1000000.0,
 			(double)round_ns / 1000000.0,(unsigned long long)round_count,
 			(double)state->chain_stage_ns[0] / 1000000.0,
