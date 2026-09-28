@@ -637,7 +637,7 @@ static SparkStatus SparkLagunaServingAdmit(
 	cache = SparkLagunaServingCacheContext(state,pending->cache_lanes);
 	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	frame->cache_lanes = pending->cache_lanes;
 	frame->cache_lane_count = request.cache_lane_count;
 	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
@@ -694,10 +694,10 @@ static SparkStatus SparkLagunaServingResetControl(void *adapter_state,uint64_t c
 	SparkModelDriverAdmissionDecision decision;
 	SparkStatus status;
 	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkLagunaServingQuiesce(state,UINT64_MAX);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	request.descriptor_bytes = sizeof(request);
 	request.program_id = state->program->program_id;
 	request.control_generation = control_generation;
@@ -711,7 +711,7 @@ static SparkStatus SparkLagunaServingResetControl(void *adapter_state,uint64_t c
 		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
 		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
 	}
-	return(status);
+	SPARK_RETURN(status);
 }
 
 #include "sparkpipe/family/serving/spark_serving_reset.h"
