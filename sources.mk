@@ -21,6 +21,9 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
     src/spark_speculation_seam.c \
+    src/spark_speculation_reference_draft.c \
+    src/spark_speculation_lookup_draft.c \
+    src/spark_speculation_relay_draft.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
@@ -34,6 +37,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
+    runtime/spark_expert_working_set.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
@@ -62,6 +66,7 @@ SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
     cache/kv_page_cache.c \
     cache/kv_page_store.c \
+    cache/kv_snapshot.c \
     cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \

@@ -1,0 +1,14 @@
+PASS dataset=0 rows=1 mix_error_over_l1=1.48e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=0 rows=3 mix_error_over_l1=5.16e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=0 rows=5 mix_error_over_l1=5.16e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=1 rows=1 mix_error_over_l1=2.6e-08 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=1 rows=3 mix_error_over_l1=2.6e-08 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=1 rows=5 mix_error_over_l1=2.6e-08 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=2 rows=1 mix_error_over_l1=1.65e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=2 rows=3 mix_error_over_l1=1.93e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+PASS dataset=2 rows=5 mix_error_over_l1=2.02e-09 sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes
+TIMING production=0 rows=1 distinct_weights=1 sites=90 warmups=2 samples=8 min_ms=28.975008 median_ms=32.581886 max_ms=37.176033
+TIMING production=1 rows=1 distinct_weights=1 sites=90 warmups=2 samples=8 min_ms=1.781600 median_ms=1.917648 max_ms=1.993024
+TIMING production=0 rows=1 distinct_weights=90 sites=90 warmups=2 samples=8 min_ms=32.378399 median_ms=43.878624 max_ms=50.811649
+TIMING production=1 rows=1 distinct_weights=90 sites=90 warmups=2 samples=8 min_ms=1.163424 median_ms=1.170864 max_ms=1.174432
+PASS hc_site_probe numerical_cases=9 mixes=f64_reference sinkhorn_collapse=frozen_bitwise production_kernel=actual_fused_cluster

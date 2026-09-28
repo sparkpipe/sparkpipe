@@ -1,0 +1,38 @@
+{
+ "format": "sparkpipe-release-identity-v1",
+ "verified_at": "2026-09-28T11:58Z",
+ "source_commit": "09fdad6328721792eb29a5850f6b0021432ed426",
+ "root": "glm53flash.fp8.tp16",
+ "model": "zai-org/GLM-5.3-Flash",
+ "model_revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033",
+ "contract_sha256": "850402580c2516cd4cf4507b8672b57753739562955234e4755296e26dcc03fe",
+ "fleet": {
+  "ranks_verified": 16,
+  "method": "sha256 of /proc/<pid>/exe and <cwd>/stages/stage_000/model_driver.so for each residentd whose cwd is the glm53flash.fp8.tp16 root",
+  "residentd_sha256": "546bb0c8efab5c1b7869da13894f56284b842ad001ae59a6aedbf9949766d13c",
+  "model_driver_sha256": "b06b26217551526bb3c0ddf07a0c6d24990c312016c579b56899ce86f1ad3dd7",
+  "weightd_sha256_prefix": "3da98597a88b60b5"
+ },
+ "served_root_rtx5090": {
+  "path": "~/release/glm53flash.fp8.tp16",
+  "MANIFEST_sha256": "e4a877f42ecf054a8932a9af88667fc3cb289e5e2d9cedf0b9e5849efed775eb",
+  "bin/sparkpipe_model_residentd": "546bb0c8efab5c1b7869da13894f56284b842ad001ae59a6aedbf9949766d13c",
+  "stages/stage_000/model_driver.so": "b06b26217551526bb3c0ddf07a0c6d24990c312016c579b56899ce86f1ad3dd7",
+  "lib/hidden_transport.so": "6ef6b1e23eec9f97097d82ae8198c830d08dacb5b031fa4055a2a064ddb0c730",
+  "lib/model_serving_adapter.so": "8bf27c7d04b3cf81dae360e106b596394741e517cca67fe1035bbd7632f95f9a",
+  "bin/sparkpipe_model_api": "381b6e4f56fc3211c213d40e8e204322465d2a49411c8fc3650098f2d9a0516b",
+  "bin/sparkpipe_model_batch": "487afeb0d7666178722e036985ee868c2e0de7df59026b2f086e14e05369969c",
+  "stages/stage_000/link_units": ["df5f54db0cfb5669a923fdea6f95a0462bfa9878f0b6cf9517c692a697ff4702.a"]
+ },
+ "api_rtx5090": {
+  "unit": "g53-api.service",
+  "port": 8433,
+  "channel": "~/g53-api-channel",
+  "SOURCE_COMMIT": "09fdad6",
+  "bin/sparkpipe_model_api": "da032e66138a2b655da753b0020d551ea6d75a3d7572d5974440f24b9056270a",
+  "runtime/lib/model_serving_adapter.so": "b936964f2c4b85b3e9d64db37583813e694b9ca487140a06834f5ae50c45eca0",
+  "runtime/tokenizer/tokenizer.json": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+  "environment": {"SPARK_BATCH_INFLIGHT_BUDGET_NS": "900000000000"},
+  "prefill_row_clamp": "absent (SPARK_MODEL_API_MAX_PREFILL_ROWS not set)"
+ }
+}

@@ -74,6 +74,8 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 }
 
+#define LM_RMS_NORM_STAGED 16u
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *output,uint32_t dimension,uint32_t row_stride,float epsilon)
@@ -81,8 +83,38 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 	extern __shared__ float lm_norm_shared[];
 	float *row = lm_norm_shared,*reduction = lm_norm_shared + dimension;
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
-	uint32_t index;
+	uint32_t index,slot;
 	float total = 0.0f,scale,value;
+	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+	{
+		uint16_t staged_input[LM_RMS_NORM_STAGED],staged_weight[LM_RMS_NORM_STAGED];
+		#pragma unroll
+		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			staged_input[slot] = index < dimension ? input[base + index] : (uint16_t)0u;
+			staged_weight[slot] = index < dimension ? weight[index] : (uint16_t)0u;
+		}
+		#pragma unroll
+		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
+		{
+			value = LmBf16ToFloat(staged_input[slot]);
+			if ( threadIdx.x + slot * THREADS < dimension )
+				total += value * value;
+		}
+		total = LmBlockSum<THREADS>(total,reduction);
+		scale = rsqrtf((total / (float)dimension) + epsilon);
+		#pragma unroll
+		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			if ( index >= dimension )
+				continue;
+			value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(staged_input[slot]) * scale));
+			output[base + index] = LmFloatToBf16(value * LmBf16ToFloat(staged_weight[slot]));
+		}
+		return;
+	}
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(input[base + index]);
@@ -137,6 +169,23 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
 		output_bf16[out_base + index] =
 			LmFloatToBf16((gate / (1.0f + __expf(-gate))) * up);
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, bool gate_first, float limit)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
+		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
+		float activated = fminf(gate / (1.0f + __expf(-gate)), limit);
+		output_bf16[out_base + index] =
+			LmFloatToBf16(activated * fminf(fmaxf(up, -limit), limit));
 	}
 }
 

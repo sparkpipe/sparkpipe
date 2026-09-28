@@ -8,9 +8,10 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 7u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
+#define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
 
 #define SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED 1u
 #define SPARK_MODEL_BATCH_EVENT_TOKEN 2u
@@ -43,6 +44,8 @@ typedef struct SparkModelBatchEvent
 	uint32_t model_extension_kind;
 	uint32_t first_draft_miss_count;
 	uint32_t first_draft_policy;
+	uint32_t stale_prefix_recompute_count;
+	uint64_t first_dispatch_ns;
 } SparkModelBatchEvent;
 
 typedef void (*SparkModelBatchEventFunction)(
@@ -103,6 +106,18 @@ typedef struct SparkModelBatchEngineView
 	uint64_t completed_request_count;
 	uint64_t cancelled_request_count;
 	uint64_t emitted_token_count;
+	uint64_t rejected_submission_count_by_status[SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT];
+	uint64_t rejected_lane_count;
+	uint64_t prefix_hit_count;
+	uint64_t prefix_miss_count;
+	uint64_t prefix_hit_token_count;
+	uint64_t stale_prefix_recompute_count;
+	uint64_t stale_prefix_isolation_count;
+	uint64_t first_token_count;
+	uint64_t queue_ns_total;
+	uint64_t prefill_ns_total;
+	uint64_t ttft_ns_total;
+	uint64_t ttft_ns_maximum;
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 

@@ -205,10 +205,25 @@ typedef struct SparkTokenizer
     uint32_t *fast_merge_buckets;
     uint32_t fast_merge_bucket_count;
     uint32_t default_worker_count;
+    uint32_t normalizer_nfc;
 } SparkTokenizer;
 
 void SparkTokenizerReset(
     SparkTokenizer *tokenizer);
+
+SparkStatus SparkTokenizerNormalizeNfcUtf8(
+    const char *text,
+    uint32_t text_bytes,
+    char **normalized_out,
+    uint32_t *normalized_bytes_out);
+
+SparkStatus SparkTokenizerSplitUtf8(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t *piece_ends,
+    uint32_t piece_capacity,
+    uint32_t *piece_count_out);
 
 void SparkTokenizerDestroy(
     SparkTokenizer *tokenizer);

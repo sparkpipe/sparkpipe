@@ -175,6 +175,19 @@ start, when an engine starts, and when a root's state or pid changes
 node leaves its last `ready` file on the hub. The `epoch` field is therefore
 not a liveness signal; check the nodes themselves (section 4.3).
 
+### 2.3 Several roots per node
+
+Dev-lane roots run beside production under the same agent. Each root is listed in `~/.fleet_agent_roots` and can carry its own:
+- rank index (`config/rank_index_<RR>`);
+- environment (`agent.env`, `config/env_<RR>.env`);
+- `MemoryMax`.
+
+The agent matches each root's residentd by its resolved cwd and exe, never by the first `pgrep` hit. A dev residentd with a lower pid therefore can no longer make GLM look down; on 2026-09-28 that bug recycled GLM rank 9 every minute.
+
+Before starting a non-production root, the agent checks that at least 20 GiB of `MemAvailable` would remain. If not, it holds the root as `blocked-headroom`. The production root is never held.
+
+See [FLEET_AGENT_ROOTS.md](FLEET_AGENT_ROOTS.md).
+
 ## 3. weightd ownership
 
 Each node's production weightd is the agent's:
@@ -239,6 +252,7 @@ cd build/glm53_release
 sha256sum -c --quiet SHA256SUMS
 cat SOURCE_COMMIT                                                  # the merged main SHA
 grep -o 'validation=[a-z]*' qualification/serving-receipts/publish.log   # executed
+grep 'component validator' qualification/serving-receipts/publish.log  # glm5_next component validator: PASS
 ```
 
 Two traps from 09-28, from the handoff's evidence:

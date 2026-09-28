@@ -6,8 +6,28 @@
 
 #define LM_UNPAREN(...) __VA_ARGS__
 #ifdef __CUDACC__
+#include <utility>
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) \
 	LM_UNPAREN kernel<<<(grid), (block), (shared), (stream)>>>(__VA_ARGS__)
+
+template<typename... Parameters, typename... Arguments>
+static cudaError_t LmLaunchDependentKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, cudaStream_t stream, Arguments &&... arguments)
+{
+	cudaLaunchConfig_t config;
+	cudaLaunchAttribute attribute;
+	attribute.id = cudaLaunchAttributeProgrammaticStreamSerialization;
+	attribute.val.programmaticStreamSerializationAllowed = 1;
+	config.gridDim = grid;
+	config.blockDim = block;
+	config.dynamicSmemBytes = shared;
+	config.stream = stream;
+	config.attrs = &attribute;
+	config.numAttrs = 1u;
+	return(cudaLaunchKernelEx(&config,kernel,std::forward<Arguments>(arguments)...));
+}
+
+#define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) \
+	LmLaunchDependentKernel(LM_UNPAREN kernel, dim3(grid), dim3(block), (size_t)(shared), (stream), __VA_ARGS__)
 #endif
 
 #define LM_LAUNCH_OK 0

@@ -1,0 +1,46 @@
+{
+ "id": "compsec-092",
+ "request": {
+  "endpoint": "http://127.0.0.1:8437/v1/completions",
+  "fixture_prompt_token_count": 293,
+  "prompt_sha256": "a6800182c76be3f222c382dd5085785a81bb5802d0396d506a523734b0c614b5",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "11",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 352,
+   "completion_tokens": 3,
+   "total_tokens": 355
+  },
+  "tokens": [
+   16,
+   16,
+   156895
+  ],
+  "status": 0
+ },
+ "decoded_text": "11",
+ "grade": {
+  "index": 17,
+  "id": "compsec-092",
+  "source": "COMPSEC",
+  "domain": "Linux kernel AppArmor",
+  "expected": "10-14",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 8332.1,
+  "output_sha256": "4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8",
+  "generated_token_count": 3,
+  "status": 0
+ }
+}

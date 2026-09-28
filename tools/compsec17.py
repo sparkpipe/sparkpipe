@@ -24,11 +24,18 @@ qualification/ds4_eval/compare_runs.py: the answer is taken from the last
 "Answer:" line after any </think>, and a case passes iff its line set is a
 non-empty subset of the fixture's expected lines.
 
+--compare REFERENCE CANDIDATE checks row invariance instead: it loads two
+archived runs (for example --concurrency 1 and --concurrency 17 against the same
+root) and requires every case's generated token ids to be identical. It prints
+the first differing token index per case and exits 0 when all 17 cases match,
+1 when any differs, and 2 when a run is missing, malformed or incomplete.
+
 usage:
   compsec17.py --template glm --endpoint http://127.0.0.1:8433 --thinking off \
       --fixture qualification/ds4_eval/quality-fixtures-glm5.3-flash.json \
       --tokenizer <runtime>/tokenizer/tokenizer.json \
       --out qualification/ds4_eval/runs/glm5-next-tp16-<date>
+  compsec17.py --compare RUN_SEQUENTIAL RUN_CONCURRENT
 """
 from __future__ import annotations
 
@@ -60,10 +67,9 @@ CHAT_TEMPLATES = {
 SUMMARY_FORMATS = {
     "glm": ("ds4-eval-glm5-next-compsec17-summary-v1", "ds4-eval-glm5-next-compsec17-cases-v1"),
     "gemma4": ("ds4-eval-compsec17-summary-v1", "ds4-eval-compsec17-cases-v1"),
+    "ling": ("ds4-eval-compsec17-summary-v1", "ds4-eval-compsec17-cases-v1"),
 }
 
-# GPT-2 style byte-level BPE reverse alphabet (the GLM tokenizer.json vocab
-# uses the same byte-unicode mapping).
 def _bytes_to_unicode() -> dict:
     bs = (list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256)))
     cs = bs[:]
@@ -92,7 +98,7 @@ def load_decoder(tokenizer_path: Path):
         for i in ids:
             p = id_to_piece.get(int(i))
             if p is None:
-                out += b"\xef\xbf\xbd"  # U+FFFD
+                out += b"\xef\xbf\xbd"
                 continue
             out += bytes(_CHAR_TO_BYTE.get(ch, 0xFF) for ch in p)
         return out.decode("utf-8", errors="replace")
@@ -127,24 +133,105 @@ def grade(text: str, answer: str) -> tuple:
     return answer_matches(case, extracted), extracted
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+class RunError(Exception):
+    pass
+
+
+def load_run_tokens(run: Path) -> dict:
+    tokens, statuses = {}, {}
+    responses = sorted((run / "responses").glob("*.json"))
+    if not responses:
+        raise RunError(f"{run}: no responses/*.json")
+    for path in responses:
+        try:
+            record = json.loads(path.read_text())
+            case = record["id"]
+            ids = record["response"]["tokens"]
+            status = record["response"].get("status")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            raise RunError(f"{path}: {error!r}") from error
+        if case not in COMPSEC_IDS:
+            raise RunError(f"{path}: case {case!r} is not a COMPSEC-17 case")
+        if not isinstance(ids, list) or not all(isinstance(value, int) for value in ids):
+            raise RunError(f"{path}: response.tokens is not a list of token ids")
+        if not ids:
+            raise RunError(f"{path}: response.tokens is empty (status {status!r})")
+        if case in tokens:
+            raise RunError(f"{path}: duplicate case {case}")
+        tokens[case] = ids
+        statuses[case] = status
+    missing = [case for case in COMPSEC_IDS if case not in tokens]
+    if missing:
+        raise RunError(f"{run}: missing cases {', '.join(missing)}")
+    return tokens, statuses
+
+
+def first_difference(left: list, right: list) -> int:
+    for index, (a, b) in enumerate(zip(left, right)):
+        if a != b:
+            return index
+    return -1 if len(left) == len(right) else min(len(left), len(right))
+
+
+def compare_runs(reference: Path, candidate: Path, out=sys.stdout) -> int:
+    try:
+        left, left_status = load_run_tokens(reference)
+        right, right_status = load_run_tokens(candidate)
+    except RunError as error:
+        print(f"COMPSEC-COMPARE-ERROR {error}", file=out)
+        return 2
+    differing = 0
+    for case in COMPSEC_IDS:
+        index = first_difference(left[case], right[case])
+        if index < 0 and left_status[case] != right_status[case]:
+            differing += 1
+            print(f"COMPSEC-COMPARE {case} DIFFERS status reference_status={left_status[case]!r} "
+                  f"candidate_status={right_status[case]!r} tokens={len(left[case])}", file=out)
+            continue
+        if index < 0:
+            print(f"COMPSEC-COMPARE {case} IDENTICAL tokens={len(left[case])}", file=out)
+            continue
+        differing += 1
+        a = left[case][index] if index < len(left[case]) else None
+        b = right[case][index] if index < len(right[case]) else None
+        print(f"COMPSEC-COMPARE {case} DIFFERS first_token_index={index} reference_token={a} candidate_token={b} "
+              f"reference_tokens={len(left[case])} candidate_tokens={len(right[case])}", file=out)
+    print(f"COMPSEC-COMPARE RESULT identical={17 - differing}/17", file=out)
+    return 0 if differing == 0 else 1
+
+
+def arguments(description: str, thinking_modes) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--endpoint", default="http://127.0.0.1:8433")
     ap.add_argument("--fixture", required=True)
     ap.add_argument("--tokenizer", required=True,
                     help="tokenizer.json (vocab used to decode token ids)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--template", required=True, choices=sorted(CHAT_TEMPLATES))
-    ap.add_argument("--thinking", required=True, choices=("off", "on"))
+    ap.add_argument("--thinking", required=True, choices=sorted(thinking_modes))
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--pass-threshold", type=int, default=14)
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--timeout", type=int, default=600)
+    return ap
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--compare":
+        if len(sys.argv) != 4:
+            print("usage: compsec17.py --compare REFERENCE_RUN CANDIDATE_RUN", file=sys.stderr)
+            return 2
+        return compare_runs(Path(sys.argv[2]), Path(sys.argv[3]))
+    ap = arguments(__doc__, ("off", "on"))
+    ap.add_argument("--template", required=True, choices=sorted(CHAT_TEMPLATES))
     args = ap.parse_args()
-
     decode = load_decoder(Path(args.tokenizer))
+    template = args.template
+    return run(args, lambda question, thinking: build_prompt(question, thinking, template), template,
+               decode, decode if template == "glm" else None)
 
+
+def run(args, prompt_builder, chat_template: str, decode, decode_output) -> int:
     fixture = json.loads(Path(args.fixture).read_text())
     cases = [c for c in fixture["cases"] if c["id"] in COMPSEC_IDS]
     if len(cases) != 17:
@@ -155,8 +242,7 @@ def main() -> int:
     out = Path(args.out)
     (out / "responses").mkdir(parents=True, exist_ok=True)
 
-    prompts = [build_prompt(decode(c["prompt_token_ids"]), args.thinking, args.template)
-               for c in cases]
+    prompts = [prompt_builder(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
         replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
@@ -169,8 +255,8 @@ def main() -> int:
         tokens = payload.get("tokens") or []
         choices = payload.get("choices") or [{}]
         text = choices[0].get("text")
-        if text is None and args.template == "glm":
-            text = decode(tokens)
+        if text is None and decode_output is not None:
+            text = decode_output(tokens)
         if text is None:
             raise SystemExit(f"{c['id']}: the endpoint returned no completion text; "
                              "tokens of a non-fixture vocabulary cannot be decoded here")
@@ -212,7 +298,7 @@ def main() -> int:
 
     passed_n = sum(1 for r in results if r["passed"])
     summary = {
-        "format": SUMMARY_FORMATS[args.template][0],
+        "format": SUMMARY_FORMATS[chat_template][0],
         "generated_at": time.strftime("%FT%T%z"),
         "endpoint": args.endpoint,
         "fixture": Path(args.fixture).name,
@@ -220,7 +306,7 @@ def main() -> int:
         "wall_s": round(wall_s, 2),
         "parameters": {"max_tokens": args.max_tokens,
                        "temperature": args.temperature,
-                       "chat_template": args.template, "thinking": args.thinking,
+                       "chat_template": chat_template, "thinking": args.thinking,
                        "concurrency": args.concurrency,
                        "pass_threshold": args.pass_threshold},
         "grading_rule": ("qualification/ds4_eval/compare_runs.py: last Answer: line after "
@@ -232,7 +318,7 @@ def main() -> int:
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
 
     cases_out = {
-        "format": SUMMARY_FORMATS[args.template][1],
+        "format": SUMMARY_FORMATS[chat_template][1],
         "note": "cases exactly as selected from the fixture (pre-tokenized)",
         "cases": cases,
     }
@@ -260,6 +346,7 @@ def main() -> int:
     print(f"\nCOMPSEC-17 RESULT: {passed_n}/17 "
           f"({', '.join(r['id'] + ('+ok' if r['passed'] else '+X') for r in results if not r['passed']) or 'all pass'})")
     return 0 if passed_n >= args.pass_threshold else 1
+
 
 
 if __name__ == "__main__":

@@ -690,7 +690,7 @@ static const char *SparkTestQwenTokenizerJsonPath(void)
     return "build/test_tokenizer_qwen_byte_bpe.json";
 }
 
-static void SparkTestQwenTokenizerWriteFixtureJson(void)
+static void SparkTestQwenTokenizerWriteFixtureJson(const char *split_pattern_json)
 {
     FILE *file;
 
@@ -725,7 +725,7 @@ static void SparkTestQwenTokenizerWriteFixtureJson(void)
         "  \"pre_tokenizer\": {\n"
         "    \"type\": \"Sequence\",\n"
         "    \"pretokenizers\": [\n"
-        "      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
+        "      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"%s\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
         "      {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": false, \"use_regex\": false}\n"
         "    ]\n"
         "  },\n"
@@ -742,18 +742,26 @@ static void SparkTestQwenTokenizerWriteFixtureJson(void)
         SPARK_TEST_QWEN_TOKEN_A,
         SPARK_TEST_QWEN_TOKEN_B,
         SPARK_TEST_QWEN_TOKEN_AB,
-        SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
+        SPARK_TEST_QWEN_TOKEN_LBRACKET_AB,
+        split_pattern_json);
     assert(fclose(file) == 0);
 }
 
-static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
+static const char *const g_spark_test_letter_split_patterns[] =
+{
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+",
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+",
+    "'(?i:[sdmt]|ll|ve|re)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?+\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]++[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]|\\\\s+(?!\\\\S)|\\\\s+"
+};
+
+static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(const char *split_pattern_json)
 {
     SparkTokenizer tokenizer;
     SparkTokenizerEncoding encoding;
     SparkTokenizerHuggingFaceJsonConfiguration configuration;
     uint32_t token_ids[16u];
 
-    SparkTestQwenTokenizerWriteFixtureJson();
+    SparkTestQwenTokenizerWriteFixtureJson(split_pattern_json);
     SparkTokenizerReset(&tokenizer);
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
@@ -780,6 +788,25 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
     assert(SparkTokenizerEncodeUtf8(&tokenizer, "[ab", 3u, 0u, &encoding) == SPARK_STATUS_OK);
     assert(encoding.token_count == 1u);
     assert(token_ids[0u] == SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
+
+    {
+        static const char quoted[] = "She called it the \xe2\x80\x98" "best\xe2\x80\x99, and it was.";
+        static const uint32_t quoted_ends[] = {3u, 10u, 13u, 17u, 21u, 25u, 29u, 33u, 36u, 40u, 41u};
+        static const char numeral[] = "Chapter \xe2\x85\xa3 begins";
+        static const uint32_t numeral_ends[] = {7u, 8u, 11u, 18u};
+        static const char spaced[] = "a\xc2\xa0" "b\xc2\xa0\xc2\xa0" "c";
+        static const uint32_t spaced_ends[] = {1u, 4u, 6u, 9u};
+        uint32_t ends[16u];
+        uint32_t count = 0u;
+        assert(SparkTokenizerSplitUtf8(&tokenizer, quoted, (uint32_t)strlen(quoted), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(quoted_ends) / sizeof(quoted_ends[0]) && memcmp(ends, quoted_ends, sizeof(quoted_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, numeral, (uint32_t)strlen(numeral), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(numeral_ends) / sizeof(numeral_ends[0]) && memcmp(ends, numeral_ends, sizeof(numeral_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, spaced, (uint32_t)strlen(spaced), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(spaced_ends) / sizeof(spaced_ends[0]) && memcmp(ends, spaced_ends, sizeof(spaced_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, quoted, (uint32_t)strlen(quoted), ends, 4u, &count) == SPARK_STATUS_CAPACITY_EXCEEDED);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, "ab\xe2\x80", 4u, ends, 16u, &count) == SPARK_STATUS_PARSE_ERROR);
+    }
 
     SparkTokenizerDestroy(&tokenizer);
 }
@@ -863,6 +890,66 @@ static void SparkTestMetaspaceTokenizerEncodesAndDecodes(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestTokenizerWriteNfcFixtureJson(const char *path, const char *normalizer_json)
+{
+    FILE *file = fopen(path, "wb");
+    assert(file != 0);
+    fprintf(file,
+        "{\n"
+        "  \"normalizer\": %s,\n"
+        "  \"model\": {\"type\": \"BPE\", \"byte_fallback\": false,\n"
+        "    \"vocab\": {\"c\": 1, \"a\": 2, \"f\": 3, \"e\": 4, \"\\u00c3\": 5, \"\\u00a9\": 6, \"\\u00c3\\u00a9\": 7, \"\\u00cc\": 8, \"\\u0123\": 9},\n"
+        "    \"merges\": [\"\\u00c3 \\u00a9\"]},\n"
+        "  \"pre_tokenizer\": {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": false, \"use_regex\": false},\n"
+        "  \"added_tokens\": []\n"
+        "}\n",
+        normalizer_json);
+    assert(fclose(file) == 0);
+}
+
+static void SparkTestTokenizerNfcNormalizerComposesBeforeBpe(void)
+{
+    static const char *const normalizers[2] = {"{\"type\": \"NFC\"}", "null"};
+    static const uint32_t expected[2][6] = {{1u, 2u, 3u, 7u}, {1u, 2u, 3u, 4u, 8u, 9u}};
+    static const uint32_t expected_count[2] = {4u, 6u};
+    for (uint32_t variant = 0u; variant < 2u; ++variant)
+    {
+        SparkTokenizer tokenizer;
+        SparkTokenizerEncoding encoding;
+        SparkTokenizerHuggingFaceJsonConfiguration configuration;
+        SparkTokenizerCompiledFileConfiguration compiled;
+        uint32_t token_ids[16u];
+        SparkTestTokenizerWriteNfcFixtureJson("build/test_tokenizer_nfc.json", normalizers[variant]);
+        SparkTokenizerReset(&tokenizer);
+        memset(&configuration, 0, sizeof(configuration));
+        configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+        configuration.tokenizer_json_path = "build/test_tokenizer_nfc.json";
+        assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) == SPARK_STATUS_OK);
+        assert(tokenizer.normalizer_nfc == (variant == 0u ? 1u : 0u));
+        memset(token_ids, 0, sizeof(token_ids));
+        SparkTokenizerEncodingReset(&encoding);
+        encoding.token_capacity = 16u;
+        encoding.token_ids = token_ids;
+        assert(SparkTokenizerEncodeUtf8(&tokenizer, "cafe\xcc\x81", 6u, 0u, &encoding) == SPARK_STATUS_OK);
+        assert(encoding.token_count == expected_count[variant]);
+        assert(memcmp(token_ids, expected[variant], expected_count[variant] * sizeof(uint32_t)) == 0);
+        if (variant == 0u)
+        {
+            SparkTokenizerEncodingReset(&encoding);
+            encoding.token_capacity = 16u;
+            encoding.token_ids = token_ids;
+            assert(SparkTokenizerEncodeUtf8(&tokenizer, "caf\xff", 4u, 0u, &encoding) == SPARK_STATUS_PARSE_ERROR);
+            memset(&compiled, 0, sizeof(compiled));
+            compiled.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+            compiled.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+            compiled.compiled_tokenizer_path = "build/test_tokenizer_nfc.bin";
+            assert(SparkTokenizerSaveCompiledFile(&tokenizer, &compiled) == SPARK_STATUS_UNSUPPORTED);
+        }
+        SparkTokenizerDestroy(&tokenizer);
+    }
+}
+
 int main(void)
 {
     SparkTestTokenizerPieceCacheMatchesUncached();
@@ -874,7 +961,11 @@ int main(void)
     SparkTestTokenizerLoadsLegacyCompiledFile();
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
-    SparkTestQwenTokenizerPretokenizesWithQwenSemantics();
+    for (uint32_t pattern_index = 0u; pattern_index < sizeof(g_spark_test_letter_split_patterns) / sizeof(g_spark_test_letter_split_patterns[0]); ++pattern_index)
+    {
+        SparkTestQwenTokenizerPretokenizesWithQwenSemantics(g_spark_test_letter_split_patterns[pattern_index]);
+    }
     SparkTestMetaspaceTokenizerEncodesAndDecodes();
+    SparkTestTokenizerNfcNormalizerComposesBeforeBpe();
     return 0;
 }

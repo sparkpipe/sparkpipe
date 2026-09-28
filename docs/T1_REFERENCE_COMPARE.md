@@ -143,6 +143,48 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   ported line-by-line from
   `modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu`,
   which ACC-2 verified checkpoint-faithful at layers 0/21/41.
+- ling publisher-code reference (2026-09-28): `tools/ling_hf_reference.py`
+  runs the pinned publisher `modeling_bailing_moe_v3.py` (sha256
+  c2509bf7...) with its fla KDA kernels on one Spark GPU, loading the
+  non-expert tensors once (about 10 GB of device memory) and each routed
+  expert on demand with `pread`, so the bf16 checkpoint never has to fit.
+  Two transformers 5 compatibility shims are applied and nothing else:
+  `is_torch_fx_available` returns False (it only decides whether a mask
+  helper is fx-wrapped) and the `default` rope initializer, which
+  transformers 5 removed, is restored with the transformers 4.45 formula.
+  `rope_scaling` is reset to None after transformers 5 rewrites the null
+  value into a dict; `rope_theta` is checked after the reset. The receipt
+  `qualification/ling_reference/ling_hf_reference.json` holds three
+  prompts x 16 greedy tokens with the top-5 logits of every step:
+  "The capital of France is" -> " Paris. (Rewrite the sentence as a
+  question.)\nIs the capital of France", "Counting upward: one, two," ->
+  " three, four, five, six, seven, eight, nine, ten.", and a Python
+  fibonacci docstring prompt -> "    if n <= 0:\n        return 0\n
+  elif n". The committed numpy fixtures above agree with it on all ten
+  tokens they hold, including the 0.0625-logit near tie at the third
+  capital token. `tests/test_ling_reference_agreement.py` checks the
+  receipt against the pinned modeling, checkpoint and prompts and against
+  the numpy fixtures. The run on spark0 used
+  `~/vllm-venv` (torch 2.13, transformers 5.8.1, fla 0.5.2), a
+  `systemd-run --user` unit with `MemoryMax=28G`, and took 440 s:
+  `python ling_hf_reference.py --checkpoint /mnt/model-warm/ling-3.0-flash
+  --prompts prompts.json --out ling_hf_reference.json --new-tokens 16
+  --expert-cache 256 --top 5 --swiglu-limits modeling`. Logits are bf16,
+  so scores are quantized to 1/16 at this magnitude.
+- ling SwiGLU limits: the config carries `expert_swiglu_limit_list` (4 on
+  layers 35-41) and `share_expert_swiglu_limit_list` (5 on layers 34-39,
+  7 on 40-41). The publisher HF modeling ignores them. The publisher
+  serving implementations apply `silu(gate).clamp(max=L) *
+  up.clamp(-L, L)` to the routed experts and the shared expert of those
+  layers: sglang `python/sglang/srt/models/bailing_moe_v3.py` (81f27fb3)
+  and vLLM `vllm/model_executor/models/bailing_moe_v3.py` (d8818125).
+  `--swiglu-limits serving` applies the same clamp. The 2026-09-28 run on
+  spark3 (`qualification/ling_reference/ling_hf_reference_serving_limits.json`,
+  478 s) gives the same 48 greedy tokens as the modeling receipt. Its
+  top-5 logits move by at most 0.5 from a modeling run on the same node.
+  A modeling rerun on spark3 also differs from the spark0 receipt by up
+  to 0.5, so these prompts cannot separate the clamp from run-to-run
+  noise. The CUDA driver implements no clamp (TECHDEBT).
 - gemma4 31b (60 layers, 5 sliding : 1 full): verified against the
   publishers' HF implementation on the fleet — the anchor oracle
   (`tools/t1_gemma4_anchor_check.py`) reproduces the committed
