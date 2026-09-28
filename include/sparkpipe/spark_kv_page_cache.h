@@ -76,10 +76,12 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t save_page_count;
 	uint64_t save_ns;
 	uint64_t save_failure_count;
+	uint64_t save_deferred_count;
 	uint64_t restore_count;
 	uint64_t restore_page_count;
 	uint64_t restore_ns;
 	uint64_t restore_miss_count;
+	uint64_t restore_corrupt_count;
 	uint64_t restore_failure_count;
 	SparkStatus last_save_status;
 	SparkStatus last_restore_status;

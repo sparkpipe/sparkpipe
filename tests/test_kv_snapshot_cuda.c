@@ -376,14 +376,15 @@ int main(int argc,char **argv)
 	snprintf(directory,sizeof(directory),"%s/kv-snapshot-cuda-XXXXXX",argv[1]);
 	if ( mkdtemp(directory) == 0 )
 		return(2);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
-	CHECK(result == 0);
-	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES);
+	CHECK(result == 0 && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
 	CudaEngineClose(&source);
+	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
 	CHECK(CudaEngineOpen(&fresh,&store) == 0);
 	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns);
 	CHECK(result == 0);
@@ -393,13 +394,15 @@ int main(int argc,char **argv)
 	CHECK(differences == 0u);
 	read_bytes = store.read_bytes;
 	CudaEngineClose(&fresh);
+	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&cold,&store) == 0);
 	cold.snapshot.layout_sha256[0] ^= 1u;
 	result = CudaPrefillPrompt(&cold,logits_cold,&cold_ns);
 	CHECK(result == 0 && memcmp(logits_cold,logits_source,sizeof(logits_cold)) == 0);
 	CudaEngineClose(&cold);
+	SparkKvSnapshotStoreClose(&store);
 	CudaRemoveTree(directory);
 	printf("test_kv_snapshot_cuda: prompt_tokens=%u pages=%u snapshot_bytes_per_page=%u logits=%u bitwise_differences=%u prefill_with_save_us=%llu restore_us=%llu read_bytes=%llu checks=%u failures=%u\n",CUDA_PROMPT_TOKENS,CUDA_PROMPT_PAGES,CUDA_PAGE_BYTES + CUDA_STATE_BYTES,CUDA_VOCAB,differences,(unsigned long long)(prefill_ns / 1000u),(unsigned long long)(restore_ns / 1000u),(unsigned long long)read_bytes,cuda_checks,cuda_failures);
 	return(cuda_failures == 0u ? 0 : 1);
