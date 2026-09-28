@@ -165,3 +165,27 @@ make -C modules/glm5_next_resident_decode_stage publish \
 ```
 
 The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks and the maximum full-stage submission-to-completion latency ceiling.
+
+## NVMe prefix snapshots
+
+Snapshots are opt-in per deployment through two adapter-config members that
+must be set together: `kv_snapshot_directory` (resolved under the runtime
+root, one directory per rank, created by the deployer) and
+`kv_snapshot_maximum_bytes` (the LRU-enforced disk budget). The store itself
+is described in `docs/KVCACHE_SUBSYSTEM_BOUNDARY.md` section 1.5b.
+
+- Layout identity. A file is restored only into a rank whose layout digest
+  matches. The digest covers the model id and revision, the cache layout
+  name, the weightd pack SHA-256, `GLM5_NEXT_CONTRACT_SHA256`, the expert
+  codec, the SHA-256 of the loaded driver binary (so any kernel or numerics
+  change invalidates old files), the TP rank and degree, the stage span, the
+  block size and the page and KDA state sizes. Files of any other layout are
+  pruned when the store opens. A rank without a weightd pack digest refuses
+  to enable snapshots (UNSUPPORTED) instead of writing files it could not
+  tell apart later.
+- Write queue. At most `SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS` (32) block
+  files wait for the writer thread, about 330 MB of host memory at TP16.
+  Beyond that a publish leaves the block unsaved and it is retried at the
+  sequence's next publish or release.
+- Startup cost. Hashing the driver binary happens once per create and is
+  logged as `identity_us` on the `GLM KV snapshot store` line.

@@ -64,6 +64,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #endif
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
+#define SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS 32u
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
@@ -280,6 +281,7 @@ struct SparkGlm5NextModuleState
 	SparkKvPageCacheSnapshotLink *kv_snapshot_links;
 	uint8_t *kv_snapshot_page;
 	uint8_t *kv_snapshot_state;
+	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	SparkGlm5NextExecutionSlot slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm5NextAsyncCompletion completions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	volatile uint64_t slot_alive_ns[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -636,6 +638,7 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.identity.pack_sha256,digest,65u);
+	memcpy(state->pack_sha256,digest,sizeof(state->pack_sha256));
 	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM5_NEXT_MODULE_TAG);
 	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
@@ -1281,15 +1284,49 @@ static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *st
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *state,const SparkKvModelTable *table)
+static SparkStatus SparkGlm5NextSnapshotLayout(const SparkGlm5NextModuleState *state,const SparkKvModelTable *table,uint8_t layout[SPARK_SHA256_DIGEST_BYTES],char *identity,uint32_t identity_capacity,char *driver_path,uint32_t driver_path_capacity)
 {
 	SparkSha256Context context;
-	char identity[768];
+	char driver_hex[SPARK_SHA256_HEX_BYTES];
+	uint8_t driver_digest[SPARK_SHA256_DIGEST_BYTES];
 	int length;
+	SparkStatus status;
+	if ( strlen(state->pack_sha256) != 64u )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: the layout identity needs the weightd pack SHA-256 and this rank has none\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	status = SparkKvSnapshotBinaryDigest((const void *)&SparkGlm5NextSnapshotLayout,driver_digest,driver_path,driver_path_capacity);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: cannot hash the driver binary status=%d\n",(int)status);
+		SPARK_RETURN(status);
+	}
+	SparkSha256DigestToHex(driver_digest,driver_hex);
+	length = snprintf(identity,identity_capacity,"%s|%s|%s|pack=%s|contract=%s|codec=%s|driver=%s|tp=%u/%u|stage=%u/%u|layers=%u+%u|block=%u|page=%llu|state=%llu",table->model_id,table->model_revision,table->cache_layout_fingerprint,state->pack_sha256,GLM5_NEXT_CONTRACT_SHA256,GLM5_NEXT_EXPERT_CODEC_NAME,driver_hex,state->tp_rank,state->tp_degree,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,(unsigned)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT,(unsigned long long)table->page_store_config.page_bytes,(unsigned long long)state->recurrent_page_bytes);
+	if ( length <= 0 || (uint32_t)length >= identity_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,identity,(size_t)length);
+	SparkSha256Finalize(&context,layout);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *state,const SparkKvModelTable *table)
+{
+	char identity[1024],driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	uint64_t file_bytes,queue_bytes,start_ns;
+	struct timespec now;
 	SparkStatus status;
 	if ( state->kv_snapshot_directory == 0 )
 		return(SPARK_STATUS_OK);
-	status = SparkKvSnapshotStoreOpen(&state->kv_snapshot_store,state->kv_snapshot_directory,state->kv_snapshot_maximum_bytes);
+	start_ns = clock_gettime(CLOCK_MONOTONIC,&now) == 0 ? (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec : 0u;
+	status = SparkGlm5NextSnapshotLayout(state,table,state->kv_snapshot.layout_sha256,identity,sizeof(identity),driver_path,sizeof(driver_path));
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	file_bytes = SPARK_KV_SNAPSHOT_ALIGNMENT * 4u + (uint64_t)state->pages_per_sequence * sizeof(SparkKvPageCacheSnapshotLink) + table->page_store_config.page_bytes + state->recurrent_page_bytes;
+	queue_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS * file_bytes;
+	status = SparkKvSnapshotStoreOpen(&state->kv_snapshot_store,state->kv_snapshot_directory,state->kv_snapshot_maximum_bytes,queue_bytes);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"GLM KV snapshot store rejected: directory=%s maximum_bytes=%llu status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(int)status);
@@ -1300,19 +1337,16 @@ static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *sta
 	state->kv_snapshot_state = state->recurrent_page_bytes != 0u ? (uint8_t *)malloc((size_t)state->recurrent_page_bytes) : 0;
 	if ( state->kv_snapshot_links == 0 || state->kv_snapshot_page == 0 || (state->recurrent_page_bytes != 0u && state->kv_snapshot_state == 0) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	length = snprintf(identity,sizeof(identity),"%s|%s|%s|tp=%u/%u|stage=%u/%u|layers=%u+%u|block=%u|page=%llu|state=%llu",table->model_id,table->model_revision,table->cache_layout_fingerprint,state->tp_rank,state->tp_degree,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,(unsigned)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT,(unsigned long long)table->page_store_config.page_bytes,(unsigned long long)state->recurrent_page_bytes);
-	if ( length <= 0 || (size_t)length >= sizeof(identity) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	SparkSha256Initialize(&context);
-	SparkSha256Update(&context,identity,(size_t)length);
-	SparkSha256Finalize(&context,state->kv_snapshot.layout_sha256);
+	status = SparkKvSnapshotPrune(&state->kv_snapshot_store,state->kv_snapshot.layout_sha256);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	state->kv_snapshot.store = &state->kv_snapshot_store;
 	state->kv_snapshot.page_capacity = state->pages_per_sequence;
 	state->kv_snapshot.links = state->kv_snapshot_links;
 	state->kv_snapshot.page = state->kv_snapshot_page;
 	state->kv_snapshot.state = state->kv_snapshot_state;
 	status = SparkKvPageCacheAttachSnapshot(&state->kv_page_cache,&state->kv_snapshot);
-	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu used_bytes=%llu files=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,identity,(int)status);
+	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu used_bytes=%llu files=%llu pruned=%llu evicted_at_open=%llu driver=%s identity_us=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)queue_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,(unsigned long long)state->kv_snapshot_store.pruned_count,(unsigned long long)state->kv_snapshot_store.eviction_count,driver_path,(unsigned long long)(clock_gettime(CLOCK_MONOTONIC,&now) == 0 && start_ns != 0u ? ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - start_ns) / 1000u : 0u),identity,(int)status);
 	SPARK_RETURN(status);
 }
 
@@ -4754,6 +4788,7 @@ static SparkStatus SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 	free(state->kv_hash_bucket_heads);
 	free(state->kv_entry_indices_by_logical_page);
 	free(state->kv_page_staging);
+	SparkKvSnapshotStoreClose(&state->kv_snapshot_store);
 	free(state->kv_snapshot_links);
 	free(state->kv_snapshot_page);
 	free(state->kv_snapshot_state);

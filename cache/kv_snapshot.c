@@ -1,7 +1,12 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -611,6 +616,26 @@ SparkStatus SparkKvSnapshotStoreSample(SparkKvSnapshotStore *store,SparkKvSnapsh
 	*sample = *store;
 	pthread_mutex_unlock(&runtime->mutex);
 	sample->runtime = 0;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_SHA256_DIGEST_BYTES],char *path,uint32_t path_capacity)
+{
+	Dl_info info;
+	char hex[SPARK_SHA256_HEX_BYTES];
+	SparkStatus status;
+	if ( symbol == 0 || digest == 0 || path == 0 || path_capacity == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&info,0,sizeof(info));
+	if ( dladdr(symbol,&info) == 0 || info.dli_fname == 0 || info.dli_fname[0] == '\0' )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	if ( (uint32_t)snprintf(path,path_capacity,"%s",info.dli_fname) >= path_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkSha256File(path,hex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( SparkKvSnapshotParseHex(hex,digest) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return(SPARK_STATUS_OK);
 }
 

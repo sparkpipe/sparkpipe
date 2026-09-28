@@ -1739,6 +1739,39 @@ static void check_pack_identity(void)
 	assert(SparkGlm5NextPackValidateHeader(&state,&header,header.file_bytes) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static void check_snapshot_layout(void)
+{
+	SparkKvModelTable table;
+	uint8_t first[SPARK_SHA256_DIGEST_BYTES],second[SPARK_SHA256_DIGEST_BYTES];
+	char identity[1024],driver[SPARK_KV_SNAPSHOT_PATH_BYTES],self[SPARK_SHA256_HEX_BYTES],pack[80];
+	memset(&state,0,sizeof(state));
+	memset(&table,0,sizeof(table));
+	table.model_id = "glm5_next";
+	table.model_revision = "fixture";
+	table.cache_layout_fingerprint = "fixture-layout";
+	table.page_store_config.page_bytes = 4096u;
+	state.tp_degree = 16u;
+	state.tp_rank = 3u;
+	state.stage_count = 1u;
+	state.layer_count = 45u;
+	state.pages_per_sequence = 4u;
+	state.recurrent_page_bytes = 128u;
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,first,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_UNSUPPORTED);
+	memset(state.pack_sha256,'a',64u);
+	state.pack_sha256[64] = '\0';
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,first,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK);
+	(void)snprintf(pack,sizeof(pack),"pack=%s|",state.pack_sha256);
+	assert(strstr(identity,pack) != 0 && strstr(identity,"|contract=fixture|") != 0 && strstr(identity,"|codec=fp8|") != 0);
+	assert(SparkSha256File(driver,self) == SPARK_STATUS_OK && strstr(identity,self) != 0);
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) == 0);
+	state.pack_sha256[0] = 'b';
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) != 0);
+	state.pack_sha256[0] = 'a';
+	state.tp_rank = 4u;
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) != 0);
+	memset(&state,0,sizeof(state));
+}
+
 static void check_linear_walk(void)
 {
 	SparkGlm5NextTpChain chain = {0};
@@ -2587,6 +2620,7 @@ int32_t main(void)
 	services.kv_physical_page_capacity = 1u;
 	services.kv_logical_page_capacity = 0u;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	check_snapshot_layout();
 	return(0);
 }
 '''
