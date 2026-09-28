@@ -15,6 +15,8 @@
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP 1u
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE 2u
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY 3u
+#define SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX "oracle:"
+#define SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX "adversary:"
 #define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH 3u
 #define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH 8u
 
@@ -46,16 +48,16 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
 		return(SPARK_STATUS_OK);
 	}
-	if ( strncmp(text,"oracle:",7u) == 0 && text[7] != '\0' )
+	if ( strncmp(text,SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX,sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u) == 0 && text[sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u] != '\0' )
 	{
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE;
-		*path_out = text + 7;
+		*path_out = text + sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u;
 		return(SPARK_STATUS_OK);
 	}
-	if ( strncmp(text,"adversary:",10u) == 0 && text[10] != '\0' )
+	if ( strncmp(text,SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX,sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u) == 0 && text[sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u] != '\0' )
 	{
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY;
-		*path_out = text + 10;
+		*path_out = text + sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u;
 		return(SPARK_STATUS_OK);
 	}
 	return(SPARK_STATUS_INVALID_ARGUMENT);
