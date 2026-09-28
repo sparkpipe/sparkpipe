@@ -295,6 +295,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 // queues group offsets into slot host_group_row_offset; record/wait an event
 // on that stream before inspecting them or calling SparkWeightdRouteKeys.
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 // cudaSuccess means the current routing readback is complete; cudaErrorNotReady
 // means pending. Calling before a successful Route returns cudaErrorInvalidValue.
 cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave);

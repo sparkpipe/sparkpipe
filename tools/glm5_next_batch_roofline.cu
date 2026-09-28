@@ -23,7 +23,7 @@
 typedef struct RoofConfig
 {
 	uint32_t batches[ROOF_MAX_BATCHES];
-	uint32_t batch_count,context,iterations,copies,max_batch,index_cp;
+	uint32_t batch_count,context,iterations,copies,max_batch,index_cp,graph,route_readback;
 	double round_us,nic_gbps,memory_gbps;
 }
 RoofConfig;
@@ -52,7 +52,7 @@ typedef struct RoofState
 	uint32_t *host_slots,*host_positions,*host_run_begin,*host_run_rows,*host_run_state;
 	void *hidden_input;
 	uint32_t *page_table;
-	uint32_t pages_per_sequence,max_positions;
+	uint32_t pages_per_sequence,max_positions,route_readback;
 }
 RoofState;
 
@@ -448,7 +448,7 @@ static void RoofStep(const RoofState *state)
 	{
 		RoofAttention(state,layer);
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
-		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
+		ROOF_LAUNCH(state->route_readback != 0u ? SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer) : SparkGlm5NextLaunchCudaLayerMlpRouteResident(wave,layer));
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer));
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer));
 	}
@@ -652,15 +652,68 @@ static void RoofReport(const RoofModel *model,const RoofState *state,const RoofC
 	printf("ROOFLINE-FLEET rows=%u collectives=%.0f direct_ms=%.1f rsag_ms=%.1f tok_s_direct=%.0f tok_s_rsag=%.0f tok_s_rsag_overlapped=%.0f\n",rows,collectives,direct_ms,rsag_ms,rows * 1000.0 / (step_ms + direct_ms),rows * 1000.0 / (step_ms + rsag_ms),rows * 1000.0 / (step_ms > rsag_ms ? step_ms : rsag_ms));
 }
 
+static double RoofMeasureGraph(RoofState *state,const RoofConfig *config,uint32_t rows,cudaStream_t stream)
+{
+	cudaGraph_t graph;
+	cudaGraphExec_t exec;
+	cudaEvent_t start,stop;
+	double *samples,total,sorted;
+	size_t nodes;
+	uint32_t iteration,other;
+	float elapsed;
+	ROOF_CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+	RoofStep(state);
+	ROOF_CUDA(cudaStreamEndCapture(stream,&graph));
+	ROOF_CUDA(cudaGraphGetNodes(graph,0,&nodes));
+	ROOF_CUDA(cudaGraphInstantiate(&exec,graph,0));
+	ROOF_CUDA(cudaGraphLaunch(exec,stream));
+	ROOF_CUDA(cudaGraphLaunch(exec,stream));
+	ROOF_CUDA(cudaStreamSynchronize(stream));
+	samples = (double *)calloc(config->iterations,sizeof(double));
+	if ( samples == 0 )
+		exit(1);
+	ROOF_CUDA(cudaEventCreate(&start));
+	ROOF_CUDA(cudaEventCreate(&stop));
+	total = 0.0;
+	for (iteration=0u; iteration<config->iterations; iteration++)
+	{
+		ROOF_CUDA(cudaEventRecord(start,stream));
+		ROOF_CUDA(cudaGraphLaunch(exec,stream));
+		ROOF_CUDA(cudaEventRecord(stop,stream));
+		ROOF_CUDA(cudaEventSynchronize(stop));
+		ROOF_CUDA(cudaEventElapsedTime(&elapsed,start,stop));
+		samples[iteration] = (double)elapsed;
+		total += (double)elapsed;
+	}
+	for (iteration=1u; iteration<config->iterations; iteration++)
+		for (other=iteration; other>0u && samples[other - 1u] > samples[other]; other--)
+		{
+			sorted = samples[other - 1u];
+			samples[other - 1u] = samples[other];
+			samples[other] = sorted;
+		}
+	printf("ROOFLINE-GRAPH rows=%u route_readback=%u nodes=%zu replays=%u median_ms=%.3f min_ms=%.3f max_ms=%.3f mean_ms=%.3f\n",rows,state->route_readback,nodes,config->iterations,samples[config->iterations / 2u],samples[0],samples[config->iterations - 1u],total / config->iterations);
+	free(samples);
+	ROOF_CUDA(cudaEventDestroy(start));
+	ROOF_CUDA(cudaEventDestroy(stop));
+	ROOF_CUDA(cudaGraphExecDestroy(exec));
+	ROOF_CUDA(cudaGraphDestroy(graph));
+	return(total / config->iterations);
+}
+
 static double RoofMeasure(RoofState *state,const RoofConfig *config,uint32_t rows,cudaStream_t stream)
 {
 	cudaEvent_t start,stop;
 	uint32_t iteration;
 	float elapsed;
 	RoofSetRows(state,rows,config->context);
+	state->route_readback = 1u;
 	RoofStep(state);
 	RoofStep(state);
 	ROOF_CUDA(cudaStreamSynchronize(stream));
+	state->route_readback = config->route_readback;
+	if ( config->graph != 0u )
+		return(RoofMeasureGraph(state,config,rows,stream));
 	ROOF_CUDA(cudaEventCreate(&start));
 	ROOF_CUDA(cudaEventCreate(&stop));
 	ROOF_CUDA(cudaEventRecord(start,stream));
@@ -701,6 +754,7 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 	config->round_us = 100.0;
 	config->nic_gbps = 11.5;
 	config->memory_gbps = 273.0;
+	config->route_readback = 1u;
 	for (index=1; index + 1 < argc; index+=2)
 	{
 		if ( strcmp(argv[index],"--batches") == 0 )
@@ -717,6 +771,10 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 			config->round_us = strtod(argv[index + 1],0);
 		else if ( strcmp(argv[index],"--nic-gbps") == 0 )
 			config->nic_gbps = strtod(argv[index + 1],0);
+		else if ( strcmp(argv[index],"--graph") == 0 )
+			config->graph = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--route-readback") == 0 )
+			config->route_readback = (uint32_t)strtoul(argv[index + 1],0,10);
 		else
 			return(-1);
 	}
@@ -735,7 +793,7 @@ int main(int argc,char **argv)
 	uint32_t batch;
 	if ( RoofParse(argc,argv,&config) != 0 )
 	{
-		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5]\n");
+		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5] [--graph 0|1] [--route-readback 0|1]\n");
 		return(2);
 	}
 	setvbuf(stdout,0,_IOLBF,0);
