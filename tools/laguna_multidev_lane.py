@@ -99,13 +99,16 @@ def tp_collective(rank: int, collective_identifier: int, lane: int) -> dict:
     }
 
 
+MAX_SEQUENCE_POSITIONS = 32768
+
+
 def adapter_config(rank: int, collective_identifier: int, lane: int) -> dict:
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": EXPERT_CODEC,
         "stage_pack_path": "packs/" + os.path.basename(deployed_pack(rank)),
-        "max_sequence_positions": 32768,
+        "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
         "execution_row_capacity": 128,
         "decode_split_context_threshold": 2048,
         "tp_degree": TP,
@@ -159,6 +162,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "resident_sequence_capacity": 16,
             "kv_logical_page_capacity": kv_page_capacity,
             "kv_physical_page_capacity": kv_page_capacity,
+            "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
         },
         "nodes": nodes,
     }

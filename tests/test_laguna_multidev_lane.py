@@ -482,6 +482,13 @@ def main() -> int:
 
         deployment = json.loads((output / "deployment.json").read_text())
         deployment_gates(deployment, runtime_root, socket_path, failures)
+        check(deployment["runtime_limits"].get("max_sequence_positions")
+              == lane.MAX_SEQUENCE_POSITIONS, failures,
+              "deployment must bound the API context to the adapter's positions")
+        adapter_zero = json.loads((output / "adapter.spark0.json").read_text())
+        check(adapter_zero["max_sequence_positions"]
+              == deployment["runtime_limits"].get("max_sequence_positions"),
+              failures, "adapter and deployment sequence positions must agree")
         for key in ("kv_logical_page_capacity", "kv_physical_page_capacity"):
             check(deployment["runtime_limits"][key] == 2048, failures,
                   f"{key} must be the requested 2048 pages")
