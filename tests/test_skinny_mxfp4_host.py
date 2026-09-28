@@ -1,4 +1,3 @@
-"""Run the MXFP4 skinny expert kernels on host threads."""
 import pathlib
 import subprocess
 import tempfile
