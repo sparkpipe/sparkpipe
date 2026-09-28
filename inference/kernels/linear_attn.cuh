@@ -245,8 +245,7 @@ enum LmConvActivation
 };
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
-__global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
+static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
 {
 	uint32_t sequence = blockIdx.x,channel = (blockIdx.y * THREADS) + threadIdx.x;
 	uint32_t begin,end,row,tap,ordinal;
@@ -283,4 +282,31 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 		return;
 	for (tap = 0u; tap < KERNEL; ++tap)
 		slot[(channel * KERNEL) + tap] = taps[tap];
+}
+
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
+{
+	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(window,state_index,sequence_row_begin,sequence_row_count,input_bf16,weight,output_bf16,channels,sequences,commit,sequence_row_indices);
+}
+
+#define LM_CAUSAL_CONV_STREAMS 3u
+
+template<class Weight>
+struct LmCausalConvStreams
+{
+	uint16_t *window[LM_CAUSAL_CONV_STREAMS];
+	const uint16_t *input_bf16[LM_CAUSAL_CONV_STREAMS];
+	const Weight *weight[LM_CAUSAL_CONV_STREAMS];
+	uint16_t *output_bf16[LM_CAUSAL_CONV_STREAMS];
+	uint32_t channels[LM_CAUSAL_CONV_STREAMS];
+};
+
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
+{
+	const uint32_t stream = blockIdx.z;
+	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices);
 }
