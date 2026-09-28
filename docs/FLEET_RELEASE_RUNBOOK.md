@@ -40,7 +40,9 @@ only ever write `~/release` and `~/current` files there.
   `ensure_root` (boot a down root: 15-min post-reboot autospawn guard,
   `MemAvailable >= packs + 8 GB` gate, backoff) → `report` (heartbeat, local + hub).
   The agent never starts an API: the API runs only on the rtx5090 hub
-  (`g53-api`).
+  (`g53-api`). Dev-lane roots run beside production under the same agent
+  (`~/.fleet_agent_roots`, per-root rank index, env, `MemoryMax` and a 20 GiB
+  headroom guard): see [`FLEET_AGENT_ROOTS.md`](FLEET_AGENT_ROOTS.md).
 - **The MANIFEST is the version.** Each root dir has `MANIFEST` (sha256 per
   file). Agents fetch the diff vs `.applied_manifest` and verify every sha
   before applying. A binary's sha is its version; there is no "deployed
