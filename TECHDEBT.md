@@ -519,10 +519,11 @@ progress diary.
   - gemma4's `Replace` plus `Split " "`.
 
   Implement them, then make an unknown `Split` a load error.
-- The tokenizer ignores the `NFC` normalizer that Ling, Qwen3.8 and MiMo
-  declare. Composed input is unaffected. Decomposed input tokenizes
-  differently: 2 of 304 corpus texts for Ling, "cafe" plus U+0301 and the
-  angstrom sign U+212B.
+- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
+  skips any other normalizer without an error: gemma4's `Replace`, and
+  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
+  those, then make an unknown normalizer a load error. A tokenizer with
+  NFC cannot be saved in the compiled format, which has no field for it.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head

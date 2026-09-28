@@ -238,6 +238,7 @@ TOOL_NAMES := \
     spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
+    sparkpipe_nfc \
     sparkpipe_tokenizer_benchmark \
     sparkpipe_memlink \
     sparkpipe_prevcp \
@@ -407,6 +408,7 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
+	tests/test_unicode_nfc.py \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
@@ -682,6 +684,7 @@ model_driver_contracts: build/test_model_description build/test_stage_module_com
 
 MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_tokenize_prompt \
+    build/sparkpipe_nfc \
     build/sparkpipe_tokenizer_benchmark \
     build/sparkpipe_memlink \
     build/sparkpipe_prevcp \
@@ -955,6 +958,9 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(GLM52_HOST_LI
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_nfc: tools/sparkpipe_nfc.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
