@@ -38,6 +38,7 @@ tools/ling_lane.sh setup
 tools/ling_lane.sh start
 tools/ling_lane.sh status
 export LING_API_HOST=rtx5090 LING_API_PORT=8437 LING_API_UNIT=ling3-api LING_API_BUILD=/home/spec/build-ling/api
+export LING_API_TOKENIZER=/home/spec/build-ling/ling_tokenizer.json
 tools/ling_lane.sh api
 tools/ling_lane.sh decode 678,7706,300,11406,341 16
 tools/ling_lane.sh stop
@@ -50,6 +51,12 @@ budget from the manifest with `tools/ling_multidev_lane.py
 `tools/ling_multidev_build.sh` produces (b128 variant archive, linked
 driver, adapter, residentd, transport). `LING_API_BUILD` holds
 `sparkpipe_model_api` and the ling adapter built on the API host.
+
+The deployment names the publisher `tokenizer.json` (sha256 40fb9d7d…) so
+the API accepts text prompts. Its `vocabulary_size` is 157153, the
+tokenizer's highest id plus one, which the API checks; the model head is
+padded to 157184. `api` copies `LING_API_TOKENIZER` into the API runtime
+root and checks that digest.
 
 Expected first tokens are the publisher-code reference in
 `qualification/ling_reference/ling_hf_reference.json`.

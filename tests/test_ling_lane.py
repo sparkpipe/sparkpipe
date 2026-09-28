@@ -37,8 +37,10 @@ def lane_problems(lane, files, members):
     ports = ling_lane.lane_ports(lane)
     deployment = files["model_resident.json"]
     check(deployment["eos_token_ids"] == [156895], f"lane {lane}: eos", failures)
+    check(deployment["runtime_limits"]["max_sequence_positions"] == files["config/stage_00.json"]["max_sequence_positions"], f"lane {lane}: engine position limit differs from the adapter's", failures)
     check(deployment["weightd"]["socket_path"] == SOCKET, f"lane {lane}: socket", failures)
     check(deployment["transport"]["control_port_base"] == ports["transport"], f"lane {lane}: transport base", failures)
+    check(deployment["tokenizer"] == {"path": "tokenizer/tokenizer.json", "sha256": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60", "vocabulary_size": 157153}, f"lane {lane}: tokenizer entry", failures)
     for rank, node in enumerate(deployment["nodes"]):
         host = ling_lane.HOSTS[rank]
         check(node["rank_index"] == rank and node["stage_index"] == rank, f"lane {lane}: rank {rank} identity", failures)

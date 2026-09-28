@@ -75,11 +75,13 @@ api() {
   : "${LING_API_PORT:?LING_API_PORT is the API listen port}"
   : "${LING_API_BUILD:?LING_API_BUILD is the API host directory holding sparkpipe_model_api and model_serving_adapter.so built for that host}"
   : "${LING_API_UNIT:?LING_API_UNIT is the API systemd user unit name}"
-  local generated root
+  : "${LING_API_TOKENIZER:?LING_API_TOKENIZER is the Ling tokenizer.json on the API host}"
+  local generated root sha
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
+  sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokenizer"]["sha256"])' "$generated/model_resident.json")"
   root="ling-lane$LING_LANE-api"
-  $SSH "$LING_API_HOST" "mkdir -p $root/bin $root/runtime/lib && cp $LING_API_BUILD/sparkpipe_model_api $root/bin/ && cp $LING_API_BUILD/model_serving_adapter.so $root/runtime/lib/"
+  $SSH "$LING_API_HOST" "mkdir -p $root/bin $root/runtime/lib $root/runtime/tokenizer && cp $LING_API_BUILD/sparkpipe_model_api $root/bin/ && cp $LING_API_BUILD/model_serving_adapter.so $root/runtime/lib/ && cp $LING_API_TOKENIZER $root/runtime/tokenizer/tokenizer.json && echo '$sha  $root/runtime/tokenizer/tokenizer.json' | sha256sum -c --quiet"
   scp -q "$generated/model_resident.json" "$LING_API_HOST:$root/"
   rm -rf "$generated"
   $SSH "$LING_API_HOST" "cd $root && systemctl --user stop $LING_API_UNIT 2>/dev/null; systemctl --user reset-failed $LING_API_UNIT 2>/dev/null; systemd-run --user --unit=$LING_API_UNIT -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=\$HOME/$root bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root \$HOME/$root/runtime --port $LING_API_PORT >> api.log 2>&1'"

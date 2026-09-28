@@ -9,6 +9,8 @@ HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[index]}" for index in range(WORLD)]
 MODEL_REVISION = "e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3"
 EOS_TOKEN_ID = 156895
+TOKENIZER_SHA256 = "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60"
+TOKENIZER_TOKEN_COUNT = 157153
 CODECS = ("bf16", "fp8")
 MAX_LANES = 16
 ADAPTER_MEMBERS = ("schema_version", "model_revision", "expert_weight_codec", "stage_pack_path",
@@ -71,7 +73,7 @@ def stage_config(rank, lane, codec, max_sequence_positions, execution_row_capaci
     }
 
 
-def deployment(lane, codec, socket_path, kv_backing_bytes):
+def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_positions):
     ports = lane_ports(lane)
     nodes = []
     for rank, host in enumerate(HOSTS):
@@ -102,7 +104,9 @@ def deployment(lane, codec, socket_path, kv_backing_bytes):
             "resident_sequence_capacity": 16,
             "kv_logical_page_capacity": 8192,
             "kv_physical_page_capacity": 8192,
+            "max_sequence_positions": max_sequence_positions,
         },
+        "tokenizer": {"path": "tokenizer/tokenizer.json", "sha256": TOKENIZER_SHA256, "vocabulary_size": TOKENIZER_TOKEN_COUNT},
         "nodes": nodes,
     }
 
@@ -114,7 +118,7 @@ def render(lane, codec, socket_path, kv_backing_bytes, max_sequence_positions, e
         raise SystemExit("weightd socket must be an absolute .sock path")
     if kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive byte count")
-    files = {"model_resident.json": deployment(lane, codec, socket_path, kv_backing_bytes)}
+    files = {"model_resident.json": deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_positions)}
     for rank in range(WORLD):
         files[f"config/stage_{rank:02d}.json"] = stage_config(rank, lane, codec, max_sequence_positions, execution_row_capacity)
     return {name: json.dumps(document, indent=1) + "\n" for name, document in files.items()}
