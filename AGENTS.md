@@ -12,6 +12,17 @@
   `tests/test_dry_law.py` enforces this for the runtime, transport, cache,
   serving, kernel and common paths; its `PENDING` list may only shrink.
 
+## Workflow
+
+- Claude is the lead developer. The user merges pull requests by hand, after
+  Claude reports a PR ready. A PR may stack on another open PR; say so in
+  its description.
+- Fleet host roles (the hub, the build host, the Sparks), releases and
+  operations are in [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
+  Read it before touching a fleet host. Deploy only by publishing a release
+  root; never kill and reload daemons by hand, and never kill anything on
+  the hub.
+
 ## Source package manifests
 
 - `PACKAGE_MANIFEST.json` and `SHA256SUMS` at the repository root are
@@ -26,7 +37,9 @@
 - Never open a GitHub login flow, request a connector, call `gh auth login`, or
   rely on the active `gh` account for this repository.
 - Run every GitHub-facing `git` or `gh` command through
-  `tools/sparkpipe_github_pat.sh`. The wrapper reads `GITHUB_PAT` directly from
+  `tools/sparkpipe_github_pat.sh`. The wrapper reads `GITHUB_PAT` from
+  `$SPARKPIPE_PAT_FILE` or, when that is unset, from the first readable
+  `sparkpipe/.env` in its candidate list; on this workstation that is
   `/Users/mac/sparkpipe/.env`.
 - The wrapper deliberately clears Git credential helpers. This is mandatory:
   the workstation credential helper may otherwise replace the SparkPipe PAT

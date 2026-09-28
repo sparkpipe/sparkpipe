@@ -48,8 +48,11 @@ prompts sha256, per-fixture sha256, and generator versions.
 
 ## Driver-side comparison (serving-gated half)
 
-The driver hook dumps the same array names (bf16 patterns for streams, the
-integer routing decisions, head top-1) into a T1R1 file, then:
+No C or CUDA code writes T1R1. A driver with a T1 dump path (glm5_next,
+glm52, gemma4, laguna, ling) prints per-row `<TAG>-T1` stream, route and head
+lines to stderr when its T1 switch is set, and the family's assembler
+(`tools/t1_{g53,gfull,gemma4,lag,ling}_log_assembly.py`) builds the candidate
+T1R1 file with the same array names from those logs, then:
 
     tools/t1_reference_compare.py compare \
         --reference OUT/F/<prompt>.t1r --candidate DRIVER.t1r
@@ -110,6 +113,16 @@ before fixtures are trusted: glm5_next was verified against
 `tools/glm5_next_checkpoint_layer_reference.py` (top-1 token equal, layer
 output norms within 2.3 percent over 45 layers). A generator whose
 position-0 anchor disagrees with the committed oracle is not fixture-grade.
+
+## Families with engines and fixtures
+
+`tools/t1_reference_decoder.py --family F` imports `tools/t1_reference_F.py`.
+Engines exist for 14 families: dsv41, gemma4, glm53flash, glm53full,
+glm5_next, hy4, k3, laguna, ling, minimax, muse, qwen38_27b, qwen38_max and
+qwen4_flash. `qualification/t1_reference/` has 15 directories (gemma4_26b
+runs the gemma4 engine with its own `llm_defines_26b.h`); 13 hold committed
+fixtures and a `MANIFEST.json`, while glm53flash and hy4 hold only
+`prompts.json`.
 
 ## Wave-refs2 families (ling, gemma4 31b, laguna)
 

@@ -1,17 +1,22 @@
 # Completion events and polling
 
 Payloads and readiness counters already arrive through RDMA writes into each
-receiver's local mapped host memory. `SparkWeightdClientAttachLazy` maps the local
-mesh file, and `PrepareReceiveBf16` passes that mapping to CUDA. A GPU `.cv` load
-of the readiness counter is not an RDMA READ operation. Replacing that repeated
-local load with a pushed notification is a separate change from payload direction.
+receiver's local mapped host memory. `SparkWeightdClientAttachLazy` (GLM) or
+`SparkWeightdClientMeshMap` (`SparkTpDeviceCollectiveAttachMesh`) maps the local
+mesh file, and `PrepareReceiveBf16` passes that mapping to CUDA. In spin mode, a
+GPU `.cv` load of the readiness counter is not an RDMA READ operation. Replacing
+that repeated local load with a pushed notification is a separate change from
+payload direction.
 CPU polling, GPU wait kernels and network transfer time need separate measurements.
 
 The API worker now sleeps on resident sockets and a nonblocking request-queue
 pipe. Enqueue and cancellation wake that pipe; only the worker mutates the batch
 engine. The batch CLI flushes events immediately after progress and checks
-completion before sleeping. There is no fixed 5/10 ms polling cadence in either
-consumer. Submission checkpoint persistence retains its 60-second deadline.
+completion before sleeping, with no fixed polling cadence. The API worker's poll
+timeout follows the batch engine's next deadline, except that while a
+submission is refused as busy it retries every 5 ms (`API_BUSY_RETRY_MS`,
+`node/model_api.c`). Submission checkpoint persistence retains its 60-second
+deadline.
 
 `SparkModelResidentClientNextProgressNs`, the pipeline aggregator and
 `SparkModelBatchEngineNextProgressNs` expose absolute monotonic deadlines:
@@ -36,7 +41,8 @@ variable only when there are no active owners, queued NIC transfers or published
 GPU doorbells still waiting to ship. All three predicates are checked under the
 wake lock; a producer ending before the first scan cannot lose its last transfer.
 A disconnected active owner is an explicit orphan error, not proof of GPU drain.
-This changes the weightd wire ABI to 5; clients and daemon must be rebuilt together.
+This change bumped the weightd IPC ABI (`SPARK_WEIGHTD_IPC_ABI_VERSION`); clients
+and daemon must be rebuilt together.
 
 The common CUDA receipt uses one host callback and a monotonic condition deadline
 for an owned stream. Timeout retains the receipt until the callback has actually
@@ -55,44 +61,26 @@ checks establish host ownership rules; they do not prove GPU or RDMA ordering.
 
 ## Device and transport boundary
 
-The developer's PR1077 commit 07333264 reports idle engines at 96% GPU and 0%
-memory utilization. Its success-time cancellation broadcasts are unscoped:
-a faster rank can cancel another rank's valid final round. Cancellation must
-preserve request ownership and drain before rearming shared cells. A same-stream
-CUDA completion callback cannot prove that another stream or request has drained.
-The fix preserves ownership through stream drain, cancels only failed work, and
-latches cancellation generations in GPU waits. Sampled 96% GPU utilization means
-kernels were active during most samples; it does not establish 96% SM occupancy
-or prove that the wait kernel caused the full serving delay.
-
-GB10 reports 64-bit stream memory operations, NOR waits and mapped host memory
-support, but no remote-write flush capability. The read-only attribute probe
-created no CUDA context and launched no GPU work. This does not qualify replacing
-mapped-host wait kernels with hardware waits. Graph replay needs correct wait
-values, explicit timeout/cancellation wakeups and payload visibility ordering.
-
-CUDA documents [stream memory operations](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__MEMOP.html).
-RDMA completion notifications are [one-shot](https://man7.org/linux/man-pages/man3/ibv_req_notify_cq.3.html)
-and require rearming and draining without a lost-wakeup race. A plain incoming
-RDMA write does not produce the receiver completion event needed for that design;
-GPU writes to a shared host doorbell do not themselves wake a CPU file descriptor.
+[`TP_STREAM_MEMOP_QUALIFICATION.md`](TP_STREAM_MEMOP_QUALIFICATION.md) is the
+authority for device waits. In `hardware` mode, the fleet's serving mode, GPU
+waits are stream memory waits on a ready word the daemon publishes. In `spin`
+mode, the default when `SPARK_TP_WAIT_MODE` is unset, they are GPU polling
+kernels. In both modes the weight daemon polls while a mesh activity interval
+is active and sleeps only as described above. An incoming RDMA WRITE produces no
+receiver completion event, and a GPU write to a host doorbell wakes no CPU file
+descriptor, so neither can replace that polling. RDMA completion notifications
+are [one-shot](https://man7.org/linux/man-pages/man3/ibv_req_notify_cq.3.html)
+and must be rearmed and drained without a lost-wakeup race.
 
 Mesh registration is owned per exact mapping, shared by main and hidden-channel
 collectives and released only after the final owner drains. Distinct mappings
-register independently. Registration failure is explicit; it cannot silently
-continue with pageable memory. Failed unregister retains a cleanup-only owner.
-
-Active mesh intervals still poll GPU-produced doorbells and send completions.
-B1 and B2+ device waits still use GPU polling kernels. Removing those loops requires
-a completion gate separate from real peer counters, error-before-wake ordering,
-valid mapped device pointers and graph wait-value updates. Cancellation must not
-forge peer completion. CUDA memory-operation support and a successful compile
-alone do not prove that design works on GB10.
-
-The [hardware wait probe](TP_STREAM_MEMOP_QUALIFICATION.md) is a standalone
-qualification artifact. Exact PR source cd344a64 passed 24 NIC-to-GPU trials on
-Spark0/Spark1 with shared memfd registration, stale readiness, cancellation and
-recovery. A wait-bypass mutation failed the intended assertion. GPU completion
-was observed before any post-release CUDA call. Updating 91 wait nodes averaged
-4.25 microseconds per replay. These primitive results support integration testing;
-they do not establish model throughput. See the [receipt](receipts/tp-hardware-wait-cd344a64.json).
+register independently. Since 5814bf2 (2026-09-23), when `cudaHostRegister`
+returns `cudaErrorInvalidValue`, as it did for a shared weightd's RDMA-registered
+region in that commit's reproduction, the collective logs `MESH-REGISTER-SKIP` and continues with the
+unregistered mapping; every other error fails with `MESH-REGISTER-FAIL`
+(`ring/transport/tp_device_collective.c`). A failed unregister logs
+`MESH-UNREGISTER-FAIL` and retains a cleanup-only owner. The skip is not
+recorded, so the final owner's release still calls `cudaHostUnregister` on the
+unregistered mapping, which CUDA rejects; by code reading, teardown after a
+skip therefore ends in `MESH-UNREGISTER-FAIL`. The fleet's registrations
+currently succeed, so this path has not been observed there.
