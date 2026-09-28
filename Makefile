@@ -378,6 +378,7 @@ TEST_NAMES := \
     test_stage_module_weightd \
     test_weightd_map \
     test_expert_working_set \
+    test_graph_reloc \
     test_weightd_mesh_mock \
     test_module_library \
     test_speculation_provider_slot \
@@ -1710,6 +1711,16 @@ build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage
 
 build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/test_graph_reloc: tests/test_graph_reloc.c runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c tests/cuda_stub/cuda_runtime_stub.c include/sparkpipe/spark_graph_reloc.h $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_graph_reloc_gpu: tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c include/sparkpipe/spark_graph_reloc.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-graph-reloc-gpu
+test-graph-reloc-gpu: build/test_graph_reloc_gpu
+	./build/test_graph_reloc_gpu
 
 # W3 weightd (docs/WEIGHTD_DESIGN.md): the fd tier - chunk shareable-fd
 # export over SCM_RIGHTS and the consumer's import/map, including a real
