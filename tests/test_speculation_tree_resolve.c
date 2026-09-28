@@ -57,7 +57,7 @@ static void SparkTestTreeResolveAcceptToDepth(void)
 
 static void SparkTestTreeResolveBranchSelection(void)
 {
-        const uint32_t draft_tokens[3] = { 10u, 20u, 21u };
+    const uint32_t draft_tokens[3] = { 10u, 20u, 21u };
     const uint32_t parents[3] = {
         SPARK_SPECULATION_PARENT_INDEX_ROOT,
         SPARK_SPECULATION_PARENT_INDEX_ROOT,
@@ -157,7 +157,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
     SparkSpeculationPolicyVerifyResult result;
     const uint32_t *null_parents = 0;
 
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         duplicate_root_tokens,
         duplicate_sibling_parents,
         3u,
@@ -165,7 +165,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         self_parent,
         3u,
@@ -173,7 +173,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         forward_parent,
         3u,
@@ -181,7 +181,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         duplicate_root_siblings,
         3u,
@@ -189,7 +189,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         3u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         out_of_vocab_draft,
         null_parents,
         3u,
@@ -197,7 +197,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-        assert(SparkSpeculationPolicyResolveVerifierTree(
+    assert(SparkSpeculationPolicyResolveVerifierTree(
         0,
         null_parents,
         3u,
