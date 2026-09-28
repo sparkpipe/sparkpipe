@@ -249,23 +249,51 @@ def main() -> int:
         assert victim.exists() and victim.stat().st_size > 0
         assert survivor.stat().st_mtime_ns == before
 
-        # wrong shape: break one expert tensor, expect a hard failure
         index = json.loads((ckpt / "model.safetensors.index.json").read_text())
-        shard = ckpt / index["weight_map"]["model.layers.1.mlp.experts.0.gate_proj.weight"]
+        expert = "model.layers.1.mlp.experts.0.gate_proj.weight"
+        shard = ckpt / index["weight_map"][expert]
+        original_shard = shard.read_bytes()
+        (header_bytes,) = struct.unpack_from("<Q", original_shard)
+        header = json.loads(original_shard[8:8 + header_bytes])
+        expected_shape = header[expert]["shape"]
+        header[expert]["shape"] = [7, 64]
+        blob = json.dumps(header).encode()
+        if len(blob) > header_bytes:
+            raise AssertionError("the wrong-shape header no longer fits the original header")
         with open(shard, "r+b") as file:
-            file.seek(0)
-            (n,) = struct.unpack("<Q", file.read(8))
-            header = json.loads(file.read(n))
-            header["model.layers.1.mlp.experts.0.gate_proj.weight"]["shape"] = [7, 64]
-            blob = json.dumps(header).encode()
-            file.seek(0)
-            file.write(struct.pack("<Q", len(blob)))
-            file.write(blob)
-        try:
-            packer.do_verify(Args(checkpoint=str(ckpt), tp=2, rank=0, out=str(packs[0])))
-            raise AssertionError("wrong shape verified")
-        except (packer.PackFailure, SystemExit, json.JSONDecodeError, struct.error):
-            pass
+            file.seek(8)
+            file.write(blob + b" " * (header_bytes - len(blob)))
+        shape_reason = f"{expert}: checkpoint shape [7, 64], pack expects {expected_shape}"
+        for operation, arguments in (
+                (packer.do_verify, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                        out=str(packs[0]))),
+                (packer.do_emit, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                      out=str(tmp / "shape.sp"),
+                                      stage_dir=str(tmp / "stage_shape")))):
+            try:
+                operation(arguments)
+                raise AssertionError(f"{operation.__name__} accepted a wrong source shape")
+            except packer.PackFailure as failure:
+                if str(failure) != shape_reason:
+                    raise AssertionError(f"{operation.__name__}: {failure}") from failure
+        shard.write_bytes(original_shard)
+
+        shard.rename(str(shard) + ".away")
+        missing_reason = f"missing shard {shard.name}"
+        for operation, arguments in (
+                (packer.do_verify, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                        out=str(packs[0]))),
+                (packer.do_emit, Args(checkpoint=str(ckpt), tp=2, rank=0,
+                                      out=str(tmp / "missing.sp"),
+                                      stage_dir=str(tmp / "stage_missing")))):
+            try:
+                operation(arguments)
+                raise AssertionError(f"{operation.__name__} ran without shard {shard.name}")
+            except packer.PackFailure as failure:
+                if str(failure) != missing_reason:
+                    raise AssertionError(f"{operation.__name__}: {failure}") from failure
+        if (tmp / "stage_missing").exists() or (tmp / "stage_shape").exists():
+            raise AssertionError("a refused emission staged payloads")
 
     print("PASS mimo26 stagepack round-trip")
     return 0

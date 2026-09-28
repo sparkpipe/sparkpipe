@@ -829,6 +829,7 @@ def do_assemble(args) -> int:
 def do_verify(args) -> int:
     source = SafetensorsSource(Path(args.checkpoint))
     check_source(args.arm, source)
+    check_shapes(args.arm, source)
     records = build_plan(args.arm, source.config, args.tp, args.rank)
     reader = SourceReader(source)
     pack_path = Path(args.out)
