@@ -1393,6 +1393,11 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		return;
 	slot = (uint32_t)(request - engine->requests);
 	memset(&lookup,0,sizeof(lookup));
+	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+	{
+		SparkModelBatchApplyPrefixLookup(engine,request,SparkModelBatchRequestTokens(engine,slot),&lookup);
+		return;
+	}
 	status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
 		request->sequence_id,SparkModelBatchRequestTokens(engine,slot),
 		request->prompt_token_count,&lookup);
