@@ -64,3 +64,13 @@ static __global__ void LmHeadMissPoisonKernel(
 	if ( row < rows && miss[SPARK_STEP_MISS_FLAG] != 0u )
 		maxloc[row] = UINT64_MAX;
 }
+
+static __global__ void LmHeadMaxlocUnpackPoisonKernel(
+	const uint64_t *maxloc,
+	uint32_t *token_ids,
+	uint32_t rows)
+{
+	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row < rows )
+		token_ids[row] = maxloc[row] == UINT64_MAX ? SPARK_STEP_POISON_TOKEN : UINT32_MAX - (uint32_t)maxloc[row];
+}

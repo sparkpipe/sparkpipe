@@ -37,6 +37,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
+    runtime/spark_expert_working_set.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
