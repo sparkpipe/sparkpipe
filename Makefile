@@ -610,8 +610,7 @@ PYTHON_TESTS := \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
-	tests/test_weightd_warm_family_dsv41_flash.py \
-	tests/test_weightd_warm_family_ling.py
+	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
