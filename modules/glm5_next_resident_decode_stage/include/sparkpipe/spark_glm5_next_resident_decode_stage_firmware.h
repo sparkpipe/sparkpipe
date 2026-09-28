@@ -3,7 +3,6 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
-#include "sparkpipe/spark_glm5_next_verify_regime.h"
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_tp_device_collective.h"
