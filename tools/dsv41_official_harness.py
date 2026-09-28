@@ -310,6 +310,7 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--memory-fraction", type=float, default=0.6)
     parser.add_argument("--max-seq-len", type=int, default=256)
+    parser.add_argument("--capture-dir")
     arguments = parser.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -322,11 +323,20 @@ def main():
     print(json.dumps({"loaded_parameters": loaded, "seconds": round(time.time() - started, 1)}), flush=True)
     prompts = json.load(open(arguments.prompts))["prompts"]
     results = []
+    captured = {}
+    if arguments.capture_dir:
+        os.makedirs(arguments.capture_dir, exist_ok=True)
+        for layer_index, layer in enumerate(transformer.layers):
+            def hook(module, inputs, output, layer_index=layer_index):
+                captured[f"call{len(captured) // len(transformer.layers):03d}_layer{layer_index:02d}_streams"] = \
+                    output[0].detach().to(torch.bfloat16).view(torch.int16).cpu().numpy().view(np.uint16)
+            layer.register_forward_hook(hook)
     with torch.inference_mode():
         for prompt in prompts:
             ids = list(prompt["prompt_token_ids"])
             tokens = torch.tensor([ids], device=arguments.device)
             generated = []
+            margins = []
             start = 0
             step_started = time.time()
             for step in range(arguments.new_tokens):
@@ -334,6 +344,7 @@ def main():
                 token = int(logits[0].float().argmax())
                 top2 = torch.topk(logits[0].float(), 2)
                 generated.append(token)
+                margins.append(round(float(top2.values[0] - top2.values[1]), 4))
                 print(json.dumps({"prompt": prompt["name"], "step": step, "token": token,
                                   "margin": round(float(top2.values[0] - top2.values[1]), 4),
                                   "seconds": round(time.time() - step_started, 1)}), flush=True)
@@ -341,7 +352,11 @@ def main():
                 tokens = torch.tensor([[token]], device=arguments.device)
                 if token == 1:
                     break
-            results.append({"name": prompt["name"], "prompt_token_ids": ids, "generated_token_ids": generated})
+            results.append({"name": prompt["name"], "prompt_token_ids": ids, "generated_token_ids": generated,
+                            "top1_margins": margins})
+            if arguments.capture_dir:
+                np.savez(os.path.join(arguments.capture_dir, prompt["name"] + ".npz"), **captured)
+                captured.clear()
     json.dump({"generator": "tools/dsv41_official_harness.py", "prompts": results}, open(arguments.output, "w"), indent=1)
     return 0
 
