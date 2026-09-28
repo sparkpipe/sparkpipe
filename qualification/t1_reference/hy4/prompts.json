@@ -1,43 +1,71 @@
 {
-  "prompts": [
-    {
-      "capture_layers": [
-        0,
-        3,
-        22,
-        44
-      ],
-      "name": "capital_of_france",
-      "new_tokens": 4,
-      "prompt_token_ids": [
-        802,
-        8778,
-        299,
-        12749,
-        341
-      ],
-      "text": "The capital of France is"
-    },
-    {
-      "capture_layers": [
-        0,
-        3,
-        22,
-        44
-      ],
-      "name": "count_up",
-      "new_tokens": 4,
-      "prompt_token_ids": [
-        8813,
-        287,
-        33465,
-        25,
-        936,
-        11,
-        1404,
-        11
-      ],
-      "text": "Counting upward: one, two,"
-    }
-  ]
+ "prompts": [
+  {
+   "name": "capital",
+   "text": "The capital of France is",
+   "prompt_token_ids": [
+    802,
+    8778,
+    299,
+    12749,
+    341
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    77
+   ]
+  },
+  {
+   "name": "code",
+   "text": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n",
+   "prompt_token_ids": [
+    2345,
+    7779,
+    46866,
+    4363,
+    3894,
+    326,
+    19598,
+    11328,
+    269,
+    312,
+    10387,
+    60751,
+    1649,
+    45842,
+    1756
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    77
+   ]
+  },
+  {
+   "name": "science",
+   "text": "Water boils at 100 degrees Celsius because",
+   "prompt_token_ids": [
+    28780,
+    101432,
+    539,
+    220,
+    1314,
+    11514,
+    57886,
+    1950
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    77
+   ]
+  }
+ ]
 }

@@ -1,0 +1,29 @@
+{
+  "checkpoint": {
+    "config_sha256": "8f08e75af6c46578a6fc93883b4446189c67cc8b6ff47f20a51c43cd3dd9d6d4",
+    "index_sha256": "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106",
+    "path": "/mnt/model-warm/hy4-preview-fp8-official"
+  },
+  "family": "hy4",
+  "fixtures": {
+    "capital.t1r": {
+      "bytes": 1497847,
+      "sha256": "0bd92a48c0c7ff3ee98df0b59ce74b048733da742f8bef9cf3ecf296d7faafff"
+    },
+    "code.t1r": {
+      "bytes": 3416402,
+      "sha256": "5d1196c742b2d283ab72b8fef595b315b1411db20337ee525c91a53192727b26"
+    },
+    "science.t1r": {
+      "bytes": 2072930,
+      "sha256": "8c0fc98ce449e7ca7930807c81c7d66e3e36ae05f05caa156d4f5bb7bccc3060"
+    }
+  },
+  "generated_utc": "2026-09-28T16:09:34Z",
+  "generator": "tools/hy4_reference/hy4_fp8_reference.c",
+  "generator_sha256": "ff3a4f00bf3c7892dfde5b58c208d36781c0a6219007062867909075da6456d5",
+  "host": "spark5",
+  "numerics": "fp32 activations and accumulation, publisher MXFP8 weights dequantized exactly (E4M3 x E8M0 per 32 columns), BF16 planes widened exactly; DSA indexer selection is the identity below 2048 context tokens",
+  "prompts_sha256": "b8f30393b4de9eb30d504d35df4999bdf80ecbf6e4d7bd97e762681285d16335",
+  "python_version": "3.12.3"
+}

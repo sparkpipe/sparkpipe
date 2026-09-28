@@ -1,5 +1,7 @@
 # hy4 layer forward semantics (from AngelSlim's llama.cpp implementation)
 
+Superseded for the publisher MXFP8 checkpoint by `tools/hy4_reference/README.md`, which was checked against the transformers `hy_v4` code. Two statements below were wrong: the DSA indexer runs its own on layers 0, 1, 5, 9, ..., 77 (from `indexer_types`), not on every 4th layer, and `rms_norm_eps` is 1e-5.
+
 Ground truth: `vendor/hyv4_reference.cpp` (src/models/hyv4.cpp @ llama.cpp
 0cea36222, from hy4-preview-patch/0001). Config pins: hc=4, eps=1e-6,
 magnitude=2.0, sigmoid routing + e_score_correction_bias, experts 8/256 + 1

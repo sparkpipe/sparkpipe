@@ -5,7 +5,7 @@ from t1_reference_common import (Safetensors, bf16_to_f32, define_float,
 
 PREFIX = "model.layers."
 FP8_GROUP = 32
-WSUM_FLOOR = 6.103515625e-5
+ROUTE_DENOMINATOR_EPSILON = 1e-20
 MAX_INDEXER_CONTEXT = 2048
 
 _E4M3 = np.zeros(256, dtype=np.float32)
@@ -151,8 +151,6 @@ class Hy4Engine:
         self.rope_freqs = np.power(
             np.float32(self.rope_theta),
             -np.arange(0, self.rot, 2, dtype=np.float32) / self.rot)
-        self.sinks = self._plane_f32("model.layers.0.self_attn."
-                                     "learnable_sink_param", (self.heads,))
         self._geometry_checks()
 
     def _plane_f32(self, name, shape):
@@ -281,11 +279,10 @@ class Hy4Engine:
         scores = (np.einsum("hk,tk->ht", q_abs, latents, optimize=True) +
                   np.einsum("hk,tk->ht", q_pe, pes, optimize=True)) \
             * self.kq_scale
-        ceiling = np.maximum(scores.max(axis=1),
-                             self.sinks.astype(np.float32))
+        sinks = self._plane_f32(p + "learnable_sink_param", (self.heads,))
+        ceiling = np.maximum(scores.max(axis=1), sinks)
         weights = np.exp(scores - ceiling[:, None])
-        denominator = weights.sum(axis=1) + np.exp(
-            self.sinks.astype(np.float32) - ceiling)
+        denominator = weights.sum(axis=1) + np.exp(sinks - ceiling)
         probs = weights / denominator[:, None]
         context = np.einsum("ht,tn->hn", probs, latents, optimize=True)
         head_out = np.einsum("ht,thv->hv", probs,
@@ -305,11 +302,10 @@ class Hy4Engine:
 
     def _routed_expert(self, il, expert, cur):
         gu = self._expert(il, "gate_up_proj", expert, cur)
-        gate = gu[:self.moe_inter]
-        up = gu[self.moe_inter:]
-        np.clip(up, -self.swiglu_limit, self.swiglu_limit, out=up)
+        gate = np.minimum(gu[:self.moe_inter], self.swiglu_limit)
+        up = np.clip(gu[self.moe_inter:], -self.swiglu_limit,
+                     self.swiglu_limit)
         activated = gate / (1.0 + np.exp(-gate))
-        np.clip(activated, None, self.swiglu_limit, out=activated)
         return self._expert(il, "down_proj", expert, activated * up)
 
     def _shared_expert(self, il, cur):
@@ -328,10 +324,8 @@ class Hy4Engine:
         selected = order[:self.top_k]
         weights = probs[selected]
         if self.norm_topk:
-            total = float(weights.sum())
-            if total < WSUM_FLOOR:
-                total = WSUM_FLOOR
-            weights = weights / total * self.route_scale
+            weights = weights / (float(weights.sum()) + ROUTE_DENOMINATOR_EPSILON)
+        weights = weights * self.route_scale
         ffn = np.zeros(self.hidden, dtype=np.float32)
         for k in range(self.top_k):
             ffn += weights[k] * self._routed_expert(il, int(selected[k]), cur)
