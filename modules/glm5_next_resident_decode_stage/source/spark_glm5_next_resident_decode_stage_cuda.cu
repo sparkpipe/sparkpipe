@@ -9,6 +9,7 @@
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/kernels/state_snapshot.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_weightd.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -16,6 +17,7 @@
 #include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM5_NEXT_CUDA_THREADS 256u
+static_assert(SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * GLM5_NEXT_TOP_K <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * GLM5_NEXT_EXPERTS, "every routed pair of a mesh wave must fit the grouped skinny expert kernel");
 __global__ static void SparkGlm5NextBoundaryLoadKernel(
 	const uint16_t *boundary,
 	uint16_t *streams,
@@ -324,13 +326,11 @@ static void SparkGlm5NextBindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->index_owner_rank = wave->tp_rank;
-	buffers->attention_decode_wave = wave->run_count == wave->row_count && wave->row_count > 1u ? 1u : 0u;
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
-	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
 	buffers->route_source_token = slot->route_source_token;
@@ -549,6 +549,32 @@ static int32_t SparkGlm5NextHeadCertifiedRows(const SparkGlm5NextCudaWave *wave,
 	return(status);
 }
 
+static uint32_t SparkGlm5NextGreedyRows(const SparkGlm5NextCudaWave *wave)
+{
+	uint32_t row,greedy;
+	greedy = 0u;
+	for ( row = 0u; row < wave->row_count; row++ )
+		greedy += wave->host_row_sampling[row].inverse_temperature == 0.0f ? 1u : 0u;
+	return(greedy);
+}
+
+static int32_t SparkGlm5NextHeadGreedyRowsOfSampledWave(const SparkGlm5NextCudaWave *wave,const Glm5NextLayerBuffers *buffers,cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot;
+	int32_t status;
+	slot = wave->slot;
+	if ( wave->host_row_sampling == 0 || slot->head_certified_token == 0 || slot->head_certified_score == 0 || buffers->row_sampling == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	if ( wave->row_count == 1u )
+		status = Glm5NextHeadCertifiedB1(buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers->head_vocabulary,stream);
+	else
+		status = Glm5NextHeadExactRows(buffers,wave->final_norm_bf16,wave->lm_head_bf16,slot->head_certified_scratch,slot->head_certified_token,slot->head_certified_score,0u,buffers->head_vocabulary,wave->row_count,stream);
+	if ( status != LM_LAUNCH_OK || wave->row_count == 1u )
+		return(status);
+	Glm5NextHeadGreedySelectKernel<<<(wave->row_count + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(buffers->row_sampling,slot->head_certified_token,slot->head_certified_score,slot->output_token,slot->output_score,wave->row_count);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -571,8 +597,12 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
 		if ( (wave->row_count == 1u || wave->mtp_verify != 0u) && wave->head_certified_fp8_payload != 0 && wave->sampled == 0u )
 			status = SparkGlm5NextHeadCertifiedRows(wave,&buffers,stream);
+		else if ( wave->head_certified_fp8_payload != 0 && wave->sampled == 0u )
+			status = Glm5NextHeadExactRows(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,slot->head_certified_scratch,slot->output_token,slot->output_score,0u,buffers.head_vocabulary,wave->row_count,stream);
 		else
 			status = Glm5NextHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
+		if ( status == LM_LAUNCH_OK && wave->head_certified_fp8_payload != 0 && wave->sampled != 0u && SparkGlm5NextGreedyRows(wave) != 0u )
+			status = SparkGlm5NextHeadGreedyRowsOfSampledWave(wave,&buffers,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		error = SparkGlm5NextLaunchHeadMaxlocPack(stream,slot->output_score,slot->output_token,slot->head_maxloc_u64,wave->row_count,rank_offset);
@@ -702,7 +732,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	cudaStream_t stream;
 	cudaError_t error;
 	uint32_t step,token;
-	uint32_t row_window[2];
 	int32_t status;
 	if ( wave == 0 || host_draft_tokens == 0 || committed_hidden_bf16 == 0 || wave->slot == 0 ||
 		wave->mtp_layer_weights == 0 || wave->mtp_eh_proj_bf16 == 0 || wave->mtp_enorm_bf16 == 0 ||
@@ -716,11 +745,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 		slot->mtp_positions == 0 || slot->mtp_context == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	stream = (cudaStream_t)slot->stream;
-	row_window[0] = 0u;
-	row_window[1] = 1u;
-	error = cudaMemcpyAsync(slot->dense_row_offset,row_window,sizeof(row_window),cudaMemcpyHostToDevice,stream);
-	if ( error != cudaSuccess )
-		return(SparkGlm5NextCudaStatus(error));
 	token = first_token;
 	for ( step = 0u; step < wave->mtp_draft_depth; ++step )
 	{
@@ -746,8 +770,7 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 			1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
 			hidden_input,0,(const uint16_t *)wave->mtp_hnorm_bf16,0,slot->mtp_concat_bf16,
 			GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
-		status = Glm5NextLaunchBf16Linear(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,
-			slot->dense_row_offset,slot->dense_tile_prefix,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,wave->multiprocessor_count,stream);
+		status = Glm5NextLaunchBf16LinearRows(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		status = SparkGlm5NextBindMtpLayer(wave,step,&buffers);

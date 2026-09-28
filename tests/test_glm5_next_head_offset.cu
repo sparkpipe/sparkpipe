@@ -48,7 +48,7 @@ int32_t main(void)
 	slot.output_score = TestAllocate<float>(3u);
 	slot.output_token = TestAllocate<uint32_t>(3u);
 	slot.head_maxloc_u64 = TestAllocate<uint64_t>(3u);
-	slot.head_certified_scratch = TestAllocate<uint8_t>(SparkHeadCertifiedFp8ScratchBytes(vocabulary,GLM5_NEXT_HIDDEN));
+	slot.head_certified_scratch = TestAllocate<uint8_t>(3u * SparkHeadCertifiedFp8ScratchBytes(vocabulary,GLM5_NEXT_HIDDEN));
 	slot.head_certified_candidates = TestAllocate<uint32_t>(vocabulary);
 	slot.head_screened_count = TestAllocate<uint32_t>(1u);
 	for (index=0u; index<GLM5_NEXT_HIDDEN; index++)

@@ -46,6 +46,7 @@ template<class T> static T *Upload(const std::vector<T> &host)
     T *device;
     CUDA(cudaMalloc(&device,std::max<size_t>(host.size(),1u)*sizeof(T)));
     if (!host.empty()) CUDA(cudaMemcpy(device,host.data(),host.size()*sizeof(T),cudaMemcpyHostToDevice));
+    CUDA(cudaDeviceSynchronize());
     return device;
 }
 
@@ -269,9 +270,9 @@ static void AttentionUpload(const AttentionCase &item,AttentionDevice *device)
     for (uint32_t row=0u; row<item.rows; row++) sequence[row]=row;
     device->pool=Upload(item.pool); device->query=Upload(item.query);
     device->table=Upload(item.table); device->contexts=Upload(item.contexts); device->positions=Upload(item.positions); device->selection=Upload(item.selection); device->sequences=Upload(sequence);
-    CUDA(cudaMalloc(&device->error,sizeof(*device->error))); CUDA(cudaMemset(device->error,0,sizeof(*device->error)));
+    CUDA(cudaMalloc(&device->error,sizeof(*device->error))); CUDA(cudaMemset(device->error,0,sizeof(*device->error))); CUDA(cudaDeviceSynchronize());
     CUDA(cudaMalloc(&device->output,(uint64_t)item.rows*item.heads*GLM5_NEXT_LATENT*2u));
-    CUDA(cudaMalloc(&device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS*(GLM5_NEXT_LATENT+2u)*4u));
+    CUDA(cudaMalloc(&device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_HEADS_MAX_TILES*(GLM5_NEXT_LATENT+2u)*4u));
     REQUIRE(LmKvViewInitialize(&device->view,(uint8_t *)device->pool,device->table,item.pages_per_sequence,item.rows,item.rows*item.pages_per_sequence,device->error) == 0);
 }
 
@@ -286,7 +287,7 @@ static void AttentionLaunch(const AttentionCase &item,const AttentionDevice *dev
     const uint32_t bound=item.selected != 0u ? item.selected : *std::max_element(item.contexts.begin(),item.contexts.end()),blocks=item.rows*item.heads*LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS;
     const uint32_t *selection=item.selected != 0u ? device->selection : 0;
     if (heads_kernel)
-        CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(device->query,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,64u,device->partials,blocks,multiprocessors,stream)));
+        CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(device->query,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,0u,device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_HEADS_MAX_TILES,multiprocessors,stream)));
     else
         CUDA((LmLatentAttentionDecodeSplitLaunch<Glm5NextKv,GLM5_NEXT_ATTN_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_ROPE_DIM>(device->query,0,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,64u,device->partials,blocks,multiprocessors,stream)));
 }
@@ -301,6 +302,23 @@ static std::vector<uint16_t> AttentionRun(const AttentionCase &item,bool heads_k
     CUDA(cudaMemcpy(&error,device.error,sizeof(error),cudaMemcpyDeviceToHost));
     REQUIRE(error.error_code == LM_KV_ACCESS_ERROR_NONE);
     std::vector<uint16_t> result=Download(device.output,(size_t)item.rows*item.heads*GLM5_NEXT_LATENT);
+    AttentionFree(&device);
+    return result;
+}
+
+static std::vector<uint16_t> AttentionAloneRun(const AttentionCase &item,uint32_t multiprocessors,cudaStream_t stream)
+{
+    const uint32_t bound=item.selected != 0u ? item.selected : *std::max_element(item.contexts.begin(),item.contexts.end());
+    const uint64_t width=(uint64_t)item.heads*GLM5_NEXT_LATENT;
+    AttentionDevice device;
+    LmKvAccessError error;
+    AttentionUpload(item,&device);
+    for (uint32_t row=0u; row<item.rows; row++)
+        CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(device.query+row*width,device.view,device.sequences+row,device.contexts,item.selected != 0u ? device.selection+(uint64_t)row*item.selected : 0,item.selected,item.heads,0.0625f,device.output+row*width,device.positions+row,1u,bound,0u,device.partials,(uint64_t)item.heads*LM_LATENT_HEADS_MAX_TILES,multiprocessors,stream)));
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(&error,device.error,sizeof(error),cudaMemcpyDeviceToHost));
+    REQUIRE(error.error_code == LM_KV_ACCESS_ERROR_NONE);
+    std::vector<uint16_t> result=Download(device.output,(size_t)item.rows*width);
     AttentionFree(&device);
     return result;
 }
@@ -358,7 +376,12 @@ static void AttentionCaseRun(uint32_t rows,uint32_t heads,uint32_t maximum_conte
     std::vector<double> reference;
     double worst=0.0,worst_old=0.0;
     AttentionBuild(&item,rows,heads,maximum_context,selected,false);
-    std::vector<uint16_t> fresh=AttentionRun(item,true,multiprocessors,stream),old=AttentionRun(item,false,multiprocessors,stream);
+    std::vector<uint16_t> fresh=AttentionRun(item,true,multiprocessors,stream),old=AttentionRun(item,false,multiprocessors,stream),alone=AttentionAloneRun(item,multiprocessors,stream);
+    if (memcmp(fresh.data(),alone.data(),fresh.size()*sizeof(uint16_t)) != 0)
+    {
+        fprintf(stderr,"ATTENTION-ROW-MISMATCH rows=%u heads=%u context=%u selected=%u batched differs from each row alone\n",rows,heads,maximum_context,selected);
+        exit(1);
+    }
     for (uint32_t row=0u; row<rows; row++)
         for (uint32_t head=0u; head<heads; head++)
         {
@@ -375,7 +398,7 @@ static void AttentionCaseRun(uint32_t rows,uint32_t heads,uint32_t maximum_conte
         fprintf(stderr,"ATTENTION-MISMATCH rows=%u heads=%u context=%u selected=%u worst=%.6f old_kernel_worst=%.6f\n",rows,heads,maximum_context,selected,worst,worst_old);
         exit(1);
     }
-    printf("PASS all-heads latent attention rows=%u heads=%u context=%u selected=%u multiprocessors=%u worst_abs=%.6f old_kernel_worst_abs=%.6f reference=f64\n",rows,heads,maximum_context,selected,multiprocessors,worst,worst_old);
+    printf("PASS all-heads latent attention rows=%u heads=%u context=%u selected=%u multiprocessors=%u worst_abs=%.6f old_kernel_worst_abs=%.6f reference=f64 each_row_alone_bitwise_equal=yes\n",rows,heads,maximum_context,selected,multiprocessors,worst,worst_old);
 }
 
 static void WsSpans(uint32_t layers,uint32_t capacity,uint8_t *const *pools,std::vector<SparkStateSpan> &spans,uint64_t *snapshot_bytes,uint32_t *row_words)
@@ -556,6 +579,13 @@ int main(int argc,char **argv)
         AttentionCaseRun(2u,heads,3000u,256u,(uint32_t)properties.multiProcessorCount,stream);
         AttentionCaseRun(64u,heads,300u,0u,(uint32_t)properties.multiProcessorCount,stream);
         AttentionCaseRun(200u,heads,100u,0u,(uint32_t)properties.multiProcessorCount,stream);
+    }
+    for (uint32_t heads : {3u,8u,16u,64u})
+    {
+        AttentionCaseRun(1u,heads,2100u,0u,(uint32_t)properties.multiProcessorCount,stream);
+        AttentionCaseRun(3u,heads,700u,0u,(uint32_t)properties.multiProcessorCount,stream);
+        AttentionCaseRun(2u,heads,3000u,256u,(uint32_t)properties.multiProcessorCount,stream);
+        AttentionCaseRun(17u,heads,300u,0u,(uint32_t)properties.multiProcessorCount,stream);
     }
     AttentionTiming(8u,1024u,(uint32_t)properties.multiProcessorCount,stream);
     AttentionTiming(256u,1024u,(uint32_t)properties.multiProcessorCount,stream);

@@ -189,6 +189,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *head_certified_scratch;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
+	uint32_t *head_certified_token;
+	float *head_certified_score;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;

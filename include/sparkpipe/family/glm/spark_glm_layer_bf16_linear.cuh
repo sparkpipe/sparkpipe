@@ -57,3 +57,21 @@ static int32_t SPARK_FAMILY_BARE(LaunchBf16Linear)(
             false,
             stream);
 }
+
+static int32_t SPARK_FAMILY_BARE(LaunchBf16LinearRows)(
+    const uint16_t *activation_bf16,
+    const void *weight_bf16,
+    uint16_t *output_bf16,
+    uint32_t rows,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_row_stride,
+    uint32_t output_column_offset,
+    cudaStream_t stream)
+{
+    if (output_bf16 == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    return LmSkinnyDenseRows<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
+}

@@ -5,6 +5,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/rows_tile.cuh"
+#include "inference/kernels/splitmix.cuh"
 #include "include/sparkpipe/spark_sampling.h"
 #include "runtime/launch.h"
 #include <stdint.h>
@@ -29,18 +30,7 @@ static __device__ __forceinline__ void LmHeadRowsReduce(float (*best_score)[LM_R
 	}
 }
 
-#define LM_SPLITMIX64_INCREMENT 0x9e3779b97f4a7c15ull
-#define LM_SPLITMIX64_MULTIPLIER_A 0xbf58476d1ce4e5b9ull
-#define LM_SPLITMIX64_MULTIPLIER_B 0x94d049bb133111ebull
 #define LM_GUMBEL_UNIFORM_BITS 24u
-
-static __host__ __device__ __forceinline__ uint64_t LmSplitMix64(uint64_t value)
-{
-	value += LM_SPLITMIX64_INCREMENT;
-	value = (value ^ (value >> 30u)) * LM_SPLITMIX64_MULTIPLIER_A;
-	value = (value ^ (value >> 27u)) * LM_SPLITMIX64_MULTIPLIER_B;
-	return(value ^ (value >> 31u));
-}
 
 static __host__ __device__ __forceinline__ float LmGumbelNoise(uint64_t seed, uint32_t position, uint32_t token)
 {
@@ -152,7 +142,7 @@ static __device__ __forceinline__ void LmHeadCandidateBody(const uint16_t *__res
 			total += LmBf16ToFloat(normed_bf16[((uint64_t)row * hidden) + element])
 				* LmBf16ToFloat(head_weight_bf16[((uint64_t)token * hidden) + element]);
 		value = score(total, row, index);
-		if ( value > best )
+		if ( value > best || (value == best && token < best_token) )
 		{
 			best = value;
 			best_token = token;
@@ -163,7 +153,7 @@ static __device__ __forceinline__ void LmHeadCandidateBody(const uint16_t *__res
 	__syncthreads();
 	for (stride = THREADS / 2u; stride > 0u; stride >>= 1u)
 	{
-		if ( threadIdx.x < stride && shared_score[threadIdx.x + stride] > shared_score[threadIdx.x] )
+		if ( threadIdx.x < stride && (shared_score[threadIdx.x + stride] > shared_score[threadIdx.x] || (shared_score[threadIdx.x + stride] == shared_score[threadIdx.x] && shared_token[threadIdx.x + stride] < shared_token[threadIdx.x])) )
 		{
 			shared_score[threadIdx.x] = shared_score[threadIdx.x + stride];
 			shared_token[threadIdx.x] = shared_token[threadIdx.x + stride];

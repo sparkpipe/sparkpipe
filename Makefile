@@ -564,6 +564,9 @@ PYTHON_TESTS := \
 	tests/test_skinny_grouped_host.py \
 	tests/test_skinny_mxfp4_host.py \
 	tests/test_skinny_mxfp4_cuda.py \
+	tests/test_skinny_rows_host.py \
+	tests/test_row_hash_host.py \
+	tests/test_row_hash_compare.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_module_host_contracts.py \
@@ -820,12 +823,30 @@ build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spar
 test-working-set-rollback: build/test_working_set_rollback
 	./build/test_working_set_rollback
 
+build/test_glm5_next_row_invariance: tests/test_glm5_next_row_invariance.cu inference/kernels/skinny.cuh inference/kernels/head.cuh inference/kernels/attn.cuh include/sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-glm5-next-row-invariance report-glm5-next-row-invariance
+test-glm5-next-row-invariance: build/test_glm5_next_row_invariance
+	./build/test_glm5_next_row_invariance --run
+
+report-glm5-next-row-invariance: build/test_glm5_next_row_invariance
+	./build/test_glm5_next_row_invariance --report
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
 .PHONY: bench-glm5-next-batch
 bench-glm5-next-batch: build/glm5_next_batch_roofline
 	./build/glm5_next_batch_roofline $(ROOFLINE_ARGS)
+
+.PHONY: test-glm5-next-row-invariance-stack
+test-glm5-next-row-invariance-stack: build/glm5_next_batch_roofline
+	rm -rf build/rowhash-1024 build/rowhash-2100
+	mkdir -p build/rowhash-1024 build/rowhash-2100
+	./build/glm5_next_batch_roofline --batches 2,8,17,64 --context 1024 --iterations 1 --copies 1 --row-hash build/rowhash-1024
+	./build/glm5_next_batch_roofline --batches 2,9 --context 2100 --iterations 1 --copies 1 --row-hash build/rowhash-2100
+	set -e; for serial in build/rowhash-*/rows*_serial.tsv; do python3 tools/row_hash_compare.py "$$serial" "$${serial%_serial.tsv}_batched.tsv"; done
 
 build/glm5_next_batch_roofline.cubin: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) -cubin $< -o $@

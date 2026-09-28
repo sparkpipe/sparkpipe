@@ -26,6 +26,7 @@ LmHostDim3 blockDim,gridDim;
 #define HOST_MAX_ROWS 40u
 #define HOST_MAX_CONTEXT 3000u
 #define HOST_MAX_POOL_ROWS 5u
+#define HOST_MAX_HEADS 64u
 
 struct HostKv
 {
@@ -42,8 +43,8 @@ typedef struct HostAttention
 {
 	uint32_t rows,heads,pages,selected,contexts[HOST_MAX_POOL_ROWS],positions[HOST_MAX_POOL_ROWS],sequences[HOST_MAX_POOL_ROWS];
 	uint32_t table[HOST_MAX_POOL_ROWS * (HOST_MAX_CONTEXT / HOST_PAGE + 1u)],selection[HOST_MAX_POOL_ROWS * 64u];
-	uint16_t pool[HOST_MAX_POOL_ROWS * (HOST_MAX_CONTEXT / HOST_PAGE + 1u) * HOST_PAGE * HOST_LATENT],query[HOST_MAX_POOL_ROWS * 4u * HOST_LATENT],output[HOST_MAX_POOL_ROWS * 4u * HOST_LATENT];
-	float partials[HOST_MAX_POOL_ROWS * 4u * LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS * (HOST_LATENT + 2u)];
+	uint16_t pool[HOST_MAX_POOL_ROWS * (HOST_MAX_CONTEXT / HOST_PAGE + 1u) * HOST_PAGE * HOST_LATENT],query[HOST_MAX_POOL_ROWS * HOST_MAX_HEADS * HOST_LATENT],output[HOST_MAX_POOL_ROWS * HOST_MAX_HEADS * HOST_LATENT];
+	float partials[HOST_MAX_POOL_ROWS * HOST_MAX_HEADS * LM_LATENT_HEADS_MAX_TILES * (HOST_LATENT + 2u)];
 }
 HostAttention;
 
@@ -131,7 +132,7 @@ static void HostAttentionCase(uint32_t rows,uint32_t heads,uint32_t context,uint
 			item.selection[row * selected + step] = step % 13u == 5u ? 0xffffffffu : (host_state = host_state * 1664525u + 1013904223u) % item.contexts[row];
 	}
 	assert(LmKvViewInitialize(&view,(uint8_t *)item.pool,item.table,item.pages,rows,rows * item.pages,&error) == 0);
-	assert((LmLatentAttentionHeadsLaunch<HostKv,HOST_LATENT>(item.query,view,item.sequences,item.contexts,selected != 0u ? item.selection : 0,selected,heads,0.0625f,item.output,item.positions,rows,selected != 0u ? selected : context,64u,item.partials,rows * heads * LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS,multiprocessors,0)) == cudaSuccess);
+	assert((LmLatentAttentionHeadsLaunch<HostKv,HOST_LATENT>(item.query,view,item.sequences,item.contexts,selected != 0u ? item.selection : 0,selected,heads,0.0625f,item.output,item.positions,rows,selected != 0u ? selected : context,0u,item.partials,(uint64_t)rows * heads * LM_LATENT_HEADS_MAX_TILES,multiprocessors,0)) == cudaSuccess);
 	assert(error.error_code == LM_KV_ACCESS_ERROR_NONE);
 	for (row=0u; row<rows; row++)
 		for (head=0u; head<heads; head++)
@@ -184,6 +185,11 @@ int main(void)
 	HostAttentionCase(3u,4u,200u,0u,48u);
 	HostAttentionCase(5u,4u,60u,0u,1u);
 	HostAttentionCase(2u,4u,1000u,64u,48u);
-	puts("PASS GLM row kernels on host threads: head rows kernel equals the per-row kernel bitwise for 2-40 rows; per-head projection rows kernel equals the per-row kernel bitwise for 1-40 rows; all-heads latent attention matches an f64 reference, split and unsplit, with selected positions");
+	HostAttentionCase(3u,3u,200u,0u,48u);
+	HostAttentionCase(2u,8u,700u,0u,48u);
+	HostAttentionCase(2u,16u,1000u,64u,48u);
+	HostAttentionCase(1u,64u,300u,0u,48u);
+	HostAttentionCase(2u,64u,600u,0u,1u);
+	puts("PASS GLM row kernels on host threads: head rows kernel equals the per-row kernel bitwise for 2-40 rows; per-head projection rows kernel equals the per-row kernel bitwise for 1-40 rows; all-heads latent attention matches an f64 reference in one and several key tiles, with selected positions, at 1, 2, 3, 4, 8, 16 and 64 heads per rank");
 	return(0);
 }

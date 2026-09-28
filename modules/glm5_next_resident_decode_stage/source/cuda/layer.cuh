@@ -393,21 +393,22 @@ struct Glm5NextLayerBuffers
     uint32_t head_token_offset;
     uint32_t index_owner_rank;
     uint32_t index_owner_degree;
-    uint32_t attention_decode_wave;
     float *index_local_scores;
     const float *index_gathered_scores;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
-    uint32_t decode_split_context_threshold;
 };
 
 static_assert(
-    LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
-        SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS,
-    "the firmware's split-partials sizing must match the kernel's "
-    "partition cap");
+    (SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH + LM_LATENT_HEADS_TILE - 1u) /
+        LM_LATENT_HEADS_TILE <=
+        SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS &&
+    SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS <=
+        LM_LATENT_HEADS_MAX_TILES,
+    "the firmware's split partials hold every absolute key tile of the "
+    "longest row");
 
 #include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
@@ -441,52 +442,43 @@ static int32_t Glm5NextLayerIndexerScore(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->q_compressed_bf16,
         buffers->index_q_weight,
         buffers->index_query_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_DSA_QUERY_DIM,
         GLM5_NEXT_DSA_QUERY_DIM,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
         return status;
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->index_k_weight,
         buffers->index_key_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_DIM,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
         return status;
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->index_compress_gate,
         buffers->index_gate_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_DIM,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
@@ -505,18 +497,15 @@ static int32_t Glm5NextLayerIndexerScore(
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_EPSILON);
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->index_head_weight,
         buffers->index_head_weight_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_DSA_INDEX_HEADS,
         GLM5_NEXT_DSA_INDEX_HEADS,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
@@ -770,18 +759,15 @@ static int32_t Glm5NextLayerAttentionHead(
         Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,
             layer_index,(uint32_t)vec_pass,"attn_normed");
 
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->q_a_weight,
         buffers->q_compressed_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_QUERY_A_DIM,
         GLM5_NEXT_QUERY_A_DIM,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
@@ -836,18 +822,15 @@ static int32_t Glm5NextLayerAttentionTail(
     {
         return status;
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->q_compressed_bf16,
         buffers->q_b_weight,
         buffers->q_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_QUERY_A_DIM,
         buffers->q_b_rows,
         buffers->q_b_rows,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
@@ -856,18 +839,15 @@ static int32_t Glm5NextLayerAttentionTail(
     if ( vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->q_bf16,
             vec_rank_heads * GLM5_NEXT_QK_NOPE_DIM,layer_index,(uint32_t)vec_pass,"q");
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->kv_a_weight,
         buffers->kv_slot_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_LATENT_ROW,
         GLM5_NEXT_LATENT_ROW,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
     {
@@ -907,33 +887,8 @@ static int32_t Glm5NextLayerAttentionTail(
         rows,
         GLM5_NEXT_LATENT_ROW);
     static_assert(GLM5_NEXT_ROPE_DIM == 0u, "the all-heads latent kernel carries no RoPE part");
-    if (buffers->attention_decode_wave != 0u && LmLatentAttentionHeadsSupported(buffers->attn_heads) != 0u)
-    {
-        if (LmLatentAttentionHeadsLaunch<Glm5NextKv, GLM5_NEXT_LATENT>(
-                buffers->query_latent_bf16,
-                buffers->cache,
-                buffers->sequence_of_row,
-                buffers->context_length,
-                selected_positions,
-                selected_position_count,
-                buffers->attn_heads,
-                buffers->qk_scale,
-                buffers->attention_latent_bf16,
-                buffers->row_positions,
-                rows,
-                SparkGlm5NextAttentionPositionBound(context),
-                buffers->decode_split_context_threshold,
-                buffers->attention_split_partials,
-                (uint32_t)buffers->attention_split_partial_blocks,
-                multiprocessors,
-                stream) != cudaSuccess)
-            return LM_LAUNCH_ERR_LAUNCH;
-    }
-    else if (LmLatentAttentionDecodeSplitLaunch<
-            Glm5NextKv, GLM5_NEXT_ATTN_THREADS, GLM5_NEXT_LATENT,
-            GLM5_NEXT_ROPE_DIM>(
+    if (LmLatentAttentionHeadsLaunch<Glm5NextKv, GLM5_NEXT_LATENT>(
             buffers->query_latent_bf16,
-            buffers->query_rope_bf16,
             buffers->cache,
             buffers->sequence_of_row,
             buffers->context_length,
@@ -945,9 +900,9 @@ static int32_t Glm5NextLayerAttentionTail(
             buffers->row_positions,
             rows,
             SparkGlm5NextAttentionPositionBound(context),
-            buffers->decode_split_context_threshold,
+            GLM5_NEXT_DSA_SELECTED,
             buffers->attention_split_partials,
-            (uint32_t)buffers->attention_split_partial_blocks,
+            buffers->attention_split_partial_blocks,
             multiprocessors,
             stream) != cudaSuccess)
     {
@@ -963,18 +918,15 @@ static int32_t Glm5NextLayerAttentionTail(
         Glm5NextProbeVecU16(stream,buffers->attention_value_bf16,
             vec_rank_heads * GLM5_NEXT_VALUE_DIM,layer_index,(uint32_t)vec_pass,"attn_value");
 
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->attention_value_bf16,
         buffers->output_weight,
         buffers->attention_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         buffers->attn_output_columns,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         0u,
-        multiprocessors,
         stream);
     if ( status == LM_LAUNCH_OK && vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,
@@ -1277,33 +1229,27 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->kda_qkv_beta_weight,
         buffers->fused_qkvb_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         rank_qk * 2u + rank_v + rank_heads,
         rank_qk * 2u + rank_v + rank_heads,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->normed_bf16,
         buffers->kda_decay_gate_down_weight,
         buffers->fused_decay_gate_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_HIDDEN,
         2u * GLM5_NEXT_KDA_LOW_RANK,
         2u * GLM5_NEXT_KDA_LOW_RANK,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
@@ -1427,33 +1373,27 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"k_postconv",buffers->kv_slot_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"v_postconv",buffers->gate_up_bf16);
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->kda_decay_latent_bf16,
         buffers->kda_decay_up_weight,
         buffers->kda_decay_logit_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_KDA_LOW_RANK,
         rank_qk,
         rank_qk,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->kda_gate_latent_bf16,
         buffers->kda_gate_up_weight,
         buffers->kda_gate_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM5_NEXT_KDA_LOW_RANK,
         rank_v,
         rank_v,
         0u,
-        multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
         return status;
@@ -1585,18 +1525,15 @@ static int32_t Glm5NextLayerKda(
         buffers->kv_slot_bf16,
         rows,
         rank_v);
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->kv_slot_bf16,
         buffers->kda_out_weight,
         buffers->attention_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         rank_v,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         0u,
-        multiprocessors,
         stream);
     if ( status == LM_LAUNCH_OK && Glm5NextKdaProbeActive(buffers) )
     {
@@ -1947,18 +1884,15 @@ static int32_t Glm5NextLayerDenseMlp(
     }
     if (buffers->dense_gate_up_fused != 0u)
     {
-        status = Glm5NextLaunchBf16Linear(
+        status = Glm5NextLaunchBf16LinearRows(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM5_NEXT_HIDDEN,
             buffers->dense_gate_up_rows,
             buffers->dense_gate_up_rows,
             0u,
-            multiprocessors,
             stream);
         if (status != LM_LAUNCH_OK)
         {
@@ -1967,35 +1901,29 @@ static int32_t Glm5NextLayerDenseMlp(
     }
     else
     {
-        status = Glm5NextLaunchBf16Linear(
+        status = Glm5NextLaunchBf16LinearRows(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM5_NEXT_HIDDEN,
             buffers->dense_intermediate,
             buffers->dense_gate_up_rows,
             0u,
-            multiprocessors,
             stream);
         if (status != LM_LAUNCH_OK)
         {
             return status;
         }
-        status = Glm5NextLaunchBf16Linear(
+        status = Glm5NextLaunchBf16LinearRows(
             buffers->normed_bf16,
             buffers->dense_up_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM5_NEXT_HIDDEN,
             buffers->dense_intermediate,
             buffers->dense_gate_up_rows,
             buffers->dense_intermediate,
-            multiprocessors,
             stream);
         if (status != LM_LAUNCH_OK)
         {
@@ -2019,18 +1947,15 @@ static int32_t Glm5NextLayerDenseMlp(
         Glm5NextProbeVecU16(stream,buffers->gate_up_bf16,buffers->dense_gate_up_rows,buffers->layer_index,(uint32_t)pass,"dense_gate_up");
         Glm5NextProbeVecU16(stream,buffers->intermediate_bf16,buffers->dense_intermediate,buffers->layer_index,(uint32_t)pass,"dense_intermediate");
     }
-    status = Glm5NextLaunchBf16Linear(
+    status = Glm5NextLaunchBf16LinearRows(
         buffers->intermediate_bf16,
         buffers->dense_down_weight,
         buffers->attention_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         buffers->dense_intermediate,
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_HIDDEN,
         0u,
-        multiprocessors,
         stream);
     if ( status == LM_LAUNCH_OK && pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->attention_out_bf16,GLM5_NEXT_HIDDEN,buffers->layer_index,(uint32_t)pass,"dense_down_partial");
@@ -2062,7 +1987,6 @@ static int32_t Glm5NextLayerMoeRoute(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    LmGemmArguments gemm;
     int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
     if (status != LM_LAUNCH_OK)
         return status;
@@ -2079,32 +2003,7 @@ static int32_t Glm5NextLayerMoeRoute(
         GLM5_NEXT_HIDDEN,
         GLM5_NEXT_RMS_EPSILON);
 
-    status = LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM5_NEXT_HIDDEN, GLM5_NEXT_EXPERTS, 0u, 0u, stream);
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = buffers->dense_row_offset;
-    gemm.group_tile_prefix = buffers->dense_tile_prefix;
-    gemm.output_f32 = buffers->router_logits;
-    if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmGemmLaunch<
-        LmBf16Format,
-        GLM5_NEXT_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        GLM5_NEXT_LAYER_STAGES,
-        GLM5_NEXT_LAYER_WARPS>(
-            &gemm,
-            buffers->normed_bf16,
-            buffers->router_weight,
-            rows,
-            rows,
-            1u,
-            1u,
-            GLM5_NEXT_HIDDEN,
-            GLM5_NEXT_EXPERTS,
-            multiprocessors,
-            false,
-            stream);
+    status = LmSkinnyDenseRows<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM5_NEXT_HIDDEN, GLM5_NEXT_EXPERTS, 0u, 0u, stream);
     if (status != LM_LAUNCH_OK)
     {
         return status;
@@ -2157,25 +2056,13 @@ static int32_t Glm5NextLayerMoeRoute(
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoeUp(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Glm5NextLayerMoeUp(const Glm5NextLayerBuffers *buffers, uint32_t packed_rows, cudaStream_t stream)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-    LmGemmArguments gemm;
-    int32_t status;
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w1_scale, GLM5_NEXT_EXPERTS, buffers->expert_w1_rows, GLM5_NEXT_HIDDEN);
-    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
+    const LmScaleTensor scale = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w1_scale, GLM5_NEXT_EXPERTS, buffers->expert_w1_rows, GLM5_NEXT_HIDDEN);
+    int32_t status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, scale, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
-    gemm.prefix_built = 1u;
-    gemm.group_row_offset = buffers->group_row_offset;
-    gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
-    gemm.source_row_map = buffers->route_source_token;
-    gemm.source_row_count = rows;
-    gemm.output_bf16 = buffers->gate_up_bf16;
-    if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmGemmWeightOnlyIndirectLaunch<ExpertFormat, GLM5_NEXT_LAYER_TILE_N, GLM5_NEXT_LAYER_STAGES, GLM5_NEXT_LAYER_WARPS>(&gemm, buffers->normed_bf16, buffers->expert_w1_weight, packed_rows, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, multiprocessors, stream);
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, scale, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH((LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>), packed_rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->gate_up_bf16, buffers->intermediate_bf16, buffers->expert_intermediate, SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
@@ -2183,36 +2070,26 @@ static int32_t Glm5NextLayerMoeUp(const Glm5NextLayerBuffers *buffers, uint32_t 
 }
 
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextLayerMoeDown(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Glm5NextLayerMoeDown(const Glm5NextLayerBuffers *buffers, uint32_t packed_rows, cudaStream_t stream)
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
-    LmGemmArguments gemm;
-    int32_t status;
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w2_scale, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_intermediate);
-    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
+    const LmScaleTensor scale = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w2_scale, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_intermediate);
+    int32_t status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, scale, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
-    gemm.prefix_built = 1u;
-    gemm.group_row_offset = buffers->group_row_offset;
-    gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
-    gemm.output_bf16 = buffers->expert_out_bf16;
-    if (status == LM_LAUNCH_ERR_SHAPE)
-        status = LmGemmWeightOnlyLaunch<ExpertFormat, GLM5_NEXT_LAYER_TILE_N, GLM5_NEXT_LAYER_STAGES, GLM5_NEXT_LAYER_WARPS>(&gemm, buffers->intermediate_bf16, buffers->expert_w2_weight, packed_rows, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_EXPERTS, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, multiprocessors, true, stream);
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, scale, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     return status;
 }
 
-static int32_t Glm5NextLayerMoeCombine(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Glm5NextLayerMoeCombine(const Glm5NextLayerBuffers *buffers, uint32_t rows, cudaStream_t stream)
 {
     const dim3 grid((GLM5_NEXT_HIDDEN + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS, rows);
     int32_t status;
     LM_LAUNCH((LmMoeFinalizeKernel<GLM5_NEXT_LAYER_THREADS>), grid, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->expert_out_bf16, buffers->route_packed_row, buffers->route_weight, buffers->attention_out_bf16, rows, GLM5_NEXT_TOP_K, GLM5_NEXT_HIDDEN);
-    status = Glm5NextLaunchBf16Linear(buffers->normed_bf16, buffers->shared_gate_up_weight, buffers->gate_up_bf16, buffers->dense_row_offset, buffers->dense_tile_prefix, rows, GLM5_NEXT_HIDDEN, buffers->shared_gate_up_rows, buffers->shared_gate_up_rows, 0u, multiprocessors, stream);
+    status = Glm5NextLaunchBf16LinearRows(buffers->normed_bf16, buffers->shared_gate_up_weight, buffers->gate_up_bf16, rows, GLM5_NEXT_HIDDEN, buffers->shared_gate_up_rows, buffers->shared_gate_up_rows, 0u, stream);
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH((LmClampedUpGateKernel<GLM5_NEXT_LAYER_THREADS>), rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->gate_up_bf16, buffers->intermediate_bf16, buffers->shared_intermediate, SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT);
-    status = Glm5NextLaunchBf16Linear(buffers->intermediate_bf16, buffers->shared_down_weight, buffers->shared_out_bf16, buffers->dense_row_offset, buffers->dense_tile_prefix, rows, buffers->shared_intermediate, GLM5_NEXT_HIDDEN, GLM5_NEXT_HIDDEN, 0u, multiprocessors, stream);
+    status = Glm5NextLaunchBf16LinearRows(buffers->intermediate_bf16, buffers->shared_down_weight, buffers->shared_out_bf16, rows, buffers->shared_intermediate, GLM5_NEXT_HIDDEN, GLM5_NEXT_HIDDEN, 0u, stream);
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH((LmAddRowsKernel<GLM5_NEXT_LAYER_THREADS>), grid, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->attention_out_bf16, buffers->shared_out_bf16, buffers->attention_out_bf16, rows, GLM5_NEXT_HIDDEN);
@@ -2232,11 +2109,11 @@ static int32_t Glm5NextLayerMoeExperts(
         return status;
     if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 || buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
         return(LM_LAUNCH_ERR_SHAPE);
-    status = Glm5NextLayerMoeUp<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
+    status = Glm5NextLayerMoeUp<ExpertCodec>(buffers, packed_rows, stream);
     if (status == LM_LAUNCH_OK)
-        status = Glm5NextLayerMoeDown<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
+        status = Glm5NextLayerMoeDown<ExpertCodec>(buffers, packed_rows, stream);
     if (status == LM_LAUNCH_OK)
-        status = Glm5NextLayerMoeCombine(buffers, rows, multiprocessors, stream);
+        status = Glm5NextLayerMoeCombine(buffers, rows, stream);
     return status;
 }
 
@@ -2372,4 +2249,57 @@ static int32_t Glm5NextHeadCertifiedB1(
         screened_count, buffers->output_token, buffers->output_score,
         rank_offset, 1u, vocabulary, GLM5_NEXT_HIDDEN);
     return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextHeadExactRows(
+    const Glm5NextLayerBuffers *buffers,
+    const void *head_norm_weight,
+    const void *head_weight,
+    void *scratch,
+    uint32_t *output_token,
+    float *output_score,
+    uint32_t rank_offset,
+    uint32_t vocabulary,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    cudaError_t status;
+    if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
+        scratch == 0 || rows == 0u || buffers->hc_mean_bf16 == 0 ||
+        buffers->normed_bf16 == 0 || output_token == 0 || output_score == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    LM_LAUNCH(
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hc_mean_bf16,
+        (const uint16_t *)head_norm_weight,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+    status = SparkLmHostLaunchHeadExactRowsWithScore(
+        stream, buffers->normed_bf16, head_weight, scratch, output_token,
+        output_score, rank_offset, rows, vocabulary, GLM5_NEXT_HIDDEN);
+    return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+__global__ static void Glm5NextHeadGreedySelectKernel(
+    const SparkRowSampling *row_sampling,
+    const uint32_t *certified_token,
+    const float *certified_score,
+    uint32_t *output_token,
+    float *output_score,
+    uint32_t rows)
+{
+    const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < rows && row_sampling[row].inverse_temperature == 0.0f)
+    {
+        output_token[row] = certified_token[row];
+        output_score[row] = certified_score[row];
+    }
 }
