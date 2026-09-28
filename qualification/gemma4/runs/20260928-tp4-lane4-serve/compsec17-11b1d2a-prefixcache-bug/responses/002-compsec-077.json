@@ -1,0 +1,49 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:8436/v1/completions",
+  "fixture_prompt_token_count": 321,
+  "prompt_sha256": "c7b26e2e1a143d357832413223070ab0b8977b31fad4ee85cc0e455e341f80c0",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 10",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 379,
+   "completion_tokens": 6,
+   "total_tokens": 385
+  },
+  "tokens": [
+   7925,
+   236787,
+   236743,
+   236770,
+   236771,
+   106
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 10",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "10",
+  "passed": false,
+  "elapsed_ms": 2143.4,
+  "output_sha256": "84115255722a0106afb3dda08747edb3fe8d8ac9fae9f77dc7eee17281037c88",
+  "generated_token_count": 6,
+  "status": 0
+ }
+}
