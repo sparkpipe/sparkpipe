@@ -222,6 +222,15 @@ Decode waves up to 64 rows are as fast or faster. 128-row waves (prefill
 chunks) pay 7% at 1,024 tokens and more at 2,048 tokens, from the skinny order
 on the wide projections and the attention tiles.
 
+The tensor-core GEMM (`LmGemmLaunch`, BF16, the glm5_next tile) is row-invariant
+across M on its own. At K x N of 4096 x 1536, 1536 x 4096, 1024 x 4096 and
+4096 x 288, every row of M = 2, 9, 17, 64 and 128 equals the same row at M = 1,
+bitwise (sparkf). So prompt rows could keep the tensor-core order and generated
+rows the skinny order, and each row's bits would still depend only on the row
+and its role. That would remove the 128-row prefill cost. It needs one of two
+things: waves split by role, or two launches over row subsets. Generated-token
+checkpoints would also have to stay out of prefix reuse for verified requests.
+
 ## Not yet covered
 
 MTP drafting and verify through the stage, rows at different positions in one
