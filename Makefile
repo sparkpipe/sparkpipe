@@ -555,6 +555,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_shared_lane.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
+	tests/test_dsv41_verify_pack.py \
 	tests/test_dsv4_hc_residual_fusion_source.py \
 	tests/test_dsv4_indexer_post_fusion_source.py \
 	tests/test_dsv4_pro_exact32k_stage.py \
