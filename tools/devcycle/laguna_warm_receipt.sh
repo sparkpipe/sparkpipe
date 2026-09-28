@@ -44,7 +44,7 @@ RANK="$((16#${HOST#spark}))"
 STAGE="$((RANK / 8))"
 PACK="/home/$HOST/sparkdata/laguna-s-2.1.bf16.tp8pp2/packs/laguna_stage.tp8.pp2.stage${STAGE}.rank${RANK}.lgsp"
 SHA="$(cut -d' ' -f1 "$PACK.sha256")"
-REVISION="$(python3 -c 'import json;print(json.load(open("'"$REPO"'/examples/model_descriptions/laguna_resident_decode_stage_firmware.json"))["model"]["revision"])')"
+REVISION="$(python3 -c 'import json;print(json.load(open("'"$REPO"'/examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json"))["model"]["revision"])')"
 WSET="$(mktemp -q /tmp/laguna-wset.XXXXXX)"
 trap 'rm -f "$WSET" "$WSET.chunk."*' EXIT
 
