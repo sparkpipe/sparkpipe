@@ -1,0 +1,42 @@
+{
+ "provenance": "read-only copy from spark0:/tmp on 2026-09-28",
+ "prototype_6db0dd33": {
+  "remote": "spark0:/tmp/sparkpipe-hw-wait-6db0dd33/run.log",
+  "run.log": {
+   "sha256": "176b68358f77169f5b7bd7aa0dd46819aa9bab9b7276495d74f561212be6ae4a",
+   "lines": [
+    "graph_nodes=91 updates=1000 ns_per_replay=4258.53 ns_per_node=46.80 gpu_launches=0",
+    "PASS delayed-ready stale-generation cancellation-before-release recovery; gpu_launches=3; network_visibility=unqualified"
+   ]
+  }
+ },
+ "local_memfd_cd344a64": {
+  "remote": "spark0:/tmp/sparkpipe-hw-rdma-cd344a64/local-memfd.log",
+  "local-memfd.log": {
+   "sha256": "ed84b9645f1f6305f416153a4dccca7e7d8cb28443534c89f0afeac64de7a2b3",
+   "lines": [
+    "mapping=memfd-shared-portable-mapped registration_bytes=8192",
+    "graph_nodes=91 updates=1000 ns_per_replay=4078.29 ns_per_node=44.82 gpu_launches=0",
+    "PASS delayed-ready stale-generation cancellation-before-release recovery; gpu_launches=3 payload_bytes=4096 network_visibility=unqualified"
+   ]
+  }
+ },
+ "wait_bypass_negative_control": {
+  "remote": "spark0:/tmp/sparkpipe-rdma-memfd-negative-20260922/",
+  "negative-run.log": {
+   "sha256": "a57472ad2586b7d8b945bbd4b238d1353e4a869b860df764b41f1bccdbd8efa5",
+   "lines": [
+    "FAIL assertion line=478 errno=2",
+    "mapping=memfd-shared-portable-mapped registration_bytes=8192",
+    "graph_nodes=91 updates=1000 ns_per_replay=4344.45 ns_per_node=47.74 gpu_launches=0"
+   ]
+  },
+  "build/qualification/SHA256SUMS": {
+   "sha256": "3b229544476c060aff878d29711888126ecbce5938339b2d0117906bd5f6d11c",
+   "lines": [
+    "25107f4073902d8f287ad6366b96d5cd36950946a7b25dc7359d26c82a6080f6  tools/tp_stream_memop_probe.cu",
+    "4af9ebf224cfbcdb014850bb67d1701988989dc3ef850bea713bc318ab09a9d2  build/qualification/tp_stream_memop_probe"
+   ]
+  }
+ }
+}
