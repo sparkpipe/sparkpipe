@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "8571b1d6d95c4760e7594a01482fb6f80874b930de2c4f741190bae0343d2f4c",
-      "size_bytes": 39461
+      "sha256": "e78d930e46dc08bc37654fb8bc967bfa29e07d70b847e7847684be940245269e",
+      "size_bytes": 39797
     },
     {
       "path": "cache/cache.h",
@@ -683,8 +683,8 @@
     },
     {
       "path": "docs/DRIVER_ACCEPTANCE.md",
-      "sha256": "08db74da112640493ba68d1d3287cbf0323c5e9813da29429842ba908834e2ff",
-      "size_bytes": 9753
+      "sha256": "d2a07229ac3f9dd13a2ef85ee25b70d33e9d54d92b483868574e0968af5d3610",
+      "size_bytes": 10057
     },
     {
       "path": "docs/DRY_PACKBUILDER_PROPOSAL.md",
@@ -8778,8 +8778,8 @@
     },
     {
       "path": "tests/test_adapter_description_identity.py",
-      "sha256": "966aa157e44fa91257019f345712e5f1c4d52fd44060b3efffb18028b6a1a508",
-      "size_bytes": 5242
+      "sha256": "c3c91aa46cae81db4a43981ae9b74b178780a8a5f0a37c55f4722043dc904507",
+      "size_bytes": 6664
     },
     {
       "path": "tests/test_api_stress.py",
@@ -15280,5 +15280,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73952800
+  "total_bytes": 73954862
 }
