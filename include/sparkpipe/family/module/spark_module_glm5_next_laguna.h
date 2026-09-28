@@ -93,10 +93,7 @@ static SparkStatus SPARK_FAMILY(DevicePageCopy)(
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"kv_page_copy"));
 }
 
-static uint32_t SPARK_FAMILY(PrefixRestorePending)(const SparkKvLaneTransaction *owner)
-{
-	return(owner != 0 && (owner->mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u && (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && owner->lane.sequence_position != 0u);
-}
+#include "sparkpipe/family/module/spark_module_prefix_restore_pending.h"
 
 static void SPARK_FAMILY(T1Wave)(const SPARK_FAMILY(CudaWave) *wave)
 {

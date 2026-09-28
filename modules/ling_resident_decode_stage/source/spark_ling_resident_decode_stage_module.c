@@ -130,8 +130,7 @@ struct SparkLingModuleState
 	uint32_t *kv_lane_logical_pages;
 	uint32_t *kv_lane_page_count;
 	uint32_t *kv_lane_mutable_page;
-	uint32_t *kv_lane_mutation_flags;
-	SparkModelDriverCacheLane *kv_lane_cache_lanes;
+	SparkKvLaneTransaction *kv_lane_transactions;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
@@ -614,9 +613,8 @@ static SparkStatus SparkLingKvAllocateArrays(SparkLingModuleState *state,uint64_
 	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)state->resident_sequence_capacity * state->pages_per_sequence,sizeof(*state->kv_lane_logical_pages));
 	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
 	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
-	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
-	state->kv_lane_cache_lanes = (SparkModelDriverCacheLane *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_cache_lanes));
-	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 || state->kv_lane_cache_lanes == 0 )
+	state->kv_lane_transactions = (SparkKvLaneTransaction *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_transactions));
+	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_transactions == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
@@ -776,115 +774,7 @@ static SparkStatus SparkLingAllocateCaches(SparkLingModuleState *state)
 	return(status);
 }
 
-static void SparkLingClearMutationFlags(SparkLingModuleState *state,const SparkModelDriverAdmissionRequest *request)
-{
-	uint32_t lane_index;
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-		state->kv_lane_mutation_flags[request->cache_lanes[lane_index].resident_sequence_slot] = 0u;
-}
-
-static SparkStatus SparkLingRollbackLanes(SparkLingModuleState *state,const SparkModelDriverAdmissionRequest *request,uint32_t lane_count)
-{
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index;
-	SparkStatus result,status;
-	result = SPARK_STATUS_OK;
-	for (lane_index=0u; lane_index<lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,lane,state->kv_lane_mutation_flags[lane->resident_sequence_slot]);
-		state->kv_lane_mutation_flags[lane->resident_sequence_slot] = 0u;
-		if ( status != SPARK_STATUS_OK && result == SPARK_STATUS_OK )
-			result = status;
-	}
-	SPARK_RETURN(result);
-}
-
-static SparkStatus SparkLingPrepareLanes(SparkLingModuleState *state,const SparkModelDriverAdmissionRequest *request)
-{
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index;
-	SparkStatus status;
-	SparkLingClearMutationFlags(state,request);
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_FAIL(status);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingCommitLanes(SparkLingModuleState *state,const SparkModelDriverAdmissionRequest *request)
-{
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index,mutation_flags;
-	SparkStatus status;
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		mutation_flags = 0u;
-		status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
-		if ( status != SPARK_STATUS_OK )
-		{
-			(void)SparkLingRollbackLanes(state,request,lane_index);
-			SparkLingClearMutationFlags(state,request);
-			SPARK_FAIL(status);
-		}
-		state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingReleaseLanes(SparkLingModuleState *state,const SparkModelDriverAdmissionRequest *request)
-{
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index;
-	SparkStatus status;
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkLingAdmissionPredicate(void *context,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
-{
-	SparkLingModuleState *state;
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index;
-	SparkStatus status;
-	state = (SparkLingModuleState *)context;
-	if ( state == 0 || request == 0 || decision == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		if ( lane->resident_sequence_slot < state->resident_sequence_capacity )
-			state->kv_lane_cache_lanes[lane->resident_sequence_slot] = *lane;
-	}
-	status = SPARK_STATUS_OK;
-	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
-		status = SparkLingReleaseLanes(state,request);
-	else
-	{
-		if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != 0u )
-			status = SparkLingPrepareLanes(state,request);
-		if ( status == SPARK_STATUS_OK && (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
-			status = SparkLingCommitLanes(state,request);
-		if ( status == SPARK_STATUS_OK && (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
-			status = SparkLingRollbackLanes(state,request,request->cache_lane_count);
-	}
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	decision->accepted = 1u;
-	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_lane_record_admission.h"
 
 static uint32_t SparkLingRoundMajorWaveRows(
 	const SparkLingResidentDecodeStageBatchView *batch,
@@ -1480,22 +1370,12 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
-			SparkStatus complete_status;
-			const SparkModelDriverCacheLane *remembered;
 			resident = async->lane_indices[lane];
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
-			remembered = &state->kv_lane_cache_lanes[resident];
-			if ( remembered->sequence_id != 0u &&
-				remembered->sequence_id == async->lane_sequence_ids[lane] )
-			{
-				complete_status = SparkKvPageCacheCompleteLane(&state->kv_page_cache,remembered);
-				if ( complete_status != SPARK_STATUS_OK )
-				{
-					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-				}
-			}
+			if ( SparkLingLaneRecordFinish(state,resident,async->lane_sequence_ids[lane],SPARK_STATUS_OK) != SPARK_STATUS_OK )
+				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
@@ -1503,19 +1383,9 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 	{
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
-			SparkStatus rollback_status;
-			const SparkModelDriverCacheLane *remembered;
 			resident = async->lane_indices[lane];
-			remembered = &state->kv_lane_cache_lanes[resident];
-			if ( remembered->sequence_id != 0u &&
-				remembered->sequence_id == async->lane_sequence_ids[lane] )
-			{
-				rollback_status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,remembered,state->kv_lane_mutation_flags[resident]);
-				if ( rollback_status != SPARK_STATUS_OK )
-				{
-					async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-				}
-			}
+			if ( SparkLingLaneRecordFinish(state,resident,async->lane_sequence_ids[lane],async->completion.status) != SPARK_STATUS_OK )
+				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
 		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
@@ -1672,8 +1542,7 @@ void SparkLingResidentDecodeStageDestroy(void *module_state)
 	free(state->kv_lane_logical_pages);
 	free(state->kv_lane_page_count);
 	free(state->kv_lane_mutable_page);
-	free(state->kv_lane_mutation_flags);
-	free(state->kv_lane_cache_lanes);
+	free(state->kv_lane_transactions);
 	free(state);
 }
 

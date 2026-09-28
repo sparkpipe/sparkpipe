@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sparkpipe/family/module/spark_module_prefix_restore_pending.h"
+
 static SparkStatus SPARK_FAMILY(LoadSequenceContinuity)(const SPARK_FAMILY(ModuleState) *state,const SPARK_FAMILY(ResidentDecodeStageBatchView) *batch,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	const SparkKvLaneTransaction *owner;
