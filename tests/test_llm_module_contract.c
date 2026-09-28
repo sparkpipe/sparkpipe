@@ -32,20 +32,27 @@ static int g_submit_calls;
 static int g_progress_calls;
 static int g_fail_submit_at;
 static uint32_t g_last_submit_operation;
+static uint32_t g_last_evicted_word;
+
+static uint32_t KvFrameWord(uint64_t sequence_id, uint32_t logical)
+{
+	return((uint32_t)(sequence_id * 1000u + logical));
+}
 
 static SparkStatus FakeBuildRestoreBatch(const LmKvFramePlanConfig *configuration, const LmKvFramePendingLane *pending_lanes, uint32_t pending_lane_count, const uint32_t *packet_lane_counts, uint32_t packet_count, void *block_staging, uint32_t block_staging_record_capacity, void *gdn_staging, uint32_t gdn_staging_record_capacity, SparkKvStoreBlock *blocks, uint32_t block_capacity, uint32_t *block_count, uint32_t *lanes_built)
 {
+	uint32_t index;
 	(void)configuration;
-	(void)pending_lanes;
 	(void)packet_lane_counts;
 	(void)packet_count;
-	(void)block_staging;
 	(void)block_staging_record_capacity;
 	(void)gdn_staging;
 	(void)gdn_staging_record_capacity;
 	(void)blocks;
 	(void)block_capacity;
 	g_restore_calls++;
+	for (index = 0u; index < pending_lane_count; index++)
+		((uint32_t *)block_staging)[index] = KvFrameWord(pending_lanes[index].sequence_id,pending_lanes[index].nonresident_blocks[0]);
 	*block_count = pending_lane_count;
 	*lanes_built = pending_lane_count;
 	return(SPARK_STATUS_OK);
@@ -58,11 +65,11 @@ static SparkStatus FakeBuildEvictBatch(const LmKvFramePlanConfig *configuration,
 	(void)resident_blocks;
 	(void)resident_block_count;
 	(void)include_gdn_state;
-	(void)block_staging;
 	(void)gdn_staging;
 	(void)blocks;
 	(void)block_capacity;
 	g_evict_calls++;
+	g_last_evicted_word = ((const uint32_t *)block_staging)[0];
 	*block_count = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -109,32 +116,42 @@ static const LmKvFrameOps g_ops =
 	FakeAcknowledge
 };
 
-static void MakeState(LmKvFrameState *state, uint32_t block_count)
+static void MakeStateSized(LmKvFrameState *state, uint32_t block_count, uint32_t lanes, uint32_t stride)
 {
 	uint32_t index;
 	memset(state,0,sizeof(*state));
 	state->ops = g_ops;
 	state->block_count = block_count;
-	state->logical_to_slot = (uint32_t *)calloc(2u * 4u,sizeof(uint32_t));
-	state->logical_to_slot_capacity = 2u * 4u;
-	state->logical_stride = 4u;
-	state->table_indices_device = (uint32_t *)malloc(8u * sizeof(uint32_t));
-	state->table_counts_device = (uint32_t *)malloc(8u * sizeof(uint32_t));
-	state->table_indices_host = (uint32_t *)calloc(2u * 4u,sizeof(uint32_t));
-	state->slot_lane = (uint32_t *)calloc(block_count,sizeof(uint32_t));
-	state->slot_logical = (uint32_t *)calloc(block_count,sizeof(uint32_t));
+	state->plan.block_record_bytes = 4u;
+	state->logical_to_slot = (uint32_t *)calloc((size_t)lanes * stride,sizeof(uint32_t));
+	state->logical_to_slot_capacity = (uint64_t)lanes * stride;
+	state->logical_stride = stride;
+	state->table_indices_device = (uint32_t *)calloc((size_t)lanes * stride,sizeof(uint32_t));
+	state->table_counts_device = (uint32_t *)calloc(lanes,sizeof(uint32_t));
+	state->table_indices_host = (uint32_t *)calloc((size_t)lanes * stride,sizeof(uint32_t));
+	state->slot_lane = (uint32_t *)malloc(block_count * sizeof(uint32_t));
+	state->slot_logical = (uint32_t *)malloc(block_count * sizeof(uint32_t));
 	state->slot_sequence = (uint64_t *)calloc(block_count,sizeof(uint64_t));
 	state->slot_dirty = (uint8_t *)calloc(block_count,sizeof(uint8_t));
 	state->slot_pinned = (uint8_t *)calloc(block_count,sizeof(uint8_t));
 	state->slot_free_stack = (uint32_t *)malloc(block_count * sizeof(uint32_t));
-	state->block_staging = malloc(64u);
+	state->block_staging = calloc(SPARK_LLM_KV_STAGING_RECORDS,4u);
 	state->gdn_staging = malloc(64u);
-	state->cache_bf16 = malloc(4096u);
+	state->cache_bf16 = calloc(block_count,4u);
 	for (index = 0u; index < block_count; index++)
+	{
 		state->slot_free_stack[index] = index;
+		state->slot_lane[index] = UINT32_MAX;
+		state->slot_logical[index] = UINT32_MAX;
+	}
 	state->slot_free_count = block_count;
 	state->evict_cursor = 0u;
 	state->tier_active = 1u;
+}
+
+static void MakeState(LmKvFrameState *state, uint32_t block_count)
+{
+	MakeStateSized(state,block_count,2u,4u);
 }
 
 static void FreeState(LmKvFrameState *state)
@@ -162,6 +179,39 @@ static void FillSlotView(LmKvFrameSlot *view, uint32_t *lane_indices, uint64_t *
 	view->host_context_lengths = contexts;
 	view->host_slot_mapping = host_mapping;
 	view->slot_mapping = device_mapping;
+}
+
+static void FillTable(LmKvFrameTable *table, uint32_t lanes, uint32_t stride, const uint32_t *host_blocks, const uint32_t *host_counts, const uint32_t *stale_device)
+{
+	table->lane_count = lanes;
+	table->lane_stride = stride;
+	table->host_physical_block_indices = host_blocks;
+	table->host_lane_physical_block_counts = host_counts;
+	table->physical_block_indices = stale_device;
+	table->lane_physical_block_counts = host_counts;
+}
+
+static int KvFrameResidencyConsistent(const LmKvFrameState *state, uint32_t stride)
+{
+	uint8_t *seen = (uint8_t *)calloc(state->block_count,1u);
+	uint64_t index;
+	uint32_t slot,resident = 0u;
+	int consistent = 1;
+	for (index = 0u; index < state->logical_to_slot_capacity; index++)
+	{
+		slot = state->logical_to_slot[index];
+		if ( slot == 0u )
+			continue;
+		resident++;
+		if ( slot > state->block_count || seen[slot - 1u] != 0u || state->slot_lane[slot - 1u] != index / stride || state->slot_logical[slot - 1u] != index % stride || ((const uint32_t *)state->cache_bf16)[slot - 1u] != KvFrameWord(state->slot_sequence[slot - 1u],(uint32_t)(index % stride)) )
+			consistent = 0;
+		else
+			seen[slot - 1u] = 1u;
+	}
+	if ( resident + state->slot_free_count != state->block_count )
+		consistent = 0;
+	free(seen);
+	return(consistent);
 }
 
 static void TestLayerPartition(void)
@@ -368,6 +418,82 @@ static void TestKvFrameNegativeGeometry(void)
 	FreeState(&state);
 }
 
+static void TestKvFrameMultiBatch(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[1] = {0u},contexts[1] = {21u * SPARK_LLM_KV_BLOCK_TOKENS},host_mapping[1] = {0u},device_mapping[1] = {0u},host_counts[1] = {21u};
+	uint32_t host_blocks[32],stale_device[32] = {0u},logical;
+	uint64_t positions[1] = {21u * SPARK_LLM_KV_BLOCK_TOKENS - 1u},sequence_ids[1] = {301u};
+	int placed = 1;
+	for (logical = 0u; logical < 32u; logical++)
+		host_blocks[logical] = 1000u + logical;
+	MakeStateSized(&state,32u,1u,32u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,1u,32u,host_blocks,host_counts,stale_device);
+	g_submit_calls = 0;
+	g_restore_calls = 0;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK,"kv_frame multi-batch prepare status");
+	Check(g_restore_calls == 2 && g_submit_calls == 2,"kv_frame restores 21 blocks in two staging batches");
+	Check(state.slot_free_count == 11u,"kv_frame multi-batch claims 21 slots");
+	for (logical = 0u; logical < 21u; logical++)
+		placed &= state.logical_to_slot[logical] == 32u - logical && state.table_indices_host[logical] == 31u - logical && state.table_indices_device[logical] == 31u - logical;
+	Check(placed,"kv_frame multi-batch table maps each restored block to its slot");
+	Check(state.table_indices_host[21] == 1021u && state.table_indices_device[31] == 1031u,"kv_frame table keeps the host entries past the frame's blocks");
+	Check(KvFrameResidencyConsistent(&state,32u),"kv_frame multi-batch residency and data consistent");
+	Check(host_mapping[0] == 11u * SPARK_LLM_KV_BLOCK_TOKENS + SPARK_LLM_KV_BLOCK_TOKENS - 1u && device_mapping[0] == host_mapping[0],"kv_frame multi-batch row mapping");
+	FreeState(&state);
+}
+
+static void TestKvFrameLaneOrder(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[3] = {1u,0u,1u},contexts[3] = {SPARK_LLM_KV_BLOCK_TOKENS,2u * SPARK_LLM_KV_BLOCK_TOKENS,3u * SPARK_LLM_KV_BLOCK_TOKENS},host_mapping[3] = {0u},device_mapping[3] = {0u};
+	uint32_t host_blocks[8] = {0u},host_counts[2] = {2u,3u},stale_device[8] = {0u};
+	uint64_t positions[3] = {SPARK_LLM_KV_BLOCK_TOKENS - 1u,2u * SPARK_LLM_KV_BLOCK_TOKENS - 1u,3u * SPARK_LLM_KV_BLOCK_TOKENS - 1u},sequence_ids[3] = {601u,602u,601u};
+	MakeStateSized(&state,8u,2u,4u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,2u,4u,host_blocks,host_counts,stale_device);
+	g_submit_calls = 0;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,3u) == SPARK_STATUS_OK && g_submit_calls == 1,"kv_frame restores two lanes in one batch");
+	Check(state.logical_to_slot[4] == 8u && state.logical_to_slot[5] == 7u && state.logical_to_slot[6] == 6u && state.logical_to_slot[0] == 5u && state.logical_to_slot[1] == 4u,"kv_frame restores lanes in first-row order, each to its longest context");
+	Check(host_mapping[0] == 7u * SPARK_LLM_KV_BLOCK_TOKENS + SPARK_LLM_KV_BLOCK_TOKENS - 1u && host_mapping[1] == 3u * SPARK_LLM_KV_BLOCK_TOKENS + SPARK_LLM_KV_BLOCK_TOKENS - 1u && host_mapping[2] == 5u * SPARK_LLM_KV_BLOCK_TOKENS + SPARK_LLM_KV_BLOCK_TOKENS - 1u,"kv_frame maps rows that share a lane");
+	Check(state.slot_sequence[7] == 601u && state.slot_sequence[4] == 602u,"kv_frame tags slots with the lane's sequence");
+	Check(KvFrameResidencyConsistent(&state,4u),"kv_frame lane order residency consistent");
+	FreeState(&state);
+}
+
+static void TestKvFrameEvictDirty(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[1] = {0u},contexts[1] = {2u * SPARK_LLM_KV_BLOCK_TOKENS},host_mapping[1] = {0u},device_mapping[1] = {0u};
+	uint32_t host_blocks[8] = {0u},host_counts[2] = {2u,1u},stale_device[8] = {0u};
+	uint64_t positions[1] = {2u * SPARK_LLM_KV_BLOCK_TOKENS - 1u},sequence_ids[1] = {401u};
+	MakeStateSized(&state,2u,2u,4u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,2u,4u,host_blocks,host_counts,stale_device);
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK && state.slot_free_count == 0u,"kv_frame fills the pool");
+	LmKvFrameMarkWritten(&state,&view,1u);
+	lane_indices[0] = 1u;
+	contexts[0] = 1u;
+	positions[0] = 0u;
+	sequence_ids[0] = 402u;
+	g_evict_calls = 0;
+	g_submit_calls = 0;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK,"kv_frame evicts for a new lane");
+	Check(g_evict_calls == 1 && g_submit_calls == 2 && g_last_submit_operation == SPARK_KV_STORE_OPERATION_GET,"kv_frame writes back the dirty block before restoring");
+	Check(g_last_evicted_word == KvFrameWord(401u,1u),"kv_frame writes back the evicted block's data");
+	Check(state.logical_to_slot[1] == 0u && state.logical_to_slot[0] == 2u && state.logical_to_slot[4] == 1u,"kv_frame eviction moves the slot to the new lane");
+	Check(state.slot_dirty[0] == 0u && state.slot_lane[0] == 1u && state.slot_sequence[0] == 402u,"kv_frame restored slot metadata");
+	Check(KvFrameResidencyConsistent(&state,4u),"kv_frame residency consistent after eviction");
+	FreeState(&state);
+}
+
 int LlmModuleNegativeControlRun(void);
 
 #define SPARK_FAMILY_CAMEL KvProbe
@@ -440,6 +566,9 @@ int main(void)
 	TestKvFrameRestore();
 	TestKvFrameUnwind();
 	TestKvFrameNegativeGeometry();
+	TestKvFrameMultiBatch();
+	TestKvFrameLaneOrder();
+	TestKvFrameEvictDirty();
 	TestKvFrameTemplateTierOff();
 	failures += LlmModuleNegativeControlRun();
 	if ( failures == 0 )

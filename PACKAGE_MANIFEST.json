@@ -9868,8 +9868,8 @@
     },
     {
       "path": "tests/test_llm_module_contract.c",
-      "sha256": "e23eb8080573f0d7ab9f1011fc1427baafa673bdd796aca6be7d03823e25459b",
-      "size_bytes": 17392
+      "sha256": "197f023d2ff4fd7c338ce9572e16b6d908c769c31d3b68c1cbccea4d15d701e7",
+      "size_bytes": 24655
     },
     {
       "path": "tests/test_llm_module_contract_negative.c",
@@ -15265,5 +15265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73920307
+  "total_bytes": 73927570
 }
