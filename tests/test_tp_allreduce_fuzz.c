@@ -83,6 +83,8 @@ static volatile uint32_t g_shipper_paused;
 extern uint32_t cuda_stub_roundloop_launches;
 extern uint64_t cuda_stub_roundloop_rounds;
 extern uint32_t cuda_stub_mesh_publish_calls;
+extern uint32_t cuda_stub_mesh_tree_calls;
+extern uint64_t cuda_stub_mesh_tree_elements;
 extern uint32_t cuda_stub_mesh_seq_pad_calls;
 extern int cuda_stub_stream_query_result;
 extern uint32_t cuda_stub_host_register_calls;
@@ -1379,6 +1381,7 @@ static void FuzzPayloadCapacity(void)
     SparkStatus status;
     FuzzTask *task = &g_tasks[0];
     uint32_t published = cuda_stub_mesh_publish_calls;
+    uint32_t tree_calls = cuda_stub_mesh_tree_calls;
     memset(&config,0,sizeof(config));
     memset(&collective,0,sizeof(collective));
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -1396,11 +1399,13 @@ static void FuzzPayloadCapacity(void)
         config.local_hidden_dimension,0u,0) == SPARK_STATUS_OK,"capacity probe binds its real mesh region");
     task->argument = 1050000u;
     FuzzSubmission(task,&submission);
-    CHECK(SparkTpDeviceCollectiveSubmitBf16(&collective,&submission) ==
-        SPARK_STATUS_CAPACITY_EXCEEDED,"payload plus sequence trailer cannot exceed registered slot");
-    CHECK(cuda_stub_mesh_publish_calls == published &&
-        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
-        "oversized payload rejects before publication or generation consumption");
+    status = SparkTpDeviceCollectiveSubmitBf16(&collective,&submission);
+    CHECK(status != SPARK_STATUS_CAPACITY_EXCEEDED && status != SPARK_STATUS_OK &&
+        cuda_stub_mesh_tree_calls == tree_calls + 1u &&
+        cuda_stub_mesh_tree_elements == config.local_hidden_dimension,
+        "a single-sequence payload larger than the registered slot runs as chunked device rounds");
+    CHECK(cuda_stub_mesh_publish_calls == published,
+        "an oversized payload never publishes through the host round");
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(task->record->count == 0u,"oversized payload never transfers callback ownership");
 }
