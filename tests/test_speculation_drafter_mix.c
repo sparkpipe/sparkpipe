@@ -135,7 +135,7 @@ static void TestRouting(void)
 	primary.count = 7u;
 	Require(Ask(&mix,0u,9u,33u,7u,&result) == SPARK_STATUS_OK && result.token_count == 2u && primary.last_requested == 2u,"the primary cap never falls below its minimum");
 	Require(SparkSpeculationDrafterMixObserve(&mix,0u,2u,0u) == SPARK_STATUS_OK && mix.caps[SPARK_SPECULATION_DRAFTER_MIX_PRIMARY] == TEST_MIN_TOKENS,"primary cap floor holds after a miss");
-	Require(Ask(&mix,0u,10u,0u,7u,&result) == SPARK_STATUS_OK && primary.last_requested == TEST_CAP_MAX,"a new sequence on the lane restores both caps");
+	Require(Ask(&mix,0u,10u,0u,7u,&result) == SPARK_STATUS_OK && primary.last_requested == TEST_CAP_MAX && mix.caps[SPARK_SPECULATION_DRAFTER_MIX_FALLBACK] == TEST_CAP_MAX,"a new sequence on the lane restores both caps");
 	Require(SparkSpeculationDrafterMixObserve(&mix,0u,7u,7u) == SPARK_STATUS_OK,"new sequence round observed");
 	Require(Ask(&mix,1u,11u,3u,3u,&result) == SPARK_STATUS_OK && primary.last_requested == 3u,"lanes keep separate caps");
 	Require(SparkSpeculationDrafterMixObserve(&mix,1u,3u,3u) == SPARK_STATUS_OK,"second lane observed");

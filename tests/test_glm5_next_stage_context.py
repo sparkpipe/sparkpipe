@@ -3031,6 +3031,41 @@ static void check_chain_steps(void)
 	linear_chain_teardown();
 }
 
+static void check_finish_chain_mtp_tap(void)
+{
+	static uint16_t hc_mean[SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION],lane_hidden[4u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION];
+	uint64_t lane_sequence[4],lane_next[4],position = 40u,sequence = 9u;
+	uint32_t mtp,lane;
+	for (mtp=0u; mtp<2u; mtp++)
+	{
+		SparkGlm5NextTpChain *chain = linear_chain_fixture();
+		SparkGlm5NextAsyncCompletion *async = &state.completions[0];
+		memset(lane_sequence,0,sizeof(lane_sequence));
+		memset(lane_next,0,sizeof(lane_next));
+		memset(lane_hidden,0,sizeof(lane_hidden));
+		hc_mean[0] = 777u;
+		lane = LINEAR_SLOTS[0];
+		state.slots[0].hc_mean_bf16 = hc_mean;
+		state.mtp_lane_hidden_bf16 = lane_hidden;
+		state.mtp_lane_sequence = lane_sequence;
+		state.mtp_lane_next = lane_next;
+		state.verify_mtp = mtp;
+		LINEAR_BATCH.active_sequence_count = LINEAR_BATCH.row_count = 1u;
+		LINEAR_BATCH.row_positions = &position;
+		LINEAR_BATCH.row_sequence_ids = &sequence;
+		chain->wave_rows = 1u;
+		chain->steps = async->steps = 3u;
+		chain->step = 2u;
+		SparkGlm5NextFinishChain(chain);
+		assert(COMPLETION_WORK == SparkGlm5NextCompleteOnWorker && async->completion.status == SPARK_STATUS_OK);
+		assert(state.mtp_taps == mtp && lane_next[lane] == (mtp != 0u ? position + 3u : 0u) && lane_sequence[lane] == (mtp != 0u ? sequence : 0u));
+		assert(lane_hidden[(uint64_t)lane * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] == (mtp != 0u ? 777u : 0u));
+		LINEAR_BATCH.row_positions = 0;
+		LINEAR_BATCH.row_sequence_ids = 0;
+		linear_chain_teardown();
+	}
+}
+
 #define WS_WALK "zBsh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HpxU"
 #define WS_KEY(layer,expert) ((layer) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + (expert))
 
@@ -3826,6 +3861,7 @@ int32_t main(void)
 	check_linear_eligibility();
 	check_linear_chain();
 	check_chain_steps();
+	check_finish_chain_mtp_tap();
 	check_execute_sequence();
 	check_chain_validation();
 	check_frame_chain_validation();
