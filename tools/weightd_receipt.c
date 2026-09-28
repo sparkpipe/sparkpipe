@@ -107,8 +107,8 @@ static int tool_stream(const char *pack,uint32_t hash,const char *expected,int r
 		(void)close(fd);
 		return(1);
 	}
-	tool_report(hash == 0u ? "read" : "verify",pack,&stats);
-	if ( hash == 0u )
+	tool_report(hash == 0u ? "read" : hash == 1u ? "sha256" : hash == 2u ? "ck128" : "verify",pack,&stats);
+	if ( record == 0 && hash != 1u )
 	{
 		(void)close(fd);
 		return(0);
@@ -130,7 +130,7 @@ static int tool_stream(const char *pack,uint32_t hash,const char *expected,int r
 		fprintf(stderr,"weightd_receipt: %s verified but the receipt was not written status=%s\n",pack,SparkStatusToString(status));
 		return(1);
 	}
-	printf("weightd_receipt verified path=%s sha256=%s ck128=%s\n",pack,sha_hex,ck_hex);
+	printf("weightd_receipt verified path=%s sha256=%s ck128=%s\n",pack,sha_hex,(hash & 2u) != 0u ? ck_hex : "-");
 	return(0);
 }
 
@@ -272,13 +272,16 @@ int main(int argc,char **argv)
 		fprintf(stderr,"usage: weightd_receipt verify <pack> [sha256]\n"
 			"       weightd_receipt check <pack> [sha256]\n"
 			"       weightd_receipt read <pack>\n"
-			"       weightd_receipt hash <pack>\n"
+			"       weightd_receipt hash <pack> [sha256]\n"
+			"       weightd_receipt ck128 <pack>\n"
 			"       weightd_receipt adopt <pack> [legacy-dir]\n"
 			"       weightd_receipt show <pack>\n");
 		return(2);
 	}
 	if ( strcmp(argv[1],"read") == 0 )
 		return(tool_stream(argv[2],0u,0,0));
+	if ( strcmp(argv[1],"ck128") == 0 )
+		return(tool_stream(argv[2],2u,0,0));
 	if ( strcmp(argv[1],"show") == 0 )
 		return(tool_show(argv[2]));
 	if ( strcmp(argv[1],"adopt") == 0 )
