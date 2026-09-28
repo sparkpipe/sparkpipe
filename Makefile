@@ -618,9 +618,11 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_glm53flash.py \
 	tests/test_t1_reference_hy4.py \
 	tests/test_t1_reference_k3.py \
+	tests/test_t1_reference_mimo26.py \
 	tests/test_t1_reference_minimax.py \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_qwen38_27b.py \
+	tests/test_t1_reference_quarantine.py \
 	tests/test_tp_collective_open.py \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
