@@ -708,7 +708,28 @@ VERIFY-FRAME ... and VERIFY-MTP ...                                  (per frame,
 Stop the arm and restore the spec-off `agent.env` on any of: a replay or
 compare that is not exact, `VERIFY-RANK-LOCAL-INELIGIBLE`,
 `VERIFY-MTP-DRAFT-FAILED`, `VERIFY-MTP-UNSUPPORTED`, `GRAPH-VERIFY-TABLE ...
-status!=0`, `GRAPH-VERIFY-REJECTED`, or an engine that does not reach ready.
+status!=0`, `GRAPH-VERIFY-REJECTED`, `VERIFY-PLAIN-STEP-FAILED`,
+`VERIFY-OBSERVE-FAILED`, or an engine that does not reach ready.
+
+`tools/glm5_next_spec_ab.sh` exits nonzero on each of these that it can see:
+tokens that differ from `off.json`, any of the markers above in rank 15's
+`residentd.log`, an `off` arm whose engine runs a verify regime
+(`GLM verify regime rows=` not 0, or any `VERIFY-FRAME`), and a spec arm
+that ran no verify frame (spec silently off, so its rate would be a spec-off
+number under a spec label). `$OUT/<arm>.summary.json` records
+`stop_markers`, `verify_rows` and `spec_state_ok`. The script reads rank
+15's log only; before recording an arm, grep the other 15 nodes for the same
+markers:
+
+```sh
+for h in "${hosts[@]}"; do ssh $h 'grep -cE "VERIFY-RANK-LOCAL-INELIGIBLE|VERIFY-MTP-(DRAFT-FAILED|UNSUPPORTED)|GRAPH-VERIFY-REJECTED|VERIFY-(PLAIN-STEP|OBSERVE)-FAILED|GRAPH-VERIFY-TABLE .*status=-?[1-9]" ~/sparkdata/glm53flash.fp8.tp16/residentd.log' | sed "s/^/$h /"; done
+```
+
+The arms run on the production root, so g53-api traffic during a spec arm
+is served by the spec path. Greedy output is exact only once the oracle arm
+has shown G-ROWEQ at TP16; until then, run the arms in a window with no
+outside traffic on g53-api, and restore the spec-off `agent.env` as soon as
+the last arm ends.
 
 Record per arm: decode tok/s per class (`$OUT/<arm>.summary.json`), tokens
 per round and acceptance per drafter (`$OUT/<arm>.acceptance.json`), mean
@@ -748,6 +769,9 @@ logs `VERIFY-MTP`. Today's costs: B1 25.2 ms, 2.7 ms per extra verify row
 (2.35 ms kernel from the single-GPU bench, B1 15.39 ms to B8 31.87 ms, plus
 the 0.38 ms certified head per row), 1.0 ms per round, MTP 1.3 ms per drafted
 token plus 0.3 ms per draft, frames of 8. Spec-off prices at 39.7 tok/s.
+That is the B1 step alone; production measures 36.3 tok/s end to end, so
+read the tok/s cells below as upper bounds and apply the speedups to 36.3
+(MTP p = 0.5 / 0.65 / 0.8 at 4 rows: about 44 / 51 / 64 tok/s).
 
 | Drafter, rows | code | prose | repetitive |
 | --- | --- | --- | --- |
