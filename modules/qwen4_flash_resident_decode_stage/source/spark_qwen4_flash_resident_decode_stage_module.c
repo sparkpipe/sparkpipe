@@ -851,7 +851,6 @@ static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 			return(status);
 		state->lazy_pack = 0;
 	}
-	SparkStageKvClientClose(&state->kv.client);
 	free(state->ple_prev_context_u32);
 	free(state->t1.stage_hidden);
 	free(state->t1.stage_route_ids);
@@ -864,20 +863,7 @@ static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
 			free(state->slots[slot_index].ple_host_history_u32);
 	}
-	free(state->kv.logical_to_slot);
-	free(state->kv.slot_lane);
-	free(state->kv.slot_logical);
-	free(state->kv.slot_sequence);
-	free(state->kv.slot_dirty);
-	free(state->kv.slot_pinned);
-	free(state->kv.slot_free_stack);
-	free(state->kv.block_staging);
-	free(state->kv.gdn_staging);
-	free(state->kv.table_indices_host);
-	if ( state->kv.table_indices_device != 0 )
-		cudaFree(state->kv.table_indices_device);
-	if ( state->kv.table_counts_device != 0 )
-		cudaFree(state->kv.table_counts_device);
+	LmKvFrameRelease(&state->kv);
 	return(SPARK_STATUS_OK);
 }
 

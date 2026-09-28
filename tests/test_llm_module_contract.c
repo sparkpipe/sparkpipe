@@ -288,6 +288,12 @@ static void TestKvFrameRestore(void)
 
 	LmKvFrameMarkWritten(&state,&view,2u);
 	Check(state.slot_dirty[7u] == 1u && state.slot_dirty[5u] == 1u && state.slot_dirty[6u] == 0u,"kv_frame mark written blocks (SPARK_LLM_KV_BLOCK_TOKENS)");
+	host_mapping[0] = 0u;
+	host_mapping[1] = 0u;
+	view.slot_mapping = 0;
+	status = LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,2u);
+	Check(status == SPARK_STATUS_OK,"kv_frame prepare without a device slot mapping");
+	Check(host_mapping[0] == expected_row0 && host_mapping[1] == expected_row1,"kv_frame host mapping without a device slot mapping");
 	FreeState(&state);
 }
 

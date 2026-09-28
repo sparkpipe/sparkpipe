@@ -387,7 +387,7 @@ static inline SparkStatus LmKvFramePrepareFrame(LmKvFrameState *state, const LmK
 		slot_index = state->logical_to_slot[((uint64_t)lane * table->lane_stride) + (uint32_t)(position / SPARK_LLM_KV_BLOCK_TOKENS)] - 1u;
 		slot->host_slot_mapping[row] = slot_index * SPARK_LLM_KV_BLOCK_TOKENS + (uint32_t)(position % SPARK_LLM_KV_BLOCK_TOKENS);
 	}
-	error = cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
+	error = slot->slot_mapping != 0 ? cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream) : cudaSuccess;
 	if ( error != cudaSuccess )
 		{
 			fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_slot_upload");
@@ -419,6 +419,25 @@ fail:
 	}
 	return(fail_status);
 }
+static inline void LmKvFrameRelease(LmKvFrameState *state)
+{
+	SparkStageKvClientClose(&state->client);
+	free(state->logical_to_slot);
+	free(state->slot_lane);
+	free(state->slot_logical);
+	free(state->slot_sequence);
+	free(state->slot_dirty);
+	free(state->slot_pinned);
+	free(state->slot_free_stack);
+	free(state->block_staging);
+	free(state->gdn_staging);
+	free(state->table_indices_host);
+	if ( state->table_indices_device != 0 )
+		cudaFree(state->table_indices_device);
+	if ( state->table_counts_device != 0 )
+		cudaFree(state->table_counts_device);
+}
+
 static inline void LmKvFrameMarkWritten(LmKvFrameState *state, const LmKvFrameSlot *slot, uint32_t rows)
 {
 	uint32_t row,slot_index;
