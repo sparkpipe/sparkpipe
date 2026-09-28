@@ -848,6 +848,8 @@ static SparkStatus SparkLingReleaseLanes(SparkLingModuleState *state,const Spark
 		status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
+		if ( lane->resident_sequence_slot < state->resident_sequence_capacity )
+			atomic_store_explicit(&state->lane_bound[lane->resident_sequence_slot],0u,memory_order_release);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1322,6 +1324,7 @@ static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint
 
 static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
 {
+	SparkStatus launch_status;
 	SparkLingBuildWave(chain);
 	SparkLingT1Wave(&chain->wave);
 	if ( SparkLingLaunchCudaWaveBegin(&chain->wave) != 0 )
@@ -1331,7 +1334,14 @@ static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
 	}
 	chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
 	chain->next_layer = 0u;
-	SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+	if ( chain->state->owns_embedding == 0u )
+	{
+		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		return;
+	}
+	launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->hidden_bf16);
+	if ( launch_status != SPARK_STATUS_OK )
+		SparkLingTpChainFail(chain,launch_status);
 }
 
 static void SparkLingTpChainStageHead(SparkLingTpChain *chain)
@@ -1636,6 +1646,14 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
+	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	{
+		if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->new_token_count != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		SparkModelDriverInitializeAdmissionDecision(decision);
+		decision->available_dispatch_slot_count = available;
+		return(SparkLingAdmissionPredicate(state,request,decision));
+	}
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
 	table.descriptor_bytes = (uint32_t)sizeof(table);

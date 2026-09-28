@@ -82,6 +82,7 @@ typedef struct SparkLingServingPending
 {
 	struct SparkLingServingState *owner;
 	uint32_t active;
+	uint32_t work_kind;
 	uint32_t row_count;
 	uint32_t lane_count;
 	uint32_t active_sequence_count;
@@ -276,6 +277,7 @@ static SparkLingServingPending *SparkLingServingReservePending(
 			memset(pending,0,sizeof(*pending));
 			pending->owner = state;
 			pending->active = 1u;
+			pending->work_kind = submission->work_kind;
 			pending->row_count = submission->row_count;
 			pending->lane_count = submission->lane_count;
 			pending->active_sequence_count = submission->active_sequence_count;
@@ -340,7 +342,7 @@ static void SparkLingServingDriverCompletion(
 		completion.accepted_token_count = 0u;
 		completion.completion_flags = 0u;
 	}
-	if ( completion.status == SPARK_STATUS_OK )
+	if ( completion.status == SPARK_STATUS_OK && SparkModelServingWorkKindUsesRows(pending->work_kind) != 0u )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->active_sequence_count;
@@ -582,6 +584,7 @@ static SparkStatus SparkLingServingSubmit(
 	SparkLingResidentDecodeStageFrameContext context;
 	SparkModelDriverBuffer buffer;
 	SparkModelDriverFrame frame;
+	SparkModelDriverCompletion released;
 	SparkStatus status;
 	state = (SparkLingServingState *)adapter_state;
 	status = SparkLingServingValidateSubmission(state,submission);
@@ -592,7 +595,17 @@ static SparkStatus SparkLingServingSubmit(
 		return(SPARK_STATUS_BUSY);
 	SparkLingServingBuildFrame(state,submission,pending,&batch,&context,&buffer,&frame);
 	status = SparkLingServingAdmit(state,submission,&frame);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		memset(&released,0,sizeof(released));
+		released.request_id = pending->request_id;
+		released.sequence_id = pending->sequence_id;
+		released.sequence_position = pending->sequence_position;
+		released.program_id = state->program->program_id;
+		released.residency = submission->residency;
+		SparkLingServingDriverCompletion(pending,&released);
+	}
+	else if ( status == SPARK_STATUS_OK )
 	{
 		status = state->program->submit(state->driver_instance,&frame);
 	}
