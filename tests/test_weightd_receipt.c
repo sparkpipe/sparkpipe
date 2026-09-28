@@ -185,11 +185,28 @@ static void check_malformed(void)
 	write_text(receipt,text,(size_t)bytes,0644);
 	assert(check(pack,sha,0,&reason) == SPARK_STATUS_PARSE_ERROR);
 	text[40] = original;
+	{
+		char full[SPARK_WEIGHTD_RECEIPT_BYTES_MAX];
+		const char *field;
+		size_t prefix;
+		assert((size_t)bytes < sizeof(text));
+		text[bytes] = 0;
+		field = strstr(text,"verified_unix_ns ");
+		assert(field != 0);
+		prefix = (size_t)(field - text) + strlen("verified_unix_ns ");
+		memcpy(full,text,prefix);
+		memset(full + prefix,'7',sizeof(full) - prefix);
+		write_text(receipt,full,sizeof(full),0644);
+		assert(check(pack,sha,0,&reason) == SPARK_STATUS_PARSE_ERROR);
+		memset(full + prefix,' ',sizeof(full) - prefix);
+		write_text(receipt,full,sizeof(full),0644);
+		assert(check(pack,sha,0,&reason) == SPARK_STATUS_PARSE_ERROR);
+	}
 	write_text(receipt,text,(size_t)bytes,0666);
 	assert(check(pack,sha,0,&reason) == SPARK_STATUS_VALIDATION_FAILED && strcmp(reason,"untrusted owner or mode") == 0);
 	write_text(receipt,text,(size_t)bytes,0644);
 	assert(check(pack,sha,0,&reason) == SPARK_STATUS_OK);
-	puts("PASS malformed: truncated, empty, garbage, edited-without-seal and group-writable receipts are not trusted");
+	puts("PASS malformed: truncated, empty, garbage, edited-without-seal, max-size unterminated and group-writable receipts are not trusted");
 }
 
 static void check_invalidation(void)

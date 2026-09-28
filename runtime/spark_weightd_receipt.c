@@ -210,8 +210,9 @@ SparkStatus SparkWeightdReceiptLoad(const char *receipt_path,SparkWeightdReceipt
 		done += (size_t)count;
 	}
 	(void)close(fd);
-	if ( done != (size_t)info.st_size )
+	if ( done != (size_t)info.st_size || done >= sizeof(text) )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	text[done] = 0;
 	return(receipt_parse(text,done,out));
 }
 
