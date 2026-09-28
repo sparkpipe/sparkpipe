@@ -30,7 +30,7 @@ SparkStatus SparkSpeculationReferenceDraftTokens(void *context,const SparkSpecul
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	next = request->sequence_position + 1u;
 	if ( next < draft->first_position || next - draft->first_position >= draft->token_count )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+		return(SPARK_STATUS_NOT_FOUND);
 	offset = next - draft->first_position;
 	count = draft->token_count - (uint32_t)offset;
 	count = count < request->requested_token_count ? count : request->requested_token_count;
