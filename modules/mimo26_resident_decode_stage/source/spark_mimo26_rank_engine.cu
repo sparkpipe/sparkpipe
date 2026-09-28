@@ -431,6 +431,31 @@ static SparkStatus ReDense(SparkMimo26RankEngine *engine, uint32_t index, ReLaye
 	return(ReReduceAdd(engine));
 }
 
+static int32_t ReGroupedMxfp4(const uint8_t *weight, const uint8_t *scale, const uint16_t *activation, uint16_t *output, const uint32_t *group_offset, const uint32_t *source_token, uint32_t pairs, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+{
+	LmSkinnyArguments args;
+	if ( pairs > RE_TOP_K )
+		return(LmSkinnyGroupedExperts<LmMxfp4>(weight,LmScaleTensorBlockUe8m0(scale,RE_RANK_EXPERTS,output_dimension,input_dimension,1u,32u),activation,output,group_offset,source_token,RE_RANK_EXPERTS,pairs,activation_packed,input_dimension,output_dimension,stream));
+	memset(&args,0,sizeof(args));
+	args.weight = weight;
+	args.activation = activation;
+	args.output_bf16 = output;
+	args.group_row_offset = group_offset;
+	args.route_source_token = source_token;
+	args.scale = LmScaleTensorBlockUe8m0(scale,RE_RANK_EXPERTS,output_dimension,input_dimension,1u,32u);
+	args.weight_group_bytes = (uint64_t)output_dimension * input_dimension * LmMxfp4::kStoredBits / 8u;
+	args.rows = 1u;
+	args.pairs = pairs;
+	args.activation_packed = activation_packed;
+	args.groups = RE_RANK_EXPERTS;
+	args.input_dimension = input_dimension;
+	args.output_dimension = output_dimension;
+	args.output_row_stride = output_dimension;
+	if ( LmSkinnyValidateOperands<LmMxfp4>(&args) != LM_LAUNCH_OK )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmSkinnyGroupedLanes<LmMxfp4,1u,LM_SKINNY_GROUPED_NEURONS>(&args,input_dimension / LmSkinnyFormat<LmMxfp4>::kElements,stream));
+}
+
 static SparkStatus ReMoe(SparkMimo26RankEngine *engine, uint32_t index, ReLayer *layer)
 {
 	cudaStream_t s = engine->stream;
@@ -440,11 +465,11 @@ static SparkStatus ReMoe(SparkMimo26RankEngine *engine, uint32_t index, ReLayer 
 	RE_KERNEL("topk");
 	ReLocalRouteKernel<<<1,32,0,s>>>(engine->route_expert,pairs,engine->config.rank,engine->group_offset,engine->source_token,engine->row_of_k);
 	RE_KERNEL("local-route");
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[0],LmScaleTensorBlockUe8m0(layer->expert_scale[0],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->gate,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-gate",index);
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[1],LmScaleTensorBlockUe8m0(layer->expert_scale[1],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->up,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-up",index);
+	RE_LAUNCH(ReGroupedMxfp4(layer->expert[0],layer->expert_scale[0],engine->normed,engine->gate,engine->group_offset,engine->source_token,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-gate",index);
+	RE_LAUNCH(ReGroupedMxfp4(layer->expert[1],layer->expert_scale[1],engine->normed,engine->up,engine->group_offset,engine->source_token,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-up",index);
 	ReSwigluKernel<<<(pairs * RE_INTER + 255u) / 256u,256u,0,s>>>(engine->gate,engine->up,engine->act,pairs * RE_INTER);
 	RE_KERNEL("expert-swiglu");
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[2],LmScaleTensorBlockUe8m0(layer->expert_scale[2],RE_RANK_EXPERTS,RE_HIDDEN,RE_INTER,1u,32u),engine->act,engine->down,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,1u,RE_INTER,RE_HIDDEN,s),"expert-down",index);
+	RE_LAUNCH(ReGroupedMxfp4(layer->expert[2],layer->expert_scale[2],engine->act,engine->down,engine->group_offset,engine->source_token,pairs,1u,RE_INTER,RE_HIDDEN,s),"expert-down",index);
 	ReCombineKernel<<<dim3((RE_HIDDEN + 255u) / 256u,tokens),256u,0,s>>>(engine->down,engine->route_weight,engine->row_of_k,engine->partial);
 	RE_KERNEL("combine");
 	return(ReReduceAdd(engine));

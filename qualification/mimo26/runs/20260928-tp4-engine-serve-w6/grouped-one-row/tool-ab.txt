@@ -1,0 +1,5 @@
+perf_window.py mimo 10, 2026-09-28T17:1xZ, science prompt, graph-rows mode, 16 tokens x 4 repeats, alternating binaries
+before (grouped kernel ROWS=4 shape):  36.07 34.73 35.57 35.73 | 35.73 34.63 34.85 34.49 ms/token
+after  (grouped kernel ROWS=1 shape):  30.29 30.09 29.12 30.90 | 31.48 29.21 29.27 30.20 ms/token
+tokens: 16/16 equal the CPU reference in every run; COMPSEC-17 token streams byte-equal the earlier runs (diffs=0)
+nsys (one graph replay trace, before): grouped MXFP4 GEMV 15.6 ms of 30.3 ms GPU time per token (141 launches, 110.6 us each)

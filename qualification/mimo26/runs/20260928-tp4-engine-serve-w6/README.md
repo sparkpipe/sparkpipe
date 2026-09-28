@@ -21,15 +21,18 @@ expert is pinned in the weightd pool (3008 experts per rank, 40.3 GB pool,
 
 ## Performance (no speculation, measured inside perf_window.py)
 
-API, multi-row firmware (`rows/api-perf.json`):
+API, final firmware (multi-row steps, one-row grouped MXFP4 shape for single-row steps; `grouped-one-row/api-perf.json`):
 
 | metric | value |
 | --- | --- |
-| B1 decode, 46-token prompt, 128 tokens | 22.6 tok/s |
-| B1 decode, 46-token prompt, 512 tokens | 21.4 tok/s |
+| B1 decode, 46-token prompt, 128 tokens | 26.0 tok/s |
+| B1 decode, 46-token prompt, 512 tokens | 23.9 tok/s |
 | TTFT, 46-token prompt | 0.71 s |
-| TTFT, 278-token prompt | 4.67 s |
-| 4 streams x 256 tokens | 51.1 tok/s aggregate |
+| TTFT, 278-token prompt | 4.68 s |
+| 4 streams x 256 tokens | 51.2 tok/s aggregate |
+
+The multi-row firmware before the grouped-shape change measured 22.6 / 21.4 tok/s
+(`rows/api-perf.json`); the tool A/B is in `grouped-one-row/tool-ab.txt`.
 
 Earlier firmware, one row per step (`tool/perf-*.log` and the API run at 16:02Z):
 B1 23.4 tok/s at 128 and 22.7 tok/s at 512 tokens; TTFT 1.84 s (46 tokens) and
