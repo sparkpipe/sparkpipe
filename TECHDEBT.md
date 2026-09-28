@@ -116,9 +116,9 @@ removed rather than retained as a progress diary.
 
 - GLM 5.3 Flash serves only at TP16. Measure B1 latency and aggregate
   throughput from B8 to B1024 for TP16, TP4 x PP4 and PP16 once each runs,
-  and choose placement from those numbers (README, Placement). The
-  items below are what TP4 x PP4 and PP16 need first.
-
+  and choose placement from those numbers (README, Placement). The items
+  below are the TP4 x PP4 work; PP16 needs the same stage-local layer spans
+  and boundary forwarding.
 - GLM 5.3 Flash source audit at main `371ae9e`: the TP4xPP4 JSON generator
   exists, but the shipped serving adapter hard-codes TP16, rejects other TP
   degrees, requires `tp_rank == stage_index`, and declares parallel fanout.
