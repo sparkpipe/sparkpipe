@@ -509,7 +509,25 @@ static void SparkGemma4ModuleReportReady(void *module_state)
 
 #include "sparkpipe/family/module/spark_module_admission_cost.h"
 
+static SparkStatus SparkGemma4ModuleReset(SparkGemma4ModuleState *state, const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t index;
+	cudaError_t drain;
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index = 0u; index < state->pipeline_slot_count; index++)
+	{
+		if ( state->slots[index].cuda_stream == 0 )
+			continue;
+		drain = cudaStreamSynchronize((cudaStream_t)state->slots[index].cuda_stream);
+		if ( drain != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,drain,"reset_stream_drain"));
+	}
+	return(SPARK_STATUS_OK);
+}
+
 #define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_input_row_count)
+#define SPARK_MODULE_ADMIT_RESET(state,request) SparkGemma4ModuleReset((state),(request))
 #include "sparkpipe/family/module/spark_module_admit_shape.h"
 
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)

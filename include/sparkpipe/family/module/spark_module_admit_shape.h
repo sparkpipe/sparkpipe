@@ -11,6 +11,19 @@ static SparkStatus SPARK_FAMILY(ModuleAdmit)(void *module_state,const SparkModel
 	uint32_t available_slot_count;
 	SparkStatus status;
 	state = (SPARK_FAMILY(ModuleState) *)module_state;
+#ifdef SPARK_MODULE_ADMIT_RESET
+	if ( request != 0 && decision != 0 && request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
+	{
+		SparkModelDriverInitializeAdmissionDecision(decision);
+		status = SPARK_MODULE_ADMIT_RESET(state,request);
+		if ( status == SPARK_STATUS_OK )
+		{
+			decision->accepted = 1u;
+			decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+		}
+		SPARK_RETURN(status);
+	}
+#endif
 	available_slot_count = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
