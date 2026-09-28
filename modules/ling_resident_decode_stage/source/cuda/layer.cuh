@@ -794,6 +794,44 @@ static int32_t LingLayerDenseMlp(
         stream);
 }
 
+static int32_t LingLaunchSiluMul(
+    const uint16_t *gate_up_bf16,
+    uint16_t *intermediate_bf16,
+    uint32_t rows,
+    uint32_t intermediate,
+    float limit,
+    cudaStream_t stream)
+{
+    if (limit > 0.0f)
+    {
+        LM_LAUNCH(
+            (LmSiluMulLimitKernel<LING_LAYER_THREADS>),
+            rows,
+            LING_LAYER_THREADS,
+            0,
+            stream,
+            gate_up_bf16,
+            intermediate_bf16,
+            intermediate,
+            false,
+            limit);
+    }
+    else
+    {
+        LM_LAUNCH(
+            (LmSiluMulKernel<LING_LAYER_THREADS>),
+            rows,
+            LING_LAYER_THREADS,
+            0,
+            stream,
+            gate_up_bf16,
+            intermediate_bf16,
+            intermediate,
+            false);
+    }
+    return LM_LAUNCH_OK;
+}
+
 template<uint32_t ExpertCodec>
 static int32_t LingLayerMoe(
     const LingLayerBuffers *buffers,
@@ -950,16 +988,17 @@ static int32_t LingLayerMoe(
         return status;
     }
 
-    LM_LAUNCH(
-        (LmSiluMulKernel<LING_LAYER_THREADS>),
-        packed_rows,
-        LING_LAYER_THREADS,
-        0,
-        stream,
+    status = LingLaunchSiluMul(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
+        packed_rows,
         buffers->expert_intermediate,
-        false);
+        LING_ROUTED_SWIGLU_LIMIT(buffers->layer_index),
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
@@ -1027,16 +1066,17 @@ static int32_t LingLayerMoe(
     {
         return status;
     }
-    LM_LAUNCH(
-        (LmSiluMulKernel<LING_LAYER_THREADS>),
-        rows,
-        LING_LAYER_THREADS,
-        0,
-        stream,
+    status = LingLaunchSiluMul(
         buffers->gate_up_bf16,
         buffers->intermediate_bf16,
+        rows,
         buffers->shared_intermediate,
-        false);
+        LING_SHARED_SWIGLU_LIMIT(buffers->layer_index),
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
     status = LingLaunchBf16Linear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,

@@ -274,14 +274,20 @@ static void SparkLingValRopeInterleaved(float *section,uint32_t rope_dim,float p
 	}
 }
 
-static void SparkLingValSiluMul(const float *gate_up,float *out,uint32_t dimension)
+static void SparkLingValSiluMul(const float *gate_up,float *out,uint32_t dimension,float limit)
 {
 	uint32_t index;
 	for (index = 0u; index < dimension; index++)
 	{
 		float up = gate_up[index];
 		float gate = gate_up[dimension + index];
-		out[index] = (gate / (1.0f + expf(-gate))) * up;
+		float activated = gate / (1.0f + expf(-gate));
+		if ( limit > 0.0f )
+		{
+			activated = fminf(activated,limit);
+			up = fminf(fmaxf(up,-limit),limit);
+		}
+		out[index] = activated * up;
 	}
 }
 
@@ -1203,7 +1209,7 @@ static void SparkLingValDenseMlp(
 			sum += gate_up_weight[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
 		gate_up[index] = sum;
 	}
-	SparkLingValSiluMul(gate_up,intermediate,SPARK_LING_VAL_DENSE_INTER);
+	SparkLingValSiluMul(gate_up,intermediate,SPARK_LING_VAL_DENSE_INTER,0.0f);
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 	{
 		float sum = 0.0f;
@@ -1225,6 +1231,8 @@ typedef struct SparkLingValMoeWeights
 	const float *shared_gate_up;
 	const float *shared_down;
 	uint32_t codec;
+	float routed_limit;
+	float shared_limit;
 } SparkLingValMoeWeights;
 
 static void SparkLingValMoe(
@@ -1257,7 +1265,7 @@ static void SparkLingValMoe(
 					SPARK_LING_VAL_W1_ROWS,SPARK_LING_VAL_HIDDEN,expert,row,j) * normed[j];
 			scratch[row] = SparkLingValFromBf16(SparkLingValBf16(sum));
 		}
-		SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER);
+		SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER,w->routed_limit);
 		SparkLingValBf16Array(intermediate,SPARK_LING_VAL_EXPERT_INTER);
 		for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 		{
@@ -1276,7 +1284,7 @@ static void SparkLingValMoe(
 			sum += w->shared_gate_up[(uint64_t)index * SPARK_LING_VAL_HIDDEN + j] * normed[j];
 		scratch[index] = SparkLingValFromBf16(SparkLingValBf16(sum));
 	}
-	SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER);
+	SparkLingValSiluMul(scratch,intermediate,SPARK_LING_VAL_EXPERT_INTER,w->shared_limit);
 	SparkLingValBf16Array(intermediate,SPARK_LING_VAL_EXPERT_INTER);
 	for (index = 0u; index < SPARK_LING_VAL_HIDDEN; index++)
 	{
@@ -2161,6 +2169,8 @@ static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
 		moe.shared_gate_up = fixture->shared_gate_up.host;
 		moe.shared_down = fixture->shared_down.host;
 		moe.codec = SPARK_LING_VAL_CODEC;
+		moe.routed_limit = SPARK_LLM_MOE_ROUTED_SWIGLU_LIMIT(layer);
+		moe.shared_limit = SPARK_LLM_MOE_SHARED_SWIGLU_LIMIT(layer);
 		SparkLingValMoe(&moe,hidden,residual,sublayer_out,
 			walk->selected,walk->route_weights);
 	}
@@ -2685,6 +2695,7 @@ int main(int argc,char **argv)
 	static SparkLingValFixture fixture;
 	static const uint32_t kda_layers[2] = {0u,1u};
 	static const uint32_t mixed_layers[2] = {5u,6u};
+	static const uint32_t limited_layers[2] = {35u,36u};
 	SparkLingValWavePlan decode_plans[SPARK_LING_VAL_TOKENS];
 	SparkLingValWavePlan prefill_plans[2];
 	uint32_t step;
@@ -2723,6 +2734,8 @@ int main(int argc,char **argv)
 		SPARK_LING_VAL_TOKENS,"tier1 kda+dense decode",0);
 	failures += SparkLingValRunTier(&fixture,mixed_layers,decode_plans,
 		SPARK_LING_VAL_TOKENS,"tier2a mla+moe decode",1);
+	failures += SparkLingValRunTier(&fixture,limited_layers,decode_plans,
+		SPARK_LING_VAL_TOKENS,"tier2b swiglu-limited mla+moe decode",1);
 	failures += SparkLingValRunTier(&fixture,kda_layers,prefill_plans,2u,
 		"tier3 prefill+cached decode",0);
 	printf("ling validator: %s (%d failures)\n",

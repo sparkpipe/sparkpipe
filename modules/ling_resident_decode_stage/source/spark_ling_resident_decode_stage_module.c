@@ -1287,6 +1287,9 @@ static void SparkLingTpChainFail(SparkLingTpChain *chain,SparkStatus status)
 	SparkLingAsyncCompletion *async;
 	state = chain->state;
 	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+	fprintf(stderr,"ling chain_failed rank=%u stage=%u layer=%u status=%u cuda=%s\n",
+		chain->wave.tp_rank,chain->stage,chain->wave.first_layer_index + chain->next_layer,
+		(unsigned)status,cudaGetErrorString(cudaGetLastError()));
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
 	chain->active = 0u;
@@ -1303,7 +1306,12 @@ static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint
 	else
 		launch = SparkLingLaunchCudaLayerMlp(&chain->wave,chain->next_layer);
 	if ( launch != 0 )
+	{
+		fprintf(stderr,"ling layer_launch_failed rank=%u layer=%u stage=%u launch=%d\n",
+			chain->wave.tp_rank,chain->wave.first_layer_index + chain->next_layer,
+			reduce_stage,(int)launch);
 		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	chain->stage = reduce_stage;
 	launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 	if ( launch_status != SPARK_STATUS_OK )
@@ -1472,6 +1480,9 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
+		fprintf(stderr,"ling kv_access_error slot=%u words=%u,%u,%u,%u\n",async->slot_index,
+			slot->host_kv_access_error[0],slot->host_kv_access_error[1],
+			slot->host_kv_access_error[2],slot->host_kv_access_error[3]);
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if ( async->completion.status == SPARK_STATUS_OK )
