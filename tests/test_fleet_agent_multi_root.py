@@ -232,6 +232,19 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         self.assertIn("-p MemoryMax=40G -p MemorySwapMax=0", units[0])
         self.assertIn("--working-directory=" + str(self.dev), units[0])
 
+    def test_lower_pid_dev_residentd_never_recycles_production(self):
+        prod_pid, dev_pid = self.start_both()
+        self.assertLess(dev_pid, prod_pid)
+        result = self.run_agent(f'''
+for i in 1 2 3; do ensure_root {PROD}; ensure_root {DEV}; done
+echo "STATES $(root_state {PROD}) $(root_state {DEV})"
+echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STATES ready ready", result.stdout)
+        self.assertIn(f"PIDS {prod_pid} {dev_pid}", result.stdout)
+        self.assertNotIn("starting", result.stdout)
+
     def test_heartbeat_lists_every_root_with_state_pid_and_shas(self):
         (self.home / ".fleet_agent_roots").write_text(DEV + "\ngone.root\n")
         prod_pid, dev_pid = self.start_both()
