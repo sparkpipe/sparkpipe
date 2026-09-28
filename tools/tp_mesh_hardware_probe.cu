@@ -55,6 +55,7 @@ struct Probe
     std::thread worker;
     std::vector<std::vector<uint8_t>> inputs;
     std::vector<uint8_t> expected;
+    std::vector<std::vector<uint8_t>> expected_rank;
     uint32_t completed_cases=0u;
 
     Probe()
@@ -159,13 +160,23 @@ struct Probe
     }
     void Data(uint32_t salt)
     {
-        uint64_t local_elements=operation==0u ? elements/degree : elements;
+        uint64_t local_elements=operation==0u ? elements/degree : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? elements*degree : elements;
         uint32_t width=operation==2u ? 8u : 2u;
         REQUIRE(elements*width<=tensor_bytes && local_elements*width<=tensor_bytes);
-        inputs.assign(degree,std::vector<uint8_t>(local_elements*width));expected.assign(elements*width,0u);
+        inputs.assign(degree,std::vector<uint8_t>(local_elements*width));expected.assign((operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements : elements)*width,0u);
+        expected_rank.assign(degree,std::vector<uint8_t>(operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? local_elements*width : 0u));
+        if (operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL)
+            for (uint32_t rank=0u;rank<degree;rank++)
+                for (uint64_t i=0u;i<local_elements;i++)
+                {
+                    uint64_t peer=i/elements,j=i%elements;
+                    uint16_t bits=static_cast<uint16_t>((rank*31u+peer*7u+1u)*977u+j*3u+salt);
+                    std::memcpy(inputs[rank].data()+i*2u,&bits,2u);
+                    std::memcpy(expected_rank[peer].data()+(rank*elements+j)*2u,&bits,2u);
+                }
         for (uint32_t rank=0u;rank<degree;rank++)
         {
-            for (uint64_t i=0u;i<local_elements;i++)
+            for (uint64_t i=0u;i<local_elements && operation!=SPARK_TP_MESH_OPERATION_ALL_TO_ALL;i++)
             {
                 if (operation==2u)
                 {
@@ -250,7 +261,8 @@ struct Probe
     {
         for (uint32_t rank=0u;rank<degree;rank++)
         {
-            SparkTpMeshRoundControl control={};std::vector<uint8_t> output(expected.size());
+            const std::vector<uint8_t> &want=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? expected_rank[rank] : expected;
+            SparkTpMeshRoundControl control={};std::vector<uint8_t> output(want.size());
             CUDA(cudaMemcpy(&control,ranks[rank].control,sizeof(control),cudaMemcpyDeviceToHost));
             CUDA(cudaMemcpy(output.data(),ranks[rank].output,output.size(),cudaMemcpyDeviceToHost));
             if ((control.error_word!=0u)!=failed)
@@ -278,17 +290,26 @@ struct Probe
             {
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
-                uint64_t advances=rows==1u ? SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES) : rows==1u ? SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
-            else if (output!=expected)
+            else if (output!=want)
             {
-                size_t index=0u;while (index<output.size() && output[index]==expected[index]) index++;
-                std::fprintf(stderr,"MISMATCH degree=%u rows=%u op=%u rank=%u byte=%zu actual=%u expected=%u\n",degree,rows,operation,rank,index,output[index],expected[index]);
+                size_t index=0u;while (index<output.size() && output[index]==want[index]) index++;
+                std::fprintf(stderr,"MISMATCH degree=%u rows=%u op=%u rank=%u byte=%zu actual=%u expected=%u\n",degree,rows,operation,rank,index,output[index],want[index]);
                 REQUIRE(false);
             }
         }
+    }
+    void AllToAll()
+    {
+        for (uint32_t n:{2u,3u,4u,8u,16u})
+            for (uint64_t count:{UINT64_C(257),UINT64_C(4112),SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u)+1000u})
+            {
+                if (count*n*2u>tensor_bytes) continue;
+                Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,false);Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,true);
+            }
     }
     void Case(uint32_t n,uint32_t op,uint32_t b,uint64_t count,bool graph)
     {
@@ -361,9 +382,9 @@ struct Probe
 
 int main(int argc,char **argv)
 {
-    if (argc!=2 || std::strcmp(argv[1],"--run")!=0)
+    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run\n",argv[0]);return 2;
+        std::fprintf(stderr,"usage: %s --run | --all-to-all\n",argv[0]);return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
     CUDA(cudaSetDeviceFlags(cudaDeviceMapHost));CUDA(cudaSetDevice(0));
@@ -371,6 +392,12 @@ int main(int argc,char **argv)
     std::printf("ENV CUDA_MODULE_LOADING=%s CUDA_MODULE_DATA_LOADING=%s CUDA_DEVICE_MAX_CONNECTIONS=%s\n",loading==CU_MODULE_LAZY_LOADING ? "LAZY" : "EAGER",
         std::getenv("CUDA_MODULE_DATA_LOADING") ? std::getenv("CUDA_MODULE_DATA_LOADING") : "unset",std::getenv("CUDA_DEVICE_MAX_CONNECTIONS") ? std::getenv("CUDA_DEVICE_MAX_CONNECTIONS") : "unset");
     Probe probe;
+    if (std::strcmp(argv[1],"--all-to-all")==0)
+    {
+        probe.AllToAll();
+        std::printf("PASS tp_mesh_hardware_probe all-to-all cases=%u\n",probe.completed_cases);
+        return 0;
+    }
     for (uint32_t degree:{2u,3u,4u,8u,16u})
         for (uint32_t operation:{0u,1u,2u})
             for (uint32_t rows:{1u,2u})
@@ -391,6 +418,7 @@ int main(int argc,char **argv)
         {
             probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
         }
+    probe.AllToAll();
     probe.routes=0u;probe.Case(16u,1u,1u,65536u,true);probe.routes=1u;
     probe.Faults();probe.Timings();
     std::printf("PASS tp_mesh_hardware_probe cases=%u GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy\n",probe.completed_cases);
