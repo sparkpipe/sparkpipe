@@ -740,7 +740,7 @@ static void SparkGemma4T1Frame(SparkGemma4ModuleState *state, SparkGemma4ModuleS
 	fputc('\n',stderr);
 }
 
-static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+static void SparkGemma4T1Buffer(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const char *tag, uint32_t layer, uint32_t rows, const void *buffer)
 {
 	static uint16_t *rows_host = 0;
 	static uint32_t rows_host_capacity = 0;
@@ -759,16 +759,21 @@ static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4Modul
 		rows_host_capacity = rows_host != 0 ? rows : 0u;
 	}
 	if ( rows_host == 0 ||
-		cudaMemcpy(rows_host,slot->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
+		cudaMemcpy(rows_host,buffer,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
 		return;
 	for (row = 0u; row < rows; row++)
 	{
 		uint16_t *values = rows_host + (uint64_t)row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
-		fprintf(stderr,"G4-T1 stream L%u pos%u",layer,slot->host_row_positions_u32[row]);
+		fprintf(stderr,"G4-T1 %s L%u pos%u",tag,layer,slot->host_row_positions_u32[row]);
 		for (i = 0u; i < SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION; i++)
 			fprintf(stderr," %04x",values[i]);
 		fputc('\n',stderr);
 	}
+}
+
+static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+{
+	SparkGemma4T1Buffer(state,slot,"stream",layer,rows,slot->hidden_bf16);
 }
 
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
@@ -921,6 +926,7 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaGetLastError(),"attention");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4T1Buffer(state,slot,"attn",layer,rows,slot->attn_output_bf16);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm(stream,slot->attn_output_bf16,state->layer_post_attention_norm_by_layer[layer],slot->delta_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"post_attention_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -985,6 +991,8 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
+	SparkGemma4T1Buffer(state,slot,"mid",layer,rows,slot->hidden_bf16);
+	SparkGemma4T1Buffer(state,slot,"mlp",layer,rows,slot->mlp_down_bf16);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm(stream,slot->mlp_down_bf16,state->layer_post_feedforward_norm_by_layer[layer],slot->delta_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"post_ff_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1233,6 +1241,7 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 			return(status);
 	}
 	SparkGemma4T1Frame(state,slot,rows,1u);
+	SparkGemma4T1Buffer(state,slot,"embed",0u,rows,slot->hidden_bf16);
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkGemma4ModuleRunLayer(state,slot,context,layer,rows);
