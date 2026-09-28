@@ -324,7 +324,8 @@ class Qwen38_27bEngine:
             attention, states[index] = self.gdn_attention(prefix, x,
                                                           states.get(index))
         elif self.layer_types[index] == "full_attention":
-            attention = self.full_attention(prefix, x, caches[index], index)
+            attention = self.full_attention(prefix, x, caches[index],
+                                             len(caches[index]))
         else:
             raise ValueError(f"unsupported layer type {self.layer_types[index]}")
         streams = bf16_round_f32(streams + attention)
