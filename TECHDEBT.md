@@ -253,6 +253,29 @@ removed rather than retained as a progress diary.
   call it, so the pager that README's KV tiers describe is not wired into
   any module.
 
+## Prefix reuse (I23)
+
+Adapters without `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` get no
+cached prefixes and log `prefix_reuse=off` at engine connect
+([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse
+capability). Each is an open I23 gap:
+
+- qwen38_27b has a GDN snapshot borrow for prompt checkpoints
+  (`SparkQwen38_27bServingPrefixBorrow`) but cannot declare the capability:
+  a borrow miss logs `recomputing` and prefills over unrestored KV blocks and
+  GDN state; decode-lane checkpoints are never snapshotted (only prefill frames
+  call `SparkQwen38_27bServingPrefixPublish`), so indexed generated blocks
+  would always miss; a publish that finds no free entry or more than 64 blocks
+  returns OK without storing; the eight snapshot entries evict independently
+  of the engine's index; a borrowed partial last block is shared without
+  copy-on-write.
+- gemma4 keeps a per-slot block allocator and has no borrow path.
+- glm52 and ling resolve prefix pages through `SparkKvPageCachePrepareLane`
+  but attend through an identity page table; laguna shares glm5_next's page
+  table upload. Each needs a restored-versus-uninterrupted proof (I27) before
+  it declares the capability.
+- k3, minimax, muse_glimmer, qwen38_max and qwen4_flash have no borrow path.
+
 ## Dynamic batching
 
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to

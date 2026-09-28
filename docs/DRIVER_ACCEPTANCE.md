@@ -126,6 +126,45 @@ into its model's byte layout; it does not set or enforce the budgets.
   runtime yet ([`TECHDEBT.md`](../TECHDEBT.md), Serving API).
 - Prefix reuse goes through `cache/prefix_cache.c`: the batch engine calls
   `SparkPrefixCacheLookupPrompt` and `SparkPrefixCacheCommitPrompt`.
+
+## Prefix reuse capability
+
+An adapter declares `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE`
+only when it restores every identity it was asked to publish (I24-I27): the
+whole state at that position, bound to the new slot, and a failed submission
+rather than a silent recompute over unrestored state when it no longer holds
+the identity. The batch engine looks up cached prefixes, and so sends
+`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX` lanes, only to adapters that
+declare it; adapter validation rejects a prefix lane for any other adapter
+with `UNSUPPORTED`. At connect the engine logs one line per adapter:
+
+```
+batch engine adapter=<id> prefix_reuse=on|off decode_checkpoints=inline|deferred|inline-until-speculative
+```
+
+`prefix_reuse=off` is an I23 gap owned by that adapter, not an engine choice.
+The adapters that declare the capability are glm5_next (paged KV plus KDA
+state from the recurrent store) and dsv4 (paged KV, index and compressor state
+resolved through per-lane page tables). qwen38_27b, gemma4, glm52, ling,
+laguna, k3, minimax, muse_glimmer, qwen38_max and qwen4_flash do not declare
+it yet.
+
+Decode checkpoints depend on how the adapter speculates:
+
+- `inline`: no speculation. A decode lane that reaches a cache block
+  boundary, or the request's last token, names the checkpoint and the engine
+  indexes it when the completion returns.
+- `deferred`: speculation with `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH`.
+  The decode lane carries no checkpoint; the engine sends a
+  `SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH` frame after the tokens are
+  accepted, so the state is captured at the boundary exactly.
+- `inline-until-speculative`: speculation without the cache-publish work
+  kind. Checkpoints are named inline. A completion that returns one token per
+  sequence is indexed as usual, so a run with speculation off keeps publishing
+  its generated blocks. A completion that returns more than one token per
+  sequence may have captured state past the boundary, so the engine does not
+  index that checkpoint and names no further decode checkpoints for that
+  request. Its prompt checkpoints stay indexed.
 - `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
   `scheduler/topology_switch.c` uses it only through the tier's public calls
   (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
