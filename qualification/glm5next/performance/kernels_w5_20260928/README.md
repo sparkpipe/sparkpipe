@@ -36,7 +36,7 @@ Dropped after measurement: programmatic dependent launch plus L2 prefetch for ev
 
 ## Bandwidth and per kernel
 - stream_read_probe_sparke.txt: streaming read peaks at 243 GB/s (4-64 MB per launch), 237 GB/s at 1 GB; copy 222 GB/s read+write; an empty graph node costs 0.41 us; a 256 KB read costs 2.0 us, 1 MB 5.1 us.
-- kernel_table_b1.txt: base vs final per kernel class (nsys graph-node trace, median replay). The BF16 skinny GEMVs were already at 190-240 GB/s on an idle GPU. The large losses were the B1 head (74 GB/s), the split latent attention (14 GB/s), the delta rule, route build and RMSNorm.
+- kernel_table_b1.txt: base vs final per kernel class (nsys graph-node trace, median replay), made with `tools/glm5_next_nsys_kernel_table.py`; `tools/glm5_next_nsys_kernel_aggregate.py` aggregates one trace. Both were `scripts/kernel_table.py` and `scripts/kernel_aggregate.py` here. The BF16 skinny GEMVs were already at 190-240 GB/s on an idle GPU. The large losses were the B1 head (74 GB/s), the split latent attention (14 GB/s), the delta rule, route build and RMSNorm.
 - The bytes floor of this step is 2.56 GB / 243 GB/s = 10.5 ms. The final step is 12.9 ms.
 
 ## Tests (tests/)
