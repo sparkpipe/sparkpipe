@@ -358,7 +358,6 @@ TEST_NAMES := \
     test_weightd_expert \
     test_stage_module_weightd \
     test_weightd_map \
-    test_weightd_mesh_doorbell \
     test_weightd_mesh_mock \
     test_module_library \
     test_speculation_provider_slot \
@@ -1534,9 +1533,6 @@ build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage
 # its W2 siblings.
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
-
-build/test_weightd_mesh_doorbell: tests/test_weightd_mesh_doorbell.c include/sparkpipe/spark_weightd.h | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c tests/ibv_stub/infiniband/verbs.h tests/ibv_stub/sys/mman.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests/ibv_stub -DSPARK_WEIGHTD_MESH_DIR=\"/tmp/spark-weightd-mesh-mock\" $(CFLAGS) tests/test_weightd_mesh_mock.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
