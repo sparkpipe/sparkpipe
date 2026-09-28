@@ -1,5 +1,10 @@
 # T1-QMAX run receipt — 2026-09-15/16 night wave (re-stamp + engine repair)
 
+> Archived 2026-09-28: a receipt from the 2026-09-15/16 waves. The TP16
+> transport blocker it reports has since been fixed (GLM serves TP16 graph
+> chains). Its evidence files and `runs/` are not in the tree, and its
+> MESH_LEASE and worktree conventions are obsolete.
+
 Lane lane/t1-qmax @ 3217be3 (+ tooling commits), worktree /Users/mac/t1qmaxn.
 Mesh lease ACTIVE T1-QMAX window 16:21Z-~19:00Z; CEPH lease held from the
 prior session (tail reads only; patch pass + release notes appended).

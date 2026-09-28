@@ -1,5 +1,14 @@
 # Model Dev's Guide — start every session here
 
+> Archived 2026-09-28. Its queue section is wrong for Queue v2: state lives in
+> `~/.sparkpipe/queue` on the one controller, deadlines default to 3 minutes
+> with a 15-minute maximum (so `--ttl-min 20` is rejected), and jobs get
+> MemoryMax 8192 MiB unless `--memory-mib` is set (`tools/spark_queue.py`).
+> The coordinator workflow, `docs/AGENT_LANE_BRIEFS/` and the :8765 dashboard
+> no longer exist. The rules that still hold are in
+> `docs/MULTIDEV_QUICKSTART.md` ("Model work rules"); the queue contract is
+> in `docs/PARALLEL_DRIVER_DEBUG.md`.
+
 You own ONE model. The fleet, its packs, and the task queue are shared
 infrastructure run by the coordinator (PR-based). This guide is the
 contract for getting your work done without stepping on anyone.

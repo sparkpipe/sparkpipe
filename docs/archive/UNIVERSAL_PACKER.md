@@ -1,5 +1,10 @@
 # The Universal Packer — design (operator directive 2026-08-30)
 
+> Archived 2026-09-28: a 2026-08-30 design sketch that was never built
+> (`tools/sparkpipe_stagepack.py` and `tools/stagepack_core/` do not exist).
+> Its motivation and shape are folded into `docs/DRY_PACKBUILDER_PROPOSAL.md`,
+> the single packer-consolidation doc.
+
 ## Why (the incident that justifies it)
 
 Eight packers, ~8,700 lines, one shared job: read safetensors source →

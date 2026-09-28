@@ -1,5 +1,13 @@
 # K3 TP4xPP4 fleet — launch state (lane/k3-finish, 2026-08-29/30)
 
+> Archived 2026-09-28: a 2026-08-29/30 lane snapshot. Do not follow its
+> bring-up. The K3 runner fails closed without a weightd socket
+> (`SparkWeightdAttachRequested` in
+> `spark_k3_resident_decode_stage_runner.cu`), `tools/k3_fleet_wave.sh` sets no
+> weightd environment, `fleet_swap` is obsolete, and queue jobs last at most
+> 15 minutes (`validate_ttl` in `tools/spark_queue.py`). Current K3 bring-up:
+> `tools/k3_multidev_run_family.sh` and `docs/MULTIDEV_QUICKSTART.md`.
+
 Live copy of this file sits at
 `/home/<host>/sparkdata/k3.mxfp4.tp4pp4/LAUNCH-STATE.md` on every staged
 rank. Any coordinator/agent can take over mid-bring-up from this file.

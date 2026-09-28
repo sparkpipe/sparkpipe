@@ -1,5 +1,15 @@
 # DESIGN — gemma-4 family driver (one family, two contracts)
 
+> Archived 2026-09-28: the pre-implementation design (2026-09-09). The module
+> landed with a different placement: 31B builds as TP16
+> (`spark.gemma4.serving-adapter.tp16.v1`) and 26B-A4B as TP4xPP4 over 16
+> stages (`tp4pp4.v1`), both from one `llm_defines.h` behind
+> `SPARK_GEMMA4_MOE_BUILD`
+> (`modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c`).
+> Full layers rotate 64 pairs (`SPARK_LLM_FULL_ROTATED_PAIR_COUNT`), not the
+> 128 stated in sections 2 and 4. Authorities: the module,
+> `model_contracts/gemma4_*_authoritative.json` and `docs/DRIVER_ACCEPTANCE.md`.
+
 Lane: gemma4 · branch `lane/gemma4-driver` @ origin/main 8f3a6f2 · UNTRACKED deliverable.
 Author: designer stage, 2026-09-09. HF facts refetched today from
 `https://huggingface.co/google/{gemma-4-31B-it,gemma-4-26B-A4B-it}` (config.json +

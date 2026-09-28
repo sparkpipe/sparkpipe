@@ -6,7 +6,9 @@ Required behavior is mandatory. No descriptor bit, configuration option,
 environment variable, stub or documentation exception can disable it. Report
 functional qualification and hardware-normalized performance qualification
 separately. An incomplete driver fails functional qualification; a correct but
-slow driver remains an explicit performance optimization target.
+slow driver remains an explicit performance optimization target. The one
+recorded deviation, pinned GLM graph serving, is listed under "Known
+exception" with what it does not qualify.
 
 ## One implementation of common policy
 
@@ -44,7 +46,8 @@ specialization of hot math while sharing its dispatch and scheduling policy.
 | Page movement | `cache/kv_page_store.c` | Copy callback and opaque device context |
 | Collective orchestration and progress | `ring/transport/tp_device_collective.c` | Device combine/transfer/completion operations |
 | Slot ownership, completion lifetime | `runtime/stage_module_common.c`, `runtime/work_transaction.c` | Model stage work and final state publication |
-| Deployment and hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
+| Development hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
+| Production deployment | fleet-agent (`tools/fleet_node_agent.sh`) pulling release roots from the hub over HTTP :8802 ([`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md)) | A coherent release root per rank |
 
 Keep model geometry, state layout and math in model hooks. Keep device
 allocation, execution, copies and events in backend hooks. Shared policy
@@ -55,13 +58,18 @@ document does not claim that implementation is already complete.
 
 ## Mandatory interface and behavior
 
-Serving ABI 21 retires the PREFILL, DECODE, RELEASE, PREFETCH, RESET,
-DRIVER_OWNS_KV and JIT_KV capability bits. Their old numeric bits are rejected.
-Every interface must provide initialize, destroy, validate_submission,
-submit, prefetch, resolve_prefetch, progress, quiesce, snapshot and reset.
-ABI 22 additionally removes the slot-reuse policy field. Common code always
-requires release before another sequence can own a bound slot, including at
-position zero. Cache geometry and positive runtime page capacities are required.
+The serving ABI is 23 (`SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION` in
+`include/sparkpipe/spark_model_serving_adapter.h`). ABI 21 retired the
+PREFILL, DECODE, RELEASE, PREFETCH, RESET, DRIVER_OWNS_KV and JIT_KV
+capability bits; their old numeric bits are rejected. Every interface must
+provide initialize, destroy, validate_submission, submit, prefetch,
+resolve_prefetch, progress, quiesce, snapshot and reset;
+`SparkModelServingAdapterValidateInterface` (`runtime/model_serving_adapter.c`)
+rejects a missing one. ABI 22 removed the slot-reuse policy field. Common code
+always requires release before another sequence can own a bound slot,
+including at position zero. ABI 23 (a2fbb5f) added per-lane sampling rules and
+the SAMPLING capability; a sampled lane on an adapter without the capability
+is rejected. Cache geometry and positive runtime page capacities are required.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.
@@ -152,10 +160,50 @@ allreduce time remains exposed after compute overlap, the bytes/weight reuse
 lost to microbatch splitting, GPU launch gaps and rank imbalance. Use these
 measurements to select the next optimization while preserving correctness.
 
-## Current enforcement change is not driver completion
+## Quality gate
 
-The ABI enforcement change intentionally exposes missing integrations. GLM
-Flash lacks complete cache preparation/restoration; production adapters lack
-reset callbacks, and Qwen had no-op prefetch/resolve callbacks. Do not fill
-these holes with dummy functions or invented geometry. Complete the common
-machinery and real model state integration, then rerun the behavioral gates.
+COMPSEC-17 (`qualification/ds4_eval` fixtures) passes only when the request
+applies the model's chat template, disables thinking, allows at least 512
+output tokens and grades the last `Answer:` line
+(`qualification/ds4_eval/compare_runs.py`). `tools/glm5_next_compsec17.py`
+does this for GLM (default 512 tokens, pass threshold 14 of 17); GLM 5.3
+Flash scored 14/17 on TP16 engines from dd3526b
+(`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff`). The K3
+fixtures are raw text with no chat template, so a K3 gate needs the same
+treatment before it can pass or fail a model. Batched serving is not
+batch-invariant, so compare concurrent runs by grade, not by token stream.
+
+## Known exception: pinned GLM graph serving
+
+Production GLM 5.3 Flash does not use strict lazy, bounded expert residency.
+fleet-agent's `20-serving.conf` drop-in sets `G5_PIN_EXPERTS=1` and
+`G5_GRAPH_PATH=1`; `tools/fleet_node_agent.sh` passes them to residentd as
+`SPARK_GLM5_NEXT_PIN_EXPERTS` and `SPARK_GLM5_NEXT_GRAPH_PATH`, and
+`SparkGlm5NextPinAllExperts` leases every routed expert (12096 = 288 experts
+x 42 routed layers, arithmetic from `model_contracts/glm53_flash_authoritative.json`).
+The graph path requires this since 78c2c21. It is an explicitly selected,
+reported resident mode (I28): it does not qualify the lazy path under I29 or
+I30, and it remains an exception until graphs can relocate expert pointers
+(TECHDEBT).
+
+## Current per-driver gaps
+
+Code state on 2026-09-28. Do not fill these holes with dummy functions or
+invented geometry; complete the real integration and rerun the gates.
+
+- k3: `K3ServingPrefetch`, `K3ServingResolvePrefetch`, `K3ServingProgress`,
+  `K3ServingQuiesce` and `K3ServingReset` return success without doing
+  anything (`spark_k3_serving_adapter.c`).
+- qwen4_flash: its interface table (`ServingSeamInterface` in
+  `spark_qwen4_flash_serving_adapter.c`) sets no prefetch,
+  resolve_prefetch or reset, so `SparkModelServingAdapterValidateInterface`
+  rejects it.
+- dsv41_flash, hy4 and mimo26: no serving adapter source exists under
+  `modules/<family>_resident_decode_stage/source/` (mimo26 holds only its
+  stagepack format header). MiMo 2.5 has no module directory; its engine is
+  `inference/llms/mimo_2_5`.
+- The families built on `include/sparkpipe/family/serving/` (dsv4, gemma4,
+  glm52, glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b) and
+  qwen38_max route reset through a driver RESET admission. A present
+  callback is structural evidence only; the functional evidence above still
+  qualifies each driver.
