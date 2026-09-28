@@ -440,11 +440,17 @@ progress diary.
     serving adapter. None of their module Makefiles names an
     `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
     `make adapter` refuses and the script cannot release them.
-- glm5_next, laguna and ling compare four driver descriptor fields in their
+- glm5_next and laguna compare four driver descriptor fields in their
   own load functions and skip `model_description_sha256`, which
   `serving_adapter_template.c` checks for the other adapters. Moving them
-  onto the template needs each build to pass its description hash; the
-  tree holds a glm5_next description for fp8 only.
+  onto the template needs each build to pass its description hash, as the
+  ling module does through `MODEL_DESCRIPTION`; the tree holds a glm5_next
+  description for fp8 only.
+- `tools/module_build_release.sh` defaults the ling firmware description to
+  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
+  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
+  script refuses without it). Commit the per-codec ling descriptions or
+  point the default at `ling_resident_decode_stage_firmware.json`.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
@@ -507,6 +513,39 @@ progress diary.
   belongs to the model: carry it in the deployment's tokenizer or model
   description and let the API render whatever the model declares, then drop
   `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
+- `text/tokenizer.c` knows split regexes only by exact string. It knows
+  the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
+  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
+  possessive quantifiers). Every other `Split` is skipped without an
+  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
+  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
+  - laguna, whose newline split precedes the letter pattern;
+  - dsv4 and dsv4.1, with three splits;
+  - muse-glimmer's case-aware letters;
+  - gemma4's `Replace` plus `Split " "`.
+
+  Implement them, then make an unknown `Split` a load error.
+- The four known letter-class splits classify code points by Unicode
+  class (`text/unicode_class_tables.h`, generated from Python
+  `unicodedata` 16.0 and checked range for range against the Oniguruma
+  classes of HF tokenizers 0.23.2 by
+  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
+  regex path (`use_regex: true` with no `Split`) still classifies by byte
+  and treats every byte >= 0x80 as a letter. Port it to the same
+  classifier before a model that uses it serves non-ASCII text.
+- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
+  skips any other normalizer without an error: gemma4's `Replace`, and
+  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
+  those, then make an unknown normalizer a load error. A tokenizer with
+  NFC cannot be saved in the compiled format, which has no field for it.
+- The ling driver applies no SwiGLU clamp. The publisher serving code
+  (sglang and vLLM `bailing_moe_v3`) clamps `silu(gate)` to at most L and
+  `up` to [-L, L] on layers 34-41, using `expert_swiglu_limit_list` and
+  `share_expert_swiglu_limit_list`; the HF modeling and our contract treat
+  the lists as inert. The three reference prompts cannot tell the two
+  apart (docs/T1_REFERENCE_COMPARE.md). Add the clamp to the routed and
+  shared expert activation for those layers, and make the contract name
+  the lists as required behaviour.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head
