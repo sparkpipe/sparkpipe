@@ -1,4 +1,5 @@
 #pragma once
+#include <pthread.h>
 #include "sparkpipe/spark_lm_kernels.cuh"
 
 static __device__ __forceinline__ void StCpAsync16(void *shmem, const void *gmem)
@@ -32,11 +33,38 @@ static __device__ __forceinline__ void StageB16(void *shmem, const void *gmem)
 #define ST_B_STRIDE (ST_CHUNK_K + 16u)
 #define SPARK_QWEN38_27B_WS_PREFILL_M_TILES 4u
 
-template <uint32_t D, bool PLAIN_B, uint32_t MT>
+static __global__ void SparkQwen38_27bWsQuantizeActivationsKernel(
+	const void *input_bf16,
+	uint64_t input_row_stride,
+	uint8_t *quantized,
+	uint8_t *scale_codes,
+	uint32_t input_dimension)
+{
+	const uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	const uint32_t row = blockIdx.x;
+	const uint32_t groups = input_dimension / 32u;
+	const __nv_bfloat16 *src = (const __nv_bfloat16 *)((const uint8_t *)input_bf16 + (uint64_t)row * input_row_stride * 2u);
+	for ( uint32_t group = warp; group < groups; group += blockDim.x / SPARK_LM_WARP_LANES )
+	{
+		float value = __bfloat162float(src[group * 32u + lane]);
+		float amax = LmActivationWarpMax(fabsf(value));
+		amax = __shfl_sync(0xffffffffu, amax, 0u);
+		uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
+		float scale = SparkLmSm121E8m0ScaleValue(scale_code);
+		quantized[(uint64_t)row * input_dimension + group * 32u + lane] = LmFloatToE4m3(value / scale);
+		if ( lane == 0u )
+			scale_codes[(uint64_t)row * groups + group] = scale_code;
+	}
+}
+
+template <uint32_t D, bool PLAIN_B, uint32_t MT, bool PREQUANTIZED>
 static __global__ __launch_bounds__(512u, 1)
 void SparkQwen38_27bWarpSpecializedKernel(
 	const uint8_t *weight_payload,
 	const uint8_t *weight_scale_e8m0,
+	const uint8_t *quantized_input,
+	const uint8_t *quantized_scale_codes,
 	const void *input_bf16,
 	uint64_t input_row_stride,
 	void *output_bf16,
@@ -157,6 +185,21 @@ void SparkQwen38_27bWarpSpecializedKernel(
 			asm volatile("bar.sync 1, 256;");
 			if ( PLAIN_B )
 				__threadfence_block();
+			if ( PREQUANTIZED )
+			{
+				for ( uint32_t tile_row = warp; tile_row < MT * 16u; tile_row += 8u )
+					if ( row_base + tile_row < row_count )
+					{
+						const uint32_t row = row_base + tile_row;
+						const uint32_t lane_step = lane / 8u;
+						*(uint32_t *)(a_e4m3 + ((tile_row / 16u) * (ST_CHUNK_K / 32u) + lane_step) * 16u * 32u + (tile_row % 16u) * 32u + (lane % 8u) * 4u) =
+							*(const uint32_t *)(quantized_input + (uint64_t)row * input_dimension + (uint64_t)chunk * ST_CHUNK_K + lane * 4u);
+						if ( lane < ST_CHUNK_K / 32u )
+							a_scale[((tile_row / 16u) * (ST_CHUNK_K / 32u) + lane) * 16u + (tile_row % 16u)] =
+								quantized_scale_codes[(uint64_t)row * (input_dimension / 32u) + chunk * (ST_CHUNK_K / 32u) + lane];
+					}
+			}
+			else
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
 				for ( uint32_t tile_row = warp; tile_row < MT * 16u; tile_row += 8u )
 				{
@@ -225,9 +268,63 @@ void SparkQwen38_27bWarpSpecializedKernel(
 }
 
 
-template <uint32_t MT>
+#define SPARK_QWEN38_27B_WS_QUANTIZED_ROWS 1024u
+#define SPARK_QWEN38_27B_WS_QUANTIZED_K 32768u
+#define SPARK_QWEN38_27B_WS_QUANTIZED_STREAMS 16u
+
+typedef struct SparkQwen38_27bWsQuantizedWorkspace
+{
+	cudaStream_t stream;
+	uint8_t *quantized;
+	uint8_t *scale_codes;
+} SparkQwen38_27bWsQuantizedWorkspace;
+
+static SparkQwen38_27bWsQuantizedWorkspace SparkQwen38_27bWsWorkspaces[SPARK_QWEN38_27B_WS_QUANTIZED_STREAMS];
+static pthread_mutex_t SparkQwen38_27bWsWorkspaceMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static inline cudaError_t SparkQwen38_27bWsWorkspace(cudaStream_t stream, SparkQwen38_27bWsQuantizedWorkspace **workspace_out)
+{
+	cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+	cudaError_t error = cudaSuccess;
+	uint32_t index;
+	*workspace_out = 0;
+	pthread_mutex_lock(&SparkQwen38_27bWsWorkspaceMutex);
+	for ( index = 0u; index < SPARK_QWEN38_27B_WS_QUANTIZED_STREAMS && SparkQwen38_27bWsWorkspaces[index].quantized != 0; ++index )
+		if ( SparkQwen38_27bWsWorkspaces[index].stream == stream )
+		{
+			*workspace_out = &SparkQwen38_27bWsWorkspaces[index];
+			pthread_mutex_unlock(&SparkQwen38_27bWsWorkspaceMutex);
+			return(cudaSuccess);
+		}
+	if ( index == SPARK_QWEN38_27B_WS_QUANTIZED_STREAMS )
+		error = cudaErrorMemoryAllocation;
+	if ( error == cudaSuccess )
+		error = cudaStreamIsCapturing(stream, &capture);
+	if ( error == cudaSuccess && capture != cudaStreamCaptureStatusNone )
+		error = cudaErrorStreamCaptureUnsupported;
+	if ( error == cudaSuccess )
+		error = cudaMalloc((void **)&SparkQwen38_27bWsWorkspaces[index].quantized, (size_t)SPARK_QWEN38_27B_WS_QUANTIZED_ROWS * SPARK_QWEN38_27B_WS_QUANTIZED_K);
+	if ( error == cudaSuccess )
+		error = cudaMalloc((void **)&SparkQwen38_27bWsWorkspaces[index].scale_codes, (size_t)SPARK_QWEN38_27B_WS_QUANTIZED_ROWS * (SPARK_QWEN38_27B_WS_QUANTIZED_K / 32u));
+	if ( error == cudaSuccess )
+	{
+		SparkQwen38_27bWsWorkspaces[index].stream = stream;
+		*workspace_out = &SparkQwen38_27bWsWorkspaces[index];
+	}
+	else if ( index < SPARK_QWEN38_27B_WS_QUANTIZED_STREAMS && SparkQwen38_27bWsWorkspaces[index].quantized != 0 )
+	{
+		cudaFree(SparkQwen38_27bWsWorkspaces[index].quantized);
+		SparkQwen38_27bWsWorkspaces[index].quantized = 0;
+	}
+	pthread_mutex_unlock(&SparkQwen38_27bWsWorkspaceMutex);
+	return(error);
+}
+
+template <uint32_t MT, bool PREQUANTIZED>
 static inline cudaError_t SparkQwen38_27bLaunchWsLinearTiles(
 	cudaStream_t stream,
+	const uint8_t *quantized_input,
+	const uint8_t *quantized_scale_codes,
 	const void *weight_payload,
 	const uint8_t *weight_scale_e8m0,
 	const void *input_bf16,
@@ -246,11 +343,11 @@ static inline cudaError_t SparkQwen38_27bLaunchWsLinearTiles(
 	static bool ws_shared_ready = false;
 	if ( !ws_shared_ready )
 	{
-		cudaError_t error = cudaFuncSetAttribute(SparkQwen38_27bWarpSpecializedKernel<4u,true,MT>,
+		cudaError_t error = cudaFuncSetAttribute(SparkQwen38_27bWarpSpecializedKernel<4u,true,MT,PREQUANTIZED>,
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
 		if ( error != cudaSuccess )
 			return(error);
-		error = cudaFuncSetAttribute(SparkQwen38_27bWarpSpecializedKernel<4u,false,MT>,
+		error = cudaFuncSetAttribute(SparkQwen38_27bWarpSpecializedKernel<4u,false,MT,PREQUANTIZED>,
 			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
 		if ( error != cudaSuccess )
 			return(error);
@@ -259,13 +356,13 @@ static inline cudaError_t SparkQwen38_27bLaunchWsLinearTiles(
 	{
 		const char *plain_env = getenv("SPARK_QWEN38_27B_WS_PLAIN");
 		if ( plain_env != 0 && plain_env[0] == '0' )
-			SparkQwen38_27bWarpSpecializedKernel<4u,false,MT><<<grid, 512u, shared, stream>>>(
-				(const uint8_t *)weight_payload, weight_scale_e8m0,
+			SparkQwen38_27bWarpSpecializedKernel<4u,false,MT,PREQUANTIZED><<<grid, 512u, shared, stream>>>(
+				(const uint8_t *)weight_payload, weight_scale_e8m0, quantized_input, quantized_scale_codes,
 				input_bf16, input_row_stride, output_bf16, output_row_stride,
 				row_count, input_dimension, output_dimension);
 		else
-			SparkQwen38_27bWarpSpecializedKernel<4u,true,MT><<<grid, 512u, shared, stream>>>(
-				(const uint8_t *)weight_payload, weight_scale_e8m0,
+			SparkQwen38_27bWarpSpecializedKernel<4u,true,MT,PREQUANTIZED><<<grid, 512u, shared, stream>>>(
+				(const uint8_t *)weight_payload, weight_scale_e8m0, quantized_input, quantized_scale_codes,
 				input_bf16, input_row_stride, output_bf16, output_row_stride,
 				row_count, input_dimension, output_dimension);
 	}
@@ -284,7 +381,18 @@ static inline cudaError_t SparkQwen38_27bLaunchWsLinear(
 	uint32_t input_dimension,
 	uint32_t output_dimension)
 {
+	SparkQwen38_27bWsQuantizedWorkspace *workspace = 0;
+	cudaError_t error;
 	if ( row_count <= 16u )
-		return(SparkQwen38_27bLaunchWsLinearTiles<1u>(stream,weight_payload,weight_scale_e8m0,input_bf16,input_row_stride,output_bf16,output_row_stride,row_count,input_dimension,output_dimension));
-	return(SparkQwen38_27bLaunchWsLinearTiles<SPARK_QWEN38_27B_WS_PREFILL_M_TILES>(stream,weight_payload,weight_scale_e8m0,input_bf16,input_row_stride,output_bf16,output_row_stride,row_count,input_dimension,output_dimension));
+		return(SparkQwen38_27bLaunchWsLinearTiles<1u,false>(stream,0,0,weight_payload,weight_scale_e8m0,input_bf16,input_row_stride,output_bf16,output_row_stride,row_count,input_dimension,output_dimension));
+	if ( row_count > SPARK_QWEN38_27B_WS_QUANTIZED_ROWS || input_dimension > SPARK_QWEN38_27B_WS_QUANTIZED_K || input_dimension % 32u != 0u )
+		return(cudaErrorInvalidValue);
+	error = SparkQwen38_27bWsWorkspace(stream, &workspace);
+	if ( error != cudaSuccess )
+		return(error);
+	SparkQwen38_27bWsQuantizeActivationsKernel<<<row_count, 256u, 0u, stream>>>(input_bf16, input_row_stride, workspace->quantized, workspace->scale_codes, input_dimension);
+	error = cudaGetLastError();
+	if ( error != cudaSuccess )
+		return(error);
+	return(SparkQwen38_27bLaunchWsLinearTiles<SPARK_QWEN38_27B_WS_PREFILL_M_TILES,true>(stream,workspace->quantized,workspace->scale_codes,weight_payload,weight_scale_e8m0,input_bf16,input_row_stride,output_bf16,output_row_stride,row_count,input_dimension,output_dimension));
 }
