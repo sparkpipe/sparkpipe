@@ -280,7 +280,6 @@ sync_root() { echo ROOT_SYNC; }
 sync_rendezvous() { echo RENDEZVOUS; }
 ensure_root() { echo ROOT_START; }
 prune_logs() { :; }
-ensure_api() { echo API_START; }
 warmup_hook() { echo WARMUP; }
 report_if_changed() { echo REPORT; }
 sleep() { exit 0; }
@@ -292,7 +291,7 @@ sleep() { exit 0; }
                     capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "API_START", "WARMUP", "REPORT"]
+                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "WARMUP", "REPORT"]
                     if ready else ["REPORT"])
 
 

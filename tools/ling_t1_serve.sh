@@ -8,7 +8,7 @@
 set -uo pipefail
 NAME="ling.bf16.tp16.t1ling"
 CMD="${1:-full}"
-API_HOST="spark0"
+API_HOST="${G5_API_HOST:?G5_API_HOST is required: the API host is not a Spark by default}"
 API_PORT="18477"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
