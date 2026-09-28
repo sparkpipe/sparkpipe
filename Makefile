@@ -1404,6 +1404,9 @@ build/test_llm_stagepack_format: tests/test_llm_stagepack_format.c tests/test_ll
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I include -c runtime/stagepack_format.c -o build/test_llm_stagepack_format_runtime.o
 	$(CC) $(CFLAGS) build/test_llm_stagepack_format_main.o build/test_llm_stagepack_format_negative.o build/test_llm_stagepack_format_runtime.o -o $@
 
+build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
+
 build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
 

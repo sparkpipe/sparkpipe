@@ -898,3 +898,31 @@ static __global__ void SparkDsv41FlashFp4Pow2QdqKernel(uint16_t *data_bf16, uint
 		data_bf16[base + element] = LmFloatToBf16(SparkDsv41FlashE2m1Round(value) * scale);
 	}
 }
+
+static __global__ void SparkDsv41FlashIndexScoreKernel(const uint16_t *query_bf16, const uint16_t *keys_bf16, const uint16_t *head_weights_bf16, float *scores_f32, uint32_t key_count, uint32_t head_count, uint32_t head_dimension)
+{
+	uint32_t lane = threadIdx.x % 32u,warp = threadIdx.x / 32u;
+	uint32_t key = blockIdx.x * (blockDim.x / 32u) + warp,head,element,offset;
+	float total = 0.0f,dot;
+	if ( key >= key_count )
+		return;
+	for (head = 0u; head < head_count; head++)
+	{
+		dot = 0.0f;
+		for (element = lane; element < head_dimension; element += 32u)
+			dot += LmBf16ToFloat(query_bf16[(uint64_t)head * head_dimension + element]) * LmBf16ToFloat(keys_bf16[(uint64_t)key * head_dimension + element]);
+		for (offset = 16u; offset != 0u; offset >>= 1u)
+			dot += __shfl_xor_sync(0xffffffffu,dot,offset);
+		total += fmaxf(dot,0.0f) * LmBf16ToFloat(head_weights_bf16[head]);
+	}
+	if ( lane == 0u )
+		scores_f32[key] = total;
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchIndexScore(cudaStream_t stream, const uint16_t *query_bf16, const uint16_t *keys_bf16, const uint16_t *head_weights_bf16, float *scores_f32, uint32_t key_count, uint32_t head_count, uint32_t head_dimension)
+{
+	if ( query_bf16 == 0 || keys_bf16 == 0 || head_weights_bf16 == 0 || scores_f32 == 0 || key_count == 0u || head_count == 0u || head_dimension == 0u )
+		return(cudaErrorInvalidValue);
+	SparkDsv41FlashIndexScoreKernel<<<(key_count + 7u) / 8u,256u,0,stream>>>(query_bf16,keys_bf16,head_weights_bf16,scores_f32,key_count,head_count,head_dimension);
+	return(cudaGetLastError());
+}
