@@ -391,21 +391,22 @@ struct Glm5NextLayerBuffers
     uint32_t head_token_offset;
     uint32_t index_owner_rank;
     uint32_t index_owner_degree;
-    uint32_t attention_decode_wave;
     float *index_local_scores;
     const float *index_gathered_scores;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
-    uint32_t decode_split_context_threshold;
 };
 
 static_assert(
-    LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
-        SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS,
-    "the firmware's split-partials sizing must match the kernel's "
-    "partition cap");
+    (SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH + LM_LATENT_HEADS_TILE - 1u) /
+        LM_LATENT_HEADS_TILE <=
+        SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS &&
+    SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTITIONS <=
+        LM_LATENT_HEADS_MAX_TILES,
+    "the firmware's split partials hold every absolute key tile of the "
+    "longest row");
 
 #include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
@@ -884,33 +885,8 @@ static int32_t Glm5NextLayerAttentionTail(
         rows,
         GLM5_NEXT_LATENT_ROW);
     static_assert(GLM5_NEXT_ROPE_DIM == 0u, "the all-heads latent kernel carries no RoPE part");
-    if (buffers->attention_decode_wave != 0u && LmLatentAttentionHeadsSupported(buffers->attn_heads) != 0u)
-    {
-        if (LmLatentAttentionHeadsLaunch<Glm5NextKv, GLM5_NEXT_LATENT>(
-                buffers->query_latent_bf16,
-                buffers->cache,
-                buffers->sequence_of_row,
-                buffers->context_length,
-                selected_positions,
-                selected_position_count,
-                buffers->attn_heads,
-                buffers->qk_scale,
-                buffers->attention_latent_bf16,
-                buffers->row_positions,
-                rows,
-                SparkGlm5NextAttentionPositionBound(context),
-                buffers->decode_split_context_threshold,
-                buffers->attention_split_partials,
-                (uint32_t)buffers->attention_split_partial_blocks,
-                multiprocessors,
-                stream) != cudaSuccess)
-            return LM_LAUNCH_ERR_LAUNCH;
-    }
-    else if (LmLatentAttentionDecodeSplitLaunch<
-            Glm5NextKv, GLM5_NEXT_ATTN_THREADS, GLM5_NEXT_LATENT,
-            GLM5_NEXT_ROPE_DIM>(
+    if (LmLatentAttentionHeadsLaunch<Glm5NextKv, GLM5_NEXT_LATENT>(
             buffers->query_latent_bf16,
-            buffers->query_rope_bf16,
             buffers->cache,
             buffers->sequence_of_row,
             buffers->context_length,
@@ -922,9 +898,9 @@ static int32_t Glm5NextLayerAttentionTail(
             buffers->row_positions,
             rows,
             SparkGlm5NextAttentionPositionBound(context),
-            buffers->decode_split_context_threshold,
+            GLM5_NEXT_DSA_SELECTED,
             buffers->attention_split_partials,
-            (uint32_t)buffers->attention_split_partial_blocks,
+            buffers->attention_split_partial_blocks,
             multiprocessors,
             stream) != cudaSuccess)
     {

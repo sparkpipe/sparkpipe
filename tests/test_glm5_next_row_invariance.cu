@@ -21,12 +21,12 @@
 #define ROWEQ_CAPACITY 128u
 #define ROWEQ_SPLIT_THRESHOLD 64u
 #define ROWEQ_PAGE 64u
+#define ROWEQ_RUN 4u
 
 static const uint32_t roweq_waves[] = {1u,2u,8u,17u,64u};
 
-static const char *const roweq_known_breaks[] =
+static const std::vector<std::string> roweq_known_breaks =
 {
-    "attention.latent@2","attention.latent@8","attention.latent@17","attention.latent@64",
 };
 
 typedef std::vector<std::vector<uint8_t>> RowBytes;
@@ -284,45 +284,64 @@ static Family MoeFamily(uint32_t multiprocessors)
 static Family AttentionFamily(uint32_t multiprocessors)
 {
     Family family;
-    std::vector<uint32_t> contexts(ROWEQ_POOL),table;
+    const uint32_t sequences=ROWEQ_POOL/ROWEQ_RUN,width=SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
+    std::vector<uint32_t> last(sequences),table,selection((uint64_t)ROWEQ_POOL*width);
     uint32_t longest=0u;
+    for (uint32_t sequence=0u; sequence<sequences; sequence++)
+    {
+        last[sequence]=sequence%4u == 0u ? ROWEQ_RUN+Random()%(ROWEQ_SPLIT_THRESHOLD-ROWEQ_RUN) : sequence%4u == 3u ? GLM5_NEXT_DSA_SELECTED+Random()%1000u : ROWEQ_RUN+Random()%1500u;
+        longest=std::max(longest,last[sequence]);
+    }
     for (uint32_t row=0u; row<ROWEQ_POOL; row++)
     {
-        contexts[row]=row%4u == 0u ? 1u+Random()%(ROWEQ_SPLIT_THRESHOLD-1u) : 1u+Random()%900u;
-        longest=std::max(longest,contexts[row]);
+        const uint32_t position=last[row/ROWEQ_RUN]-ROWEQ_RUN+row%ROWEQ_RUN;
+        for (uint32_t slot=0u; slot<width; slot++)
+            selection[(uint64_t)row*width+slot]=slot%97u == 13u ? 0xffffffffu : Random()%(position+1u+(slot%5u == 0u ? 8u : 0u));
     }
     const uint32_t pages=(longest+ROWEQ_PAGE-1u)/ROWEQ_PAGE;
-    for (uint32_t page=0u; page<ROWEQ_POOL*pages; page++) table.push_back((page*7919u)%(ROWEQ_POOL*pages));
-    uint16_t *kv=RandomBf16((uint64_t)ROWEQ_POOL*pages*ROWEQ_PAGE*GLM5_NEXT_LATENT_ROW,1.0f);
+    for (uint32_t page=0u; page<sequences*pages; page++) table.push_back((page*7919u)%(sequences*pages));
+    uint16_t *kv=RandomBf16((uint64_t)sequences*pages*ROWEQ_PAGE*GLM5_NEXT_LATENT_ROW,1.0f);
     uint16_t *queries=RandomBf16((uint64_t)ROWEQ_POOL*ROWEQ_HEADS*GLM5_NEXT_LATENT,0.25f);
     uint16_t *query=Allocate<uint16_t>((uint64_t)ROWEQ_POOL*ROWEQ_HEADS*GLM5_NEXT_LATENT),*output=Allocate<uint16_t>((uint64_t)ROWEQ_POOL*ROWEQ_HEADS*GLM5_NEXT_LATENT);
-    uint32_t *device_table=Upload(table),*device_contexts=Upload(contexts),*sequence=Allocate<uint32_t>(ROWEQ_POOL),*position=Allocate<uint32_t>(ROWEQ_POOL);
+    uint32_t *device_table=Upload(table),*pool_selection=Upload(selection),*wave_selection=Allocate<uint32_t>((uint64_t)ROWEQ_POOL*width);
+    uint32_t *contexts=Allocate<uint32_t>(sequences),*sequence=Allocate<uint32_t>(ROWEQ_POOL),*position=Allocate<uint32_t>(ROWEQ_POOL);
     const uint64_t partial_blocks=SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(ROWEQ_CAPACITY,ROWEQ_HEADS);
     float *partials=Allocate<float>(partial_blocks*SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS);
     LmKvAccessError *error=Allocate<LmKvAccessError>(1u);
     LmKvView view;
-    REQUIRE(LmKvViewInitialize(&view,(uint8_t *)kv,device_table,pages,ROWEQ_POOL,ROWEQ_POOL*pages,error) == 0);
+    REQUIRE(LmKvViewInitialize(&view,(uint8_t *)kv,device_table,pages,sequences,sequences*pages,error) == 0);
     family.name="attention";
     family.sites={"latent"};
     family.run=[=](const std::vector<uint32_t> &members,std::vector<RowBytes> &sites)
     {
         const uint32_t rows=(uint32_t)members.size();
-        std::vector<uint32_t> positions(rows);
+        std::vector<uint32_t> positions(rows),sequence_rows(rows),wave_contexts(sequences,1u);
         uint32_t context=0u;
         LmKvAccessError host_error;
         for (uint32_t row=0u; row<rows; row++)
         {
-            positions[row]=contexts[members[row]]-1u;
-            context=std::max(context,contexts[members[row]]);
+            sequence_rows[row]=members[row]/ROWEQ_RUN;
+            positions[row]=last[sequence_rows[row]]-ROWEQ_RUN+members[row]%ROWEQ_RUN;
+            wave_contexts[sequence_rows[row]]=std::max(wave_contexts[sequence_rows[row]],positions[row]+1u);
+            context=std::max(context,positions[row]+1u);
         }
-        CUDA(cudaMemcpy(sequence,members.data(),rows*4u,cudaMemcpyHostToDevice));
+        CUDA(cudaMemcpy(sequence,sequence_rows.data(),rows*4u,cudaMemcpyHostToDevice));
         CUDA(cudaMemcpy(position,positions.data(),rows*4u,cudaMemcpyHostToDevice));
+        CUDA(cudaMemcpy(contexts,wave_contexts.data(),sequences*4u,cudaMemcpyHostToDevice));
         Gather(query,queries,(uint64_t)ROWEQ_HEADS*GLM5_NEXT_LATENT*2u,members);
-        if (rows > 1u)
-            CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(query,view,sequence,device_contexts,0,0u,ROWEQ_HEADS,0.0625f,output,position,rows,SparkGlm5NextAttentionPositionBound(context),ROWEQ_SPLIT_THRESHOLD,partials,(uint32_t)partial_blocks,multiprocessors,0)));
-        else
-            CUDA((LmLatentAttentionDecodeSplitLaunch<Glm5NextKv,GLM5_NEXT_ATTN_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_ROPE_DIM>(query,0,view,sequence,device_contexts,0,0u,ROWEQ_HEADS,0.0625f,output,position,rows,SparkGlm5NextAttentionPositionBound(context),ROWEQ_SPLIT_THRESHOLD,partials,(uint32_t)partial_blocks,multiprocessors,0)));
-        sites={Scatter(output,(uint64_t)ROWEQ_HEADS*GLM5_NEXT_LATENT*2u,(uint64_t)ROWEQ_HEADS*GLM5_NEXT_LATENT*2u,rows)};
+        Gather(wave_selection,pool_selection,(uint64_t)width*4u,members);
+        for (uint32_t grouping : {multiprocessors,1u,1u<<20u})
+        {
+            CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(query,view,sequence,contexts,context > GLM5_NEXT_DSA_SELECTED ? wave_selection : 0,width,ROWEQ_HEADS,0.0625f,output,position,rows,SparkGlm5NextAttentionPositionBound(context),GLM5_NEXT_DSA_SELECTED,partials,partial_blocks,grouping,0)));
+            RowBytes bytes=Scatter(output,(uint64_t)ROWEQ_HEADS*GLM5_NEXT_LATENT*2u,(uint64_t)ROWEQ_HEADS*GLM5_NEXT_LATENT*2u,rows);
+            if (grouping == multiprocessors)
+                sites={bytes};
+            else if (bytes != sites[0])
+            {
+                fprintf(stderr,"FAIL attention heads per block changed bits: wave=%u grouping_multiprocessors=%u\n",rows,grouping);
+                exit(1);
+            }
+        }
         CUDA(cudaMemcpy(&host_error,error,sizeof(host_error),cudaMemcpyDeviceToHost));
         REQUIRE(host_error.error_code == LM_KV_ACCESS_ERROR_NONE);
     };
@@ -488,7 +507,7 @@ int main(int argc,char **argv)
     cudaDeviceProp properties;
     std::map<std::string,Tally> tallies;
     std::vector<std::string> keys;
-    std::set<std::string> known(std::begin(roweq_known_breaks),std::end(roweq_known_breaks));
+    std::set<std::string> known(roweq_known_breaks.begin(),roweq_known_breaks.end());
     uint32_t regressions=0u,stale=0u,breaks=0u;
     bool enforce;
     if (argc != 2 || (strcmp(argv[1],"--run") != 0 && strcmp(argv[1],"--report") != 0))

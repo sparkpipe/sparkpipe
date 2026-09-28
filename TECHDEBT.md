@@ -250,9 +250,10 @@ progress diary.
   every row count (`LmSkinnyDenseRows`, docs/ROW_INVARIANCE.md). ling and
   laguna still leave the skinny kernel above eight rows for the tensor-core
   GEMM. The glm5_next greedy head gives every row the certified B1 result
-  (exact rows rescore). Batched latent attention still sums in a different
-  order from the per-head kernel, so prefill and batched-decode logits are not
-  yet bitwise equal to B1. 128-row prefill waves cost about 4.6% more with the skinny order;
+  (exact rows rescore), and its latent attention plans absolute 256-key tiles
+  from each row's own keys. The kernel harness finds no remaining break; KDA,
+  the indexer, HC and the full layer stack are not yet in it, and no TP16 run
+  has compared sequential with concurrent COMPSEC-17 yet. 128-row prefill waves cost about 4.6% more with the skinny order;
   keeping prompt rows on the tensor-core order (and generated-token
   checkpoints out of prefix reuse for verified requests) would remove that.
 - `make test-glm5-next-row-invariance` (docs/ROW_INVARIANCE.md) compares
@@ -275,14 +276,6 @@ progress diary.
   generated ones. Until batched rows equal B1, a warm and a cold run of the
   same prompt can differ (#1230). Make them equal, or keep checkpoints of
   generated tokens out of reuse for verified requests.
-- glm5_next: a row's attention still depends on the other rows in its wave.
-  The wave's longest row decides split-KV for every row, and a row at or
-  below 2,048 tokens, in a wave whose longest row is past 2,048, attends
-  through the 2,051-slot selected list (all its complete pools, then its
-  tail) instead of densely. Either way its partitions and summation order
-  differ from a one-row wave's. Graph and eager waves now agree with each
-  other, but not with the row run alone. Attention tiles fixed by absolute
-  key position (the TensorFold rule above) remove this.
 - glm5_next: no GPU test compares a replayed decode graph's logits with an
   eager wave's at the same context. Host tests cover the choices (split-KV,
   DSA selection, pool expansion) and run the selection kernels. Add the

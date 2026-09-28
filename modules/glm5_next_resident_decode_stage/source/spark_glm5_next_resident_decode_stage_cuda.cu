@@ -324,13 +324,11 @@ static void SparkGlm5NextBindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->index_owner_rank = wave->tp_rank;
-	buffers->attention_decode_wave = wave->run_count == wave->row_count && wave->row_count > 1u ? 1u : 0u;
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
-	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
 	buffers->route_source_token = slot->route_source_token;

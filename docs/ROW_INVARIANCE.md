@@ -18,7 +18,7 @@ intermediate):
 | `dense_linear` | `Glm5NextLaunchBf16LinearRows` for the nine per-rank dense shapes | output |
 | `dense_mlp` | `Glm5NextLayerDenseMlp` | output |
 | `moe` | `Glm5NextLayerMoeRoute` then `Glm5NextLayerMoeExperts` (FP8 experts, shared expert, finalize) | router logits, route (expert ids and weights), output |
-| `attention` | the stage's decode dispatch: one row takes the per-head split kernel, a decode wave the all-heads kernel, split on the wave's longest context against threshold 64 | latent output |
+| `attention` | `LmLatentAttentionHeadsLaunch` as the layer calls it: 16 sequences of four consecutive positions each (so a wave can hold a multi-row run of one sequence, as MTP verify and prefill do), contexts from under 64 to past 2,048 with per-row 2,051-slot selected lists, the context of each sequence set by its last row in the wave; every wave is also run with one, two and four heads per block and must give the same bytes | latent output |
 | `head_greedy` | `SparkGlm5NextRunHead`, greedy rows (B1 takes the certified FP8 path) | maxloc word, token |
 | `head_sampled` | `SparkGlm5NextRunHead`, every row sampled | maxloc word, token |
 | `head_mixed` | `SparkGlm5NextRunHead`, half the rows sampled | maxloc word, token |
@@ -41,7 +41,9 @@ repairs in the same change.
 
 After the skinny-rows fix, 12 cells remain: attention and the greedy and
 mixed head maxloc words. After the head fix, only the four attention cells
-remain.
+remain. After the attention fix, none remain (88 cells, 0 breaks). The
+baseline attention family was the simpler decode-only version; the current
+one also covers runs of one sequence and selected lists.
 
 
 38 of 80 cells break:
@@ -128,9 +130,59 @@ on the rank that owns the head. Sixteen rows of hidden state would need
 128 KB of shared memory, over the per-block limit; a K-slab version is the
 next step if the 64-row cost matters.
 
+### Attention (absolute key tiles)
+
+`LmLatentAttentionHeadsKernel` now plans each row from the row alone:
+
+- keys: `min(context_length[sequence], position + 1)`. A row takes its
+  selected list only when that count exceeds `dense_limit` (2,048 for
+  glm5_next) and the wave has a list, so a short row next to a long one stays
+  dense;
+- tiles: `ceil(keys / 256)`; tile `t` covers keys `[256 t, 256 t + 256)`; warp
+  `w` takes keys `256 t + w, + 16, ...` in two-key steps;
+- a one-tile row writes its output directly; a longer row writes one partial
+  per tile, and `LmLatentAttentionTilesCombineKernel` merges tiles 0..P-1 in
+  order;
+- the grid is `(rows, tiles of the longest possible row, head groups)`. Blocks
+  past a row's own tile count exit. How many heads a block handles (one, two
+  or four) is picked from the wave size for speed; it never changes a head's
+  arithmetic, and the harness checks that.
+
+The per-head split kernel, `attention_decode_wave` and the split threshold's
+numeric role are gone from glm5_next. `decode_split_context_threshold` still
+shapes graph regimes and bounds, which no longer affect bits. A row whose key
+count exceeds the planned tiles reports `PAGE_TABLE_OUT_OF_RANGE` through the
+KV access error. The partials keep 16 tiles per row and head (the longest row,
+a 2,051-slot list, needs 9).
+
+This changes B1 attention numerics once. COMPSEC-17 and MTP parity must be
+requalified on this reference.
+
+Cost, per MLA layer (sparkf, 4 heads, all rows at the given context, median of
+7 x 20 launches; the GPU was shared with another lane's run, so old numbers
+varied between runs and the table gives the range):
+
+| Rows | Context | old us | tiles us |
+|---|---|---|---|
+| 1 | 64 | 10-23 | 16 |
+| 1 | 512 | 29-51 | 31 |
+| 1 | 1,024 | 50-87 | 31 |
+| 1 | 2,048 | 92-102 | 31 |
+| 8 | 1,024 | 137-180 | 64-78 |
+| 16 | 1,024 | 190-238 | 115-165 |
+| 64 | 1,024 | 455-618 | 512-685 |
+| 64 | 2,048 | 747-997 | 935-1,282 |
+| 128 | 1,024 | 845-1,102 | 905-1,242 |
+
+glm5_next has 11 MLA layers per rank. So B1 at 2,048 tokens saves about
+0.7 ms per token and B1 below 128 tokens pays at most 0.07 ms; 8-16-row waves
+save about 0.8 ms per step; 64-row waves at 2,048 tokens pay up to about 2 ms.
+The next lever for large waves is occupancy: the four-head block uses 207
+registers, so one block per SM.
+
 ## Not yet covered
 
 KDA, the DSA indexer (pool scores and top-k), the HC site and post kernels,
-MTP drafting, multi-row runs of one sequence (MTP verify, prefill chunks),
-selected-list attention past 2,048 tokens, graph against eager replay, and the
-TP16 collectives. Add a family when a fix touches one of them.
+MTP drafting, the layer stack end to end (hash every layer boundary in
+`bench-glm5-next-batch`), graph against eager replay, and the TP16
+collectives. Add a family when a fix touches one of them.

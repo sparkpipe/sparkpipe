@@ -43,7 +43,7 @@ typedef struct HostAttention
 	uint32_t rows,heads,pages,selected,contexts[HOST_MAX_POOL_ROWS],positions[HOST_MAX_POOL_ROWS],sequences[HOST_MAX_POOL_ROWS];
 	uint32_t table[HOST_MAX_POOL_ROWS * (HOST_MAX_CONTEXT / HOST_PAGE + 1u)],selection[HOST_MAX_POOL_ROWS * 64u];
 	uint16_t pool[HOST_MAX_POOL_ROWS * (HOST_MAX_CONTEXT / HOST_PAGE + 1u) * HOST_PAGE * HOST_LATENT],query[HOST_MAX_POOL_ROWS * 4u * HOST_LATENT],output[HOST_MAX_POOL_ROWS * 4u * HOST_LATENT];
-	float partials[HOST_MAX_POOL_ROWS * 4u * LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS * (HOST_LATENT + 2u)];
+	float partials[HOST_MAX_POOL_ROWS * 4u * LM_LATENT_HEADS_MAX_TILES * (HOST_LATENT + 2u)];
 }
 HostAttention;
 
@@ -131,7 +131,7 @@ static void HostAttentionCase(uint32_t rows,uint32_t heads,uint32_t context,uint
 			item.selection[row * selected + step] = step % 13u == 5u ? 0xffffffffu : (host_state = host_state * 1664525u + 1013904223u) % item.contexts[row];
 	}
 	assert(LmKvViewInitialize(&view,(uint8_t *)item.pool,item.table,item.pages,rows,rows * item.pages,&error) == 0);
-	assert((LmLatentAttentionHeadsLaunch<HostKv,HOST_LATENT>(item.query,view,item.sequences,item.contexts,selected != 0u ? item.selection : 0,selected,heads,0.0625f,item.output,item.positions,rows,selected != 0u ? selected : context,64u,item.partials,rows * heads * LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS,multiprocessors,0)) == cudaSuccess);
+	assert((LmLatentAttentionHeadsLaunch<HostKv,HOST_LATENT>(item.query,view,item.sequences,item.contexts,selected != 0u ? item.selection : 0,selected,heads,0.0625f,item.output,item.positions,rows,selected != 0u ? selected : context,0u,item.partials,(uint64_t)rows * heads * LM_LATENT_HEADS_MAX_TILES,multiprocessors,0)) == cudaSuccess);
 	assert(error.error_code == LM_KV_ACCESS_ERROR_NONE);
 	for (row=0u; row<rows; row++)
 		for (head=0u; head<heads; head++)

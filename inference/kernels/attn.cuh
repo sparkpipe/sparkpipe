@@ -607,6 +607,24 @@ static __device__ __forceinline__ void LmLatentHeadsWalk(LmKvView cache, const u
     }
 }
 
+#define LM_LATENT_HEADS_TILE 256u
+#define LM_LATENT_HEADS_MAX_TILES 64u
+#define LM_LATENT_HEADS_WIDE_WAVES 4u
+
+static __host__ __device__ __forceinline__ uint32_t LmLatentHeadsTiles(uint32_t keys)
+{
+    return(keys == 0u ? 1u : (keys + LM_LATENT_HEADS_TILE - 1u) / LM_LATENT_HEADS_TILE);
+}
+
+static __device__ __forceinline__ uint32_t LmLatentHeadsRowKeys(const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t dense_limit, uint32_t row, uint32_t sequence, uint32_t *selected)
+{
+    uint32_t dense = context_length[sequence];
+    if (row_position != 0 && row_position[row] < dense)
+        dense = row_position[row] + 1u;
+    *selected = selected_positions != 0 && dense > dense_limit ? 1u : 0u;
+    return(*selected != 0u ? selected_count : dense);
+}
+
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
 __global__ __launch_bounds__(LM_LATENT_HEADS_THREADS, 1)
 void LmLatentAttentionHeadsKernel(
@@ -616,7 +634,9 @@ void LmLatentAttentionHeadsKernel(
     const uint32_t *__restrict__ context_length,
     const uint32_t *__restrict__ selected_positions,
     uint32_t selected_count,
-    uint32_t partitions,
+    uint32_t dense_limit,
+    uint32_t tile_stride,
+    uint32_t heads_total,
     float qk_scale,
     uint16_t *__restrict__ output_bf16,
     float *__restrict__ partials,
@@ -627,8 +647,8 @@ void LmLatentAttentionHeadsKernel(
     __shared__ float warp_max[LM_LATENT_HEADS_WARPS][HEADS];
     __shared__ float warp_sum[LM_LATENT_HEADS_WARPS][HEADS];
     __shared__ float merged[HEADS][LATENT];
-    uint32_t row = blockIdx.x, partition = blockIdx.y, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
-    uint32_t sequence = sequence_of_row[row], head, index, position_count, span, first, last;
+    uint32_t row = blockIdx.x, tile = blockIdx.y, head_first = blockIdx.z * HEADS, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
+    uint32_t sequence = sequence_of_row[row], head, index, keys, tiles, selected, first, last;
     float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE];
     float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS];
     uint64_t base;
@@ -637,28 +657,36 @@ void LmLatentAttentionHeadsKernel(
         LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
         return;
     }
+    keys = LmLatentHeadsRowKeys(context_length, row_position, selected_positions, selected_count, dense_limit, row, sequence, &selected);
+    tiles = LmLatentHeadsTiles(keys);
+    if (tiles > tile_stride)
+    {
+        if (tile == 0u && blockIdx.z == 0u)
+            LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, keys, 0xffffffffu);
+        return;
+    }
+    if (tile >= tiles)
+        return;
     for (head = 0u; head < HEADS; ++head)
     {
         running_max[head] = -INFINITY;
         running_sum[head] = 0.0f;
-        LmLatentHeadsLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * PER_LANE, query[head]);
+        LmLatentHeadsLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * heads_total + head_first + head) * LATENT + lane * PER_LANE, query[head]);
         for (index = 0u; index < PER_LANE; ++index)
             accumulator[head][index] = 0.0f;
     }
-    position_count = selected_positions != 0 ? selected_count : context_length[sequence];
-    span = (position_count + partitions - 1u) / partitions;
-    first = partition * span;
-    last = first + span < position_count ? first + span : position_count;
-    LmLatentHeadsWalk<Geometry, HEADS, PER_LANE>(cache, selected_positions, selected_count, row_position, row, sequence, first + warp, last, lane, query, qk_scale, running_max, running_sum, accumulator);
+    first = tile * LM_LATENT_HEADS_TILE;
+    last = first + LM_LATENT_HEADS_TILE < keys ? first + LM_LATENT_HEADS_TILE : keys;
+    LmLatentHeadsWalk<Geometry, HEADS, PER_LANE>(cache, selected != 0u ? selected_positions : 0, selected_count, row_position, row, sequence, first + warp, last, lane, query, qk_scale, running_max, running_sum, accumulator);
     LmLatentHeadsMerge<HEADS, LATENT, PER_LANE>(warp_max, warp_sum, merged, running_max, running_sum, accumulator, global_max, global_sum);
     for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_HEADS_THREADS)
     {
         head = index / LATENT;
-        if (partitions == 1u)
-            output_bf16[((uint64_t)row * HEADS + head) * LATENT + index % LATENT] = LmFloatToBf16(merged[head][index % LATENT] / fmaxf(global_sum[head], 1.0e-20f));
+        if (tiles == 1u)
+            output_bf16[((uint64_t)row * heads_total + head_first + head) * LATENT + index % LATENT] = LmFloatToBf16(merged[head][index % LATENT] / fmaxf(global_sum[head], 1.0e-20f));
         else
         {
-            base = (((uint64_t)row * HEADS + head) * partitions + partition) * (LATENT + 2u);
+            base = (((uint64_t)row * heads_total + head_first + head) * tile_stride + tile) * (LATENT + 2u);
             partials[base + 2u + index % LATENT] = merged[head][index % LATENT];
             if (index % LATENT == 0u)
             {
@@ -669,18 +697,69 @@ void LmLatentAttentionHeadsKernel(
     }
 }
 
+template<uint32_t THREADS, uint32_t LATENT>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLatentAttentionTilesCombineKernel(
+    const float *__restrict__ partials,
+    uint16_t *__restrict__ output_bf16,
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ selected_positions,
+    uint32_t selected_count,
+    uint32_t dense_limit,
+    const uint32_t *__restrict__ row_position,
+    uint32_t heads,
+    uint32_t tile_stride)
+{
+    __shared__ float scales[LM_LATENT_HEADS_MAX_TILES];
+    __shared__ float denominator_shared;
+    uint32_t row = blockIdx.x, head = blockIdx.y, tile, element, tiles, selected;
+    uint64_t block_base;
+    float global_max, denominator;
+    tiles = LmLatentHeadsTiles(LmLatentHeadsRowKeys(context_length, row_position, selected_positions, selected_count, dense_limit, row, sequence_of_row[row], &selected));
+    if (tiles == 1u)
+        return;
+    block_base = ((uint64_t)row * heads + head) * tile_stride * (LATENT + 2u);
+    if (threadIdx.x == 0u)
+    {
+        global_max = -INFINITY;
+        for (tile = 0u; tile < tiles; ++tile)
+        {
+            float candidate = partials[block_base + (uint64_t)tile * (LATENT + 2u)];
+            global_max = candidate > global_max ? candidate : global_max;
+        }
+        denominator = 0.0f;
+        for (tile = 0u; tile < tiles; ++tile)
+        {
+            float tile_max = partials[block_base + (uint64_t)tile * (LATENT + 2u)];
+            float scale = (global_max == -INFINITY || tile_max == -INFINITY) ? 0.0f : __expf(tile_max - global_max);
+            scales[tile] = scale;
+            denominator = fmaf(partials[block_base + (uint64_t)tile * (LATENT + 2u) + 1u], scale, denominator);
+        }
+        denominator_shared = denominator;
+    }
+    __syncthreads();
+    for (element = threadIdx.x; element < LATENT; element += THREADS)
+    {
+        float merged = 0.0f;
+        for (tile = 0u; tile < tiles; ++tile)
+            merged = fmaf(partials[block_base + (uint64_t)tile * (LATENT + 2u) + 2u + element], scales[tile], merged);
+        output_bf16[((uint64_t)row * heads + head) * LATENT + element] = LmFloatToBf16(merged / fmaxf(denominator_shared, 1.0e-20f));
+    }
+}
+
 static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
 {
     return(heads == 1u || heads == 2u || heads == 4u ? 1u : 0u);
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
-static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t dense_limit, uint32_t tile_stride, uint32_t heads, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
 {
-    LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
-    if (cudaPeekAtLastError() != cudaSuccess || partitions == 1u)
+    LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, tile_stride, heads / HEADS), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position);
+    if (cudaPeekAtLastError() != cudaSuccess || tile_stride == 1u)
         return cudaPeekAtLastError();
-    LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
+    LM_LAUNCH((LmLatentAttentionTilesCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, heads), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, row_position, heads, tile_stride);
     return cudaPeekAtLastError();
 }
 
@@ -698,23 +777,23 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     const uint32_t *row_position,
     uint32_t rows,
     uint32_t position_bound,
-    uint32_t split_context_threshold,
+    uint32_t dense_limit,
     float *split_partials,
-    uint32_t split_partial_blocks,
+    uint64_t split_partial_blocks,
     uint32_t multiprocessor_count,
     cudaStream_t stream)
 {
-    uint32_t partitions;
-    partitions = rows == 0u || multiprocessor_count == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + rows - 1u) / rows;
-    partitions = partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ? LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS : partitions;
-    if (LmLatentAttentionContextSplits(position_bound, split_context_threshold) == 0u || split_partials == 0 || partitions < 2u || (uint64_t)rows * heads * partitions > split_partial_blocks)
-        partitions = 1u;
-    if (heads == 1u)
-        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    if (heads == 2u)
-        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    if (heads == 4u)
-        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    const uint32_t keys = selected_positions != 0 && selected_count > position_bound ? selected_count : position_bound;
+    const uint32_t tile_stride = LmLatentHeadsTiles(keys);
+    const uint64_t blocks = (uint64_t)rows * tile_stride;
+    if (rows == 0u || tile_stride > LM_LATENT_HEADS_MAX_TILES || (tile_stride > 1u && (split_partials == 0 || (uint64_t)rows * heads * tile_stride > split_partial_blocks)))
+        return cudaErrorInvalidValue;
+    if (heads == 4u && blocks >= (uint64_t)LM_LATENT_HEADS_WIDE_WAVES * multiprocessor_count)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    if ((heads == 2u || heads == 4u) && blocks * 2u >= multiprocessor_count)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+    if (heads == 1u || heads == 2u || heads == 4u)
+        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
     return cudaErrorNotSupported;
 }
 

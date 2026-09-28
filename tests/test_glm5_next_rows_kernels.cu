@@ -271,7 +271,7 @@ static void AttentionUpload(const AttentionCase &item,AttentionDevice *device)
     device->table=Upload(item.table); device->contexts=Upload(item.contexts); device->positions=Upload(item.positions); device->selection=Upload(item.selection); device->sequences=Upload(sequence);
     CUDA(cudaMalloc(&device->error,sizeof(*device->error))); CUDA(cudaMemset(device->error,0,sizeof(*device->error)));
     CUDA(cudaMalloc(&device->output,(uint64_t)item.rows*item.heads*GLM5_NEXT_LATENT*2u));
-    CUDA(cudaMalloc(&device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS*(GLM5_NEXT_LATENT+2u)*4u));
+    CUDA(cudaMalloc(&device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_HEADS_MAX_TILES*(GLM5_NEXT_LATENT+2u)*4u));
     REQUIRE(LmKvViewInitialize(&device->view,(uint8_t *)device->pool,device->table,item.pages_per_sequence,item.rows,item.rows*item.pages_per_sequence,device->error) == 0);
 }
 
@@ -286,7 +286,7 @@ static void AttentionLaunch(const AttentionCase &item,const AttentionDevice *dev
     const uint32_t bound=item.selected != 0u ? item.selected : *std::max_element(item.contexts.begin(),item.contexts.end()),blocks=item.rows*item.heads*LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS;
     const uint32_t *selection=item.selected != 0u ? device->selection : 0;
     if (heads_kernel)
-        CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(device->query,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,64u,device->partials,blocks,multiprocessors,stream)));
+        CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(device->query,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,0u,device->partials,(uint64_t)item.rows*item.heads*LM_LATENT_HEADS_MAX_TILES,multiprocessors,stream)));
     else
         CUDA((LmLatentAttentionDecodeSplitLaunch<Glm5NextKv,GLM5_NEXT_ATTN_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_ROPE_DIM>(device->query,0,device->view,device->sequences,device->contexts,selection,item.selected,item.heads,0.0625f,device->output,device->positions,item.rows,bound,64u,device->partials,blocks,multiprocessors,stream)));
 }
