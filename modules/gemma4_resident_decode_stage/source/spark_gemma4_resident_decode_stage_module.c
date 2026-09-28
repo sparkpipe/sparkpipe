@@ -861,7 +861,7 @@ static struct
 	double frame_milliseconds;
 	cudaEvent_t events[SPARK_GEMMA4_PROFILE_EVENTS];
 	uint8_t kinds[SPARK_GEMMA4_PROFILE_EVENTS];
-} SparkGemma4Profile = {-1};
+} SparkGemma4Profile = {.enabled = -1};
 
 static const char *const SparkGemma4ProfileNames[SPARK_GEMMA4_PROFILE_KINDS] =
 	{"upload","qkv","attention","o_proj","all_reduce","mlp","elementwise","head"};
