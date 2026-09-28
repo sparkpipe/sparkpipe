@@ -1,0 +1,7 @@
+{
+  "prompts": [
+    {"name": "capital_of_france", "text": "The capital of France is", "prompt_token_ids": [678, 7706, 300, 11406, 341]},
+    {"name": "count_up", "text": "Counting upward: one, two,", "prompt_token_ids": [5212, 283, 39043, 25, 810, 11, 1307, 11]},
+    {"name": "python_fibonacci", "text": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n"}
+  ]
+}

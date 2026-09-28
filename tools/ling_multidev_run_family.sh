@@ -207,6 +207,7 @@ else
     EXPERT_CODEC="$EXPERT_CODEC" \
     MODEL_REVISION="$MODEL_REVISION" \
     CONTRACT_SHA256="$CONTRACT_SHA256" \
+    MODEL_DESCRIPTION="$CHECKOUT/$FIRMWARE" \
     archive adapter
   ADAPTER="$CHECKOUT/build/modules/ling_resident_decode_stage/$EXPERT_CODEC/libling_serving_adapter_$EXPERT_CODEC.so"
   [ -f "$ADAPTER" ] || fail "adapter not built: $ADAPTER"

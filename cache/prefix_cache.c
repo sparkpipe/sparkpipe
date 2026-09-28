@@ -231,6 +231,11 @@ static uint32_t SparkPrefixCacheEntryIsReusable(
         entry->token_count <= cache->block_token_count;
 }
 
+static uint32_t SparkPrefixCacheEntryIsCommitted(const SparkPrefixCache *cache,const SparkPrefixCacheEntry *entry)
+{
+    return(SparkPrefixCacheEntryIsReusable(cache,entry) != 0u || (entry != 0 && (entry->flags & (SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID | SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE | SPARK_PREFIX_CACHE_ENTRY_FLAG_PENDING)) == (SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID | SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE)) ? 1u : 0u);
+}
+
 static uint32_t SparkPrefixCacheEntryIndex(
     const SparkPrefixCache *cache,
     const SparkPrefixCacheEntry *entry)
@@ -1319,18 +1324,17 @@ typedef struct SparkPrefixCacheWalk
     uint32_t partial;
 } SparkPrefixCacheWalk;
 
-static SparkPrefixCacheEntry *SparkPrefixCacheWalkNext(
+static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
-    uint32_t token_count,
+    uint32_t maximum,
     SparkPrefixCacheWalk *walk)
 {
     SparkPrefixCacheEntry *entry;
-    uint32_t count,maximum;
+    uint32_t count;
     uint64_t block_hash,content_hash;
     uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
 
-    maximum = SparkPrefixCacheMaximumReusableTokenCount(cache,token_count);
     if (walk->partial != 0u || walk->token_offset >= maximum)
         return 0;
     if (walk->matched_block_count == 0u)
@@ -1357,6 +1361,11 @@ static SparkPrefixCacheEntry *SparkPrefixCacheWalkNext(
         return entry;
     }
     return 0;
+}
+
+static SparkPrefixCacheEntry *SparkPrefixCacheWalkNext(SparkPrefixCache *cache,const uint32_t *token_ids,uint32_t token_count,SparkPrefixCacheWalk *walk)
+{
+    return(SparkPrefixCacheWalkNextBounded(cache,token_ids,SparkPrefixCacheMaximumReusableTokenCount(cache,token_count),walk));
 }
 
 SparkStatus SparkPrefixCacheProbePrompt(
@@ -2387,7 +2396,7 @@ SparkStatus SparkPrefixCacheCommitPrompt(
             SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         previous = &cache->entries[binding->entry_index];
         SparkPrefixCacheDigestBlock(&token_ids[offset],previous->token_count,digest);
-        if (!SparkPrefixCacheEntryIsReusable(cache,previous) ||
+        if (!SparkPrefixCacheEntryIsCommitted(cache,previous) ||
             memcmp(previous->content_digest,digest,sizeof(digest)) != 0)
             SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
         status = SparkPrefixCacheRetainLogicalBlock(cache,previous->logical_block_index);
@@ -2967,6 +2976,23 @@ SparkStatus SparkPrefixCacheReleaseSequence(
         }
     }
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkPrefixCacheTombstonePrompt(SparkPrefixCache *cache,const uint32_t *token_ids,uint32_t token_count)
+{
+    SparkPrefixCacheWalk walk = {0};
+    SparkPrefixCacheEntry *entry,*terminal = 0;
+    SparkStatus status = SparkPrefixCacheValidate(cache);
+    if (status != SPARK_STATUS_OK)
+        return(status);
+    if (token_ids == 0 || token_count == 0u)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    while ((entry = SparkPrefixCacheWalkNextBounded(cache,token_ids,token_count,&walk)) != 0)
+        terminal = entry;
+    if (terminal == 0 || walk.token_offset != token_count)
+        return(SPARK_STATUS_NOT_FOUND);
+    terminal->flags = (terminal->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_REUSABLE) | SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE;
+    return(terminal->reference_count == 0u ? SparkPrefixCacheInvalidateEntry(cache,terminal) : SPARK_STATUS_OK);
 }
 
 SparkStatus SparkPrefixCacheReset(

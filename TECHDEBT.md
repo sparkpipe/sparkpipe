@@ -552,11 +552,18 @@ removed rather than retained as a progress diary.
     serving adapter. None of their module Makefiles names an
     `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
     `make adapter` refuses and the script cannot release them.
-- glm5_next and ling compare four driver descriptor fields in their own
-  load functions and skip `model_description_sha256`, which
-  `serving_adapter_template.c` checks for the other adapters. Moving them
-  onto the template needs each build to pass its description hash; the
-  tree holds a glm5_next description for fp8 only.
+- glm5_next compares four driver descriptor fields in its own load
+  function and skips `model_description_sha256`, which
+  `serving_adapter_template.c` checks for the other adapters. Moving it
+  onto the template needs its build to pass its description hash, as the
+  ling module does through `MODEL_DESCRIPTION` and the laguna module through
+  `LAGUNA_MODEL_DESCRIPTION_SHA256`; the tree holds a glm5_next description
+  for fp8 only.
+- `tools/module_build_release.sh` defaults the ling firmware description to
+  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
+  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
+  script refuses without it). Commit the per-codec ling descriptions or
+  point the default at `ling_resident_decode_stage_firmware.json`.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
@@ -622,6 +629,61 @@ removed rather than retained as a progress diary.
   belongs to the model: carry it in the deployment's tokenizer or model
   description and let the API render whatever the model declares, then drop
   `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
+- Ling TP16 prefill runs one row per sequence per wave (the round-major
+  wave rule), so a prompt costs one full 86-collective chain per token:
+  298 prompt tokens take 5.1-8.2 s to the first token. Chunked KDA
+  prefill (many rows of one sequence per wave) is the fix.
+- `SparkLingRoundMajorWaveRows` clamps every wave to one row, so a
+  decode step of 8 sequences runs 8 full chains (8-stream aggregate
+  equals B1, about 52 tok/s). Removing the clamp gives waves of several
+  sequences, and those produce wrong tokens after the first decode step;
+  the Q-projection stride and the KDA state index were two of the
+  multi-row defects and are fixed, at least one remains. Find it with a
+  T1 route comparison of a multi-row wave against the same prompts solo,
+  then drop the clamp.
+- The ling TP chain advances from host callbacks and keys the single
+  device collective per chain, so a ling lane runs one submission in
+  flight (`tools/ling_lane.py` renders `max_inflight_submissions` 1).
+- Ling keeps no KDA state per cached prefix, so its deployment sets
+  `prefix_reuse` false. Prefix reuse for ling needs KDA state capture at
+  block boundaries, as the GLM JIT KV work does.
+- laguna's TP chain has the shape ling had before 2026-09-28: it keeps the
+  adapter's stack-allocated batch view and frame context across
+  asynchronous collectives and takes no collective chain key, so a TP>1
+  laguna lane should expect a dead-stack read on multi-wave prefill and
+  CAPACITY_EXCEEDED after 1024 collectives. Port the ling fixes
+  (chain-owned views, `SparkTpDeviceCollectiveChainKey` per execute).
+- The ling T1 stream dump prints hidden plus the reduced MLP delta, which
+  does not equal the fixture's residual stream at early layers (layer 0
+  norm 1.1 against 226); `tools/t1_ling_log_assembly.py` also expects a
+  prefix field that raw residentd logs do not carry. Route ids and head
+  tokens compare; streams need the dump brought back to the fixture's
+  definition.
+- `text/tokenizer.c` knows split regexes only by exact string. It knows
+  the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
+  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
+  possessive quantifiers). Every other `Split` is skipped without an
+  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
+  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
+  - laguna, whose newline split precedes the letter pattern;
+  - dsv4 and dsv4.1, with three splits;
+  - muse-glimmer's case-aware letters;
+  - gemma4's `Replace` plus `Split " "`.
+
+  Implement them, then make an unknown `Split` a load error.
+- The four known letter-class splits classify code points by Unicode
+  class (`text/unicode_class_tables.h`, generated from Python
+  `unicodedata` 16.0 and checked range for range against the Oniguruma
+  classes of HF tokenizers 0.23.2 by
+  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
+  regex path (`use_regex: true` with no `Split`) still classifies by byte
+  and treats every byte >= 0x80 as a letter. Port it to the same
+  classifier before a model that uses it serves non-ASCII text.
+- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
+  skips any other normalizer without an error: gemma4's `Replace`, and
+  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
+  those, then make an unknown normalizer a load error. A tokenizer with
+  NFC cannot be saved in the compiled format, which has no field for it.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head

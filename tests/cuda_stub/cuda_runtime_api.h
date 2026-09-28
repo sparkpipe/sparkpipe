@@ -136,6 +136,121 @@ cudaError_t cudaHostGetDevicePointer(
     void *host_pointer,
     unsigned int flags);
 const char *cudaGetErrorString(cudaError_t error);
+typedef void *cudaGraphNode_t;
+typedef void *cudaArray_t;
+typedef struct CUfunc_st *cudaFunction_t;
+
+typedef enum cudaGraphNodeType
+{
+    cudaGraphNodeTypeKernel = 0x00,
+    cudaGraphNodeTypeMemcpy = 0x01,
+    cudaGraphNodeTypeMemset = 0x02,
+    cudaGraphNodeTypeHost = 0x03,
+    cudaGraphNodeTypeGraph = 0x04,
+    cudaGraphNodeTypeEmpty = 0x05,
+    cudaGraphNodeTypeWaitEvent = 0x06,
+    cudaGraphNodeTypeEventRecord = 0x07,
+    cudaGraphNodeTypeMemAlloc = 0x0a,
+    cudaGraphNodeTypeMemFree = 0x0b
+} cudaGraphNodeType;
+
+typedef enum cudaMemoryType
+{
+    cudaMemoryTypeUnregistered = 0,
+    cudaMemoryTypeHost = 1,
+    cudaMemoryTypeDevice = 2,
+    cudaMemoryTypeManaged = 3
+} cudaMemoryType;
+
+typedef struct dim3
+{
+    unsigned int x;
+    unsigned int y;
+    unsigned int z;
+} dim3;
+
+struct cudaKernelNodeParams
+{
+    void *func;
+    dim3 gridDim;
+    dim3 blockDim;
+    unsigned int sharedMemBytes;
+    void **kernelParams;
+    void **extra;
+};
+
+struct cudaPos
+{
+    size_t x;
+    size_t y;
+    size_t z;
+};
+
+struct cudaPitchedPtr
+{
+    void *ptr;
+    size_t pitch;
+    size_t xsize;
+    size_t ysize;
+};
+
+struct cudaExtent
+{
+    size_t width;
+    size_t height;
+    size_t depth;
+};
+
+struct cudaMemcpy3DParms
+{
+    cudaArray_t srcArray;
+    struct cudaPos srcPos;
+    struct cudaPitchedPtr srcPtr;
+    cudaArray_t dstArray;
+    struct cudaPos dstPos;
+    struct cudaPitchedPtr dstPtr;
+    struct cudaExtent extent;
+    enum cudaMemcpyKind kind;
+};
+
+struct cudaMemsetParams
+{
+    void *dst;
+    size_t pitch;
+    unsigned int value;
+    unsigned int elementSize;
+    size_t width;
+    size_t height;
+};
+
+struct cudaHostNodeParams
+{
+    cudaHostFn_t fn;
+    void *userData;
+};
+
+struct cudaPointerAttributes
+{
+    enum cudaMemoryType type;
+    int device;
+    void *devicePointer;
+    void *hostPointer;
+};
+
+cudaError_t cudaGraphGetNodes(cudaGraph_t graph,cudaGraphNode_t *nodes,size_t *count);
+cudaError_t cudaGraphNodeGetType(cudaGraphNode_t node,enum cudaGraphNodeType *type);
+cudaError_t cudaGraphKernelNodeGetParams(cudaGraphNode_t node,struct cudaKernelNodeParams *params);
+cudaError_t cudaGraphMemcpyNodeGetParams(cudaGraphNode_t node,struct cudaMemcpy3DParms *params);
+cudaError_t cudaGraphMemsetNodeGetParams(cudaGraphNode_t node,struct cudaMemsetParams *params);
+cudaError_t cudaGraphHostNodeGetParams(cudaGraphNode_t node,struct cudaHostNodeParams *params);
+cudaError_t cudaGraphEventRecordNodeGetEvent(cudaGraphNode_t node,cudaEvent_t *event);
+cudaError_t cudaGraphEventWaitNodeGetEvent(cudaGraphNode_t node,cudaEvent_t *event);
+cudaError_t cudaGraphExecKernelNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaKernelNodeParams *params);
+cudaError_t cudaGraphExecMemcpyNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaMemcpy3DParms *params);
+cudaError_t cudaGraphExecMemsetNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaMemsetParams *params);
+cudaError_t cudaGraphExecHostNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaHostNodeParams *params);
+cudaError_t cudaGetFuncBySymbol(cudaFunction_t *function,const void *symbol);
+cudaError_t cudaPointerGetAttributes(struct cudaPointerAttributes *attributes,const void *pointer);
 cudaError_t cudaGetLastError(void);
 #include <stdint.h>
 

@@ -48,7 +48,10 @@ MODULE_ENTRY_PREFIX := SparkGlm5NextResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../runtime/spark_expert_working_set.c \
 	../../src/spark_speculation_policy.c \
+	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_reference_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
@@ -59,6 +62,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \
+	../../cache/kv_snapshot.c \
 	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_glm5_next_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
