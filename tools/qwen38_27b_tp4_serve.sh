@@ -149,16 +149,22 @@ launch() {
 		on "$host" "set -e
 systemctl --user is-active --quiet ${UNIT} && { echo '${host}: ${UNIT} already running'; exit 2; }
 test -S ${WEIGHTD_SOCKET} || { echo '${host}: weightd socket missing'; exit 2; }
+python3 -c 'import os, sys
+for p in sys.argv[1:]:
+    fd = os.open(p, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)' ${root}/packs/${PACK_NAME}.rank${rank}.qwen36sp ${root}/drafter/qwen38-dflash2-drafter.qwen36sp
 cd ${root} && log=${root}/logs/residentd-${mode}-\$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn \$log ${root}/logs/current.log && echo ${mode} > ${root}/logs/current.mode
-systemd-run --user --collect --unit=${UNIT} --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${root}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E SPARK_TP_MESH_RANKS=${MESH_RANKS} -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 $(spec_env "$mode" "$root") ${QWEN27B_DIAG_ENV:-} ${root}/bin/sparkpipe_model_residentd --deployment ${root}/config/model_resident.${deployment}.json --rank-index ${rank} > /dev/null" &
+systemd-run --user --collect --unit=${UNIT} --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${root}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E SPARK_TP_MESH_RANKS=${MESH_RANKS} -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E SPARK_TP_WAIT_MODE=hardware -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 $(spec_env "$mode" "$root") ${QWEN27B_DIAG_ENV:-} ${root}/bin/sparkpipe_model_residentd --deployment ${root}/config/model_resident.${deployment}.json --rank-index ${rank} > /dev/null" &
 	done
 	wait
+	local not_ready=0
 	for rank in "${!HOSTS[@]}"; do
 		host=${HOSTS[$rank]}
 		root=$(root_of "$host")
 		on "$host" "for i in \$(seq 1 300); do grep -aq 'model_residentd ready' ${root}/logs/current.log && break; systemctl --user is-active --quiet ${UNIT} || break; sleep 1; done
-echo ${host} rank${rank}: \$(grep -a -E 'model_residentd ready|refused|failed|ERRSITE|mismatch' ${root}/logs/current.log | tail -3) avail=\$(free -g | awk '/Mem:/{print \$7}')G"
+echo ${host} rank${rank}: \$(grep -a -E 'model_residentd ready|refused|failed|ERRSITE|mismatch|out of memory' ${root}/logs/current.log | tail -3) avail=\$(free -g | awk '/Mem:/{print \$7}')G free=\$(awk '/MemFree/{print int(\$2/1048576)}' /proc/meminfo)G
+grep -aq 'model_residentd ready' ${root}/logs/current.log" || not_ready=$((not_ready + 1))
 	done
+	[ "$not_ready" -eq 0 ] || { echo "launch failed: ${not_ready} rank(s) not ready" >&2; return 4; }
 }
 
 status() {
