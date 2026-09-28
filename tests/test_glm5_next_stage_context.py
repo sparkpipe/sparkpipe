@@ -76,6 +76,15 @@ SparkStatus SparkTpDeviceCollectiveChainRetire(SparkTpDeviceCollective *collecti
 	return(SPARK_STATUS_OK);
 }
 
+cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+{
+	(void)stream;
+	(void)destination;
+	(void)source;
+	(void)element_count;
+	return(cudaErrorInvalidValue);
+}
+
 static uint32_t REAL_BACKEND;
 static int32_t ALLOCATIONS_BEFORE_FAILURE = -1;
 
