@@ -836,6 +836,13 @@ build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/ro
 test-route-build-scan: build/test_route_build_scan
 	./build/test_route_build_scan --run
 
+build/test_latent_attention_split_group: tests/test_latent_attention_split_group.cu inference/kernels/attn.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-latent-attention-split-group
+test-latent-attention-split-group: build/test_latent_attention_split_group
+	./build/test_latent_attention_split_group --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
