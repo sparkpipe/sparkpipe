@@ -286,7 +286,27 @@ def write_fixture(path, arrays):
             fh.write(comp)
 
 
+def fixture_quarantine(path):
+    manifest_path = os.path.join(os.path.dirname(os.path.abspath(path)),
+                                 "MANIFEST.json")
+    if not os.path.exists(manifest_path):
+        return None
+    with open(manifest_path) as fh:
+        quarantine = json.load(fh).get("quarantine")
+    if quarantine is None:
+        return None
+    if not quarantine.get("reason") or not quarantine.get("fixtures"):
+        raise ValueError(f"{manifest_path}: quarantine needs a reason and "
+                         f"a fixture list")
+    if os.path.basename(path) in quarantine["fixtures"]:
+        return quarantine["reason"]
+    return None
+
+
 def read_fixture(path):
+    reason = fixture_quarantine(path)
+    if reason is not None:
+        raise ValueError(f"{path}: quarantined fixture: {reason}")
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:4] != T1R_MAGIC:
