@@ -229,10 +229,14 @@ weights and two scales per expert (arithmetic from
 The spine is the sorted exact complement of the expert ranges. It includes
 headers and padding and has no digest of its own, so the loader validates the
 pack identity before publishing a pointer. Compact spine offsets keep each
-source offset's alignment modulo 256. `SparkWeightdSpineLoad` streams the pack
-once through a 64 KiB buffer, hashing all of it while copying only spine
-bytes. Do not map complement spans at their pack VA: small padding gaps would
-pin nearly every expert chunk.
+source offset's alignment modulo 256. `SparkWeightdSpineLoad`
+(`runtime/spark_weightd_spine.c`) streams the pack through a 1 MiB buffer,
+SHA-256 hashing all of it while copying only spine bytes, and then writes a
+receipt under `/tmp/spark-weightd-spine` named by the expected digest, size and
+inode. A later load whose receipt still matches the pack's size, mtime and
+ctime, written by a client or by the daemon, copies the spine without
+rehashing. Do not map complement spans at
+their pack VA: small padding gaps would pin nearly every expert chunk.
 
 ### Pool sizing
 

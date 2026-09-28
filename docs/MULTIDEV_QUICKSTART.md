@@ -22,8 +22,8 @@ residentd, and both run in the agent's cgroup
 `20-serving.conf` (sha256 prefix `8324336487eecc38`, the one recorded in
 `qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
 sets `G5_API_DISABLED=1`, `G5_WARMUP=0`, `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1`
-and `SPARK_TP_WAIT_MODE=hardware`, and no `SPARK_WEIGHTD_LANE` or `MemoryMax`
-(observed 2026-09-28 on spark0). `start_root` in `tools/fleet_node_agent.sh`
+and `SPARK_TP_WAIT_MODE=hardware`; it sets neither `SPARK_WEIGHTD_LANE` nor
+`MemoryMax` (observed 2026-09-28 on spark0). `start_root` in `tools/fleet_node_agent.sh`
 maps the two `G5_` switches to `SPARK_GLM5_NEXT_GRAPH_PATH` and
 `SPARK_GLM5_NEXT_PIN_EXPERTS`, and passes `SPARK_WEIGHTD_EXPERT_POOL_BYTES`
 34359738368 unless `G5_EXPERT_POOL_BYTES` overrides it. The production arena is
