@@ -99,7 +99,7 @@ def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_position
         "transport": {"shared_object_path": "lib/hidden_transport.so", "mode": "host-rdma", "control_port_base": ports["transport"]},
         "weightd": {"socket_path": socket_path},
         "runtime_limits": {
-            "max_inflight_submissions": 4,
+            "max_inflight_submissions": 1,
             "max_active_sequences": 16,
             "max_input_rows": 1024,
             "resident_sequence_capacity": 16,
