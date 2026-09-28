@@ -99,6 +99,21 @@ and start a private weightd. Other families need validated shared-socket wrapper
 The older synthetic/SSH `multi_dev_orchestrate.py` is not the queue workflow.
 See [parallel driver debugging](PARALLEL_DRIVER_DEBUG.md) for provenance/receipts.
 
+## Model work rules
+
+- Never quantize weights yourself. Packers slice, shard and repackage; they do
+  not change precision. A lower-precision arm needs an official or vetted
+  community release as its source.
+- Model geometry and identity come from `model_contracts/<model>_authoritative.json`.
+- Device memory per node is capped at 110 GiB, weightd's default
+  `--device-bytes-max` (`SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` in
+  `include/sparkpipe/spark_weightd.h`). Lower it on a shared node; never raise it.
+- Stop owned jobs with `cancel --id`. Stop a process outside the queue with
+  TERM only after `/proc/<pid>/cwd` shows it is yours; never match by name
+  alone and never `kill -9`. A wedged node (hung `nvidia-smi`) goes to the operator.
+- Verify numerical agreement before timing; a mismatch stops the run. Record
+  context, batch, topology and precision with every number.
+
 For the exact released GLM benchmark, binary verification, startup failure
 signatures and the supported replay command, see
 [release recovery](SERVING_RELEASE_RECOVERY_20260924.md). The replay needs an
