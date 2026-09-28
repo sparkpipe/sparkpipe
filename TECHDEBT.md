@@ -59,6 +59,33 @@ removed rather than retained as a progress diary.
 - Overlap communication with compute: two micro-batches in flight per
   engine, one computing while the other's collectives complete. Measure the
   extra weight reads that splitting costs against the exposed wait it hides.
+- weightd has 16 mesh lanes (`4f0e339`). CUDA refuses to host-register the
+  daemon's RDMA-registered mesh region (`cudaErrorInvalidValue`); since
+  `5814bf2` (PR #1135) the collective logs `MESH-REGISTER-SKIP` and runs
+  unregistered. Find out why CUDA refuses those pages, and measure the
+  unregistered path against a registered one.
+- Hardware waits were deployed fleet-wide without distributed fault
+  qualification. The real daemon/NIC path has no receipt for rank skew, a
+  missing peer, timeout, cancellation, a failed Begin/End or source-slot
+  reuse. The `MESH-REGISTER-SKIP` and `MESH-DEVICE-ALIAS-IDENTITY` paths were
+  never exercised on a daemon-owned region, and the production link
+  `rocep1s0f1` was not covered by the two-host check
+  ([`docs/TP_STREAM_MEMOP_QUALIFICATION.md`](docs/TP_STREAM_MEMOP_QUALIFICATION.md),
+  Production status). Qualify GPU cancellation, drain and event-driven mesh
+  activity on that path too, so that rearming a wait cannot cancel unrelated
+  work on the rank.
+- Teardown after a register skip is broken by code reading:
+  `SparkTpDeviceCollectiveReleaseRegion`
+  (`ring/transport/tp_device_collective.c`) still calls `cudaHostUnregister`
+  on a mapping whose registration was skipped, which ends in
+  `MESH-UNREGISTER-FAIL` with a retained cleanup-only owner. Record the skip
+  per mapping.
+- NCCL leftovers after `b31761e`, which deleted the NCCL backend:
+  `SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL`, the `nccl` parsers in
+  `runtime/serving_adapter_template.c` and
+  `modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c`, the
+  NCCL branches in the glm5_next and laguna modules, and
+  `tools/qwen38_tp4_nccl_bench.c`.
 
 ## Steady-state decode hot path
 
@@ -106,6 +133,17 @@ removed rather than retained as a progress diary.
   chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
   without looking at queued prefill; shorten chains while prefill waits if
   time to first token suffers.
+- Validation and admission fanout run on the per-frame path (perf-program
+  rock R5, from the archived `PERF_PROGRAM2.md`): 12 + 9 `Validate` call
+  sites remain on the client paths, and the engine SHA-probes inside
+  `Progress`. Move them off the per-frame path.
+- qwen38_27b: `SparkQwen38_27bServingUploadBlockTable`
+  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c`)
+  copies the full `max_active_sequence_count` x `blocks_per_lane`
+  block-index table plus the counts on every submission (rock R7). Add dirty
+  tracking.
+- dsv4: island chaining, RA joins and an event diet (rock R6). Do this only
+  while DSV4 stays in the driver order.
 - glm5_next: the exact DSA top-k (`LmTopkExactKernel`) runs four radix passes
   and a block-scan compaction in one CTA per row. At 32K context a row has
   8,192 pools, and the kernel's time there is unmeasured. If it shows in
@@ -142,7 +180,7 @@ removed rather than retained as a progress diary.
 
 ## Model residency and storage
 
-- Relocatable (saved) graphs are designed but not built. `8adebc6`
+- Relocatable expert graphs (saved graphs) are designed but not built. `8adebc6`
   proposed capturing a graph once, recording which kernel arguments are
   expert pointers and patching them on load, as a dynamic linker does, and
   `360c0ee` and `1a674be` deleted the union-lease workaround on that
@@ -158,6 +196,21 @@ removed rather than retained as a progress diary.
   residency, and the memory it holds is unavailable to co-resident drivers.
   On top of relocation, capture over a leased working set and send a miss
   to an explicit, reported refill.
+  - The pin takes 12096 keys in 24 leases per rank; the daemon held
+    20,874 MiB of device memory on spark6 on 2026-09-28
+    ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#glm-graph-residency-today)).
+  - With fewer experts leased, `SparkGlm5NextGraphClaimExperts` returns
+    `UNSUPPORTED` and the wave runs eager instead. That is logged, but it is
+    still a mode fallback.
+  - This is the known exception in
+    [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and the first
+    item of ROADMAP M6. Exit: GLM graph decode on a bounded expert working
+    set, with the same greedy tokens as the pinned build
+    ([`docs/GLM_LAZY_DRIVER_INTEGRATION.md`](docs/GLM_LAZY_DRIVER_INTEGRATION.md),
+    [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#open-relocatable-graphs)).
+- Partial residency (S3) and queue warm hints with pin-on-dispatch (S4) from
+  the archived `WEIGHTD_RESIDENT_CACHE_DESIGN.md` are not implemented; S2 is
+  partial.
 - Implement one catalog that keeps every configured frontier model addressable
   while tracking resident, warm, promotable, and unavailable states.
 - Partition and mount each 4 TB internal NVMe as 2.5 TB hot KV, 1 TB active
@@ -188,6 +241,18 @@ removed rather than retained as a progress diary.
 - Replace per-driver KV and index pools with one node-level pool shared by
   all resident drivers, admitted against resident demand.
 
+## KV tiers
+
+- JIT-KV W3 is open (from the archived `docs/archive/JIT_KV_RESPONSE.md`).
+  The three spill mechanisms (`cache/kv_page_store.c`,
+  `runtime/spark_kv_backing.c`, `cache/nvme_tier.c`) were never collapsed
+  into one. `runtime/spark_kv_backing.c`'s only consumer is
+  `tools/spark_kv_backing_test.c` (Makefile targets). `SparkKvPagerInitialize`
+  (`cache/kv_pager.c`) has no production caller; only
+  `tests/test_jit_kv_slice.c`, `test_jit_kv_c3c4.c` and `test_jit_kv_c5w2.c`
+  call it, so the pager that README's KV tiers describe is not wired into
+  any module.
+
 ## Dynamic batching
 
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to
@@ -210,6 +275,11 @@ removed rather than retained as a progress diary.
   timeline.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
+- Batch weight amortization (perf-program rock R4): take the WS/native path
+  from two rows up, with k-tile pipelining, so a batch reads each weight
+  once.
+- `SparkContinuousBatchStep` (`scheduler/continuous_batch.c`) has no caller
+  outside `tests/test_continuous_batch.c`. Delete it or wire it.
 - Select the smallest validated specialization for effective rows, including
   speculative verification rows, while preserving sequence and KV identity.
 - Qualify mixed arrivals, priorities, prompt lengths, shared prefixes, cache
@@ -275,6 +345,9 @@ removed rather than retained as a progress diary.
   has none.
 - Remove legacy model names from generated release inventories and operator
   surfaces when their replacement contracts land.
+- `tools/generate_recipe.py` (`MODELS`, via `glm52.json`) and
+  `examples/recipes` still generate GLM 5.2 (`zai-org/GLM-5.2`) recipes,
+  although the owner said on 2026-09-28 that GLM 5.2 weights are deprecated.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
 - Complete and qualify the K3 BF16-activation/MXFP4-weight asymmetric GEMM,
@@ -287,11 +360,34 @@ removed rather than retained as a progress diary.
 - The GLM 5.3 Flash MTP draft layer keeps a one-page KV per execution slot
   and attends only within its current draft chain, not the sequence
   history. Give it per-sequence draft KV and measure the acceptance change.
-- Wire tree verification (`spark_speculation_tree.h`) into the common
-  acceptance engine; it currently resolves chains only.
-- Build the tournament provider over the provider slot, with per-drafter
-  acceptance telemetry, after the single-drafter agreement matrix is
-  measured.
+- Tree verification is not wired. The policy engine resolves trees
+  (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
+  Sequence state stores chains, the seam collapses DFT3 trees to one chain
+  (`SparkSpeculationSeamExtractChain`), and no verify frame applies a
+  tree-attention mask. `spark_speculation_tree.h` has no production includer.
+- Build multi-drafter composition over the seam, after the single-drafter
+  agreement matrix is measured: verify the DFT3 tree instead of collapsing
+  it, allow local plus remote sources together (qwen38_27b rejects the mix),
+  and attribute acceptance per `source_bit`.
+- `SPARK_QWEN38_27B_SPECULATORS=0x4` (local DFlash2) fails initialization
+  with `SCHEMA_ERROR`, with or without a bridge, because the seam classes
+  DFLASH2 as a remote tap source.
+- qwen38_27b remote drafting is synchronous: a decode frame, then a blocking
+  20 ms `DraftRemoteChain`, then verify. Pipeline it one round ahead.
+- glm5_next accepts `draft_bridge_host`/`draft_bridge_port` and the tap-free
+  remote sources but has no `DraftRemoteChain` call site.
+- `inference/kernels/speculate.cuh` is included by four unity files and
+  launched nowhere.
+- `Makefile:791` passes a vestigial `-DSPARK_DSPARK_TARGET_GLM52=1` to
+  `spark_speculation_policy.o`, which no longer includes the header that
+  reads it.
+- The qwen38_max provider-slot shim is the only user of
+  `spark_speculation_provider.h`; move it onto the seam and delete the slot.
+- `tests/test_speculation_tree_resolve.c`,
+  `tests/test_speculation_headers_coexist.c` and
+  `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
+- `tools/fleet_serve.sh` defaults `SPARK_GLM5_NEXT_MTP=1` (`:66`, `:96`),
+  which fails glm5_next initialization at TP > 1.
 - glm5_next resident decode chains run no MTP draft: a frame of more than
   one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
   whenever the adapter offers them, so with MTP enabled drafts only run on
@@ -313,7 +409,7 @@ removed rather than retained as a progress diary.
   model conversion dependencies.
 - Generate compact deployment specifications for every released model package.
 - Replace the 33 per-family `tools/*stagepack*.py` packers with the
-  universal packer (`docs/UNIVERSAL_PACKER.md`): one CLI, one codec table,
+  universal packer ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)): one CLI, one codec table,
   per-family byte-compatible emitters, each gated on byte identity with its
   existing packs.
 - The GPU validator digest (`SPARK_<FAMILY>_CUDA_VALIDATOR_SHA256`, computed
@@ -336,8 +432,31 @@ removed rather than retained as a progress diary.
   `spark_module_glm5_next_laguna.h`) take the name of their behaviour.
 - Adopt the common parameterized modules in
   `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
-  replace (measured at about 26,000 lines across the families), each
-  migration proved by byte or behaviour identity.
+  replace (estimated by the 2026-09-13 SEAM surveys at about 26,000 lines
+  across the families), each migration proved by byte or behaviour identity.
+- Two copies of each model's constants: make `spark_<family>_model.h` a shim
+  that includes `llm_defines.h` for dsv41_flash, glm52, glm5_next,
+  muse_glimmer and qwen38_27b, or tie the copies together with
+  `_Static_assert`. glm5_next, for example, states hidden 4096 and 288
+  experts in both files. k3's model header includes
+  `spark_k3_llm_defines.h`, and nothing consumes k3's generic
+  `llm_defines.h`.
+- glm5_next assigns its combine wrappers field by field instead of calling
+  `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
+  the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.
+- k3 has no TP16 adapter descriptor: `K3ServingDescriptor` is `k3-tp4pp4`
+  only, so a TP16 PP1 deployment cannot load
+  ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
+- k3's `ServingPrefetch`, `ResolvePrefetch`, `Progress`, `Quiesce` and
+  `Reset` are no-ops that return success (I01).
+- The `capture_graphs` keys that `tools/k3_gen_adapter_configs.sh`,
+  `tools/k3_multidev_lane.py` and
+  `modules/k3_resident_decode_stage/configs/*.json` emit have been read by
+  nothing since `a29ea53`.
+- qwen4_flash: `ServingSeamInterface` in
+  `spark_qwen4_flash_serving_adapter.c` sets no `prefetch`,
+  `resolve_prefetch` or `reset`, so
+  `SparkModelServingAdapterValidateInterface` rejects the adapter.
 - Publish one driver per model with prewarmed row-count specializations
   instead of one module ID per `SPARK_BATCH_BUCKET`.
 - Every decode module now builds for sm_121a and links as a driver in
@@ -460,6 +579,9 @@ removed rather than retained as a progress diary.
 
 - Add bounded cancellation and drain for terminal client I/O failures so every
   resident sequence slot is released.
+- `node/model_api.c` calls `SparkModelBatchEngineReopenAdmission` before
+  every submit. After a latched collective failure it keeps feeding the dead
+  collective instead of failing loudly.
 - A failed residentd route whose driver cache abort also fails stops the
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
@@ -556,15 +678,14 @@ door and the static pages and playground in `site/`.
   - virtual keys and spend logs, which need LiteLLM's Postgres database;
   - a logging callback that feeds the audit sampler.
 
-  Two limits of the door as it stands, found with LiteLLM 1.74 and a mock
+  Limits of the door as it stands, found with LiteLLM 1.74 and a mock
   upstream (`docs/LITELLM_FRONTEND.md`, browser clients):
-  - the committed `config/litellm-config.yaml` uses `vllm/` deployments,
-    which serve only the token-ID passthrough; LiteLLM's chat route fails on
-    them, so chat clients, the playground included, need the `openai/`
-    deployments that `tools/generate_litellm_config.py` writes;
   - LiteLLM consumes a request's `priority` for its own scheduler and does
     not forward it, so the batch engine's priorities do not cross the door.
     `seed`, `temperature` and `deadline_ms` do.
+  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries
+    a failed upstream call once and can duplicate a generation on the fleet;
+    the old hand-written config used 0.
 - **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
   at the serving provider's price, pay providers 85% after the challenge
   window, and hold and forfeit bonds.
@@ -598,6 +719,9 @@ door and the static pages and playground in `site/`.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
+- `tools/glm5_next_driver_compare.py` runs resident baselines, which always
+  fail since `c67be23` removed the module's direct pack loader, so it never
+  writes `RESULT.json`. Replace the baseline with a lazy or path-parity one.
 - Nine Python tests stay outside `make test`:
   - five drive the fleet over ssh: `test_expert_io_perf`,
     `test_jit_kv_page_fault`, `test_lossless_doorbell`,
@@ -631,6 +755,62 @@ door and the static pages and playground in `site/`.
   `G5_GRAPH_PATH=0`, the node falls to eager chains, spin wait and unpinned
   experts. Move these settings into the deployment contract as validated
   fields (I04) and record their hash in every receipt (I33).
+
+## Fleet and queue tooling
+
+Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md)
+and the multidev docs on 2026-09-28. Line numbers are in
+`tools/fleet_node_agent.sh` unless another file is named.
+
+- `restart_scope` (`:356-361`) matches `config/model_resident.json`, but a
+  root's deployment file is the top-level `model_resident.json`, so a
+  deployment-only change never restarts the root.
+- `ensure_api` (`:219`) tests `"$G5_API_DISABLED"` under `set -u`, so rank 0
+  exits when the variable is unset and, with `KillMode=control-group`, takes
+  weightd and the engine with it. Use `${G5_API_DISABLED:-}` or require the
+  variable explicitly.
+- An installed but unrecycled weightd makes `ensure_weightd` return 1 on
+  every pass while an engine runs (`:485-489`, `:610-614`), which stops all
+  root convergence.
+- `apply_manifest` never re-verifies on-disk files while the `MANIFEST` is
+  unchanged (`:324`), so an agent copied in by `fleet_sync.sh start`
+  persists.
+- Heartbeats are sent only on change (`:106-119`), so the epoch is not
+  liveness. Add a periodic report.
+- `fleet-agent.service` runs with the default `KillMode=control-group`, so
+  any agent stop, restart or exit kills weightd and the engine. Set
+  `KillMode=process` in the drop-in or record why not.
+- `fleet-agent.service` has no finite `MemoryMax`; give it one and track it
+  with `spark_queue.py track --scope user`.
+- `tools/publish_core.sh:4` ignores `SPARKPIPE_BUILD_TREE`, and
+  `tools/publish_local.sh:32` takes `model_driver.so` from `~/sparkdata/out`,
+  which the current build never writes. Fix or retire both.
+- The janitor's log message (`:455`) is inverted relative to what it kills.
+- The `install_core` and `tools/weightsd_announce.sh` messages still say
+  weightsd owns the restart.
+- `tools/fleet_release_hygiene.sh:16` defaults `HUB` to sparkf; the hub is
+  the rtx5090.
+- `tools/fleet_ready_poll.sh` reads heartbeats from sparkf instead of the
+  rtx5090 hub, waits on an `UPDATE` sentinel the agent no longer uses, and
+  miscounts ready nodes when it greps several files.
+- Neither the `20-serving.conf` drop-in (Production qualification) nor
+  `sparkpipe-hub-route.service` is in the repository or shipped by
+  `fleet_sync.sh`. Production GLM should also pin its lane with
+  `SPARK_WEIGHTD_LANE=0` in that drop-in.
+- The queue ledger holds 32 stale persistent owners
+  (`sparkpipe-weightd-shared.service`,
+  `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
+  admission. Untrack them.
+- Bump `SPARK_WEIGHTD_IPC_ABI_VERSION` whenever the mesh layout changes.
+- The family wrappers default to `/run/sparkpipe-weightd-shared/weightd.sock`,
+  which no Spark provides.
+- `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
+  assume 8 lanes, and `lane_assignments.json` gives lane 0, which production
+  GLM should hold, to a GLM development lane. `tools/inference_smoke.py` accepts lanes
+  0-7 only.
+- A stale, idle `sparkpipe_weightsd` still runs on spark6.
+- Operations: linger is missing for the fleet user on spark8, spark9,
+  sparka to sparkd and sparkf. Run `sudo loginctl enable-linger` there.
 
 ## Hardware independence
 
@@ -729,12 +909,21 @@ for seamless production multi-model.
   multi-model deploy or update has been tested.
 - `tools/fleet_swap.sh` still drives the system unit
   `sparkpipe_model_residentd` through sudo (`start_model`, `stop_model`),
-  not the `fleet-agent` user unit that serves. A fleet-scope swap would
-  start a second residentd beside the agent's on all 16 nodes, which the
-  agent's janitor does not reap because it only matches its own roots. The
-  registry it reads has no GLM 5.3 Flash entry and marks both DSV4 models
-  removed. Delete the script and the registry's start fields, or rebuild
-  model swaps on the agent's release roots.
+  not the `fleet-agent` user unit that serves. Running it writes `/etc`
+  drop-ins and starts a system-level residentd outside the fleet-agent
+  cgroup: a fleet-scope swap would start a second residentd beside the
+  agent's on all 16 nodes, which the agent's janitor does not reap because
+  it only matches its own roots. The registry it reads
+  (`tools/devcycle/fleet_registry.json`) has no GLM 5.3 Flash entry and
+  marks both DSV4 models removed. The fleet_swap procedure is obsolete:
+  delete the script and the registry, together with their remaining
+  callers `tools/devcycle/deploy_pro.sh` and
+  `tools/devcycle/first_decode_pro.sh`, or rebuild model swaps on the
+  agent's release roots.
+- Device allocation budgets are incomplete. GB10 `MemoryMax` does not
+  contain every CUDA allocation, and the driver ledger omits some direct
+  allocations and graph and context overhead. Enforce complete budgets
+  before co-resident drivers rely on them.
 
 ## Topology-aware lane sub-allocation
 
