@@ -29,6 +29,9 @@
 #ifndef MUSE_CONTRACT_SHA256
 #error "MUSE_CONTRACT_SHA256 must identify the exact package contract"
 #endif
+#ifndef MUSE_MODEL_DESCRIPTION_SHA256
+#error "MUSE_MODEL_DESCRIPTION_SHA256 must identify the firmware model description the driver compiles"
+#endif
 
 #define SPARK_MUSE_GLIMMER_SERVING_ADAPTER_ID \
 	"spark.muse.serving-adapter.tp16.v1"
@@ -197,4 +200,5 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 };
 
 #define SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_GDN(layer) 0
+#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 MUSE_MODEL_DESCRIPTION_SHA256
 #include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"

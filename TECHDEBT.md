@@ -380,7 +380,13 @@ progress diary.
     qwen38_max and qwen4_flash now report a failed TP combine launch as
     `INTERNAL_ERROR` or `CAPACITY_EXCEEDED` with a log line, as glm5_next
     does, instead of a silent `IO_ERROR` the engine treated as transport
-    trouble.
+    trouble;
+  - qwen4_flash's and muse_glimmer's serving adapters sent their package
+    contract hash as the model-description hash, so loading a driver
+    compiled from their firmware description failed with
+    `TARGET_MISMATCH`. They now send the description file's hash, and
+    qwen4_flash's module Makefile gains the `adapter` target the other
+    families have.
 - Some production headers still default a build setting with `#ifndef`, so
   a build that forgets the flag silently gets the default:
   - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
@@ -392,20 +398,21 @@ progress diary.
     compile these headers without it today;
   - `SPARK_QWEN38_27B_SERVING_TP_DEGREE` (4) in both the qwen38_27b adapter
     and `spark_qwen38_27b_serving_constants.h`; TP1 deployments pass 1;
-  - `SPARK_LLM_FIRST_ROUTED_LAYER` in `spark_driver_defines.h`, which
-    defaults to the layer count for families that do not define it;
-  - the `spark_pack_load_common.h` and `spark_pack_synthesize_common.h`
-    template hooks (three each);
-  - `SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256` and
-    `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests and
-    tools get the default);
+  - the `spark_pack_synthesize_common.h` value hooks
+    (`SPARK_SYNTH_EMIT_MTP_TAIL`, `SPARK_SYNTH_HEAD_GLOBAL_KINDS`); its
+    context type and `spark_pack_load_common.h`'s field names fail to
+    compile when wrong, so they are not silent;
+  - `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests
+    and tools get the default);
   - `QWEN38_27B_LAYER_THREADS` and `MIMO25_LAYER_THREADS`, which the
     host-CUDA layer tests set to 1 before including `layer.cuh`.
 
   Pass each from every build that includes the header, and delete the
-  default. The `llm_defines.h` defaults went in `f4056bf1`. Test-harness
-  paths (`TEST_*_PATH`) and platform shims (`_POSIX_C_SOURCE`,
-  `MSG_NOSIGNAL` and the like) are not build settings.
+  default. The `llm_defines.h` defaults went in `f4056bf1`,
+  `SPARK_LLM_FIRST_ROUTED_LAYER`'s in `691ea361`, and the serving adapters'
+  description-hash default with the qwen4_flash and muse_glimmer fix
+  below. Test-harness paths (`TEST_*_PATH`) and platform shims
+  (`_POSIX_C_SOURCE`, `MSG_NOSIGNAL` and the like) are not build settings.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

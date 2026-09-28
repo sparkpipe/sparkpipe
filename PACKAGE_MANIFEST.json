@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "a992335aa5fb170e9a11b58b85950ddc78570f90be0cebe34c56f5f959e87474",
-      "size_bytes": 139475
+      "sha256": "c8cc57c65c87d76aa5e56c2c3c97ecab33682e9ed82f7efe1e9c2fa4c83e45cd",
+      "size_bytes": 139946
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "aee5bcfb2fee4c7cd6937e67a065ad952bac607dae67fc7b8e45a804fd65c24a",
-      "size_bytes": 37760
+      "sha256": "225d4e5a82bf3e10c18cd22c98870888db97dd86c36a4301271e7575bd463b26",
+      "size_bytes": 38206
     },
     {
       "path": "cache/cache.h",
@@ -4248,8 +4248,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h",
-      "sha256": "d3f4951edde25f889c675b47846683ca55f8136a6c8176c5e3fc9d251ad67fa3",
-      "size_bytes": 40173
+      "sha256": "93141fbd2e08e239f88c7c3bdb22812f43b00ece39bb8d90b54b4697953db391",
+      "size_bytes": 40190
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_qwen38_serving_adapter_common.h",
@@ -5803,8 +5803,8 @@
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c",
-      "sha256": "ca892e0377a4350f5774fd2f3f4c79a5aeda347d43b21062efc64cf1cc8ad49c",
-      "size_bytes": 9544
+      "sha256": "323a79febbfd3678a39afbd8ee449c1a0014ea05fcbc295a778db511753c4128",
+      "size_bytes": 9631
     },
     {
       "path": "modules/minimax_resident_decode_stage/source/spark_minimax_stagepack_format.h",
@@ -5858,8 +5858,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
-      "sha256": "8b86273855815aa47cdf372a6d4cf578c5c0defd56e05ff5b96a6de746d399d0",
-      "size_bytes": 8983
+      "sha256": "971b1fd59136f85a460e173836ba7798b1df8fed151e1d00d437b020f48d10cb",
+      "size_bytes": 9225
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_stagepack_format.h",
@@ -6023,8 +6023,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/Makefile",
-      "sha256": "a33bf817ea22ce1815271a475eca7932e710fa9a26556213daad2f0e90b54ed3",
-      "size_bytes": 4410
+      "sha256": "2fef87c24fdb801142e2a169115982e4487776ae5bf6e4f760ed4adcea0eac71",
+      "size_bytes": 5306
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/include/sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h",
@@ -6048,8 +6048,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_serving_adapter.c",
-      "sha256": "9dda901bc440e2703bc1f94fc5d8466ac8cd355b22b432fb65428e37b6581b7a",
-      "size_bytes": 14661
+      "sha256": "e77a28887ea57221f62d741c999b8d5f2af07f7b9917ab7bf52067f0b65be108",
+      "size_bytes": 14924
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/tools/qwen4_flash_pack_synthesize.c",
@@ -8453,8 +8453,8 @@
     },
     {
       "path": "tests/fixtures/muse_glimmer_serving_adapter_driver.c",
-      "sha256": "505047561ed986483ea9a2aeb7a6ac80c9beb608c3b924aa60b8e9ef00e0e20f",
-      "size_bytes": 11491
+      "sha256": "90361f42c463549f81a13081970fe6ea0812a5e202bb87f30bb01bbf5933256d",
+      "size_bytes": 11518
     },
     {
       "path": "tests/fixtures/qwen38_27b_remote_spec_driver.c",
@@ -15275,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73945568
+  "total_bytes": 73948017
 }
