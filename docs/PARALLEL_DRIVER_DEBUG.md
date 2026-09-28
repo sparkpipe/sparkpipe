@@ -1,7 +1,8 @@
 # Parallel driver debugging
 
 Start with the [multideveloper quickstart](MULTIDEV_QUICKSTART.md) for the current
-controller, shared-daemon setup, lane assignments and model-specific boundaries.
+controller client, the shared production daemon, lane assignments, lane tiers and
+the performance-evidence rule.
 
 This is the shared workflow for every driver lane. Family code owns geometry,
 tensor descriptions and model math. Reuse stage_module_common for ownership,
@@ -101,8 +102,10 @@ use --resources cpu, but it still needs an honest memory budget.
 For integration, list exactly the participating hosts and use --per-node. Each
 rank starts its own residentd/validator using SPARK_QUEUE_RANK. A single-node
 forward-cell pass cannot establish TP16 collective correctness. For a measured
-fleet run, list all sixteen hosts and use --resources exclusive. Exclude other
-out-of-queue services and prewarm the intended working set before measurements.
+fleet run, list all sixteen hosts and use --resources exclusive. An exclusive
+job does not stop the fleet agent's production serving, which runs outside the
+queue; stop it for the window and meet every condition of the quickstart's
+performance-evidence rule.
 
 The controller runs:
 
@@ -126,20 +129,20 @@ An enabled weightd attach must return errors for missing identity/daemon,
 rejected pack and failed consumer import. stage_module_common must propagate
 them without allocating a direct copy. Explicitly disabled attach remains a
 direct-load request; it is not a recovery path and is not lazy debugging.
-The pending opt-in lazy attach in PR #829 must follow this rule as well.
 Families with a specialized pack identity use SparkWeightdAttachMappedPack,
 which owns attach/import validation and releases partial mappings on error.
 DSV4 and the common region loader share this helper. Do not recreate their
 former attach/import/fallback sequence in another driver.
 
-Current shared lazy Ensure tests exercise the daemon's materialization and
-eviction, including missing/corrupt metadata before residency. They do not yet
-prove end-to-end driver lazy inference. A daemon VA is not a consumer mapping.
-The remaining gate is a stable consumer import of the spine and routed working
-set, held until GPU completion, with no silent whole-arena import or eager
-fallback. Do not advertise the full driver workflow as lazy-qualified until
-two real consumers pass cold/hit/eviction/reload, cancellation and numerical
-checks inside their declared budgets.
+ENSURE is retired and returns `UNSUPPORTED`. Materialization and eviction are
+tested through ACQUIRE/RELEASE leases in `build/test_weightd_working_set` and
+`build/test_weightd_expert`, including missing or corrupt metadata before
+residency. These are CUDA-stub host tests; they do not prove end-to-end driver
+lazy inference, and a daemon VA is not a consumer mapping. GLM graph serving
+pins the whole pack ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#glm-graph-residency-today)),
+so it is not lazy-qualified either. Do not advertise a driver workflow as
+lazy-qualified until two real consumers pass cold/hit/eviction/reload,
+cancellation and numerical checks inside their declared budgets.
 
 ## PR acceptance
 
@@ -181,7 +184,14 @@ SSH children or decide completion from a readiness log line. Inspect the queue
 receipt and every rank's numerical result. Logs include source and binary SHAs.
 These are transport component measurements, not GLM serving throughput.
 
-## GLM firmware build on an assigned Spark
+## GLM firmware build for development and PR testing
+
+This section covers development and PR builds. Release builds for the hub
+follow [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md) on the build host
+sparkf (`~/g5n-rd-build`). On 2026-09-28 that runbook's six-argument
+`module_build_release.sh` command did not match main, where the script takes
+exactly five arguments, requires `SPARK_QUEUE_ID` and never publishes
+(`tools/module_build_release.sh`); reconcile the two before a release.
 
 Run `tools/glm5_next_build_release.sh` with no arguments through a GPU-owned
 queue job in the clean checkout returned by `spark_queue.py sync`. Use
@@ -212,10 +222,14 @@ MemAvailable, and rejects unknown GPU owners or observed device usage above
 the declaration. Port ranges are reserved with repeated `--ports START:END`.
 
 Register an existing finite host service using `track --node spark0 --unit UNIT
---scope system --device-memory-mib DEVICE --ports START:END`. Tracking retains
-the exact service invocation and cgroup; a restart or changed budget requires
-reconciliation. `preflight --nodes spark0 --memory-mib TOTAL
---device-memory-mib DEVICE --ports START:END` reports blockers without launch.
+--scope system|user --device-memory-mib DEVICE --ports START:END`. Tracking
+retains the exact service invocation and cgroup; a restart or changed budget
+requires reconciliation, and `untrack` accepts only a verifiably stopped unit.
+`preflight --nodes spark0 --memory-mib TOTAL --device-memory-mib DEVICE --ports
+START:END` reports blockers without launch. On 2026-09-28 no serving Spark
+could admit a `gpu-shared` job: the ledger tracked stopped system units, and the
+fleet agent's user unit, which holds the production weightd and residentd, has
+no finite `MemoryMax`. The quickstart lists the operator fix.
 Cgroups on GB10 do not bound all CUDA allocations. Match the declared device
 budget to the exact model's finite KV/workspace/weight allocation plan and
 measure it during qualification. The census deliberately does not credit GPU
@@ -223,7 +237,11 @@ memory a second time when its overlap with host charges is unknown.
 
 `tools/inference_smoke.py --spec JOB.json` runs inside an admitted queue job.
 It starts that rank's private weightd and residentd, exchanges only its own
-mesh records, and runs the real model_batch client on the coordinator. Every
+mesh records, and runs the real model_batch client on the coordinator. Because
+of the private weightd it cannot run on a Spark the fleet agent manages: any
+other `sparkpipe_weightd` process stops the agent from managing that node
+([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)). It accepts
+replica lanes 0-7 only. Every
 participant stays in its queue cgroup. Read-only peer file transfers do not
 launch remote inference. Completion requires exact reference tokens for every
 request, correct sequence/handle/token order and successful daemon shutdown.
@@ -231,7 +249,7 @@ The existing benchmark wrapper records TTFT, per-sequence arrivals and the
 common decode window; these are stdout-observed timings, not GPU kernel time.
 
 A job specification supplies `hosts`, `deployment`, `batch`, `reference`,
-`port_base`, `port_map`, `environment`, `timeout_seconds` (at most840), and
+`port_base`, `port_map`, `environment`, `timeout_seconds` (at most 840), and
 `budgets` containing `weightd_device_bytes`, `model_device_bytes`,
 `expert_pool_bytes`, `spine_bytes`. Multi-rank jobs also supply `mesh.interface`
 and `mesh.sgid_index`. All values describe the actual model and workload.

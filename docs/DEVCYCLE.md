@@ -44,5 +44,5 @@ and physical rank map on every participating daemon, unique ports and bounded
 KV/workspace allocations. Keep each lane's topology fixed for that daemon's
 lifetime. Coordinate `.wset` budgets across models and retain token, overlap,
 memory and terminal-cleanup receipts. A ready process alone is not a passed
-smoke test. See [parallel qualification](PARALLEL_RESIDENT_QUALIFICATION.md) for
+smoke test. See [parallel qualification](archive/PARALLEL_RESIDENT_QUALIFICATION.md) for
 what has actually run.

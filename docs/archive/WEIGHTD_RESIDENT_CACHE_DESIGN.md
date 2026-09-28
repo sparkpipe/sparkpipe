@@ -1,5 +1,11 @@
 # weightd: resident multi-model weight cache (design of record, 2026-09-01)
 
+> Archived 2026-09-28. Slice S1 is done: residentd only probes a supervised
+> socket (`node/weightd_spawn.c`) and the fleet agent keeps weightd running.
+> S2 is partly done (`SPARK_WEIGHTD_ARENA_COUNT_MAX` 16). S3 and S4 (partial
+> residency, queue warm hints) are not implemented. Current authority:
+> [WEIGHTD_DESIGN.md](../WEIGHTD_DESIGN.md).
+
 Operator direction, after the wave-collision incident: **weightd stays
 resident all the time** — it owns eviction and swap-in itself, so a
 model switch or fleet wave never again destroys memory residency.

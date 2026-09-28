@@ -1,5 +1,14 @@
 # WEIGHTSD — the stable weights-daemon channel
 
+> Archived 2026-09-28. Its premise no longer holds: `/tmp/spark_weightd.sock`
+> is the production daemon the fleet agent owns on every Spark, not a debug
+> instance, and must never be restarted by hand. The mesh instructions below
+> omit `--mesh-rank-mask` (weightd refuses to start) and `--mesh-dir` (the
+> default directory is the production one). The lease table has 256 leases,
+> and the header is `include/sparkpipe/spark_weightd_lease.h`. The weightsd
+> channel is retired; `core/WEIGHTSD_BIN` now names the production weightd
+> announce. Current guide: [MULTIDEV_QUICKSTART.md](../MULTIDEV_QUICKSTART.md).
+
 weightsd is the **stable weights-daemon channel** for driver/dev testing. It is
 a **deployment identity of the same source tree as weightd** (same `node/weightd.c`,
 same `runtime/spark_weightd*.c`, built by the same Makefile into its own binary
