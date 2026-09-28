@@ -197,6 +197,8 @@ bind a cover, so they capture none of them and keep their node count.
   graph step and every settled chain step the reduced tokens and the local
   miss flag decide: commit; rollback (all rows poisoned, local or remote
   miss); mixed rows or a local miss without poison are internal errors. A
-  non-commit verdict fails the chain and never makes the engine terminal;
-  rollback and replay arrive with the snapshot stage. A graph step no longer
+  non-commit verdict fails the chain and never makes the engine terminal,
+  except in working-set mode (`SPARK_GLM5_NEXT_EXPERT_WSET`), where a rollback
+  restores the recurrent-state snapshot, grows the set and replays the step
+  (`docs/WORKING_SET_GRAPHS.md`). A graph step no longer
   reports a miss as BUSY, and a failed capture arm is an internal error.

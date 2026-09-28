@@ -48,6 +48,7 @@ MODULE_ENTRY_PREFIX := SparkGlm5NextResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../runtime/spark_expert_working_set.c \
 	../../src/spark_speculation_policy.c \
 	../../src/spark_speculation_lookup_draft.c \
 	../../src/spark_speculation_reference_draft.c \

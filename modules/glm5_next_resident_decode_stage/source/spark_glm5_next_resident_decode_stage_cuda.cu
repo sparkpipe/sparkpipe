@@ -7,6 +7,7 @@
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "inference/kernels/tp_reduce.cuh"
+#include "inference/kernels/state_snapshot.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
@@ -541,6 +542,11 @@ extern "C" cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,con
 		return(cudaErrorInvalidValue);
 	LmHeadMissPoisonKernel<<<(row_count + 255u) / 256u,256u,0u,stream>>>(miss,maxloc,row_count);
 	return(cudaPeekAtLastError());
+}
+
+extern "C" cudaError_t SparkGlm5NextLaunchStateSnapshot(cudaStream_t stream,const void *spans,uint32_t span_count,uint32_t row_words,uint8_t *snapshot,const uint32_t *state_index,uint32_t rows,uint32_t restore)
+{
+	return(LmStateSpansCopy(stream,(const SparkStateSpan *)spans,span_count,row_words,snapshot,state_index,rows,restore));
 }
 
 static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)

@@ -84,6 +84,119 @@ flow or collective ordinals, so hardware-wait collectives cannot deadlock.
   - 10,000 random growth rounds with injected denials;
   - the replay policy.
 
-The fleet proof is not done yet. It needs the GLM stage module wired to these
-pieces (snapshot spans, PARTIAL capture, recovery in `TpChainAdvance`), running
-in a dev weightd lane with a `.wset`.
+## GLM 5.3 Flash stage module (A3)
+
+`SPARK_GLM5_NEXT_EXPERT_WSET=<path>` selects the working-set residency mode.
+`SPARK_GLM5_NEXT_EXPERT_WSET_SHA256=<hex>` is required with it. The file is a
+`.wset`: little-endian `(layer u32, expert u32)` pairs, as written by
+`tools/glm5_next_wset_from_trace.py`.
+
+**Refusals at attach.** The mode fails at attach, and never falls back, when:
+- `SPARK_GLM5_NEXT_PIN_EXPERTS=1` is also set;
+- the stage is not a single stage that owns both the embedding and the final
+  head;
+- there is no lazy expert pack;
+- the digest does not match;
+- a key is outside the stage's routed layers;
+- a routed layer has no held expert.
+
+**Leases.** Keys are leased through weightd in groups of at most 512
+(`SparkWeightdMapAcquire` + `BeginUse`, sharing the pinned-lease table of 32).
+If any group of one grow fails (acquire, begin, or a lease base that differs
+from the one the graphs were built on), every lease taken by that grow is
+released again (`RecordCompletion` for begun leases, then `Release`), so the
+table never keeps leases for keys the cover does not mark. A failed unwind is
+returned instead of the grow status and fails the chain.
+Attach prints
+`EXPERT-RESIDENCY mode=working-set wset= keys= of N leases= rows_max=8 replays=2`.
+
+**Where the graph path runs.** Waves of up to 8 rows take the PARTIAL graph
+or linear chain; wider waves take eager. Every captured PARTIAL step:
+- resets `miss[0..1]`;
+- snapshots every KDA state and Q/K/V conv-window row of the wave after
+  `WaveBegin`, using `4 x kda_layers` spans and the layer kernels' own
+  `state_index`;
+- runs the cover kernel after every router;
+- poisons the head maxloc before the head MAX reduce.
+
+FULL graphs bind no cover and capture none of these nodes.
+
+**Rollback.** On a rollback verdict, whether from `GraphStep`, `SettleStep`
+or the final step of a working-set chain, `SparkGlm5NextWsRetry` does the
+following:
+1. Disarms capture.
+2. Restores the snapshot and syncs.
+3. Harvests the first missed layer and grows the set. Denied growth is counted
+   and leaves the result correct.
+4. Replays the same step. `FeedStep` does not run.
+
+The replay budget is per step. After 2 replays the step runs eager
+(`ws_force_eager`). When a step commits, `FeedStep` clears `ws_force_eager`
+and resets the replay attempts (`SparkStepReplayNext` with a commit verdict),
+so an earlier step's replays never shorten a later step's budget. Every input to the replay/eager decision is the agreed verdict
+history, so all ranks decide the same way; a ring overflow does not change the
+decision. `GRAPH-WS-RECOVER` logs each recovery with running local, remote,
+replay and eager counts.
+
+**Known limits (follow-ups).**
+- Growth leases are not compacted. After the 32-slot lease table fills,
+  growth is denied and misses resolve through replay then eager.
+- There is no degrade gate: a lane that keeps thrashing pays two replays plus
+  an eager step on every miss.
+- Keys seen on eager steps are not fed back into growth.
+- A rank-local recovery error (a corrupt ring, a failed restore or sync, a
+  failed unwind) fails that rank's chain through `TpChainFail`, which
+  broadcasts a cancel on both collectives, so the other ranks see the cancel
+  instead of waiting for the collective timeout.
+- When ranks' covers differ, a remote-induced divergence can make other ranks
+  record local misses at later layers; they then report rollback-local and
+  harvest keys from their own first layer. Carrying the global first-miss
+  layer in the poison value is a follow-up; until then the local/remote
+  counts are diagnostics, not a proof of which rank missed.
+
+**Tests.** `tests/test_glm5_next_stage_context.py` drives the module's own
+chain code on the host harness:
+- `check_ws_open`: `.wset` load, digest check, exclusivity with pinned
+  experts, single-stage requirement, out-of-range keys and missing anchors.
+- `check_ws_acquire_unwind`: partial failures in a two-group grow release
+  every new lease and keep the existing ones.
+- `check_ws_chain_rollback`: a 2-step chain through `TpChainAdvance` and the
+  linear chain. The walk order is checked
+  (`z` ring reset, `B` WaveBegin, `s` snapshot, ..., `H` head, `p` poison,
+  `x` head reduce, `U` unpack, `L` restore). A local miss rolls back, grows
+  the set by the missed key and replays; a remote miss on the final step is
+  settled in `FinishChain` and replayed; a corrupt ring fails the chain with
+  both broadcasts cancelled and positions untouched.
+- `check_ws_replay_budget`: a 3-step chain where step 0 needs one replay and
+  step 1 misses three times gets two replays on step 1, then runs it eager
+  (no ring reset, snapshot or poison).
+- `check_ws_graph_result_replays`: a rollback verdict from the graph path
+  restarts the step through `WsRetry`.
+- `check_ws_snapshot_layout`: spans from the real TP16 KDA pools and strides
+  of `AllocateCaches`, their snapshot offsets, and the allocation size.
+
+`make test-glm5-next-rows-kernels` (sparkf, sm_121a) runs the module's own
+recovery launchers on the GPU with the TP16 KDA layout (state rows of
+`KDA_STATE_BYTES_PER_LAYER / 16`, conv-window rows of
+`KDA_CONV_WINDOW_BYTES_PER_LAYER / 48`, Q/K/V pools back to back):
+- `SparkGlm5NextLaunchStateSnapshot` saves the wave rows (state_index {3,1}),
+  the pools are overwritten, and restore brings those rows back bitwise while
+  every other row keeps the overwrite;
+- `SparkGlm5NextLaunchHeadMissPoison` + `LaunchHeadMaxlocUnpack` give
+  `SPARK_STEP_POISON_TOKEN` on every row when the miss flag is set and the
+  real token when it is clear.
+
+It also times the snapshot save for all 34 KDA layers of a TP16 rank (no
+speculation; sparkf, 3 runs, another tenant's harness was using the GPU):
+1 row (9.3 MB) 38.6-41.2 us, 8 rows (74.6 MB) 705-783 us. At B1 the rows
+stay in L2 across repeats, so the fleet cost per step can be higher; at 8
+rows the copy is DRAM-bound (about 200 GB/s of read plus write).
+
+Each of the following mutations makes the harness fail: removing the ring
+reset, the snapshot save or the head poison; making `WsRetry` fail the chain;
+skipping the final-step settle; dropping the per-step replay reset; dropping
+the lease unwind.
+
+The fleet proof is not done yet. It needs a dev weightd lane (lane 5) running
+this build with a trace-built `.wset`, compared against the same build in FULL
+mode.
