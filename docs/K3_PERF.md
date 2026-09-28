@@ -1,197 +1,131 @@
-# K3 serving-path performance audit and improvement plan
+# K3 performance record
 
-## 2026-09-21: the gb10-vllm comparison (K3_VS_GB10_VLLM)
+SparkPipe's own Kimi K3 numbers live here and nowhere else. External stacks
+are compared in [K3_VS_GB10_VLLM.md](K3_VS_GB10_VLLM.md), which takes
+SparkPipe's side of the comparison from this file.
 
-The full per-lever comparison against the announced-stack
-(github.com/ciprianveg/gb10-vllm kimi-k3/v5) lives in
-docs/K3_VS_GB10_VLLM.md: their 29.81 C1 decomposes into the transport class
-we already run (one-shot mesh, warm 561-700 us/round MEASURED), DSpark nst6
-speculation (our engine draft-verify loop + this lane's adaptive depth), and
-kernel/quant polish we do not carry. The 18.0 -> >=30 route and the
-CPU-proven vs compile-gated split are in that doc.
+## Numbers
 
-## 2026-09-19: 29 tok/s on 16x sparks (announced perf point)
+| Point | Value | Grade | Source |
+| --- | --- | --- | --- |
+| Warm B1 step: stage 0 (24 layers) of a TP4 rank pack on one Spark (sparka) | 55.5 ms, 2.3 ms/layer | measured 2026-08-16, one stage | `MEASURED_STAGE_MS` in `tools/k3_tp4pp4_perf_estimate.py` (a40946c) |
+| TP4xPP4 pipelined throughput, one token per stage step | 18.0 tok/s | arithmetic: 1000 / 55.5 | same tool |
+| One B1 sequence through the four PP stages | ~4.5 tok/s | arithmetic: 1000 / (4 x 55.5), collectives excluded | same tool |
+| TP4xPP4 decode roofline, slowest stage | 48.6 ms (20.6 tok/s pipelined) | analytical | tool output |
+| TP16 PP1 decode | 49.5 ms (20.2 tok/s) | analytical, 15 us per all-reduce | tool output |
+| TP16 PP1 decode at GLM's measured all-reduce latency | ~78 ms (~12.9 tok/s) | arithmetic, below | this file |
+| End-to-end K3 decode on the fleet | none | not measured | |
 
-@ciprianveg announced 29 tok/sec for kimi K3 decode on the 16-spark fleet
-(TP16, 2026-09-19). Recorded in the PERFORMANCE_LEDGER scoreboard as the
-current best-known K3 decode point, superseding the 18.0 anchor. Graded
-ANNOUNCED-MEASURED (attributed to its author): batch scope, precision,
-prompt length, and the code hash are not yet in a receipt — the k3 lane
-should append them here when the run artifacts are available so the point
-moves to full MEASURED standing. Their published v5-prd table now pins
-C1 29.81, C2 42.00 agg, C8 87.12 agg (136 peak) at TP16+DCP8, nst6 spec
-(gb10-vllm kimi-k3/v5/README.md:68-79).
+The 55.5 ms step was measured before a29ea53 (2026-09-10) moved every K3
+weight behind weightd, and has not been measured since.
 
-## 2026-08-17: the tail nondeterminism root cause (FIXED)
+SparkPipe has no K3 fleet measurement. The 29 tok/s K3 point announced by
+@ciprianveg on 2026-09-19 (published C1 29.81) comes from his gb10-vllm stack
+(vLLM, TP16+DCP8, DSpark nst6 speculation), not from SparkPipe. It is listed
+with the other external numbers in K3_VS_GB10_VLLM.md.
 
-The fresh-run gate's known tail variance (hidden[6144..7167], ~14 ULP,
-across runs AND across the TP4-vs-full equivalence) was the KDA o_proj
-running its weight-only GEMM with output == input == attention_out_bf16.
-The persistent GEMM stages A per k-tile while storing finished output tiles
-into the output buffer, so a second-wave tile's A reads race the first-wave
-stores of columns 0..7167 and its k-sums pick up another tile's outputs.
-Localised by per-phase dumps: q/k/v, gate, decay logits, retention, beta
-and the state pool were bit-identical across processes while the o_proj
-output moved (8 runs, 6 distinct outputs) - and the pre-norm and post-gate
-attention were bit-identical, which is what pinned the race to the
-projection itself. Fixed in layer.cuh (o_proj lands in hidden_bf16, which
-the MLP-side retrieval overwrites next; the tp1 boundary partial-set and
-the TP4 phase-0 hook source follow the layer kind - the MLA path already
-used distinct buffers). The gate's 64-ULP tail exemption is gone: fresh-run
-determinism and capture fidelity now hold at 4 ULP everywhere, and the TP4
-4-rank sum equals the full-stage run to bf16 rounding.
+### TP16 collective arithmetic
 
-The earlier "plain BF16 GEMM breaks at K >= 512" was a test artifact, not
-a kernel bug: the gate's plain probe filled its activation pattern with
-(((int32_t)x % 11u) - 5), whose subtraction happens in UNSIGNED space and
-wraps the intended negatives to ~4.29e9 (bf16 0x4E80). The GEMM was summing
-poisoned test data faithfully - verified byte-exact across processes at
-every real K extent (7168/12288/33792) by the determinism probes.
+The estimate tool charges 15 us per 16-rank all-reduce (`tp16_ar_ms`). The
+measured GLM 5.3 Flash 8 KiB 16-rank all-reduce is 167 us p50
+([GLM5_NEXT_ROOFLINE.md](GLM5_NEXT_ROOFLINE.md), fleet, 2026-09-25). K3 runs
+two all-reduces per layer on the B1 critical path (after attention and after
+the MLP), so at that latency (arithmetic):
 
-## Prefill + decode performance estimate
+- 93 layers x 2 x 167 us = 31.1 ms per token, against the tool's 2.8 ms;
+- 49.5 - 2.8 + 31.1 = 77.8 ms per token, ~12.9 tok/s.
 
-tools/k3_tp4pp4_perf_estimate.py derives both numbers from the deployed
-rank-pack manifest inventory (per-layer tensor bytes) and the repo's
-273 GB/s x 0.65 bandwidth convention, anchored to the measured 55.5 ms
-stage step:
+This assumes K3's collective matches GLM's weightd-mesh latency; the K3 runner
+uses its own `device_collective` tier (NCCL or hidden transport). K3's phase
+payloads are larger than 8 KiB, so ~12.9 tok/s is optimistic. At TP16 the
+collective, not weight bandwidth, is the dominant cost, as it is for GLM.
 
-- Decode (output, B1): measured 18.0 tok/s (55.5 ms/stage); the roofline
-  lands at 48.6 ms (20.6 tok/s) - the path is bandwidth-bound on the dense
-  spine + the top-16 expert stream + the fp32 KDA state read/write.
-- Prefill: 92 tok/s at B8 rising to 1537 tok/s at B1024 steady state
-  (single-prompt latency 0.35 s -> 2.66 s); the expert stream saturates at
-  B=56 (896/16) and the KDA state becomes the dominant term at large batch.
-- TP16 (PP1): decode 20.2 tok/s at 49.5 ms token latency (~4x lower latency
-  than the pipelined TP4xPP4 at the same throughput); prefill parity.
+### Prefill estimate (analytical)
 
-Measured on sparka, real rank pack, stage 0 (24 layers), 1 token:
+`tools/k3_tp4pp4_perf_estimate.py` gives TP4xPP4 prefill of 92 tok/s at B8
+rising to 1537 tok/s at B1024 steady state (single-prompt latency 0.35 s to
+2.66 s). The expert stream saturates at B56 (896 experts / top-16) and the
+fp32 KDA state becomes the dominant term at large batch. TP16 gives
+1511 tok/s at B1024 with 0.68 s latency. Both use the tool's 8 us (TP4) and
+15 us (TP16) all-reduce assumptions.
 
-- Cold first step: ~2.5 s - one-time JIT, tensor-map encodes, shared-memory
-  opt-ins. Amortises to nothing in steady state.
-- Warm step: **55.5 ms** = 2.3 ms/layer. The slice issues ~35 kernels per
-  layer (~840 per step, ~66 us of host enqueue each - the HOST spent ~55 ms
-  enqueueing each step).
-- Graph replay of the captured slice: **54.2 ms** (step 3 in the gate) -
-  bit-identical output. The kernels themselves take ~54 ms, so the path is
-  MEMORY-BANDWIDTH-BOUND on weight streaming, not launch-bound: each layer
-  streams ~0.8-1 GB of BF16 spine + MXFP4 expert weights per token through
-  the persistent GEMMs (LPDDR5X ~273 GB/s => ~2.3 ms/layer). The capture's
-  win is real but wall-clock-side: it removes the ~55 ms serialized host
-  enqueue from every submit, roughly halving the per-step wall time at B1
-  and freeing the host thread for the residentd loop and the other ranks.
-  Steady-state decode: ~55 ms per stage per token (the PP4 stages
-  pipeline), i.e. ~18 tokens/s for the 16-spark K3.
+## Current code state
 
-## Improvements, in dependency order
+- **Only a TP4xPP4 descriptor exists.** `K3ServingDescriptor`
+  (`modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c`) is
+  `k3-tp4pp4`: hybrid TP/PP, 16 stages, `parallel_group_size` 4 and PP4 stage
+  layer counts. residentd derives pipeline geometry from the descriptor
+  (`SparkPipelineRuntimeDeriveStageGeometry` in `runtime/pipeline_runtime.c`).
+  The adapter config can set `tp_degree` 16, but without a TP16 descriptor a
+  TP16 PP1 deployment is not deployable as written.
+- **weightd is mandatory.** The runner fails closed when
+  `SparkWeightdAttachRequested` is not granted (a29ea53: the family no longer
+  opens or maps weight bytes).
+- **CUDA graphs were removed.** a29ea53 deleted the capture machinery
+  (`graphs[4]`, `LaunchSliceGraph`, `CAPTURE_GRAPHS`, `capture_graphs`)
+  because exclusive lazy loading makes capture ineligible. The 2026-08-16
+  replay result (54.2 ms vs 55.5 ms eager) no longer applies. The
+  `capture_graphs` keys still emitted by `tools/k3_gen_adapter_configs.sh`,
+  `tools/k3_multidev_lane.py` and `modules/k3_resident_decode_stage/configs/`
+  are not read by the adapter. GLM regained graphs by pinning every expert
+  (78c2c21); K3 needs the same, or relocatable graphs.
+- **TILE_K=32 landed** (837fe89, 2026-08-16): `layer.cuh` takes the
+  INTERLEAVED_B path when `expert_tile_k == 32u`; `tools/k3_pack.py` packs
+  experts at tile_k 128 by default and 32 on request.
+- **Expert sharding** (`tools/k3_shard.py`): w1 (`_expert_gate_up`) splits
+  the input on whole k-tiles and keeps the gate|up output whole, because the
+  layer all-reduces before the SiTU. w2 (`_expert_down`) splits the output on
+  whole 16-neuron cells and keeps the input whole. The sharder refuses a
+  degree the tile or cell counts do not divide.
+- **Lifecycle callbacks are no-ops.** `K3ServingPrefetch`,
+  `K3ServingResolvePrefetch`, `K3ServingProgress`, `K3ServingQuiesce` and
+  `K3ServingReset` return success without doing anything, which
+  [DRIVER_ACCEPTANCE.md](DRIVER_ACCEPTANCE.md) forbids.
+- **Landed collective work** (2026-08-16): one fused, stream-ordered
+  all-reduce per layer phase over the `device_collective` tier (`nccl` or
+  `hidden_transport`); the host TCP tier serves at most 4 ranks
+  (`SPARK_TP_COLLECTIVE_MAX_STEPS`). The phase after attention is required
+  for correctness: the MLP-side AttnRes retrieval reads the post-attention
+  partial.
 
-1. **CUDA-graph capture** (the slice's own capture audit: legal once no
-   host traffic remains on the layer path). The per-step dense-offset H2D
-   is now a device-side kernel (K3RunnerDenseOffsetsKernel); the remaining
-   host traffic is the collective tier's staging. Target: the ~3.3k
-   launches/token become one graph replay per shape.
-2. **The fused per-layer collective (LANDED)**: attention_out | hidden |
-   shared_out pack into contiguous 14 KB segments instead of three
-   separate exchanges - the two-phase split (item 5) ships attention_out
-   alone before the MLP-side retrieval and hidden | shared_out after the
-   MLP, so each exchange carries the largest frame its phase allows and
-   the wire utilization stays high. The host-TCP tier implements it; the
-   device tier replaces the whole block with stream-ordered combines (no
-   sync at all).
-3. **The device-direct tier (LANDED)**: the adapter parses a
-   `device_collective` object (backend nccl | hidden_transport, peer
-   hosts, ports, timeouts), applies the topology, and hands the runner a
-   completed config. The runner creates the collective with the K3 combine
-   kernels (hidden transport) or plain NCCL, and the per-layer hook issues
-   ONE stream-ordered all-reduce of the fused 3x7168 buffer with a
-   completion that folds the summed segments into the AttnRes partial on
-   the same stream. No sync, no host staging, no H2D on the hot path.
-   NCCL's unique id bootstraps through the shared control port (64620);
-   the host TCP tier stays available as the TP4 fallback and is skipped
-   for TP16 (its 4-rank cap).
-4. **TP16-ready geometry (LANDED)**: the adapter derives the PP stage
-   split from `world_size / tp_degree` (16/16 -> PP1), the module takes
-   slice bounds from the pack manifest when the runner passes
-   SPARK_K3_MODULE_DERIVE_SLICE, the bound-layer cap is 93, and the
-   generator emits TP16 configs (16 peer hosts, no host tier). The degree
-   divisibility audit below holds.
-5. **Expert sharding, corrected (LANDED)**: two real findings from the
-   audit. (a) The w1's K AXIS must slice too: the rank's latent slice
-   addresses only its k-tiles, so the old whole-k shard paired ranks 1-3's
-   activations with rank 0's weights - the sharder now takes the rank's
-   k-tile range on w1 as well as the cell range. (b) The TP16 tile size
-   is 32, not 64: the rank's SiTU intermediate slice IS contiguous (the
-   gate|up halves share cell offsets), and 32 divides both the w1 k-slice
-   (224 = 7 x 32) and the w2 k-slice (192 = 6 x 32); the packer's
-   interleave_geometry already closes at tile_k 32 (16B payload row = 16
-   rows x 1 scale byte). The packer now takes expert_tile_k (128 default,
-   32 for TP16 packs) and the sharder refuses any degree the tile counts
-   do not divide, naming the tile size. The TILE_K=32 INTERLEAVED_B GEMM
-   variant is the remaining code wave; until then TP16 packs cannot be
-   consumed by the serving tier. NOTE: the deployed TP4 rank packs were
-   sliced by the pre-fix sharder and must be RE-SLICED before the
-   end-to-end run (only rank 0's w1 is correct today).
-5. **Two-phase layer collective (LANDED)**: the hook now fires after the
-   attention half (phase 0) AND after the MLP half (phase 1). Phase 0 is
-   required for correctness, not just speed: the MLP-side AttnRes retrieval
-   is documented to read the POST-attention partial, and the old single
-   post-MLP hook let the sharded path retrieve a partial missing the
-   attention contribution. Each phase packs and all-reduces its own
-   segment(s) with the fold landing on the submission's stream (no legacy
-   default stream), and at tp_degree 1 the hook no-ops because the layer
-   folds its own projections.
-6. **Per-shape CUDA-graph capture (LANDED, gated)**: the runner captures
-   the dense-offset kernel + the whole slice into a cudaGraphExec_t keyed
-   by rows (warm-direct first submit, capture on the second, replay after),
-   gated on a non-default stream and a capture-safe tier (NCCL device
-   collective or tp_degree 1; the host tiers' syncs/staging are not
-   replayable and self-disable the path). The slice audit (in slice.cuh)
-   held: no host traffic on the layer path, host-resolved branches bake
-   in, tensor-map encodes are steady-state cache hits. The single-spark
-   gate now replays the captured slice and compares it against the direct
-   launch (0 mismatches beyond the ULP limits).
-7. **AR overhead audit, 2026-08-16 (second pass)**: the per-phase
-   payloads are now SIZED to the phase (the submission carries the element
-   count - phase 0 ships ONE 14 KB segment instead of the 3-segment 43 KB
-   frame, cutting its wire bytes 3x), and the embedding exchange runs on
-   the NCCL tier (one slot-encoded stream-ordered all-reduce; no sync, no
-   host staging). Remaining, in order of value: (a) the slot-encoded
-   full-width all-reduce moves 4x the minimal bytes - a reduce-scatter +
-   all-gather pair would halve the per-rank wire traffic; (b) the head
-   exchange still uses the host tier (its f32 slots have no NCCL f32
-   collective - a bf16-splittable slot layout or an f32 NCCL op would move
-   it); (c) the hidden-transport tier cannot narrow its pre-registered
-   frame (the per-submission count is NCCL-only). The per-layer structure
-   stays 2 ARs on the critical path (the correctness requirement), so the
-   B1 AR budget is 2 x NCCL-tree latency (~5-15 us) per layer.
-8. **Overlap** (revised): the per-layer ARs sit on the critical path for
-   B1 decode by construction - the MLP-side retrieval needs the summed
-   attention output and the next layer needs the summed MLP outputs - so
-   there is no compute to hide them behind. The AR-overhead reductions are
-   the fused messages, the device-direct tier, and the graph capture
-   above. Remaining ideas: a per-submission payload width (the collective
-   currently fixes local_hidden_dimension at create time, so a 1-segment
-   phase still ships the 3-segment frame) and the balanced TP16 w2
-   half-tile repack.
+## TP16 divisibility (degree 16)
 
-## TP16 readiness audit (degree 16 divisibility)
+Extents the sharder splits; the expert rows use `inference/llms/kimi_k3/config.h`
+(`K3_ROUTED_EXPERT_HIDDEN` 3584, `K3_EXPERT_INTERMEDIATE` 3072).
 
 | tensor | full | /16 | status |
 | --- | --- | --- | --- |
 | heads (KDA + MLA) | 96 | 6 | ok |
 | vocab (embed/lm_head) | 163840 | 10240 | ok |
-| kda_out input | 128 | 8 | ok |
-| mla_out input | 12288 | 768 | ok |
-| routed latent | 3584 | 224 | ok |
-| expert w1 output (cells) | 6144 (384) | 384 (24) | ok |
-| expert w2 k-tiles | 24 | 1.5 | was REFUSED - now UNBALANCED SPLIT |
+| kda_out, mla_out input (96 heads x 128) | 12288 | 768 | ok |
+| expert w1 input k-tiles at tile_k 32 | 3584 / 32 = 112 | 7 | ok (tile_k 128 gives 28 tiles, refused) |
+| expert w2 output cells | 3584 / 16 = 224 | 14 | ok, input 3072 kept whole |
 | shared w1 halves | 1024 | 64 | ok |
 | shared w2 input | 2048 | 128 | ok |
 | dense gate_up halves | 16896 | 1056 | ok |
 | dense down input | 33792 | 2112 | ok |
 
-The sharder now splits the w2 across TP16 UNBALANCED (the first 8 ranks
-take 2 of the 24 k-tiles, the rest 1) - whole tiles, scales intact, the
-per-rank dims the layer already reads make it explicit. The balanced
-follow-up is the 64-element half-tile repack (a pack-format change the
-GEMM would take as an INTERLEAVED_B TILE_K=64 variant with 32-byte cell
-rows).
+## Open work, in dependency order
+
+1. A TP16 adapter descriptor, so TP16 PP1 can load.
+2. Real prefetch, resolve, progress, quiesce and reset callbacks.
+3. Collective latency, the dominant TP16 term (186 all-reduces per token).
+   Recorded in the 2026-08-16 audit and not re-verified since: the
+   slot-encoded full-width all-reduce moves 4x the minimal bytes
+   (reduce-scatter plus all-gather would halve per-rank wire traffic), the
+   head exchange still uses the host tier, and the hidden-transport tier
+   cannot narrow its pre-registered frame.
+4. Graph replay through pinned or relocatable experts.
+5. A first end-to-end fleet B1 number, then the levers in
+   [K3_VS_GB10_VLLM.md](K3_VS_GB10_VLLM.md).
+
+## Fixed defects (record)
+
+- 2026-08-17, tail nondeterminism: the KDA o_proj ran its weight-only GEMM
+  with output == input, so second-wave tiles read first-wave stores (about
+  14 ULP on hidden[6144..7167], across runs and across TP4 vs full stage).
+  o_proj now lands in `hidden_bf16`; fresh-run determinism holds at 4 ULP and
+  the TP4 4-rank sum equals the full-stage run to bf16 rounding.
+- The earlier "plain BF16 GEMM breaks at K >= 512" was a test artifact: the
+  probe's `(((int32_t)x % 11u) - 5)` subtracts in unsigned space and wraps
+  negatives to ~4.29e9.
