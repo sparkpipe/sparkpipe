@@ -14,6 +14,7 @@ QWEN38_27B_SERVING_CONSTANTS = (
 EXPECTED_FAMILIES = {
     "k3",
     "glm52",
+    "glm5_next",
     "qwen38_27b",
     "dsv4_flash",
     "dsv4_pro",
@@ -51,6 +52,13 @@ def main() -> int:
         "mxfp4_e2m1_e8m0",
     ]
     assert by_family["glm52"]["non_expert_weight_format"] == "bf16"
+    glm53_flash = by_family["glm5_next"]
+    glm53_contract = json.loads((ROOT / glm53_flash["contract"]).read_text(encoding="utf-8"))
+    assert glm53_flash["model_id"] == glm53_contract["model_id"]
+    assert glm53_flash["model_revision"] == glm53_contract["source_revision"]
+    assert glm53_contract["precision"]["weight_format"] == "fp8_e4m3"
+    assert glm53_contract["precision"]["weight_block_size"] == [128, 128]
+    assert glm53_flash["routed_expert_weight_format"] == "fp8_e4m3_block_128x128"
     # The Qwen 3.8 27B target pins the exact checkpoint the serving constants
     # compile against (the 3.6 line is deprecated; gate-breaking by directive).
     qwen = by_family["qwen38_27b"]
