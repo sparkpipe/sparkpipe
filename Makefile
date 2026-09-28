@@ -762,6 +762,13 @@ build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inferenc
 test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
 	./build/test_glm5_next_rows_kernels --run
 
+build/test_head_candidate_stage: tests/test_head_candidate_stage.cu inference/kernels/head.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-head-candidate-stage
+test-head-candidate-stage: build/test_head_candidate_stage
+	./build/test_head_candidate_stage --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
