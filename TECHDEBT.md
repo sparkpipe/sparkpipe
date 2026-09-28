@@ -610,17 +610,26 @@ door and the static pages and playground in `site/`.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- Nine Python tests stay outside `make test`:
+- Eight Python tests stay outside `make test`:
   - five drive the fleet over ssh: `test_expert_io_perf`,
     `test_jit_kv_page_fault`, `test_lossless_doorbell`,
     `test_memory_bandwidth_budget` and `test_transport_stability`;
   - three read whole synthetic packs into memory and fail with
     `MemoryError` on a 7 GB host: `test_dsv41_flash_layer0_anchor`,
-    `test_dsv41_verify_pack` and `test_glm52_validate_pack_stage`;
-  - `test_stagepack_mtp_strip_qwen36sp` fails removing its temporary
-    directory in a sandbox.
+    `test_dsv41_verify_pack` and `test_glm52_validate_pack_stage`.
 
-  Give the fleet tests a runner, stream the packs, and register all nine.
+  Give the fleet tests a runner, stream the packs, and register all eight.
+- Eleven C tests are neither registered nor run anywhere. Ten should be
+  deleted: `test_cache`, `test_sideband`, `test_group_gemm_workspace` and
+  `test_state_pool` test headers no product includes (`cache/cache.h`,
+  `ring/sideband.h` and `runtime/workspace.h` go with them;
+  `spark_state_pool.h` is still used by `test_k3_kv_cache`);
+  `test_continuous_batch_decode`, `test_multi_row_prefill`, `test_pack`,
+  `test_dequant` and `test_reference` (with `tests/reference.h`) test local
+  reimplementations; `test_graph_replay_kernel_abi` checks a mesh-kernel
+  marker the module build already verifies. `test_graph_replay_correctness`
+  is a GPU rig with private kernel prototypes and no build rule; it needs an
+  nvcc-gated rule on the shared kernel headers and a Spark runner.
 
 ## Hardware independence
 
