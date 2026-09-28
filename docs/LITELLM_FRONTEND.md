@@ -1,33 +1,47 @@
 # LiteLLM front end — one door for the SparkPipe fleet
 
-Status: operational on the controller Mac (LiteLLM proxy v1.74.0), routing
-table covers glm5_next TP16 and the Qwen 3.8 27B TP1 staging pair. All three
-upstreams were DOWN at bring-up time (glm53 mid-debug; 27B staged but not
-launched), so the proof of routing is the per-deployment connect evidence in
-`docs/AGENT_LANE_BRIEFS/reports/litellm-2026-08-28.md` plus a
-contract-exact mock-upstream verification of the passthrough bridge.
+Status, 2026-09-28: `config/litellm-config.yaml` routes `glm-5.3-flash` to
+the GLM API on the rtx5090 hub. From the controller Mac that upstream answers
+`GET /health` with `"tokenizer":true` and `GET /v1/models`. No completion
+through the proxy against it has a receipt yet, and no proxy on the
+controller Mac runs the committed config (the one LiteLLM process there
+listens on `127.0.0.1:4000` with a different config file). The browser checks
+below used a mock upstream.
 
 ## What this is
 
-- The standard open-source LiteLLM proxy runs on the controller Mac only.
-  Sparks keep serving their per-deployment `model_api`; nothing changes on
-  any spark (front end is controller-side).
-- Clients get one OpenAI-compatible door: `http://<mac>:4000`, bearer-key
-  auth, model-name routing (`glm-5.3-flash` → spark0:8433), access logging.
+- A standard open-source LiteLLM proxy on the controller Mac: one
+  OpenAI-compatible door at `http://<mac>:4000` with bearer-key auth,
+  model-name routing and access logging.
+- Its upstreams are per-deployment `model_api` instances. GLM 5.3 Flash's is
+  `sparkpipe_model_api` in the systemd user unit `g53-api` on the rtx5090,
+  port 8433, an x86 build of the engines' source commit
+  (`docs/SPARKDEV_HANDOFF_GLM53FLASH.md`; the COMPSEC-17 receipt below lists
+  the build). No Spark serves an API: the serving drop-in sets
+  `G5_API_DISABLED=1`, and `ensure_api` in `tools/fleet_node_agent.sh` then
+  starts none.
+- Nothing changes on the Sparks or the hub to add the door.
 
 ## The model_api contract (read first)
 
 `model_api` (`node/model_api.c`) accepts OpenAI-shaped requests. Text
 prompts need a tokenizer sidecar in the deployment config; token IDs always
-work.
+work. `model_api` checks no API key and ignores the request's `model` field.
 
 | Route | Request | Response |
 | --- | --- | --- |
 | `GET /health` | — | `{"status":"ok","served":N,"tokenizer":bool}` |
-| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}` |
+| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is `SPARK_MODEL_ID`, default `sparkpipe-model` |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
-| `POST /v1/chat/completions` | `messages` (text), or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
+| `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
+
+A request with `messages` and no `prompt` or `prompt_token_ids` gets the GLM
+chat layout (`api_build_chat_prompt`): `[gMASK]<sop>`, a role marker before
+each turn (`<|system|>`, `<|user|>`, `<|assistant|>`, `<|observation|>`) and
+a trailing `<|assistant|>\n`. Unless the request names `stop_token_ids`, the
+reply stops at the next turn marker. The layout does not append
+`<think></think>`, so the model reasons before it answers.
 
 Optional request fields:
 
@@ -68,48 +82,40 @@ seed, the finish reason and
 every output token with its timestamp. That is enough to replay a
 completion off-node and compare it bit for bit.
 
-The passthrough notes below were verified against the earlier token-ID-only
-upstream (contract-exact mock in `tools/litellm_mock_upstream.py`, LiteLLM
-1.74.0). Now that the upstream accepts OpenAI-shaped text bodies, the
-transformed routes are expected to work too, but they have no receipt yet;
-the passthrough stays the verified integration until one exists.
+## Calling GLM 5.3 Flash through the door
 
-1. LiteLLM's **transformed routes** (`/v1/completions`, `/v1/chat/completions`)
-   rewrite the body into the OpenAI shape and ignore unknown fields. A body
-   carrying only `prompt_token_ids` dies at the proxy (`KeyError 'prompt'`).
-   Against the token-ID-only upstream a text prompt was answered
-   `400 {"error":"prompt_token_ids required"}`; with a tokenizer sidecar it is
-   now accepted, but that path has no LiteLLM receipt yet.
-2. LiteLLM's **pass-through route is the integration point.** Clients POST to
+Chat, thinking on (the default path for clients):
 
-   ```
-   POST http://<mac>:4000/vllm/v1/completions
-   Authorization: Bearer <LITELLM_MASTER_KEY>
-   {"model": "glm-5.3-flash", "prompt_token_ids": [...], "max_tokens": 64}
-   ```
+```sh
+curl http://<mac>:4000/v1/chat/completions \
+  -H "Authorization: Bearer $SPARK_LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"Hello"}],"max_tokens":256}'
+```
 
-   The `/vllm/<path>` prefix selects the passthrough handler; `model` names
-   the deployment in the config; the rest of the JSON body is forwarded
-   **verbatim** (only `model` is rewritten to the deployment's internal name)
-   to the deployment's `api_base` + path, and the upstream's response
-   bytes/status are returned to the client as-is. Verified: the mock upstream
-   received `{"model":"mock-model","prompt_token_ids":[151644,872,198],
-   "max_tokens":3}` byte-for-byte and the client got the mock's
-   `{"object":"text_completion",...}` unchanged.
-3. Deployment model strings **must use the `vllm/` prefix** — the vllm
-   provider is the one with a registered passthrough config. `openai/`
-   prefix → `Provider openai not found` (500).
-4. **Error fidelity caveat:** non-2xx upstream responses surface to the
-   client as HTTP 500 with a generic body. The upstream's status text IS
-   preserved server-side in the proxy log (`VLLMError: {"error": ...}`,
-   `Cannot connect to host spark0:8433 ...`) — triage lives in the log, not
-   the client response. Down upstream → 500 + `Cannot connect to host
-   <host:port>` in the log naming the exact deployment.
-5. LiteLLM's own `GET /health` (per-deployment probing) uses the OpenAI chat
-   shape, which our upstream always rejects — it reports our deployments
-   "unhealthy" even when they serve fine. Ignore it; probe upstreams directly
-   (`curl http://spark0:8433/health`) or send a 1-token completion through
-   the passthrough.
+Thinking off, or any exact prompt: send the templated text as `prompt` to
+`/v1/completions`. The API's tokenizer maps the markers to their special
+tokens.
+
+```json
+{"model": "glm-5.3-flash",
+ "prompt": "[gMASK]<sop><|user|>\n{question}<|assistant|>\n<think></think>\n",
+ "max_tokens": 512}
+```
+
+This is the COMPSEC-17 protocol, which scores 14/17 sent straight to the API
+([receipt](../qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md));
+it has not been run through the proxy.
+
+Token IDs go straight to `model_api`, not through the door: LiteLLM's
+routes rewrite the body into the OpenAI shape, and a body with only
+`prompt_token_ids` failed at the proxy with `KeyError 'prompt'` (LiteLLM
+1.74.0, 2026-08-28). A token-ID prompt gets no chat layout, so it must carry
+the markers itself. GLM 5.3 Flash IDs: `[gMASK]` 154822, `<sop>` 154824,
+`<|user|>` 154827, `<|assistant|>` 154828, `<think>` 154841, `</think>`
+154842 (`qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json`).
+Qwen's `<|im_start|>user\n` IDs (151644, 872, 198) are ordinary text pieces
+to GLM.
 
 ## Browser clients (the sparkpipe.ai playground)
 
@@ -127,99 +133,131 @@ above, with deployments as `tools/generate_litellm_config.py` writes them
   decode rate.
 - `seed`, `temperature`, `max_tokens` and `deadline_ms` reach the upstream.
   `priority` does not: LiteLLM takes it for its own scheduler.
-- With `vllm/` deployments, as in the committed `config/litellm-config.yaml`,
-  the chat route fails with `No module named 'vllm'`: LiteLLM's `vllm/`
-  provider runs a local vLLM engine rather than calling the upstream. Chat
-  clients need the `openai/` deployments.
+- `vllm/` deployments fail the chat route with `No module named 'vllm'`:
+  LiteLLM's `vllm/` provider runs a local vLLM engine rather than calling
+  the upstream.
 
 ## Install (controller Mac)
 
 ```sh
-python3.13 -m venv /Users/mac/sparkpipe/litellm-venv
-/Users/mac/sparkpipe/litellm-venv/bin/pip install 'litellm[proxy]==1.74.0'
-/Users/mac/sparkpipe/litellm-venv/bin/litellm --version   # litellm-1.74.0
+python3.13 -m venv ~/litellm-venv
+~/litellm-venv/bin/pip install 'litellm[proxy]==1.74.0'
+~/litellm-venv/bin/litellm --version   # litellm-1.74.0
 ```
 
-Pinned: `litellm[proxy]==1.74.0` (with `litellm-proxy-extras-0.2.6`), on
-Homebrew Python 3.13.2. The venv lives outside the repo at
-`/Users/mac/sparkpipe/litellm-venv`.
+Pinned: `litellm[proxy]==1.74.0` (with `litellm-proxy-extras-0.2.6`) on
+Homebrew Python 3.13.2, the versions every check here used. The 2026-09-05
+integration notes give the reasons: newer LiteLLM releases need Postgres for
+any auth, and Python 3.14 breaks uvloop. Keep the venv outside the
+repository.
 
 ## Config
 
-Committed at `config/litellm-config.yaml`. Secrets come from the
-environment (`os.environ/LITELLM_MASTER_KEY`,
-`os.environ/SPARKPIPE_UPSTREAM_KEY`) — generated once into
-`/Users/mac/sparkpipe/.env` (mode 600, never committed):
+`config/litellm-config.yaml` is generated, never edited by hand:
 
 ```sh
-grep -q LITELLM_MASTER_KEY /Users/mac/sparkpipe/.env || \
-  echo 'LITELLM_MASTER_KEY="sk-sparkpipe-<random>"' >> /Users/mac/sparkpipe/.env
+python3 tools/generate_litellm_config.py \
+  --pair glm-5.3-flash=http://100.123.97.61:8433 \
+  --master-key --out config/litellm-config.yaml
 ```
 
-Routing table (model_api HTTP ports, NOT residentd control ports):
+The generator writes one `openai/<name>` deployment per `--pair` (or per
+`--registry models.json` entry, `[{"name": ..., "base_url": ...}]`), with
+`api_base` ending in `/v1`, `drop_params: true`, `num_retries: 1` and
+`request_timeout: 600`. `--master-key` adds bearer auth through
+`SPARK_LITELLM_MASTER_KEY`; the generator omits it by default, so always pass
+it for the door. Upstream calls send `SPARK_API_KEY`, which `model_api`
+ignores; set it to any value. Older setups named these `LITELLM_MASTER_KEY`
+and `SPARKPIPE_UPSTREAM_KEY`.
 
-| model_name | api_base | evidence |
+Keep both secrets in their own mode-600 file outside the repository, not in
+the repository's `.env`, which also holds the GitHub PAT:
+
+```sh
+mkdir -p ~/.config/sparkpipe
+( umask 077; printf 'SPARK_LITELLM_MASTER_KEY="sk-sparkpipe-%s"\nSPARK_API_KEY="unused"\n' \
+    "$(openssl rand -hex 16)" > ~/.config/sparkpipe/litellm.env )
+```
+
+Routing table (`model_api` HTTP ports, not residentd control ports):
+
+| model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3-flash` | `http://spark0:8433` | glm53 lane LAUNCH-STATE.md + `/tmp/g5n_api.log` on spark0 |
-| `qwen-3.8-27b` | `http://sparka:8534` + `http://spark9:8434` (pool) | sparka port proven in `~/sparkdata/qwen38.fp8.tp1/co_resident_api.log`; **spark9:8434 provisional** (its api never reached ready; confirm at launch) |
-| `qwen-3.8-27b-a` | `http://sparka:8534` | pin one instance |
-| `qwen-3.8-27b-9` | `http://spark9:8434` | pin one instance |
+| `glm-5.3-flash` | `g53-api` on the rtx5090, `http://100.123.97.61:8433` (tailscale; `10.10.250.2` from the Sparks) | `GET /health` from the controller Mac on 2026-09-28; `docs/SPARKDEV_HANDOFF_GLM53FLASH.md` |
+
+Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
+(`docs/FLEET_RELEASE_RUNBOOK.md` topology, COMPSEC-17 receipt).
 
 ## Start / stop
 
 ```sh
 # start
-cd /tmp && set -a; source /Users/mac/sparkpipe/.env; set +a; \
-  nohup /Users/mac/sparkpipe/litellm-venv/bin/litellm \
+cd /tmp && set -a; . ~/.config/sparkpipe/litellm.env; set +a; \
+  nohup ~/litellm-venv/bin/litellm \
     --config <repo>/config/litellm-config.yaml --port 4000 \
     > /tmp/litellm-sparkpipe.stdout 2>&1 & echo $! > /tmp/litellm-sparkpipe.pid
 # stop
 kill $(cat /tmp/litellm-sparkpipe.pid)
 ```
 
-Binds `0.0.0.0:4000`. Uvicorn access lines (`POST /vllm/... 500/200`) plus
-LiteLLM error details land in `/tmp/litellm-sparkpipe.stdout` — that is the
-usage log in the DB-free setup. Per-key budgets/virtual keys need a Postgres
-`database_url`; deliberately not configured yet (single master key is the
-auth model today).
-
-## Client contract (the one true way to call)
+Uvicorn access lines and LiteLLM error details land in
+`/tmp/litellm-sparkpipe.stdout`, the usage log of the database-free setup.
+Probe an upstream directly with `curl http://100.123.97.61:8433/health`.
+Smoke the door with the standard tester, which sends two temperature-0 text
+completions per listed model and requires identical output:
 
 ```sh
-KEY=$(grep -o 'sk-sparkpipe-[a-f0-9]*' /Users/mac/sparkpipe/.env)
-curl http://<mac>:4000/vllm/v1/completions \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"model":"glm-5.3-flash","prompt_token_ids":[151644,872,198],"max_tokens":64}'
-# -> {"object":"text_completion","tokens":[...],"status":0}   (upstream bytes, verbatim)
+python3 tools/model_api_smoke.py --endpoint http://127.0.0.1:4000 \
+  --token "$SPARK_LITELLM_MASTER_KEY"
 ```
 
-`GET /v1/models` (with the key) lists the routed model names. Deployments
-with a tokenizer sidecar accept text prompts and return text; others speak
-token IDs end to end.
+## Postgres (virtual keys and spend logs)
 
-## Add-a-model procedure
+Per-key budgets, virtual keys and spend tracking in the admin UI (`/ui`)
+need a Postgres `database_url`. Install it on the controller Mac, not on a
+Spark:
 
-1. The deployment's lane brings its `model_api` up on a known port on its
-   head node (record the port in the deployment dir / LAUNCH-STATE.md).
-2. Edit `config/litellm-config.yaml`: add
+```sh
+brew install postgresql@16
+/opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 start
+/opt/homebrew/opt/postgresql@16/bin/createdb litellm
+python3 tools/generate_litellm_config.py \
+  --pair glm-5.3-flash=http://100.123.97.61:8433 --master-key \
+  --database-url postgresql://mac@localhost:5432/litellm \
+  --out config/litellm-config.yaml
+```
 
-   ```yaml
-   - model_name: <fleet-facing-name>
-     litellm_params:
-       model: vllm/<anything>          # vllm/ prefix is REQUIRED (see above)
-       api_base: http://<sparkN>:<api-port>
-       api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
-   ```
+LiteLLM ships a prisma schema; generate the client and push the schema once:
 
-3. Restart the proxy (stop/start above).
-4. Prove routing: `GET /v1/models` shows the name; a completion POST
-   reaches the upstream (`curl http://<sparkN>:<port>/health` served count
-   increments, or the connect-error in the proxy log names the right
-   host:port if it is down).
-5. Commit config + note the port's evidence in this file's routing table.
+```sh
+cd ~/litellm-venv/lib/python3.13/site-packages/litellm/proxy
+PATH=~/litellm-venv/bin:$PATH DATABASE_URL=postgresql://mac@localhost:5432/litellm prisma generate
+PATH=~/litellm-venv/bin:$PATH DATABASE_URL=postgresql://mac@localhost:5432/litellm prisma db push
+```
 
-## Verification receipts
+Then start the proxy with `DATABASE_URL` exported next to
+`SPARK_LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
+served the admin page, routed completions by name and wrote one
+`LiteLLM_SpendLogs` row per request.
 
-All raw outputs (model list, per-deployment connect evidence, the mock
-passthrough byte-for-byte proof, error-surfacing behavior) are in
-`docs/AGENT_LANE_BRIEFS/reports/litellm-2026-08-28.md`.
+## Add a model
+
+1. Bring the deployment's `model_api` up on a known host and port and record
+   them with the deployment.
+2. Regenerate `config/litellm-config.yaml` with one `--pair` per route, the
+   existing ones included.
+3. Restart the proxy.
+4. Prove routing: `GET /v1/models` through the door lists the name, and
+   `tools/model_api_smoke.py` through the door passes.
+5. Commit the config and add the route and its evidence to the table above.
+
+## History
+
+Until 2026-09-28 the committed config used `vllm/` deployments and LiteLLM's
+`/vllm/<path>` passthrough, which forwards a token-ID body verbatim. That
+path cannot serve chat clients, and its documented example sent Qwen token
+IDs to GLM. The 2026-08-28 bring-up receipts, including the mock passthrough
+proof, were removed with `docs/AGENT_LANE_BRIEFS` in 27a2620;
+`git show 27a2620^:docs/AGENT_LANE_BRIEFS/reports/litellm-2026-08-28.md`
+prints them. The generator and Postgres notes came from
+[`archive/LITELLM_INTEGRATION.md`](archive/LITELLM_INTEGRATION.md).
