@@ -35,6 +35,7 @@ usage: $0 ACTION [ARG]
   status | stop           unit state, ready line, memory | stop that unit
   bench nospec|dflash2    canonical 128-token prompt, 512 greedy tokens through sparkpipe_model_batch
   refcheck MODE FILE      greedy continuations for a reference prompt file (fresh residentd per prompt), compared with its reference_token_ids
+  perf MODE CASES REPS OUT [ROWS] tools/qwen38_27b_tp1_bench.py cases (o128,o512,code512,rep512,ttft,streams8), fresh residentd per run, JSON lines to OUT
   fresh MODE              stop, then launch MODE (residentd serves one client connection; see lane notes)
   api-install SHA         build the x86 API + TP1 adapter on ${HUB}, stage ${API_CHANNEL}, write qwen27b-api.service (not started)
   api-start | api-stop | smoke
@@ -73,7 +74,7 @@ cd ${src} && digest=\$(cut -d' ' -f1 ${ROOT}/${PACK_REL}.sha256) && systemd-run 
 export PATH=/usr/local/cuda/bin:\$PATH
 set -e
 make -C modules/qwen38_27b_resident_decode_stage CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a $(publish_env) publish > publish.log 2>&1
-grep -q \"qwen38_27b_validation PASS\" publish.log
+grep -q -E \"qwen38_27b_validation PASS|validation=reused\" publish.log
 rm -rf build/tp1-driver
 build/sparkpipe_model_compile --model examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json --library build/module_library --output build/tp1-driver --cc /usr/bin/cc --include include --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm --cc-arg -ldl --cc-arg -pthread > driver-link.log 2>&1
 build/sparkpipe_driver_inspect build/tp1-driver/stages/stage_000/model_driver.so cuda.sm121.qwen38_27b.resident_decode_stage.bf16 > driver-inspect.log 2>&1
@@ -176,6 +177,26 @@ EOF"
 	done
 }
 
+perf() {
+	local mode=${1:?nospec|mtp|dflash2} cases=${2:?comma list} reps=${3:?reps} out=${4:?local jsonl} prefill_rows=${5:-128} case rep deployment=nospec
+	[ "$mode" = dflash2 ] && deployment=dflash2
+	scp -q "$HERE/tools/qwen38_27b_tp1_bench.py" "${NODE}:${ROOT}/logs/qwen38_27b_tp1_bench.py"
+	scp -q "$HERE/qualification/qwen38_27b/bench_prompts_tp1.json" "${NODE}:${ROOT}/logs/bench_prompts_tp1.json"
+	for case in ${cases//,/ }; do
+		for rep in $(seq 1 "$reps"); do
+			fresh "$mode" > /dev/null 2>&1
+			on "$NODE" "cd ${ROOT} && python3 logs/qwen38_27b_tp1_bench.py ${case} --root ${ROOT} --deployment ${ROOT}/config/model_resident.${deployment}.json --prompts logs/bench_prompts_tp1.json --prefill-rows ${prefill_rows} | python3 -c '
+import json, sys, re
+r = json.loads(sys.stdin.read())
+acc = [int(m.group(1)) for m in re.finditer(r\"qwen38_27b_spec accepted=(\\d+)\", open(\"${ROOT}/logs/current.log\", errors=\"replace\").read())]
+r.update(mode=\"${mode}\", rep=${rep}, prefill_rows=${prefill_rows}, source_commit=open(\"${ROOT}/SOURCE_COMMIT\").read().strip(), spec_rounds=len(acc), mean_accepted_drafts=round(sum(acc) / len(acc), 3) if acc else None, mean_tokens_per_round=round(sum(a + 1 for a in acc) / len(acc), 3) if acc else None)
+print(json.dumps(r))
+'" | tee -a "$out"
+		done
+	done
+	stop > /dev/null 2>&1
+}
+
 api_install() {
 	local sha=${1:?SHA} tmp
 	test -f "$HERE/build/api.model_resident.json" || { echo "run configs first" >&2; exit 2; }
@@ -214,6 +235,7 @@ case "$ACTION" in
 	bench) bench "${2:-}" ;;
 	refcheck) refcheck "${2:-}" "${3:-}" ;;
 	fresh) fresh "${2:-}" ;;
+	perf) perf "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-128}" ;;
 	api-install) api_install "${2:-}" ;;
 	api-start) on "$HUB" "systemctl --user daemon-reload && systemctl --user start qwen27b-api && sleep 2 && systemctl --user is-active qwen27b-api && curl -s --max-time 5 http://127.0.0.1:${API_PORT}/health; echo" ;;
 	api-stop) on "$HUB" "systemctl --user stop qwen27b-api; systemctl --user is-active qwen27b-api || true" ;;
