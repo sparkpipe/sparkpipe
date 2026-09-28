@@ -19,7 +19,9 @@ checkpoint through the real CLI with numpy blocked from the packer. Where
 numpy is installed the same checkpoint is packed again with it, and every
 tensor must match the stdlib pack byte for byte, except the MLA q-fold,
 whose f32 accumulation order differs (tests/test_k3_pack.py holds its
-values to the einsum).
+values to the einsum). The kv_b value half and the q_up rope rows are byte
+moves, so in both packs they must be the checkpoint's bytes, signalling NaN
+payloads included.
 """
 import json
 import os
@@ -405,6 +407,27 @@ def verify_pack(label, src, out):
     expect(tensor(p + "kda_head_log_scale") ==
            src[a + "A_log"][2][:MINI["kda_heads"] * 4],
            "A_log was not narrowed")
+
+    p, a = "model.layers.1.", "model.layers.1.self_attn."
+    heads, nope, rope = MINI["heads"], MINI["nope"], MINI["rope"]
+    q_lora, kv_lora, v_head = MINI["q_lora"], MINI["kv_lora"], MINI["v_head"]
+    q_b = src[a + "q_b_proj.weight"][2]
+    kv_b = src[a + "kv_b_proj.weight"][2]
+    want_value = b"".join(
+        kv_b[2 * (h * (nope + v_head) + nope) * kv_lora:
+             2 * (h + 1) * (nope + v_head) * kv_lora] for h in range(heads))
+    expect(tensor(p + "mla_kv_b_value_weight") == want_value,
+           "kv_b value half is not the checkpoint's bytes")
+    q_up = tensor(p + "mla_q_up_weight")
+    rope_mismatch = [
+        h for h in range(heads)
+        if q_up[2 * (h * (kv_lora + rope) + kv_lora) * q_lora:
+                2 * (h + 1) * (kv_lora + rope) * q_lora]
+        != q_b[2 * (h * (nope + rope) + nope) * q_lora:
+               2 * (h + 1) * (nope + rope) * q_lora]]
+    expect(not rope_mismatch,
+           f"q_up rope rows of heads {rope_mismatch} are not the checkpoint's "
+           "bytes")
     return {name: tensor(name) for name in manifest["tensors"]}
 
 
