@@ -16,8 +16,8 @@ below used a mock upstream.
 - Its upstreams are per-deployment `model_api` instances. GLM 5.3 Flash's is
   `sparkpipe_model_api` in the systemd user unit `g53-api` on the rtx5090,
   port 8433, an x86 build of the engines' source commit
-  (`docs/SPARKDEV_HANDOFF_GLM53FLASH.md`; the COMPSEC-17 receipt below lists
-  the build). No Spark serves an API: the serving drop-in sets
+  ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md) §6; the COMPSEC-17
+  receipt below lists the build). No Spark serves an API: the serving drop-in sets
   `G5_API_DISABLED=1`, and `ensure_api` in `tools/fleet_node_agent.sh` then
   starts none.
 - Nothing changes on the Sparks or the hub to add the door.
@@ -183,7 +183,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 
 | model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3-flash` | `g53-api` on the rtx5090, `http://100.123.97.61:8433` (tailscale; `10.10.250.2` from the Sparks) | `GET /health` from the controller Mac on 2026-09-28; `docs/SPARKDEV_HANDOFF_GLM53FLASH.md` |
+| `glm-5.3-flash` | `g53-api` on the rtx5090, `http://100.123.97.61:8433` (tailscale; `10.10.250.2` from the Sparks) | `GET /health` from the controller Mac on 2026-09-28; `docs/FLEET_RELEASE_RUNBOOK.md` §6 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
 (`docs/FLEET_RELEASE_RUNBOOK.md` topology, COMPSEC-17 receipt).

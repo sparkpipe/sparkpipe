@@ -198,7 +198,7 @@ to the production weightd is not documented yet.
 
 Build from a merged main SHA, in a clean checkout from `spark_queue.py sync`,
 with a GPU-owned queue job that runs `bash tools/glm5_next_build_release.sh`
-([PARALLEL_DRIVER_DEBUG.md](PARALLEL_DRIVER_DEBUG.md#glm-firmware-build-on-an-assigned-spark)).
+([PARALLEL_DRIVER_DEBUG.md](PARALLEL_DRIVER_DEBUG.md#glm-firmware-build-for-development-and-pr-testing)).
 That script runs `tools/module_build_release.sh glm5_next_resident_decode_stage
 fp8 glm53_release 84c6a6aa9497188e15a635ba793b0f95a79b1033
 model_contracts/glm53_flash_authoritative.json`

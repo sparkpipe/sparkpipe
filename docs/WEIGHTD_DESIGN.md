@@ -176,8 +176,12 @@ send QP and one RC receive QP per peer, 30 QPs for 15 peers, and moves payloads
 and tails with plain `IBV_WR_RDMA_WRITE` into the peer's registered receive
 region. There are no posted receives and no immediate data. Every topology is a
 routing choice over these QPs: lane profiles (next section) map logical ranks
-to physical peers, and I36 fixes the algorithm (B1 contribution broadcast with
-local reduction, B2+ tree reduction).
+to physical peers. The algorithm is chosen by `tp_device_collective.c`, not
+here. With `SPARK_TP_WAIT_MODE=hardware`, the fleet's mode, every collective
+runs as chunked direct rounds (`SparkTpLaunchMeshHardware`), with
+reduce-scatter plus all-gather over slice routes for large sums; the tree
+runs only in spin mode. That the wait mode picks the algorithm is a known
+deviation from I36 ([TECHDEBT.md](../TECHDEBT.md#mesh-collectives)).
 
 The region layout is in `include/sparkpipe/spark_weightd.h`. It has 16 lanes
 (`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-15) with two bands each (GLM uses one for its

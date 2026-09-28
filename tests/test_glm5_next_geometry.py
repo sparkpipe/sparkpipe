@@ -284,7 +284,7 @@ def main() -> int:
     check("nope indexer delta recorded",
           any("NoPE" in d for d in deltas))
 
-    # ---- 4. JIT-KV machinery geometry (B2, docs/JIT_KV_RESPONSE.md):
+    # ---- 4. JIT-KV machinery geometry (B2, docs/archive/JIT_KV_RESPONSE.md):
     #         the cache machinery's block must be the DSA layer count of
     #         the stage, sized in slot geometry - never the stage's whole
     #         weight-layer count. The kda-lane's 64.96 GB double-multiplied

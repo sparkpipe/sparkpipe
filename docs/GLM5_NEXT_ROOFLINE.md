@@ -320,6 +320,33 @@ number of steps per decode wave, 1.0 on lines printed before resident decode
 chains. `linear_walk` is the host's share of `linear_run`; the difference is
 the GPU still running after the host finished enqueueing.
 
+### Chain and replay lines
+
+Three more lines time single chains and waits. The completion worker prints
+one `CHAIN-TIME` line per finished chain:
+
+```
+CHAIN-TIME slot=S path=P steps=N status=C total_ms=T walk_ms=T collective_host_submit_ms=T collective_host_submissions=N stage_ms=T/T/T/T/T/T/T/T
+```
+
+| Field | Meaning |
+| --- | --- |
+| `path` | how the chain ran: `graph`, `linear`, or `eager` for the chain state machine |
+| `steps` | decode steps the frame ran; 1 unless it was a resident decode chain |
+| `total_ms` | the chain from its start to the completion worker, over all of its steps |
+| `walk_ms` | the part of `total_ms` the host spent enqueueing linear steps. A small `walk_ms` means the chain waited for the GPU and its peers. A full CUDA launch queue also blocks the walk, so a `walk_ms` close to `total_ms` shows a launch bound only if the GPU finished soon after the walk did. |
+| `collective_host_submit_ms`, `collective_host_submissions` | host work submitting collective rounds, capture included. This is not the allreduce time of a graph replay; a linear chain checks its rounds once at the end, so its figure is launch work only. |
+| `stage_ms` | host time the chain state machine spent in each of its eight stages (`chain_stage_ns`), reset after every line |
+
+The graph path prints `GRAPH-REPLAY-TIME slot=S wall_ns=N stream_status=C`
+after it waits for a replay. `wall_ns` includes compute and collective waits;
+`stream_status` is the CUDA query result, and the sticky collective-error
+check follows separately. `tp_device_collective.c` prints
+`COLLECTIVE-WAIT-END rank=R slot_idx=I elapsed_since_previous_wait_end_us=N gpu_timestamp_ns=N`
+from its arrival ring; the elapsed figure includes the computation between
+the two waits. These interpretations come from the PR #1077 write-up
+([archive/PR1077_SERVING_RELIABILITY.md](archive/PR1077_SERVING_RELIABILITY.md)).
+
 ### Iteration 15's `pre` held the GPU time
 
 Iteration 15 printed `pre` (first sight to "the last launch") and `gpu` (the

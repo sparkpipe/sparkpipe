@@ -94,6 +94,11 @@ sampled rows run on graphs with the FP8 head and MTP; top-k, top-p and
 logprobs work on every family; deadlines and priorities hold from the API
 through the engine; a client failure drains every sequence slot.
 
+MTP at TP16 needs the work in
+[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md#glm5_next-mtp-research-path):
+a TP-sharded MTP head, draft and verify inside graph chains, and
+per-sequence draft KV. glm5_next's MTP path runs at TP1 only today.
+
 TECHDEBT: speculation, serving API, runtime completion.
 
 ## M4. One collective platform
@@ -224,7 +229,9 @@ Work:
   (GOALS.md);
 - drafters on the rtx5090 hub. It is 22.6 us p50 from sparkf and about
   300 us p50 from the other Sparks, which reach it through sparkf
-  (PERFORMANCE_STATUS.md, Measured fabric);
+  (PERFORMANCE_STATUS.md, Measured fabric). GLM needs a glm5_next
+  `DraftRemoteChain` call site first, with drafting pipelined one round
+  ahead of verify;
 - a DFlash2 capture inside the GLM graph engine, if a GLM 5.3 Flash DFlash2
   drafter is to be qualified.
 

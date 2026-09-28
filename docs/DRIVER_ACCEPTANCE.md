@@ -186,6 +186,10 @@ pipeline. Queued request count is not serving capacity. Report how much
 allreduce time remains exposed after compute overlap, the bytes/weight reuse
 lost to microbatch splitting, GPU launch gaps and rank imbalance. Use these
 measurements to select the next optimization while preserving correctness.
+The "Changes and lessons so far" table in
+[archive/GLM_FLASH_HILLCLIMB.md](archive/GLM_FLASH_HILLCLIMB.md#changes-and-lessons-so-far)
+records one lesson per fix from PRs #842-#864. The log is archived; the
+table is still a reusable lesson list.
 
 ## Quality gate
 
@@ -211,7 +215,8 @@ x 42 routed layers, arithmetic from `model_contracts/glm53_flash_authoritative.j
 The graph path requires this since 78c2c21. It is an explicitly selected,
 reported resident mode (I28): it does not qualify the lazy path under I29 or
 I30, and it remains an exception until graphs can relocate expert pointers
-(TECHDEBT).
+([TECHDEBT.md](../TECHDEBT.md#model-residency-and-storage), Model residency
+and storage).
 
 ## Current per-driver gaps
 

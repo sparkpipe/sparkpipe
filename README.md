@@ -137,7 +137,10 @@ arenas:
   move, so a graph never forces the whole expert set to stay resident.
   Pinning every expert is a separate resident mode, selected explicitly and
   reported with its memory cost. GLM graphs currently require that mode
-  (invariants I28-I30, [`TECHDEBT.md`](TECHDEBT.md)).
+  (invariants I28-I30, [`TECHDEBT.md`](TECHDEBT.md)): since `78c2c21`, GLM
+  5.3 Flash graph serving pins the whole expert pack on every rank, and it
+  will until graphs are relocatable
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#glm-graph-residency-today)).
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:
@@ -258,7 +261,9 @@ generations checked at every transition.
 **Tiers.** Pages move between GPU memory, host memory, the 2.5 TB NVMe tier
 and an optional external store. The pager parks and restores whole lanes
 rather than paging per token, because attention reads the entire context on
-every step. Under pressure, admission queues work instead of thrashing.
+every step. Under pressure, admission queues work instead of thrashing. The
+pager (`cache/kv_pager.c`) is host-tested but not yet wired into any module
+([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
@@ -312,25 +317,32 @@ reordering cannot deadlock the mesh.
 
 ## Speculative decoding
 
-Speculation is a provider plugged into the serving adapter. The adapter
-sees one lifecycle slot, and one model-neutral engine does all acceptance
-accounting: the longest accepted path plus one bonus token, with a chain
-treated as a degenerate tree.
+Speculation goes through one seam per serving adapter. Each family has one
+source mask, `SPARK_<FAMILY>_SPECULATORS`, that selects its draft sources:
+local drafts the model makes itself (MTP heads, DSpark) and remote drafts
+from a drafter host through the DFT3 draft bridge (DFlash2, n-gram and suffix
+sources). One model-neutral policy engine does all acceptance accounting: the
+longest accepted path plus one bonus token, with a chain treated as a
+degenerate tree.
 
 A model customizes exactly three things:
 
-- a geometry descriptor;
-- a draft function;
+- a model contract: geometry, draft limits and hidden-tap layers;
+- a draft function, or the hidden-tap rows a remote drafter needs;
 - a fold/rollback for its own recurrent and paged state.
 
-**Providers.** Supported providers include MTP heads, DFlash and DSpark, and
-new methods arrive as new provider modules. A tree verifier checks several
-drafters' candidates in one target pass. A tournament provider races
-decorrelated drafters and retires the ones that stop paying for themselves.
+**Sources.** A new method arrives as a new source behind the seam, not as
+edits to every family. The end state, not yet built, is a tree verifier that
+checks several drafters' candidates in one target pass, and multi-drafter
+composition that races decorrelated drafters and retires the ones that stop
+paying for themselves. Today every served acceptance is a chain
+([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
-**Guarantees.** Verification pins every emitted token to the target model,
-so speculation changes throughput, never output. Every built speculation
-path can be selected individually, and none can be compiled out.
+**Guarantees.** Verification pins every emitted token to the target model's
+multi-row verify output. Batched rows are not yet bitwise equal to B1
+([`TECHDEBT.md`](TECHDEBT.md), Dynamic batching), so a speculative run can
+differ from a B1 run without speculation. Every built speculation path can
+be selected individually, and none can be compiled out.
 
 ## Determinism and evidence
 
@@ -435,13 +447,18 @@ the aarch64 Spark binaries. Host roles and the release procedure are in
 
 ## Models
 
-Drivers exist in `modules/` for these families:
+The product set and the owner's direction are in
+[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Decode modules exist in
+`modules/` for these families:
 
-- DeepSeek V4 Flash, V4 Pro and V4.1 Flash;
 - GLM 5.3 Flash (`glm5_next`, the current optimization focus) and GLM 5.3
   Full (`glm52` module);
-- Kimi K3;
-- Qwen 3.8 Max, Qwen 3.8 27B and Qwen4 Flash;
+- DeepSeek V4.1 Flash, which leads the DeepSeek line, V4 Flash, and V4 Pro
+  0813, last in the driver order and kept as the base for V4.1 Pro once it
+  is released;
+- Kimi K3, which moves into the slot V4 Pro 0813 held;
+- Qwen 3.8 Max, Qwen 3.8 27B and Qwen4 Flash, for internal use only: Qwen
+  models are not enabled on the external API service;
 - MiniMax;
 - Gemma 4;
 - Ling 3.0 Flash and its finance fine-tune;
@@ -449,10 +466,13 @@ Drivers exist in `modules/` for these families:
 - Hunyuan HY4;
 - Muse Glimmer.
 
-MiMo 2.6 Flash and Pro have contracts and a stage-pack format, but no
-decode driver yet. A driver in the tree is not a readiness claim. Each exact
-checkpoint needs its own contract, pack, numerical result, transport profile
-and service receipt. Status is in
+DeepSeek V4.1 Flash and Hunyuan HY4 have decode modules but no serving
+adapter yet. MiMo 2.6 Flash and Pro, the MiMo target, have contracts and a
+stage-pack format (the only file in `modules/mimo26_resident_decode_stage`),
+but no decode driver yet. MiMo 2.5 has only an older engine in
+`inference/llms/mimo_2_5` and no module. A driver in the tree is not a
+readiness claim. Each exact checkpoint needs its own contract, pack,
+numerical result, transport profile and service receipt. Status is in
 [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
@@ -606,7 +626,9 @@ physical route evidence, numerical correctness, end-to-end service results
 and retained receipts from a merged-main release.
 
 Superseded designs and experiment logs are kept under
-[`docs/archive/`](docs/archive/) as history, not authority.
+[`docs/archive/`](docs/archive/) as history, not authority;
+[`docs/ARCHIVE_INDEX.md`](docs/ARCHIVE_INDEX.md) gives the reason each was
+archived.
 
 ## Build and test
 

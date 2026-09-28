@@ -10,8 +10,8 @@ GLM 5.3 Flash is the current implementation and optimization focus. Other
 drivers must follow the same contract; their qualification is not implied by
 changes to common code. Track implementation evidence in
 [driver acceptance](docs/DRIVER_ACCEPTANCE.md), the
-[GLM roofline](docs/GLM5_NEXT_ROOFLINE.md),
-[performance gates](docs/GLM_PERFORMANCE_GATES.md) and the
+[GLM roofline and measurements](docs/GLM5_NEXT_ROOFLINE.md),
+[acceptance gates](docs/GLM_PERFORMANCE_GATES.md) and the
 [performance ledger](PERFORMANCE_STATUS.md).
 
 ## 1. One fixed serving contract
@@ -155,9 +155,11 @@ changes to common code. Track implementation evidence in
   expert pointers into its kernel arguments, and since `78c2c21` it refuses to
   run unless every routed expert is leased. Production therefore pins all
   12096 experts (`G5_PIN_EXPERTS=1`). That is the explicit resident mode I28
-  allows: selected by configuration, reported with its memory cost, and held
-  only until working-set graphs patch expert pointers on lease
-  ([`TECHDEBT.md`](TECHDEBT.md), Model residency and storage). Eager chains
+  allows: selected by configuration and reported with its memory cost. It is
+  a deliberate, reported deviation from I29's bounded residency, held only
+  until relocatable expert graphs patch expert pointers on lease
+  ([`TECHDEBT.md`](TECHDEBT.md), Model residency and storage;
+  [GLM expert residency](docs/GLM_LAZY_DRIVER_INTEGRATION.md)). Eager chains
   keep strict lazy loading, and pinning is not a substitute for I29 in any
   other driver.
 - **I31 — One authoritative resource ledger.** Queue jobs and persistent

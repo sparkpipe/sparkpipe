@@ -38,9 +38,11 @@ Owner direction (2026-09-28):
 
 - GLM 5.2 weights are deprecated; the glm52 module serves GLM 5.3 Full.
 - MiMo 2.6 is the MiMo target.
-- DeepSeek V4.1 Flash leads the DeepSeek line. V4 Pro 0813 stays as the last
-  DeepSeek driver, as the base for V4.1 Pro, which will be supported when
+- DeepSeek V4.1 Flash leads the DeepSeek line. V4 Pro 0813 stays, last in
+  the driver order, as the base for V4.1 Pro, which will be supported when
   released.
+- Kimi K3 moves up into the driver-order slot DSV4 Pro 0813 held
+  ([GOALS.md](GOALS.md), model direction).
 - Ling 3.0 Flash and its finance fine-tune are the Ling targets; Ling 2.x is
   not.
 - Qwen models are for internal use and are not enabled on the external API

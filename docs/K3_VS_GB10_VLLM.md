@@ -19,7 +19,7 @@ or ANNOUNCED (attributed claim without a receipt in our tree).
 | SparkPipe K3, TP4xPP4 | 18.0 tok/s pipelined, ~4.5 tok/s for one B1 sequence through four stages — K3_PERF.md | ARITHMETIC from the 55.5 ms step |
 | SparkPipe K3, TP16 PP1 | 20.2 tok/s at 15 us per all-reduce; ~12.9 tok/s at GLM's measured 167 us — K3_PERF.md | DERIVED / ARITHMETIC; not deployable (no TP16 descriptor) |
 | SparkPipe transport, 16-rank 8 KiB all-reduce | 167 us p50 (GLM5_NEXT_ROOFLINE.md, fleet 2026-09-25) | MEASURED |
-| SparkPipe transport, warm serving chain | allreduce 561-700 us/round, pure-mesh component 136 us/round (docs/archive/HILLCLIMB_20260920.md, hillclimb/allreduce branch tip) | MEASURED (2026-09-20) |
+| SparkPipe transport, warm serving chain | allreduce 561-700 us/round, pure-mesh component 136 us/round (docs/archive/HILLCLIMB_20260920.md, an archived session log; hillclimb/allreduce branch tip) | MEASURED (2026-09-20) |
 
 SparkPipe has no end-to-end K3 fleet number; its only measured K3 point is a
 single-stage step. For the B1, no-speculation target the comparable external
@@ -43,7 +43,8 @@ number is gb10-vllm without speculation, 23.59 t/s at depth 4000 (20.03 at
   backpressure (#1063), cancel (#1056), the fuzz harness
   (tests/test_tp_allreduce_fuzz.c, 2328-check 200-round green at
   hillclimb/allreduce). MEASURED warm 561-700 us/round, pure-mesh 136 us —
-  docs/archive/HILLCLIMB_20260920.md ("Verdict (all MEASURED, r3)").
+  docs/archive/HILLCLIMB_20260920.md, an archived session log ("Verdict
+  (all MEASURED, r3)").
 - Where they are ahead: an init-time capability VOTE that disables the
   backend uniformly on any mismatch (payload:88-90) and per-size caps with
   fallback; ours fail at submit with CAPACITY_EXCEEDED
@@ -87,8 +88,9 @@ number is gb10-vllm without speculation, 23.59 t/s at depth 4000 (20.03 at
   redhatai, ...). The qwen drafter precedent pins the drafter forward math
   (tools/qwen36_dspark_reference.py) and the remote-drafter-over-a-socket
   pattern exists on BOTH sides (their mods/v6-remote-dspark/
-  patch_remote_dspark.py:1-36 ZMQ RemoteK3DSparkSpeculator; our RTX5090 spec
-  node, docs/RTX5090_SPECULATION_NODE.md + test_qwen38_27b_remote_spec.c).
+  patch_remote_dspark.py:1-36 ZMQ RemoteK3DSparkSpeculator; the rtx5090 DFT3
+  draft farm, docs/RTX5090_SPECULATION_NODE.md, where only qwen38_27b
+  consumes remote drafts today).
 - What we lacked and cf5645a landed: the adaptive depth POLICY (their L2
   controller) as a CPU-proven core — inference/llms/kimi_k3/spec_verify.h
   (K3AdaptiveDepth, defaults window 8 floor 4 ceiling 7 = their rule), the

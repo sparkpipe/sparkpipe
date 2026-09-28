@@ -158,11 +158,11 @@ anything holding an ACTIVE lease. Every kill receipted (pid, cwd, age, reason).
 - Coordination: `/Users/mac/sparkpipe-coord/` (SHARED_DECISIONS.md append-only,
   PORT_LEDGER.md, LANES.md, CEPH_LEASE, MESH_LEASE,
   DEV_MISSION_GOALS_TEMPLATE.md).
-- Repo docs: `docs/DEPLOY_PROTOCOL_MAP.md`, `docs/DEPLOY_MULTI_DEV_PROPOSAL.md`,
-  `docs/DEPLOY_ROLLOUT.md` (dormant — see PR #1011 comment),
-  `docs/CONSTANT_AUDIT.md`, `docs/COMMON_MODULE_ARCHITECTURE.md`,
-  `docs/WEIGHTSD.md`, `docs/T1_REFERENCE_COMPARE.md`,
-  `docs/WEIGHTD_EXECUTE_STABILITY.md`.
+- Repo docs: `docs/archive/DEPLOY_PROTOCOL_MAP.md`, `docs/archive/DEPLOY_MULTI_DEV_PROPOSAL.md`,
+  `docs/archive/DEPLOY_ROLLOUT.md` (dormant — see PR #1011 comment),
+  `docs/archive/CONSTANT_AUDIT.md`, `docs/COMMON_MODULE_ARCHITECTURE.md`,
+  `docs/archive/WEIGHTSD.md`, `docs/T1_REFERENCE_COMPARE.md`,
+  `docs/archive/WEIGHTD_EXECUTE_STABILITY.md`.
 - Instruments: `tools/weightd_execute_receipt.py` (+ `.c` probe),
   `tools/roofline_estimator.py`, `tools/t1_reference_decoder.py` +
   `t1_reference_compare.py`, `tools/k3_checkpoint_oracle.py`,
