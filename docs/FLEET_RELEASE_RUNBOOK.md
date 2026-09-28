@@ -45,16 +45,16 @@ Network (lead-dev facts and read-only checks, 2026-09-28):
 
 The hub also runs unrelated workloads, the chess/nnue training among them.
 Fleet work there touches only `~/release`, `~/release-staging`, `~/current`,
-`~/g53-api-channel` and its own build directories, and restarts only
-`g53-api` or `fleet-release`.
+`~/g53-api-channel` (and its `.prev` copy) and its own build directories, and
+restarts only `g53-api` or `fleet-release`.
 
 ## 2. The node agent
 
 ### 2.1 Unit, drop-in and cgroup
 
-`fleet-agent` is a systemd user unit on every Spark; the user has linger
-enabled. The base unit is the one `tools/fleet_sync.sh start` writes
-(`fleet_sync.sh:37`):
+`fleet-agent` is a systemd user unit on every Spark. The base unit is the
+one `tools/fleet_sync.sh start` writes (`fleet_sync.sh:37`), identical on all
+sixteen on 2026-09-28:
 
 ```ini
 ExecStart=%h/sparkdata/core/bin/fleet_node_agent.sh glm53flash.fp8.tp16 spec@100.123.97.61
@@ -105,6 +105,13 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
   take down weightd and the engine on that node. The engine then comes back
   cold and pins every expert again. Treat each of these as a planned outage.
 - A new agent restarts nothing: `self_update` is an `exec` in place (`:423`).
+- The user manager must linger (`sudo loginctl enable-linger <user>`).
+  Without it, systemd stops the user manager, and with it fleet-agent,
+  weightd and the engine, when the user's last login session ends, and does
+  not start it after a reboot until someone logs in. On 2026-09-28 linger was
+  enabled on spark0-spark7 and sparke only; spark8, spark9, sparka-sparkd and
+  sparkf had no `/var/lib/systemd/linger` entry and were running on open
+  sessions (read-only check).
 
 ### 2.2 One loop pass (every 1 s, `:604-624`)
 
@@ -539,7 +546,7 @@ To bootstrap one node:
    - `sparkpipe-hub-route.service` (section 1);
    - the node's SSH key is authorized for `spec@100.123.97.61` (the agent adds
      the host key itself, `:260-262`);
-   - linger is enabled for the user;
+   - linger is enabled for the user (section 2.1);
    - the root's packs are in `~/sparkdata/<root>/packs/`, because the channel
      never syncs packs.
 2. Fetch the hub's agent:
