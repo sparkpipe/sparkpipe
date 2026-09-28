@@ -807,8 +807,9 @@ static void RoofHashState(RoofState *state,uint32_t save)
 	windows = wave->kda_window_layer_stride_bytes * wave->kda_layer_count * 3u;
 	if ( state->kda_snapshot == 0 )
 		state->kda_snapshot = RoofAllocate(pools + windows);
-	ROOF_CUDA(cudaMemcpy(save != 0u ? state->kda_snapshot : (void *)wave->kda_state_pools,save != 0u ? (const void *)wave->kda_state_pools : state->kda_snapshot,pools,cudaMemcpyDeviceToDevice));
-	ROOF_CUDA(cudaMemcpy(save != 0u ? (uint8_t *)state->kda_snapshot + pools : (void *)wave->kda_q_window_pool,save != 0u ? (const void *)wave->kda_q_window_pool : (const uint8_t *)state->kda_snapshot + pools,windows,cudaMemcpyDeviceToDevice));
+	ROOF_CUDA(cudaMemcpyAsync(save != 0u ? state->kda_snapshot : (void *)wave->kda_state_pools,save != 0u ? (const void *)wave->kda_state_pools : state->kda_snapshot,pools,cudaMemcpyDeviceToDevice,(cudaStream_t)state->slot.stream));
+	ROOF_CUDA(cudaMemcpyAsync(save != 0u ? (uint8_t *)state->kda_snapshot + pools : (void *)wave->kda_q_window_pool,save != 0u ? (const void *)wave->kda_q_window_pool : (const uint8_t *)state->kda_snapshot + pools,windows,cudaMemcpyDeviceToDevice,(cudaStream_t)state->slot.stream));
+	ROOF_CUDA(cudaStreamSynchronize((cudaStream_t)state->slot.stream));
 }
 
 static FILE *RoofHashOpen(const RoofConfig *config,uint32_t rows,const char *kind)
