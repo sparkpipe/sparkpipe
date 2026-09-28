@@ -163,9 +163,9 @@ def group_hosts(rank: int) -> list[str]:
 
 
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                   sequences: int = 16) -> dict:
+                   sequences: int = 16, collective: str = "device") -> dict:
     tp = tp_rank_of(rank)
-    return {
+    config = {
         "stage_pack_path": deployed_pack(rank),
         "tp_degree": TP,
         "tp_rank": tp,
@@ -200,12 +200,16 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
             ],
         },
     }
+    if collective == "host":
+        del config["device_collective"]
+    return config
 
 
 def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
                         sequences: int = 16,
-                        kv_pages: int = KV_PAGES_PER_SEQUENCE) -> dict:
+                        kv_pages: int = KV_PAGES_PER_SEQUENCE,
+                        pipeline_transport: str = "host-rdma") -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
         root = runtime_root.format(host=host)
@@ -238,8 +242,9 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "program_name": "k3",
         },
         "transport": {
-            "shared_object_path": "lib/hidden_transport.so",
-            "mode": "host-rdma",
+            "shared_object_path": "lib/hidden_pipeline.so"
+            if pipeline_transport == "host-staged" else "lib/hidden_transport.so",
+            "mode": pipeline_transport,
             "control_port_base": TRANSPORT_BASE,
         },
         "weightd": {
@@ -308,6 +313,17 @@ def main() -> int:
     parser.add_argument("--kv-pages", type=int, default=KV_PAGES_PER_SEQUENCE,
                         help="64-token KV pages per sequence "
                              "(default %(default)d)")
+    parser.add_argument("--collective", choices=("device", "host"),
+                        default="device",
+                        help="TP all-reduce path: the weightd-mesh device "
+                             "collective or the host TCP collective "
+                             "(default %(default)s)")
+    parser.add_argument("--pipeline-transport",
+                        choices=("host-rdma", "host-staged"),
+                        default="host-rdma",
+                        help="stage-to-stage hidden hand-off: the weightd "
+                             "host-rdma module or the host-staged TCP module "
+                             "(lib/hidden_pipeline.so) (default %(default)s)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
@@ -327,14 +343,16 @@ def main() -> int:
 
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
-        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages))
+        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
+        arguments.pipeline_transport))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)
 
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
         text = render(adapter_config(rank, arguments.kv_pages,
-                                     arguments.sequences))
+                                     arguments.sequences,
+                                     arguments.collective))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

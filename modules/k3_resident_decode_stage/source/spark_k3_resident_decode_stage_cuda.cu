@@ -179,6 +179,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->mla_cache = d->mla_cache;
 	st->sequences = sequences;
 	st->kda_state_bf16 = 0u;
+	st->first_mla_index = d->first_layer / 4u;
+	st->first_kda_index = d->first_layer - (d->first_layer / 4u);
 
 	size_t off = 0u;
 	d->scratch_bytes = 0u;

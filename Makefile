@@ -85,6 +85,7 @@ MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_HOST_STAGED_TCP := build/libhidden_transport_host_staged_tcp.$(SHARED_LIBRARY_EXT)
 
 include sources.mk
 
@@ -374,6 +375,7 @@ TEST_NAMES := \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
     test_weightd_direct \
+    test_host_staged_tcp \
     test_weightd_fd_frames \
     test_weightd_attach \
     test_weightd_expert \
@@ -1177,6 +1179,12 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_
 	else \
 		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
+
+$(HIDDEN_TRANSPORT_HOST_STAGED_TCP): ring/transport/host_staged_tcp.c include/sparkpipe/spark_hidden_transport.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/host_staged_tcp.c $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lpthread -o $@
+
+build/test_host_staged_tcp: tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 

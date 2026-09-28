@@ -1314,6 +1314,9 @@ static SparkStatus K3RunnerHeadExchange(SparkK3RunnerState *state,
 	return SPARK_STATUS_OK;
 }
 
+static_assert(SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW == K3_ATTNRES_BANK_BYTES,
+	"the pipeline residual bank sideband carries every attention-residual slot");
+
 SparkStatus SparkK3StageRunnerSubmit(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
@@ -1359,6 +1362,15 @@ SparkStatus SparkK3StageRunnerSubmit(
 		if ( dispatch->hidden_input_bf16 == 0 )
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		cudaMemcpy(b->hidden_bf16, dispatch->hidden_input_bf16,
+			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+		if ( dispatch->residual_bank_input != 0 )
+		{
+			if ( dispatch->residual_bank_input_bytes < (uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			cudaMemcpy(b->attnres_bank_bf16, dispatch->residual_bank_input,
+				(uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, cudaMemcpyDefault);
+		}
+		cudaMemcpy(b->attnres_partial_bf16, b->hidden_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
 	}
 	in.hidden_in = b->hidden_bf16;
@@ -1457,6 +1469,13 @@ SparkStatus SparkK3StageRunnerSubmit(
 	{
 		cudaMemcpy(dispatch->hidden_output_bf16, b->hidden_bf16,
 			(uint64_t)rows * K3_HIDDEN * 2u, cudaMemcpyDeviceToDevice);
+		if ( dispatch->residual_bank_output != 0 )
+		{
+			if ( dispatch->residual_bank_output_bytes < (uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			cudaMemcpy(dispatch->residual_bank_output, b->attnres_bank_bf16,
+				(uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, cudaMemcpyDefault);
+		}
 	}
 	if ( state->tp_context_overflow != 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;

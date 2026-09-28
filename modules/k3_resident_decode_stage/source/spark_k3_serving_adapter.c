@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_k3_llm_defines.h"
 #include "sparkpipe/spark_k3_model.h"
@@ -654,6 +655,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		(void)SparkMemoryBufferCopy(&state->seqslot_device,
 			&state->seqslot_host, (uint64_t)active * sizeof(uint32_t), 0);
 	}
+	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
 	dispatch.request_id = submission->request_id;
@@ -672,6 +674,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 	dispatch.hidden_output_bf16 = submission->hidden_output_address;
 	dispatch.hidden_output_bytes = submission->hidden_output_bytes;
+	dispatch.residual_bank_input = submission->boundary_sideband_input_address;
+	dispatch.residual_bank_input_bytes = submission->boundary_sideband_input_bytes;
+	dispatch.residual_bank_output = submission->boundary_sideband_output_address;
+	dispatch.residual_bank_output_bytes = submission->boundary_sideband_output_bytes;
 	dispatch.output_token_ids = state->output_tokens.pointer;
 	dispatch.output_scores = state->output_scores.pointer;
 	dispatch.completion_function = 0;
@@ -682,9 +688,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( state->completion_function != 0 )
 	{
 		SparkModelServingCompletion completion;
-		uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * 4u);
-		if ( tokens_host == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		uint32_t uses_rows = SparkModelServingWorkKindUsesRows(submission->work_kind);
 		memset(&completion, 0, sizeof(completion));
 		completion.abi_version = submission->abi_version;
 		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
@@ -692,17 +696,31 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		completion.request_id = submission->request_id;
 		completion.sequence_id = submission->sequence_id;
 		completion.sequence_position = submission->sequence_position;
+		completion.control_generation = submission->control_generation;
+		completion.transaction_id = submission->transaction_id;
+		completion.dispatch_generation = submission->dispatch_generation;
+		completion.request_generation = submission->request_generation;
+		completion.step_generation = submission->step_generation;
 		completion.residency = submission->residency;
-		completion.accepted_token_count = rows;
-		completion.token_count = rows;
-		completion.tokens_per_sequence = 1u;
-		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
-			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
-		(void)SparkMemoryBufferCopy(&tokens, &state->output_tokens,
-			(uint64_t)rows * 4u, 0);
-		for ( uint32_t i = 0u; i < rows && i < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++i )
-			completion.token_ids[i] = tokens_host[i];
-		free(tokens_host);
+		completion.accepted_token_count = uses_rows != 0u ? rows : 0u;
+		if ( uses_rows != 0u && state->runner.owns_final_head != 0u )
+		{
+			uint32_t *runs = (uint32_t *)state->runs_host.pointer;
+			uint32_t sequences = dispatch.active_sequence_count;
+			uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * 4u);
+			if ( tokens_host == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
+				SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
+			(void)SparkMemoryBufferCopy(&tokens, &state->output_tokens,
+				(uint64_t)rows * 4u, 0);
+			completion.tokens_per_sequence = 1u;
+			completion.token_count = sequences;
+			completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+			for ( uint32_t s = 0u; s < sequences && s < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++s )
+				completion.token_ids[s] = tokens_host[runs[s + 1u] - 1u];
+			free(tokens_host);
+		}
 		state->completion_function(state->completion_context, &completion);
 	}
 	return SPARK_STATUS_OK;
@@ -802,8 +820,18 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u),
 		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u)
 	},
-	.boundary_sideband_kinds = { 0u, 0u, 0u, 0u },
-	.boundary_sideband_bytes_per_sequence = { 0u, 0u, 0u, 0u },
+	.boundary_sideband_kinds =
+	{
+		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK,
+		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK,
+		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK
+	},
+	.boundary_sideband_bytes_per_sequence =
+	{
+		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW,
+		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW,
+		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW
+	},
 	.minimum_efficient_submission_row_count = 1u,
 	/* the KV page is the cache block: K3_KV_PAGE_SLOTS tokens per page
 	 * (inference/llms/kimi_k3/config.h; seam_config max_committed uses the

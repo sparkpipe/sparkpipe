@@ -523,7 +523,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->max_sequence_positions == 1u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( strcmp(deployment->transport_mode,"host-rdma") != 0 && strcmp(deployment->transport_mode,"gpudirect-rdma") != 0 )
+	if ( strcmp(deployment->transport_mode,"host-rdma") != 0 && strcmp(deployment->transport_mode,"gpudirect-rdma") != 0 && strcmp(deployment->transport_mode,"host-staged") != 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->transport_control_port_base == 0u || deployment->transport_control_port_base > UINT16_MAX - (deployment->node_count - 1u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

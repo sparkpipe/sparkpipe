@@ -1,4 +1,5 @@
 #pragma once
+#include <stdio.h>
 #include "inference/llms/kimi_k3/layer.cuh"
 #include "inference/llms/kimi_k3/dspark.h"
 
@@ -73,6 +74,8 @@ struct K3SliceState
 	uint32_t aux_rows;
 	uint32_t sequences;
 	uint32_t kda_state_bf16;
+	uint32_t first_mla_index;
+	uint32_t first_kda_index;
 	void (*layer_collective)(void *context, void *stream, uint32_t layer,
 		uint32_t phase);
 	void *collective_context;
@@ -141,8 +144,8 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 
 static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerBuffers *buffers)
 {
-	uint32_t mla_index = layer / 4u;
-	uint32_t kda_index = layer - mla_index;
+	uint32_t mla_index = (layer / 4u) - state->first_mla_index;
+	uint32_t kda_index = (layer - (layer / 4u)) - state->first_kda_index;
 	uint64_t sequences = state->sequences;
 	uint64_t slot_bytes = state->kda_state_bf16 != 0u
 		? (uint64_t)K3_KDA_STATE_SLOT_BYTES_BF16 : (uint64_t)K3_KDA_STATE_SLOT_BYTES;
@@ -189,6 +192,12 @@ static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t lay
 	}
 }
 
+static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
+{
+	fprintf(stderr,"k3 slice failed layer=%u phase=%s status=%d\n",layer,phase,status);
+	return(status);
+}
+
 template<class Format, class Geometry>
 static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -198,7 +207,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 	{
 		layer = first_layer + offset;
 		if ( layer >= K3_LAYERS )
-			return(LM_LAUNCH_ERR_SHAPE);
+			return(K3SliceFailure(layer,"shape",LM_LAUNCH_ERR_SHAPE));
 		K3BindLayer(&weights[offset],buffers);
 		K3BindLayerState(state,layer,buffers);
 		boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
@@ -215,7 +224,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
-			return(status);
+			return(K3SliceFailure(layer,"attention",status));
 		if ( boundary != 0u && buffers->tp_sharded == 0u )
 			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 		if ( state->layer_collective != 0 )
@@ -245,7 +254,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
 		}
 		if ( status != LM_LAUNCH_OK )
-			return(status);
+			return(K3SliceFailure(layer,layer < K3_FIRST_ROUTED_LAYER ? "dense" : state->lazy_acquire != 0 ? "routed-lazy" : "routed",status));
 		if ( state->layer_collective != 0 )
 			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,1u);
 		if ( state->lazy_release != 0 )

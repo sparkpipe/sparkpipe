@@ -34,6 +34,8 @@ join_ranks() {
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
     --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
+    --collective "${K3_COLLECTIVE:-device}" \
+    --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
     --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
     --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
@@ -52,6 +54,9 @@ setup() {
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$K3_FIRMWARE/libk3_serving_adapter.so" "$host:$root/lib/"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
+      if [ "${K3_PIPELINE_TRANSPORT:-host-rdma}" = host-staged ]; then
+        scp -q "$K3_FIRMWARE/libhidden_transport_host_staged_tcp.so" "$host:$root/lib/hidden_pipeline.so"
+      fi
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"
@@ -72,7 +77,9 @@ start() {
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     stage=$((rank / 4))
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$((stage * 4)),$((stage * 4 + 1)),$((stage * 4 + 2)),$((stage * 4 + 3)) -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
+    wrapper=""
+    case " ${K3_WRAP_RANKS:-} " in *" $rank "*) wrapper="${K3_RANK_WRAPPER:-} " ;; esac
+    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$((stage * 4)),$((stage * 4 + 1)),$((stage * 4 + 2)),$((stage * 4 + 3)) -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start
