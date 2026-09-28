@@ -164,6 +164,13 @@ def main() -> int:
                                        arguments.max_sequence_positions,
                                        arguments.resident_sequences),
                    indent=1) + "\n")
+    sliding_heads = max(16 // tp_degree, 1)
+    full_heads = max(4 // tp_degree, 1)
+    kv_bytes_per_token = 50 * sliding_heads * 256 * 2 * 2 + 10 * full_heads * 512 * 2 * 2
+    kv_tokens = arguments.resident_sequences * (
+        (arguments.max_sequence_positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS) * KV_PAGE_TOKENS
+    print(f"kv pools per rank: {kv_tokens} tokens x {kv_bytes_per_token} B = "
+          f"{kv_tokens * kv_bytes_per_token} bytes")
     print(f"{root}: {tp_degree} stage configs + envs + model_resident.json "
           f"(TP{tp_degree} {hosts[0]}..{hosts[-1]}, lane {arguments.lane}, "
           f"control {23000 + 16 * arguments.lane}+, "
