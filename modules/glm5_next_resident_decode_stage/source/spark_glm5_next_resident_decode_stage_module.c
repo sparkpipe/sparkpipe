@@ -1039,24 +1039,48 @@ static SparkStatus SparkGlm5NextAllocateSlots(SparkGlm5NextModuleState *state)
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextAllocateMtp(SparkGlm5NextModuleState *state)
+static uint32_t SparkGlm5NextReplayRows(const SparkGlm5NextModuleState *state)
+{
+	uint32_t rows = state->mtp_enabled != 0u ? SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u : 0u;
+	return(state->verify_rows_max > rows ? state->verify_rows_max : rows);
+}
+
+static SparkStatus SparkGlm5NextAllocateReplay(SparkGlm5NextModuleState *state)
 {
 	SparkGlm5NextKdaReplayLayout layout;
-	uint64_t kv_pool_bytes,index_pool_bytes,replay_bytes,steps_bytes,conv_bytes;
-	uint32_t index,rank_heads,step;
+	uint64_t replay_bytes,steps_bytes,conv_bytes;
+	uint32_t index,rank_heads,rows = SparkGlm5NextReplayRows(state);
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( rows == 0u )
+		return(SPARK_STATUS_OK);
+	if ( rows > SPARK_GLM5_NEXT_REPLAY_ROWS_MAX || state->execution_row_capacity < rows )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	rank_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / state->tp_degree;
+	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,rows);
+	state->kda_replay_layer_bytes = layout.layer_bytes;
+	replay_bytes = layout.layer_bytes * state->kda_layer_count;
+	steps_bytes = (uint64_t)state->kda_layer_count * rows * SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES;
+	conv_bytes = (uint64_t)rows * rank_heads * SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
+	for (index=0u; status==SPARK_STATUS_OK && index<state->pipeline_slot_count; index++)
+	{
+		SparkGlm5NextExecutionSlot *slot = &state->slots[index];
+		status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_committed);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,steps_bytes,1u,&slot->mtp_replay_steps);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,conv_bytes,1u,(void **)&slot->mtp_conv_scratch);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,replay_bytes,1u,(void **)&slot->kda_replay_pool);
+	}
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkGlm5NextAllocateMtp(SparkGlm5NextModuleState *state)
+{
+	uint64_t kv_pool_bytes,index_pool_bytes;
+	uint32_t index,step;
 	SparkStatus status;
 	if ( state->mtp_enabled == 0u )
 		return(SPARK_STATUS_OK);
-	if ( state->execution_row_capacity < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	rank_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / state->tp_degree;
-	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u);
-	state->kda_replay_layer_bytes = layout.layer_bytes;
 	kv_pool_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES;
 	index_pool_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u * SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT;
-	replay_bytes = layout.layer_bytes * state->kda_layer_count;
-	steps_bytes = (uint64_t)state->kda_layer_count * (SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES;
-	conv_bytes = (uint64_t)(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u) * rank_heads * SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
 	state->mtp_lane_armed = (uint8_t *)calloc(state->resident_sequence_capacity,1u);
 	if ( state->mtp_lane_armed == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1072,10 +1096,6 @@ static SparkStatus SparkGlm5NextAllocateMtp(SparkGlm5NextModuleState *state)
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,sizeof(uint32_t),1u,(void **)&slot->mtp_context);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_page_table);
 		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_sequence);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,sizeof(uint32_t),1u,(void **)&slot->mtp_committed);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,steps_bytes,1u,&slot->mtp_replay_steps);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,conv_bytes,1u,(void **)&slot->mtp_conv_scratch);
-		if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,1u,replay_bytes,1u,(void **)&slot->kda_replay_pool);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		{
@@ -2399,7 +2419,7 @@ static void SparkGlm5NextMtpResolveOnWorker(void *context)
 			(uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
 			cudaMemcpyDeviceToDevice,(cudaStream_t)slot->stream);
 		if ( error == cudaSuccess )
-			launch = SparkGlm5NextLaunchCudaMtpCommit(&chain->wave,result.committed_token_count);
+			launch = SparkGlm5NextLaunchCudaReplayFold(&chain->wave,result.committed_token_count);
 	}
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess || launch != 0 )
 		SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -5091,6 +5111,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SparkGlm5NextAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateSlots(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextAllocateReplay(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateMtp(state);
 	if ( status == SPARK_STATUS_OK )

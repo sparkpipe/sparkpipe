@@ -535,7 +535,7 @@ static void check_graph_expert_ownership(uint32_t first,uint32_t layers,uint32_t
 	assert(PIN_RECORDS == leases + 1u && PIN_RELEASES == leases + 1u);
 }
 
-int32_t SparkGlm5NextLaunchCudaMtpCommit(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps)
+int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps)
 {
 	assert(IN_CUDA_CALLBACK == 0u && wave != 0 && committed_steps == 1u);
 	MTP_COMMITS++;

@@ -227,6 +227,7 @@ static inline SparkGlm5NextKdaReplayLayout SparkGlm5NextKdaReplayLayoutFor(
 }
 
 #define SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES 32u
+#define SPARK_GLM5_NEXT_REPLAY_ROWS_MAX 8u
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa(uint32_t source_stage_index)
 {

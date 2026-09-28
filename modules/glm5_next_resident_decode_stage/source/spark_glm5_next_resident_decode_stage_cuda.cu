@@ -752,13 +752,13 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	}
 	return(LM_LAUNCH_OK);
 }
-extern "C" int32_t SparkGlm5NextLaunchCudaMtpCommit(
+extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t committed_steps)
 {
 	SparkGlm5NextExecutionSlot *slot;
 	SparkGlm5NextKdaReplayLayout layout;
-	LmReplayStep host_steps[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u];
+	LmReplayStep host_steps[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
 	const SparkGlm5NextLayerWeights *weight;
 	LmReplayStep *device_steps;
 	cudaStream_t stream;
@@ -766,9 +766,10 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpCommit(
 	uint8_t *record;
 	uint32_t local,ordinal,rank_heads,rank_qk,rank_v,steps_capacity,step;
 	static_assert(sizeof(LmReplayStep) == SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES,"replay step record size changed; re-price the staging buffer");
+	static_assert(SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX && SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u,"the replay fold must cover every verify wave");
 	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->mtp_verify == 0u ||
 		committed_steps == 0u || committed_steps > wave->row_count ||
-		wave->row_count > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u )
+		wave->row_count > SPARK_GLM5_NEXT_REPLAY_ROWS_MAX )
 		return(LM_LAUNCH_ERR_SHAPE);
 	slot = wave->slot;
 	if ( slot->kda_replay_pool == 0 || slot->mtp_replay_steps == 0 || slot->mtp_committed == 0 ||
