@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "sparkpipe/spark_stage_module_common.h"
 
@@ -338,6 +339,54 @@ static void SparkTestCudaReadAheadArmsBeforeJoining(void)
     assert(cudaStreamDestroy(primary_stream) == cudaSuccess);
 }
 
+static void SparkTestPauseTimespecCase(
+    uint64_t nanoseconds,
+    time_t expected_seconds,
+    long expected_nanoseconds)
+{
+    struct timespec pause;
+
+    pause.tv_sec = (time_t)-1;
+    pause.tv_nsec = -1l;
+    assert(SparkStageModulePauseTimespec(nanoseconds, &pause) ==
+        SPARK_STATUS_OK);
+    assert(pause.tv_sec == expected_seconds);
+    assert(pause.tv_nsec == expected_nanoseconds);
+    assert(pause.tv_nsec >= 0l && pause.tv_nsec < 1000000000l);
+}
+
+static uint64_t SparkTestMonotonicNanoseconds(void)
+{
+    struct timespec now;
+
+    assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static void SparkTestPauseNormalisesAndWaits(void)
+{
+    uint64_t start;
+    uint64_t elapsed;
+
+    SparkTestPauseTimespecCase(0u, 0, 0l);
+    SparkTestPauseTimespecCase(1u, 0, 1l);
+    SparkTestPauseTimespecCase(999999999u, 0, 999999999l);
+    SparkTestPauseTimespecCase(1000000000u, 1, 0l);
+    SparkTestPauseTimespecCase(1500000000u, 1, 500000000l);
+    SparkTestPauseTimespecCase(600000000000ull, 600, 0l);
+    assert(SparkStageModulePauseTimespec(1u, 0) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkStageModulePauseNanoseconds(0u) == SPARK_STATUS_OK);
+    start = SparkTestMonotonicNanoseconds();
+    assert(SparkStageModulePauseNanoseconds(20000000u) == SPARK_STATUS_OK);
+    elapsed = SparkTestMonotonicNanoseconds() - start;
+    assert(elapsed >= 20000000u);
+    start = SparkTestMonotonicNanoseconds();
+    assert(SparkStageModulePauseNanoseconds(1000000000u) == SPARK_STATUS_OK);
+    elapsed = SparkTestMonotonicNanoseconds() - start;
+    assert(elapsed >= 1000000000u);
+}
+
 int main(void)
 {
     uint32_t value;
@@ -395,5 +444,6 @@ int main(void)
     SparkTestAllocationLedgerAccountsAndReleases();
     SparkTestCudaForkOwnsReusableResources();
     SparkTestCudaReadAheadArmsBeforeJoining();
+    SparkTestPauseNormalisesAndWaits();
     return 0;
 }

@@ -11,14 +11,24 @@
 set -euo pipefail
 OUT="${1:?usage: k3_gen_deployment.sh OUT_PATH [TP_DEGREE(4|16)]}"
 TP="${2:-4}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "$TP" in
   4) RT="tp4pp4" ;;
   16) RT="tp16" ;;
   *) echo "unsupported tp degree $TP (4 or 16)" >&2; exit 1 ;;
 esac
+RESIDENT_SEQUENCES=16
+KV_PAGES_PER_SEQUENCE=64
+KV_PAGES=$((RESIDENT_SEQUENCES * KV_PAGES_PER_SEQUENCE))
+EOS=$(python3 -c 'import json, sys
+token = json.load(open(sys.argv[1]))["tokens"]["end_of_text"]
+if type(token) is not int or token <= 0:
+    raise SystemExit("k3 contract tokens.end_of_text must be a positive id")
+print(token)' "$ROOT/model_contracts/k3_authoritative.json")
 {
   echo '{'
   echo '  "schema_version": 2,'
+  echo '  "eos_token_ids": ['$EOS'],'
   echo '  "coordinator_rank_index": 0,'
   echo '  "adapter": {'
   echo '    "shared_object_path": "lib/libk3_serving_adapter.so"'
@@ -36,9 +46,9 @@ esac
   echo '    "max_inflight_submissions": 16,'
   echo '    "max_active_sequences": 16,'
   echo '    "max_input_rows": 16,'
-  echo '    "resident_sequence_capacity": 16,'
-  echo '    "kv_logical_page_capacity": 0,'
-  echo '    "kv_physical_page_capacity": 0'
+  echo '    "resident_sequence_capacity": '$RESIDENT_SEQUENCES','
+  echo '    "kv_logical_page_capacity": '$KV_PAGES','
+  echo '    "kv_physical_page_capacity": '$KV_PAGES
   echo '  },'
   echo '  "nodes": ['
   for i in $(seq 0 15); do

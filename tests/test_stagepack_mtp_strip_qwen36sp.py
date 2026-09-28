@@ -11,6 +11,8 @@ are patched, and tp_degree/tp_rank survive byte-identical.
 
 import importlib.util
 import json
+import os
+import shlex
 import struct
 import subprocess
 import sys
@@ -25,6 +27,21 @@ from qwen38_27b_stagepack import (  # noqa: E402
 )
 
 TOOL = ROOT / "tools" / "stagepack_mtp_strip.py"
+
+
+def run_strip(directory: Path, *arguments: str):
+    stubs = directory / "privileged-stubs"
+    stubs.mkdir()
+    log = directory / "privileged-calls.log"
+    for name in ("chattr", "sudo", "lsattr"):
+        stub = stubs / name
+        stub.write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> {shlex.quote(str(log))}\nexit 1\n")
+        stub.chmod(0o755)
+    environment = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"])
+    run = subprocess.run([sys.executable, str(TOOL), *arguments],
+                         capture_output=True, text=True, env=environment)
+    calls = log.read_text().splitlines() if log.exists() else []
+    return run, calls
 
 
 def load_strip_tool():
@@ -110,11 +127,11 @@ def test_strip_removes_mtp_tail_and_preserves_tp_fields():
         before = HEADER_STRUCT.unpack(pack.read_bytes()[:HEADER_BYTES])
         assert before[MTP_INDEX] == MTP_LAYERS
         assert before[TP_RANK_INDEX] == 3
-        run = subprocess.run(
-            [sys.executable, str(TOOL), "--pack", str(pack),
-             "--family", "qwen36sp"],
-            capture_output=True, text=True)
-        assert run.returncode in (0, 3), run.stderr
+        run, calls = run_strip(Path(tmp), "--pack", str(pack),
+                               "--family", "qwen36sp")
+        assert run.returncode == 3, run.stderr
+        assert f"chattr +i -- {pack}" in calls, calls
+        assert f"sudo chattr +i -- {pack}" in calls, calls
         raw = pack.read_bytes()
         after = HEADER_STRUCT.unpack(raw[:HEADER_BYTES])
         assert after[COUNT_INDEX] == 1
@@ -129,6 +146,7 @@ def test_strip_removes_mtp_tail_and_preserves_tp_fields():
         receipt = json.loads(
             Path(str(pack) + ".receipt.json").read_text())
         assert receipt["mtp"] == "stripped"
+        assert receipt["locked"] is False
         assert receipt["mtp_entries_dropped"] == 1
         assert receipt["file_bytes"] == len(raw)
         assert receipt["output_sha256"] == strip.sha256_chunked(pack)
@@ -185,12 +203,11 @@ def test_repair_header_restores_rank_field():
         assert before[MTP_INDEX] == 1
         assert before[TP_RANK_INDEX] == 0
         assert before[TP_DEGREE_INDEX] == 4
-        run = subprocess.run(
-            [sys.executable, str(TOOL), "--pack", str(pack),
-             "--family", "qwen36sp", "--repair-header",
-             "--expect-tp-degree", "4", "--expect-tp-rank", "3"],
-            capture_output=True, text=True)
-        assert run.returncode in (0, 3), run.stderr
+        run, calls = run_strip(Path(tmp), "--pack", str(pack),
+                               "--family", "qwen36sp", "--repair-header",
+                               "--expect-tp-degree", "4", "--expect-tp-rank", "3")
+        assert run.returncode == 3, run.stderr
+        assert f"sudo chattr +i -- {pack}" in calls, calls
         raw = pack.read_bytes()
         after = HEADER_STRUCT.unpack(raw[:HEADER_BYTES])
         assert after[MTP_INDEX] == 0
@@ -204,6 +221,7 @@ def test_repair_header_restores_rank_field():
         repair = receipt["header_repair"]
         assert repair["before"] == {"u32[23]": 1, "u32[24]": 4, "u32[25]": 0}
         assert repair["after"] == {"u32[23]": 0, "u32[24]": 4, "u32[25]": 3}
+        assert receipt["locked"] is False
         assert receipt["output_sha256"] == strip.sha256_chunked(pack)
 
 
@@ -213,12 +231,11 @@ def test_repair_header_refuses_clean_and_unknown_states():
         pack = synthetic_pack(Path(tmp))
         good = HEADER_STRUCT.unpack(pack.read_bytes()[:HEADER_BYTES])
         assert good[MTP_INDEX] == MTP_LAYERS
-        run = subprocess.run(
-            [sys.executable, str(TOOL), "--pack", str(pack),
-             "--family", "qwen36sp", "--repair-header",
-             "--expect-tp-degree", "4", "--expect-tp-rank", "3"],
-            capture_output=True, text=True)
+        run, calls = run_strip(Path(tmp), "--pack", str(pack),
+                               "--family", "qwen36sp", "--repair-header",
+                               "--expect-tp-degree", "4", "--expect-tp-rank", "3")
         assert run.returncode == 1
+        assert not any("+i" in call for call in calls), calls
         assert "corruption signature" in run.stderr
         assert HEADER_STRUCT.unpack(pack.read_bytes()[:HEADER_BYTES]) == good
 

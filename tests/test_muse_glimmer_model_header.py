@@ -5,19 +5,23 @@ The contract (model_contracts/muse_glimmer_authoritative.json) pins the HF
 publisher config and the modeling source commit; this test binds
 model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h to
 that contract so header, contract and checkpoint config stay in lockstep.
+Every macro is evaluated by the C compiler, so unsigned integer division and
+float suffixes behave exactly as they do in the driver; the TP16 per-rank
+geometry is checked for every rank and the layer-kind predicate for every
+layer.
 Run: python3 tests/test_muse_glimmer_model_header.py
 """
 
 from __future__ import annotations
 
 import json
-import math
-import re
 import sys
 from pathlib import Path
 
+from c_macro_values import MacroProbeError, c_macro_values, value_matches
+
 REPOSITORY = Path(__file__).resolve().parents[1]
-HEADER = REPOSITORY / "model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h"
+INCLUDE_DIRECTORIES = [REPOSITORY / "model-families/muse_glimmer/include"]
 CONTRACT = REPOSITORY / "model_contracts/muse_glimmer_authoritative.json"
 
 TP_DEGREE = 16
@@ -50,144 +54,78 @@ BINDINGS = {
 }
 
 
-def unwrap(expression: str) -> str:
-    """Drop enclosing parentheses that wrap the entire expression so the
-    ternary scan sees balanced branches."""
-    while expression.startswith("(") and expression.endswith(")"):
-        depth = 0
-        for index, character in enumerate(expression):
-            if character == "(":
-                depth += 1
-            elif character == ")":
-                depth -= 1
-                if depth == 0 and index != len(expression) - 1:
-                    return expression
-        expression = expression[1:-1].strip()
-    return expression
-
-
-def ternary_to_python(expression: str) -> str:
-    """C constant ternaries (the donor KV_SHARD_COUNT form) become python
-    conditionals; one '?' per expression, split at the depth-zero ':'."""
-    if "?" not in expression:
-        return expression
-    assert expression.count("?") == 1, f"unsupported ternary chain: {expression}"
-    expression = unwrap(expression)
-    question = expression.index("?")
-    depth = 0
-    for index in range(question + 1, len(expression)):
-        character = expression[index]
-        if character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-        elif character == ":" and depth == 0:
-            condition = expression[:question].strip()
-            return (f"(({expression[question + 1:index]}) "
-                f"if ({condition}) else ({expression[index + 1:]}))")
-    raise AssertionError(f"ternary without colon: {expression}")
-
-
-def macro(header: str, name: str, tp_degree: int | None = None) -> float:
-    """Resolve one #define to a number: numeric defines directly, composed
-    defines by evaluating their expression over previously resolved names
-    (line continuations joined first; parameterized macros get the TP degree
-    and the boundary rank substituted textually, and invocations of other
-    parameterized macros expand before the plain name pass)."""
-    joined = header.replace("\\\n", " ")
-    defines: dict[str, str] = {}
-    parameters: dict[str, list[str] | None] = {}
-    for match in re.finditer(
-            r"^#define\s+(\w+)(?:\(([^)]*)\))?[ \t]+([^\n]+?)\s*$", joined, re.M):
-        defines[match.group(1)] = match.group(3).strip()
-        parameters[match.group(1)] = (
-            [piece.strip() for piece in match.group(2).split(",")]
-            if match.group(2) else None)
-    if name not in defines:
-        raise AssertionError(f"header missing #define {name}")
-
-    def resolve(target: str, seen: frozenset, arguments: dict[str, str] | None = None) -> float:
-        text = defines[target]
-        if target in seen:
-            raise AssertionError(f"cyclic define {target}")
-        if arguments:
-            for parameter, argument in arguments.items():
-                text = re.sub(r"\b%s\b" % re.escape(parameter), argument, text)
-        try:
-            return float(text.rstrip("uf"))
-        except ValueError:
-            pass
-        if tp_degree is not None:
-            text = re.sub(r"\btp_degree\b", str(tp_degree), text)
-            text = re.sub(r"\btp_rank\b", str(tp_degree - 1), text)
-        for callee, callee_parameters in parameters.items():
-            if not callee_parameters:
-                continue
-            text = re.sub(
-                r"\b%s\(([^()]*)\)" % re.escape(callee),
-                lambda call, callee=callee, callee_parameters=callee_parameters, seen=seen: str(resolve(
-                    callee, seen | {target},
-                    dict(zip(callee_parameters, [piece.strip() for piece in call.group(1).split(",")])))),
-                text)
-        expression = re.sub(r"\w+", lambda m: (
-            str(resolve(m.group(0), seen | {target}))
-            if m.group(0) in defines and m.group(0) != target else m.group(0)), text)
-        expression = re.sub(r"(\d)[uf]\b", r"\1", expression)  # strip C suffixes
-        expression = re.sub(r"\((?:float|double|uint32_t|uint64_t|int32_t|int64_t|unsigned|size_t)\)", "", expression)
-        expression = ternary_to_python(expression)
-        environment = {"__builtins__": {}, "sqrtf": math.sqrt, "sqrt": math.sqrt}
-        return float(eval(expression, environment, {}))  # noqa: S307 - header constants only
-
-    return resolve(name, frozenset())
+def composed_expectations(model: dict) -> dict[str, int]:
+    heads = model["attention_head_count"]
+    kv_heads = model["kv_head_count"]
+    head_dimension = model["head_dimension"]
+    local_heads = heads // TP_DEGREE
+    local_kv_heads = kv_heads // min(TP_DEGREE, kv_heads)
+    prefix = "SPARK_MUSE_GLIMMER_MODEL_"
+    expected = {
+        prefix + "ATTN_QUERY_DIMENSION": heads * head_dimension,
+        prefix + "ATTN_KV_DIMENSION": kv_heads * head_dimension,
+        prefix + "ATTN_QUERY_GROUP": heads // kv_heads,
+        prefix + "ATTN_CACHE_TOKEN_ELEMENTS": 2 * kv_heads * head_dimension,
+        prefix + f"KV_SHARD_COUNT({TP_DEGREE}u)": min(TP_DEGREE, kv_heads),
+        prefix + f"ATTN_LOCAL_QUERY_HEAD_COUNT({TP_DEGREE}u)": local_heads,
+        prefix + f"ATTN_LOCAL_KV_HEAD_COUNT({TP_DEGREE}u)": local_kv_heads,
+        prefix + f"ATTN_LOCAL_QUERY_DIMENSION({TP_DEGREE}u)": local_heads * head_dimension,
+        prefix + f"ATTN_LOCAL_QUERY_GATE_DIMENSION({TP_DEGREE}u)": local_heads * 2 * head_dimension,
+        prefix + f"ATTN_LOCAL_KV_DIMENSION({TP_DEGREE}u)": local_kv_heads * head_dimension,
+        prefix + f"QGKV_LOCAL_ROWS({TP_DEGREE}u)":
+            local_heads * 2 * head_dimension + 2 * local_kv_heads * head_dimension,
+        prefix + f"MLP_LOCAL_INTERMEDIATE({TP_DEGREE}u)": model["intermediate_dimension"] // TP_DEGREE,
+        prefix + f"VOCAB_LOCAL_ROWS({TP_DEGREE}u)": model["vocabulary_size"] // TP_DEGREE,
+        prefix + "HIDDEN_BF16_BYTES": model["hidden_dimension"] * 2,
+    }
+    for rank in range(TP_DEGREE):
+        expected[prefix + f"ATTN_RANK_KV_HEAD_BASE({TP_DEGREE}u, {rank}u)"] = rank * kv_heads // TP_DEGREE
+    return expected
 
 
 def main() -> int:
-    header = HEADER.read_text(encoding="utf-8")
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-    failures = 0
+    model = contract["model"]
+    prefix = "SPARK_MUSE_GLIMMER_MODEL_"
+    composed = composed_expectations(model)
+    layer_flags = [prefix + f"LAYER_IS_FULL_ATTENTION({layer}u)" for layer in range(model["layer_count"])]
+    try:
+        values = c_macro_values(INCLUDE_DIRECTORIES, "sparkpipe/spark_muse_glimmer_model.h",
+                                list(BINDINGS.values()) + list(composed) + layer_flags)
+    except MacroProbeError as error:
+        print(f"FAILED {error}")
+        return 1
+    failures = []
     for (section, key), name in BINDINGS.items():
         expected = contract[section][key]
-        actual = macro(header, name)
-        if not math.isclose(float(expected), actual, rel_tol=1e-9):
-            print(f"MISMATCH {name}: header {actual} contract {expected}")
-            failures += 1
-    composed = {
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_DIMENSION": 32 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_KV_DIMENSION": 2 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_GROUP": 32 / 2,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_CACHE_TOKEN_ELEMENTS": 2 * (2 * 128),
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_QUERY_HEAD_COUNT": 32 / 16,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT": 2 / 2,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_RANK_KV_HEAD_BASE": 15 * 2 / 16,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_QUERY_DIMENSION": 2 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_QUERY_GATE_DIMENSION": 2 * 2 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_DIMENSION": 1 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_QGKV_LOCAL_ROWS": 2 * 2 * 128 + 2 * 128,
-        "SPARK_MUSE_GLIMMER_MODEL_MLP_LOCAL_INTERMEDIATE": 19968 / 16,
-        "SPARK_MUSE_GLIMMER_MODEL_VOCAB_LOCAL_ROWS": 202048 / 16,
-        "SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES": 6656 * 2,
-    }
+        if not value_matches(expected, values[name]):
+            failures.append(f"{name}: header {values[name]!r} contract {expected!r}")
     for name, expected in composed.items():
-        actual = macro(header, name, tp_degree=TP_DEGREE)
-        if not math.isclose(float(expected), actual, rel_tol=1e-9):
-            print(f"MISMATCH composed {name}: header {actual} expected {expected}")
-            failures += 1
-    if 39 + 13 != 52 or 52 % 4 != 0:
-        print("MISMATCH hybrid layer split does not cover the stack in whole periods")
-        failures += 1
-    if 32 % 2 != 0 or 16 % (32 // 16) != 0:
-        print("MISMATCH query heads must group evenly onto kv heads")
-        failures += 1
-    if 128 % 2 != 0:
-        print("MISMATCH rope dimension must pair")
-        failures += 1
-    if 202048 % 16 != 0 or 19968 % 16 != 0:
-        print("MISMATCH vocab and intermediate must shard evenly across 16 ranks")
-        failures += 1
+        if not value_matches(expected, values[name]):
+            failures.append(f"composed {name}: header {values[name]!r} expected {expected!r}")
+    full_layers = [layer for layer, flag in enumerate(layer_flags) if values[flag] != 0.0]
+    period = values[prefix + "ATTENTION_PERIOD"]
+    phase = values[prefix + "FULL_ATTENTION_PHASE"]
+    if full_layers != [layer for layer in range(model["layer_count"]) if layer % period == phase]:
+        failures.append(f"LAYER_IS_FULL_ATTENTION marks layers {full_layers}")
+    if len(full_layers) != values[prefix + "FULL_ATTENTION_LAYER_COUNT"]:
+        failures.append(f"{len(full_layers)} layers are full attention but the header counts "
+                        f"{values[prefix + 'FULL_ATTENTION_LAYER_COUNT']}")
+    if (values[prefix + "SLIDING_LAYER_COUNT"] + values[prefix + "FULL_ATTENTION_LAYER_COUNT"]
+            != values[prefix + "LAYER_COUNT"]):
+        failures.append("sliding and full attention layer counts do not cover the stack")
+    for name, whole in ((f"MLP_LOCAL_INTERMEDIATE({TP_DEGREE}u)", "INTERMEDIATE_DIMENSION"),
+                        (f"VOCAB_LOCAL_ROWS({TP_DEGREE}u)", "VOCAB_COUNT"),
+                        (f"ATTN_LOCAL_QUERY_HEAD_COUNT({TP_DEGREE}u)", "ATTENTION_HEAD_COUNT")):
+        if values[prefix + name] * TP_DEGREE != values[prefix + whole]:
+            failures.append(f"{name} x {TP_DEGREE} ranks does not cover {whole}")
     if failures:
-        print(f"FAILED {failures} binding(s)")
+        for failure in failures:
+            print(f"MISMATCH {failure}")
+        print(f"FAILED {len(failures)} binding(s)")
         return 1
-    print(f"PASS muse_glimmer header matches the authoritative contract ({len(BINDINGS)} bindings + {len(composed)} composed)")
+    print(f"PASS muse_glimmer header matches the authoritative contract ({len(BINDINGS)} bindings + "
+          f"{len(composed)} composed + {len(layer_flags)} layer kinds, evaluated by the C compiler)")
     return 0
 
 

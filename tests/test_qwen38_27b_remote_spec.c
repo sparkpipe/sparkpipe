@@ -21,13 +21,13 @@
 #error "QWEN38_27B_MODEL_REVISION must match the adapter build"
 #endif
 #ifndef TEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH
-#define TEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH ""
+#error "TEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH must name the serving adapter under test"
 #endif
 #ifndef TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_PATH
-#define TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_PATH ""
+#error "TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_PATH must name the remote speculation fixture driver"
 #endif
-#ifndef TEST_QWEN38_27B_REMOTE_SPEC_CONFIG_PATH
-#define TEST_QWEN38_27B_REMOTE_SPEC_CONFIG_PATH ""
+#ifndef SPARK_QWEN38_27B_SERVING_TP_DEGREE
+#error "SPARK_QWEN38_27B_SERVING_TP_DEGREE must match the serving adapter build"
 #endif
 
 #define TEST_REMOTE_EXCHANGE_COUNT 4u
@@ -288,15 +288,34 @@ static uint32_t TestRemoteClosedPort(void)
 	return(port);
 }
 
-static uint32_t TestRemoteWriteConfiguration(const char *path, uint32_t bridge_port)
+static void TestRemoteWriteTopology(FILE *file)
+{
+#if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
+	uint32_t peer;
+	fprintf(file,",\n  \"tp_degree\": %u,\n  \"tp_rank\": 0,\n  \"tp_collective\": {\n    \"backend\": \"nccl\",\n    \"backend_module_path\": \"lib/runtime_libs/libnccl.so.2\",\n    \"collective_identifier\": 22528,\n    \"listen_port\": 61000,\n    \"connect_timeout_milli\": 3000,\n    \"operation_timeout_milli\": 3000,\n    \"peer_hosts\": [",(unsigned)SPARK_QWEN38_27B_SERVING_TP_DEGREE);
+	for ( peer = 0u; peer < SPARK_QWEN38_27B_SERVING_TP_DEGREE; peer++ )
+		fprintf(file,"%s\"127.0.0.1\"",peer == 0u ? "" : ", ");
+	fprintf(file,"],\n    \"peer_ports\": [");
+	for ( peer = 0u; peer < SPARK_QWEN38_27B_SERVING_TP_DEGREE; peer++ )
+		fprintf(file,"%s%u",peer == 0u ? "" : ", ",61000u + peer);
+	fprintf(file,"]\n  }");
+#else
+	(void)file;
+#endif
+}
+
+static uint32_t TestRemoteWriteConfiguration(const char *path, uint32_t with_bridge, uint32_t bridge_port)
 {
 	FILE *file;
 	file = fopen(path,"w");
 	if ( file == 0 )
 		return(1u);
-	fprintf(file,"{\n  \"schema_version\": 3,\n  \"model_revision\": \"%s\",\n  \"stage_pack_path\": \"tests/fixtures/qwen38_27b-stage.qwen38_27bsp\",\n  \"max_sequence_positions\": 4096,\n  \"draft_bridge_host\": \"127.0.0.1\",\n  \"draft_bridge_port\": %u\n}\n",QWEN38_27B_MODEL_REVISION,bridge_port);
-	fclose(file);
-	return(0u);
+	fprintf(file,"{\n  \"schema_version\": 3,\n  \"model_revision\": \"%s\",\n  \"stage_pack_path\": \"tests/fixtures/qwen38_27b-stage.qwen38_27bsp\",\n  \"max_sequence_positions\": 4096",QWEN38_27B_MODEL_REVISION);
+	if ( with_bridge != 0u )
+		fprintf(file,",\n  \"draft_bridge_host\": \"127.0.0.1\",\n  \"draft_bridge_port\": %u",bridge_port);
+	TestRemoteWriteTopology(file);
+	fprintf(file,"\n}\n");
+	return(fclose(file) == 0 ? 0u : 1u);
 }
 
 typedef struct TestRemoteState
@@ -427,10 +446,12 @@ int main(void)
 	char runtime_root[4096];
 	char config_path[64];
 	char dead_config_path[64];
+	char unbridged_config_path[64];
 	char capture_path[64];
 	uint32_t closed_port;
 	snprintf(config_path,sizeof(config_path),"/tmp/qwen38_27b_remote_spec_%d.json",(int)getpid());
 	snprintf(dead_config_path,sizeof(dead_config_path),"/tmp/qwen38_27b_remote_spec_dead_%d.json",(int)getpid());
+	snprintf(unbridged_config_path,sizeof(unbridged_config_path),"/tmp/qwen38_27b_remote_spec_unbridged_%d.json",(int)getpid());
 	snprintf(capture_path,sizeof(capture_path),"/tmp/qwen38_27b_remote_verify_%d.txt",(int)getpid());
 	setenv("SPARK_QWEN38_27B_SPECULATORS","0x8",1);
 	setenv("SPARK_QWEN38_27B_TEST_VERIFY_CAPTURE",capture_path,1);
@@ -440,7 +461,7 @@ int main(void)
 		fprintf(stderr,"CHECK-FAIL stub start\n");
 		return(1);
 	}
-	if ( TestRemoteWriteConfiguration(config_path,stub.port) != 0u )
+	if ( TestRemoteWriteConfiguration(config_path,1u,stub.port) != 0u )
 	{
 		fprintf(stderr,"CHECK-FAIL config write\n");
 		return(1);
@@ -676,8 +697,10 @@ int main(void)
 	if ( TestRemoteCheckVerifyCapture(capture_path) != 0u )
 		return(1);
 
+	if ( TestRemoteWriteConfiguration(unbridged_config_path,0u,0u) != 0u )
+		return(1);
 	adapter_state = 0;
-	TestRemoteConfiguration(&configuration,TEST_QWEN38_27B_REMOTE_SPEC_CONFIG_PATH,runtime_root,&test_state);
+	TestRemoteConfiguration(&configuration,unbridged_config_path,runtime_root,&test_state);
 	if ( library.adapter_interface.initialize(&configuration,&adapter_state) != SPARK_STATUS_SCHEMA_ERROR || adapter_state != 0 )
 	{
 		fprintf(stderr,"CHECK-FAIL remote without bridge config must fail SCHEMA_ERROR\n");
@@ -685,7 +708,7 @@ int main(void)
 	}
 
 	closed_port = TestRemoteClosedPort();
-	if ( closed_port == 0u || TestRemoteWriteConfiguration(dead_config_path,closed_port) != 0u )
+	if ( closed_port == 0u || TestRemoteWriteConfiguration(dead_config_path,1u,closed_port) != 0u )
 		return(1);
 	adapter_state = 0;
 	TestRemoteConfiguration(&configuration,dead_config_path,runtime_root,&test_state);
@@ -700,6 +723,7 @@ int main(void)
 		return(1);
 	unlink(config_path);
 	unlink(dead_config_path);
+	unlink(unbridged_config_path);
 	unlink(capture_path);
 	printf("PASS qwen38_27b remote speculation\n");
 	return(0);

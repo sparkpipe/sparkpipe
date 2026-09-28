@@ -8,6 +8,7 @@
     "layer_count": 61,
     "mtp_layer_count": 3,
     "vocabulary_size": 129280,
+    "eos_token_id": 1,
     "maximum_context_tokens": 1048576,
     "rms_norm_epsilon": 0.000001,
     "attention_head_count": 128,

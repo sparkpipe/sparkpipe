@@ -65,13 +65,20 @@ typedef struct TestDsv4ServingDriver
 	uint32_t needs_hidden_output;
 	uint32_t owns_final_head;
 	uint32_t resident_sequence_capacity;
-	uint32_t cuda_graph_count;
 	uint64_t submitted_count;
 	uint64_t completed_count;
 	uint64_t reset_generation;
 	TestDsv4ServingCacheAdmission cache_admissions[
 		SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 } TestDsv4ServingDriver;
+
+static uint32_t TestDsv4ServingDriverCreatedGraphCount;
+
+__attribute__((visibility("default")))
+uint32_t TestDsv4ServingDriverLastCreatedCudaGraphCount(void)
+{
+	return(TestDsv4ServingDriverCreatedGraphCount);
+}
 
 static SparkStatus TestDsv4ServingDriverSubmit(
 	void *driver_instance,
@@ -170,7 +177,7 @@ static SparkStatus TestDsv4ServingDriverCreate(
 	driver->needs_hidden_output = context->pp_stage_index + 1u < context->pp_stage_count ? 1u : 0u;
 	driver->owns_final_head = context->first_layer_index + context->layer_count == SPARK_DSV4_MODEL_LAYER_COUNT && context->tp_rank + 1u == context->tp_degree ? 1u : 0u;
 	driver->resident_sequence_capacity = context->resident_sequence_capacity;
-	driver->cuda_graph_count = context->cuda_graph_count;
+	TestDsv4ServingDriverCreatedGraphCount = context->cuda_graph_count;
 	*driver_instance = driver;
 	return(SPARK_STATUS_OK);
 }
@@ -507,7 +514,6 @@ static SparkStatus TestDsv4ServingDriverSnapshot(
 	snapshot->available_dispatch_slot_count = SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
 	snapshot->submitted_count = driver->submitted_count;
 	snapshot->completed_count = driver->completed_count;
-	snapshot->kv_token_capacity = driver->cuda_graph_count;
 	return(SPARK_STATUS_OK);
 }
 

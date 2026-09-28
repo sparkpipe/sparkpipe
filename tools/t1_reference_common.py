@@ -44,7 +44,7 @@ for _i in range(16):
     _s = -1.0 if _i & 0x8 else 1.0
     _e = (_i >> 1) & 0x3
     _m = _i & 0x1
-    _E2M1_LUT[_i] = _s * ((1.0 + _m / 2.0) * 2.0 ** _e if _e else _m / 2.0)
+    _E2M1_LUT[_i] = _s * ((1.0 + _m / 2.0) * 2.0 ** (_e - 1) if _e else _m / 2.0)
 
 
 def fp8_block_to_bf16(payload_u8, scale_inv, out_dim, in_dim):
@@ -292,7 +292,27 @@ def write_fixture(path, arrays):
             fh.write(comp)
 
 
+def fixture_quarantine(path):
+    manifest_path = os.path.join(os.path.dirname(os.path.abspath(path)),
+                                 "MANIFEST.json")
+    if not os.path.exists(manifest_path):
+        return None
+    with open(manifest_path) as fh:
+        quarantine = json.load(fh).get("quarantine")
+    if quarantine is None:
+        return None
+    if not quarantine.get("reason") or not quarantine.get("fixtures"):
+        raise ValueError(f"{manifest_path}: quarantine needs a reason and "
+                         f"a fixture list")
+    if os.path.basename(path) in quarantine["fixtures"]:
+        return quarantine["reason"]
+    return None
+
+
 def read_fixture(path):
+    reason = fixture_quarantine(path)
+    if reason is not None:
+        raise ValueError(f"{path}: quarantined fixture: {reason}")
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:4] != T1R_MAGIC:

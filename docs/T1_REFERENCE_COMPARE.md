@@ -70,6 +70,38 @@ of a copy and require the conviction,
 must exit 1 naming the corrupted array. `verify-manifest` re-checks every
 committed fixture against its manifest sha256.
 
+## Fixture quarantine
+
+A family directory's `MANIFEST.json` may carry
+`"quarantine": {"reason": ..., "fixtures": [...], "since": ...}`. A listed
+fixture is refused everywhere: `read_fixture` raises, so `compare` and
+every tool built on the reader fail, and `verify-manifest` exits 1 naming
+the reason. A quarantine without a reason or fixture list, or one naming a
+fixture absent from the manifest, is itself a failure. Remove the
+quarantine only in the commit that regenerates the fixtures.
+`tests/test_t1_reference_quarantine.py` pins this behaviour.
+
+### e2m1 table (2026-09-28, #1288)
+
+`t1_reference_common._E2M1_LUT` decoded e2m1 as
+{0, .5, 2, 3, 4, 6, 8, 12}: every normal code 2x, the subnormal 0.5
+correct. The OCP set is {0, .5, 1, 1.5, 2, 3, 4, 6}. Two generators had
+absorbed the doubling as a 0.5 factor fitted against their fp8 twins,
+which still left code 0.5 decoded as 0.25. With the corrected table the
+fit to the twin is 1.0 without the factor (glm-5.3-flash-nvfp4-nvidia vs
+bf16-official: 0.993 to 0.999 on dense and expert tensors; qwen3.8-27b
+nvfp4a16 vs fp8: 0.994), so the factor is removed.
+
+| family / arm | path | state |
+|---|---|---|
+| qwen38_max (nvfp4 experts) | `_E2M1_LUT` direct, no factor: experts 2x | fixtures quarantined; `model-families/qwen38_max/smoke_experts.json` derives from their route ids |
+| qwen38_27b nvfp4a16 | `nvfp4_to_f32` x 0.5 / global | fixtures quarantined; top-level fp8 fixtures unaffected |
+| glm53flash nvfp4 | `nvfp4_to_f32` x scale_2 x 0.5 | no committed fixtures; any nvfp4-arm fixture made before #1288 is invalid; bf16 and fp8 arms unaffected |
+| mimo26 | written after the fix | valid |
+
+Regenerate a quarantined set with `tools/t1_reference_decoder.py` on its
+pinned checkpoint and drop the quarantine in the same commit.
+
 ## Position-0 anchor
 
 For families with a committed checkpoint layer oracle, the generator's
