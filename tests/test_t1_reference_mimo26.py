@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -446,10 +447,37 @@ def check_family_headers():
     print("  PASS llm_defines.h agrees with spark_mimo26_model.h")
 
 
+COMMITTED = {
+    "capital": [264, 3283, 315, 29263, 11, 1947, 11, 323, 3840, 13, 1084, 374, 264, 3283, 429, 702],
+    "code": [262, 421, 308, 2651, 220, 15, 510, 286, 470, 220, 15, 198, 262, 4409, 308, 621],
+    "science": [429, 374, 279, 9315, 518, 892, 279, 37652, 7262, 315, 3015, 16819, 279, 44375, 7262, 13],
+}
+
+
+def check_committed_fixtures():
+    directory = os.path.join(ROOT, "qualification", "t1_reference", "mimo26")
+    result = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "t1_reference_compare.py"),
+                             "verify-manifest", "--fixture-dir", directory], capture_output=True, text=True)
+    expect(result.returncode == 0, f"committed mimo26 fixtures fail their manifest: {result.stdout}{result.stderr}")
+    manifest = json.load(open(os.path.join(directory, "MANIFEST.json")))
+    header = os.path.join(ROOT, "model-families", "mimo26", "include", "sparkpipe", "llm_defines.h")
+    expect(manifest["llm_defines_sha256"] == hashlib.sha256(open(header, "rb").read()).hexdigest(),
+           "committed fixtures were generated from a different llm_defines.h; regenerate them")
+    expect(manifest["checkpoint"]["config_sha256"] == "61bea4a0f7a0dd8969f8cae528761e26b697dd12ff63e98804c3f0945492e621",
+           "committed fixtures are not from the pinned MiMo-V2.6-Flash-RL config")
+    for name, tokens in COMMITTED.items():
+        _, arrays = read_fixture(os.path.join(directory, name + ".t1r"))
+        expect([int(t) for t in arrays["generated_token_ids"]] == tokens, f"{name}: committed greedy tokens changed")
+        expect(sum(1 for key in arrays if key.endswith("_route_ids")) == (len(arrays["prompt_token_ids"]) + 16) * 47,
+               f"{name}: fixture does not carry a route decision per routed layer and position")
+    print("  PASS committed Flash fixtures: manifest, header, config pin, 3 x 16 greedy tokens")
+
+
 def main():
     rng = np.random.default_rng(26)
     print("mimo26 t1 reference:")
     check_family_headers()
+    check_committed_fixtures()
     check_lut_and_matvec(rng)
     check_layout_guard(rng)
     check_end_to_end(rng)
