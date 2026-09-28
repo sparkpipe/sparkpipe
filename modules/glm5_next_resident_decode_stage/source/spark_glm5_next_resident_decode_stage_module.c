@@ -65,6 +65,7 @@ static int SparkGlm5NextProbeEnabled(void)
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
 #define SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS 32u
+#define SPARK_GLM5_NEXT_KV_SNAPSHOT_PREFETCH_CHAINS 2u
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
@@ -279,6 +280,7 @@ struct SparkGlm5NextModuleState
 	SparkKvSnapshotStore kv_snapshot_store;
 	SparkKvPageCacheSnapshot kv_snapshot;
 	SparkKvPageCacheSnapshotLink *kv_snapshot_links;
+	SparkKvSnapshotKey *kv_snapshot_keys;
 	uint8_t *kv_snapshot_page;
 	uint8_t *kv_snapshot_state;
 	char pack_sha256[SPARK_SHA256_HEX_BYTES];
@@ -1315,7 +1317,7 @@ static SparkStatus SparkGlm5NextSnapshotLayout(const SparkGlm5NextModuleState *s
 static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *state,const SparkKvModelTable *table)
 {
 	char identity[1024],driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	uint64_t file_bytes,queue_bytes,start_ns;
+	uint64_t file_bytes,queue_bytes,prefetch_bytes,start_ns;
 	struct timespec now;
 	SparkStatus status;
 	if ( state->kv_snapshot_directory == 0 )
@@ -1333,20 +1335,26 @@ static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *sta
 		SPARK_RETURN(status);
 	}
 	state->kv_snapshot_links = (SparkKvPageCacheSnapshotLink *)calloc(state->pages_per_sequence,sizeof(*state->kv_snapshot_links));
+	state->kv_snapshot_keys = (SparkKvSnapshotKey *)calloc(state->pages_per_sequence,sizeof(*state->kv_snapshot_keys));
 	state->kv_snapshot_page = (uint8_t *)malloc((size_t)table->page_store_config.page_bytes);
 	state->kv_snapshot_state = state->recurrent_page_bytes != 0u ? (uint8_t *)malloc((size_t)state->recurrent_page_bytes) : 0;
-	if ( state->kv_snapshot_links == 0 || state->kv_snapshot_page == 0 || (state->recurrent_page_bytes != 0u && state->kv_snapshot_state == 0) )
+	if ( state->kv_snapshot_links == 0 || state->kv_snapshot_keys == 0 || state->kv_snapshot_page == 0 || (state->recurrent_page_bytes != 0u && state->kv_snapshot_state == 0) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkKvSnapshotPrune(&state->kv_snapshot_store,state->kv_snapshot.layout_sha256);
+	prefetch_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_SNAPSHOT_PREFETCH_CHAINS * ((uint64_t)state->pages_per_sequence * table->page_store_config.page_bytes + state->recurrent_page_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotPrefetcherStart(&state->kv_snapshot_store,prefetch_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	state->kv_snapshot.flags = SPARK_KV_PAGE_CACHE_SNAPSHOT_FLAG_PREFETCH_JOIN;
+	state->kv_snapshot.keys = state->kv_snapshot_keys;
 	state->kv_snapshot.store = &state->kv_snapshot_store;
 	state->kv_snapshot.page_capacity = state->pages_per_sequence;
 	state->kv_snapshot.links = state->kv_snapshot_links;
 	state->kv_snapshot.page = state->kv_snapshot_page;
 	state->kv_snapshot.state = state->kv_snapshot_state;
 	status = SparkKvPageCacheAttachSnapshot(&state->kv_page_cache,&state->kv_snapshot);
-	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu used_bytes=%llu files=%llu pruned=%llu evicted_at_open=%llu driver=%s identity_us=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)queue_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,(unsigned long long)state->kv_snapshot_store.pruned_count,(unsigned long long)state->kv_snapshot_store.eviction_count,driver_path,(unsigned long long)(clock_gettime(CLOCK_MONOTONIC,&now) == 0 && start_ns != 0u ? ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - start_ns) / 1000u : 0u),identity,(int)status);
+	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu prefetch_bytes=%llu used_bytes=%llu files=%llu pruned=%llu evicted_at_open=%llu driver=%s identity_us=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)queue_bytes,(unsigned long long)prefetch_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,(unsigned long long)state->kv_snapshot_store.pruned_count,(unsigned long long)state->kv_snapshot_store.eviction_count,driver_path,(unsigned long long)(clock_gettime(CLOCK_MONOTONIC,&now) == 0 && start_ns != 0u ? ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - start_ns) / 1000u : 0u),identity,(int)status);
 	SPARK_RETURN(status);
 }
 
@@ -4790,6 +4798,7 @@ static SparkStatus SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 	free(state->kv_page_staging);
 	SparkKvSnapshotStoreClose(&state->kv_snapshot_store);
 	free(state->kv_snapshot_links);
+	free(state->kv_snapshot_keys);
 	free(state->kv_snapshot_page);
 	free(state->kv_snapshot_state);
 	free(state->kv_lane_logical_pages);

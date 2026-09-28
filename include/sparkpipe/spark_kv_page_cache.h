@@ -20,6 +20,7 @@ extern "C" {
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_CHAIN 1u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES 2u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_STATE 3u
+#define SPARK_KV_PAGE_CACHE_SNAPSHOT_FLAG_PREFETCH_JOIN UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_ALLOCATED_MUTABLE UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_CACHE_KNOWN_MUTATIONS \
@@ -68,8 +69,9 @@ typedef struct SparkKvPageCacheSnapshot
 	SparkKvSnapshotStore *store;
 	uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint32_t page_capacity;
-	uint32_t reserved0;
+	uint32_t flags;
 	SparkKvPageCacheSnapshotLink *links;
+	SparkKvSnapshotKey *keys;
 	uint8_t *page;
 	uint8_t *state;
 	uint64_t save_count;
@@ -83,6 +85,8 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t restore_miss_count;
 	uint64_t restore_corrupt_count;
 	uint64_t restore_failure_count;
+	uint64_t prefetch_wait_count;
+	uint64_t prefetch_overflow_count;
 	SparkStatus last_save_status;
 	SparkStatus last_restore_status;
 }

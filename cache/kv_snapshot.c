@@ -40,6 +40,17 @@ typedef struct SparkKvSnapshotJob
 	SparkKvSnapshotSegment segments[SPARK_KV_SNAPSHOT_MAX_SEGMENTS];
 } SparkKvSnapshotJob;
 
+typedef struct SparkKvSnapshotPrefetchJob
+{
+	struct SparkKvSnapshotPrefetchJob *next;
+	uint32_t state;
+	SparkStatus status;
+	uint64_t bytes;
+	uint8_t *buffer;
+	SparkKvSnapshotPrefetchRequest request;
+	SparkKvSnapshotKey *keys;
+} SparkKvSnapshotPrefetchJob;
+
 typedef struct SparkKvSnapshotRuntime
 {
 	pthread_mutex_t mutex;
@@ -57,6 +68,12 @@ typedef struct SparkKvSnapshotRuntime
 	SparkKvSnapshotJob *jobs;
 	SparkKvSnapshotJob *spare_jobs;
 	uint64_t spare_bytes;
+	uint32_t prefetch_started;
+	uint32_t prefetch_active;
+	pthread_t prefetcher;
+	pthread_cond_t prefetch_wake;
+	pthread_cond_t prefetch_idle;
+	SparkKvSnapshotPrefetchJob *prefetch_jobs;
 } SparkKvSnapshotRuntime;
 
 static uint64_t SparkKvSnapshotNowNs(void)
@@ -566,7 +583,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
 	status = SparkKvSnapshotScan(store);
-	if ( status == SPARK_STATUS_OK && (pthread_mutex_init(&runtime->mutex,0) != 0 || pthread_cond_init(&runtime->wake,0) != 0 || pthread_cond_init(&runtime->idle,0) != 0 || pthread_create(&runtime->writer,0,SparkKvSnapshotWriterMain,store) != 0) )
+	if ( status == SPARK_STATUS_OK && (pthread_mutex_init(&runtime->mutex,0) != 0 || pthread_cond_init(&runtime->wake,0) != 0 || pthread_cond_init(&runtime->idle,0) != 0 || pthread_cond_init(&runtime->prefetch_wake,0) != 0 || pthread_cond_init(&runtime->prefetch_idle,0) != 0 || pthread_create(&runtime->writer,0,SparkKvSnapshotWriterMain,store) != 0) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -587,8 +604,11 @@ void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store)
 	pthread_mutex_lock(&runtime->mutex);
 	runtime->stopping = 1u;
 	pthread_cond_broadcast(&runtime->wake);
+	pthread_cond_broadcast(&runtime->prefetch_wake);
 	pthread_mutex_unlock(&runtime->mutex);
 	(void)pthread_join(runtime->writer,0);
+	if ( runtime->prefetch_started != 0u )
+		(void)pthread_join(runtime->prefetcher,0);
 	while ( (job = runtime->jobs) != 0 )
 	{
 		runtime->jobs = job->next;
@@ -599,6 +619,15 @@ void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store)
 		runtime->spare_jobs = job->next;
 		free(job);
 	}
+	while ( runtime->prefetch_jobs != 0 )
+	{
+		SparkKvSnapshotPrefetchJob *prefetch = runtime->prefetch_jobs;
+		runtime->prefetch_jobs = prefetch->next;
+		free(prefetch->buffer);
+		free(prefetch);
+	}
+	pthread_cond_destroy(&runtime->prefetch_wake);
+	pthread_cond_destroy(&runtime->prefetch_idle);
 	pthread_cond_destroy(&runtime->wake);
 	pthread_cond_destroy(&runtime->idle);
 	pthread_mutex_destroy(&runtime->mutex);
@@ -1017,5 +1046,248 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 		return(status);
 	*bytes_out = header.segments[segment_index].bytes;
 	SparkKvSnapshotRecordRead(store,key,header.segments[segment_index].bytes,start_ns);
+	return(SPARK_STATUS_OK);
+}
+
+#define SPARK_KV_SNAPSHOT_PREFETCH_QUEUED 1u
+#define SPARK_KV_SNAPSHOT_PREFETCH_ACTIVE 2u
+#define SPARK_KV_SNAPSHOT_PREFETCH_DONE 3u
+
+static SparkStatus SparkKvSnapshotPrefetchSegment(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,uint32_t segment_index,uint32_t kind,uint64_t bytes,uint8_t *data)
+{
+	SparkKvSnapshotFileHeader header;
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+	SparkStatus status;
+	int descriptor;
+	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,1u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( segment_index >= header.segment_count || header.segments[segment_index].kind != kind || header.segments[segment_index].bytes != bytes )
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	else
+		status = SparkKvSnapshotReadExact(descriptor,data,bytes,header.segments[segment_index].offset);
+	(void)close(descriptor);
+	if ( status == SPARK_STATUS_OK )
+	{
+		SparkKvSnapshotDigest(data,bytes,digest);
+		if ( memcmp(digest,header.segments[segment_index].sha256,sizeof(digest)) != 0 )
+			status = SPARK_STATUS_HASH_MISMATCH;
+	}
+	if ( status == SPARK_STATUS_HASH_MISMATCH )
+		SparkKvSnapshotDiscard(store,key);
+	return(status);
+}
+
+static SparkStatus SparkKvSnapshotPrefetchRun(SparkKvSnapshotStore *store,SparkKvSnapshotPrefetchJob *job)
+{
+	const SparkKvSnapshotPrefetchRequest *request = &job->request;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	job->buffer = (uint8_t *)malloc((size_t)job->bytes);
+	if ( job->buffer == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (index=0u; status == SPARK_STATUS_OK && index<request->key_count; index++)
+		status = SparkKvSnapshotPrefetchSegment(store,&job->keys[index],request->segment_index,request->segment_kind,request->segment_bytes,job->buffer + (uint64_t)index * request->segment_bytes);
+	if ( status == SPARK_STATUS_OK && request->last_segment_index != SPARK_KV_SNAPSHOT_NO_SEGMENT )
+		status = SparkKvSnapshotPrefetchSegment(store,&job->keys[request->key_count - 1u],request->last_segment_index,request->last_segment_kind,request->last_segment_bytes,job->buffer + (uint64_t)request->key_count * request->segment_bytes);
+	return(status);
+}
+
+static void *SparkKvSnapshotPrefetchMain(void *context)
+{
+	SparkKvSnapshotStore *store = (SparkKvSnapshotStore *)context;
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	SparkKvSnapshotPrefetchJob *job,*candidate;
+	uint64_t start_ns;
+	SparkStatus status;
+	uint32_t index;
+	pthread_mutex_lock(&runtime->mutex);
+	while ( runtime->stopping == 0u )
+	{
+		job = 0;
+		for (candidate=runtime->prefetch_jobs; candidate != 0; candidate=candidate->next)
+			if ( candidate->state == SPARK_KV_SNAPSHOT_PREFETCH_QUEUED )
+				job = candidate;
+		if ( job == 0 )
+		{
+			runtime->prefetch_active = 0u;
+			pthread_cond_broadcast(&runtime->prefetch_idle);
+			pthread_cond_wait(&runtime->prefetch_wake,&runtime->mutex);
+			continue;
+		}
+		job->state = SPARK_KV_SNAPSHOT_PREFETCH_ACTIVE;
+		runtime->prefetch_active = 1u;
+		pthread_mutex_unlock(&runtime->mutex);
+		start_ns = SparkKvSnapshotNowNs();
+		status = SparkKvSnapshotPrefetchRun(store,job);
+		pthread_mutex_lock(&runtime->mutex);
+		for (index=0u; status == SPARK_STATUS_OK && index<job->request.key_count; index++)
+			SparkKvSnapshotIndexTouch(store,&job->keys[index]);
+		job->status = status;
+		job->state = SPARK_KV_SNAPSHOT_PREFETCH_DONE;
+		store->prefetch_completed_count++;
+		store->prefetch_failure_count += status != SPARK_STATUS_OK ? 1u : 0u;
+		store->prefetch_bytes += status == SPARK_STATUS_OK ? job->bytes : 0u;
+		store->prefetch_ns += SparkKvSnapshotNowNs() - start_ns;
+		pthread_cond_broadcast(&runtime->prefetch_idle);
+	}
+	runtime->prefetch_active = 0u;
+	pthread_cond_broadcast(&runtime->prefetch_idle);
+	pthread_mutex_unlock(&runtime->mutex);
+	return(0);
+}
+
+SparkStatus SparkKvSnapshotPrefetcherStart(SparkKvSnapshotStore *store,uint64_t maximum_bytes)
+{
+	SparkKvSnapshotRuntime *runtime;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || maximum_bytes == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	if ( runtime->prefetch_started != 0u )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	else if ( pthread_create(&runtime->prefetcher,0,SparkKvSnapshotPrefetchMain,store) != 0 )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	else
+	{
+		runtime->prefetch_started = 1u;
+		store->prefetch_maximum_bytes = maximum_bytes;
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
+static uint32_t SparkKvSnapshotPrefetchMatches(const SparkKvSnapshotPrefetchJob *job,const SparkKvSnapshotPrefetchRequest *request)
+{
+	uint32_t skip;
+	if ( job->request.key_count < request->key_count || job->request.segment_index != request->segment_index || job->request.segment_kind != request->segment_kind || job->request.last_segment_index != request->last_segment_index || job->request.segment_bytes != request->segment_bytes || job->request.last_segment_bytes != request->last_segment_bytes )
+		return(0u);
+	skip = job->request.key_count - request->key_count;
+	return(memcmp(job->keys + skip,request->keys,(size_t)request->key_count * sizeof(request->keys[0])) == 0 ? 1u : 0u);
+}
+
+static void SparkKvSnapshotPrefetchFree(SparkKvSnapshotStore *store,SparkKvSnapshotPrefetchJob *target)
+{
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	SparkKvSnapshotPrefetchJob **link;
+	for (link=&runtime->prefetch_jobs; *link != 0; link=&(*link)->next)
+		if ( *link == target )
+		{
+			*link = target->next;
+			store->prefetch_reserved_bytes -= target->bytes;
+			free(target->buffer);
+			free(target);
+			return;
+		}
+}
+
+SparkStatus SparkKvSnapshotPrefetch(SparkKvSnapshotStore *store,const SparkKvSnapshotPrefetchRequest *request,SparkKvSnapshotPrefetchResult *result)
+{
+	SparkKvSnapshotRuntime *runtime;
+	SparkKvSnapshotPrefetchJob *job,*oldest;
+	uint64_t bytes;
+	SparkStatus status;
+	if ( result != 0 )
+		memset(result,0,sizeof(*result));
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || request == 0 || result == 0 || request->keys == 0 || request->key_count == 0u || request->segment_bytes == 0u || request->reserved0 != 0u || request->segment_index >= SPARK_KV_SNAPSHOT_MAX_SEGMENTS || (request->last_segment_index != SPARK_KV_SNAPSHOT_NO_SEGMENT && request->last_segment_index >= SPARK_KV_SNAPSHOT_MAX_SEGMENTS) || request->segment_bytes > (UINT64_MAX / 4u) / request->key_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	bytes = (uint64_t)request->key_count * request->segment_bytes + (request->last_segment_index != SPARK_KV_SNAPSHOT_NO_SEGMENT ? request->last_segment_bytes : 0u);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	if ( runtime->prefetch_started == 0u || bytes > store->prefetch_maximum_bytes )
+	{
+		pthread_mutex_unlock(&runtime->mutex);
+		SPARK_FAIL(runtime->prefetch_started == 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	for (job=runtime->prefetch_jobs; job != 0 && SparkKvSnapshotPrefetchMatches(job,request) == 0u; job=job->next)
+		;
+	if ( job != 0 && job->state != SPARK_KV_SNAPSHOT_PREFETCH_DONE )
+		status = SPARK_STATUS_PENDING;
+	else if ( job != 0 )
+	{
+		status = job->status;
+		if ( status == SPARK_STATUS_OK )
+		{
+			result->buffer = job->buffer;
+			result->key_count = request->key_count;
+			result->segment_bytes = request->segment_bytes;
+			result->last_segment_bytes = request->last_segment_index != SPARK_KV_SNAPSHOT_NO_SEGMENT ? request->last_segment_bytes : 0u;
+			result->segments = job->buffer + (uint64_t)(job->request.key_count - request->key_count) * request->segment_bytes;
+			result->last_segment = request->last_segment_index != SPARK_KV_SNAPSHOT_NO_SEGMENT ? job->buffer + (uint64_t)job->request.key_count * request->segment_bytes : 0;
+			job->buffer = 0;
+		}
+		SparkKvSnapshotPrefetchFree(store,job);
+	}
+	else
+	{
+		for (;;)
+		{
+			if ( store->prefetch_reserved_bytes <= store->prefetch_maximum_bytes - bytes )
+				break;
+			oldest = 0;
+			for (job=runtime->prefetch_jobs; job != 0; job=job->next)
+				if ( job->state == SPARK_KV_SNAPSHOT_PREFETCH_DONE )
+					oldest = job;
+			if ( oldest == 0 )
+				break;
+			store->prefetch_dropped_count++;
+			SparkKvSnapshotPrefetchFree(store,oldest);
+		}
+		job = 0;
+		if ( store->prefetch_reserved_bytes > store->prefetch_maximum_bytes - bytes )
+		{
+			store->prefetch_busy_count++;
+			status = SPARK_STATUS_BUSY;
+		}
+		else if ( (job = (SparkKvSnapshotPrefetchJob *)calloc(1u,sizeof(*job) + (size_t)request->key_count * sizeof(request->keys[0]))) == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		else
+		{
+			job->keys = (SparkKvSnapshotKey *)(job + 1);
+			memcpy(job->keys,request->keys,(size_t)request->key_count * sizeof(request->keys[0]));
+			job->request = *request;
+			job->request.keys = job->keys;
+			job->bytes = bytes;
+			job->state = SPARK_KV_SNAPSHOT_PREFETCH_QUEUED;
+			job->next = runtime->prefetch_jobs;
+			runtime->prefetch_jobs = job;
+			store->prefetch_reserved_bytes += bytes;
+			store->prefetch_queued_count++;
+			pthread_cond_signal(&runtime->prefetch_wake);
+			status = SPARK_STATUS_PENDING;
+		}
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	return(status);
+}
+
+void SparkKvSnapshotPrefetchResultRelease(SparkKvSnapshotPrefetchResult *result)
+{
+	if ( result == 0 )
+		return;
+	free(result->buffer);
+	memset(result,0,sizeof(*result));
+}
+
+SparkStatus SparkKvSnapshotPrefetchWait(SparkKvSnapshotStore *store)
+{
+	SparkKvSnapshotRuntime *runtime;
+	SparkKvSnapshotPrefetchJob *job;
+	uint32_t busy;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	for (;;)
+	{
+		busy = runtime->prefetch_active;
+		for (job=runtime->prefetch_jobs; job != 0; job=job->next)
+			busy += job->state != SPARK_KV_SNAPSHOT_PREFETCH_DONE ? 1u : 0u;
+		if ( busy == 0u || runtime->prefetch_started == 0u )
+			break;
+		pthread_cond_wait(&runtime->prefetch_idle,&runtime->mutex);
+	}
+	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
 }

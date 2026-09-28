@@ -1,5 +1,6 @@
 #include <cuda_runtime_api.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,7 @@ typedef struct CudaEngine
 	uint32_t by_page[CUDA_PAGES];
 	SparkKvPageCacheSnapshot snapshot;
 	SparkKvPageCacheSnapshotLink links[CUDA_PAGES];
+	SparkKvSnapshotKey keys[CUDA_PAGES];
 	uint8_t *snapshot_page;
 	uint8_t *snapshot_state;
 	SparkKvLaneTransaction owners[4];
@@ -98,7 +100,7 @@ static int32_t CudaStoreOpen(SparkKvPageStore *store,char *path,void *staging,ui
 	return(SparkKvPageStoreInitialize(store,&configuration) == SPARK_STATUS_OK ? 0 : -2);
 }
 
-static int32_t CudaEngineOpen(CudaEngine *engine,SparkKvSnapshotStore *store)
+static int32_t CudaEngineOpen(CudaEngine *engine,SparkKvSnapshotStore *store,uint32_t flags)
 {
 	SparkKvCacheConfiguration arena;
 	SparkKvPageCacheConfiguration config;
@@ -150,8 +152,10 @@ static int32_t CudaEngineOpen(CudaEngine *engine,SparkKvSnapshotStore *store)
 	memset(engine->snapshot.layout_sha256,0x5a,sizeof(engine->snapshot.layout_sha256));
 	engine->snapshot.page_capacity = CUDA_PAGES;
 	engine->snapshot.links = engine->links;
+	engine->snapshot.keys = engine->keys;
 	engine->snapshot.page = engine->snapshot_page;
 	engine->snapshot.state = engine->snapshot_state;
+	engine->snapshot.flags = flags;
 	engine->transactions.cache = &engine->cache;
 	engine->transactions.lanes = engine->owners;
 	engine->transactions.logical_pages = engine->logical;
@@ -313,7 +317,9 @@ static int32_t CudaPrefillPrompt(CudaEngine *engine,float *logits,uint64_t *pref
 	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -10);
 }
 
-static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *restore_ns)
+static uint64_t cuda_admit_max_ns;
+
+static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *restore_ns,uint32_t *pending_out)
 {
 	SparkModelDriverCacheLane lane;
 	SparkModelDriverAdmissionRequest request;
@@ -329,8 +335,23 @@ static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *rest
 	lane.prefix_token_count = CUDA_PROMPT_TOKENS;
 	CudaIdentity(&lane.prefix_identity,CUDA_PROMPT_TOKENS);
 	CudaRequest(&request,&lane,1u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,0u);
-	if ( SparkKvLaneTransactionsAdmit(&engine->transactions,&request) != SPARK_STATUS_OK )
-		return(-1);
+	*pending_out = 0u;
+	cuda_admit_max_ns = 0u;
+	for (;;)
+	{
+		struct timespec pause = {0,100000};
+		uint64_t admit_ns = CudaNow();
+		SparkStatus status = SparkKvLaneTransactionsAdmit(&engine->transactions,&request);
+		admit_ns = CudaNow() - admit_ns;
+		if ( admit_ns > cuda_admit_max_ns )
+			cuda_admit_max_ns = admit_ns;
+		if ( status == SPARK_STATUS_OK )
+			break;
+		if ( status != SPARK_STATUS_PENDING || ++*pending_out > 100000u )
+			return(-1);
+		nanosleep(&pause,0);
+		request.request_id = request.submission_id = request.transaction_id = request.request_id + 1u;
+	}
 	count = engine->owners[1].page_count;
 	if ( count != CUDA_PROMPT_PAGES || CudaRestoreState(engine,engine->logical[CUDA_PAGES + count - 1u]) != SPARK_STATUS_OK )
 		return(-2);
@@ -339,6 +360,28 @@ static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *rest
 		return(-3);
 	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
 	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -4);
+}
+
+static void CudaDropCache(const char *directory)
+{
+	char path[1200];
+	struct dirent *item;
+	DIR *listing = opendir(directory);
+	int descriptor;
+	if ( listing == 0 )
+		return;
+	while ( (item = readdir(listing)) != 0 )
+	{
+		if ( item->d_name[0] == '.' )
+			continue;
+		snprintf(path,sizeof(path),"%s/%s",directory,item->d_name);
+		descriptor = open(path,O_RDONLY);
+		if ( descriptor < 0 )
+			continue;
+		(void)posix_fadvise(descriptor,0,0,POSIX_FADV_DONTNEED);
+		close(descriptor);
+	}
+	closedir(listing);
 }
 
 static void CudaRemoveTree(const char *directory)
@@ -365,7 +408,9 @@ int main(int argc,char **argv)
 	static float logits_source[CUDA_VOCAB],logits_restored[CUDA_VOCAB],logits_cold[CUDA_VOCAB];
 	SparkKvSnapshotStore store;
 	char directory[512];
-	uint64_t prefill_ns = 0u,restore_ns = 0u,cold_ns = 0u,read_bytes;
+	uint64_t prefill_ns = 0u,restore_ns = 0u,cold_ns = 0u,cold_restore_ns = 0u,prefetch_ns = 0u,read_bytes = 0u;
+	uint32_t pending = 0u,prefetch_pending = 0u;
+	uint64_t cold_admit_max_ns = 0u,prefetch_admit_max_ns = 0u,writer_ns = 0u,publish_save_ns = 0u,prefetch_background_ns = 0u;
 	int32_t result;
 	uint32_t index,differences = 0u;
 	if ( argc != 2 || argv[1][0] != '/' )
@@ -377,17 +422,19 @@ int main(int argc,char **argv)
 	if ( mkdtemp(directory) == 0 )
 		return(2);
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
-	CHECK(CudaEngineOpen(&source,&store) == 0);
+	CHECK(CudaEngineOpen(&source,&store,0u) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
 	CHECK(result == 0 && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
+	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && source.snapshot.save_deferred_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
+	writer_ns = store.write_ns;
+	publish_save_ns = source.snapshot.save_ns;
 	CudaEngineClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
-	CHECK(CudaEngineOpen(&fresh,&store) == 0);
-	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns);
-	CHECK(result == 0);
+	CHECK(CudaEngineOpen(&fresh,&store,0u) == 0);
+	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns,&pending);
+	CHECK(result == 0 && pending == 0u);
 	CHECK(fresh.snapshot.restore_count == 1u && fresh.snapshot.restore_page_count == CUDA_PROMPT_PAGES);
 	for (index=0u; index<CUDA_VOCAB; index++)
 		differences += memcmp(&logits_source[index],&logits_restored[index],sizeof(float)) != 0 ? 1u : 0u;
@@ -396,14 +443,34 @@ int main(int argc,char **argv)
 	CudaEngineClose(&fresh);
 	SparkKvSnapshotStoreClose(&store);
 
+	CudaDropCache(directory);
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
-	CHECK(CudaEngineOpen(&cold,&store) == 0);
+	CHECK(CudaEngineOpen(&fresh,&store,0u) == 0);
+	result = CudaRestorePrompt(&fresh,logits_restored,&cold_restore_ns,&pending);
+	CHECK(result == 0 && pending == 0u && memcmp(logits_restored,logits_source,sizeof(logits_source)) == 0);
+	cold_admit_max_ns = cuda_admit_max_ns;
+	CudaEngineClose(&fresh);
+	SparkKvSnapshotStoreClose(&store);
+
+	CudaDropCache(directory);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK && SparkKvSnapshotPrefetcherStart(&store,2ull * (CUDA_PAGES * (uint64_t)CUDA_PAGE_BYTES + CUDA_STATE_BYTES)) == SPARK_STATUS_OK);
+	CHECK(CudaEngineOpen(&fresh,&store,SPARK_KV_PAGE_CACHE_SNAPSHOT_FLAG_PREFETCH_JOIN) == 0);
+	result = CudaRestorePrompt(&fresh,logits_restored,&prefetch_ns,&prefetch_pending);
+	CHECK(result == 0 && prefetch_pending != 0u && fresh.snapshot.prefetch_wait_count == prefetch_pending && store.prefetch_completed_count == 1u && store.prefetch_bytes == CUDA_PROMPT_PAGES * (uint64_t)CUDA_PAGE_BYTES + CUDA_STATE_BYTES);
+	CHECK(memcmp(logits_restored,logits_source,sizeof(logits_source)) == 0);
+	prefetch_admit_max_ns = cuda_admit_max_ns;
+	prefetch_background_ns = store.prefetch_ns;
+	CudaEngineClose(&fresh);
+	SparkKvSnapshotStoreClose(&store);
+
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
+	CHECK(CudaEngineOpen(&cold,&store,0u) == 0);
 	cold.snapshot.layout_sha256[0] ^= 1u;
 	result = CudaPrefillPrompt(&cold,logits_cold,&cold_ns);
 	CHECK(result == 0 && memcmp(logits_cold,logits_source,sizeof(logits_cold)) == 0);
 	CudaEngineClose(&cold);
 	SparkKvSnapshotStoreClose(&store);
 	CudaRemoveTree(directory);
-	printf("test_kv_snapshot_cuda: prompt_tokens=%u pages=%u snapshot_bytes_per_page=%u logits=%u bitwise_differences=%u prefill_with_save_us=%llu restore_us=%llu read_bytes=%llu checks=%u failures=%u\n",CUDA_PROMPT_TOKENS,CUDA_PROMPT_PAGES,CUDA_PAGE_BYTES + CUDA_STATE_BYTES,CUDA_VOCAB,differences,(unsigned long long)(prefill_ns / 1000u),(unsigned long long)(restore_ns / 1000u),(unsigned long long)read_bytes,cuda_checks,cuda_failures);
+	printf("test_kv_snapshot_cuda: prompt_tokens=%u pages=%u snapshot_bytes_per_page=%u logits=%u bitwise_differences=%u prefill_with_save_us=%llu publish_save_us=%llu writer_us=%llu restore_warm_us=%llu restore_cold_us=%llu prefetch_then_join_us=%llu prefetch_background_us=%llu prefetch_pending=%u cold_admit_max_us=%llu prefetch_admit_max_us=%llu read_bytes=%llu checks=%u failures=%u\n",CUDA_PROMPT_TOKENS,CUDA_PROMPT_PAGES,CUDA_PAGE_BYTES + CUDA_STATE_BYTES,CUDA_VOCAB,differences,(unsigned long long)(prefill_ns / 1000u),(unsigned long long)(publish_save_ns / 1000u),(unsigned long long)(writer_ns / 1000u),(unsigned long long)(restore_ns / 1000u),(unsigned long long)(cold_restore_ns / 1000u),(unsigned long long)(prefetch_ns / 1000u),(unsigned long long)(prefetch_background_ns / 1000u),prefetch_pending,(unsigned long long)(cold_admit_max_ns / 1000u),(unsigned long long)(prefetch_admit_max_ns / 1000u),(unsigned long long)read_bytes,cuda_checks,cuda_failures);
 	return(cuda_failures == 0u ? 0 : 1);
 }

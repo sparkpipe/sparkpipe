@@ -800,6 +800,35 @@ static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeplo
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioPrefetchThenJoin(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u},plain_a[3] = {51u,52u,53u},plain_b[3] = {61u,62u,63u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane hit = {0};
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,920u,1u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_PENDING,3u);
+	TestSubmitPrompt(engine,2u,921u,1u,prompt,8u);
+	TestSubmitPrompt(engine,3u,922u,1u,plain_a,3u);
+	TestSubmitPrompt(engine,4u,923u,1u,plain_b,3u);
+	TestDriveUntilTerminal(engine,&state,4u,1500u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
+	CHECK(state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u && state.error_events[2] + state.error_events[3] + state.error_events[4] == 0u,"prefetch: a pending prefix fails no lane of its wave");
+	CHECK(state.token_events[2] == 1u && state.token_events[3] == 1u && state.token_events[4] == 1u,"prefetch: every lane emits its token exactly once");
+	CHECK(state.cached_tokens[2] == 4u && state.stale_recomputes[2] == 0u && TestFindLane(2u,4u,4u,&hit) != 0u && (hit.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u,"prefetch: the waiting request joins from its cached prefix without recompute");
+	CHECK(state.first_token_ns[3] != 0u && state.first_token_ns[4] != 0u && state.first_token_ns[3] < state.first_token_ns[2] && state.first_token_ns[4] < state.first_token_ns[2],"prefetch: plain lanes of the wave do not wait for the prefetch");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_PENDING] == 3u && view.prefix_prefetch_wait_count == 3u && view.stale_prefix_recompute_count == 0u,"prefetch: three pending answers are three waits and no recompute");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioStalePrefixTerminates(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
@@ -1081,6 +1110,7 @@ int main(void)
 		TestScenarioStalePrefixTerminates(&deployment,runtime_root);
 		TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
 		TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
+		TestScenarioPrefetchThenJoin(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 		TestScenarioDriverIoError(&deployment,runtime_root);
 		TestScenarioEosEarlyStop(&deployment,runtime_root);

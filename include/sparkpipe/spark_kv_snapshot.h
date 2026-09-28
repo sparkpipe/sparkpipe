@@ -18,6 +18,7 @@ extern "C" {
 #define SPARK_KV_SNAPSHOT_SUFFIX ".kvs"
 #define SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX ".kvs-writing-"
 #define SPARK_KV_SNAPSHOT_LOCK_NAME ".kvs-lock"
+#define SPARK_KV_SNAPSHOT_NO_SEGMENT UINT32_MAX
 
 typedef struct SparkKvSnapshotKey
 {
@@ -83,6 +84,15 @@ typedef struct SparkKvSnapshotStore
 	uint64_t miss_count;
 	uint64_t checksum_failure_count;
 	uint64_t removed_temporary_count;
+	uint64_t prefetch_maximum_bytes;
+	uint64_t prefetch_reserved_bytes;
+	uint64_t prefetch_queued_count;
+	uint64_t prefetch_completed_count;
+	uint64_t prefetch_failure_count;
+	uint64_t prefetch_busy_count;
+	uint64_t prefetch_dropped_count;
+	uint64_t prefetch_bytes;
+	uint64_t prefetch_ns;
 	SparkStatus failed_status;
 	uint32_t reserved0;
 	void *runtime;
@@ -97,6 +107,30 @@ typedef struct SparkKvSnapshotWriteTicket
 	SparkKvSnapshotSegment segments[SPARK_KV_SNAPSHOT_MAX_SEGMENTS];
 	void *job;
 } SparkKvSnapshotWriteTicket;
+
+typedef struct SparkKvSnapshotPrefetchRequest
+{
+	const SparkKvSnapshotKey *keys;
+	uint32_t key_count;
+	uint32_t segment_index;
+	uint32_t segment_kind;
+	uint32_t last_segment_index;
+	uint32_t last_segment_kind;
+	uint32_t reserved0;
+	uint64_t segment_bytes;
+	uint64_t last_segment_bytes;
+} SparkKvSnapshotPrefetchRequest;
+
+typedef struct SparkKvSnapshotPrefetchResult
+{
+	void *buffer;
+	uint32_t key_count;
+	uint32_t reserved0;
+	uint64_t segment_bytes;
+	uint64_t last_segment_bytes;
+	uint8_t *segments;
+	uint8_t *last_segment;
+} SparkKvSnapshotPrefetchResult;
 
 #define SPARK_KV_SNAPSHOT_STORE_BYTES ((uint32_t)sizeof(SparkKvSnapshotStore))
 
@@ -115,6 +149,10 @@ SparkStatus SparkKvSnapshotStat(SparkKvSnapshotStore *store,const SparkKvSnapsho
 SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotSegment *segments,uint32_t segment_count);
 SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,uint32_t segment_index,uint32_t kind,void *data,uint64_t capacity,uint64_t *bytes_out);
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
+SparkStatus SparkKvSnapshotPrefetcherStart(SparkKvSnapshotStore *store,uint64_t maximum_bytes);
+SparkStatus SparkKvSnapshotPrefetch(SparkKvSnapshotStore *store,const SparkKvSnapshotPrefetchRequest *request,SparkKvSnapshotPrefetchResult *result);
+void SparkKvSnapshotPrefetchResultRelease(SparkKvSnapshotPrefetchResult *result);
+SparkStatus SparkKvSnapshotPrefetchWait(SparkKvSnapshotStore *store);
 
 #ifdef __cplusplus
 }

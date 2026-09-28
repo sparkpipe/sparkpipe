@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 8u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 9u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -113,6 +113,7 @@ typedef struct SparkModelBatchEngineView
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
+	uint64_t prefix_prefetch_wait_count;
 	uint64_t first_token_count;
 	uint64_t queue_ns_total;
 	uint64_t prefill_ns_total;

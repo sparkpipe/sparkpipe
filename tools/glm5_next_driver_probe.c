@@ -246,9 +246,9 @@ static SparkStatus probe_submit(probe_state_t *state)
 		do
 		{
 			status = SparkAdmissionEvaluate(state->driver.interface,state->instance,&request,&decision);
-			if ( status == SPARK_STATUS_BUSY )
+			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 				(void)nanosleep(&pause,0);
-		} while ( status == SPARK_STATUS_BUSY && probe_time() < deadline );
+		} while ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING) && probe_time() < deadline );
 	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);

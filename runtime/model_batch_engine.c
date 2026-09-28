@@ -168,6 +168,7 @@ struct SparkModelBatchEngine
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
+	uint64_t prefix_prefetch_wait_count;
 	uint64_t first_token_count;
 	uint64_t queue_ns_total;
 	uint64_t prefill_ns_total;
@@ -821,6 +822,48 @@ static void SparkModelBatchRequeueStaleWave(SparkModelBatchEngine *engine,SparkM
 	engine->next_progress_ns = 1u;
 }
 
+static uint32_t SparkModelBatchWaveAwaitsPrefetch(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,SparkStatus status)
+{
+	uint32_t lane,*request_slots;
+	if ( status != SPARK_STATUS_PENDING || submission->admitted != 0u || submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+		return(0u);
+	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
+	for (lane=0u; lane<submission->lane_count; lane++)
+		if ( SparkModelBatchRequestCarriesPrefix(&engine->requests[request_slots[lane]]) != 0u )
+			return(1u);
+	return(0u);
+}
+
+static void SparkModelBatchRequeuePrefetchWave(SparkModelBatchEngine *engine,SparkModelBatchSubmissionState *submission)
+{
+	SparkModelBatchRequestState *request;
+	uint32_t lane,*request_slots;
+	uint64_t now = SparkModelBatchNowNs();
+	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
+	for (lane=0u; lane<submission->lane_count; lane++)
+	{
+		request = &engine->requests[request_slots[lane]];
+		if ( SparkModelBatchRequestCarriesPrefix(request) == 0u )
+		{
+			request->busy_retry_not_before_ns = 0u;
+			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+			continue;
+		}
+		if ( request->busy_restore_count >= 10000u )
+		{
+			fprintf(stderr,"batch_prefetch_cap request=%llu restores=%u; failing\n",(unsigned long long)request->request_id,(unsigned)request->busy_restore_count);
+			SparkModelBatchFailRequest(engine,request,SPARK_STATUS_PENDING);
+			continue;
+		}
+		request->busy_restore_count++;
+		request->busy_retry_backoff_ms = request->busy_retry_backoff_ms == 0u ? 10u : (request->busy_retry_backoff_ms < 200u ? request->busy_retry_backoff_ms * 2u : request->busy_retry_backoff_ms);
+		request->busy_retry_not_before_ns = now != 0u ? now + (uint64_t)request->busy_retry_backoff_ms * UINT64_C(1000000) : 0u;
+		engine->prefix_prefetch_wait_count++;
+		SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+	}
+	engine->next_progress_ns = 1u;
+}
+
 static void SparkModelBatchRejectedResidency(
 	SparkModelBatchRequestState *request,
 	const SparkModelBatchSubmissionState *submission)
@@ -856,6 +899,11 @@ static void SparkModelBatchHandleRejected(
 	if ( SparkModelBatchWaveCarriesStalePrefix(engine,submission,status) != 0u )
 	{
 		SparkModelBatchRequeueStaleWave(engine,submission);
+		return;
+	}
+	if ( SparkModelBatchWaveAwaitsPrefetch(engine,submission,status) != 0u )
+	{
+		SparkModelBatchRequeuePrefetchWave(engine,submission);
 		return;
 	}
 	{
@@ -2564,6 +2612,7 @@ static void SparkModelBatchCopyMeasurements(
 	view->prefix_hit_token_count = engine->prefix_hit_token_count;
 	view->stale_prefix_recompute_count = engine->stale_prefix_recompute_count;
 	view->stale_prefix_isolation_count = engine->stale_prefix_isolation_count;
+	view->prefix_prefetch_wait_count = engine->prefix_prefetch_wait_count;
 	view->first_token_count = engine->first_token_count;
 	view->queue_ns_total = engine->queue_ns_total;
 	view->prefill_ns_total = engine->prefill_ns_total;
