@@ -14,6 +14,7 @@ HARNESS = r'''
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
 #include "cache/kv_page_store.c"
 #include "src/spark_speculation_policy.c"
+#include "runtime/spark_expert_working_set.c"
 #define SparkKvBackendInitialize SparkTestRealKvBackendInitialize
 #include "cache/kv_model_table.c"
 #undef SparkKvBackendInitialize
@@ -181,6 +182,24 @@ int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *w
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
 static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
+
+static uint32_t SNAPSHOT_SAVES,SNAPSHOT_RESTORES,POISON_LAUNCHES;
+cudaError_t SparkGlm5NextLaunchStateSnapshot(cudaStream_t stream,const void *spans,uint32_t span_count,uint32_t row_words,uint8_t *snapshot,const uint32_t *state_index,uint32_t rows,uint32_t restore)
+{
+	assert(stream != 0 && spans != 0 && span_count != 0u && row_words != 0u && snapshot != 0 && state_index != 0 && rows != 0u && rows <= SPARK_GLM5_NEXT_WS_ROWS_MAX);
+	if ( restore != 0u )
+		SNAPSHOT_RESTORES++;
+	else
+		SNAPSHOT_SAVES++;
+	return(cudaSuccess);
+}
+cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count)
+{
+	(void)stream;(void)maxloc;
+	assert(miss != 0 && row_count != 0u);
+	POISON_LAUNCHES++;
+	return(cudaSuccess);
+}
 
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count)
 {
@@ -432,6 +451,77 @@ static void check_graph_epoch_ownership(void)
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_IO_ERROR && position == 7u && GRAPH_LAUNCHES == 6u);
 	HEALTH_DEAD_MASK = 0u;
+	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
+}
+
+static uint32_t WS_ACQUIRED[64],WS_ACQUIRE_COUNT,WS_DENY;
+static SparkStatus check_ws_acquire(void *context,const uint32_t *keys,uint32_t count)
+{
+	uint32_t index;
+	assert(context == &state);
+	if ( WS_DENY != 0u )
+		return(SPARK_STATUS_BUSY);
+	for (index=0u; index<count; index++)
+		WS_ACQUIRED[WS_ACQUIRE_COUNT++] = keys[index];
+	return(SPARK_STATUS_OK);
+}
+
+static void check_working_set_recover(void)
+{
+	static uint32_t ring[SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES / sizeof(uint32_t)];
+	static uint8_t snapshot[64];
+	static uint32_t spans[16],index_words[4];
+	SparkGlm5NextTpChain chain = {0};
+	SparkStepAction action;
+	uint32_t anchor = SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + 5u;
+	memset(&state,0,sizeof(state));
+	memset(ring,0,sizeof(ring));
+	state.execution_stream = (void *)(uintptr_t)7u;
+	state.slots[0].stream = state.execution_stream;
+	state.slots[0].miss_ring = ring;
+	state.slots[0].snapshot = snapshot;
+	state.slots[0].snapshot_spans = spans;
+	state.slots[0].snapshot_span_count = 4u;
+	state.slots[0].snapshot_row_words = 16u;
+	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
+	assert(SparkExpertWorkingSetCreate(&state.expert_ws,SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT,SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE,64u,check_ws_acquire,&state) == SPARK_STATUS_OK);
+	assert(SparkExpertWorkingSetAdd(&state.expert_ws,&anchor,1u) == SPARK_STATUS_OK);
+	state.ws_enabled = 1u;
+	chain.state = &state;chain.slot = &state.slots[0];chain.wave.slot = &state.slots[0];
+	chain.wave.row_count = 1u;chain.wave_rows = 1u;chain.wave.kda_state_index = index_words;
+	ring[SPARK_STEP_MISS_FLAG] = 1u;ring[SPARK_STEP_MISS_COUNT] = 3u;
+	ring[SPARK_STEP_MISS_ENTRIES] = (SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 1u) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + 7u;
+	ring[SPARK_STEP_MISS_ENTRIES + 1u] = (SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 1u) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + 2u;
+	ring[SPARK_STEP_MISS_ENTRIES + 2u] = (SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 4u) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + 9u;
+	chain.step_verdict = SPARK_STEP_VERDICT_ROLLBACK_LOCAL;
+	SNAPSHOT_RESTORES = 0u;WS_ACQUIRE_COUNT = 0u;
+	assert(SparkGlm5NextWsRecover(&chain,&action) == SPARK_STATUS_OK && action == SPARK_STEP_ACTION_REPLAY);
+	assert(SNAPSHOT_RESTORES == 1u && ring[SPARK_STEP_MISS_FLAG] == 0u && ring[SPARK_STEP_MISS_COUNT] == 0u);
+	assert(WS_ACQUIRE_COUNT == 2u && WS_ACQUIRED[0] == ring[SPARK_STEP_MISS_ENTRIES + 1u] && WS_ACQUIRED[1] == ring[SPARK_STEP_MISS_ENTRIES]);
+	assert(SparkExpertWorkingSetCovered(&state.expert_ws,SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 1u,7u) == 1u);
+	assert(SparkExpertWorkingSetCovered(&state.expert_ws,SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 4u,9u) == 0u);
+	assert(state.ws_local_miss == 1u && state.ws_replays == 1u && chain.ws_force_eager == 0u);
+	chain.step_verdict = SPARK_STEP_VERDICT_ROLLBACK_REMOTE;WS_DENY = 1u;
+	assert(SparkGlm5NextWsRecover(&chain,&action) == SPARK_STATUS_OK && action == SPARK_STEP_ACTION_REPLAY && state.ws_remote_miss == 1u);
+	ring[SPARK_STEP_MISS_FLAG] = 1u;ring[SPARK_STEP_MISS_COUNT] = 1u;
+	ring[SPARK_STEP_MISS_ENTRIES] = (SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 2u) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + 1u;
+	chain.step_verdict = SPARK_STEP_VERDICT_ROLLBACK_LOCAL;
+	assert(SparkGlm5NextWsRecover(&chain,&action) == SPARK_STATUS_OK && action == SPARK_STEP_ACTION_EXHAUSTED);
+	assert(chain.ws_force_eager == 1u && state.ws_eager_steps == 1u && state.expert_ws.grow_denied == 1u && SNAPSHOT_RESTORES == 3u);
+	chain.wave_rows = 1u;
+	assert(SparkGlm5NextGraphClaimExperts(&chain) == SPARK_STATUS_UNSUPPORTED);
+	chain.slot->host_output_token_ids = index_words;chain.slot->host_positions = index_words;chain.slot->host_token_ids = index_words;chain.slot->host_chain_token_ids = index_words;chain.steps = 1u;
+	SparkGlm5NextFeedStep(&chain);
+	assert(chain.ws_force_eager == 0u);
+	WS_DENY = 0u;
+	ring[SPARK_STEP_MISS_FLAG] = 1u;ring[SPARK_STEP_MISS_COUNT] = SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY + 1u;
+	for (uint32_t entry=0u; entry<SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY; entry++)
+		ring[SPARK_STEP_MISS_ENTRIES + entry] = (SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER + 6u) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + entry % SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT;
+	WS_ACQUIRE_COUNT = 0u;
+	assert(SparkGlm5NextWsRecover(&chain,&action) == SPARK_STATUS_OK && action == SPARK_STEP_ACTION_REPLAY && WS_ACQUIRE_COUNT == 0u && state.expert_ws.harvest_overflow == 1u);
+	ring[SPARK_STEP_MISS_FLAG] = 0u;ring[SPARK_STEP_MISS_COUNT] = 2u;
+	assert(SparkGlm5NextWsRecover(&chain,&action) == SPARK_STATUS_VALIDATION_FAILED && action == SPARK_STEP_ACTION_FAIL);
+	SparkExpertWorkingSetDestroy(&state.expert_ws);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 }
 
@@ -2517,6 +2607,7 @@ int32_t main(void)
 	check_attempt_accounting();
 	check_wave_timing();
 	check_graph_epoch_ownership();
+	check_working_set_recover();
 	check_lazy_open_retained_owner();
 	check_route_trace();
 	check_graph_expert_ownership(0u,45u,3u,0u,0u);

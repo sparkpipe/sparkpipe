@@ -84,6 +84,62 @@ flow or collective ordinals, so hardware-wait collectives cannot deadlock.
   - 10,000 random growth rounds with injected denials;
   - the replay policy.
 
-The fleet proof is not done yet. It needs the GLM stage module wired to these
-pieces (snapshot spans, PARTIAL capture, recovery in `TpChainAdvance`), running
-in a dev weightd lane with a `.wset`.
+## GLM 5.3 Flash stage module (A3)
+
+`SPARK_GLM5_NEXT_EXPERT_WSET=<path>` selects the working-set residency mode.
+`SPARK_GLM5_NEXT_EXPERT_WSET_SHA256=<hex>` is required with it. The file is a
+`.wset`: little-endian `(layer u32, expert u32)` pairs, as written by
+`tools/glm5_next_wset_from_trace.py`.
+
+**Refusals at attach.** The mode fails at attach, and never falls back, when:
+- `SPARK_GLM5_NEXT_PIN_EXPERTS=1` is also set;
+- the stage is not a single stage that owns both the embedding and the final
+  head;
+- there is no lazy expert pack;
+- the digest does not match;
+- a key is outside the stage's routed layers;
+- a routed layer has no held expert.
+
+**Leases.** Keys are leased through weightd in groups of at most 512
+(`SparkWeightdMapAcquire` + `BeginUse`, sharing the pinned-lease table of 32).
+Attach prints
+`EXPERT-RESIDENCY mode=working-set wset= keys= of N leases= rows_max=8 replays=2`.
+
+**Where the graph path runs.** Waves of up to 8 rows take the PARTIAL graph
+or linear chain; wider waves take eager. Every captured PARTIAL step:
+- resets `miss[0..1]`;
+- snapshots every KDA state and Q/K/V conv-window row of the wave after
+  `WaveBegin`, using `4 x kda_layers` spans and the layer kernels' own
+  `state_index`;
+- runs the cover kernel after every router;
+- poisons the head maxloc before the head MAX reduce.
+
+FULL graphs bind no cover and capture none of these nodes.
+
+**Rollback.** On a rollback verdict, whether from `GraphStep`, `SettleStep`
+or the final step of a working-set chain, `SparkGlm5NextWsRetry` does the
+following:
+1. Disarms capture.
+2. Restores the snapshot and syncs.
+3. Harvests the first missed layer and grows the set. Denied growth is counted
+   and leaves the result correct.
+4. Replays the same step. `FeedStep` does not run.
+
+After 2 replays the step runs eager (`ws_force_eager`, cleared when the step
+commits). Every input to the replay/eager decision is the agreed verdict
+history, so all ranks decide the same way; a ring overflow does not change the
+decision. `GRAPH-WS-RECOVER` logs each recovery with running local, remote,
+replay and eager counts.
+
+**Known limits (follow-ups).**
+- Growth leases are not compacted. After the 32-slot lease table fills,
+  growth is denied and misses resolve through replay then eager.
+- There is no degrade gate: a lane that keeps thrashing pays two replays plus
+  an eager step on every miss.
+- Keys seen on eager steps are not fed back into growth.
+- A corrupt ring on one rank fails that rank's chain, and the other ranks find
+  out through the collective timeout. There is no cancel broadcast yet.
+
+The fleet proof is not done yet. It needs a dev weightd lane (lane 5) running
+this build with a trace-built `.wset`, compared against the same build in FULL
+mode.
