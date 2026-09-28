@@ -54,7 +54,7 @@ def stage_config(rank, lane, codec, max_sequence_positions, execution_row_capaci
         "stage_pack_path": f"packs/{pack_name(codec, rank)}",
         "max_sequence_positions": max_sequence_positions,
         "execution_row_capacity": execution_row_capacity,
-        "decode_split_context_threshold": 0,
+        "decode_split_context_threshold": 64,
         "tp_degree": WORLD,
         "tp_rank": rank,
         "tp_collective": {
