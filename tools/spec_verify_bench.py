@@ -32,6 +32,8 @@ PROMPTS = {
 }
 
 FRAME = re.compile(r"VERIFY-FRAME slot=(\d+) position=(\d+) budget=(\d+) produced=(\d+) rounds=(\d+) accepted=(\d+)(?: steps=(\d+))?")
+SOURCES = re.compile(r"VERIFY-MTP drafts=(\d+) tokens=(\d+) cold=(\d+) truncated=(\d+) taps=(\d+) draft_us=(\d+) \| "
+                     r"lookup rounds=(\d+) proposed=(\d+) accepted=(\d+) declined=(\d+) \| mtp rounds=(\d+) proposed=(\d+) accepted=(\d+)")
 
 
 def post(endpoint: str, path: str, body: dict, timeout: int) -> tuple[dict, float]:
@@ -170,9 +172,24 @@ def compare(args: argparse.Namespace) -> int:
     return 0 if report["exact"] else 1
 
 
+def source_report(rounds: int, proposed: int, accepted: int) -> dict:
+    return {"rounds": rounds, "proposed": proposed, "accepted": accepted,
+            "acceptance": accepted / proposed if proposed else 0.0,
+            "accept_length": accepted / rounds if rounds else 0.0,
+            "tokens_per_round": (accepted + rounds) / rounds if rounds else 0.0}
+
+
 def parse_log(lines) -> dict:
     frames = rounds = accepted = produced = budget = steps = 0
+    sources = None
     for line in lines:
+        found = SOURCES.search(line)
+        if found is not None:
+            values = [int(value) for value in found.groups()]
+            sources = {"mtp_drafts": values[0], "mtp_draft_tokens": values[1], "mtp_cold": values[2], "mtp_truncated": values[3],
+                       "mtp_taps": values[4], "mtp_draft_us": values[5], "lookup_declined": values[9],
+                       "lookup": source_report(values[6], values[7], values[8]), "mtp": source_report(values[10], values[11], values[12])}
+            continue
         match = FRAME.search(line)
         if match is None:
             continue
@@ -182,10 +199,13 @@ def parse_log(lines) -> dict:
         rounds += int(match.group(5))
         accepted += int(match.group(6))
         steps += int(match.group(7) or 0)
-    return {"verify_frames": frames, "rounds": rounds, "accepted_drafts": accepted, "plain_steps": steps, "produced_tokens": produced,
-            "tokens_per_round": (produced - steps) / rounds if rounds else 0.0,
-            "tokens_per_frame": produced / frames if frames else 0.0,
-            "frame_fill": produced / budget if budget else 0.0}
+    report = {"verify_frames": frames, "rounds": rounds, "accepted_drafts": accepted, "plain_steps": steps, "produced_tokens": produced,
+              "tokens_per_round": (produced - steps) / rounds if rounds else 0.0,
+              "tokens_per_frame": produced / frames if frames else 0.0,
+              "frame_fill": produced / budget if budget else 0.0}
+    if sources is not None:
+        report["sources"] = sources
+    return report
 
 
 def log(args: argparse.Namespace) -> int:
