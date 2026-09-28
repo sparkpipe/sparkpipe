@@ -1,0 +1,93 @@
+{
+  "lane": "mimo",
+  "date": "2026-09-28",
+  "source_commit": "ca289a9 (drivers/mimo26-5)",
+  "binary": "build/mimo26_tp_decode (sm_121a, built on sparkf)",
+  "binary_sha256": "7f34e973ac5947444d4a09d493f488b9820d7464b4a763ee253212f59281afd6",
+  "topology": "TP4, ranks 0..3 = spark9, sparke, spark2, spark3, mesh ranks 9,14,2,3, weightd lane 9 on the fleet weightd",
+  "mode": "non-speculative, B1, greedy, host-synchronous validation path (not a performance path)",
+  "packs": {
+    "rank0": {
+      "file_bytes": 42513228288,
+      "sha256": "994f5da7aca9ad34d68bd7d979f33d0acd17dddb5f8231a9e6d4055d064e5c6d"
+    },
+    "rank1": {
+      "file_bytes": 42513228288,
+      "sha256": "2e7b443e0629f76cb4faf64a798d9f96128afd8ed26f30516034c17bb89b1bb7"
+    },
+    "rank2": {
+      "file_bytes": 42513228288,
+      "sha256": "3fad5b9d9f5820539096ffa92084c0f25935035cd56a99ef2382dbec3538bfed"
+    },
+    "rank3": {
+      "file_bytes": 42513228288,
+      "sha256": "ac660ea8f37450c344b6c33834a74ee576ca8088ca170d3f37de1d9bd210a03e"
+    }
+  },
+  "pack_note": "v2 packs after --repair-windows (o_proj and dense down column windows rewritten from the checkpoint)",
+  "expert_pool_bytes": 8000000000,
+  "reference": "qualification/t1_reference/mimo26/{capital,code,science}.t1r (CPU reference)",
+  "result": {
+    "capital.rank0.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "capital.rank1.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "capital.rank2.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "capital.rank3.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "code.rank0.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "code.rank1.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "code.rank2.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "code.rank3.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "science.rank0.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "science.rank1.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "science.rank2.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    },
+    "science.rank3.log": {
+      "tokens": 16,
+      "mismatches": 0,
+      "pass": true
+    }
+  },
+  "timing_note": "no throughput is claimed: the tool synchronizes the host around every collective and expert lease; timings were not taken in a perf window"
+}

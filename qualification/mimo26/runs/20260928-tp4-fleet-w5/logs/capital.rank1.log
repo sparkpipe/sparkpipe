@@ -1,0 +1,25 @@
+M26TP-ATTACH rank=1 spine_bytes=2298241791 expert_pool_bytes=8000000000 experts=3008
+MESH-LANE rank=1 lane=9 band=18 ownership=owned
+MESH-TOPOLOGY rank=1 degree=4 physical=14 map=00000000000032e9 peers=020c
+MESH-WAIT-MODE rank=1 mode=hardware
+M26TP-READY rank=1 lane=9 mesh=9,14,2,3 prompt=5 expected=16
+CKEY-CELL-ADOPT rank=1 epoch=4 had=0 req=1
+CKEY-ADOPT rank=1 epoch=4 had=0
+M26TP-TOKEN rank=1 position=4 greedy=264 reference=264 score=15.4485
+M26TP-TOKEN rank=1 position=5 greedy=3283 reference=3283 score=15.7982
+M26TP-TOKEN rank=1 position=6 greedy=315 reference=315 score=17.7899
+M26TP-TOKEN rank=1 position=7 greedy=29263 reference=29263 score=14.7862
+M26TP-TOKEN rank=1 position=8 greedy=11 reference=11 score=21.7095
+M26TP-TOKEN rank=1 position=9 greedy=1947 reference=1947 score=16.2036
+M26TP-TOKEN rank=1 position=10 greedy=11 reference=11 score=23.3094
+M26TP-TOKEN rank=1 position=11 greedy=323 reference=323 score=19.2376
+M26TP-TOKEN rank=1 position=12 greedy=3840 reference=3840 score=16.5742
+M26TP-TOKEN rank=1 position=13 greedy=13 reference=13 score=21.5103
+M26TP-TOKEN rank=1 position=14 greedy=1084 reference=1084 score=18.3613
+M26TP-TOKEN rank=1 position=15 greedy=374 reference=374 score=20.5402
+M26TP-TOKEN rank=1 position=16 greedy=264 reference=264 score=19.3534
+M26TP-TOKEN rank=1 position=17 greedy=3283 reference=3283 score=19.4629
+M26TP-TOKEN rank=1 position=18 greedy=429 reference=429 score=21.9866
+M26TP-TOKEN rank=1 position=19 greedy=702 reference=702 score=19.4892
+M26TP-SUMMARY rank=1 tokens=16 mismatches=0 kv_error=0 collectives=1960 collective_ms=19345.4 expert_ms=21528.7 decode_ms_per_token=1841.57
+M26TP-PASS rank=1 16 greedy tokens equal the CPU reference
