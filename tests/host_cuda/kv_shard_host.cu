@@ -231,7 +231,7 @@ static void HostRunCase(HostCase test)
 			}
 		}
 	}
-	HostCheck(worst < 1.0e-2,"merged output matches the f64 attention reference");
+	HostCheck(worst < 2.0e-3,"merged output matches the f64 attention reference");
 	printf("%s %s: listed rows %u, per-rank KV %llu of %llu bytes, worst |out-f64| %.2e\n",host_failures == 0 ? "PASS" : "FAIL",label,listed,(unsigned long long)shards[0].size(),(unsigned long long)replicated.size(),worst);
 }
 
