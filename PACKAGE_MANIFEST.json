@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "c81f8de46204a736ab4ff885a24ef3dbdc211de2d507ea899212b64320fbd061",
-      "size_bytes": 135238
+      "sha256": "f28c5c8c096344d3c06be216b810640d97f1a3f8368594793d2b666eb93b9f6c",
+      "size_bytes": 135328
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -8758,8 +8758,8 @@
     },
     {
       "path": "tests/host_cuda/lm_host_cuda.cuh",
-      "sha256": "2ea0587775e4b88823ec4c47ce25f2b522877eec54460ab4dcfcbb998409df25",
-      "size_bytes": 6819
+      "sha256": "0f53ee3ebb54306151fcdf559ecc93cab519c71291198179a6fbc31c2479ffb0",
+      "size_bytes": 6859
     },
     {
       "path": "tests/host_cuda/lm_host_threads.cuh",
@@ -15450,5 +15450,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74097550
+  "total_bytes": 74097680
 }
