@@ -4,13 +4,278 @@
   "model_id": "inclusionAI/Ling-3.0-flash",
   "architecture": "BailingMoeV3ForCausalLM (model_type bailing_hybrid)",
   "source_revision": "e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3",
-  "freeze_status": "pre-freeze",
+  "license": "MIT",
+  "source": {
+    "repository": "inclusionAI/Ling-3.0-flash",
+    "revision": "e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3",
+    "license": "MIT",
+    "main_revision_check": "main is ef06d91fe382109ae82647da88ff99b0f11745b0 (2026-09-24, 'Update Training Content Summary'); the HF tree listings of both revisions differ in README.md only",
+    "path_on_sparks": "/mnt/model-warm/ling-3.0-flash",
+    "file_sha256": {
+      "config.json": "6c1bd3c25e8b2db7ed954bd08291fa706ab2596a16b2cbab397ca75d44979c3b",
+      "model.safetensors.index.json": "c8cb50abb3731de0a361aa477a4b04988981bfff0935bff357658d55bfa454c1",
+      "modeling_bailing_moe_v3.py": "c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40",
+      "chat_template.jinja": "b4ab3a1c8f748e6f874d9aea102333efe7ab82528e8ab81c2eb155851e8705c6",
+      "tokenizer.json": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+      "tokenizer_config.json": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74"
+    },
+    "shard_count": 24,
+    "shard_total_bytes": 254981097642,
+    "shards": {
+      "model-00001-of-00024.safetensors": {
+        "bytes": 10715426912,
+        "sha256": "9f886a8b513a4a47e327addb04b778a2e738f0c8f434f0fd1c3ccd7d6210ecc5"
+      },
+      "model-00002-of-00024.safetensors": {
+        "bytes": 10522791950,
+        "sha256": "ecf57680364b32894980b67e146ab42118e5e98bb96ab837e551e6fb7c370e3f"
+      },
+      "model-00003-of-00024.safetensors": {
+        "bytes": 10522792184,
+        "sha256": "7a696319da63988d033f0383869c923c83c0d954fc78b586f8fafc8c5bd938ee"
+      },
+      "model-00004-of-00024.safetensors": {
+        "bytes": 10711541790,
+        "sha256": "ce6c948dbbf46e8c396017e622925310d9e8359c8fa738f3413f86a5ef2ff817"
+      },
+      "model-00005-of-00024.safetensors": {
+        "bytes": 10522791950,
+        "sha256": "c56d90531e4a4e5f4eed4f50ad90c27cd5553c6ec05e6f53fbb78e5d61d607eb"
+      },
+      "model-00006-of-00024.safetensors": {
+        "bytes": 10522793948,
+        "sha256": "e24e56f8a1e8ee2aacaaf45c8b49da6f14e3e4e0d82b27cc32bbe732346a5540"
+      },
+      "model-00007-of-00024.safetensors": {
+        "bytes": 10522794860,
+        "sha256": "c1b6c77ebf3c502b8f9a7a38e5f93b104d8165bb28f3fcfa45cd6c4e92b2215e"
+      },
+      "model-00008-of-00024.safetensors": {
+        "bytes": 10711544514,
+        "sha256": "394ff0647e8d84c37341089d1b93de6cacc97b20239641b1fd438c585ce9d255"
+      },
+      "model-00009-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "a4b28299b1b57e35bae74a5464cd997e4407ff9a63eda4c9f48dc2f49c2f5c53"
+      },
+      "model-00010-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "03e560ce58ac040787b09cee2dd743a5fc964679c9ed7d3164709c3c71f1182f"
+      },
+      "model-00011-of-00024.safetensors": {
+        "bytes": 10522794860,
+        "sha256": "59fbccd328c2e715cf7f8ffbf21e9829e83598d2d7f91a55a1d6aa76b0bcf24b"
+      },
+      "model-00012-of-00024.safetensors": {
+        "bytes": 10711544514,
+        "sha256": "aa45ba57014e0c6debb0660aa5d65ed6b07c1be7ec7ef57f871d390f69c3399d"
+      },
+      "model-00013-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "dfa13b4d8f81b0c5dba7f1529a2626cc3f6eaa937441c1281a95e2ce1a1bf71a"
+      },
+      "model-00014-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "55d347ae208e028a2f20e59bed55e4f16034d7596264cb114d8ff9482e6859a6"
+      },
+      "model-00015-of-00024.safetensors": {
+        "bytes": 10522794860,
+        "sha256": "74d7b7feb5804ae28fb003e05279afc0b194f9943b0e3bbdc29775862ec03d0e"
+      },
+      "model-00016-of-00024.safetensors": {
+        "bytes": 10711544514,
+        "sha256": "5c4266ecff73ed5a01c72ae5305f583278660ee68e324ca3638456b7cef39f6b"
+      },
+      "model-00017-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "e27c19d6abcdd841047b2d5ce7166f4a2f56dffcc6b679e7ba4425bc5433cd81"
+      },
+      "model-00018-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "13cf195bd880e6a005c57b49afca4e8e88cbf899b0246e59d908e0bdf7ecfc51"
+      },
+      "model-00019-of-00024.safetensors": {
+        "bytes": 10522794860,
+        "sha256": "56c2929bc96a099665aff0cf2b16d91b69e67a2dcad84be64d587f65186cb50e"
+      },
+      "model-00020-of-00024.safetensors": {
+        "bytes": 10711544514,
+        "sha256": "97eb9753d02e2f166aed7bfcdbcbcc8690261fee42a546db88e8cc2e3ea5982e"
+      },
+      "model-00021-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "407ae633f2a13e188fafdb4408373a14fbd2bfdd004be2622cdabd02979529d7"
+      },
+      "model-00022-of-00024.safetensors": {
+        "bytes": 10522794626,
+        "sha256": "8f81b4e3550eeacc57411d5ab214302ff98c2bd53e4260dd88b987f752a833ad"
+      },
+      "model-00023-of-00024.safetensors": {
+        "bytes": 10522794860,
+        "sha256": "4d8f0f90505538ebc527c5cf6525ba8bae3c8b250ab6875297ea3ed9d2ac8c8f"
+      },
+      "model-00024-of-00024.safetensors": {
+        "bytes": 11820449544,
+        "sha256": "5afdf7893a54bcbd1819614ddb5eac779906270cd3a0ebf09c0a95b23e924740"
+      }
+    },
+    "verification": "shard sha256 values are the publisher LFS etags that huggingface_hub recorded at download time (.cache/huggingface/download/*.metadata under the warm path, every file at the pinned revision); small-file sha256 values were hashed on spark0 on 2026-09-28; an on-node sha256 pass over the shard bytes has not run yet"
+  },
+  "variants": {
+    "fp8": {
+      "repository": "inclusionAI/Ling-3.0-flash-fp8",
+      "revision": "88d48c5a46e1b2f609144e83d95b8ac47528b12e",
+      "license": "MIT",
+      "main_revision_check": "main is 88d48c5a46e1b2f609144e83d95b8ac47528b12e (2026-09-04)",
+      "path_on_sparks": "/mnt/model-warm/ling-3.0-flash-fp8",
+      "file_sha256": {
+        "config.json": "621969ccadf2cf1f5575f82baeadccc841221922ba0dd265b6da329781738b74",
+        "model.safetensors.index.json": "c5b0212d2f4af850363f3b0a1ce76c5b5809c4d4a3a1f9f20db9c57e6e72fea6",
+        "modeling_bailing_moe_v3.py": "c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40",
+        "chat_template.jinja": "b4ab3a1c8f748e6f874d9aea102333efe7ab82528e8ab81c2eb155851e8705c6",
+        "tokenizer.json": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+        "tokenizer_config.json": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74"
+      },
+      "shard_count": 24,
+      "shard_total_bytes": 128443021752,
+      "shards": {
+        "model-00001-of-00024.safetensors": {
+          "bytes": 6268733928,
+          "sha256": "a319950a907176ecf7fa888b5ce3105b64e37790e72939b4ac0ffcfdb10d7805"
+        },
+        "model-00002-of-00024.safetensors": {
+          "bytes": 5263178280,
+          "sha256": "227219b60c39c5b1b6a030db646ddd9938b9cedcb999f9651fb7eae5bb7f3247"
+        },
+        "model-00003-of-00024.safetensors": {
+          "bytes": 5263178744,
+          "sha256": "dda4cdcf41d6eba1791c0e0ff94eb03b2dfd1460681a927a4be76887214cc0ce"
+        },
+        "model-00004-of-00024.safetensors": {
+          "bytes": 5357585384,
+          "sha256": "2aba0f142528c52b4425bfd831be8ca3cb3172df6fffb32887669ec42fa486a0"
+        },
+        "model-00005-of-00024.safetensors": {
+          "bytes": 5263178280,
+          "sha256": "88815e7f0678d39ac812c333e7675f51e520fdff70e4c9722870a02d87238026"
+        },
+        "model-00006-of-00024.safetensors": {
+          "bytes": 5263182272,
+          "sha256": "fadf3e933ea411396ebe9b9f68e4662b5da54ef703f85b67955f56f04c5c38cd"
+        },
+        "model-00007-of-00024.safetensors": {
+          "bytes": 5263184096,
+          "sha256": "61797ab82e9a4fa669a6dffc3ba5bcddff86ae74c9b1f07e4c9c9143d7365543"
+        },
+        "model-00008-of-00024.safetensors": {
+          "bytes": 5357590832,
+          "sha256": "2d55a299bab1460cede1e755925684c222ec559c7e528f665b43273e7af81f70"
+        },
+        "model-00009-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "91401afbda449c3fbb7edb2bfa795353e5c610c2eeac477f37ff1204478d5e8b"
+        },
+        "model-00010-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "9a186b15cbad8a0f478a88bae92d64b39a437b50da240f528624417ac84b1848"
+        },
+        "model-00011-of-00024.safetensors": {
+          "bytes": 5263184096,
+          "sha256": "0eb8e19317d909d7052aa15d45012cbcf9f31818c683f6b99c10a6c52704b1b9"
+        },
+        "model-00012-of-00024.safetensors": {
+          "bytes": 5357590832,
+          "sha256": "2a86d1c9ea8f26b7fcc3fbaa37b2e1c843660b6eca59f71be371be4099f9e9ed"
+        },
+        "model-00013-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "c4db745bdd41c1f672cfc05393865036089eb2529ff1c07d2a8dcc3eba1e1e98"
+        },
+        "model-00014-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "beaa28853caf89a39f6b923391c2fa0017937c439ad4c5a6a22393cd19a43575"
+        },
+        "model-00015-of-00024.safetensors": {
+          "bytes": 5263184096,
+          "sha256": "82f8cbd78182b75137843703cb2a645984a1fc6ee23ef8bdce43b6a79146b9f2"
+        },
+        "model-00016-of-00024.safetensors": {
+          "bytes": 5357590832,
+          "sha256": "9c4a772e14a1c3e792cdcb0f1f0eea8ee7d71c46a9323d98e9f582a190358ffc"
+        },
+        "model-00017-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "24ea9aad83bd5c30af2afadeb1e0f9323d016f3eeac5628f9970c798d42ed809"
+        },
+        "model-00018-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "304862dc104c69027e2b016ce909a8a4406e9cb821ab572e0414aeff54a48abb"
+        },
+        "model-00019-of-00024.safetensors": {
+          "bytes": 5263184096,
+          "sha256": "368bd01a0734ddab8b7ffff85565cb2ca3a84401c62065092d7591ab9494ee7f"
+        },
+        "model-00020-of-00024.safetensors": {
+          "bytes": 5357590832,
+          "sha256": "10a955ff781ca88e3d2c758999055101aadbabef7c8cd00f2eabf0b5ed104250"
+        },
+        "model-00021-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "45c29632813bee30bf70221a457357490e52926cb110fae1ece6b5b32035f63e"
+        },
+        "model-00022-of-00024.safetensors": {
+          "bytes": 5263183632,
+          "sha256": "a1db93965b9967eda0cbcfade4c4317ddbe3f61dffa3fdb79b7005f3b833ae18"
+        },
+        "model-00023-of-00024.safetensors": {
+          "bytes": 5263184096,
+          "sha256": "519c24073b9ab514149e95cc53ca58a21063c714d1371c471c58009fdf2ef47a"
+        },
+        "model-00024-of-00024.safetensors": {
+          "bytes": 5912232000,
+          "sha256": "4a1eb1224243f6c33fbefc18ebf8f5d3e68cfde3e8bc855d36cfa42dceba7f02"
+        }
+      },
+      "verification": "shard sha256 values are the publisher LFS etags that huggingface_hub recorded at download time (.cache/huggingface/download/*.metadata under the warm path, every file at the pinned revision); small-file sha256 values were hashed on spark0 on 2026-09-28; an on-node sha256 pass over the shard bytes has not run yet",
+      "quantization": {
+        "quant_method": "fp8",
+        "fmt": "e4m3",
+        "activation_scheme": "dynamic",
+        "weight_block_size": [
+          128,
+          128
+        ],
+        "modules_to_not_convert": [
+          "q_a_proj",
+          "q_b_proj",
+          "fused_qkv_a_proj_with_mqa",
+          "kv_a_proj_with_mqa",
+          "kv_b_proj",
+          "lm_head",
+          "word_embeddings",
+          "b_proj",
+          "mlp.gate",
+          "5.attention.g_proj",
+          "11.attention.g_proj",
+          "17.attention.g_proj",
+          "23.attention.g_proj",
+          "29.attention.g_proj",
+          "35.attention.g_proj",
+          "41.attention.g_proj",
+          "42.attention.g_proj"
+        ],
+        "pack_rule": "routed experts keep the publisher F8_E4M3 codes and their 128x128 weight_scale_inv blocks (expert codec fp8); every other F8_E4M3 tensor is dequantized once to the BF16 spine with one RNE rounding (model-families/ling/name_map_fp8.json)"
+      }
+    }
+  },
+  "freeze_status": "FROZEN: revision, small-file sha256 and 24 shard sha256 pinned from the warm snapshot's download metadata; the fp8 release is pinned the same way; on-node shard re-hash pending",
   "notes": [
-    "source_revision pins the config.json/modeling commit on huggingface (2026-09-07); the checkpoint shard shas are pinned at freeze, after the warm download lands",
-    "Ling-3.0-flash-Fin (config e0dfe7cd-identical geometry) shares this contract as a second model_revision; its own weights pin lands with its warm download",
-    "semantics ground truth: model_contracts/references/modeling_ling_bailing_moe_v3.py sha256 c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40",
-    "checkpoint census from model.safetensors.index.json: 63783 tensors, 8 kv_b_proj (7 stack MLA + MTP), 43 g_proj (all layers), 41 routers (layers 2..42)",
-    "text stack only; no vision tower exists in this checkpoint"
+    "semantics ground truth: model_contracts/references/modeling_ling_bailing_moe_v3.py sha256 c2509bf7ac580c262e2581d34d6403aa21682d2e10beb9ad85ad8820a7e33a40, git blob d3a2d4155e253e5e5b92cc514b2976e5c35a0236, identical in the bf16, fp8 and Fin releases",
+    "checkpoint census from model.safetensors.index.json: 63783 tensors, 8 kv_b_proj (7 stack MLA + MTP), 43 g_proj (all layers), 41 routers (layers 2..42); the fp8 release indexes 127115 tensors",
+    "parameters (HF safetensors metadata): 127486240128 BF16 + 165472 F32, MTP layer included",
+    "text stack only; no vision tower exists in this checkpoint",
+    "Ling-3.0-flash-Fin has its own contract: model_contracts/lingfin_authoritative.json",
+    "config keys the publisher modeling never reads: expert_swiglu_limit_list (4 on layers 35..41) and share_expert_swiglu_limit_list (5 on layers 34..39, 7 on 40..41), use_mla_nope false, use_qk_norm true, group_norm_size 1, scale_router_input false, value_norm false, up_proj_norm false, linear_silu true; they are inert data here, and a serving stack that applies the swiglu limits computes a different model than this contract"
   ],
   "model": {
     "hidden_dimension": 2560,
@@ -78,6 +343,36 @@
     "swiglu_limit_note": "config expert_swiglu_limit_list/share_expert_swiglu_limit_list exist but the publisher modeling applies no clamp; lists are carried as inert config data and no clamp is implemented"
   },
   "tokenizer": {
-    "note": "not pinned yet; vocab 157184 with eos 156895 pad 156892 from config"
+    "tokenizer_json_sha256": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+    "tokenizer_config_sha256": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74",
+    "chat_template_sha256": "b4ab3a1c8f748e6f874d9aea102333efe7ab82528e8ab81c2eb155851e8705c6",
+    "vocabulary_size": 157184,
+    "end_of_text_token_id": 156895,
+    "pad_token_id": 156892
+  },
+  "speculation": {
+    "mtp": {
+      "layer_index": 42,
+      "nextn_predict_layers": 1,
+      "mtp_use_kda": false,
+      "status": "the checkpoint carries one MTP layer (model.layers.42.*); stage packs omit it (flags 0) and the driver builds no MTP path yet"
+    },
+    "dspark": {
+      "repository": "inclusionAI/Ling-3.0-flash-dspark",
+      "revision": "8e5d9988c9b09de13f1f7c9d999ff2bfa533a149",
+      "license": "other: the card names no license text; an owner ruling is required before it serves external traffic",
+      "architecture": "LingDSparkModel (qwen3 block drafter): 5 full-attention layers, hidden 2560, 32 heads of 128, intermediate 6144, vocab 157184, confidence head with markov rank 256",
+      "block_size": 8,
+      "target_layer_ids": [
+        1,
+        11,
+        23,
+        29,
+        35
+      ],
+      "mask_token_id": 156892,
+      "parameters_reported": 1363707905,
+      "status": "not on the warm mount; no driver path yet"
+    }
   }
 }

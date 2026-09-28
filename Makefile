@@ -242,6 +242,8 @@ TOOL_NAMES := \
     spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
+    sparkpipe_nfc \
+    sparkpipe_split \
     sparkpipe_tokenizer_benchmark \
     sparkpipe_memlink \
     sparkpipe_prevcp \
@@ -399,6 +401,7 @@ PYTHON_TESTS := \
 	tests/test_gemma4_tp16_shared_socket.py \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_model_header.py \
+	tests/test_ling_contract_freeze.py \
 	tests/test_laguna_model_header.py \
 	tests/test_laguna_multidev_lane.py \
 	tests/test_laguna_smoke_experts.py \
@@ -411,6 +414,8 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
+	tests/test_unicode_nfc.py \
+	tests/test_tokenizer_unicode_split.py \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
@@ -507,6 +512,7 @@ PYTHON_TESTS := \
 	tests/test_qwen38_max_validation_harness.py \
 	tests/test_qwen38max_multidev_lane.py \
 	tests/test_ling_multidev_lane.py \
+	tests/test_ling_lane.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
@@ -579,6 +585,7 @@ PYTHON_TESTS := \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
+	tests/test_ling_reference_agreement.py \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
 	tests/test_mimo26_stagepack.py \
@@ -686,6 +693,8 @@ model_driver_contracts: build/test_model_description build/test_stage_module_com
 
 MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_tokenize_prompt \
+    build/sparkpipe_nfc \
+    build/sparkpipe_split \
     build/sparkpipe_tokenizer_benchmark \
     build/sparkpipe_memlink \
     build/sparkpipe_prevcp \
@@ -959,6 +968,12 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(GLM52_HOST_LI
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_nfc: tools/sparkpipe_nfc.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_split: tools/sparkpipe_split.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
