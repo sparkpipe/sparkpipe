@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -220,7 +221,7 @@ static void SparkTestMtpTreeHelperEquivalence(void)
 static void SparkTestMtpTreeResolveExhaustiveAlphabet3(void)
 {
 	uint32_t tokens[11];
-	uint32_t combo_index,slot_index,value;
+	uint32_t slot_index,value;
 	uint64_t combo_count,combination;
 	combo_count = 1u;
 	for (slot_index = 0u; slot_index < 11u; ++slot_index)
@@ -234,8 +235,6 @@ static void SparkTestMtpTreeResolveExhaustiveAlphabet3(void)
 			value /= 3u;
 		}
 		SparkTestMtpTreeCompareResolve(&tokens[0u],&tokens[5u]);
-		combo_index = 0u;
-		(void)combo_index;
 	}
 }
 

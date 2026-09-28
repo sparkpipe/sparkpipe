@@ -56,6 +56,30 @@
       "production_ready": false
     },
     {
+      "id": "glm53_flash_fp8_block128",
+      "model_family": "glm5_next",
+      "model_id": "zai-org/GLM-5.3-Flash",
+      "model_revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033",
+      "contract": "model_contracts/glm53_flash_authoritative.json",
+      "routed_expert_weight_format": "fp8_e4m3_block_128x128",
+      "routed_expert_activation_format": "bf16",
+      "non_expert_weight_format": "fp8_e4m3_block_128x128_with_bf16_kda_indexer_kv_b",
+      "non_expert_activation_format": "bf16",
+      "accumulator_format": "fp32",
+      "required_features": [
+        "kda_decode_and_replay",
+        "mla",
+        "dsa",
+        "hyper_connections_x4",
+        "noaux_tc_sigmoid_router",
+        "shared_expert",
+        "prefix_cache",
+        "tensor_parallel",
+        "pipeline_parallel"
+      ],
+      "production_ready": false
+    },
+    {
       "id": "qwen38_27b_27b_bf16",
       "model_family": "qwen38_27b",
       "model_id": "Qwen/Qwen3.8-27B",
@@ -121,7 +145,7 @@
     {
       "id": "mimo26_pro_mxfp4_experts_fp8_spine",
       "model_family": "mimo26_pro",
-      "model_id": "XiaomiMiMo/mimo-v2.6-pro-rl",
+      "model_id": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
       "contract": "model_contracts/mimo26_pro_authoritative.json",
       "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
       "routed_expert_activation_format": "bf16",
@@ -145,7 +169,7 @@
     {
       "id": "mimo26_flash_mxfp4_experts_fp8_spine",
       "model_family": "mimo26_flash",
-      "model_id": "XiaomiMiMo/mimo-v2.6-flash-rl",
+      "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
       "contract": "model_contracts/mimo26_flash_authoritative.json",
       "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
       "routed_expert_activation_format": "bf16",

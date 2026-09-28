@@ -1,63 +1,60 @@
-# Model Artifact Naming
+# Recipe and artifact naming
 
-Every model-derived file is immutable and content-addressed. Human-readable
-fields aid operations; SHA-256 identities establish compatibility.
+Pack directories and runtime roots are named by
+[STAGEPACK_NAMING.md](STAGEPACK_NAMING.md). This file defines the serving
+recipe names that `tools/generate_recipe.py` emits and
+`tests/test_recipe_generation.py` checks.
 
-## Canonical identity
+No pack in the tree uses the content-addressed
+`<model-id>.<placement-id>.<precision-id>.rank<rank>.<kind>.<sha256>` scheme
+this file used to describe. A pack's identity is its arm name plus its
+`.sha256` sidecar digest.
 
-```text
-<publisher>.<model>.<checkpoint-revision>.<artifact-kind>.<content-sha256>
-```
+## Recipe datafiles
 
-Names use lowercase ASCII, digits, and hyphens. The checkpoint revision is the
-exact upstream revision or an immutable internal conversion revision. A mutable
-branch, alias, or marketing name is not a revision.
+    <tag>.<strategy><degree>.<content-hash>.json
 
-## Rank-local shards
+- `tag`: a key of `MODELS` in the generator (k3, dsv4, dsv4pro, glm52,
+  qwen38_27b, mimo25); lowercase letters, digits and underscores
+  (`DATAFILE_RE`).
+- `strategy`: `TP` or `PP`.
+- `degree`: the rank or stage count; the defaults are 16 and 13
+  (`DEFAULT_DEGREES`).
+- `content-hash`: the first 16 hex digits of the SHA-256 of the recipe body
+  serialized with sorted keys and no whitespace, taken before `content_hash`
+  and `datafile` are added. It covers the contract path and SHA-256, the
+  topology, the KV geometry, the TP shard table or PP stage plan, and any
+  stage-capacity profile.
 
-```text
-<model-id>.<placement-id>.<precision-id>.rank<rank>.<kind>.<sha256>
-```
+Recipes are written to `examples/recipes/` (for example
+`dsv4.TP16.28dd8d71ef616cfc.json`); `--check` fails when the committed set
+differs from a fresh generation.
 
-Examples of `kind` are `weights`, `stagepack`, `kv-layout`, `driver`, and
-`collective-profile`. The manifest binds full hashes for:
+## KV entry prefix and geometry hash
 
-- model and checkpoint contracts;
-- source implementation revision;
-- tokenizer and prompt template;
-- placement and hardware topology;
-- precision and pack recipe;
-- exact payload bytes; and
-- every dependent artifact.
+    kv_entry_prefix = <tag>.<strategy><degree>.<geometry-hash>/
+    geometry-hash   = first 16 hex digits of SHA-256 of {"family", "kv_geometry"}
 
-## Placement identity
+`kv_geometry` holds only the contract fields that change KV content (layer
+counts, head dimensions, latent widths, KV dtype, rope conventions), chosen
+by each family adapter in the generator. `test_geometry_hash_invalidation`
+checks the properties:
 
-Placement names describe the model plan, not a permanent cluster product:
+- TP and PP recipes of one model share the geometry-hash at any degree.
+- A latent-width change mints a new geometry-hash; an expert-count change
+  keeps it and moves the content-hash.
 
-```text
-tp4
-tp8
-tp16
-tp4-pp2
-tp4-pp4
-```
+The prefix also carries strategy and degree, so the TP16 and PP16 prefixes
+of one model differ although their geometry-hash is equal. Reusing KV across
+a strategy switch must key on `geometry_hash`, not on the prefix. No runtime
+code reads `kv_entry_prefix` today.
 
-Node count, rank map, PP slices, TP communicators, direct pairs, and storage
-roles remain inside the hashed placement manifest. Two placements with the same
-short name but different rank ownership produce different content identities.
+## Rules for every model-derived artifact
 
-## Storage tiers
-
-The same verified artifact may appear in the external pooled store, external
-direct tier, internal active-shard tier, or a mounted release. Tier and path are
-not part of artifact identity. Promotion verifies bytes after every transfer or
-reflink and before binding.
-
-Partial files use a noncanonical temporary suffix and cannot be discovered as
-ready artifacts. Publication is atomic after length and SHA-256 validation.
-
-## Compatibility rule
-
-A consumer accepts a file only when its expected full identity and dependent
-contract hashes match. Similar model names, tensor geometry, rank count,
-precision labels, or file length never authorize reuse.
+- A consumer accepts a file only when its expected identity and dependent
+  contract hashes match. Similar names, tensor geometry, rank count,
+  precision labels or file length never authorize reuse.
+- A checkpoint revision is an exact upstream revision or an immutable
+  internal conversion revision, never a branch, alias or marketing name.
+- Partial files use a temporary suffix and cannot be discovered as ready;
+  publication is atomic after length and SHA-256 validation.

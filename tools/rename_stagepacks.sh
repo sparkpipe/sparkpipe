@@ -9,7 +9,7 @@ SD="$HOME_DIR/sparkdata"
 
 # legacy_dir|canonical_dir
 MAPPINGS=(
-  "glm5_next.tp16|glm53flash.bf16.tp16"
+  "glm5_next.tp16|glm53flash.fp8.tp16"
   "glm5_next.tp4pp4|glm53flash.fp8.tp4pp4"
   "glm5_next.tp8.fp8|glm53flash.fp8.tp8"
   "glm5_next.bf16.tp16|glm53flash.bf16.tp16"
@@ -36,6 +36,11 @@ for mapping in "${MAPPINGS[@]}"; do
 
   if [ ! -d "$old_dir" ]; then
     [ -d "$new_dir" ] && echo "SKIP $legacy (already canonical)"
+    continue
+  fi
+
+  if [ -e "$new_dir" ]; then
+    echo "FAIL $legacy: $canon already exists"
     continue
   fi
 

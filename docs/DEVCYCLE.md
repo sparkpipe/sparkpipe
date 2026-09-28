@@ -34,13 +34,15 @@ and numerical reference.
 
 The script builds only in the current checkout. It does not reset a shared tree,
 stop residents, write a hub release or trigger fleet updates. Branch arguments
-from the legacy publishing workflow are rejected. The `tools_local` entry point
-forwards to the same implementation.
+from the legacy publishing workflow are rejected. `tools_local/` is ignored by
+Git (`.gitignore:22`) and is not part of the repository. Promoting a verified
+archive into the production fleet is in the
+[fleet release runbook](FLEET_RELEASE_RUNBOOK.md#4-releasing-a-runtime-root).
 
 Run the resulting deployment inside admitted queue jobs. Reserve the same lane
 and physical rank map on every participating daemon, unique ports and bounded
 KV/workspace allocations. Keep each lane's topology fixed for that daemon's
 lifetime. Coordinate `.wset` budgets across models and retain token, overlap,
 memory and terminal-cleanup receipts. A ready process alone is not a passed
-smoke test. See [parallel qualification](PARALLEL_RESIDENT_QUALIFICATION.md) for
+smoke test. See [parallel qualification](archive/PARALLEL_RESIDENT_QUALIFICATION.md) for
 what has actually run.

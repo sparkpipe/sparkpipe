@@ -15,13 +15,15 @@ oracle.py.)
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = (ROOT / "modules" / "glm5_next_resident_decode_stage" /
              "validation" /
              "spark_glm5_next_resident_decode_stage_cuda_validation.cu")
-BINARY = Path("/tmp") / "glm5_next_validator_oracle_selftest"
+WORK_DIRECTORY = tempfile.TemporaryDirectory()
+BINARY = Path(WORK_DIRECTORY.name) / "glm5_next_validator_oracle_selftest"
 
 
 def compiler() -> str:

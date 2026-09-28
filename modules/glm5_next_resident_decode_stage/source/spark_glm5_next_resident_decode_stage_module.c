@@ -67,6 +67,8 @@ static int SparkGlm5NextProbeEnabled(void)
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
+#define SPARK_GLM5_NEXT_LAZY_ATTACH_ATTEMPTS 600u
+#define SPARK_GLM5_NEXT_LAZY_ATTACH_PAUSE_NS 1000000000ull
 #define SPARK_GLM5_NEXT_CHAIN_TOKEN_CAPACITY (SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE)
 
 _Static_assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT <= SPARK_WEIGHTD_WORK_QUEUE_CAPACITY,"completion worker must hold one job per occupied slot");
@@ -634,7 +636,7 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint32_t attach_attempt;
-		for ( attach_attempt = 1u; attach_attempt <= 600u; attach_attempt++ )
+		for ( attach_attempt = 1u; attach_attempt <= SPARK_GLM5_NEXT_LAZY_ATTACH_ATTEMPTS; attach_attempt++ )
 		{
 			status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm5NextManifestCheck,&context,&state->lazy_pack);
 			if ( status == SPARK_STATUS_OK && SparkGlm5NextMeshAddressPending(state) != 0u )
@@ -653,9 +655,14 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 				fprintf(stderr,
 					"LAZY-ATTACH-RETRY n=%u status=%d\n",
 					attach_attempt,(int32_t)status);
+			if ( attach_attempt < SPARK_GLM5_NEXT_LAZY_ATTACH_ATTEMPTS )
 			{
-				struct timespec attach_pause = {0,1000000000u};
-				nanosleep(&attach_pause,0);
+				SparkStatus pause_status = SparkStageModulePauseNanoseconds(SPARK_GLM5_NEXT_LAZY_ATTACH_PAUSE_NS);
+				if ( pause_status != SPARK_STATUS_OK )
+				{
+					fprintf(stderr,"LAZY-ATTACH-PAUSE-FAILED n=%u status=%d\n",attach_attempt,(int32_t)pause_status);
+					SPARK_RETURN(pause_status);
+				}
 			}
 		}
 	}

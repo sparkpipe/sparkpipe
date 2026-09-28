@@ -15,27 +15,28 @@ is this driver's distinctive shape:
 """
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "mimo25_layer_host.cu"
-BINARY = Path("/tmp") / "lm_mimo25_layer_host"
 
 
-def build():
-    result = subprocess.run(
-        [host_cuda_cxx(), "-std=c++17", "-O0",
-         f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
-         f"-I{ROOT}/tests/host_cuda",
-         "-x", "c++", str(SOURCE), "-o", str(BINARY)],
-        capture_output=True, text=True)
-    if result.returncode != 0:
-        errors = [l for l in result.stderr.split("\n") if "error" in l]
-        print("FAIL host build:", (errors or [result.stderr])[0][:200])
-        return False
-    return True
+def build_and_run():
+    with tempfile.TemporaryDirectory(prefix="lm-layer-host-") as directory:
+        binary = Path(directory) / "layer_host"
+        result = subprocess.run(
+            [host_cuda_cxx(), "-std=c++17", "-O0",
+             f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
+             f"-I{ROOT}/tests/host_cuda",
+             "-x", "c++", str(SOURCE), "-o", str(binary)],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            print("FAIL host build:", result.stderr.strip())
+            return None
+        return subprocess.run([str(binary)], capture_output=True, text=True)
 
 
 def parse(text):
@@ -56,9 +57,9 @@ def parse(text):
 
 
 def main():
-    if not build():
+    run = build_and_run()
+    if run is None:
         return 1
-    run = subprocess.run([str(BINARY)], capture_output=True, text=True)
     if run.returncode != 0:
         print("FAIL host run:", (run.stdout + run.stderr).strip()[-300:])
         return 1

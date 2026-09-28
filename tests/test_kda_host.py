@@ -3,13 +3,15 @@
 import math
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "kda_host.cu"
-BINARY = Path("/tmp") / "lm_kda_host"
+WORK_DIRECTORY = tempfile.TemporaryDirectory()
+BINARY = Path(WORK_DIRECTORY.name) / "lm_kda_host"
 
 def build():
     result = subprocess.run(

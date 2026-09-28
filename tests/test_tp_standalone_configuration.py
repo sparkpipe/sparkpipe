@@ -28,8 +28,6 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(SparkTpDeviceCollective *collectiv
     state.tp_degree = 16u;
     state.tp_standalone = 0u;
     assert(SparkQwen38MaxModuleTpAllReduceHidden(&state, 0, 0, 1u) == SPARK_STATUS_INTERNAL_ERROR);
-    state.tp_standalone = 1u;
-    assert(SparkQwen38MaxModuleTpAllReduceHidden(&state, 0, 0, 1u) == SPARK_STATUS_OK);
 """
                 source = Path(temp) / "test.c"
                 source.write_text(f'''

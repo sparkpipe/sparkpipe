@@ -50,7 +50,6 @@ PENDING = (
     "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
     "model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h",
     "model-families/common/include/sparkpipe/spark_qwen38_serving_adapter_common.h",
-    "node/model_api.c",
 )
 
 

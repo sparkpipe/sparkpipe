@@ -6,15 +6,12 @@ Covers (no checkpoint, no torch, no safetensors lib):
   1. Fp8SourceReader over a synthetic official-BF16 store: BF16 expert
      payload verbatim slicing (row + column), rejection of a non-BF16
      expert tensor (a wrong-source pack must fail, not serve),
-  2. every plan entry at --expert-codec bf16 (tp=1 and tp=16) matches the
-     C-module policy mirror in tools/glm52_validate_pack.py (codec 1,
-     PAYLOAD_BF16, SCALE_NONE, no scale plane),
+  2. every plan entry at --expert-codec bf16 (tp=1 and tp=16, all ranks)
+     matches the C-module policy mirror in tools/glm52_validate_pack.py
+     (codec 1, PAYLOAD_BF16, SCALE_NONE, no scale plane),
   3. tp16 sharded expert bytes partition the tp1 totals exactly (bf16
      experts carry NO replicated scale plane) and replicated kinds are
-     identical on every rank,
-  4. the bf16 pack header round-trips through the validator's
-     unsupported-codec gate BEFORE this lane's validator extension and is
-     accepted after it (codec 1 == the spine codec).
+     identical on every rank.
 """
 
 from __future__ import annotations
@@ -182,10 +179,10 @@ def build_entries(tp_degree: int, tp_rank: int):
     return instance
 
 
-def check_plan_against_validator(tp_degree: int):
+def check_rank_plan(tp_degree: int, tp_rank: int):
     seen_global = 0
     seen_layer: dict = {}
-    instance = build_entries(tp_degree, 0)
+    instance = build_entries(tp_degree, tp_rank)
     expert_entries = 0
     for item in instance.plan:
         entry = item.entry
@@ -227,9 +224,14 @@ def check_plan_against_validator(tp_degree: int):
             f"layer {layer} inventory drift at tp{tp_degree}"
     total_bytes = sum(item.entry.payload_bytes + item.entry.scale_bytes
                       for item in instance.plan)
-    print(f"PASS plan mirrors validator policy (bf16) at tp{tp_degree} "
+    print(f"PASS plan mirrors validator policy (bf16) at tp{tp_degree} rank {tp_rank} "
           f"({len(instance.plan)} tensors, {total_bytes} payload+scale bytes)")
     return instance
+
+
+def check_plan_against_validator(tp_degree: int):
+    for tp_rank in range(tp_degree):
+        check_rank_plan(tp_degree, tp_rank)
 
 
 def check_tp16_slices_partition():

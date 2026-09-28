@@ -23,6 +23,14 @@
   "numpy_version": "1.26.4",
   "prompts_sha256": "855eeb72ee13d2372074da7247b7a9046fa368d770fc7a316bb343f07677de0d",
   "python_version": "3.12.3",
+  "quarantine": {
+    "fixtures": [
+      "capital_of_france.t1r",
+      "count_up.t1r"
+    ],
+    "reason": "generated with the pre-#1288 e2m1 table {0,.5,2,3,4,6,8,12} (normal codes decoded 2x); NVFP4 weights and every captured array are wrong. Regenerate with tools/t1_reference_decoder.py at or after #1288, then drop this quarantine",
+    "since": "2026-09-28"
+  },
   "threading_env": {
     "MKL_NUM_THREADS": "8",
     "OMP_NUM_THREADS": "8",
