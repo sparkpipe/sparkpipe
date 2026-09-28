@@ -14,27 +14,7 @@ vision/audio towers, speech embeddings and the dflash draft tree are never
 referenced - they are documented with byte ranges in the census, not stripped
 from the checkpoint.
 
-Sharding (per the M1 topology decision; tools/mimo26_param_budget.py):
-  pro   TP8: q row-sliced by head groups (16 of 128 heads), kv REPLICATED
-             (192/128-row kv sections cannot cut the fp8 grid at head
-             boundaries; whole-section replication costs ~16 MB/layer and
-             keeps every scale grid whole), o_proj col-sliced by head-group
-             v-dims, embed/lm_head vocab-row-sliced, router + norms +
-             sink-slice replicated or head-sliced, 48 of 384 experts per
-             layer per rank.
-  flash TP4: 16 of 64 q heads, kv replicated, 64 of 256 experts, vocab/4.
-  Expert slabs are per (layer, kind), local experts concatenated expert-major
-  so one expert's rows are a base + e*extent window (a lazy-expert manifest
-  can address single experts inside the slab).
-
-The fused qkv_proj source tensor is TP-rank interleaved,
-[q_0|k_0|v_0|...|q_n|k_n|v_n] with n = the arm's qkv_interleave (flash 4,
-pro 8), and its fp8 scale grid is blocked per rank segment, each segment
-padded to whole 128-row blocks (flash full layers: 4 x 27 = 108 grid rows).
-A rank pack carries its own segment as ONE fused QKV entry, payload rows
-[rank*per, (rank+1)*per) and grid rows [rank*bpr, (rank+1)*bpr); the device
-splits q|k|v locally. Only tp == qkv_interleave is emitted: any other degree
-cuts fp8 blocks and would need requantization.
+Sharding and the TP-interleaved qkv layout: model-families/mimo26/FACTS.md.
 
 Emission is staged and resumable past queue TTLs: `--emit` writes one payload/
 scale file per directory entry into the stage dir (skipping files already
