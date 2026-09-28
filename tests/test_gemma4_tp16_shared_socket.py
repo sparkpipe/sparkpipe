@@ -61,8 +61,10 @@ def test_generator(output: Path) -> dict:
     limits = deployment["runtime_limits"]
     check(limits["max_inflight_submissions"] == 1, "inflight within adapter cap")
     check(limits["max_input_rows"] <= 512, "input rows within adapter cap")
-    check(limits["max_input_rows"] * 5376 * 2 + 16 <= 8 * 32768 + 64,
-          "a prefill frame's all-reduce fits one mesh slot")
+    env0 = json.loads((output / "config" / "env_00.json").read_text())
+    check(limits["max_input_rows"] * 5376 * 2 + 16 <= 8 * 32768 + 64 or
+          env0["SPARK_TP_WAIT_MODE"] == "hardware",
+          "prefill frames wider than one mesh slot need the device-round (hardware) collective")
     check(limits["max_input_rows"] >= limits["max_active_sequences"],
           "input rows cover the active sequences")
     stage = json.loads((output / "config" / "stage_00.json").read_text())
