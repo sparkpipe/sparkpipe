@@ -1,0 +1,48 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:8433/v1/completions",
+  "fixture_prompt_token_count": 265,
+  "prompt_sha256": "36ee3572e7447bade05a1ae3f7127a40b72e277cd64c929eb75500450f1f91f2",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 0",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 274,
+   "completion_tokens": 5,
+   "total_tokens": 279
+  },
+  "tokens": [
+   16127,
+   25,
+   220,
+   15,
+   154827
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 0",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "0",
+  "passed": false,
+  "elapsed_ms": 259.0,
+  "output_sha256": "19bc81f91052e8f25ceecb8a8cf2e614c611e0de352131e35abfd081e60077fb",
+  "generated_token_count": 5,
+  "status": 0
+ }
+}

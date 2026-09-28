@@ -1,0 +1,5 @@
+PASS sequences=1 rows_per_sequence=1 channels=512,512,512 commit=1
+PASS sequences=8 rows_per_sequence=1 channels=512,512,512 commit=1
+PASS sequences=3 rows_per_sequence=4 channels=300,512,1000 commit=1
+PASS sequences=2 rows_per_sequence=2 channels=96,64,33 commit=0
+test_causal_conv_streams PASS

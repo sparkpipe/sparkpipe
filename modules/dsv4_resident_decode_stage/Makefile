@@ -27,7 +27,8 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../ring/transport/tp_device_collective.c \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
-	../../cache/kv_page_store.c
+	../../cache/kv_page_store.c \
+	../../cache/kv_snapshot.c
 MODULE_CUDA_SOURCE := source/spark_dsv4_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_DSV4_MODULE_BUILD=1 -DSPARK_BATCH_BUCKET=1024u \
 	-D_DEFAULT_SOURCE

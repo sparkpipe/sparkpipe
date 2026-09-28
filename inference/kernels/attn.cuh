@@ -254,6 +254,41 @@ void LmLatentAttentionDecodeKernel(
 #define LM_LATENT_ATTN_SPLIT_CTAS_PER_SM 4u
 #define LM_LATENT_ATTN_SPLIT_BLOCK_FLOATS(l) ((l) + 2u)
 
+#define LM_LATENT_ATTN_SPLIT_GROUP 16u
+#define LM_LATENT_ATTN_SPLIT_VALUES(width, threads) (((width) + (threads) - 1u) / (threads))
+
+template<uint32_t THREADS, uint32_t GROUP>
+static __device__ __forceinline__ void LmBlockSumGroup(float *values, float (*reduction)[THREADS / LM_WARP_LANES], float *total)
+{
+    const uint32_t warps = THREADS / LM_WARP_LANES;
+    uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES, offset, group;
+    float value;
+    #pragma unroll
+    for (group = 0u; group < GROUP; ++group)
+    {
+        value = values[group];
+        for (offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (lane == 0u)
+            reduction[group][warp] = value;
+    }
+    __syncthreads();
+    #pragma unroll
+    for (group = 0u; group < GROUP; ++group)
+    {
+        value = threadIdx.x < warps ? reduction[group][threadIdx.x] : 0.0f;
+        if (warp == 0u)
+            for (offset = warps / 2u; offset > 0u; offset >>= 1u)
+                value += __shfl_down_sync(0xffffffffu, value, offset);
+        if (threadIdx.x == 0u)
+            total[group] = value;
+    }
+    __syncthreads();
+    #pragma unroll
+    for (group = 0u; group < GROUP; ++group)
+        values[group] = total[group];
+}
+
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentAttentionDecodeSplitKernel(
@@ -273,7 +308,8 @@ void LmLatentAttentionDecodeSplitKernel(
     static_assert(
         LATENT <= 8u * THREADS,
         "the latent must fit the per-thread accumulator");
-    __shared__ float reduction[THREADS / LM_WARP_LANES];
+    __shared__ float group_reduction[LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
+    __shared__ float group_total[LM_LATENT_ATTN_SPLIT_GROUP];
     __shared__ float shared_query[LATENT + ROPE];
     float accumulator[8];
     uint32_t row = blockIdx.x;
@@ -348,63 +384,98 @@ void LmLatentAttentionDecodeSplitKernel(
         }
         return;
     }
-    for (step = first_position; step < last_position; ++step)
+    step = first_position;
+    while (step < last_position)
     {
-        uint32_t position = selected_positions != 0
-            ? selected_positions[(row * selected_count) + step]
-            : step;
-        const uint8_t *slot;
-        float score = 0.0f;
-        float scaled_previous;
-        float scaled_current;
-        float previous_max;
+        const uint8_t *slots[LM_LATENT_ATTN_SPLIT_GROUP];
+        uint16_t values[LM_LATENT_ATTN_SPLIT_GROUP][LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS)];
+        float scores[LM_LATENT_ATTN_SPLIT_GROUP];
+        uint32_t count = 0u, missing = 0u, group, value;
 
-        if (row_position != 0 && position > row_position[row])
+        while (count < LM_LATENT_ATTN_SPLIT_GROUP && step < last_position)
         {
-            continue;
-        }
-        slot = LmKvSlotRequired<Geometry>(
-            cache, sequence, position, row, LM_KV_ACCESS_READ);
-        if (slot == 0)
-        {
-            if (threadIdx.x == 0u)
+            uint32_t position = selected_positions != 0
+                ? selected_positions[(row * selected_count) + step]
+                : step;
+            const uint8_t *slot;
+
+            ++step;
+            if (row_position != 0 && position > row_position[row])
             {
-                partials[partial_base] = running_max;
-                partials[partial_base + 1u] = running_sum;
+                continue;
             }
+            slot = LmKvSlotRequired<Geometry>(
+                cache, sequence, position, row, LM_KV_ACCESS_READ);
+            if (slot == 0)
+            {
+                missing = 1u;
+                break;
+            }
+            slots[count++] = slot;
+        }
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+        {
+            #pragma unroll
+            for (value = 0u; value < LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS); ++value)
+            {
+                index = threadIdx.x + value * THREADS;
+                values[group][value] = group < count && index < LATENT + ROPE
+                    ? ((const uint16_t *)slots[group])[index]
+                    : (uint16_t)0u;
+            }
+        }
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+        {
+            scores[group] = 0.0f;
+            #pragma unroll
+            for (value = 0u; value < LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS); ++value)
+            {
+                index = threadIdx.x + value * THREADS;
+                if (index < LATENT + ROPE)
+                {
+                    scores[group] += shared_query[index] *
+                        LmBf16ToFloat(values[group][value]);
+                }
+            }
+        }
+        LmBlockSumGroup<THREADS, LM_LATENT_ATTN_SPLIT_GROUP>(scores, group_reduction, group_total);
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+        {
+            float score;
+            float scaled_previous;
+            float scaled_current;
+            float previous_max;
+
+            if (group >= count)
+            {
+                continue;
+            }
+            score = scores[group] * qk_scale;
+            previous_max = running_max;
+            running_max = fmaxf(running_max, score);
+            scaled_previous = __expf(previous_max - running_max);
+            scaled_current = __expf(score - running_max);
+            running_sum = (running_sum * scaled_previous) + scaled_current;
+            #pragma unroll
             for (index = 0u; index < 8u; ++index)
             {
                 uint32_t element = (index * THREADS) + threadIdx.x;
 
-                if (element < LATENT)
+                if (index < LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS) && element < LATENT)
                 {
-                    partials[partial_base + 2u + element] = accumulator[index];
+                    accumulator[index] =
+                        (accumulator[index] * scaled_previous) +
+                        (scaled_current *
+                            LmBf16ToFloat(values[group][index]));
                 }
             }
-            return;
         }
-        for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+        if (missing != 0u)
         {
-            score += shared_query[index] *
-                LmBf16ToFloat(((const uint16_t *)slot)[index]);
-        }
-        score = LmBlockSum<THREADS>(score, reduction) * qk_scale;
-        previous_max = running_max;
-        running_max = fmaxf(running_max, score);
-        scaled_previous = __expf(previous_max - running_max);
-        scaled_current = __expf(score - running_max);
-        running_sum = (running_sum * scaled_previous) + scaled_current;
-        for (index = 0u; index < 8u; ++index)
-        {
-            uint32_t element = (index * THREADS) + threadIdx.x;
-
-            if (element < LATENT)
-            {
-                accumulator[index] =
-                    (accumulator[index] * scaled_previous) +
-                    (scaled_current *
-                        LmBf16ToFloat(((const uint16_t *)slot)[element]));
-            }
+            break;
         }
     }
     if (threadIdx.x == 0u)

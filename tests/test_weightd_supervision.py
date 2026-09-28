@@ -288,6 +288,7 @@ sync_rendezvous() { return 0; }
         script = r'''
 set -u
 ROOTS=test
+load_roots() { ROOT_LIST=test; }
 sync_core() { :; }
 install_core() { :; }
 self_update() { :; }
