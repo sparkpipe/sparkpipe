@@ -33,6 +33,8 @@ selected system, not the sequence of experiments that produced it.
 - [`K3_WEIGHT_ONLY_MXFP4.md`](archive/K3_WEIGHT_ONLY_MXFP4.md): K3 precision contract.
 - [`SPARK_HOST_RDMA_DOORBELL.md`](SPARK_HOST_RDMA_DOORBELL.md): host-RDMA data
   path.
+- [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
+  drafters per model, and the PR sequence.
 
 ## Changing status
 
