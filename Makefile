@@ -797,6 +797,13 @@ build/test_rms_norm_staged: tests/test_rms_norm_staged.cu inference/kernels/norm
 test-rms-norm-staged: build/test_rms_norm_staged
 	./build/test_rms_norm_staged --run
 
+build/test_causal_conv_streams: tests/test_causal_conv_streams.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-causal-conv-streams
+test-causal-conv-streams: build/test_causal_conv_streams
+	./build/test_causal_conv_streams --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 

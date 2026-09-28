@@ -1358,57 +1358,33 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"gate_latent",buffers->kda_gate_latent_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"beta_logit",buffers->kda_beta_logit);
     }
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_q_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->q_bf16,
-        (const uint16_t *)buffers->kda_q_conv_weight,
-        buffers->q_bf16,
-        rank_qk,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_k_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->kv_slot_bf16,
-        (const uint16_t *)buffers->kda_k_conv_weight,
-        buffers->kv_slot_bf16,
-        rank_qk,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_v_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->gate_up_bf16,
-        (const uint16_t *)buffers->kda_v_conv_weight,
-        buffers->gate_up_bf16,
-        rank_v,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
+    {
+        LmCausalConvStreams<uint16_t> conv;
+        conv.window[0] = buffers->kda_q_window;
+        conv.window[1] = buffers->kda_k_window;
+        conv.window[2] = buffers->kda_v_window;
+        conv.input_bf16[0] = conv.output_bf16[0] = buffers->q_bf16;
+        conv.input_bf16[1] = conv.output_bf16[1] = buffers->kv_slot_bf16;
+        conv.input_bf16[2] = conv.output_bf16[2] = buffers->gate_up_bf16;
+        conv.weight[0] = (const uint16_t *)buffers->kda_q_conv_weight;
+        conv.weight[1] = (const uint16_t *)buffers->kda_k_conv_weight;
+        conv.weight[2] = (const uint16_t *)buffers->kda_v_conv_weight;
+        conv.channels[0] = conv.channels[1] = rank_qk;
+        conv.channels[2] = rank_v;
+        LM_LAUNCH(
+            (LmCausalConvStreamsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
+            dim3(sequences,((rank_qk > rank_v ? rank_qk : rank_v) + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS,LM_CAUSAL_CONV_STREAMS),
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            conv,
+            buffers->kda_state_index,
+            buffers->sequence_row_begin,
+            0,
+            sequences,
+            commit,
+            buffers->sequence_row_indices);
+    }
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
