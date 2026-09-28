@@ -115,3 +115,35 @@ byte-compares every plane against the checkpoint.
 - Must-work targets: `mimo26_pro_mxfp4_experts_fp8_spine`,
   `mimo26_flash_mxfp4_experts_fp8_spine` (tests updated in the same PR).
 - Binding test: `tests/test_mimo26_census.py`.
+
+## First correct tokens (2026-09-28, single GPU, partial residency)
+
+`modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu` decodes the whole
+Flash text stack on one GB10 using the shared kernels. It uses skinny fp8 for qkv and the
+layer-0 dense MLP, skinny bf16 for o_proj, the router and lm_head, skinny MXFP4 for the
+experts, `LmGqaKvStoreKernel`, `LmGqaAttentionDecodeKernel` on the full layers and
+`LmGqaSinkAttentionDecodeKernel` on the SWA layers. Its own small kernels handle the
+per-rank qkv de-interleave with partial rope and v scale, SwiGLU, and the weighted
+combine. Routing runs on the host.
+
+The resident expert set is the one the CPU reference routed through for the prompt
+(35-45 GiB). Any other expert the GPU routes to is demand-loaded from local NVMe and
+counted.
+
+`validate_mimo26_model_cuda.sh <checkpoint> <nvme work dir> capital code science` builds
+the binary, stages the inputs (`tools/mimo26_model_inputs.py`, about 160 GB on the first
+prompt, then symlinks for the others) and runs each prompt.
+
+Measured on sparkf, with production GLM resident, non-speculative, B1, greedy:
+
+| prompt | tokens equal to the CPU reference | demand-loaded experts | wall (load + 20 positions) |
+| --- | --- | --- | --- |
+| capital | 16 / 16 | 34 | about 60 s |
+| code | 16 / 16 | 71 | 79.7 s |
+| science | 16 / 16 | 52 | 55.2 s |
+
+Layer-anchor stream error against the reference is 2e-3 at layers 0/1. It grows to
+1.5e-2 to 5e-2 at layer 47, and to 0.39 at capital position 0, layer 47. The growth
+tracks near-tie route flips: about 0.5 percent of the top-8 decisions differ, and those
+are the demand loads. Tighten this before relying on the 2 percent band of
+`docs/T1_REFERENCE_COMPARE.md` for layer 47.
