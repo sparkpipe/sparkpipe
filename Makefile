@@ -553,6 +553,7 @@ PYTHON_TESTS := \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
+	tests/test_dsv41_flash_pack_contract.py \
 	tests/test_dsv41_flash_shared_lane.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
@@ -615,7 +616,10 @@ PYTHON_TESTS := \
 	tests/test_weightd_mesh_source.py \
 	tests/test_weightd_warm_family_dsv41_flash.py \
 	tests/test_weightd_warm_family_ling.py
-PYTHON_TEST_BINARIES := build/test_tiktoken_compiled
+PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/dsv41_flash_pack_synthesize \
+	build/dsv41_flash_experts_manifest \
+	build/test_dsv41_flash_pack_contract
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
@@ -1483,6 +1487,18 @@ build/sparkpipe_weightsd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) 
 
 build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+DSV41_FLASH_PACK_TOOL_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/dsv41_flash/include -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -D_FILE_OFFSET_BITS=64
+DSV41_FLASH_PACK_FORMAT_HEADER := modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h
+
+build/dsv41_flash_pack_synthesize: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_pack_synthesize.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/dsv41_flash_experts_manifest: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv41_flash_pack_contract: tests/test_dsv41_flash_pack_contract.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/dsv4_pro_experts_manifest: tools/dsv4_pro_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/dsv4_pro_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
