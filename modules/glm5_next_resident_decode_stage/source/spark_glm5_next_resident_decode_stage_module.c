@@ -69,6 +69,8 @@ static int SparkGlm5NextProbeEnabled(void)
 #endif
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
+#define SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS 32u
+#define SPARK_GLM5_NEXT_KV_SNAPSHOT_PREFETCH_CHAINS 2u
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
@@ -286,6 +288,15 @@ struct SparkGlm5NextModuleState
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	char kv_backing_default[256];
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
+	SparkKvSnapshotStore kv_snapshot_store;
+	SparkKvPageCacheSnapshot kv_snapshot;
+	SparkKvPageCacheSnapshotLink *kv_snapshot_links;
+	SparkKvSnapshotKey *kv_snapshot_keys;
+	uint8_t *kv_snapshot_page;
+	uint8_t *kv_snapshot_state;
+	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	SparkGlm5NextExecutionSlot slots[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkGlm5NextAsyncCompletion completions[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	volatile uint64_t slot_alive_ns[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -338,6 +349,9 @@ struct SparkGlm5NextModuleState
 	uint64_t chain_stage_ns[8u];
 	uint64_t chain_profile_last_ns;
 	SparkGlm5NextWaveTiming wave_timing;
+	atomic_uint_fast64_t kda_restore[SPARK_GLM5_NEXT_KDA_FIELDS];
+	atomic_uint_fast64_t kda_capture[SPARK_GLM5_NEXT_KDA_FIELDS];
+	atomic_uint_fast64_t kda_window_ns;
 	uint64_t wave_attempt_request;
 	uint64_t wave_attempt_ns;
 	uint32_t wave_attempt_retries;
@@ -384,6 +398,10 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
+	if ( (context->kv_snapshot_directory == 0 || context->kv_snapshot_directory[0] == '\0') != (context->kv_snapshot_maximum_bytes == 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->kv_snapshot_directory = context->kv_snapshot_maximum_bytes != 0u ? context->kv_snapshot_directory : 0;
+	state->kv_snapshot_maximum_bytes = context->kv_snapshot_maximum_bytes;
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
@@ -633,6 +651,7 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.identity.pack_sha256,digest,65u);
+	memcpy(state->pack_sha256,digest,sizeof(state->pack_sha256));
 	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM5_NEXT_MODULE_TAG);
 	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
@@ -1180,6 +1199,14 @@ static inline SparkStatus SparkGlm5NextRecurrentCopy(SparkGlm5NextModuleState *s
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextKdaCount(atomic_uint_fast64_t *counters,uint64_t bytes,uint64_t start_ns)
+{
+	uint64_t now_ns = SparkGlm5NextNowNs();
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_COUNT],1u,memory_order_relaxed);
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_BYTES],bytes,memory_order_relaxed);
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_NS],now_ns >= start_ns ? now_ns - start_ns : 0u,memory_order_relaxed);
+}
+
 static SparkStatus SparkGlm5NextPageCopy(
 	void *context,
 	uint32_t direction,
@@ -1275,6 +1302,78 @@ static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *st
 	status = SparkKvPageStoreInitialize(&state->recurrent_store,&config);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageCacheAttachStateStore(&state->kv_page_cache,&state->recurrent_store);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkGlm5NextSnapshotLayout(const SparkGlm5NextModuleState *state,const SparkKvModelTable *table,uint8_t layout[SPARK_SHA256_DIGEST_BYTES],char *identity,uint32_t identity_capacity,char *driver_path,uint32_t driver_path_capacity)
+{
+	SparkSha256Context context;
+	char driver_hex[SPARK_SHA256_HEX_BYTES];
+	uint8_t driver_digest[SPARK_SHA256_DIGEST_BYTES];
+	int length;
+	SparkStatus status;
+	if ( strlen(state->pack_sha256) != 64u )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: the layout identity needs the weightd pack SHA-256 and this rank has none\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	status = SparkKvSnapshotBinaryDigest((const void *)&SparkGlm5NextSnapshotLayout,driver_digest,driver_path,driver_path_capacity);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: cannot hash the driver binary status=%d\n",(int)status);
+		SPARK_RETURN(status);
+	}
+	SparkSha256DigestToHex(driver_digest,driver_hex);
+	length = snprintf(identity,identity_capacity,"%s|%s|%s|pack=%s|contract=%s|codec=%s|driver=%s|tp=%u/%u|stage=%u/%u|layers=%u+%u|block=%u|page=%llu|state=%llu",table->model_id,table->model_revision,table->cache_layout_fingerprint,state->pack_sha256,GLM5_NEXT_CONTRACT_SHA256,GLM5_NEXT_EXPERT_CODEC_NAME,driver_hex,state->tp_rank,state->tp_degree,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count,(unsigned)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT,(unsigned long long)table->page_store_config.page_bytes,(unsigned long long)state->recurrent_page_bytes);
+	if ( length <= 0 || (uint32_t)length >= identity_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,identity,(size_t)length);
+	SparkSha256Finalize(&context,layout);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextSnapshotInitialize(SparkGlm5NextModuleState *state,const SparkKvModelTable *table)
+{
+	char identity[1024],driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	uint64_t file_bytes,queue_bytes,prefetch_bytes,start_ns;
+	struct timespec now;
+	SparkStatus status;
+	if ( state->kv_snapshot_directory == 0 )
+		return(SPARK_STATUS_OK);
+	start_ns = clock_gettime(CLOCK_MONOTONIC,&now) == 0 ? (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec : 0u;
+	status = SparkGlm5NextSnapshotLayout(state,table,state->kv_snapshot.layout_sha256,identity,sizeof(identity),driver_path,sizeof(driver_path));
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	file_bytes = SPARK_KV_SNAPSHOT_ALIGNMENT * 4u + (uint64_t)state->pages_per_sequence * sizeof(SparkKvPageCacheSnapshotLink) + table->page_store_config.page_bytes + state->recurrent_page_bytes;
+	queue_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_SNAPSHOT_QUEUE_BLOCKS * file_bytes;
+	status = SparkKvSnapshotStoreOpen(&state->kv_snapshot_store,state->kv_snapshot_directory,state->kv_snapshot_maximum_bytes,queue_bytes);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM KV snapshot store rejected: directory=%s maximum_bytes=%llu status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(int)status);
+		SPARK_RETURN(status);
+	}
+	state->kv_snapshot_links = (SparkKvPageCacheSnapshotLink *)calloc(state->pages_per_sequence,sizeof(*state->kv_snapshot_links));
+	state->kv_snapshot_keys = (SparkKvSnapshotKey *)calloc(state->pages_per_sequence,sizeof(*state->kv_snapshot_keys));
+	state->kv_snapshot_page = (uint8_t *)malloc((size_t)table->page_store_config.page_bytes);
+	state->kv_snapshot_state = state->recurrent_page_bytes != 0u ? (uint8_t *)malloc((size_t)state->recurrent_page_bytes) : 0;
+	if ( state->kv_snapshot_links == 0 || state->kv_snapshot_keys == 0 || state->kv_snapshot_page == 0 || (state->recurrent_page_bytes != 0u && state->kv_snapshot_state == 0) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkKvSnapshotPrune(&state->kv_snapshot_store,state->kv_snapshot.layout_sha256);
+	prefetch_bytes = (uint64_t)SPARK_GLM5_NEXT_KV_SNAPSHOT_PREFETCH_CHAINS * ((uint64_t)state->pages_per_sequence * table->page_store_config.page_bytes + state->recurrent_page_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotPrefetcherStart(&state->kv_snapshot_store,prefetch_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->kv_snapshot.flags = SPARK_KV_PAGE_CACHE_SNAPSHOT_FLAG_PREFETCH_JOIN;
+	state->kv_snapshot.keys = state->kv_snapshot_keys;
+	state->kv_snapshot.store = &state->kv_snapshot_store;
+	state->kv_snapshot.page_capacity = state->pages_per_sequence;
+	state->kv_snapshot.links = state->kv_snapshot_links;
+	state->kv_snapshot.page = state->kv_snapshot_page;
+	state->kv_snapshot.state = state->kv_snapshot_state;
+	status = SparkKvPageCacheAttachSnapshot(&state->kv_page_cache,&state->kv_snapshot);
+	fprintf(stderr,"GLM KV snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu prefetch_bytes=%llu used_bytes=%llu files=%llu pruned=%llu evicted_at_open=%llu driver=%s identity_us=%llu layout=%s status=%d\n",state->kv_snapshot_directory,(unsigned long long)state->kv_snapshot_maximum_bytes,(unsigned long long)queue_bytes,(unsigned long long)prefetch_bytes,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,(unsigned long long)state->kv_snapshot_store.pruned_count,(unsigned long long)state->kv_snapshot_store.eviction_count,driver_path,(unsigned long long)(clock_gettime(CLOCK_MONOTONIC,&now) == 0 && start_ns != 0u ? ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - start_ns) / 1000u : 0u),identity,(int)status);
 	SPARK_RETURN(status);
 }
 
@@ -1395,7 +1494,10 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		(uint64_t)state->physical_page_count * block_bytes !=
 			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	return(SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path));
+	status = SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextSnapshotInitialize(state,&table);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
@@ -3967,7 +4069,7 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 	SparkKvLaneTransaction *owner;
 	SparkKvPageCacheSequence *sequence;
 	uint32_t page;
-	uint64_t generation;
+	uint64_t generation,start_ns;
 	SparkStatus status;
 	if ( state->kda_layer_count == 0u )
 		return(SPARK_STATUS_OK);
@@ -3983,6 +4085,7 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	generation = state->kv_blocks[page].generation;
+	start_ns = SparkGlm5NextNowNs();
 	status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,state->recurrent_staging,state->recurrent_page_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -3994,6 +4097,8 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 			SPARK_RETURN(wait);
 		status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
 	}
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextKdaCount(state->kda_capture,state->recurrent_page_bytes,start_ns);
 	SPARK_RETURN(status);
 }
 
@@ -4171,6 +4276,34 @@ static void SparkGlm5NextWaveTimingReport(SparkGlm5NextWaveTiming *timing,uint32
 	memset(timing,0,sizeof(*timing));
 	timing->delivered_ns = delivered_ns;
 	timing->window_ns = now_ns;
+}
+
+static void SparkGlm5NextKdaTimingReport(SparkGlm5NextModuleState *state,uint64_t now_ns)
+{
+	SparkKvSnapshotStore store_sample;
+	uint64_t window_ns = atomic_load_explicit(&state->kda_window_ns,memory_order_relaxed),restore[SPARK_GLM5_NEXT_KDA_FIELDS],capture[SPARK_GLM5_NEXT_KDA_FIELDS];
+	uint32_t field;
+	if ( window_ns == 0u || now_ns < window_ns || now_ns - window_ns < SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS )
+	{
+		if ( window_ns == 0u )
+			atomic_store_explicit(&state->kda_window_ns,now_ns,memory_order_relaxed);
+		return;
+	}
+	if ( !atomic_compare_exchange_strong_explicit(&state->kda_window_ns,&window_ns,now_ns,memory_order_relaxed,memory_order_relaxed) )
+		return;
+	for (field=0u; field<SPARK_GLM5_NEXT_KDA_FIELDS; field++)
+	{
+		restore[field] = atomic_exchange_explicit(&state->kda_restore[field],0u,memory_order_relaxed);
+		capture[field] = atomic_exchange_explicit(&state->kda_capture[field],0u,memory_order_relaxed);
+	}
+	if ( state->kv_snapshot.store != 0 && SparkKvSnapshotStoreSample(&state->kv_snapshot_store,&store_sample) == SPARK_STATUS_OK && pthread_mutex_lock(&state->kv_mutex) == 0 )
+	{
+		SparkKvPageCacheSnapshot snapshot = state->kv_snapshot;
+		(void)pthread_mutex_unlock(&state->kv_mutex);
+		fprintf(stderr,"G5N-KV-SNAPSHOT rank=%u saves=%llu saved_pages=%llu save_us=%llu save_deferred=%llu save_failures=%llu writes=%llu write_bytes=%llu write_us=%llu write_failures=%llu queue_full=%llu store_failed=%d restores=%llu restored_pages=%llu restore_us=%llu restore_misses=%llu restore_corrupt=%llu restore_failures=%llu prefetch_waits=%llu prefetch_busy=%llu prefetch_jobs=%llu prefetch_bytes=%llu prefetch_us=%llu store_bytes=%llu files=%llu evictions=%llu checksum_failures=%llu\n",state->tp_rank,(unsigned long long)snapshot.save_count,(unsigned long long)snapshot.save_page_count,(unsigned long long)(snapshot.save_ns / 1000u),(unsigned long long)snapshot.save_deferred_count,(unsigned long long)snapshot.save_failure_count,(unsigned long long)store_sample.write_count,(unsigned long long)store_sample.write_bytes,(unsigned long long)(store_sample.write_ns / 1000u),(unsigned long long)store_sample.write_failure_count,(unsigned long long)store_sample.queue_full_count,(int)store_sample.failed_status,(unsigned long long)snapshot.restore_count,(unsigned long long)snapshot.restore_page_count,(unsigned long long)(snapshot.restore_ns / 1000u),(unsigned long long)snapshot.restore_miss_count,(unsigned long long)snapshot.restore_corrupt_count,(unsigned long long)snapshot.restore_failure_count,(unsigned long long)snapshot.prefetch_wait_count,(unsigned long long)store_sample.prefetch_busy_count,(unsigned long long)store_sample.prefetch_completed_count,(unsigned long long)store_sample.prefetch_bytes,(unsigned long long)(store_sample.prefetch_ns / 1000u),(unsigned long long)store_sample.used_bytes,(unsigned long long)store_sample.file_count,(unsigned long long)store_sample.eviction_count,(unsigned long long)store_sample.checksum_failure_count);
+	}
+	if ( restore[SPARK_GLM5_NEXT_KDA_COUNT] != 0u || capture[SPARK_GLM5_NEXT_KDA_COUNT] != 0u )
+		fprintf(stderr,"G5N-KDA-TIMING rank=%u restores=%llu restore_bytes=%llu restore_us=%llu captures=%llu capture_bytes=%llu capture_us=%llu\n",state->tp_rank,(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(restore[SPARK_GLM5_NEXT_KDA_NS] / 1000u),(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(capture[SPARK_GLM5_NEXT_KDA_NS] / 1000u));
 }
 
 static void SparkGlm5NextWaveTimingWorst(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const uint64_t *marks,uint64_t total_ns)
@@ -4376,6 +4509,7 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	complete = async->completion_function;
 	complete_context = async->completion_context;
 	SparkGlm5NextWaveTimingRecord(&state->wave_timing,async,&collective,state->tp_rank,SparkGlm5NextNowNs());
+	SparkGlm5NextKdaTimingReport(state,SparkGlm5NextNowNs());
 	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
 	atomic_store_explicit(&state->tp_chain_active,0u,memory_order_release);
 	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
@@ -4446,7 +4580,7 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 	const SparkKvLaneTransaction *owner = &state->kv_lane_transactions[resident];
 	SparkKvPageCache *cache = state->kv_transactions.cache;
 	uint32_t entry,page;
-	uint64_t generation;
+	uint64_t generation,start_ns;
 	SparkStatus status;
 	if ( SparkGlm5NextPrefixRestorePending(owner) == 0u || state->kda_layer_count == 0u )
 		return(SPARK_STATUS_OK);
@@ -4465,6 +4599,7 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	generation = state->kv_blocks[page].generation;
+	start_ns = SparkGlm5NextNowNs();
 	status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
 	while ( status == SPARK_STATUS_BUSY )
 	{
@@ -4475,6 +4610,8 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,resident,state->recurrent_staging,state->recurrent_page_bytes);
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextKdaCount(state->kda_restore,state->recurrent_page_bytes,start_ns);
 	SPARK_RETURN(status);
 }
 
@@ -4981,6 +5118,11 @@ static SparkStatus SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 	free(state->kv_hash_bucket_heads);
 	free(state->kv_entry_indices_by_logical_page);
 	free(state->kv_page_staging);
+	SparkKvSnapshotStoreClose(&state->kv_snapshot_store);
+	free(state->kv_snapshot_links);
+	free(state->kv_snapshot_keys);
+	free(state->kv_snapshot_page);
+	free(state->kv_snapshot_state);
 	free(state->kv_lane_logical_pages);
 	free(state->page_table_shadow);
 	free(state->kv_lane_transactions);

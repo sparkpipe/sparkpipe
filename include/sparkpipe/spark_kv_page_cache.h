@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_page_store.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 
@@ -11,9 +12,15 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 5u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 6u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
+#define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
+#define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED UINT32_C(0x00000004)
+#define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_CHAIN 1u
+#define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES 2u
+#define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_STATE 3u
+#define SPARK_KV_PAGE_CACHE_SNAPSHOT_FLAG_PREFETCH_JOIN UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_ALLOCATED_MUTABLE UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_CACHE_KNOWN_MUTATIONS \
@@ -49,6 +56,42 @@ typedef struct SparkKvPageCacheSequence
 }
 SparkKvPageCacheSequence;
 
+typedef struct SparkKvPageCacheSnapshotLink
+{
+	uint32_t token_count;
+	uint32_t reserved0;
+	SparkModelDriverCacheIdentity identity;
+}
+SparkKvPageCacheSnapshotLink;
+
+typedef struct SparkKvPageCacheSnapshot
+{
+	SparkKvSnapshotStore *store;
+	uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES];
+	uint32_t page_capacity;
+	uint32_t flags;
+	SparkKvPageCacheSnapshotLink *links;
+	SparkKvSnapshotKey *keys;
+	uint8_t *page;
+	uint8_t *state;
+	uint64_t save_count;
+	uint64_t save_page_count;
+	uint64_t save_ns;
+	uint64_t save_failure_count;
+	uint64_t save_deferred_count;
+	uint64_t restore_count;
+	uint64_t restore_page_count;
+	uint64_t restore_ns;
+	uint64_t restore_miss_count;
+	uint64_t restore_corrupt_count;
+	uint64_t restore_failure_count;
+	uint64_t prefetch_wait_count;
+	uint64_t prefetch_overflow_count;
+	SparkStatus last_save_status;
+	SparkStatus last_restore_status;
+}
+SparkKvPageCacheSnapshot;
+
 typedef struct SparkKvPageCacheConfiguration
 {
 	uint32_t abi_version;
@@ -80,6 +123,7 @@ typedef struct SparkKvPageCache
 	SparkKvCacheArena *kv_cache_arena;
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;
+	SparkKvPageCacheSnapshot *snapshot;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;
@@ -105,6 +149,9 @@ SparkStatus SparkKvPageCacheInitialize(
 // Attach before admitting lanes. State records use the corresponding logical
 // page generation; transfers must retain that page's residency pin until done.
 SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store);
+SparkStatus SparkKvPageCacheAttachSnapshot(SparkKvPageCache *cache,SparkKvPageCacheSnapshot *snapshot);
+SparkStatus SparkKvPageCacheSavePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 // Reclaim one unreferenced, unpinned prefix using the common LRU policy.
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(

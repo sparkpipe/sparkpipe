@@ -1524,7 +1524,9 @@ static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint
 		assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_VALIDATION_FAILED);
 		assert(SparkKvCacheArenaPinResidentBlock(&fixture->pages.kv.arena,copied) == SPARK_STATUS_OK);
 	}
+	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 0u);
 	assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_OK);
+	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 1u && atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_BYTES]) == sizeof(restored));
 	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,restored,sizeof(restored)) == SPARK_STATUS_OK);
 	assert(memcmp(restored,expected,sizeof(restored)) == 0);
 	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,restored,sizeof(restored)) == SPARK_STATUS_OK);
@@ -1651,6 +1653,7 @@ static void check_checkpoint_finish(uint32_t fail_copy,uint32_t prefix_tokens,ui
 	assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
 	assert(fixture.pages.kv.blocks[page].residency_reference_count == 0u);
 	assert(fixture.pages.cache.published_page_count == (fail_copy != 0u ? 0u : 1u));
+	assert(atomic_load(&state.kda_capture[SPARK_GLM5_NEXT_KDA_COUNT]) == (fail_copy != 0u ? 0u : 1u) && atomic_load(&state.kda_capture[SPARK_GLM5_NEXT_KDA_BYTES]) == (fail_copy != 0u ? 0u : sizeof(expected)));
 	if ( fail_copy == 0u )
 	{
 		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_BUSY);
@@ -1894,6 +1897,39 @@ static void check_pack_identity(void)
 	header.first_layer_index--;
 	header.layer_count++;
 	assert(SparkGlm5NextPackValidateHeader(&state,&header,header.file_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+}
+
+static void check_snapshot_layout(void)
+{
+	SparkKvModelTable table;
+	uint8_t first[SPARK_SHA256_DIGEST_BYTES],second[SPARK_SHA256_DIGEST_BYTES];
+	char identity[1024],driver[SPARK_KV_SNAPSHOT_PATH_BYTES],self[SPARK_SHA256_HEX_BYTES],pack[80];
+	memset(&state,0,sizeof(state));
+	memset(&table,0,sizeof(table));
+	table.model_id = "glm5_next";
+	table.model_revision = "fixture";
+	table.cache_layout_fingerprint = "fixture-layout";
+	table.page_store_config.page_bytes = 4096u;
+	state.tp_degree = 16u;
+	state.tp_rank = 3u;
+	state.stage_count = 1u;
+	state.layer_count = 45u;
+	state.pages_per_sequence = 4u;
+	state.recurrent_page_bytes = 128u;
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,first,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_UNSUPPORTED);
+	memset(state.pack_sha256,'a',64u);
+	state.pack_sha256[64] = '\0';
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,first,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK);
+	(void)snprintf(pack,sizeof(pack),"pack=%s|",state.pack_sha256);
+	assert(strstr(identity,pack) != 0 && strstr(identity,"|contract=fixture|") != 0 && strstr(identity,"|codec=fp8|") != 0);
+	assert(SparkSha256File(driver,self) == SPARK_STATUS_OK && strstr(identity,self) != 0);
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) == 0);
+	state.pack_sha256[0] = 'b';
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) != 0);
+	state.pack_sha256[0] = 'a';
+	state.tp_rank = 4u;
+	assert(SparkGlm5NextSnapshotLayout(&state,&table,second,identity,sizeof(identity),driver,sizeof(driver)) == SPARK_STATUS_OK && memcmp(first,second,sizeof(first)) != 0);
+	memset(&state,0,sizeof(state));
 }
 
 static void check_linear_walk(void)
@@ -2911,6 +2947,35 @@ static void check_route_trace(void)
 	assert(unsetenv("SPARK_GLM5_NEXT_ROUTE_TRACE") == 0);
 }
 
+static void check_kda_timing(void)
+{
+	const char *expected = "G5N-KDA-TIMING rank=5 restores=2 restore_bytes=120 restore_us=0 captures=1 capture_bytes=60 capture_us=0\n";
+	char path[] = "/tmp/g5n_kda_timing_XXXXXX",text[512] = {0};
+	int descriptor = mkstemp(path),saved = dup(2);
+	uint64_t start = UINT64_C(5000000000),now = SparkGlm5NextNowNs() + UINT64_C(1000000000);
+	uint32_t field;
+	memset(&state,0,sizeof(state));
+	state.tp_rank = 5u;
+	SparkGlm5NextKdaCount(state.kda_restore,60u,now);
+	SparkGlm5NextKdaCount(state.kda_restore,60u,now);
+	SparkGlm5NextKdaCount(state.kda_capture,60u,now);
+	assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
+	SparkGlm5NextKdaTimingReport(&state,start);
+	SparkGlm5NextKdaTimingReport(&state,start + SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS - 1u);
+	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 2u);
+	SparkGlm5NextKdaTimingReport(&state,start + SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
+	SparkGlm5NextKdaTimingReport(&state,start + 3u * SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
+	fflush(stderr);
+	assert(dup2(saved,2) == 2 && close(saved) == 0);
+	assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
+	if ( strcmp(text,expected) != 0 )
+		fprintf(stderr,"kda timing line:\n%s",text);
+	assert(strcmp(text,expected) == 0);
+	for (field=0u; field<SPARK_GLM5_NEXT_KDA_FIELDS; field++)
+		assert(atomic_load(&state.kda_restore[field]) == 0u && atomic_load(&state.kda_capture[field]) == 0u);
+	assert(atomic_load(&state.kda_window_ns) == start + 3u * SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
+}
+
 int32_t main(void)
 {
 	SparkGlm5NextResidentDecodeStageNodeContext context = {0};
@@ -2929,6 +2994,7 @@ int32_t main(void)
 	check_verify_deferred();
 	check_attempt_accounting();
 	check_wave_timing();
+	check_kda_timing();
 	check_graph_epoch_ownership();
 	check_working_set_recover();
 	check_ws_open();
@@ -3036,6 +3102,7 @@ int32_t main(void)
 	services.kv_physical_page_capacity = 1u;
 	services.kv_logical_page_capacity = 0u;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	check_snapshot_layout();
 	return(0);
 }
 '''
@@ -3060,7 +3127,7 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c",
+                        str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c", "src/spark_sha256.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership, terminal CUDA receipts, step verdicts and route trace")
