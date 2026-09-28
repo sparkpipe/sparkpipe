@@ -748,11 +748,6 @@ void LmLatentAttentionTilesCombineKernel(
     }
 }
 
-static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
-{
-    return(heads == 1u || heads == 2u || heads == 4u ? 1u : 0u);
-}
-
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
 static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t dense_limit, uint32_t tile_stride, uint32_t heads, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
 {
@@ -786,15 +781,14 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     const uint32_t keys = selected_positions != 0 && selected_count > position_bound ? selected_count : position_bound;
     const uint32_t tile_stride = LmLatentHeadsTiles(keys);
     const uint64_t blocks = (uint64_t)rows * tile_stride;
-    if (rows == 0u || tile_stride > LM_LATENT_HEADS_MAX_TILES || (tile_stride > 1u && (split_partials == 0 || (uint64_t)rows * heads * tile_stride > split_partial_blocks)))
+    const uint64_t quad_blocks = blocks * (heads >= 4u ? heads / 4u : 1u);
+    if (rows == 0u || heads == 0u || heads > 65535u || tile_stride > LM_LATENT_HEADS_MAX_TILES || (tile_stride > 1u && (split_partials == 0 || (uint64_t)rows * heads * tile_stride > split_partial_blocks)))
         return cudaErrorInvalidValue;
-    if (heads == 4u && blocks >= (uint64_t)LM_LATENT_HEADS_WIDE_WAVES * multiprocessor_count)
+    if (heads % 4u == 0u && quad_blocks >= (uint64_t)LM_LATENT_HEADS_WIDE_WAVES * multiprocessor_count)
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    if ((heads == 2u || heads == 4u) && blocks * 2u >= multiprocessor_count)
+    if (heads % 2u == 0u && quad_blocks * 2u >= multiprocessor_count)
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    if (heads == 1u || heads == 2u || heads == 4u)
-        return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    return cudaErrorNotSupported;
+    return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 1u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, dense_limit, tile_stride, heads, qk_scale, output_bf16, split_partials, row_position, rows, stream);
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
