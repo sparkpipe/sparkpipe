@@ -19,6 +19,8 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_glm5_next_model.h"
+#include "sparkpipe/spark_speculation_lookup_draft.h"
+#include "sparkpipe/spark_speculation_reference_draft.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -331,6 +333,20 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
 	uint32_t verify_rows_max;
+	uint32_t verify_drafter;
+	const char *verify_drafter_path;
+	SparkSpeculationDraftFunction verify_draft_function;
+	void *verify_draft_context;
+	SparkSpeculationLookupDraft verify_lookup;
+	SparkSpeculationReferenceDraft verify_reference;
+	uint32_t *verify_reference_tokens;
+	uint64_t verify_frames;
+	uint64_t verify_plain_frames;
+	uint64_t verify_rounds;
+	uint64_t verify_proposed;
+	uint64_t verify_accepted;
+	uint64_t verify_tokens;
+	uint64_t verify_accept_depth[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
 	uint32_t chain_profile_stage;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
@@ -1739,6 +1755,16 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t spec_verify;
 	uint32_t steps;
 	uint32_t step;
+	uint32_t verify_budget;
+	uint32_t verify_produced;
+	uint32_t verify_lane;
+	uint32_t verify_draft_count;
+	uint32_t verify_rounds;
+	uint32_t verify_accepted;
+	uint64_t verify_sequence_id;
+	uint64_t verify_position;
+	uint32_t verify_draft[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	uint32_t verify_tokens[SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE];
 	uint32_t tp_op_index;
 	uint32_t tp_hc_op_index;
 	uint64_t expert_lease;
@@ -2296,7 +2322,124 @@ static SparkStatus SparkGlm5NextMtpStashHidden(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm5NextVerifyObserveRows(SparkGlm5NextModuleState *state,const SparkGlm5NextResidentDecodeStageBatchView *batch)
+{
+	SparkStatus status;
+	uint32_t row;
+	if ( state->verify_drafter != SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP || batch->token_ids == 0 )
+		return(SPARK_STATUS_OK);
+	for (row=0u; row<batch->row_count; row++)
+	{
+		status = SparkSpeculationLookupDraftObserve(&state->verify_lookup,batch->row_resident_slots[row],batch->row_sequence_ids[row],batch->row_positions[row],&batch->token_ids[row],1u);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkGlm5NextVerifyPlanRound(SparkGlm5NextTpChain *chain,uint32_t anchor_token,SparkStatus *status_out)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	SparkSpeculationPolicyDraftRequest request;
+	SparkSpeculationPolicyDraftResult result;
+	SparkStatus status;
+	uint32_t depth,row;
+	*status_out = SPARK_STATUS_OK;
+	depth = SparkGlm5NextVerifyDepth(chain->verify_budget,chain->verify_produced,state->verify_rows_max,(uint32_t)chain->verify_position,state->decode_split_context_threshold,state->max_sequence_positions);
+	if ( depth == 0u )
+		return(0u);
+	memset(&request,0,sizeof(request));
+	memset(&result,0,sizeof(result));
+	request.abi_version = SPARK_SPECULATION_ABI_VERSION;
+	request.descriptor_bytes = SPARK_SPECULATION_DRAFT_REQUEST_DESCRIPTOR_BYTES;
+	request.requested_token_count = depth;
+	request.active_sequence_index = chain->verify_lane;
+	request.request_id = chain->frame->request_id;
+	request.sequence_id = chain->verify_sequence_id;
+	request.sequence_position = chain->verify_position;
+	status = state->verify_draft_function(state->verify_draft_context,&request,&result);
+	if ( status == SPARK_STATUS_NOT_FOUND )
+		return(0u);
+	if ( status == SPARK_STATUS_OK && result.token_count > depth )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	for (row=0u; status == SPARK_STATUS_OK && row<result.token_count; row++)
+		if ( result.token_ids[row] >= SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT )
+			status = SPARK_STATUS_VALIDATION_FAILED;
+	*status_out = status;
+	if ( status != SPARK_STATUS_OK || result.token_count == 0u )
+		return(0u);
+	slot->host_token_ids[0] = anchor_token;
+	slot->host_positions[0] = (uint32_t)chain->verify_position;
+	slot->host_resident_slots[0] = chain->verify_lane;
+	for (row=0u; row<result.token_count; row++)
+	{
+		chain->verify_draft[row] = result.token_ids[row];
+		slot->host_token_ids[row + 1u] = result.token_ids[row];
+		slot->host_positions[row + 1u] = (uint32_t)chain->verify_position + row + 1u;
+		slot->host_resident_slots[row + 1u] = chain->verify_lane;
+	}
+	chain->verify_draft_count = result.token_count;
+	chain->wave_rows = result.token_count + 1u;
+	chain->spec_verify = 1u;
+	return(1u);
+}
+
+static SparkStatus SparkGlm5NextVerifyDriveDraft(
+	SparkGlm5NextModuleState *state,
+	SparkModelDriverFrame *frame,
+	const SparkGlm5NextResidentDecodeStageBatchView *batch,
+	SparkGlm5NextExecutionSlot *slot,
+	SparkGlm5NextTpChain *chain)
+{
+	SparkStatus status;
+	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE )
+		return(SPARK_STATUS_OK);
+	status = SparkGlm5NextVerifyObserveRows(state,batch);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( SparkGlm5NextFrameSteps(frame) < 2u || (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
+		batch->row_count != 1u || batch->active_sequence_count != 1u || batch->token_ids == 0 ||
+		batch->row_sampling[0].inverse_temperature != 0.0f || chain->spec_verify != 0u ||
+		state->graph_path_enabled == 0u || state->experts_warm == 0u || slot->verify_captured == 0u )
+		return(SPARK_STATUS_OK);
+	chain->verify_budget = SparkGlm5NextFrameSteps(frame);
+	chain->verify_produced = 0u;
+	chain->verify_lane = batch->row_resident_slots[0];
+	chain->verify_sequence_id = batch->row_sequence_ids[0];
+	chain->verify_position = batch->row_positions[0];
+	if ( SparkGlm5NextVerifyPlanRound(chain,batch->token_ids[0],&status) == 0u )
+	{
+		chain->verify_budget = 0u;
+		state->verify_plain_frames++;
+		SPARK_RETURN(status);
+	}
+	chain->steps = 1u;
+	state->completions[chain->slot_index].steps = 1u;
+	state->verify_frames++;
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm5NextVerifyObserveOutputs(SparkGlm5NextModuleState *state,SparkGlm5NextAsyncCompletion *async,const SparkGlm5NextExecutionSlot *slot)
+{
+	uint32_t burst;
+	uint64_t next;
+	if ( state->verify_drafter != SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP || async->completion.status != SPARK_STATUS_OK ||
+		async->prefill != 0u || async->lane_count != 1u || async->row_count != 1u || state->owns_final_head == 0u )
+		return;
+	burst = async->burst_token_count != 0u ? async->burst_token_count : 1u;
+	next = async->lane_next_positions[0];
+	if ( next < burst || next >= state->max_sequence_positions )
+		return;
+	if ( SparkSpeculationLookupDraftObserve(&state->verify_lookup,async->lane_indices[0],async->lane_sequence_ids[0],next - burst + 1u,slot->host_output_token_ids,burst) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"VERIFY-OBSERVE-FAILED lane=%u position=%llu tokens=%u\n",async->lane_indices[0],(unsigned long long)(next - burst + 1u),burst);
+		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	}
+}
+
 static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain);
+static void SparkGlm5NextReleaseDrafter(SparkGlm5NextModuleState *state);
 
 static uint32_t SparkGlm5NextGraphPathState(const SparkGlm5NextModuleState *state)
 {
@@ -3374,16 +3517,77 @@ static SparkStatus SparkGlm5NextVerifyLookup(SparkGlm5NextTpChain *chain,void **
 	return(status);
 }
 
-static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain)
+static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain,uint32_t *more_out)
 {
-	fprintf(stderr,"GRAPH-VERIFY-COMMIT-MISSING rows=%u: the verify regime has no device accept and state fold in this revision\n",chain->wave_rows);
-	return(SPARK_STATUS_UNSUPPORTED);
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	SparkSpeculationPolicyVerifyResult result;
+	SparkStatus status;
+	uint32_t committed,index;
+	*more_out = 0u;
+	if ( chain->verify_budget == 0u || chain->verify_draft_count == 0u || chain->wave_rows != chain->verify_draft_count + 1u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( SparkGlm5NextBoundedStreamSync(state,slot->stream,UINT64_C(35000000000)) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = SparkSpeculationPolicyResolveVerifierTokens(chain->verify_draft,chain->verify_draft_count,slot->host_output_token_ids,chain->wave_rows,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,&result);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	committed = result.committed_token_count;
+	if ( committed != result.accepted_draft_token_count + 1u || committed > chain->wave_rows || committed > chain->verify_budget - chain->verify_produced )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( SparkGlm5NextLaunchCudaReplayFold(&chain->wave,committed) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	for (index=0u; index<committed; index++)
+		chain->verify_tokens[chain->verify_produced + index] = slot->host_output_token_ids[index];
+	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
+	{
+		status = SparkSpeculationLookupDraftObserve(&state->verify_lookup,chain->verify_lane,chain->verify_sequence_id,chain->verify_position + 1u,slot->host_output_token_ids,committed);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	state->verify_rounds++;
+	state->verify_proposed += chain->verify_draft_count;
+	state->verify_accepted += result.accepted_draft_token_count;
+	state->verify_accept_depth[result.accepted_draft_token_count]++;
+	chain->verify_rounds++;
+	chain->verify_accepted += result.accepted_draft_token_count;
+	chain->verify_produced += committed;
+	chain->verify_position += committed;
+	chain->spec_verify = 0u;
+	chain->verify_draft_count = 0u;
+	chain->wave_rows = 1u;
+	*more_out = SparkGlm5NextVerifyPlanRound(chain,chain->verify_tokens[chain->verify_produced - 1u],&status);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkGlm5NextVerifyFinish(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	SparkGlm5NextAsyncCompletion *async = &state->completions[chain->slot_index];
+	uint32_t produced = chain->verify_produced;
+	if ( produced == 0u || produced > chain->verify_budget || async->lane_count != 1u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( SparkGlm5NextBoundedStreamSync(state,slot->stream,UINT64_C(35000000000)) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	memcpy(slot->host_output_token_ids,chain->verify_tokens,(uint64_t)produced * sizeof(uint32_t));
+	async->burst_token_count = produced;
+	async->cache_extra_tokens = produced - 1u;
+	async->lane_next_positions[0] += produced - 1u;
+	async->completion.tokens_per_sequence = produced;
+	state->verify_tokens += produced;
+	fprintf(stderr,"VERIFY-FRAME slot=%u position=%llu budget=%u produced=%u rounds=%u accepted=%u | frames=%llu plain=%llu rounds=%llu proposed=%llu accepted=%llu tokens=%llu\n",
+		chain->slot_index,(unsigned long long)(chain->verify_position - produced),chain->verify_budget,produced,chain->verify_rounds,chain->verify_accepted,
+		(unsigned long long)state->verify_frames,(unsigned long long)state->verify_plain_frames,(unsigned long long)state->verify_rounds,
+		(unsigned long long)state->verify_proposed,(unsigned long long)state->verify_accepted,(unsigned long long)state->verify_tokens);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkGlm5NextVerifyWave(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkStatus status;
+	uint32_t more;
 	void *exec;
 	status = SparkGlm5NextVerifyLookup(chain,&exec);
 	if ( status == SPARK_STATUS_OK )
@@ -3405,7 +3609,20 @@ static void SparkGlm5NextVerifyWave(SparkGlm5NextTpChain *chain)
 		return;
 	}
 	SparkGlm5NextGraphDisarm(state);
-	status = SparkGlm5NextVerifyCommit(chain);
+	status = SparkGlm5NextVerifyCommit(chain,&more);
+	if ( status == SPARK_STATUS_OK && more != 0u )
+	{
+		status = SparkGlm5NextSettleStep(chain);
+		if ( status == SPARK_STATUS_OK )
+		{
+			chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_BEGIN;
+			chain->next_layer = 0u;
+			SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+			return;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextVerifyFinish(chain);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm5NextTpChainFail(chain,status);
@@ -4215,6 +4432,7 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	}
 	SparkGlm5NextVerifyDeferred(state,async);
 	SparkGlm5NextGatherSteps(async,slot);
+	SparkGlm5NextVerifyObserveOutputs(state,async,slot);
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
 		fprintf(stderr,"GLM cache access failed: code %u row %u slot %u\n",slot->host_kv_access_error[0],slot->host_kv_access_error[2],async->slot_index);
@@ -4506,6 +4724,8 @@ static SparkStatus SparkGlm5NextStartClaimedBatch(SparkGlm5NextModuleState *stat
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextMtpDriveDraft(state,frame,context->batch,slot,chain);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextVerifyDriveDraft(state,frame,context->batch,slot,chain);
 	if ( status != SPARK_STATUS_OK )
 		SparkGlm5NextTpChainFail(chain,status);
 	else
@@ -4991,6 +5211,7 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state->mtp_lane_armed);
+	SparkGlm5NextReleaseDrafter(state);
 	free(state);
 }
 
@@ -5021,8 +5242,76 @@ static SparkStatus SparkGlm5NextConfigureVerify(SparkGlm5NextModuleState *state)
 		fprintf(stderr,"%s must be 0 or %u..%u, and a nonzero value needs SPARK_GLM5_NEXT_GRAPH_PATH=1\n",SPARK_GLM5_NEXT_VERIFY_ROWS_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_MIN,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	fprintf(stderr,"GLM verify regime rows=%u\n",state->verify_rows_max);
+	if ( SparkGlm5NextVerifyDrafterParse(getenv(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV),state->verify_rows_max,&state->verify_drafter,&state->verify_drafter_path) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s must be lookup, oracle:PATH or adversary:PATH when %s is nonzero, and absent when it is 0\n",SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_ENV);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	fprintf(stderr,"GLM verify regime rows=%u drafter=%u\n",state->verify_rows_max,state->verify_drafter);
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextLoadReferenceTokens(SparkGlm5NextModuleState *state,uint32_t *count_out)
+{
+	FILE *file;
+	long bytes;
+	uint32_t count;
+	*count_out = 0u;
+	file = fopen(state->verify_drafter_path,"rb");
+	if ( file == 0 )
+	{
+		fprintf(stderr,"GLM verify reference drafter cannot open %s\n",state->verify_drafter_path);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	bytes = fseek(file,0,SEEK_END) == 0 ? ftell(file) : -1;
+	if ( bytes < (long)(2u * sizeof(uint32_t)) || (uint64_t)bytes % sizeof(uint32_t) != 0u || (uint64_t)bytes / sizeof(uint32_t) > state->max_sequence_positions || fseek(file,0,SEEK_SET) != 0 )
+	{
+		fclose(file);
+		fprintf(stderr,"GLM verify reference drafter %s must hold 2..%u little-endian uint32 token ids from position 0\n",state->verify_drafter_path,state->max_sequence_positions);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	count = (uint32_t)((uint64_t)bytes / sizeof(uint32_t));
+	state->verify_reference_tokens = (uint32_t *)malloc((uint64_t)count * sizeof(uint32_t));
+	if ( state->verify_reference_tokens == 0 || fread(state->verify_reference_tokens,sizeof(uint32_t),count,file) != count )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	fclose(file);
+	*count_out = count;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t count;
+	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
+	{
+		status = SparkSpeculationLookupDraftInitialize(&state->verify_lookup,state->resident_sequence_capacity,state->max_sequence_positions,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH);
+		state->verify_draft_function = SparkSpeculationLookupDraftTokens;
+		state->verify_draft_context = &state->verify_lookup;
+	}
+	else if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE || state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
+	{
+		status = SparkGlm5NextLoadReferenceTokens(state,&count);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkSpeculationReferenceDraftInitialize(&state->verify_reference,
+				state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE ? SPARK_SPECULATION_REFERENCE_ORACLE : SPARK_SPECULATION_REFERENCE_ADVERSARY,
+				SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,state->verify_reference_tokens,count);
+		state->verify_draft_function = SparkSpeculationReferenceDraftTokens;
+		state->verify_draft_context = &state->verify_reference;
+	}
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"GLM verify drafter %u failed to initialize: status=%d\n",state->verify_drafter,(int)status);
+	SPARK_RETURN(status);
+}
+
+static void SparkGlm5NextReleaseDrafter(SparkGlm5NextModuleState *state)
+{
+	SparkSpeculationLookupDraftDestroy(&state->verify_lookup);
+	free(state->verify_reference_tokens);
+	state->verify_reference_tokens = 0;
 }
 
 static SparkStatus SparkGlm5NextValidateSpeculation(const SparkGlm5NextModuleState *state)
@@ -5108,6 +5397,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextValidateSpeculation(state);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextAllocateDrafter(state);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateSlots(state);
@@ -5141,6 +5432,7 @@ static SparkStatus SparkGlm5NextInitializeState(
 		SparkGlm5NextReleaseSlotHost(state);
 		SparkStageModuleLedgerRelease(&state->ledger);
 		free(state->mtp_lane_armed);
+		SparkGlm5NextReleaseDrafter(state);
 		free(state);
 		SPARK_RETURN(status);
 	}

@@ -14,6 +14,8 @@ HARNESS = r'''
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
 #include "cache/kv_page_store.c"
 #include "src/spark_speculation_policy.c"
+#include "src/spark_speculation_lookup_draft.c"
+#include "src/spark_speculation_reference_draft.c"
 #define SparkKvBackendInitialize SparkTestRealKvBackendInitialize
 #include "cache/kv_model_table.c"
 #undef SparkKvBackendInitialize
@@ -535,9 +537,12 @@ static void check_graph_expert_ownership(uint32_t first,uint32_t layers,uint32_t
 	assert(PIN_RECORDS == leases + 1u && PIN_RELEASES == leases + 1u);
 }
 
+static uint32_t FOLD_ANY,FOLD_LAST;
+
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps)
 {
-	assert(IN_CUDA_CALLBACK == 0u && wave != 0 && committed_steps == 1u);
+	assert(IN_CUDA_CALLBACK == 0u && wave != 0 && (FOLD_ANY != 0u || committed_steps == 1u));
+	FOLD_LAST = committed_steps;
 	MTP_COMMITS++;
 	return(0);
 }
@@ -621,6 +626,168 @@ static void check_mtp_callback_handoff(SparkStatus submit_status,uint32_t releas
 	assert(atomic_load(&state.tp_chain_active) == 1u && atomic_load(&state.slot_states[0]) == SPARK_STAGE_MODULE_SLOT_CLAIMED);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 	assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0);
+}
+
+#define VERIFY_PROMPT 60u
+#define VERIFY_GENERATE 240u
+#define VERIFY_CAPACITY 512u
+
+static uint32_t VerifyTarget(const uint32_t *history,uint32_t length)
+{
+	if ( length % 13u == 0u )
+		return((history[length - 1u] * 7u + length) % 1000u);
+	return(history[length - 11u]);
+}
+
+static void check_verify_rounds(uint32_t drafter)
+{
+	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
+	uint32_t host_tokens[8],host_positions[8],host_slots[8],host_output[8],row_slot = 1u,token,index,length,produced,more,frames = 0u,rounds = 0u;
+	uint64_t row_position,row_sequence = 44u,positions[VERIFY_PROMPT],sequences[VERIFY_PROMPT];
+	uint32_t slots[VERIFY_PROMPT];
+	SparkRowSampling sampling;
+	SparkModelDriverFrame frame;
+	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextTpChain *chain;
+	SparkGlm5NextAsyncCompletion *async;
+	SparkStatus status;
+	memset(&state,0,sizeof(state));
+	memset(&sampling,0,sizeof(sampling));
+	state.pipeline_slot_count = 1u;
+	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
+	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
+	state.verify_rows_max = 8u;
+	state.max_sequence_positions = VERIFY_CAPACITY;
+	state.resident_sequence_capacity = 2u;
+	state.decode_split_context_threshold = 0u;
+	state.graph_path_enabled = 1u;
+	state.experts_warm = 1u;
+	state.owns_final_head = 1u;
+	state.slots[0].verify_captured = 1u;
+	state.slots[0].host_token_ids = host_tokens;
+	state.slots[0].host_positions = host_positions;
+	state.slots[0].host_resident_slots = host_slots;
+	state.slots[0].host_output_token_ids = host_output;
+	state.completions[0].state = &state;
+	for (index=0u; index<VERIFY_PROMPT; index++)
+	{
+		history[index] = (index * 37u + 5u) % 41u;
+		positions[index] = index;
+		sequences[index] = row_sequence;
+		slots[index] = row_slot;
+	}
+	for (length=VERIFY_PROMPT; length<VERIFY_CAPACITY; length++)
+		history[length] = VerifyTarget(history,length);
+	memcpy(expected,history,sizeof(history));
+	state.verify_drafter = drafter;
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
+	{
+		assert(SparkSpeculationLookupDraftInitialize(&state.verify_lookup,2u,VERIFY_CAPACITY,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH) == SPARK_STATUS_OK);
+		state.verify_draft_function = SparkSpeculationLookupDraftTokens;
+		state.verify_draft_context = &state.verify_lookup;
+	}
+	else
+	{
+		assert(SparkSpeculationReferenceDraftInitialize(&state.verify_reference,drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE ? SPARK_SPECULATION_REFERENCE_ORACLE : SPARK_SPECULATION_REFERENCE_ADVERSARY,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,expected,VERIFY_CAPACITY) == SPARK_STATUS_OK);
+		state.verify_draft_function = SparkSpeculationReferenceDraftTokens;
+		state.verify_draft_context = &state.verify_reference;
+	}
+	memset(&batch,0,sizeof(batch));
+	batch.row_count = VERIFY_PROMPT;
+	batch.active_sequence_count = 1u;
+	batch.token_ids = history;
+	batch.row_resident_slots = slots;
+	batch.row_positions = positions;
+	batch.row_sequence_ids = sequences;
+	assert(SparkGlm5NextVerifyObserveRows(&state,&batch) == SPARK_STATUS_OK);
+	length = VERIFY_PROMPT + 1u;
+	DRAIN_STATUS = cudaSuccess;
+	FOLD_ANY = 1u;
+	while ( length < VERIFY_PROMPT + VERIFY_GENERATE )
+	{
+		chain = calloc(1u,sizeof(*chain));
+		assert(chain != 0);
+		async = &state.completions[0];
+		memset(async,0,sizeof(*async));
+		async->state = &state;
+		async->lane_count = 1u;
+		async->row_count = 1u;
+		async->steps = 8u;
+		async->lane_indices[0] = row_slot;
+		async->lane_sequence_ids[0] = row_sequence;
+		async->lane_next_positions[0] = length;
+		token = history[length - 1u];
+		row_position = length - 1u;
+		memset(&frame,0,sizeof(frame));
+		frame.tokens_per_sequence = 8u;
+		frame.request_id = 900u + frames;
+		batch.row_count = 1u;
+		batch.token_ids = &token;
+		batch.row_resident_slots = &row_slot;
+		batch.row_positions = &row_position;
+		batch.row_sequence_ids = &row_sequence;
+		batch.row_sampling = &sampling;
+		chain->state = &state;
+		chain->slot = &state.slots[0];
+		chain->frame = &frame;
+		chain->batch = &batch;
+		chain->wave_rows = 1u;
+		chain->steps = 8u;
+		assert(SparkGlm5NextVerifyDriveDraft(&state,&frame,&batch,&state.slots[0],chain) == SPARK_STATUS_OK);
+		if ( chain->verify_budget == 0u )
+		{
+			assert(drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP && chain->steps == 8u && async->steps == 8u && chain->spec_verify == 0u);
+			for (index=0u; index<8u; index++)
+				host_output[index] = expected[length + index];
+			async->burst_token_count = 8u;
+			async->lane_next_positions[0] += 7u;
+			produced = 8u;
+		}
+		else
+		{
+			assert(chain->steps == 1u && async->steps == 1u && chain->spec_verify == 1u);
+			do
+			{
+				assert(chain->wave_rows >= 2u && chain->wave_rows <= 8u && host_positions[0] == chain->verify_position && host_slots[0] == row_slot);
+				for (index=0u; index<chain->wave_rows; index++)
+				{
+					uint32_t fed = (uint32_t)chain->verify_position + index;
+					assert(host_positions[index] == fed && (index == 0u || host_tokens[index] == chain->verify_draft[index - 1u]));
+					memcpy(history,expected,(uint64_t)(fed) * sizeof(uint32_t));
+					history[fed] = host_tokens[index];
+					host_output[index] = VerifyTarget(history,fed + 1u);
+				}
+				memcpy(history,expected,sizeof(history));
+				FOLD_LAST = 0u;
+				status = SparkGlm5NextVerifyCommit(chain,&more);
+				assert(status == SPARK_STATUS_OK && FOLD_LAST >= 1u && FOLD_LAST <= 8u);
+				rounds++;
+			} while ( more != 0u );
+			assert(SparkGlm5NextVerifyFinish(chain) == SPARK_STATUS_OK);
+			produced = chain->verify_produced;
+			assert(produced >= 1u && produced <= 8u && async->burst_token_count == produced && async->cache_extra_tokens == produced - 1u);
+			assert(async->completion.tokens_per_sequence == produced && async->lane_next_positions[0] == length + produced - 1u);
+			if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
+				assert(produced == 8u && chain->verify_rounds == 1u && chain->verify_accepted == 7u);
+			if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
+				assert(produced == 7u && chain->verify_rounds == 7u && chain->verify_accepted == 0u);
+		}
+		for (index=0u; index<produced; index++)
+			assert(host_output[index] == expected[length + index]);
+		SparkGlm5NextVerifyObserveOutputs(&state,async,&state.slots[0]);
+		assert(async->completion.status == SPARK_STATUS_OK);
+		length += produced;
+		frames++;
+		free(chain);
+	}
+	assert(state.verify_frames + state.verify_plain_frames == frames && state.verify_rounds == rounds);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
+		assert(state.verify_frames != 0u && state.verify_accepted != 0u && state.verify_lookup.lengths[row_slot] == length);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
+		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds);
+	FOLD_ANY = 0u;
+	SparkGlm5NextReleaseDrafter(&state);
+	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 }
 
 static SparkGlm5NextModuleState *DESTROY_STATE;
@@ -2460,6 +2627,9 @@ int32_t main(void)
 	check_mtp_callback_handoff(SPARK_STATUS_OK,1u);
 	check_mtp_callback_handoff(SPARK_STATUS_BUSY,0u);
 	check_mtp_callback_handoff(SPARK_STATUS_BUSY,1u);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
 	check_callback_retirement();
 	check_stream_receipt();
 	check_chain_ownership();

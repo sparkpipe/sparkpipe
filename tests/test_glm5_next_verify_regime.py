@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "sparkpipe/spark_glm5_next_verify_regime.h"
 
 #define REGIMES SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT
@@ -67,6 +68,42 @@ static void check_shape(void)
 	require(SparkGlm5NextVerifyWaveCheck(4u,8u,0u,1u,0u,slots,positions,64u,4096u) == SPARK_STATUS_INVALID_ARGUMENT,"a wave past the sequence capacity is rejected",0u,0u,0u);
 }
 
+static void check_drafter(void)
+{
+	uint32_t kind;
+	const char *path;
+	static const char *bad[] = {"","Lookup","lookup ","oracle","oracle:","adversary:","remote:rtx5090"};
+	uint32_t index;
+	require(SparkGlm5NextVerifyDrafterParse(0,0u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE && path == 0,"regime off with no drafter",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse("lookup",0u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE,"a drafter without the regime is rejected",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse(0,4u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT,"the regime without a drafter is rejected",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse("lookup",4u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP && path == 0,"lookup drafter",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse("oracle:/tmp/r.u32",4u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE && strcmp(path,"/tmp/r.u32") == 0,"oracle drafter names its recording",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse("adversary:r",8u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY && strcmp(path,"r") == 0,"adversary drafter names its recording",0u,0u,0u);
+	for (index=0u; index<sizeof(bad)/sizeof(bad[0]); index++)
+		require(SparkGlm5NextVerifyDrafterParse(bad[index],4u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE,"unknown drafter rejected",index,0u,0u);
+}
+
+static void check_depth(void)
+{
+	uint32_t budget,produced,rows_max,position,depth;
+	for (budget=0u; budget<=8u; budget++)
+		for (produced=0u; produced<=budget; produced++)
+			for (rows_max=0u; rows_max<=SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows_max++)
+				for (position=40u; position<80u; position+=3u)
+				{
+					depth = SparkGlm5NextVerifyDepth(budget,produced,rows_max,position,64u,4096u);
+					require(depth == 0u || (depth + 1u <= budget - produced && depth + 1u <= rows_max && rows_max >= SPARK_GLM5_NEXT_VERIFY_ROWS_MIN),"a round never exceeds the frame budget or the regime rows",budget,produced,rows_max);
+					require(depth == 0u || SparkGlm5NextVerifyRowsFit(position,depth + 1u,64u,4096u) == depth + 1u,"a round stays inside one attention regime",position,depth,0u);
+					require(depth != 0u || budget - produced < 2u || rows_max < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || SparkGlm5NextVerifyRowsFit(position,2u,64u,4096u) < 2u,"a round is planned whenever two rows fit",budget,produced,position);
+				}
+	require(SparkGlm5NextVerifyDepth(8u,0u,8u,100u,64u,4096u) == 7u,"a full frame drafts seven",0u,0u,0u);
+	require(SparkGlm5NextVerifyDepth(8u,5u,8u,100u,64u,4096u) == 2u,"the rest of the frame bounds the depth",0u,0u,0u);
+	require(SparkGlm5NextVerifyDepth(8u,0u,4u,100u,64u,4096u) == 3u,"the regime rows bound the depth",0u,0u,0u);
+	require(SparkGlm5NextVerifyDepth(8u,0u,8u,60u,64u,4096u) + 1u == SparkGlm5NextVerifyRowsFit(60u,8u,64u,4096u) && SparkGlm5NextVerifyDepth(8u,0u,8u,60u,64u,4096u) < 7u,"the split threshold bounds the depth",0u,0u,0u);
+	require(SparkGlm5NextVerifyDepth(8u,7u,8u,100u,64u,4096u) == 0u,"one token left is a plain step",0u,0u,0u);
+}
+
 static void capture_start(uint32_t bounds[REGIMES][TABLE],uint32_t rows_max,uint32_t threshold,uint32_t max_positions)
 {
 	uint32_t regime,rows,bound;
@@ -120,6 +157,8 @@ int main(void)
 	static const uint32_t max_positions[] = {4096u,32768u};
 	uint32_t t,m,rows_max;
 	check_parse();
+	check_drafter();
+	check_depth();
 	check_shape();
 	for (m=0u; m<2u; m++)
 		for (t=0u; t<sizeof(thresholds)/sizeof(thresholds[0]); t++)
@@ -138,7 +177,7 @@ def main():
         subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I.", "-Iinclude",
                         "-Imodel-families/glm5_next/include", str(source), "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True, timeout=600)
-    print("PASS verify waves are admitted exactly when a captured regime graph replays every row with its own B1 attention choice")
+    print("PASS verify waves are admitted exactly when a captured regime graph replays every row with its own B1 attention choice, drafters parse strictly and rounds fit the frame and the regime")
 
 
 if __name__ == "__main__":

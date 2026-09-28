@@ -49,6 +49,8 @@ MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
 	../../src/spark_speculation_policy.c \
+	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_reference_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
