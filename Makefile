@@ -434,6 +434,8 @@ PYTHON_TESTS := \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_unity_precision_contract.py \
+	tests/test_glm52_validate_pack_mirror.py \
+	tests/test_glm52_validate_pack_stage.py \
 	tests/test_gqa_host.py \
 	tests/test_grouped_moe_source_contracts.py \
 	tests/test_hardware_topology.py \
