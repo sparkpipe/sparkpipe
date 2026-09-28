@@ -102,8 +102,12 @@ class SupervisedWeightd(unittest.TestCase):
 
     def test_bad_sidecar_cannot_be_hidden_by_valid_digest(self):
         (self.root / "packs/broken.sha256").write_text("z" * 64)
-        self.assertNotEqual(self.call(), 0)
+        self.assertIn(self.call(), (-2, -5))
         self.assertIsNone(self.libc.getenv(b"SPARK_WEIGHTD_PACK_SHA256"))
+        self.sidecar.unlink()
+        self.assertEqual(self.call(), -2)
+        self.assertIsNone(self.libc.getenv(b"SPARK_WEIGHTD_PACK_SHA256"))
+        self.assertIsNone(self.libc.getenv(b"SPARK_WEIGHTD_SOCKET"))
 
     def test_invalid_arguments(self):
         self.assertEqual(self.gate(None, b"socket"), -12)
