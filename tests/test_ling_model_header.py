@@ -6,22 +6,22 @@ geometry is pinned to the publisher config (inclusionAI/Ling-3.0-flash @
 e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3) and the checkpoint shard shas
 get pinned at freeze, after the warm download. This test binds
 model-families/ling/include/sparkpipe/spark_ling_model.h to that contract
-so header and contract stay in lockstep through the freeze.
+so header and contract stay in lockstep through the freeze. The C compiler
+evaluates every macro, including the per-layer MLA/KDA predicates.
 Run: python3 tests/test_ling_model_header.py
 """
 
 from __future__ import annotations
 
-import ast
 import json
-import re
 import sys
 from pathlib import Path
 
+from c_macro_values import MacroProbeError, c_macro_values, value_matches
+
 REPOSITORY = Path(__file__).resolve().parents[1]
-HEADER = REPOSITORY / "model-families/ling/include/sparkpipe/spark_ling_model.h"
-DEFINES_HEADER = REPOSITORY / "model-families/ling/include/sparkpipe/llm_defines.h"
-DRIVER_DEFINES_HEADER = REPOSITORY / "model-families/common/include/sparkpipe/spark_driver_defines.h"
+INCLUDE_DIRECTORIES = [REPOSITORY / "model-families/ling/include",
+                       REPOSITORY / "model-families/common/include"]
 CONTRACT = REPOSITORY / "model_contracts/ling_authoritative.json"
 
 BINDINGS = {
@@ -62,128 +62,75 @@ BINDINGS = {
 }
 
 
-class MacroExpression(ast.NodeVisitor):
-    """Evaluate a restricted arithmetic AST over resolved macro names."""
-
-    def __init__(self, resolver: "MacroTable", seen: frozenset) -> None:
-        self.table = resolver
-        self.seen = seen
-        self.result = 0.0
-
-    def visit_Expression(self, node: ast.Expression) -> None:
-        self.result = self.visit(node.body)
-
-    def visit_Constant(self, node: ast.Constant) -> float:
-        if not isinstance(node.value, (int, float)):
-            raise AssertionError(f"non-numeric constant {node.value!r}")
-        return float(node.value)
-
-    def visit_Name(self, node: ast.Name) -> float:
-        if node.id in self.table.defines and node.id not in self.table.resolved:
-            self.table.resolve(node.id, self.seen)
-        if node.id not in self.table.resolved:
-            raise AssertionError(f"unknown symbol {node.id}")
-        return self.table.resolved[node.id]
-
-    def visit_BinOp(self, node: ast.BinOp) -> float:
-        left = self.visit(node.left)
-        right = self.visit(node.right)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.Div):
-            return left / right
-        raise AssertionError(f"unsupported operator {type(node.op).__name__}")
-
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> float:
-        value = self.visit(node.operand)
-        if isinstance(node.op, ast.USub):
-            return -value
-        if isinstance(node.op, ast.UAdd):
-            return value
-        raise AssertionError(f"unsupported unary operator {type(node.op).__name__}")
-
-    def generic_visit(self, node: ast.AST) -> float:
-        raise AssertionError(f"unsupported syntax {type(node).__name__}")
-
-
-class MacroTable:
-    def __init__(self, header: str) -> None:
-        joined = header.replace("\\\n", " ")
-        self.defines: dict[str, str] = {}
-        for match in re.finditer(r"^#define\s+(\w+)[ \t]+([^\n]+?)\s*$", joined, re.M):
-            self.defines[match.group(1)] = match.group(2).strip()
-        self.resolved: dict[str, float] = {}
-
-    def resolve(self, name: str, seen: frozenset = frozenset()) -> float:
-        if name in self.resolved:
-            return self.resolved[name]
-        if name not in self.defines:
-            raise AssertionError(f"header missing #define {name}")
-        if name in seen:
-            raise AssertionError(f"cyclic define {name}")
-        text = self.defines[name]
-        try:
-            value = float(text.rstrip("uf"))
-        except ValueError:
-            stripped = re.sub(r"(\d)[uf]\b", r"\1", text)
-            tree = ast.parse(stripped, mode="eval")
-            visitor = MacroExpression(self, seen | {name})
-            visitor.visit(tree)
-            value = visitor.result
-        self.resolved[name] = value
-        return value
+def composed_expectations(contract: dict) -> dict[str, int]:
+    mla = contract["mla"]
+    kda = contract["kda"]
+    model = contract["model"]
+    prefix = "SPARK_LING_MODEL_"
+    return {
+        prefix + "MLA_QUERY_DIMENSION":
+            mla["head_count"] * (mla["qk_nope_head_dimension"] + mla["qk_rope_head_dimension"]),
+        prefix + "MLA_KV_A_DIMENSION": mla["latent_dimension"] + mla["qk_rope_head_dimension"],
+        prefix + "MLA_KV_B_DIMENSION":
+            mla["head_count"] * (mla["qk_nope_head_dimension"] + mla["value_head_dimension"]),
+        prefix + "MLA_ATTENTION_PROJECTION_DIMENSION": mla["head_count"] * mla["value_head_dimension"],
+        prefix + "KDA_QKV_DIMENSION": kda["head_count"] * kda["key_dimension"],
+        prefix + "KDA_VALUE_DIMENSION": kda["head_count"] * kda["value_dimension"],
+        prefix + "KDA_STATE_BYTES_PER_LAYER":
+            kda["head_count"] * kda["key_dimension"] * kda["value_dimension"] * 4,
+        prefix + "KV_SLOT_BYTES": (mla["latent_dimension"] + mla["qk_rope_head_dimension"]) * 2,
+        prefix + "WEIGHT_LAYER_COUNT": model["layer_count"] + 1,
+    }
 
 
 def main() -> int:
-    table = MacroTable(DRIVER_DEFINES_HEADER.read_text(encoding="utf-8")
-                       + "\n"
-                       + DEFINES_HEADER.read_text(encoding="utf-8")
-                       + "\n"
-                       + HEADER.read_text(encoding="utf-8"))
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-    failures = 0
+    prefix = "SPARK_LING_MODEL_"
+    layer_count = contract["model"]["layer_count"]
+    composed = composed_expectations(contract)
+    mla_flags = [prefix + f"LAYER_IS_MLA({layer}u)" for layer in range(layer_count)]
+    kda_flags = [prefix + f"LAYER_IS_KDA({layer}u)" for layer in range(layer_count)]
+    try:
+        values = c_macro_values(INCLUDE_DIRECTORIES, "sparkpipe/spark_ling_model.h",
+                                list(BINDINGS.values()) + list(composed) + mla_flags + kda_flags,
+                                ("SPARK_BATCH_BUCKET=1024u",))
+    except MacroProbeError as error:
+        print(f"FAILED {error}")
+        return 1
+    failures = []
     for (section, key), name in BINDINGS.items():
         expected = contract[section][key]
-        actual = table.resolve(name)
-        if float(expected) != actual:
-            print(f"MISMATCH {name}: header {actual} contract {expected}")
-            failures += 1
-    composed = {
-        "SPARK_LING_MODEL_MLA_QUERY_DIMENSION": 32 * 192,
-        "SPARK_LING_MODEL_MLA_KV_A_DIMENSION": 512 + 64,
-        "SPARK_LING_MODEL_MLA_KV_B_DIMENSION": 32 * (128 + 128),
-        "SPARK_LING_MODEL_MLA_ATTENTION_PROJECTION_DIMENSION": 32 * 128,
-        "SPARK_LING_MODEL_KDA_QKV_DIMENSION": 32 * 128,
-        "SPARK_LING_MODEL_KDA_VALUE_DIMENSION": 32 * 128,
-        "SPARK_LING_MODEL_KDA_STATE_BYTES_PER_LAYER": 32 * 128 * 128 * 4,
-        "SPARK_LING_MODEL_KV_SLOT_BYTES": (512 + 64) * 2,
-        "SPARK_LING_MODEL_WEIGHT_LAYER_COUNT": 42 + 1,
-    }
+        if not value_matches(expected, values[name]):
+            failures.append(f"{name}: header {values[name]!r} contract {expected!r}")
     for name, expected in composed.items():
-        actual = table.resolve(name)
-        if float(expected) != actual:
-            print(f"MISMATCH composed {name}: header {actual} expected {expected}")
-            failures += 1
-    if 7 + 35 != 42 or 42 % 6 != 0:
-        print("MISMATCH hybrid layer split does not cover the stack in whole groups")
-        failures += 1
-    if 32 % 16 != 0 or 512 % 16 != 0:
-        print("MISMATCH TP16: head and expert counts must divide by 16")
-        failures += 1
-    if not 4 < 8:
-        print("MISMATCH router top groups must be a strict subset of groups")
-        failures += 1
-    if (2560 % 128 != 0) or (768 % 128 != 0):
-        print("MISMATCH expert geometry must tile 128-block scale groups")
-        failures += 1
+        if not value_matches(expected, values[name]):
+            failures.append(f"composed {name}: header {values[name]!r} expected {expected!r}")
+    period = values[prefix + "ATTENTION_PERIOD"]
+    phase = values[prefix + "GLOBAL_ATTENTION_PHASE"]
+    mla_layers = [layer for layer, flag in enumerate(mla_flags) if values[flag] != 0.0]
+    kda_layers = [layer for layer, flag in enumerate(kda_flags) if values[flag] != 0.0]
+    if mla_layers != [layer for layer in range(layer_count) if layer % period == phase]:
+        failures.append(f"LAYER_IS_MLA marks layers {mla_layers}")
+    if sorted(mla_layers + kda_layers) != list(range(layer_count)):
+        failures.append("every layer must be exactly one of MLA or KDA")
+    if len(mla_layers) != values[prefix + "MLA_LAYER_COUNT"] or \
+            len(kda_layers) != values[prefix + "KDA_LAYER_COUNT"]:
+        failures.append(f"{len(mla_layers)} MLA and {len(kda_layers)} KDA layers disagree with the "
+                        f"header counts {values[prefix + 'MLA_LAYER_COUNT']} and "
+                        f"{values[prefix + 'KDA_LAYER_COUNT']}")
+    if values[prefix + "MLA_HEAD_COUNT"] % 16 or values[prefix + "MOE_EXPERT_COUNT"] % 16:
+        failures.append("TP16: head and expert counts must divide by 16")
+    if not values[prefix + "MOE_ROUTER_TOP_GROUPS"] < values[prefix + "MOE_ROUTER_GROUP_COUNT"]:
+        failures.append("router top groups must be a strict subset of groups")
+    if values[prefix + "MOE_INTERMEDIATE_DIMENSION"] % 128 or values[prefix + "HIDDEN_DIMENSION"] % 128:
+        failures.append("expert geometry must tile 128-block scale groups")
     if failures:
-        print(f"FAILED {failures} binding(s)")
+        for failure in failures:
+            print(f"MISMATCH {failure}")
+        print(f"FAILED {len(failures)} binding(s)")
         return 1
-    print("PASS ling header matches the authoritative contract (35 bindings + 9 composed)")
+    print(f"PASS ling header matches the authoritative contract ({len(BINDINGS)} bindings + "
+          f"{len(composed)} composed + {layer_count} layer kinds, evaluated by the C compiler)")
     return 0
 
 
