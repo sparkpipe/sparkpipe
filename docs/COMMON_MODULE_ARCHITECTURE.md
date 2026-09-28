@@ -85,7 +85,7 @@ identity gate for the first adoption.
 | 4 | `common_serving_frame` | the deployment-config handler skeleton | 12 | glm52 adapter | glm52, glm5_next, qwen38-27b (its 2,322-LOC third-generation frame server) |
 | 5 | `common_stagepack_format_ext.h` | stagepack structs + validator + per-family tensor-kind table (the 64-byte entry is already proven cross-family identical by DRY-1) | 25 | qwen4_flash format.h | all 13 families (the quintuplets: 1,879 LOC) |
 | 6 | `common_pack_load_bind` | pack load/bind over `spark_pack_load_common.h` | 12 (existing macro keys) | gemma4's adoption | ling, laguna, muse, k3, dsv5 |
-| 7 | `common_kv_frame` (`SparkModuleKvPrepareFrame` et al.) | KV prepare/frame plumbing | 10 | qwen38_max module.c | qwen38_max, qwen4_flash (249 lines BYTE-identical today) |
+| 7 | `common_kv_frame` (`LmKvFramePrepareFrame` et al.) | the JIT KV tier: frame preparation, eviction, restore batches | 10 | qwen38_max module.c | qwen38_max, qwen4_flash, muse_glimmer (all three use it) |
 | 8 | `common_kv_geometry.h` | capacity fillers + geometry asserts | 9+12 | glm52/glm5_next twin (differs by exactly 7 constants) | glm pair, k3 (kills its `abi_version` drift), ling |
 | 9 | `spark_hybrid_state.h` | KDA/GDN/sliding state: ordinal builder, slot-bytes algebra, pool sizing (kernels stay in inference/kernels) | 11 | k3 KDA | k3, ling, gemma4, laguna |
 | 10 | `spark_rope_plan.h` | rope table builder (theta/yarn/table) + upload; launches ride the shared LmRopePerHeadKernel | 8 | ling | ling, gemma4, qwen trio, glm pair |
@@ -270,10 +270,19 @@ SparkStatus SparkCommonPackLoadBind(const SparkLlmPackPlan *plan,   /* 12 macro 
 ```
 
 ### M-7 `common_kv_frame`
-```c
-SparkStatus SparkModuleKvPrepareFrame(SparkLlmKvFrameRequest *request,
-    SparkLlmKvFrame *out);   /* qwen38_max/qwen4_flash copies are BYTE-identical */
-```
+
+`common/common_kv_frame.h` runs the JIT KV tier for qwen38_max, qwen4_flash and muse_glimmer. Each module reaches it through `family/module/spark_module_open_kv_tier.h`, `spark_module_kv_frame_ops.h` and `spark_module_kv_prepare_frame.h`, and its `llm_defines.h` names the frame's constants (`SPARK_LLM_KV_BLOCK_TOKENS`, `SPARK_LLM_KV_STAGING_RECORDS` and the rest).
+
+`LmKvFramePrepareFrame` prepares one decode frame in six steps, each its own function:
+
+1. `LmKvFrameCheckTable` validates the block table and grows the logical-to-slot map.
+2. `LmKvFrameCollectLanes` lists the frame's lanes in the order their first row appears, each with the blocks its longest row needs.
+3. `LmKvFrameSetPins` pins the blocks that are already resident.
+4. `LmKvFrameRestoreMissing` claims a slot for each missing block (`LmKvFrameClaimSlot`, which evicts when the pool is full) and restores the blocks in batches of `SPARK_LLM_KV_STAGING_RECORDS` (`LmKvFrameFlushRestore`).
+5. `LmKvFrameUploadTables` and `LmKvFrameMapRows` upload the frame's block table and slot mapping.
+6. The pins are released. On failure, `LmKvFrameUnwind` also returns the slots claimed for blocks that were not restored.
+
+`tests/test_llm_module_contract.c` covers restores that span several batches, lane order, write-back on eviction, and the unwind.
 
 ### M-8 `common_kv_geometry.h` — capacity fillers + asserts (glm twins differ by 7 keys).
 

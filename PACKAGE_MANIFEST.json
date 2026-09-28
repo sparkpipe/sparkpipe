@@ -168,8 +168,8 @@
     },
     {
       "path": "common/common_kv_frame.h",
-      "sha256": "31eca29b9ee9fdcc5424eec67f0f976258c82475fbbf478bf0bbbeb1aae34632",
-      "size_bytes": 19296
+      "sha256": "ab2f0bf40751d9b52f9adbe6ff27810a297c2327342c65756713cd5ab712f60b",
+      "size_bytes": 18481
     },
     {
       "path": "common/common_kv_geometry.h",
@@ -643,8 +643,8 @@
     },
     {
       "path": "docs/COMMON_MODULE_ARCHITECTURE.md",
-      "sha256": "fe2db3b96bd0f7ec29c628d2c0d292baa52579381c3ba66a9dc679e71e03dbce",
-      "size_bytes": 20680
+      "sha256": "146a482b814d872fc0cc739209a34f1f7474e31e4e7be4ef4f52edf53235fc00",
+      "size_bytes": 21862
     },
     {
       "path": "docs/CONSTANT_AUDIT.md",
@@ -15265,5 +15265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73927570
+  "total_bytes": 73927937
 }
