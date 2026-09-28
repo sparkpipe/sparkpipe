@@ -60,7 +60,7 @@ MODULE_CUDA_OBJECT := $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SO
 VALIDATION_CONFIGURATION_SHA256 := $(shell printf '%s\n' '$(RUNTIME_CONFIGURATION)' | sha256sum | awk '{print $$1}')
 VALIDATION_RECIPE ?= $(MODULE_FAMILY).resident_decode_stage.$(CUDA_ARCH).gpu.config_$(VALIDATION_CONFIGURATION_SHA256).v1
 
-.PHONY: all archive contract validate publish clean require_cuda_target require_gpu_validator require_stage_pack variants cold_variants publish_variants
+.PHONY: all archive contract validate publish adapter clean require_cuda_target require_gpu_validator require_stage_pack variants cold_variants publish_variants
 
 all: contract
 
@@ -222,6 +222,28 @@ publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_A
 		--validator $(GPU_VALIDATOR) \
 		--validator-arg $(VALIDATION_CONFIGURATION_SHA256) \
 		$(GPU_VALIDATOR_ARGUMENTS)
+
+ifeq ($(shell uname -s),Darwin)
+ADAPTER_SHARED_FLAGS := -dynamiclib
+ADAPTER_LIBRARY_EXT := dylib
+else
+ADAPTER_SHARED_FLAGS := -shared
+ADAPTER_LIBRARY_EXT := so
+endif
+ADAPTER_LIBRARY ?= $(BUILD_DIRECTORY)/lib$(patsubst %_resident_decode_stage,%,$(notdir $(CURDIR)))_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
+ADAPTER_VARIANT_FLAGS = -I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(lastword $(MODULE_BATCH_VARIANT_BUCKETS))
+ADAPTER_CUDA_FLAGS = -I$(REPOSITORY_ROOT)/src -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS)
+ADAPTER_CUDA_LINK = -L"$(CUDA_HOME)/lib64" -lcudart
+
+adapter:
+	@test -n "$(ADAPTER_SOURCE)" || { echo "$(MODULE_FAMILY): this module names no ADAPTER_SOURCE, so it builds no serving adapter" >&2; exit 1; }
+	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
+	@mkdir -p "$(dir $(ADAPTER_LIBRARY))"
+	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) $(ADAPTER_FLAGS) $(ADAPTER_SOURCE) \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
+		$(ADAPTER_LINK) -ldl -pthread -o "$(ADAPTER_LIBRARY)"
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)

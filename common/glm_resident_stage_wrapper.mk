@@ -44,28 +44,5 @@ BUILD_DIRECTORY ?= $(GLM_BUILD_ROOT)/$(GLM_FAMILY)_resident_decode_stage/$(EXPER
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/lib$(GLM_FAMILY)_resident_decode_stage_$(EXPERT_CODEC).a
 MODULE_COMMON_HOST_SOURCES := $(GLM_REPO_ROOT)/runtime/stage_module_common.c
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-GLM_ADAPTER_SHARED_FLAGS := -dynamiclib
-GLM_ADAPTER_LIBRARY_EXT := dylib
-else
-GLM_ADAPTER_SHARED_FLAGS := -shared
-GLM_ADAPTER_LIBRARY_EXT := so
-endif
-GLM_ADAPTER_SOURCE := $(GLM_MODULE_ROOT)/source/spark_$(GLM_FAMILY)_serving_adapter.c
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/lib$(GLM_FAMILY)_serving_adapter_$(EXPERT_CODEC).$(GLM_ADAPTER_LIBRARY_EXT)
-
-.PHONY: adapter
-
-adapter:
-	$(MAKE) -C $(GLM_REPO_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(GLM_ADAPTER_SHARED_FLAGS) \
-		-I$(GLM_REPO_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(lastword $(MODULE_BATCH_VARIANT_BUCKETS)) \
-		$(GLM_ADAPTER_SOURCE) \
-		$(GLM_REPO_ROOT)/build/libsparkpipe_runtime.a \
-		$(GLM_REPO_ROOT)/build/libsparkpipe_model_common.a \
-		$(GLM_REPO_ROOT)/build/libsparkpipe_core.a -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
-
-.DEFAULT_GOAL := all
+ADAPTER_SOURCE := $(GLM_MODULE_ROOT)/source/spark_$(GLM_FAMILY)_serving_adapter.c
+ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS)

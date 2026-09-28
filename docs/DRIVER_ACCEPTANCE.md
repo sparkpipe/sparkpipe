@@ -118,6 +118,12 @@ with the flags their own builds pass and checks all of this against their
 descriptions and module Makefiles. qwen38_max's revision comes from its build
 invocation, so the test supplies the one its in-tree callers pass.
 
+Module Makefiles build their adapter with the one `adapter` rule in
+`modules/resident_decode_stage_rules.mk`. A module names `ADAPTER_SOURCE`,
+`ADAPTER_FLAGS` and, when it links the CUDA runtime, `ADAPTER_LINK`; the
+library lands in `$(BUILD_DIRECTORY)/lib<family>_serving_adapter_<codec>`,
+where `tools/module_build_release.sh` looks for it.
+
 ## Performance evidence
 
 Record raw per-request latency and aggregate output rate, prefill throughput,

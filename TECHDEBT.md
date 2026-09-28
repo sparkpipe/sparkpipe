@@ -426,15 +426,11 @@ progress diary.
   - such a description exists only for gemma4 31B (bf16), glm52 (seven
     codecs), glm5_next (fp8) and minimax (bf16); laguna, ling, qwen38_max,
     qwen4_flash and glm5_next's other codecs need `FIRMWARE_JSON`;
-  - dsv41_flash, dsv4, hy4, muse_glimmer and qwen38_27b have no module
-    `adapter` target (their adapters build in the root Makefile), and
-    neither does the gemma4 26B's `Makefile.moe`, so the script cannot
-    release them;
-  - the seven module `adapter` recipes (gemma4, glm5_next, laguna, ling,
-    minimax, qwen38_max, qwen4_flash) differ only in their source file,
-    compile flags, output path and CUDA link; one rule in
-    `modules/resident_decode_stage_rules.mk` could build them all, checked
-    by comparing each family's `make -n adapter` before and after.
+  - dsv4, muse_glimmer and qwen38_27b build their adapters in the root
+    Makefile or a family release script, and dsv41_flash and hy4 have no
+    serving adapter. None of their module Makefiles names an
+    `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
+    `make adapter` refuses and the script cannot release them.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
