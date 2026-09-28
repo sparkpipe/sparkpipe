@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -240,21 +239,6 @@ def module_flags(family: str, codec: str) -> list[str]:
     return flags
 
 
-def undefined_symbols(output: str) -> list[str]:
-    names = set(re.findall(r"undefined reference to `([A-Za-z_][A-Za-z0-9_]*)'", output))
-    names |= set(re.findall(r'"_([A-Za-z_][A-Za-z0-9_]*)", referenced from', output))
-    return sorted(names)
-
-
-def link(command: list[str], stubs: Path) -> subprocess.CompletedProcess:
-    built = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    missing = undefined_symbols(built.stderr + built.stdout)
-    if built.returncode == 0 or not missing:
-        return built
-    stubs.write_text("#include <stdlib.h>\n" + "".join(f"void {name}(void) {{ abort(); }}\n" for name in missing))
-    return subprocess.run(command + [str(stubs)], cwd=ROOT, capture_output=True, text=True)
-
-
 def run_case(case: dict, mesh_object: Path, directory: Path) -> str | None:
     source = directory / f"{case['family']}.c"
     binary = directory / case["family"]
@@ -272,7 +256,7 @@ def run_case(case: dict, mesh_object: Path, directory: Path) -> str | None:
                str(ROOT / "tests/cuda_stub/cuda_runtime_stub.c"),
                str(ROOT / "build/libsparkpipe_runtime.a"), str(ROOT / "build/libsparkpipe_core.a"),
                "-pthread", "-lm", "-o", str(binary)]
-    built = link(command, directory / f"{case['family']}_stubs.c")
+    built = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if built.returncode != 0:
         return f"{case['family']}: harness did not build\n{built.stderr[-1500:]}"
     ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)

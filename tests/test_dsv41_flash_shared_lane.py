@@ -18,6 +18,8 @@ Lane 4 locks (PR #1083 lane_assignments.json / fleet registry band):
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GENERATOR = ROOT / "tools/dsv41_flash_gen_deployment.py"
 WRAPPER = ROOT / "tools/dsv41_flash_shared_lane.sh"
+FLEET_AGENT = ROOT / "tools/fleet_node_agent.sh"
 LANE_HOSTS = ["spark4", "spark5", "spark6", "spark7"]
 LANE_CONTROL = (23064, 23079)
 LANE_COLLECTIVE = (53064, 53079)   # PR #1094 renumber (67064+ is not bindable)
@@ -44,13 +47,34 @@ def in_block(port, block):
     return block[0] <= port <= block[1]
 
 
+def fleet_weightd_socket():
+    sockets = re.findall(r'/sparkpipe_weightd" --socket (\S+)',
+                         FLEET_AGENT.read_text(encoding="utf-8"))
+    if len(sockets) != 1:
+        raise AssertionError(f"fleet agent weightd launch sockets: {sockets}")
+    return sockets[0]
+
+
+def host_environment():
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith(("SPARK_QUEUE_", "SPARK_WEIGHTD_", "DSV41_FLASH_"))}
+
+
 def run(argv, env=None):
-    return subprocess.run(argv, capture_output=True, text=True, env=env)
+    return subprocess.run(argv, capture_output=True, text=True,
+                          env=host_environment() if env is None else env)
 
 
 def main() -> int:
-    failures = []
     tmp = tempfile.mkdtemp(prefix="dsv41-lane4-")
+    try:
+        return check_lane(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_lane(tmp) -> int:
+    failures = []
     tree = os.path.join(tmp, "deployment")
 
     result = run([sys.executable, str(GENERATOR), "--output", tree])
@@ -111,10 +135,16 @@ def main() -> int:
         failures.append(f"eos {deployment['eos_token_ids']} != [1] (family header)")
     if "socket_path" not in deployment.get("weightd", {}):
         failures.append("deployment missing weightd.socket_path")
-    if deployment["weightd"]["socket_path"] != "/run/sparkpipe-weightd-shared/weightd.sock":
+    if deployment["weightd"]["socket_path"] != fleet_weightd_socket():
         failures.append(
             f"weightd socket {deployment['weightd']['socket_path']} is not "
-            "the fleet-wide shared daemon path")
+            "the socket the fleet agent starts weightd on")
+    committed = ROOT / "deployment" / "dsv41_flash_tp4"
+    for name in ["model_resident.json"] + [
+            f"config/stage_{rank:02d}.json" for rank in range(4)]:
+        if json.loads(Path(tree, name).read_text()) != json.loads(
+                (committed / name).read_text()):
+            failures.append(f"committed {name} is not the generator output")
 
     # -- the wrapper, prepare mode ----------------------------------------
     root = os.path.join(tmp, "runtime")
@@ -128,7 +158,7 @@ def main() -> int:
     # rank 2 has a pack but no digest sidecar: the attach law fail-close
     Path(packs, "rank2.spstage").write_bytes(b"pack-bytes-2")
 
-    base_env = dict(os.environ,
+    base_env = dict(host_environment(),
                     SPARK_QUEUE_RUNTIME_ROOT=os.path.join(root, "r1"),
                     SPARK_QUEUE_RANK="1",
                     SPARK_WEIGHTD_SOCKET="/tmp/shared-weightd.sock")

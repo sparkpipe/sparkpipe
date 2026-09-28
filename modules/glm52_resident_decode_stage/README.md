@@ -146,3 +146,40 @@ make -C modules/glm52_resident_decode_stage publish \
 ```
 
 The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks and the maximum full-stage submission-to-completion latency ceiling.
+
+## Lazy consumer and serving adapter
+
+Moved from `docs/WEIGHTD_DESIGN.md` on 2026-09-28; the shared weightd contract
+stays there.
+
+LAZY CONSUMER: the lazy pack qualifies the FP8 codec only; BF16 keeps the
+resident eager load. Routed experts stay in the arena's sparse address space
+and materialize through per-wave acquisition. The module retains pack offsets
+for lease binding, while non-expert tensors come from the compact spine.
+Kernel-side, expert pointers are consumer-local leased VMM addresses; the
+weightd map exposes only acquired extents. Route results publish to host
+storage (event plus pinned host mirror) only for slots wired for lazy
+acquisition; resident and validator slots skip it. Retained lazy chains
+awaiting lease recovery are keyed by pipeline slot in the module state.
+
+FLAT RANKS: the adapter exposes FLAT_RANKS flat ranks, one per TP rank, in a
+single PP stage. residentd fans each submission out to every rank
+(PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the adapter maps
+flat rank to tp_rank and pins the firmware stage to 0. The rank count is a
+per-deployment environment selection (`SPARK_GLM52_SERVING_FLAT_RANKS`, 8 or 16),
+so one adapter artifact serves TP8 and TP16 while each keeps its own adapter
+identity. ValidateForAdapter pins deployment node_count == stage_count and the
+stage configs' tp_degree == TP_DEGREE. Unset, empty or malformed values leave
+the descriptor unconfigured, and the host's adapter-load validation fails
+closed.
+
+LAUNCHER: `tools/fleet_serve.sh` forwards `SPARK_GLM52_SERVING_FLAT_RANKS` to
+residentd verbatim, with no default. It is a legacy manual launcher: it starts
+residentds over SSH outside the fleet agent, defaults the API host to spark0,
+and sets none of the fleet's serving variables. Do not run it on a root the
+fleet agent manages (`docs/FLEET_RELEASE_RUNBOOK.md` §4).
+
+DRIVER MODEL ID: the expected DRIVER model id must equal the model.id of the
+firmware the driver was compiled from (ServingAdapterTemplateLoadDriver compares
+them). The bf16 arm's firmware pins the 5.3-full identity; every other codec's
+firmware keeps the 5.2 identity. GLM52_EXPERT_WEIGHT_CODEC is a numeric define.

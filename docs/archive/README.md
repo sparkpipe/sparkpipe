@@ -11,7 +11,10 @@ without reproducing it against the current merged source and hardware.
 
 Current documentation is indexed by [`../README.md`](../README.md):
 
-- [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) defines the selected system.
+- [`../../README.md`](../../README.md) describes the system; the old
+  `ARCHITECTURE.md` is archived here.
+- [`../ARCHIVE_INDEX.md`](../ARCHIVE_INDEX.md) gives the reason each file here
+  was archived.
 - [`../../TECHDEBT.md`](../../TECHDEBT.md) lists unfinished implementation work.
 - [`../../PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md) separates retained
   measurements, projections, and target gates.

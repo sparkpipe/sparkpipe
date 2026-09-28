@@ -1,0 +1,774 @@
+{
+ "provenance": "read-only copy from spark0:/tmp on 2026-09-28",
+ "remote_root": "spark0:/tmp/sparkpipe-perf-606cc825ca77-graph-r2/",
+ "files": {
+  "run.json": {
+   "sha256": "f628664f18a0e34818b19bcabc6440123f52ae7069ca8c8fa2895598fc8b0523",
+   "content": {
+    "source_commit": "606cc825ca77d6ca9c3f20828b8396871e0c0f54",
+    "root": "/tmp/sparkpipe-perf-606cc825ca77-graph-r2",
+    "rank": 0,
+    "mode": "graph",
+    "pack": {
+     "path": "/home/spark0/sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank0.sp",
+     "bytes": 21706046976
+    },
+    "fixture_id": "recNu3MXkvWUzHZr9",
+    "budget_bytes": {
+     "weightd": 34359738368,
+     "expert_pool": 25769803776,
+     "spine": 8589934592,
+     "model_plan": 17179869184
+    },
+    "trace": true
+   }
+  },
+  "receipt.json": {
+   "sha256": "da6aa7cb25989c0780bc7cc577e9db801ee981723791ab3d864d8fce5306fefe",
+   "content": {
+    "source_commit": "606cc825ca77d6ca9c3f20828b8396871e0c0f54",
+    "rank": 0,
+    "environment": {
+     "SPARK_WEIGHTD_ATTACH": "1",
+     "SPARK_WEIGHTD_SOCKET": "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/weightd.sock",
+     "SPARK_WEIGHTD_DEVICE_BYTES_MAX": "34359738368",
+     "SPARK_WEIGHTD_EXPERT_POOL_BYTES": "25769803776",
+     "SPARK_WEIGHTD_SPINE_BUDGET_BYTES": "8589934592",
+     "SPARK_WEIGHTD_KV_RESERVE_BYTES": "0",
+     "SPARK_WEIGHTD_MESH_DIR": "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/mesh",
+     "SPARK_WEIGHTD_LATCH_PORT": "30048",
+     "SPARK_TP_WAIT_MODE": "hardware",
+     "SPARK_GLM5_NEXT_GRAPH_PATH": "1",
+     "SPARK_GLM5_NEXT_PIN_EXPERTS": "1",
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32"
+    },
+    "children": [
+     {
+      "name": "weightd",
+      "pid": 2879931,
+      "argv": [
+       "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/bin/sparkpipe_weightd",
+       "--socket",
+       "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/weightd.sock",
+       "--device-bytes-max",
+       "34359738368",
+       "--mesh-rank",
+       "0",
+       "--mesh-rank-mask",
+       "65535",
+       "--mesh-interface",
+       "rocep1s0f1",
+       "--mesh-sgid-index",
+       "3",
+       "--mesh-dir",
+       "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/mesh"
+      ],
+      "started_seconds": 0.0003780599217861891,
+      "exit": 0,
+      "proc_absent": true
+     },
+     {
+      "name": "residentd",
+      "pid": 2882502,
+      "argv": [
+       "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/bin/sparkpipe_model_residentd",
+       "--deployment",
+       "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/deployment.json",
+       "--rank-index",
+       "0"
+      ],
+      "started_seconds": 13.029005224932916,
+      "exit": 0,
+      "proc_absent": true
+     }
+    ],
+    "terminal": "controller stopped run",
+    "elapsed_seconds": 192.10589050897397
+   }
+  },
+  "benchmark.json": {
+   "sha256": "ed02b808a71008ff137b567473173f5bfe13d9c426b55a8725db4f1d0cdd6281",
+   "content": {
+    "valid": false,
+    "process_status": 1,
+    "errors": [
+     "missing request completion"
+    ],
+    "token_count": 17,
+    "sequence_count": 1,
+    "token_order": "arrival",
+    "command": [
+     "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/bin/sparkpipe_model_batch",
+     "--deployment",
+     "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/deployment.json",
+     "--runtime-root",
+     "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/runtime",
+     "--batch",
+     "/tmp/sparkpipe-perf-606cc825ca77-graph-r2/batch.json",
+     "--profile-stages"
+    ],
+    "stderr_tail": "letion_ns=576118025265566 device_bytes=16 host_bytes=16\nsparkpipe_stage_profile submission=192 stage=11 kind=2 lanes=1 rows=1 status=0 flags=3 queue_ns=0 service_ns=77878427 elapsed_ns=78335701 completion_ns=576118028040788 device_bytes=16 host_bytes=16\nsparkpipe_stage_profile_summary events=3072 dropped=0\nsparkpipe_model_batch_failure status=4 stage=3\nsparkpipe_model_batch_pipeline submitted=193 continued=191 admitted=193 rejected=0 leases=0\nsparkpipe_model_batch_status=4 terminal=0 requests=1\n",
+    "start": {
+     "monotonic_ns": 576099114358217,
+     "realtime_ns": 1790073401658334014
+    },
+    "finish": {
+     "monotonic_ns": 576208504146742,
+     "realtime_ns": 1790073511048122827
+    }
+   }
+  }
+ },
+ "not_copied_sha256": {
+  "rank0.cupti.log": "a13f25a9ad5f76af7a04fe5086cd6abb58def929ab1f2189a53d3be74b89de23",
+  "batch.events.jsonl": "1591546c3c3ba4a639102b4a7398a16cd78c493d2fec2d7d08a7ab8726bd43aa"
+ },
+ "cupti_token0_to16": {
+  "regenerated": "2026-09-28 from the retained rank0.cupti.log (sha256 above) with tools/tp_cupti_trace_report.py at ec7f2d1; trace path rewritten to the remote file",
+  "command": "python3 tools/tp_cupti_trace_report.py rank0.cupti.log --clock monotonic --start-ns 576116547247054 --end-ns 576118028049892 --output token0-to16.json",
+  "report": {
+   "trace": "spark0:/tmp/sparkpipe-perf-606cc825ca77-graph-r2/rank0.cupti.log",
+   "status": "COMPLETE",
+   "issues": [],
+   "anchor": {
+    "pid": 2882502,
+    "cupti_ns": 1790073333279205011,
+    "monotonic_ns": 576030735229934,
+    "realtime_ns": 1790073333279204995,
+    "flush_period_ms": 1000
+   },
+   "exit": {
+    "buffers_requested": 121,
+    "buffers_completed": 121
+   },
+   "returned_buffers": 121,
+   "dropped_records": 0,
+   "invalid_gpu_records": 0,
+   "selection_ns": {
+    "cupti": [
+     1790073419091222131,
+     1790073420572024969
+    ],
+    "monotonic": [
+     576116547247054,
+     576118028049892
+    ],
+    "realtime": [
+     1790073419091222115,
+     1790073420572024953
+    ]
+   },
+   "window_ns": 1480802838,
+   "gpu_covered_ns": 902138515,
+   "gpu_uncovered_ns": 578664323,
+   "clipped_record_count": 0,
+   "categories": {
+    "compute": {
+     "records": 26096,
+     "covered_ns": 876057980,
+     "sum_record_ns": 876059868
+    },
+    "memcpy": {
+     "records": 1197,
+     "covered_ns": 3868502,
+     "sum_record_ns": 3868502
+    },
+    "memset": {
+     "records": 1520,
+     "covered_ns": 339005,
+     "sum_record_ns": 339005
+    },
+    "mesh": {
+     "records": 8832,
+     "covered_ns": 21873028,
+     "sum_record_ns": 21873124
+    }
+   },
+   "top_names": [
+    {
+     "category": "compute",
+     "name": "_Z12LmGemmKernelI12LmBf16Format5LmFp8Lj16ELj128ELj64ELj2ELj8ELb1ELj0ELb0EEv15LmGemmArguments14CUtensorMap_stS3_14LmTileGeometryS4_b",
+     "records": 672,
+     "covered_ns": 223202762,
+     "sum_record_ns": 223202762
+    },
+    {
+     "category": "compute",
+     "name": "_Z12LmGemmKernelI12LmBf16FormatS0_Lj16ELj128ELj64ELj2ELj8ELb0ELj0ELb0EEv15LmGemmArguments14CUtensorMap_stS2_14LmTileGeometryS3_b",
+     "records": 6240,
+     "covered_ns": 205078575,
+     "sum_record_ns": 205078575
+    },
+    {
+     "category": "compute",
+     "name": "_Z19Glm5NextHcMixKernelPKtPKfPfjjjf",
+     "records": 1440,
+     "covered_ns": 194211894,
+     "sum_record_ns": 194211894
+    },
+    {
+     "category": "compute",
+     "name": "_Z29Glm5NextHcSplitSinkhornKernelPKfS0_S0_jjjfPfS1_S1_",
+     "records": 1440,
+     "covered_ns": 69141982,
+     "sum_record_ns": 69141982
+    },
+    {
+     "category": "compute",
+     "name": "_Z12LmGemmKernelI12LmBf16Format5LmFp8Lj16ELj128ELj64ELj2ELj8ELb0ELj0ELb0EEv15LmGemmArguments14CUtensorMap_stS3_14LmTileGeometryS4_b",
+     "records": 672,
+     "covered_ns": 43140135,
+     "sum_record_ns": 43140135
+    },
+    {
+     "category": "compute",
+     "name": "_Z29LmLatentAttentionDecodeKernelI10Glm5NextKvLj256ELj512ELj0EEvPKtS2_8LmKvViewPKjS5_S5_jjfPtS5_",
+     "records": 176,
+     "covered_ns": 38043675,
+     "sum_record_ns": 38043675
+    },
+    {
+     "category": "compute",
+     "name": "_Z17LmTopkSmallKernelILj256ELj8ELb1ELj1ELj1ELj1EEvPKfjPjPfS1_PKtf",
+     "records": 672,
+     "covered_ns": 16971744,
+     "sum_record_ns": 16971744
+    },
+    {
+     "category": "compute",
+     "name": "_Z18LmHcPostBf16KernelPKtS0_PKfS2_Ptjjj",
+     "records": 1440,
+     "covered_ns": 14021863,
+     "sum_record_ns": 14021863
+    },
+    {
+     "category": "compute",
+     "name": "_Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf",
+     "records": 1808,
+     "covered_ns": 13617784,
+     "sum_record_ns": 13617784
+    },
+    {
+     "category": "compute",
+     "name": "_Z22LmPerHeadProjectKernelILj256ELj512ELj256ELj512ELj0EEvPKtS1_Ptjj",
+     "records": 176,
+     "covered_ns": 9714857,
+     "sum_record_ns": 9714857
+    },
+    {
+     "category": "compute",
+     "name": "_Z22LmPerHeadProjectKernelILj256ELj256ELj512ELj256ELj0EEvPKtS1_Ptjj",
+     "records": 176,
+     "covered_ns": 9711746,
+     "sum_record_ns": 9711746
+    },
+    {
+     "category": "compute",
+     "name": "_Z17LmDeltaRuleKernelILj256ELj128ELj128EfEvPhjPKjS2_S2_PKtS4_S4_PKfS6_PtjjjjS2_",
+     "records": 544,
+     "covered_ns": 7800381,
+     "sum_record_ns": 7800381
+    },
+    {
+     "category": "compute",
+     "name": "_Z25Glm5NextHcPreReduceKernelPKtPKfPtS3_jjj",
+     "records": 1440,
+     "covered_ns": 7517317,
+     "sum_record_ns": 7517317
+    },
+    {
+     "category": "compute",
+     "name": "_Z18LmRouteBuildKernelILj256ELj288EEvPKjjjPjS2_S2_jjS2_jS2_",
+     "records": 672,
+     "covered_ns": 7192243,
+     "sum_record_ns": 7192243
+    },
+    {
+     "category": "mesh",
+     "name": "_Z38SparkGlm5NextMeshHardwareRequestKernelPV27SparkWeightdMeshWaitRequestP23SparkTpMeshRoundControlmmmm",
+     "records": 2944,
+     "covered_ns": 6352573,
+     "sum_record_ns": 6352573
+    },
+    {
+     "category": "mesh",
+     "name": "_Z37SparkGlm5NextMeshHardwareDirectKernelPKhmmP23SparkTpMeshRoundControljPvmj",
+     "records": 1472,
+     "covered_ns": 5690144,
+     "sum_record_ns": 5690144
+    },
+    {
+     "category": "mesh",
+     "name": "_Z38SparkGlm5NextMeshHardwarePublishKernelPhmmPVmP23SparkTpMeshRoundControljPKvmjjj",
+     "records": 1472,
+     "covered_ns": 5067051,
+     "sum_record_ns": 5067051
+    },
+    {
+     "category": "mesh",
+     "name": "_Z36SparkGlm5NextMeshHardwareGuardKernelPVK27SparkWeightdMeshWaitRequestP23SparkTpMeshRoundControl",
+     "records": 2944,
+     "covered_ns": 4763356,
+     "sum_record_ns": 4763356
+    },
+    {
+     "category": "compute",
+     "name": "_Z18LmCausalConvKernelILj256ELj4ELj1EtEvPtPKjS2_S2_PKtPKT2_S0_jjjS2_",
+     "records": 1632,
+     "covered_ns": 3697211,
+     "sum_record_ns": 3697211
+    },
+    {
+     "category": "memcpy",
+     "name": "DtoH",
+     "records": 918,
+     "covered_ns": 3619388,
+     "sum_record_ns": 3619388
+    },
+    {
+     "category": "compute",
+     "name": "_Z34SparkLmHeadCertifiedFp8ScoreKernelPKvPKhPKfS4_S4_PfS5_jj",
+     "records": 16,
+     "covered_ns": 3427711,
+     "sum_record_ns": 3427711
+    },
+    {
+     "category": "compute",
+     "name": "_Z21LmClampedUpGateKernelILj256EEvPKtPtjf",
+     "records": 1392,
+     "covered_ns": 1474711,
+     "sum_record_ns": 1474711
+    },
+    {
+     "category": "compute",
+     "name": "_Z35Glm5NextSplitFusedProjectionsKernelILj256EEvPKtPtS2_S2_S2_jjjjj",
+     "records": 544,
+     "covered_ns": 1288274,
+     "sum_record_ns": 1288274
+    },
+    {
+     "category": "compute",
+     "name": "_Z26LmRmsNormSigmoidGateKernelILj256EEvPKtS1_PKfPtjf",
+     "records": 544,
+     "covered_ns": 943612,
+     "sum_record_ns": 943612
+    },
+    {
+     "category": "compute",
+     "name": "_Z19LmMoeFinalizeKernelILj256EEvPKtPKjPKfPtjjj",
+     "records": 672,
+     "covered_ns": 881146,
+     "sum_record_ns": 881146
+    },
+    {
+     "category": "compute",
+     "name": "_Z15LmAddRowsKernelILj256EEvPKtS1_Ptjj",
+     "records": 672,
+     "covered_ns": 733851,
+     "sum_record_ns": 733851
+    },
+    {
+     "category": "compute",
+     "name": "_Z20LmBoundedDecayKernelILj256ELj128EEvPKtPKfS3_Pfjfj",
+     "records": 544,
+     "covered_ns": 733498,
+     "sum_record_ns": 733498
+    },
+    {
+     "category": "compute",
+     "name": "_Z23LmBf16SigmoidRowsKernelILj256EEvPKtPfj",
+     "records": 544,
+     "covered_ns": 579580,
+     "sum_record_ns": 579580
+    },
+    {
+     "category": "compute",
+     "name": "_Z32Glm5NextSplitDecayGateDownKernelILj256ELj128EEvPKtPtS2_j",
+     "records": 544,
+     "covered_ns": 529723,
+     "sum_record_ns": 529723
+    },
+    {
+     "category": "compute",
+     "name": "_Z16LmCopyRowsKernelILj256EEvPKtPtjj",
+     "records": 544,
+     "covered_ns": 515453,
+     "sum_record_ns": 515453
+    },
+    {
+     "category": "compute",
+     "name": "_Z15LmKvStoreKernelI15Glm5NextIndexKvLj256EEv8LmKvViewPKtPKjS5_jj",
+     "records": 176,
+     "covered_ns": 424473,
+     "sum_record_ns": 424473
+    },
+    {
+     "category": "memset",
+     "name": "MEMSET",
+     "records": 1520,
+     "covered_ns": 339005,
+     "sum_record_ns": 339005
+    },
+    {
+     "category": "compute",
+     "name": "_Z17LmLayerNormKernelILj256EtEvPKtPKT0_S4_Ptjjf",
+     "records": 176,
+     "covered_ns": 321342,
+     "sum_record_ns": 321342
+    },
+    {
+     "category": "compute",
+     "name": "_Z15LmKvStoreKernelI10Glm5NextKvLj256EEv8LmKvViewPKtPKjS5_jj",
+     "records": 176,
+     "covered_ns": 299392,
+     "sum_record_ns": 299392
+    },
+    {
+     "category": "memcpy",
+     "name": "HtoD",
+     "records": 279,
+     "covered_ns": 249114,
+     "sum_record_ns": 249114
+    },
+    {
+     "category": "compute",
+     "name": "_Z32SparkLmHeadCertifiedScreenKernelPKfS0_PjS1_j",
+     "records": 16,
+     "covered_ns": 187485,
+     "sum_record_ns": 187485
+    },
+    {
+     "category": "compute",
+     "name": "_Z23Glm5NextIndexPackKernelILj256EEvPKtS1_Ptj",
+     "records": 176,
+     "covered_ns": 185502,
+     "sum_record_ns": 185502
+    },
+    {
+     "category": "compute",
+     "name": "_Z33SparkLmHeadCertifiedRescoreKernelPKvS0_PKjS2_PfPjj",
+     "records": 16,
+     "covered_ns": 169440,
+     "sum_record_ns": 169440
+    },
+    {
+     "category": "compute",
+     "name": "_Z24Glm5NextHcHeadMeanKernelPKtPtjjj",
+     "records": 16,
+     "covered_ns": 85886,
+     "sum_record_ns": 85886
+    },
+    {
+     "category": "compute",
+     "name": "_Z28SparkGlm5NextEmbeddingKernelPKjPKtPtjjj",
+     "records": 16,
+     "covered_ns": 41087,
+     "sum_record_ns": 41087
+    }
+   ],
+   "largest_uncovered_intervals": [
+    {
+     "duration_ns": 21802035,
+     "cupti_ns": [
+      1790073419406625167,
+      1790073419428427202
+     ],
+     "monotonic_ns": [
+      576116862650090,
+      576116884452125
+     ],
+     "realtime_ns": [
+      1790073419406625151,
+      1790073419428427186
+     ]
+    },
+    {
+     "duration_ns": 21028666,
+     "cupti_ns": [
+      1790073419156701724,
+      1790073419177730390
+     ],
+     "monotonic_ns": [
+      576116612726647,
+      576116633755313
+     ],
+     "realtime_ns": [
+      1790073419156701708,
+      1790073419177730374
+     ]
+    },
+    {
+     "duration_ns": 19963813,
+     "cupti_ns": [
+      1790073420169625707,
+      1790073420189589520
+     ],
+     "monotonic_ns": [
+      576117625650630,
+      576117645614443
+     ],
+     "realtime_ns": [
+      1790073420169625691,
+      1790073420189589504
+     ]
+    },
+    {
+     "duration_ns": 17797049,
+     "cupti_ns": [
+      1790073419515101427,
+      1790073419532898476
+     ],
+     "monotonic_ns": [
+      576116971126350,
+      576116988923399
+     ],
+     "realtime_ns": [
+      1790073419515101411,
+      1790073419532898460
+     ]
+    },
+    {
+     "duration_ns": 17794727,
+     "cupti_ns": [
+      1790073419768151386,
+      1790073419785946113
+     ],
+     "monotonic_ns": [
+      576117224176309,
+      576117241971036
+     ],
+     "realtime_ns": [
+      1790073419768151370,
+      1790073419785946097
+     ]
+    },
+    {
+     "duration_ns": 17734713,
+     "cupti_ns": [
+      1790073419136930710,
+      1790073419154665423
+     ],
+     "monotonic_ns": [
+      576116592955633,
+      576116610690346
+     ],
+     "realtime_ns": [
+      1790073419136930694,
+      1790073419154665407
+     ]
+    },
+    {
+     "duration_ns": 16289703,
+     "cupti_ns": [
+      1790073419218567030,
+      1790073419234856733
+     ],
+     "monotonic_ns": [
+      576116674591953,
+      576116690881656
+     ],
+     "realtime_ns": [
+      1790073419218567014,
+      1790073419234856717
+     ]
+    },
+    {
+     "duration_ns": 16089097,
+     "cupti_ns": [
+      1790073420150162818,
+      1790073420166251915
+     ],
+     "monotonic_ns": [
+      576117606187741,
+      576117622276838
+     ],
+     "realtime_ns": [
+      1790073420150162802,
+      1790073420166251899
+     ]
+    },
+    {
+     "duration_ns": 12922759,
+     "cupti_ns": [
+      1790073419345243920,
+      1790073419358166679
+     ],
+     "monotonic_ns": [
+      576116801268843,
+      576116814191602
+     ],
+     "realtime_ns": [
+      1790073419345243904,
+      1790073419358166663
+     ]
+    },
+    {
+     "duration_ns": 12623242,
+     "cupti_ns": [
+      1790073419474545168,
+      1790073419487168410
+     ],
+     "monotonic_ns": [
+      576116930570091,
+      576116943193333
+     ],
+     "realtime_ns": [
+      1790073419474545152,
+      1790073419487168394
+     ]
+    },
+    {
+     "duration_ns": 12283405,
+     "cupti_ns": [
+      1790073419263878380,
+      1790073419276161785
+     ],
+     "monotonic_ns": [
+      576116719903303,
+      576116732186708
+     ],
+     "realtime_ns": [
+      1790073419263878364,
+      1790073419276161769
+     ]
+    },
+    {
+     "duration_ns": 12206030,
+     "cupti_ns": [
+      1790073420424204194,
+      1790073420436410224
+     ],
+     "monotonic_ns": [
+      576117880229117,
+      576117892435147
+     ],
+     "realtime_ns": [
+      1790073420424204178,
+      1790073420436410208
+     ]
+    },
+    {
+     "duration_ns": 10853178,
+     "cupti_ns": [
+      1790073420189987692,
+      1790073420200840870
+     ],
+     "monotonic_ns": [
+      576117646012615,
+      576117656865793
+     ],
+     "realtime_ns": [
+      1790073420189987676,
+      1790073420200840854
+     ]
+    },
+    {
+     "duration_ns": 10648775,
+     "cupti_ns": [
+      1790073419861431697,
+      1790073419872080472
+     ],
+     "monotonic_ns": [
+      576117317456620,
+      576117328105395
+     ],
+     "realtime_ns": [
+      1790073419861431681,
+      1790073419872080456
+     ]
+    },
+    {
+     "duration_ns": 9772228,
+     "cupti_ns": [
+      1790073420087968171,
+      1790073420097740399
+     ],
+     "monotonic_ns": [
+      576117543993094,
+      576117553765322
+     ],
+     "realtime_ns": [
+      1790073420087968155,
+      1790073420097740383
+     ]
+    },
+    {
+     "duration_ns": 9686501,
+     "cupti_ns": [
+      1790073419178149106,
+      1790073419187835607
+     ],
+     "monotonic_ns": [
+      576116634174029,
+      576116643860530
+     ],
+     "realtime_ns": [
+      1790073419178149090,
+      1790073419187835591
+     ]
+    },
+    {
+     "duration_ns": 9496231,
+     "cupti_ns": [
+      1790073420385359533,
+      1790073420394855764
+     ],
+     "monotonic_ns": [
+      576117841384456,
+      576117850880687
+     ],
+     "realtime_ns": [
+      1790073420385359517,
+      1790073420394855748
+     ]
+    },
+    {
+     "duration_ns": 9441127,
+     "cupti_ns": [
+      1790073420098535432,
+      1790073420107976559
+     ],
+     "monotonic_ns": [
+      576117554560355,
+      576117564001482
+     ],
+     "realtime_ns": [
+      1790073420098535416,
+      1790073420107976543
+     ]
+    },
+    {
+     "duration_ns": 9364488,
+     "cupti_ns": [
+      1790073419872562868,
+      1790073419881927356
+     ],
+     "monotonic_ns": [
+      576117328587791,
+      576117337952279
+     ],
+     "realtime_ns": [
+      1790073419872562852,
+      1790073419881927340
+     ]
+    },
+    {
+     "duration_ns": 9052331,
+     "cupti_ns": [
+      1790073420346019453,
+      1790073420355071784
+     ],
+     "monotonic_ns": [
+      576117802044376,
+      576117811096707
+     ],
+     "realtime_ns": [
+      1790073420346019437,
+      1790073420355071768
+     ]
+    }
+   ],
+   "interpretation": "Coverage is the union of GPU intervals, excluding host-to-host copies. Category coverage may overlap and is not additive. Gaps are unobserved GPU activity, not automatically network or CPU time. Clock anchors are nearby samples, not cross-host synchronization."
+  }
+ }
+}

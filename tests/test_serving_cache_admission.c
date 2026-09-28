@@ -117,8 +117,11 @@ int main(void)
 	state.reject_submission = 2u;
 	if ( SparkServingCacheAdmissionRun(&cache,submissions,2u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != SPARK_STATUS_SCHEMA_ERROR || state.admitted != 0u )
 		return(4);
-	if ( SparkServingCacheAdmissionRun(&cache,submissions,1u,0u) == SPARK_STATUS_OK || state.admitted != 0u )
+	state.validated = 0u;
+	if ( SparkServingCacheAdmissionRun(&cache,submissions,1u,0u) != SPARK_STATUS_INVALID_ARGUMENT || state.admitted != 0u || state.validated != 0u )
 		return(5);
+	if ( SparkServingCacheAdmissionRun(&cache,submissions,2u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != SPARK_STATUS_INVALID_ARGUMENT || state.admitted != 0u || state.validated != 0u )
+		return(12);
 	submissions[0].work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	if ( SparkServingCacheAdmissionRun(&cache,submissions,1u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != SPARK_STATUS_OK || state.admitted != 0u )
 		return(6);
@@ -144,7 +147,8 @@ int main(void)
 			request.cache_lanes[lane].publish_identity.sha256[0] != lane + 1u )
 			return(11);
 	cache.lane_capacity = 2u;
-	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) == SPARK_STATUS_OK )
+	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) != SPARK_STATUS_INVALID_ARGUMENT )
 		return(8);
+	printf("PASS serving cache admission prepare, commit, abort, release, publish and rejection statuses\n");
 	return(0);
 }

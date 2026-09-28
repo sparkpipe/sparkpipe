@@ -1,5 +1,6 @@
 {
   "schema_version": 2,
+  "eos_token_ids": [163585],
   "coordinator_rank_index": 0,
   "adapter": {
     "shared_object_path": "lib/libk3_serving_adapter.so"
@@ -18,8 +19,8 @@
     "max_active_sequences": 16,
     "max_input_rows": 16,
     "resident_sequence_capacity": 16,
-    "kv_logical_page_capacity": 0,
-    "kv_physical_page_capacity": 0
+    "kv_logical_page_capacity": 1024,
+    "kv_physical_page_capacity": 1024
   },
   "nodes": [
     {

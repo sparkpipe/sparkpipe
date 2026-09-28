@@ -87,9 +87,7 @@ def permuted(source, records) -> bool:
     return False
 
 
-def main() -> int:
-    packer.ARMS["pro"] = dict(fixture.MINI)
-    tmp = Path(tempfile.mkdtemp())
+def run(tmp: Path) -> int:
     checkpoint = tmp / "ckpt"
     checkpoint.mkdir()
     fixture.build_checkpoint(checkpoint)
@@ -196,6 +194,12 @@ def main() -> int:
           f"repair restored verify ({skipped} already ordered); "
           "verify resume + stale-journal rejection close")
     return 0
+
+
+def main() -> int:
+    packer.ARMS["pro"] = dict(fixture.MINI)
+    with tempfile.TemporaryDirectory(prefix="mimo26-emit-order-") as raw:
+        return run(Path(raw))
 
 
 if __name__ == "__main__":

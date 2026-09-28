@@ -1,15 +1,21 @@
 # Topology Guide
 
-Why we start at TP4×PP4, what the alternatives cost, and how to hill-climb
-to the right topology per model. Written 2026-08-28 after the pack-agent
-fleet made multi-topology packs practical.
+Why TP4×PP4 was the first candidate, what the alternatives cost, and how to
+hill-climb to the right topology per model. Written 2026-08-28 after the
+pack-agent fleet made multi-topology packs practical.
+
+Updated 2026-09-28. GLM 5.3 Flash production runs TP16; its anchor is below.
+No topology is settled for any model. The deliverables are tok/s and latency,
+so hill-climb TP16, PP16, TP4×PP4 and the hybrids on measured numbers, B1
+through the largest batch that still scales.
 
 ## The "center": TP4 × PP4
 
-**16 sparks, 4 pipeline stages × 4 tensor-parallel ranks.** The default for
-large models (DSV4 Pro, Qwen Max, K3).
+**16 sparks, 4 pipeline stages × 4 tensor-parallel ranks.** The first
+candidate tried for large models (DSV4 Pro, Qwen Max, K3). It is not a
+default: the placement that measures best on tok/s and latency serves.
 
-Why it is the center:
+Why it was the center:
 - TP4 divides every supported model's dimensions cleanly (heads, experts,
   FFN intermediate all divide by 4).
 - PP4 splits layers into 4 stages — small enough that pipeline bubbles are
@@ -26,10 +32,11 @@ Why it is the center:
 - **Cost:** an all-reduce per layer (2 per layer with the gated residual).
   All-reduce data = batch_rows × hidden_dim × 2 bytes per rank.
 - **Scaling:** TP4→TP8 halves per-rank weight traffic but doubles the
-  all-reduce participant count. TP8→TP16 historically showed little gain
-  (docs/QWEN38_MAX_PERF.md: TP16 B=16 ≈ 190 tok/s projected vs TP8's
-  similar aggregate) because the all-reduce grows linearly with rank
-  count while per-rank compute halves.
+  all-reduce participant count. In the 08-28 projections, TP8→TP16 showed
+  little gain (docs/archive/QWEN38_MAX_PERF.md: TP16 B=16 ≈ 190 tok/s
+  projected vs TP8's similar aggregate) because the all-reduce grows linearly
+  with rank count while per-rank compute halves. The measured GLM 5.3 Flash
+  TP16 anchor is in the tables below.
 - **When to raise:** memory-bound single-spark models that don't fit, or
   when the model's MoE expert count divides better (K3's 896 experts = 8×112).
 
@@ -68,7 +75,10 @@ Why it is the center:
 |---|---|---|---|
 | 27B TP1 | B1 spec decode | 24.5 tok/s | spark2 prod, d7f79880 |
 | 27B TP1 | B1 no-spec | 7.7–8.03 tok/s | spark2 prod |
-| GLM 5.2 TP8 | B16 aggregate | 75.55 tok/s | PERFORMANCE_STATUS (pre-audit) |
+| GLM 5.3 Flash TP16 | B1 no-spec | 36 tok/s; 23-24.5 ms/token in 8-step graph chains, all 12096 experts pinned | lead-dev measurement, 2026-09-28 |
+| GLM 5.3 Flash TP16 | B1 memory roofline | 7.99 ms/token (2181 MB per rank at 273 GB/s) | GLM5_NEXT_ROOFLINE.md |
+| GLM 5.3 Flash, 4 Sparks, public best | B1 no-spec | 23.2 tok/s | lead-dev facts, 2026-09-28 |
+| GLM 5.2 TP8 (model deprecated) | B16 aggregate | 75.55 tok/s | PERFORMANCE_STATUS (pre-audit) |
 | Qwen Max TP4xPP4 | B1 | 1.29 tok/s | measured anchors |
 | Qwen Max TP4xPP4 | B256 aggregate | ~39 tok/s | measured anchors |
 | K3 single-stage | B1 | 18.0 tok/s | measured |
@@ -76,7 +86,7 @@ Why it is the center:
 
 ## All-reduce reality check
 
-The TP8→TP16 "no gain" report: at TP16, each all-reduce moves
+The 08-28 derivation of the TP8→TP16 "no gain" report: at TP16, each all-reduce moves
 batch × hidden × 2 bytes × (ranks-1)/ranks per rank. For B=8, hidden=8192:
 8 × 8192 × 2 × 15/16 ≈ 123 KB per rank per reduce. With 2 reduces per
 layer × 92 layers = 184 reduces/step ≈ 22.6 MB of all-reduce traffic per
@@ -91,6 +101,13 @@ launches (they capture kernels; the collective path's device kernels are
 already in the capture scope for the hidden transport backend). If the
 collectives get graph-captured with everything else, TP16's launch
 overhead disappears and the bandwidth term (~2 µs/reduce) becomes noise.
+
+**Measured since (2026-09-28).** With CUDA-graph chains and hardware waits
+(the fleet drop-in in [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md)),
+GLM 5.3 Flash TP16 runs 36 tok/s at B1, 23-24.5 ms/token against a 7.99 ms
+roofline. Collective latency is the dominant cost (lead-dev facts): an
+isolated 8 KiB 16-rank all-reduce through the weightd mesh measures 167 µs
+p50 ([GLM5_NEXT_ROOFLINE.md](GLM5_NEXT_ROOFLINE.md)), far above the wire term.
 
 ## Hill-climbing procedure
 
@@ -116,12 +133,11 @@ Per model, after the TP4×PP4 baseline:
 | Model | Params | First guess | Why |
 |---|---|---|---|
 | 27B dense FP8 | 28.5 GB | TP1 (single spark) | fits, no comm cost |
-| GLM 5.3 Flash FP8 | ~306 GB raw / ~77 GB/rank TP4 | TP4×PP4 | 78 layers ÷ 4, MoE 288 |
+| GLM 5.3 Flash FP8 | 328.3 GB checkpoint / 20.45 GB per rank at TP16 (contract `source`) | TP16 (production); climb PP16 and TP4×PP4 for aggregate | 45 layers (34 KDA, 11 DSA), 288 routed experts, top-8; 42 MoE layers (45 − 3 dense; the contract's `expert_layer_count` 43 adds the MTP layer), 288 × 42 = 12096 experts (arithmetic) |
 | DSV4 Flash FP8+MXFP4 | ~149 GB / ~37 GB/rank | TP4 (single stage) or TP4×PP2 | 43 layers, fits |
 | DSV4 Pro FP8+MXFP4 | 832 GB / ~52 GB/rank | TP4×PP4 | 61 layers ÷ 4 stages |
 | Qwen Max FP8 | 2.3 TB / ~144 GB/rank | TP4×PP4 minimum, TP8×PP2 to test | 92 layers, huge MoE |
 | K3 MXFP4 | 1.5 TB / ~94 GB/rank TP16 | TP4×PP4 or TP8×PP2 | 93 layers, 896 experts (EP candidate) |
-| GLM 5.2 FP8 | 704 GB / ~88 GB/rank TP8 | TP8 (proven) → TP4×PP4 to compare | 78 layers |
 
 ## Dense model topology: TP16 vs DP (the 27B case study)
 
@@ -156,6 +172,9 @@ request class. This IS the compute-island model.
 
 ### Why TP16 showed no gain historically
 
+This is the 08-28 reasoning; the 2026-09-28 measurement is at the end of
+"All-reduce reality check".
+
 128 all-reduce launches per decode step × 20-50 µs launch overhead =
 2.6-6.4 ms per step. At TP16, the weight stream is 7.1 ms — so the
 launch overhead ADDS 90% on top, erasing the 16× gain. With graph-
@@ -165,26 +184,38 @@ The fix is the same one as the MoE expert-grouping: capture the
 collectives into the frame graph. The collective kernels are already
 in the capture scope for the hidden transport backend.
 
-## The compute-bound knee: B* is a hardware constant, not a model property
+## The compute-bound knee B*
 
-For ANY model on ANY hardware, there is a batch size B* where weight
-streaming time = compute time. Below B*: memory-bound (wasted bandwidth).
-Above B*: compute-bound (every cycle does useful work).
+For a dense model there is a batch size B* where weight streaming time equals
+compute time. Below B* a step is memory-bound; above it, compute-bound. A step
+streams `params × bytes_per_param / memory_BW` and computes
+`B × 2 × params / compute_rate`, so (arithmetic):
 
 ```
-B* = compute_rate / (HBM_BW × 2 × bytes_per_param)
+B* = compute_rate × bytes_per_param / (2 × memory_BW)
 ```
 
-This is a property of the HARDWARE + PRECISION combination only. It does
-not depend on model size, layer count, or architecture.
+The 08-28 version divided by `bytes_per_param`; the two agree only at one
+byte per parameter.
 
-On GB10 (250 GB/s HBM, 50 TFLOPS FP8): B* ≈ 100
+GB10 memory is LPDDR5X at 273 GB/s, the figure
+[GLM5_NEXT_ROOFLINE.md](GLM5_NEXT_ROOFLINE.md) uses; 242-247.5 GB/s was
+measured on the fleet (09-15 record, archived `FLEET_RUNBOOK.md`). The compute
+rate is not established here. The 08-28 version assumed 50 TFLOPS at FP8
+without a source, and EXO rates a Spark at about 100 FP16 TFLOPS
+([HARDWARE_TOPOLOGY.md](HARDWARE_TOPOLOGY.md#mac-studio-pool)). The two
+assumptions give (arithmetic):
 
-| Precision | B* on GB10 | B* on H100 (3.35 TB/s, 1000 TFLOPS) | B* on A100 (2 TB/s, 312 TFLOPS) |
-|---|---|---|---|
-| FP8 | 100 | 150 | 78 |
-| MXFP4 | 100 | 300 | 156 |
-| BF16 | 25 | 75 | 39 |
+| Assumption | B* on GB10 |
+|---|---|
+| 50 TFLOPS at FP8, 1 byte per parameter | 50e12 × 1 / (2 × 273e9) ≈ 92 |
+| 100 TFLOPS at FP16 or BF16, 2 bytes per parameter | 100e12 × 2 / (2 × 273e9) ≈ 366 |
+
+When compute rate doubles each time bytes per parameter halve, B* does not
+depend on precision. For an MoE model a step streams every expert the batch
+touches, and that set grows with B until every expert is touched, so the knee
+in B lies above the dense B*. Measure it on the fleet: sweep B until tok/s
+stops scaling.
 
 **The maximum sustainable aggregate throughput** at B >> B*:
 
@@ -194,12 +225,13 @@ max_tok_s = total_compute_rate / (2 × active_params_per_token)
 
 For MoE models, use ACTIVE params (top_k × expert_size + attention),
 not total params — the whole point of MoE is that most experts are idle.
+The table is arithmetic from the 08-28 compute assumptions (50 TFLOPS per
+GB10 at FP8, 25 at MXFP4 for K3), not a measurement.
 
 | Model | Active params/token | FLOPs/token | Max aggregate (16× GB10) |
 |---|---|---|---|
 | Qwen 27B (dense) FP8 | 27B (all active) | 54 GFLOP | 14,815 tok/s |
 | K3 MXFP4 (896 experts, top-16) | ~144B active | 288 GFLOP | 1,389 tok/s |
-| GLM 5.2 FP8 (256+1 experts, top-8) | ~33B active | 66 GFLOP | 12,121 tok/s |
 | Qwen Max FP8 (512+1 experts, top-10) | ~60B active | 120 GFLOP | 6,667 tok/s |
 
 ACTIVE params = attention + router + top_k experts + shared experts per
@@ -214,7 +246,7 @@ used the wrong FLOPs divisor). The correct max aggregate for K3 TP16 is
 capacity (more knowledge per model, more compute per token).
 
 **For inference services**: running at B < B* wastes hardware. Most
-production deployments run at B=1-8, far below B*=100. The expert-grouped
+production deployments run at B=1-8, far below B*. The expert-grouped
 continuous batching (or weight amortization for dense models) to reach
 B > B* is the difference between 3% and 90%+ hardware utilization.
 

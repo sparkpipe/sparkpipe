@@ -15,11 +15,12 @@ GROUPS = {
     "ownership": "memory_buffer arena work_transaction runtime_completion model_runtime launch release status",
     "serving": "model_serving_adapter model_resident_deployment model_resident_ipc model_resident_deadline model_resident_session model_resident_reconnect model_pipeline_client model_pipeline_client_mock model_batch_engine_mock model_api_text pipeline_runtime serving_cache_admission steploop_admission continuous_batch model_resident_end_to_end orchestrator",
     "transport": "tp_device_collective_mock tp_collective serving_tp_config distributed_work hidden_transport hidden_transport_rdma_control fabric_topology memlink weightd_mesh_doorbell weightd_mesh_mock serial_tp_replay",
-    "cache": "kv_cache kv_page_layout kv_store nvme_tier jit_kv_slice jit_kv_wire jit_kv_c3c4 jit_kv_c5w2 topology_switch kv_model_table",
+    "cache": "kv_cache kv_page_layout kv_store nvme_tier kv_model_table",
+    "unlinked_components": "jit_kv_slice jit_kv_wire jit_kv_c3c4 jit_kv_c5w2 topology_switch",
     "weights": "weightd weightd_lease weightd_working_set weightd_churn weightd_expert_stress weightd_worker weightd_fd_frames weightd_attach weightd_expert weightd_map stage_module_weightd glm5_next_lazy_dispatch",
     "model_contracts": "model_description module_library driver_compiler stage_module_common llm_module_contract llm_stagepack_format tokenizer tokenizer_sidecar json numerical_metrics weight_codec gemm_descriptor_cache gemm_tile_k_fallback glm52_stagepack kda_reference rope_plan tensor_map_geometry",
     "driver_fixtures": "dsv4_serving_adapter dsv4_tp16_serving_adapter dsv4_tp4_pp4_serving_adapter qwen38_27b_serving_adapter muse_glimmer_serving_adapter gemma4_serving_adapter ling_serving_adapter hy4_lifecycle_smoke k3_attach_contract k3_kv_cache k3_llm_defines glm52_dspark glm52_mtp_tree kv_mooncake dsv4_cache_plan dsv4_lane_continuity dsv4_paged_cache dsv4_parallel_shape dsv4_pool_layout dsv4_stage_runner dsv4_tp_graph_contract dsv4_w1_loader gemma4_defines gemma4_defines_moe gemma4_defines_negative gemma4_defines_moe_negative k3_run_equivalence qwen38_27b_work_control qwen38_work_control",
-    "speculation": "draft_bridge dspark_drafter_pin dsv4_pro_dspark_drafter_pin speculation_policy_pin speculation_provider_slot speculation_seam speculation_tree_pin",
+    "speculation": "draft_bridge dspark_drafter_pin dsv4_pro_dspark_drafter_pin speculation_policy_pin speculation_provider_slot speculation_seam speculation_tree_pin speculation_tree_resolve",
 }
 PYTHON = {
     "weights": "weightd_supervision weightd_supervised weightd_manifest weightd_lazy_pair weightd_map_fd_ownership",
@@ -34,6 +35,7 @@ GAPS = [
     "RDMA/device completion and daemon replacement require real hardware tests",
     "TP4, TP16, TP4xPP4 sustained serving, fairness and matched throughput remain unqualified",
     "Driver fixtures and host CUDA stubs do not qualify any model's GPU implementation",
+    "unlinked_components tests exercise the lane pager, the topology switch and the dsv4 JIT-KV frame ops, which no product library or module links; they are not JIT-KV or serving evidence (I23-I27)",
 ]
 
 

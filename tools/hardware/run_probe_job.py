@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import select
+import socket
 import subprocess
 import sys
 import tempfile
@@ -324,6 +325,38 @@ def failure_probe_receipt(plan: dict[str, Any], config: dict[str, Any], job: dic
     }
 
 
+def reclaim_dead_cell_lock(lock_path: pathlib.Path, cell_id: str) -> None:
+    owner = lock_path.read_text(encoding="ascii", errors="replace").strip()
+    fields = dict(item.split("=", 1) for item in owner.split() if "=" in item)
+    require(fields.get("host") == socket.gethostname() and fields.get("cell_id") == cell_id and
+            fields.get("pid", "").isdigit(),
+            f"cell lock {lock_path} has an owner this host cannot verify: {owner!r}")
+    try:
+        os.kill(int(fields["pid"]), 0)
+    except ProcessLookupError:
+        print(json.dumps({"event": "cell_lock_reclaimed", "lock": str(lock_path), "dead_owner": owner},
+                         separators=(",", ":")), file=sys.stderr)
+        lock_path.unlink()
+        return
+    except PermissionError:
+        pass
+    raise ValueError(f"cell lock {lock_path} is held by live pid {fields['pid']}")
+
+
+def acquire_cell_lock(lock_path: pathlib.Path, cell_id: str) -> None:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        lock_descriptor = os.open(lock_path, flags, 0o600)
+    except FileExistsError:
+        reclaim_dead_cell_lock(lock_path, cell_id)
+        lock_descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        os.write(lock_descriptor,
+                 f"pid={os.getpid()} host={socket.gethostname()} cell_id={cell_id}\n".encode("ascii"))
+    finally:
+        os.close(lock_descriptor)
+
+
 def execute_job(plan: dict[str, Any], config: dict[str, Any], config_base: pathlib.Path, job: dict[str, Any], receipt_directory: pathlib.Path, dry_run: bool, resume: bool) -> None:
     receipt_path = receipt_directory / f"{job['cell_id']}.json"
     if receipt_path.exists():
@@ -336,12 +369,7 @@ def execute_job(plan: dict[str, Any], config: dict[str, Any], config_base: pathl
             return
         raise ValueError(f"receipt already exists for {job['cell_id']}")
     lock_path = receipt_path.with_suffix(".lock")
-    lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        os.write(lock_descriptor,
-                 f"pid={os.getpid()} cell_id={job['cell_id']}\n".encode("ascii"))
-    finally:
-        os.close(lock_descriptor)
+    acquire_cell_lock(lock_path, job["cell_id"])
     server: subprocess.Popen[str] | None = None
     try:
         with tempfile.TemporaryDirectory(dir=receipt_directory) as directory_name:
