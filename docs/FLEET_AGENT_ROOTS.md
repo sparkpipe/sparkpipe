@@ -20,11 +20,15 @@ ignored. Removing a name stops supervision only; it does not stop the process.
 
 ## Root layouts
 
-A root with none of the files below is a legacy root and behaves exactly as
+A root named on the command line with none of the files below is a legacy
+root and behaves exactly as
 before: `--rank-index` is the fleet rank, `config/stage.json` links
 `stage_<fleet rank>.json`, the environment comes from the agent unit (`G5_*`
 knobs, `SPARK_TP_WAIT_MODE`), the residentd runs in the agent's cgroup and
-the root is production. Today's GLM root is a legacy root.
+the root is production. Today's GLM root is a legacy root. A root listed only
+in `~/.fleet_agent_roots` must carry `agent.env`; without it the root is a dev
+root in state `blocked-config`, so a half-written layout never runs as
+production.
 
 A root that carries any of these files uses the layout rules. `<RR>` is the
 node's fleet rank as two decimal digits (spark0 = `00`, sparka = `10`).

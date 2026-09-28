@@ -383,6 +383,20 @@ report
                 self.assertIn(reason, self.heartbeat()["roots"][DEV]["reason"])
                 self.assertFalse((self.dev / "launch.txt").exists())
 
+    def test_roots_file_entries_without_a_layout_are_never_production(self):
+        for name in ("agent.env", "config/env_10.env", "config/rank_index_10"):
+            (self.dev / name).unlink()
+        result = self.run_agent(f'''
+start_root {PROD} && wait_ready {PROD} || exit 4
+ensure_root {DEV}
+echo "STATE $(root_state {DEV}) $(root_role {DEV}) $(root_role {PROD})"
+report
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STATE blocked-config dev production", result.stdout)
+        self.assertIn("need agent.env", self.heartbeat()["roots"][DEV]["reason"])
+        self.assertFalse((self.dev / "launch.txt").exists())
+
     def test_failed_unit_start_is_reported(self):
         result = self.run_agent(f'''
 start_root {PROD} && wait_ready {PROD} || exit 4

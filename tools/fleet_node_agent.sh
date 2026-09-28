@@ -141,7 +141,11 @@ root_config() {
     RC_FILES=()
     [ -f "$rr/agent.env" ] && files+=("$rr/agent.env")
     [ -f "$rr/config/env_$n.env" ] && files+=("$rr/config/env_$n.env")
-    [ -f "$rr/config/rank_index_$n" ] || [ ${#files[@]} -gt 0 ] || return 0
+    if [ ! -f "$rr/config/rank_index_$n" ] && [ ${#files[@]} = 0 ]; then
+        case ",$ROOTS," in *",$1,"*) return 0 ;; esac
+        RC_ROLE=dev
+        rc_fail "roots listed in $ROOTS_FILE need agent.env" || return 1
+    fi
     RC_LAYOUT=1
     RC_ROLE=dev
     RC_FILES=("${files[@]}")
