@@ -9,6 +9,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_muse_glimmer_model.h"
@@ -154,77 +155,17 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce)(
 
 static _Thread_local SparkModelDriverCacheLane SparkMuseGlimmerServingCacheScratch[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 
-static uint32_t SparkMuseGlimmerServingSubmissionStale(
-	const SparkMuseGlimmerServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	if ( submission == 0 )
-		return(0u);
-	return(submission->control_generation <
-		atomic_load_explicit(&state->reset_generation,memory_order_acquire) ?
-		1u : 0u);
-}
+#include "sparkpipe/family/serving/spark_serving_submission_stale.h"
 
-static SparkStatus SparkMuseGlimmerServingInitializeFamilyState(
-	SparkMuseGlimmerServingState *state)
-{
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	atomic_init(&state->reset_active,0u);
-	atomic_init(&state->reset_generation,0u);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_initialize_family_state.h"
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
-static SparkStatus SparkMuseGlimmerServingPrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submissions,uint32_t count)
-{
-	SparkMuseGlimmerServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkMuseGlimmerServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkMuseGlimmerServingCacheContext(state,SparkMuseGlimmerServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,count,
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkMuseGlimmerServingResolvePrefetch(void *adapter_state,
-	const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkMuseGlimmerServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkMuseGlimmerServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 ||
-		(resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
-		 resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT :
-		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkMuseGlimmerServingCacheContext(state,SparkMuseGlimmerServingCacheScratch);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
+#include "sparkpipe/family/serving/spark_serving_prefetch.h"
 
 #include "sparkpipe/family/serving/spark_serving_reset_control.h"
 
-static SparkStatus SparkMuseGlimmerServingReset(void *adapter_state,
-	uint64_t control_generation)
-{
-	SparkMuseGlimmerServingState *state = (SparkMuseGlimmerServingState *)adapter_state;
-	uint32_t expected = 0u;
-	SparkStatus status;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
-		memory_order_acquire,memory_order_relaxed) == 0 )
-		return(SPARK_STATUS_BUSY);
-	status = SparkMuseGlimmerServingResetControl(state,control_generation);
-	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	return(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset.h"
 
 static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescriptor =
 {

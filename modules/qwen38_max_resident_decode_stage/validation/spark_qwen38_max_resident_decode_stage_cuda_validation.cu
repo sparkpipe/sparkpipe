@@ -19,9 +19,6 @@
 #define SPARK_QWEN38_MAX_VALIDATION_ATTN_TOKENS 5u
 #define SPARK_QWEN38_MAX_VALIDATION_CHUNK_TOKENS 64u
 #define SPARK_QWEN38_MAX_VALIDATION_MOE_ROWS 5u
-#ifndef SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES
-#define SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES 8u
-#endif
 #define SPARK_QWEN38_MAX_VALIDATION_KV_LANES SPARK_QWEN38_MAX_STAGE_MAX_ACTIVE_SEQUENCES
 
 #define SPARK_QWEN38_MAX_VAL_DK SPARK_QWEN38_MAX_MODEL_GDN_HEAD_KEY_DIMENSION
@@ -156,41 +153,6 @@ static int SparkQwen38MaxValReport(const char *check, const SparkQwen38MaxValMet
 
 #include "sparkpipe/family/validation/spark_val_gdn_attention.h"
 
-static void SparkQwen38MaxValGdnRecurrence(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
-{
-	float qn[SPARK_QWEN38_MAX_VAL_DK],kn[SPARK_QWEN38_MAX_VAL_DK],delta[SPARK_QWEN38_MAX_VAL_DV];
-	float scale = 1.0f / sqrtf((float)SPARK_QWEN38_MAX_VAL_DK),decay,kv_mem;
-	uint32_t token,row,column;
-	for (token = 0u; token < tokens; token++)
-	{
-		SparkQwen38MaxValL2Norm(q + ((uint64_t)token * SPARK_QWEN38_MAX_VAL_DK),qn,SPARK_QWEN38_MAX_VAL_DK);
-		SparkQwen38MaxValL2Norm(k + ((uint64_t)token * SPARK_QWEN38_MAX_VAL_DK),kn,SPARK_QWEN38_MAX_VAL_DK);
-		for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
-			qn[row] *= scale;
-		decay = expf(g[token]);
-		for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
-			for (column = 0u; column < SPARK_QWEN38_MAX_VAL_DV; column++)
-				state[(row * SPARK_QWEN38_MAX_VAL_DV) + column] *= decay;
-		for (column = 0u; column < SPARK_QWEN38_MAX_VAL_DV; column++)
-		{
-			kv_mem = 0.0f;
-			for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
-				kv_mem += state[(row * SPARK_QWEN38_MAX_VAL_DV) + column] * kn[row];
-			delta[column] = (v[((uint64_t)token * SPARK_QWEN38_MAX_VAL_DV) + column] - kv_mem) * beta[token];
-		}
-		for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
-			for (column = 0u; column < SPARK_QWEN38_MAX_VAL_DV; column++)
-				state[(row * SPARK_QWEN38_MAX_VAL_DV) + column] += kn[row] * delta[column];
-		for (column = 0u; column < SPARK_QWEN38_MAX_VAL_DV; column++)
-		{
-			kv_mem = 0.0f;
-			for (row = 0u; row < SPARK_QWEN38_MAX_VAL_DK; row++)
-				kv_mem += state[(row * SPARK_QWEN38_MAX_VAL_DV) + column] * qn[row];
-			output[((uint64_t)token * SPARK_QWEN38_MAX_VAL_DV) + column] = kv_mem;
-		}
-	}
-}
-
 static float SparkQwen38MaxValDecodeE2m1(uint32_t nibble)
 {
 	static const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
@@ -258,91 +220,7 @@ static float SparkQwen38MaxValBf16Round(float value)
 	return(SparkQwen38MaxValFromBf16(SparkQwen38MaxValBf16(value)));
 }
 
-typedef struct SparkQwen38MaxValDevice
-{
-	SparkQwen38MaxGdnLayerWeights gdn_weights;
-	SparkQwen38MaxAttnLayerWeights attn_weights;
-	SparkQwen38MaxGdnStatePool pool;
-	uint16_t *conv_weight;
-	float *a_log;
-	float *dt_bias;
-	uint16_t *gdn_norm_weight;
-	uint16_t *q_norm_weight;
-	uint16_t *k_norm_weight;
-	float *state;
-	uint16_t *conv_tail;
-	uint32_t *cold;
-	uint32_t *lane_indices;
-	uint16_t *qkv;
-	uint16_t *conv_out;
-	uint16_t *core_out;
-	uint16_t *z_bf16;
-	uint16_t *gated_out;
-	uint16_t *ba_bf16;
-	float *log_decay;
-	float *beta;
-	float *chunk_qn;
-	float *chunk_kn;
-	float *chunk_cum_g;
-	float *chunk_decay;
-	float *chunk_attn;
-	float *chunk_w;
-	float *chunk_kg;
-} SparkQwen38MaxValDevice;
-
-static int SparkQwen38MaxValDeviceSetup(SparkQwen38MaxValDevice *device)
-{
-	uint64_t state_elements = 2ull * SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_VAL_DK * SPARK_QWEN38_MAX_VAL_DV;
-	uint64_t vector_floats = (uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS * SPARK_QWEN38_MAX_VAL_DK;
-	uint64_t matrix_floats = (uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS * SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS;
-	uint32_t tokens = SPARK_QWEN38_MAX_VALIDATION_CHUNK_TOKENS;
-	cudaError_t error;
-	memset(device,0,sizeof(*device));
-	error = cudaMalloc((void **)&device->conv_weight,(uint64_t)SPARK_QWEN38_MAX_VAL_CONV * SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->a_log,SPARK_QWEN38_MAX_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->dt_bias,SPARK_QWEN38_MAX_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->gdn_norm_weight,SPARK_QWEN38_MAX_VAL_DV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->q_norm_weight,SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->k_norm_weight,SPARK_QWEN38_MAX_MODEL_ATTN_HEAD_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->state,state_elements * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->conv_tail,2ull * SPARK_QWEN38_MAX_VAL_CONV * (SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL - 1u) * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->cold,2 * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->lane_indices,2 * sizeof(uint32_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->qkv,(uint64_t)tokens * SPARK_QWEN38_MAX_VAL_CONV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->conv_out,(uint64_t)tokens * SPARK_QWEN38_MAX_VAL_CONV * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->core_out,(uint64_t)tokens * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->z_bf16,(uint64_t)tokens * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->gated_out,(uint64_t)tokens * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_DIMENSION * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->ba_bf16,(uint64_t)tokens * SPARK_QWEN38_MAX_VAL_HEADS * sizeof(uint16_t));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->log_decay,(uint64_t)tokens * SPARK_QWEN38_MAX_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->beta,(uint64_t)tokens * SPARK_QWEN38_MAX_VAL_HEADS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_qn,vector_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kn,vector_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_cum_g,(uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_decay,matrix_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_attn,matrix_floats * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_w,(uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_MODEL_GDN_CHUNK_TOKENS * SPARK_QWEN38_MAX_VAL_DV * sizeof(float));
-	if (error == cudaSuccess) error = cudaMalloc((void **)&device->chunk_kg,vector_floats * sizeof(float));
-	if (error != cudaSuccess)
-		return(SparkQwen38MaxValCuda(error,"device_alloc"));
-	device->pool.abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION;
-	device->pool.lane_capacity = 2u;
-	device->pool.gdn_layer_count = 1u;
-	device->pool.state_f32 = device->state;
-	device->pool.state_layer_stride_elements = (uint64_t)SPARK_QWEN38_MAX_VAL_HEADS * SPARK_QWEN38_MAX_VAL_DK * SPARK_QWEN38_MAX_VAL_DV;
-	device->pool.state_lane_stride_elements = device->pool.state_layer_stride_elements;
-	device->pool.conv_tail_bf16 = device->conv_tail;
-	device->pool.conv_tail_layer_stride_elements = (uint64_t)SPARK_QWEN38_MAX_VAL_CONV * (SPARK_QWEN38_MAX_MODEL_GDN_CONV_KERNEL - 1u);
-	device->pool.conv_tail_lane_stride_elements = device->pool.conv_tail_layer_stride_elements;
-	device->pool.state_cold_by_row = device->cold;
-	device->gdn_weights.conv_weight_bf16 = device->conv_weight;
-	device->gdn_weights.a_log_f32 = device->a_log;
-	device->gdn_weights.dt_bias_f32 = device->dt_bias;
-	device->gdn_weights.gdn_norm_weight_bf16 = device->gdn_norm_weight;
-	device->attn_weights.query_norm_weight_bf16 = device->q_norm_weight;
-	device->attn_weights.key_norm_weight_bf16 = device->k_norm_weight;
-	return(0);
-}
+#include "sparkpipe/family/validation/spark_val_gdn_device.h"
 
 static int SparkQwen38MaxValCheckDecayBeta(SparkQwen38MaxValDevice *device)
 {

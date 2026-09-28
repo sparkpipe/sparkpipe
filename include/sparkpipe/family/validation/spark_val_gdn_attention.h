@@ -16,6 +16,41 @@ static void SPARK_FAMILY(ValL2Norm)(const float *input, float *output, uint32_t 
 		output[element] = input[element] * total;
 }
 
+static void SPARK_FAMILY(ValGdnRecurrence)(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens)
+{
+	float qn[SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION)],kn[SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION)],delta[SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)];
+	float scale = 1.0f / sqrtf((float)SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION)),decay,kv_mem;
+	uint32_t token,row,column;
+	for (token = 0u; token < tokens; token++)
+	{
+		SPARK_FAMILY(ValL2Norm)(q + ((uint64_t)token * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION)),qn,SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION));
+		SPARK_FAMILY(ValL2Norm)(k + ((uint64_t)token * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION)),kn,SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION));
+		for (row = 0u; row < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION); row++)
+			qn[row] *= scale;
+		decay = expf(g[token]);
+		for (row = 0u; row < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION); row++)
+			for (column = 0u; column < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION); column++)
+				state[(row * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] *= decay;
+		for (column = 0u; column < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION); column++)
+		{
+			kv_mem = 0.0f;
+			for (row = 0u; row < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION); row++)
+				kv_mem += state[(row * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] * kn[row];
+			delta[column] = (v[((uint64_t)token * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] - kv_mem) * beta[token];
+		}
+		for (row = 0u; row < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION); row++)
+			for (column = 0u; column < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION); column++)
+				state[(row * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] += kn[row] * delta[column];
+		for (column = 0u; column < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION); column++)
+		{
+			kv_mem = 0.0f;
+			for (row = 0u; row < SPARK_FAMILY_CONST(MODEL_GDN_HEAD_KEY_DIMENSION); row++)
+				kv_mem += state[(row * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] * qn[row];
+			output[((uint64_t)token * SPARK_FAMILY_CONST(MODEL_GDN_HEAD_VALUE_DIMENSION)) + column] = kv_mem;
+		}
+	}
+}
+
 static void SPARK_FAMILY(ValRope)(float *vector, uint32_t rope_dim, uint32_t position, float theta)
 {
 	uint32_t pair,half = rope_dim / 2u;

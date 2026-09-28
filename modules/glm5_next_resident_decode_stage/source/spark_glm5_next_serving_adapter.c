@@ -751,6 +751,7 @@ static SparkStatus SparkGlm5NextServingValidateSubmission(
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 #include "sparkpipe/family/serving/spark_serving_prefetch.h"
+#include "sparkpipe/family/serving/spark_serving_abort_unexecuted.h"
 
 static void SparkGlm5NextServingBuildFrame(
 	const SparkGlm5NextServingState *state,

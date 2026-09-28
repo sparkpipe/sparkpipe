@@ -407,14 +407,7 @@ static SparkStatus SparkGemma4ModuleOpenKvTier(SparkGemma4ModuleState *state, co
 
 #include "sparkpipe/family/module/spark_module_tp_submit_ordered.h"
 
-static SparkStatus SparkGemma4ModuleInitializeGate(void)
-{
-	uint32_t allow_unqualified_execution;
-	allow_unqualified_execution = 0u;
-	if ( SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
-		return(SPARK_STATUS_MODULE_NOT_VALIDATED);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_initialize_gate.h"
 
 extern cudaError_t SparkGemma4ConfigureCudaKernels(void);
 extern cudaError_t SparkGemma4LaunchEmbeddingGatherShardedScaled(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t vocab_base, uint32_t vocab_rows);
@@ -501,30 +494,7 @@ static void SparkGemma4ModuleReportReady(void *module_state)
 	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head);
 }
 
-static SparkStatus SparkGemma4AdmissionKvPredicate(
-	void *context,
-	const SparkModelDriverAdmissionRequest *request,
-	SparkModelDriverAdmissionDecision *decision)
-{
-	(void)context;
-	if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
-		SparkModelDriverRangeFitsWithinCapacity(
-			request->sequence_position,
-			request->new_token_count,
-			SPARK_GEMMA4_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u)
-	{
-		SparkModelDriverRejectAdmission(
-			decision,
-			SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY,
-			decision->available_dispatch_slot_count);
-	}
-	else
-	{
-		decision->accepted = 1u;
-		decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
-	}
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_admission_kv_predicate.h"
 
 #include "sparkpipe/family/module/spark_module_admission_cost.h"
 

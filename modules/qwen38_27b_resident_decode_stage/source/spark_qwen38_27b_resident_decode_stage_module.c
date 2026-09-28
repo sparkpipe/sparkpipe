@@ -3006,30 +3006,7 @@ static void SparkQwen38_27bAdmissionCost(
     decision->device_memcpy_bytes = decision->host_staging_bytes;
 }
 
-static SparkStatus SparkQwen38_27bAdmissionKvPredicate(
-    void *context,
-    const SparkModelDriverAdmissionRequest *request,
-    SparkModelDriverAdmissionDecision *decision)
-{
-    (void)context;
-    if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
-        SparkModelDriverRangeFitsWithinCapacity(
-            request->sequence_position,
-            request->new_token_count,
-            SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS) == 0u)
-    {
-        SparkModelDriverRejectAdmission(
-            decision,
-            SPARK_MODEL_DRIVER_ADMISSION_REJECTED_KV_CAPACITY,
-            decision->available_dispatch_slot_count);
-    }
-    else
-    {
-        decision->accepted = 1u;
-        decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
-    }
-    return SPARK_STATUS_OK;
-}
+#include "sparkpipe/family/module/spark_module_admission_kv_predicate.h"
 
 static SparkStatus SparkQwen38_27bModuleAdmit(
     void *module_state,

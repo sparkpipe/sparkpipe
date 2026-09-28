@@ -1,5 +1,15 @@
 #pragma once
 
+typedef struct SPARK_FAMILY(ValMetrics)
+{
+	double difference_l2;
+	double reference_l2;
+	double actual_l2;
+	double dot;
+	double maximum_absolute;
+	uint64_t count;
+} SPARK_FAMILY(ValMetrics);
+
 static void SPARK_FAMILY(ValMeasure)(SPARK_FAMILY(ValMetrics) *metrics, const float *actual, const float *reference, uint64_t count)
 {
 	uint64_t index;

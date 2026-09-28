@@ -496,16 +496,7 @@ static SparkStatus SparkLingServingInitialize(
 	return(SPARK_STATUS_OK);
 }
 
-static uint32_t SparkLingServingSubmissionStale(
-	const SparkLingServingState *state,
-	const SparkModelServingSubmission *submission)
-{
-	if ( submission == 0 )
-		return(0u);
-	return(submission->control_generation <
-		atomic_load_explicit(&state->reset_generation,memory_order_acquire) ?
-		1u : 0u);
-}
+#include "sparkpipe/family/serving/spark_serving_submission_stale.h"
 
 #include "sparkpipe/family/serving/spark_serving_validate_row_order.h"
 
@@ -539,6 +530,7 @@ static _Thread_local SparkModelDriverCacheLane SparkLingServingCacheScratch[SPAR
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
 #include "sparkpipe/family/serving/spark_serving_prefetch.h"
+#include "sparkpipe/family/serving/spark_serving_abort_unexecuted.h"
 
 static void SparkLingServingBuildFrame(
 	const SparkLingServingState *state,
@@ -659,22 +651,7 @@ static SparkStatus SparkLingServingQuiesce(
 
 #include "sparkpipe/family/serving/spark_serving_reset_control.h"
 
-static SparkStatus SparkLingServingReset(void *adapter_state,
-	uint64_t control_generation)
-{
-	SparkLingServingState *state;
-	uint32_t expected = 0u;
-	SparkStatus status;
-	state = (SparkLingServingState *)adapter_state;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,
-		memory_order_acquire,memory_order_relaxed) == 0 )
-		return(SPARK_STATUS_BUSY);
-	status = SparkLingServingResetControl(state,control_generation);
-	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	return(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset.h"
 
 static SparkStatus SparkLingServingSnapshot(
 	void *adapter_state,

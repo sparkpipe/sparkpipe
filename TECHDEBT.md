@@ -328,6 +328,13 @@ progress diary.
   universal packer (`docs/UNIVERSAL_PACKER.md`): one CLI, one codec table,
   per-family byte-compatible emitters, each gated on byte identity with its
   existing packs.
+- The GPU validator digest (`SPARK_<FAMILY>_CUDA_VALIDATOR_SHA256`, computed
+  in each module Makefile, validate script and publish wrapper) hashes only
+  the validator's `.cu`. The validators include templates from
+  `include/sparkpipe/family/validation/`, so a template edit changes what
+  validates a pack without changing the digest its receipt records. Hash the
+  `.cu` together with the templates it includes, in one helper every pin
+  calls.
 
 ## Driver consolidation
 
@@ -374,7 +381,10 @@ progress diary.
 - Pack synthesizers for dsv41_flash, gemma4 and muse_glimmer do not use
   `spark_pack_synthesize_common.h`, and the dsv4 and k3 batch-tuning headers
   keep their own bucket ladders. `tests/test_template_adoption.py` lists
-  them.
+  them. dsv4's ladder adds buckets 6, 9 and 11. k3's is the common ladder,
+  but `spark_batch_variant_tuning_common.h` can be instantiated once per
+  translation unit and `tests/test_batch_variants.py` compiles the glm52,
+  k3 and dsv4 headers together; no k3 build includes k3's header.
 
 ## Runtime completion
 
