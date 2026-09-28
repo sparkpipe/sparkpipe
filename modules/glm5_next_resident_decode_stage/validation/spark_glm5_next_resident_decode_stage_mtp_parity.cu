@@ -1253,7 +1253,9 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 			return(1);
 		{
 			int32_t commit_status;
-			commit_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
+			commit_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,fixture->wave.row_count);
+			if ( commit_status == 0 )
+				commit_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
 			if ( commit_status != 0 )
 				return(SparkGlm5NextMtpParityLaunchFail("spec_commit","fold",commit_status));
 		}
@@ -1435,6 +1437,9 @@ static int SparkGlm5NextMtpParityRunReference(SparkGlm5NextMtpParityFixture *fix
 		{
 			struct timespec fold_start,fold_end;
 			int32_t fold_status;
+			fold_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,rows);
+			if ( fold_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold_prepare",fold_status));
 			clock_gettime(CLOCK_MONOTONIC,&fold_start);
 			fold_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
 			if ( fold_status != 0 )

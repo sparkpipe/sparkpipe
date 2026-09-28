@@ -2607,6 +2607,8 @@ static void SparkGlm5NextMtpResolveOnWorker(void *context)
 			(uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
 			cudaMemcpyDeviceToDevice,(cudaStream_t)slot->stream);
 		if ( error == cudaSuccess )
+			launch = SparkGlm5NextPrepareCudaReplayFold(&chain->wave,chain->wave.row_count);
+		if ( error == cudaSuccess && launch == 0 )
 			launch = SparkGlm5NextLaunchCudaReplayFold(&chain->wave,result.committed_token_count);
 	}
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess || launch != 0 )
@@ -3482,6 +3484,8 @@ static SparkStatus SparkGlm5NextVerifyCaptureRows(SparkGlm5NextTpChain *chain,ui
 	SparkGlm5NextGraphDisarm(state);
 	if ( status == SPARK_STATUS_OK && exec == 0 )
 		status = SPARK_STATUS_UNSUPPORTED;
+	if ( status == SPARK_STATUS_OK && SparkGlm5NextPrepareCudaReplayFold(&chain->wave,rows) != 0 )
+		status = SPARK_STATUS_INTERNAL_ERROR;
 	fprintf(stderr,"GRAPH-VERIFY-CAPTURE rows=%u regime=%u bound=%u status=%d\n",rows,regime,bound,(int)status);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
