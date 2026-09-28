@@ -22,6 +22,7 @@ intermediate):
 | `head_greedy` | `SparkGlm5NextRunHead`, greedy rows (B1 takes the certified FP8 path) | maxloc word, token |
 | `head_sampled` | `SparkGlm5NextRunHead`, every row sampled | maxloc word, token |
 | `head_mixed` | `SparkGlm5NextRunHead`, half the rows sampled | maxloc word, token |
+| `head_ties` | `SparkGlm5NextRunHead`, greedy, every head row duplicated so each argmax is an exact tie; the lower token id must win | maxloc word, token |
 
 Each family has a pool of 64 rows with fixed random inputs. Every pool row is
 first run alone (wave 1). Waves of 2, 8, 17 and 64 are then drawn from the
@@ -39,7 +40,8 @@ repairs in the same change.
 ## Baseline (origin/main 09fdad6, sparkf, 48 SMs)
 
 After the skinny-rows fix, 12 cells remain: attention and the greedy and
-mixed head maxloc words.
+mixed head maxloc words. After the head fix, only the four attention cells
+remain.
 
 
 38 of 80 cells break:
@@ -94,6 +96,37 @@ Decode waves of 16-64 rows get faster because the tensor-core GEMM wastes
 most of its tile on the narrow projections (router, shared expert, indexer
 keys). 128-row prefill waves pay for the wide projections (q_a, index_q,
 attn_out, kda_qkv_beta). `make test-skinny-gemv` prints the per-shape table.
+
+### Greedy head (exact rows)
+
+B1 greedy takes the certified FP8 head: an FP8 screen with sound bounds, then
+an exact BF16 rescore of the survivors (`SparkLmDotRowBf16`, a 32-lane
+`fmaf` chain over pairs, then the warp reduction) and the lowest id on ties.
+Because the bounds are sound, its token and score are the full-vocabulary
+argmax of that rescore arithmetic. Waves of two or more greedy rows now
+compute exactly that argmax without a screen: `SparkLmHeadExactRowsKernel`
+stages eight rows of hidden state in shared memory, gives each warp four
+vocabulary rows at a time, and keeps each (row, token) product in the same
+lane order as the rescore. B1 is unchanged. Greedy rows in a wave with a
+sampled row are computed the same way and replace the sampled kernel's greedy
+result (`Glm5NextHeadGreedySelectKernel`). The one-row BF16 candidate kernel
+now breaks ties by the lowest token id, like the rows kernel and the commit.
+
+Cost (sparkf, per-rank vocabulary 9,680, random weights, median of 7 x 10
+launches, RMSNorm included; B1 stays on the certified path at about 0.38 ms):
+
+| Rows | old rows kernel ms | exact rows ms |
+|---|---|---|
+| 2 | 0.55 | 0.40 |
+| 8 | 0.56 | 0.42 |
+| 16 | 0.57 | 0.77 |
+| 32 | 1.11 | 1.53 |
+| 64 | 2.20 | 3.10 |
+
+So waves of 2-8 rows get faster and a 64-row wave pays about 0.9 ms per step
+on the rank that owns the head. Sixteen rows of hidden state would need
+128 KB of shared memory, over the per-block limit; a K-slab version is the
+next step if the 64-row cost matters.
 
 ## Not yet covered
 

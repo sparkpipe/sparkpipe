@@ -979,11 +979,15 @@ static SparkStatus SparkGlm5NextAllocateSlotHead(
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 	{
 		uint64_t shard_rows = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
-		status = SparkGlm5NextAllocateBytes(state,1u,SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION),1u,(void **)&slot->head_certified_scratch);
+		status = SparkGlm5NextAllocateBytes(state,rows,SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION),1u,(void **)&slot->head_certified_scratch);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextAllocateBytes(state,1u,SparkHeadCertifiedFp8CandidateBytes(shard_rows),1u,(void **)&slot->head_certified_candidates);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkGlm5NextAllocateBytes(state,1u,1u,sizeof(uint32_t),(void **)&slot->head_screened_count);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextAllocateBytes(state,rows,1u,sizeof(uint32_t),(void **)&slot->head_certified_token);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextAllocateBytes(state,rows,1u,sizeof(float),(void **)&slot->head_certified_score);
 	}
 	SPARK_RETURN(status);
 }

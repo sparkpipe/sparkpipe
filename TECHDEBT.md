@@ -249,10 +249,10 @@ progress diary.
 - glm5_next dense projections and the router keep the one-row skinny order at
   every row count (`LmSkinnyDenseRows`, docs/ROW_INVARIANCE.md). ling and
   laguna still leave the skinny kernel above eight rows for the tensor-core
-  GEMM. Batched latent attention still sums in a different order from the
-  per-head kernel, and the greedy head uses different arithmetic at one row
-  and at more, so prefill and batched-decode logits are not yet bitwise equal
-  to B1. 128-row prefill waves cost about 4.6% more with the skinny order;
+  GEMM. The glm5_next greedy head gives every row the certified B1 result
+  (exact rows rescore). Batched latent attention still sums in a different
+  order from the per-head kernel, so prefill and batched-decode logits are not
+  yet bitwise equal to B1. 128-row prefill waves cost about 4.6% more with the skinny order;
   keeping prompt rows on the tensor-core order (and generated-token
   checkpoints out of prefix reuse for verified requests) would remove that.
 - `make test-glm5-next-row-invariance` (docs/ROW_INVARIANCE.md) compares

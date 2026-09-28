@@ -1471,6 +1471,9 @@ static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, c
 
 #define SPARK_LM_HEAD_CERTIFIED_FP8_THREADS 1024u
 #define SPARK_LM_HEAD_CERTIFIED_FP8_WARPS 32u
+#define SPARK_LM_HEAD_EXACT_ROWS 8u
+#define SPARK_LM_HEAD_EXACT_CANDIDATES 4u
+#define SPARK_LM_HEAD_EXACT_ROWS_SHARED_BYTES 65536u
 
 static __device__ __forceinline__ double SparkLmHeadWarpReduceDouble(double value)
 {
@@ -1655,12 +1658,100 @@ static __global__ void SparkLmHeadCertifiedRescoreKernel(const void *hidden_bf16
 	}
 }
 
+template<uint32_t ROWS>
+static __device__ __forceinline__ void SparkLmHeadExactRowsKeep(const float (*accumulator)[ROWS],const uint32_t *candidate,uint32_t count,uint32_t lane,float *running_best,uint32_t *running_candidate)
+{
+	uint32_t c,r;
+	float score;
+	#pragma unroll
+	for (c=0u; c<SPARK_LM_HEAD_EXACT_CANDIDATES; c++)
+		#pragma unroll
+		for (r=0u; r<ROWS; r++)
+		{
+			score = SparkLmWarpReduceSum(accumulator[c][r]);
+			score = __shfl_sync(0xffffffffu,score,0u);
+			if ( lane == 0u && c < count && (score > running_best[r] || (score == running_best[r] && candidate[c] < running_candidate[r])) )
+			{
+				running_best[r] = score;
+				running_candidate[r] = candidate[c];
+			}
+		}
+}
+
+template<uint32_t ROWS>
+static __global__ __launch_bounds__(SPARK_LM_CTA_THREADS) void SparkLmHeadExactRowsKernel(const void *hidden_bf16,const void *head_weight_bf16,float *partial_scores,uint32_t *partial_candidates,uint32_t row_count,uint32_t vocabulary_count,uint32_t hidden_dimension)
+{
+	extern __shared__ uint32_t hidden_pairs[];
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	const uint32_t first_row = blockIdx.y * ROWS,live = row_count - first_row < ROWS ? row_count - first_row : ROWS,pair_count = hidden_dimension >> 1u,stride = gridDim.x * SPARK_LM_CTA_WARPS;
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES,base,count,c,pair,element,r,candidate[SPARK_LM_HEAD_EXACT_CANDIDATES],running_candidate[ROWS];
+	float accumulator[SPARK_LM_HEAD_EXACT_CANDIDATES][ROWS],running_best[ROWS];
+	float2 input_pair,pair_value[SPARK_LM_HEAD_EXACT_CANDIDATES];
+	for (element=threadIdx.x; element<ROWS * pair_count; element+=blockDim.x)
+		hidden_pairs[element] = ((const uint32_t *)hidden_bf16)[((uint64_t)(first_row + (element / pair_count < live ? element / pair_count : 0u)) * pair_count) + (element % pair_count)];
+	__syncthreads();
+	#pragma unroll
+	for (r=0u; r<ROWS; r++)
+	{
+		running_best[r] = -3.0e38f;
+		running_candidate[r] = UINT32_MAX;
+	}
+	for (base=(blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES); base<vocabulary_count; base+=stride * SPARK_LM_HEAD_EXACT_CANDIDATES)
+	{
+		count = 0u;
+		#pragma unroll
+		for (c=0u; c<SPARK_LM_HEAD_EXACT_CANDIDATES; c++)
+		{
+			candidate[c] = base + (c * stride) < vocabulary_count ? base + (c * stride) : base;
+			count += base + (c * stride) < vocabulary_count ? 1u : 0u;
+			#pragma unroll
+			for (r=0u; r<ROWS; r++)
+				accumulator[c][r] = 0.0f;
+		}
+		#pragma unroll 2
+		for (pair=lane; pair<pair_count; pair+=SPARK_LM_WARP_LANES)
+		{
+			#pragma unroll
+			for (c=0u; c<SPARK_LM_HEAD_EXACT_CANDIDATES; c++)
+				pair_value[c] = SparkLmLoadBf16Pair(head_weight_bf16,(((uint64_t)candidate[c] * hidden_dimension) >> 1u) + pair);
+			#pragma unroll
+			for (r=0u; r<ROWS; r++)
+			{
+				input_pair = __bfloat1622float2(*(const __nv_bfloat162 *)(hidden_pairs + (r * pair_count) + pair));
+				#pragma unroll
+				for (c=0u; c<SPARK_LM_HEAD_EXACT_CANDIDATES; c++)
+				{
+					accumulator[c][r] = fmaf(input_pair.x,pair_value[c].x,accumulator[c][r]);
+					accumulator[c][r] = fmaf(input_pair.y,pair_value[c].y,accumulator[c][r]);
+				}
+			}
+		}
+		SparkLmHeadExactRowsKeep<ROWS>(accumulator,candidate,count,lane,running_best,running_candidate);
+	}
+	#pragma unroll
+	for (r=0u; r<ROWS; r++)
+	{
+		SparkLmArgmaxReduce(running_best[r],running_candidate[r],best_score,best_candidate);
+		if ( threadIdx.x == 0u && r < live )
+		{
+			partial_scores[((uint64_t)(first_row + r) * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT) + blockIdx.x] = best_score[0];
+			partial_candidates[((uint64_t)(first_row + r) * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT) + blockIdx.x] = best_candidate[0];
+		}
+		__syncthreads();
+	}
+}
+
 static __global__ void SparkLmHeadCertifiedReduceKernel(const float *partial_scores,const uint32_t *partial_candidates,uint32_t *output_token_id,float *output_score,uint32_t candidate_offset)
 {
 	__shared__ float best_score[SPARK_LM_CTA_WARPS];
 	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
 	uint32_t partial,running_candidate = UINT32_MAX;
 	float running_best = -3.0e38f,score;
+	partial_scores += (uint64_t)blockIdx.x * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT;
+	partial_candidates += (uint64_t)blockIdx.x * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT;
+	output_token_id += blockIdx.x;
+	output_score += blockIdx.x;
 	for (partial=threadIdx.x; partial<SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT; partial+=blockDim.x)
 	{
 		score = partial_scores[partial];
@@ -4664,16 +4755,17 @@ typedef struct SparkLmHeadCertifiedFp8Scratch
 } SparkLmHeadCertifiedFp8Scratch;
 
 static inline SparkLmHeadCertifiedFp8Scratch SparkLmHeadCertifiedFp8ScratchView(
-	void *scratch,uint32_t vocabulary_count,uint32_t hidden_dimension)
+	void *scratch,uint32_t vocabulary_count,uint32_t hidden_dimension,
+	uint32_t row_count)
 {
 	SparkLmHeadCertifiedFp8Scratch view;
 	view.coarse_scores = (float *)scratch;
-	view.bounds = view.coarse_scores + vocabulary_count;
-	view.hidden_norms = view.bounds + vocabulary_count;
-	view.partial_scores = view.hidden_norms +
-		(hidden_dimension / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE);
+	view.bounds = view.coarse_scores + ((uint64_t)row_count * vocabulary_count);
+	view.hidden_norms = view.bounds + ((uint64_t)row_count * vocabulary_count);
+	view.partial_scores = view.hidden_norms + ((uint64_t)row_count *
+		(hidden_dimension / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE));
 	view.partial_candidates = (uint32_t *)(view.partial_scores +
-		SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT);
+		((uint64_t)row_count * SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT));
 	return(view);
 }
 
@@ -4699,7 +4791,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 		hidden_dimension == 0u || (hidden_dimension % 512u) != 0u )
 		return(cudaErrorInvalidValue);
 	view = SparkLmHeadCertifiedFp8ScratchView(scratch,vocabulary_count,
-		hidden_dimension);
+		hidden_dimension,1u);
 	SPARK_LM_LAUNCH((
 	SparkLmHeadCertifiedHiddenNormKernel<<<norm_blocks,SPARK_LM_CTA_THREADS,0u,
 			stream>>>(hidden_bf16,view.hidden_norms,hidden_dimension)
@@ -4725,6 +4817,44 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 	SparkLmHeadCertifiedReduceKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
 			view.partial_scores,view.partial_candidates,output_token_id,output_score,
 			candidate_offset)
+	));
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkLmHostLaunchHeadExactRowsWithScore(
+	cudaStream_t stream,const void *hidden_bf16,const void *head_weight_bf16,
+	void *scratch,uint32_t *output_token_ids,float *output_scores,
+	uint32_t candidate_offset,uint32_t row_count,uint32_t vocabulary_count,
+	uint32_t hidden_dimension)
+{
+	dim3 grid(SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT,
+		(row_count + SPARK_LM_HEAD_EXACT_ROWS - 1u) / SPARK_LM_HEAD_EXACT_ROWS);
+	uint32_t shared_bytes = SPARK_LM_HEAD_EXACT_ROWS * hidden_dimension *
+		(uint32_t)sizeof(uint16_t);
+	SparkLmHeadCertifiedFp8Scratch view;
+	if ( hidden_bf16 == 0 || head_weight_bf16 == 0 || scratch == 0 ||
+		output_token_ids == 0 || output_scores == 0 || row_count == 0u ||
+		row_count > 65535u * SPARK_LM_HEAD_EXACT_ROWS ||
+		vocabulary_count == 0u || hidden_dimension == 0u ||
+		(hidden_dimension % 2u) != 0u ||
+		shared_bytes > SPARK_LM_HEAD_EXACT_ROWS_SHARED_BYTES )
+		return(cudaErrorInvalidValue);
+	view = SparkLmHeadCertifiedFp8ScratchView(scratch,vocabulary_count,
+		hidden_dimension,row_count);
+	if ( cudaFuncSetAttribute(SparkLmHeadExactRowsKernel<SPARK_LM_HEAD_EXACT_ROWS>,
+		cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes) !=
+		cudaSuccess )
+		return(cudaErrorInvalidValue);
+	SPARK_LM_LAUNCH((
+	SparkLmHeadExactRowsKernel<SPARK_LM_HEAD_EXACT_ROWS><<<grid,
+			SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(hidden_bf16,
+			head_weight_bf16,view.partial_scores,view.partial_candidates,
+			row_count,vocabulary_count,hidden_dimension)
+	));
+	SPARK_LM_LAUNCH((
+	SparkLmHeadCertifiedReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0u,
+			stream>>>(view.partial_scores,view.partial_candidates,
+			output_token_ids,output_scores,candidate_offset)
 	));
 	return(cudaGetLastError());
 }

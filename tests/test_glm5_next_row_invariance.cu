@@ -27,8 +27,6 @@ static const uint32_t roweq_waves[] = {1u,2u,8u,17u,64u};
 static const char *const roweq_known_breaks[] =
 {
     "attention.latent@2","attention.latent@8","attention.latent@17","attention.latent@64",
-    "head_greedy.maxloc@2","head_greedy.maxloc@8","head_greedy.maxloc@17","head_greedy.maxloc@64",
-    "head_mixed.maxloc@2","head_mixed.maxloc@8","head_mixed.maxloc@17","head_mixed.maxloc@64",
 };
 
 typedef std::vector<std::vector<uint8_t>> RowBytes;
@@ -340,13 +338,15 @@ typedef struct HeadState
 }
 HeadState;
 
-static HeadState HeadSetup(uint32_t sampled_every)
+static HeadState HeadSetup(uint32_t sampled_every,uint32_t twin_rows)
 {
     const uint32_t vocabulary=GLM5_NEXT_VOCAB/ROWEQ_TP,tiles=(vocabulary+GLM5_NEXT_HEAD_TILE-1u)/GLM5_NEXT_HEAD_TILE;
     HeadState state;
     SparkGlm5NextLayerWeights *layer=new SparkGlm5NextLayerWeights();
     uint32_t *ordinal=new uint32_t(UINT32_MAX);
     uint16_t *head=RandomBf16((uint64_t)vocabulary*GLM5_NEXT_HIDDEN,0.05f);
+    if (twin_rows != 0u)
+        CUDA(cudaMemcpy2D(head+GLM5_NEXT_HIDDEN,2u*GLM5_NEXT_HIDDEN*2u,head,2u*GLM5_NEXT_HIDDEN*2u,GLM5_NEXT_HIDDEN*2u,vocabulary/2u,cudaMemcpyDeviceToDevice));
     state.wave=new SparkGlm5NextCudaWave();
     state.slot=new SparkGlm5NextExecutionSlot();
     state.hidden=RandomBf16((uint64_t)ROWEQ_POOL*GLM5_NEXT_HC*GLM5_NEXT_HIDDEN,1.0f);
@@ -361,9 +361,11 @@ static HeadState HeadSetup(uint32_t sampled_every)
     state.slot->head_maxloc_u64=Allocate<uint64_t>(ROWEQ_POOL);
     state.slot->positions=Allocate<uint32_t>(ROWEQ_POOL);
     state.slot->row_sampling=Allocate<SparkRowSampling>(ROWEQ_POOL);
-    state.slot->head_certified_scratch=Allocate<uint8_t>(SparkHeadCertifiedFp8ScratchBytes(vocabulary,GLM5_NEXT_HIDDEN));
+    state.slot->head_certified_scratch=Allocate<uint8_t>(ROWEQ_POOL*SparkHeadCertifiedFp8ScratchBytes(vocabulary,GLM5_NEXT_HIDDEN));
     state.slot->head_certified_candidates=Allocate<uint32_t>(vocabulary);
     state.slot->head_screened_count=Allocate<uint32_t>(1u);
+    state.slot->head_certified_token=Allocate<uint32_t>(ROWEQ_POOL);
+    state.slot->head_certified_score=Allocate<float>(ROWEQ_POOL);
     uint8_t *payload=Allocate<uint8_t>((uint64_t)vocabulary*GLM5_NEXT_HIDDEN);
     float *scale=Allocate<float>((uint64_t)vocabulary*GLM5_NEXT_HIDDEN/32u),*bound=Allocate<float>((uint64_t)vocabulary*GLM5_NEXT_HIDDEN/32u);
     REQUIRE(SparkGlm5NextLaunchHeadCertifiedQuantize(0,head,payload,scale,bound,vocabulary,GLM5_NEXT_HIDDEN) == cudaSuccess);
@@ -383,10 +385,11 @@ static HeadState HeadSetup(uint32_t sampled_every)
     return state;
 }
 
-static Family HeadFamily(const char *name,uint32_t sampled_every)
+static Family HeadFamily(const char *name,uint32_t sampled_every,uint32_t twin_rows)
 {
     Family family;
-    HeadState state=HeadSetup(sampled_every);
+    HeadState state=HeadSetup(sampled_every,twin_rows);
+    SparkRowSampling *host_rules=new SparkRowSampling[ROWEQ_POOL];
     family.name=name;
     family.sites={"maxloc","token"};
     family.run=[=](const std::vector<uint32_t> &members,std::vector<RowBytes> &sites)
@@ -402,12 +405,24 @@ static Family HeadFamily(const char *name,uint32_t sampled_every)
             sampled|=rules[row].inverse_temperature != 0.0f ? 1u : 0u;
         }
         CUDA(cudaMemcpy(state.slot->row_sampling,rules.data(),rows*sizeof(SparkRowSampling),cudaMemcpyHostToDevice));
+        std::copy(rules.begin(),rules.end(),host_rules);
+        state.wave->host_row_sampling=host_rules;
         CUDA(cudaMemcpy(state.slot->positions,positions.data(),rows*4u,cudaMemcpyHostToDevice));
         Gather(state.slot->hidden_bf16,state.hidden,(uint64_t)GLM5_NEXT_HC*GLM5_NEXT_HIDDEN*2u,members);
         state.wave->row_count=rows;
         state.wave->sampled=sampled;
         REQUIRE(SparkGlm5NextRunHead(state.wave) == LM_LAUNCH_OK);
         sites={Scatter(state.slot->head_maxloc_u64,8u,8u,rows),Scatter(state.slot->head_maxloc_u64,4u,8u,rows)};
+        for (uint32_t row=0u; twin_rows != 0u && row<rows; row++)
+        {
+            uint32_t inverted;
+            memcpy(&inverted,sites[1][row].data(),4u);
+            if (((UINT32_MAX-inverted)&1u) != 0u)
+            {
+                fprintf(stderr,"FAIL head tie: pool row %u picked token %u over its lower twin at wave %u\n",members[row],UINT32_MAX-inverted,rows);
+                exit(1);
+            }
+        }
     };
     return family;
 }
@@ -492,9 +507,10 @@ int main(int argc,char **argv)
     families.push_back(DenseMlpFamily(multiprocessors));
     families.push_back(MoeFamily(multiprocessors));
     families.push_back(AttentionFamily(multiprocessors));
-    families.push_back(HeadFamily("head_greedy",0u));
-    families.push_back(HeadFamily("head_sampled",1u));
-    families.push_back(HeadFamily("head_mixed",2u));
+    families.push_back(HeadFamily("head_greedy",0u,0u));
+    families.push_back(HeadFamily("head_sampled",1u,0u));
+    families.push_back(HeadFamily("head_mixed",2u,0u));
+    families.push_back(HeadFamily("head_ties",0u,1u));
     CUDA(cudaDeviceSynchronize());
     for (const Family &family : families)
         Measure(family,tallies,keys);

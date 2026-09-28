@@ -2308,3 +2308,56 @@ static int32_t Glm5NextHeadCertifiedB1(
         rank_offset, 1u, vocabulary, GLM5_NEXT_HIDDEN);
     return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
+
+static int32_t Glm5NextHeadExactRows(
+    const Glm5NextLayerBuffers *buffers,
+    const void *head_norm_weight,
+    const void *head_weight,
+    void *scratch,
+    uint32_t *output_token,
+    float *output_score,
+    uint32_t rank_offset,
+    uint32_t vocabulary,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    cudaError_t status;
+    if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
+        scratch == 0 || rows == 0u || buffers->hc_mean_bf16 == 0 ||
+        buffers->normed_bf16 == 0 || output_token == 0 || output_score == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    LM_LAUNCH(
+        (LmBf16RmsNormKernel<GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        (GLM5_NEXT_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hc_mean_bf16,
+        (const uint16_t *)head_norm_weight,
+        buffers->normed_bf16,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_HIDDEN,
+        GLM5_NEXT_RMS_EPSILON);
+    status = SparkLmHostLaunchHeadExactRowsWithScore(
+        stream, buffers->normed_bf16, head_weight, scratch, output_token,
+        output_score, rank_offset, rows, vocabulary, GLM5_NEXT_HIDDEN);
+    return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+__global__ static void Glm5NextHeadGreedySelectKernel(
+    const SparkRowSampling *row_sampling,
+    const uint32_t *certified_token,
+    const float *certified_score,
+    uint32_t *output_token,
+    float *output_score,
+    uint32_t rows)
+{
+    const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < rows && row_sampling[row].inverse_temperature == 0.0f)
+    {
+        output_token[row] = certified_token[row];
+        output_score[row] = certified_score[row];
+    }
+}
