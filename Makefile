@@ -790,6 +790,13 @@ build/test_latent_attention_split_group: tests/test_latent_attention_split_group
 test-latent-attention-split-group: build/test_latent_attention_split_group
 	./build/test_latent_attention_split_group --run
 
+build/test_rms_norm_staged: tests/test_rms_norm_staged.cu inference/kernels/norm.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-rms-norm-staged
+test-rms-norm-staged: build/test_rms_norm_staged
+	./build/test_rms_norm_staged --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
