@@ -89,8 +89,8 @@ static void DenseCase(const DenseShape *shape,uint32_t rows,cudaStream_t stream)
     CUDA(cudaMalloc(&device_activation,activation.size()*2u));
     CUDA(cudaMalloc(&device_out16,out16.size()*2u));
     CUDA(cudaMalloc(&device_out32,out32.size()*4u));
-    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size()*2u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpyAsync(device_weight,weight.data(),weight.size()*2u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice,stream));
     REQUIRE(LmSkinnyDense<LmBf16Format>(device_weight,device_activation,shape->f32 ? 0 : device_out16,shape->f32 ? device_out32 : 0,rows,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(out16.data(),device_out16,out16.size()*2u,cudaMemcpyDeviceToHost));
@@ -122,16 +122,16 @@ static void RowsCase(const DenseShape *shape,cudaStream_t stream)
     for (uint32_t k=0u; k<shape->input; k++) { activation[k]=0x0000u; activation[shape->input+k]=0x8000u; weight[k]=0x8000u; }
     CUDA(cudaMalloc(&device_weight,weight.size()*2u)); CUDA(cudaMalloc(&device_activation,activation.size()*2u));
     CUDA(cudaMalloc(&device_single,single.size())); CUDA(cudaMalloc(&device_batched,batched.size()));
-    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size()*2u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemset(device_single,0xa5,single.size()));
+    CUDA(cudaMemcpyAsync(device_weight,weight.data(),weight.size()*2u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemsetAsync(device_single,0xa5,single.size(),stream));
     for (uint32_t row=0u; row<most; row++)
         REQUIRE(LmSkinnyDense<LmBf16Format>(device_weight,device_activation+(uint64_t)row*shape->input,shape->f32 ? 0 : (uint16_t *)(device_single+row*width),shape->f32 ? (float *)(device_single+row*width) : 0,1u,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(single.data(),device_single,single.size(),cudaMemcpyDeviceToHost));
     for (uint32_t rows : counts)
     {
-        CUDA(cudaMemset(device_batched,0x5a,batched.size()));
+        CUDA(cudaMemsetAsync(device_batched,0x5a,batched.size(),stream));
         REQUIRE(LmSkinnyDenseRows<LmBf16Format>(device_weight,device_activation,shape->f32 ? 0 : (uint16_t *)device_batched,shape->f32 ? (float *)device_batched : 0,rows,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
         CUDA(cudaStreamSynchronize(stream));
         CUDA(cudaMemcpy(batched.data(),device_batched,batched.size(),cudaMemcpyDeviceToHost));
@@ -183,12 +183,12 @@ static void RowsTiming(uint32_t multiprocessors,cudaStream_t stream)
     const uint32_t counts[]={9u,16u,32u,64u,128u};
     uint16_t *weights,*activation,*output; uint32_t *row_offset,*tile_prefix;
     double total_skinny,total_tensor;
-    CUDA(cudaMalloc(&activation,128u*8192u*2u)); CUDA(cudaMemset(activation,0x3c,128u*8192u*2u));
+    CUDA(cudaMalloc(&activation,128u*8192u*2u)); CUDA(cudaMemsetAsync(activation,0x3c,128u*8192u*2u,stream));
     CUDA(cudaMalloc(&output,128u*4097u*4u)); CUDA(cudaMalloc(&row_offset,8u)); CUDA(cudaMalloc(&tile_prefix,8u));
     for (uint32_t rows : counts)
     {
         const uint32_t offsets[2]={0u,rows};
-        CUDA(cudaMemcpy(row_offset,offsets,8u,cudaMemcpyHostToDevice));
+        CUDA(cudaMemcpyAsync(row_offset,offsets,8u,cudaMemcpyHostToDevice,stream));
         total_skinny=total_tensor=0.0;
         for (const DenseShape &shape : dense_shapes)
         {
@@ -197,7 +197,7 @@ static void RowsTiming(uint32_t multiprocessors,cudaStream_t stream)
             float skinny,tensor;
             if ((shape.input % LmBf16Format::kTileK) != 0u)
                 continue;
-            CUDA(cudaMalloc(&weights,matrices*bytes)); CUDA(cudaMemset(weights,0x3c,matrices*bytes));
+            CUDA(cudaMalloc(&weights,matrices*bytes)); CUDA(cudaMemsetAsync(weights,0x3c,matrices*bytes,stream));
             skinny=RowsTime(&shape,true,rows,weights,activation,output,row_offset,tile_prefix,matrices,multiprocessors,stream);
             tensor=RowsTime(&shape,false,rows,weights,activation,output,row_offset,tile_prefix,matrices,multiprocessors,stream);
             total_skinny+=skinny; total_tensor+=tensor;
@@ -235,11 +235,11 @@ static void ExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t a
     for (uint32_t pair=0u; pair<pairs; pair++) { route[pair]=pair == 1u ? route[0] : Random()%experts; packed[pair]=(pair*5u+3u)%pairs; }
     CUDA(cudaMalloc(&device_weight,weight.size())); CUDA(cudaMalloc(&device_scale,scale.size()*4u)); CUDA(cudaMalloc(&device_activation,activation.size()*2u));
     CUDA(cudaMalloc(&device_out,out.size()*2u)); CUDA(cudaMalloc(&device_route,pairs*4u)); CUDA(cudaMalloc(&device_packed,pairs*4u));
-    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_route,route.data(),pairs*4u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_packed,packed.data(),pairs*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpyAsync(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_route,route.data(),pairs*4u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_packed,packed.data(),pairs*4u,cudaMemcpyHostToDevice,stream));
     REQUIRE(LmSkinnyExperts<LmFp8>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,device_route,device_packed,pairs,top_k,activation_packed,input,output,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
@@ -267,7 +267,7 @@ static void GroupedRouteBuild(GroupedRoute *route,uint32_t tokens,uint32_t input
         expert[pair]=(pair%top_k) == 0u && pair/top_k < skew ? 5u : Random()%experts;
     CUDA(cudaMalloc(&route->route,pairs*4u)); CUDA(cudaMalloc(&route->offset,(experts+1u)*4u)); CUDA(cudaMalloc(&route->packed,pairs*4u));
     CUDA(cudaMalloc(&route->source,pairs*4u)); CUDA(cudaMalloc(&route->prefix_up,(experts+1u)*4u)); CUDA(cudaMalloc(&route->prefix_down,(experts+1u)*4u));
-    CUDA(cudaMemcpy(route->route,expert.data(),pairs*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpyAsync(route->route,expert.data(),pairs*4u,cudaMemcpyHostToDevice,stream));
     REQUIRE((LmRouteBuild<256u,288u>(route->route,tokens,pairs,top_k,route->offset,route->packed,route->source,input == 4096u ? output : input,input == 4096u ? input : output,GLM5_NEXT_LAYER_TILE_N,route->prefix_up,route->prefix_down,stream)) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     route->host_offset.resize(experts+1u); route->host_source.resize(pairs);
@@ -296,15 +296,15 @@ static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uin
     for (auto &value : activation) value=Bf16(Signed()*4.0f);
     GroupedRouteBuild(&route,tokens,input,output,skew,stream);
     CUDA(cudaMalloc(&device_weight,weight.size())); CUDA(cudaMalloc(&device_scale,scale.size()*4u)); CUDA(cudaMalloc(&device_activation,activation.size()*2u)); CUDA(cudaMalloc(&device_out,out.size()*2u));
-    CUDA(cudaMemcpy(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    CUDA(cudaMemcpyAsync(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_scale,scale.data(),scale.size()*4u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemsetAsync(device_out,0xff,out.size()*2u,stream));
     std::vector<uint16_t> single((uint64_t)pairs*output);
     REQUIRE((LmSkinnyGroupedExpertsWith<LmFp8,1u>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(single.data(),device_out,single.size()*2u,cudaMemcpyDeviceToHost));
-    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    CUDA(cudaMemsetAsync(device_out,0xff,out.size()*2u,stream));
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>(device_weight,LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(device_scale,experts,output,input),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
@@ -365,9 +365,9 @@ static void GroupedTiming(uint32_t input,uint32_t output,uint32_t tokens,uint32_
     GroupedRouteBuild(&route,tokens,input,output,0u,stream);
     for (uint32_t expert=0u; expert<experts; expert++)
         distinct+=route.host_offset[expert+1u] != route.host_offset[expert] ? 1u : 0u;
-    CUDA(cudaMalloc(&weight,(uint64_t)experts*output*input)); CUDA(cudaMemset(weight,0x38,(uint64_t)experts*output*input));
-    CUDA(cudaMalloc(&scale,(uint64_t)experts*output*(input/128u)*4u)); CUDA(cudaMemset(scale,0,(uint64_t)experts*output*(input/128u)*4u));
-    CUDA(cudaMalloc(&activation,(uint64_t)pairs*input*2u)); CUDA(cudaMemset(activation,0x3c,(uint64_t)pairs*input*2u));
+    CUDA(cudaMalloc(&weight,(uint64_t)experts*output*input)); CUDA(cudaMemsetAsync(weight,0x38,(uint64_t)experts*output*input,stream));
+    CUDA(cudaMalloc(&scale,(uint64_t)experts*output*(input/128u)*4u)); CUDA(cudaMemsetAsync(scale,0,(uint64_t)experts*output*(input/128u)*4u,stream));
+    CUDA(cudaMalloc(&activation,(uint64_t)pairs*input*2u)); CUDA(cudaMemsetAsync(activation,0x3c,(uint64_t)pairs*input*2u,stream));
     CUDA(cudaMalloc(&out,(uint64_t)pairs*output*2u));
     skinny=GroupedTime(LM_SKINNY_GROUPED_NEURONS,input,output,tokens,activation_packed,weight,scale,activation,out,&route,stream);
     single=GroupedTime(1u,input,output,tokens,activation_packed,weight,scale,activation,out,&route,stream);
@@ -416,10 +416,10 @@ static void TimeShape(const DenseShape *shape,cudaStream_t stream)
     const uint32_t offsets[2]={0u,1u};
     uint16_t *weights,*activation,*output; uint32_t *row_offset,*tile_prefix;
     double skinny,tensor;
-    CUDA(cudaMalloc(&weights,(uint64_t)matrices*shape->input*shape->output*2u)); CUDA(cudaMemset(weights,0x3c,(uint64_t)matrices*shape->input*shape->output*2u));
-    CUDA(cudaMalloc(&activation,shape->input*2u)); CUDA(cudaMemset(activation,0x3c,shape->input*2u));
+    CUDA(cudaMalloc(&weights,(uint64_t)matrices*shape->input*shape->output*2u)); CUDA(cudaMemsetAsync(weights,0x3c,(uint64_t)matrices*shape->input*shape->output*2u,stream));
+    CUDA(cudaMalloc(&activation,shape->input*2u)); CUDA(cudaMemsetAsync(activation,0x3c,shape->input*2u,stream));
     CUDA(cudaMalloc(&output,shape->output*4u)); CUDA(cudaMalloc(&row_offset,8u)); CUDA(cudaMalloc(&tile_prefix,8u));
-    CUDA(cudaMemcpy(row_offset,offsets,8u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpyAsync(row_offset,offsets,8u,cudaMemcpyHostToDevice,stream));
     skinny=Timing(shape,true,weights,activation,output,row_offset,tile_prefix,matrices,stream);
     tensor=Timing(shape,false,weights,activation,output,row_offset,tile_prefix,matrices,stream);
     printf("TIMING shape=%s k=%u n=%u matrices=%u skinny_gbps=%.1f tensor_core_gbps=%.1f speedup=%.2f\n",shape->name,shape->input,shape->output,matrices,skinny,tensor,skinny/tensor);
@@ -461,8 +461,8 @@ static void TopkCase(cudaStream_t stream)
     for (auto &value : bias) value=Signed()*0.5f;
     CUDA(cudaMalloc(&device_logits,logits.size()*4u)); CUDA(cudaMalloc(&device_bias,bias.size()*4u));
     CUDA(cudaMalloc(&device_values,rows*k*4u)); CUDA(cudaMalloc(&device_indices,rows*k*4u));
-    CUDA(cudaMemcpy(device_logits,logits.data(),logits.size()*4u,cudaMemcpyHostToDevice));
-    CUDA(cudaMemcpy(device_bias,bias.data(),bias.size()*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpyAsync(device_logits,logits.data(),logits.size()*4u,cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_bias,bias.data(),bias.size()*4u,cudaMemcpyHostToDevice,stream));
     LmTopkSmallKernel<256u,8u,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<rows,256u,2u*LM_TOPK_SMALL_LIMIT*sizeof(uint32_t),stream>>>(device_logits,n,device_indices,device_values,device_bias,0,2.5f);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(indices_small.data(),device_indices,rows*k*4u,cudaMemcpyDeviceToHost));
