@@ -61,6 +61,8 @@ typedef struct SparkGlm5NextLayerWeights
 } SparkGlm5NextLayerWeights;
 
 #define SPARK_GLM5_NEXT_GRAPH_ROWS_MAX 64u
+#define SPARK_GLM5_NEXT_COVER_STRIDE ((SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 31u) / 32u)
+#define SPARK_GLM5_NEXT_ROUTE_LOG_LAYER_ENTRIES (SPARK_GLM5_NEXT_GRAPH_ROWS_MAX * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K)
 #define SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS UINT64_C(10000000000)
 #define SPARK_GLM5_NEXT_WAVE_IDLE 0u
 #define SPARK_GLM5_NEXT_WAVE_WAIT 1u
@@ -92,6 +94,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *verify_exec[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT];
 	uint32_t verify_bound[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT];
 	uint32_t verify_captured;
+	uint32_t *miss_ring;
 	void *host_staging;
 	SparkRowSampling *host_row_sampling;
 	uint32_t sampled;
@@ -239,6 +242,7 @@ typedef struct SparkGlm5NextCudaWave
 	const uint32_t *expert_cover;
 	uint32_t expert_cover_stride;
 	void *expert_miss;
+	uint32_t *expert_route_log;
 	SparkGlm5NextExecutionSlot *slot;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
@@ -311,6 +315,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,ui
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,const void *epoch_device,void *seen);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkTpLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
