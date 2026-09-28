@@ -6,9 +6,16 @@ fixture's tokenizer (qualification/ds4_eval/tokenizer/). Each question is
 decoded with that tokenizer, wrapped in the served model's chat template,
 tokenized with the served model's tokenizer.json (HF `tokenizers`) and sent
 as prompt_token_ids to /v1/completions, temperature 0. Output tokens are
-decoded with the served model's tokenizer and graded with the ds4_eval rule
-(qualification/ds4_eval/compare_runs.py), exactly as
-tools/glm5_next_compsec17.py does for GLM.
+decoded with the served model's tokenizer and graded two ways:
+
+  ds4_eval           qualification/ds4_eval/compare_runs.py, exactly as
+                     tools/glm5_next_compsec17.py does for GLM (falls back to the
+                     last integer anywhere in the reply when no Answer line exists)
+  final-answer-line  only the reply's last non-empty line counts, and only when it
+                     is an "Answer: <lines>" line (markdown emphasis allowed); a
+                     truncated or unfinished reply grades "?"
+
+--grading picks the rule that sets passed and the exit status; both are recorded.
 
 Templates (thinking off / on):
   qwen  <|im_start|>user\\n{q}<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n
@@ -25,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -34,8 +42,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "qualification" / "ds4_eval"))
 sys.path.insert(0, str(ROOT / "tools"))
-from compare_runs import answer_matches, extract_answer
+from compare_runs import answer_matches, extract_answer, normalize_line_spec
 from glm5_next_compsec17 import COMPSEC_IDS, load_decoder
+
+FINAL_ANSWER_LINE = re.compile(r"^[\s*_#>`-]*answer[\s*_`]*:[\s*_`]*(.*)$", re.IGNORECASE)
 
 TEMPLATES = {
     "qwen": ("<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n",
@@ -61,9 +71,21 @@ def call(endpoint: str, ids: list, max_tokens: int, temperature: float, timeout:
     return {"elapsed_s": time.monotonic() - t0, "payload": payload}
 
 
-def grade(text: str, answer: str) -> tuple:
+def final_answer_line(text: str) -> str:
+    surface = text.split("</think>", 1)[1] if "</think>" in text else text
+    lines = [line for line in surface.strip().splitlines() if line.strip()]
+    if not lines:
+        return "?"
+    match = FINAL_ANSWER_LINE.match(lines[-1])
+    return normalize_line_spec(match.group(1)) if match else "?"
+
+
+def grade(text: str, answer: str, grading: str) -> tuple:
     case = {"source": "COMPSEC", "choices": [], "answer": answer}
-    extracted, _ = extract_answer(case, text, "")
+    if grading == "final-answer-line":
+        extracted = final_answer_line(text)
+    else:
+        extracted, _ = extract_answer(case, text, "")
     return answer_matches(case, extracted), extracted
 
 
@@ -93,6 +115,7 @@ def main() -> int:
     ap.add_argument("--fixture-tokenizer", default=str(ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-tokens", type=int, default=512)
+    ap.add_argument("--grading", required=True, choices=("ds4_eval", "final-answer-line"))
     ap.add_argument("--pass-threshold", type=int, default=14)
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.0)
@@ -115,14 +138,18 @@ def main() -> int:
         replies = list(pool.map(lambda ids: call(args.endpoint, ids, args.max_tokens, args.temperature, args.timeout), prompt_ids))
     wall_s = time.monotonic() - started
     results = []
+    other = "ds4_eval" if args.grading == "final-answer-line" else "final-answer-line"
     for i, (c, prompt, ids, r) in enumerate(zip(cases, prompts, prompt_ids, replies), 1):
         payload = r["payload"]
         tokens = payload.get("tokens") or []
         choices = payload.get("choices") or [{}]
         text = choices[0].get("text") if choices[0].get("text") is not None else model_tok.decode(tokens, skip_special_tokens=False)
-        passed, extracted = grade(text, c["answer"])
+        passed, extracted = grade(text, c["answer"], args.grading)
+        other_passed, other_extracted = grade(text, c["answer"], other)
         rec = {"index": i, "id": c["id"], "source": "COMPSEC", "domain": c["domain"],
                "expected": c["answer"], "extracted": extracted, "passed": passed,
+               "grading": args.grading, other + "_passed": other_passed, other + "_extracted": other_extracted,
+               "finish_reason": choices[0].get("finish_reason"),
                "elapsed_ms": round(r["elapsed_s"] * 1000, 1),
                "output_sha256": hashlib.sha256(text.encode()).hexdigest(),
                "prompt_token_count": len(ids), "generated_token_count": len(tokens),
@@ -147,12 +174,18 @@ def main() -> int:
         "wall_s": round(wall_s, 2),
         "parameters": {"max_tokens": args.max_tokens, "temperature": args.temperature,
                        "chat_template": args.template, "thinking": args.thinking,
-                       "concurrency": args.concurrency, "pass_threshold": args.pass_threshold},
-        "grading_rule": "qualification/ds4_eval/compare_runs.py extract_answer + answer_matches",
-        "completed": len(results), "passed": passed_n, "results": results}, indent=1))
+                       "concurrency": args.concurrency, "pass_threshold": args.pass_threshold,
+                       "grading": args.grading},
+        "grading_rule": ("last non-empty line must be an Answer line, answer_matches on its line spec"
+                         if args.grading == "final-answer-line" else
+                         "qualification/ds4_eval/compare_runs.py extract_answer + answer_matches"),
+        "completed": len(results), "passed": passed_n,
+        "passed_other_rule": sum(1 for r in results if r[other + "_passed"]),
+        "truncated": sum(1 for r in results if r["finish_reason"] == "length"),
+        "results": results}, indent=1))
     (out / "cases.json").write_text(json.dumps({"format": "ds4-eval-compsec17-chat-cases-v1", "cases": cases}, indent=1))
     write_integrity(out, len(results))
-    print(f"\nCOMPSEC-17 RESULT: {passed_n}/17")
+    print(f"\nCOMPSEC-17 RESULT ({args.grading}): {passed_n}/17")
     return 0 if passed_n >= args.pass_threshold else 1
 
 

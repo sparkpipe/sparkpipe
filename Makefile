@@ -389,6 +389,7 @@ PYTHON_TESTS := \
 	tests/test_inference_smoke.py \
 	tests/test_qwen38_27b_lane_deployment.py \
 	tests/test_qwen38_27b_tp_split.py \
+	tests/test_compsec17_chat_grading.py \
 	tests/test_qwen38_27b_experts_manifest.py \
 	tests/test_hy4_model_header.py \
 	tests/test_qwen4_flash_model_header.py \

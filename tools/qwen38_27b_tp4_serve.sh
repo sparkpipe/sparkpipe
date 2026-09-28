@@ -312,6 +312,6 @@ case "$ACTION" in
 	api-start) on "$HUB" "systemctl --user daemon-reload && systemctl --user start qwen27b-api && sleep 2 && systemctl --user is-active qwen27b-api && curl -s --max-time 5 http://127.0.0.1:${API_PORT}/health; echo" ;;
 	api-stop) on "$HUB" "systemctl --user stop qwen27b-api; systemctl --user is-active qwen27b-api || true" ;;
 	smoke) on "$HUB" "curl -s --max-time 300 http://127.0.0.1:${API_PORT}/v1/completions -H 'Content-Type: application/json' -d '{\"prompt\":\"<|im_start|>user\\nWhat is the capital of France?<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n\",\"max_tokens\":32,\"temperature\":0}'; echo" ;;
-	compsec) on "$HUB" "cd ~/api-build-qwen27b-${2:?SHA} && python3 tools/compsec17_chat.py --endpoint http://127.0.0.1:${API_PORT} --template qwen --thinking off --max-tokens ${4:?TOK} --model-tokenizer ${API_CHANNEL}/runtime/tokenizer/tokenizer.json --out ~/qwen27b-runs/${3:?RUN_ID}/compsec17 2>&1 | tail -24" ;;
+	compsec) on "$HUB" "cd ~/api-build-qwen27b-${2:?SHA} && python3 tools/compsec17_chat.py --endpoint http://127.0.0.1:${API_PORT} --template qwen --thinking off --grading final-answer-line --max-tokens ${4:?TOK} --model-tokenizer ${API_CHANNEL}/runtime/tokenizer/tokenizer.json --out ~/qwen27b-runs/${3:?RUN_ID}/compsec17 2>&1 | tail -24" ;;
 	*) usage ;;
 esac
