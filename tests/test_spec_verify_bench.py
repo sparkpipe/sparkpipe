@@ -57,11 +57,12 @@ def check_log():
         "noise",
         "VERIFY-FRAME slot=0 position=100 budget=8 produced=8 rounds=1 accepted=7 | frames=1",
         "VERIFY-FRAME slot=1 position=108 budget=8 produced=5 rounds=3 accepted=2 | frames=2",
+        "VERIFY-FRAME slot=0 position=113 budget=8 produced=8 rounds=2 accepted=3 steps=3 | frames=3",
     ]
     report = bench.parse_log(lines)
-    assert report["verify_frames"] == 2 and report["rounds"] == 4 and report["accepted_drafts"] == 9
-    assert report["produced_tokens"] == 13 and abs(report["tokens_per_round"] - 13 / 4) < 1e-9
-    assert abs(report["frame_fill"] - 13 / 16) < 1e-9
+    assert report["verify_frames"] == 3 and report["rounds"] == 6 and report["accepted_drafts"] == 12 and report["plain_steps"] == 3
+    assert report["produced_tokens"] == 21 and abs(report["tokens_per_round"] - 18 / 6) < 1e-9
+    assert abs(report["frame_fill"] - 21 / 24) < 1e-9
 
 
 def entry(klass, tokens, text, decode_s, ids):

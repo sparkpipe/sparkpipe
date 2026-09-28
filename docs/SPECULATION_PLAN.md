@@ -340,8 +340,10 @@ Aggregate gain at batch B with k drafts per sequence is
   frames, S <= 8, never crossing a 64-token block) asks the drafter for
   k = min(rows - 1, S - 1) tokens, reduced so the wave stays in one
   attention regime. No draft: the frame runs as the ordinary S-step chain.
-  Otherwise it runs verify rounds until S tokens are produced or the drafter
-  has nothing:
+  Otherwise the frame produces exactly S tokens from verify rounds and,
+  where the drafter has nothing (or one token is left), plain B1 steps on
+  the production B1 graph; after each plain step the drafter is asked
+  again. A verify round:
   1. replay the captured verify graph for 1 + k rows with `commit=0`
      (KDA replay record on, conv windows and recurrent state untouched);
   2. sync, resolve the longest matching prefix on the host
@@ -352,8 +354,17 @@ Aggregate gain at batch B with k drafts per sequence is
      rejected rows' KV and index slots are overwritten by the next round;
   4. the drafter observes the committed tokens and the next round starts
      from the new anchor.
-  The completion carries 1..S tokens like a chain frame. Every frame prints
-  `VERIFY-FRAME slot position budget produced rounds accepted | cumulative`.
+  The depth of each round is also capped per lane by
+  `SparkSpeculationDepthCapNext`: a round whose drafts are all accepted
+  doubles the cap (up to rows - 1), a rejection sets it to the accepted
+  length plus one, and a new sequence on the lane starts at rows - 1. A
+  drafter that keeps missing therefore costs 2-row waves, not 8-row ones,
+  until it hits again. The cap only reads committed counts, so it is
+  identical on every rank. The goodput controller of S4 replaces it.
+  The completion carries the S tokens like a chain frame, so spec-on and
+  spec-off runs have the same frame count. Every frame prints
+  `VERIFY-FRAME slot position budget produced rounds accepted steps |
+  cumulative` (steps are the plain B1 steps inside the frame).
 - Rank agreement: the frame, the drafter history (built from frames and
   all-reduced outputs), the experts-warm flag and the verify-table flag
   flip on the same frame on every rank. Graph state is not like that: a
