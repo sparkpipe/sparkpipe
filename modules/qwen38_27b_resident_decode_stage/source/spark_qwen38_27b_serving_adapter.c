@@ -305,6 +305,7 @@ typedef struct SparkQwen38_27bServingState
 	uint64_t dflash2_draft_sequence_id;
 	uint32_t dflash2_next_draft_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t dflash2_fold_armed;
+	uint64_t dflash2_context_limit_sequence_id;
 	uint64_t dflash2_fold_position;
 	uint64_t dflash2_fold_sequence_id;
 	int32_t dflash2_fold_restore_slot;
@@ -1496,6 +1497,24 @@ static SparkStatus SparkQwen38_27bServingRunSpeculativeFrame(
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkQwen38_27bServingSpeculationFitsDrafter(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint64_t end_position;
+	if ( SparkQwen38_27bServingBlockDraftMethod(state->spec_method) == 0u || submission->row_count == 0u )
+		return(1u);
+	end_position = submission->row_positions[submission->row_count - 1u] + 2u * (uint64_t)SPARK_QWEN38_27B_DSPARK_BLOCK_SIZE + 2u;
+	if ( end_position <= SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS )
+		return(1u);
+	if ( state->dflash2_context_limit_sequence_id != submission->row_sequence_ids[submission->row_count - 1u] )
+	{
+		state->dflash2_context_limit_sequence_id = submission->row_sequence_ids[submission->row_count - 1u];
+		fprintf(stderr,"qwen38_27b_spec dflash2_context_limit sequence=%llu position=%llu limit=%u speculation=off\n",(unsigned long long)state->dflash2_context_limit_sequence_id,(unsigned long long)submission->row_positions[submission->row_count - 1u],SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS);
+	}
+	return(0u);
+}
+
 static uint32_t SparkQwen38_27bServingFoldRestorePending(
 	const SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission)
@@ -2002,7 +2021,7 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 		SparkQwen38_27bServingRecordSubmissionTokens(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
-		status = SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission);
+		status = SparkQwen38_27bServingSpeculationFitsDrafter(state,submission) != 0u ? SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission) : SPARK_STATUS_CAPACITY_EXCEEDED;
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 		{
 			speculate = 0u;

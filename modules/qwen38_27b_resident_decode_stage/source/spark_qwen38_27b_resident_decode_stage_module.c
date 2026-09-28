@@ -2420,6 +2420,11 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 		{
 			const uint64_t base_blk = base + blk;
 			uint32_t avail = (uint32_t)(base_blk < 2048u ? base_blk : 2048u);
+			if ( base_blk + B > SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS )
+			{
+				fprintf(stderr,"%s dflash2_context_positions_exceeded base=%llu block=%u limit=%u\n",SPARK_QWEN38_27B_MODULE_TAG,(unsigned long long)base_blk,B,SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS);
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			}
 			const uint32_t window = wnd_bound < avail ? wnd_bound : avail;
 			const uint64_t window_base = base_blk - window;
 			const uint32_t nkv = window + ctx_tail + B;
