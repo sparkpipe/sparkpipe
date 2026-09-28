@@ -552,6 +552,7 @@ PYTHON_TESTS := \
 	tests/test_stage_module_teardown.py \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
+	tests/test_dsv41_flash_layer0_anchor.py \
 	tests/test_dsv41_flash_shared_lane.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
