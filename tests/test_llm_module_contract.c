@@ -288,6 +288,12 @@ static void TestKvFrameRestore(void)
 
 	LmKvFrameMarkWritten(&state,&view,2u);
 	Check(state.slot_dirty[7u] == 1u && state.slot_dirty[5u] == 1u && state.slot_dirty[6u] == 0u,"kv_frame mark written blocks (SPARK_LLM_KV_BLOCK_TOKENS)");
+	host_mapping[0] = 0u;
+	host_mapping[1] = 0u;
+	view.slot_mapping = 0;
+	status = LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,2u);
+	Check(status == SPARK_STATUS_OK,"kv_frame prepare without a device slot mapping");
+	Check(host_mapping[0] == expected_row0 && host_mapping[1] == expected_row1,"kv_frame host mapping without a device slot mapping");
 	FreeState(&state);
 }
 
@@ -364,6 +370,66 @@ static void TestKvFrameNegativeGeometry(void)
 
 int LlmModuleNegativeControlRun(void);
 
+#define SPARK_FAMILY_CAMEL KvProbe
+#define SPARK_FAMILY_UPPER KV_PROBE
+#define SPARK_FAMILY_LOWER kv_probe
+#include "sparkpipe/family/spark_family.h"
+
+typedef struct SparkKvProbeModuleState
+{
+	LmKvFrameState kv;
+} SparkKvProbeModuleState;
+
+typedef struct SparkKvProbeModuleSlot
+{
+	void *cuda_stream;
+	uint32_t *host_row_lane_indices;
+	uint64_t *host_row_positions;
+	uint32_t *host_context_lengths;
+	uint32_t *host_slot_mapping;
+	uint32_t *slot_mapping;
+} SparkKvProbeModuleSlot;
+
+typedef struct SparkKvProbeDecodeBatchView
+{
+	const uint64_t *row_sequence_ids;
+} SparkKvProbeDecodeBatchView;
+
+typedef struct SparkKvProbeResidentDecodeStageFrameContext
+{
+	const SparkKvProbeDecodeBatchView *decode_batch;
+} SparkKvProbeResidentDecodeStageFrameContext;
+
+typedef struct SparkKvProbeKvBlockTableView
+{
+	uint32_t lane_count;
+	uint32_t lane_stride;
+	const uint32_t *host_physical_block_indices;
+	const uint32_t *host_lane_physical_block_counts;
+	const uint32_t *physical_block_indices;
+	const uint32_t *lane_physical_block_counts;
+} SparkKvProbeKvBlockTableView;
+
+#define SPARK_KV_PROBE_MODULE_KV_DEVICE_SLOT_MAPPING(slot) ((slot)->slot_mapping)
+#include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
+
+static void TestKvFrameTemplateTierOff(void)
+{
+	SparkKvProbeModuleState state;
+	SparkKvProbeModuleSlot slot;
+	SparkKvProbeResidentDecodeStageFrameContext prefill_context;
+	SparkKvProbeKvBlockTableView table;
+	memset(&state,0,sizeof(state));
+	memset(&slot,0,sizeof(slot));
+	memset(&prefill_context,0,sizeof(prefill_context));
+	memset(&table,0,sizeof(table));
+	Check(SparkKvProbeModuleKvPrepareFrame(&state,&slot,&prefill_context,&table,1u) == SPARK_STATUS_OK,"kv_frame template leaves a prefill frame alone when the tier is off");
+	Check(SparkKvProbeModuleKvPrepareFrame(&state,&slot,0,&table,1u) == SPARK_STATUS_OK,"kv_frame template leaves a frame without context alone when the tier is off");
+	SparkKvProbeModuleKvMarkWritten(&state,&slot,1u);
+	state.kv.tier_active = 1u;
+	Check(SparkKvProbeModuleKvPrepareFrame(&state,&slot,&prefill_context,&table,1u) == SPARK_STATUS_INVALID_ARGUMENT,"kv_frame template refuses a frame without a decode batch when the tier is on");
+}
+
 int main(void)
 {
 	TestLayerPartition();
@@ -374,6 +440,7 @@ int main(void)
 	TestKvFrameRestore();
 	TestKvFrameUnwind();
 	TestKvFrameNegativeGeometry();
+	TestKvFrameTemplateTierOff();
 	failures += LlmModuleNegativeControlRun();
 	if ( failures == 0 )
 		printf("test_llm_module_contract PASS\n");

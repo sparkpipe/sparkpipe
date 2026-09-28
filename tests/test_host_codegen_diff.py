@@ -31,6 +31,13 @@ COUNTER_SWAPPED = """
 int counter(int step) { static int count; static int calls; count++; return calls += step; }
 int later(int step) { static int count; static int calls; calls += 2; return count -= step; }
 """
+TABLES = """
+static const int weights[4] = {1, 2, 3, 4};
+static int one(void) { return 1; }
+static int two(void) { return 2; }
+int (*const operations[2])(void) = {one, two};
+int pick(int index) { return weights[index & 3] + operations[index & 1](); }
+"""
 RENAMED_CONSTANT = """
 const char *name_of(int code) { return code > 7 ? "LARGE" : "small"; }
 int scale(int value) { int total = 0; for (int i = 0; i < value; i++) total += i * 3; return total; }
@@ -77,10 +84,17 @@ def main():
         check(code == 0 and "unexpected 0" in output, "function-local statics renumbered by another function compare equal", output)
         code, output = run(counter, compile_object(directory, "counter_swapped", COUNTER_SWAPPED, *sections), "--allow", "^later$")
         check(code == 1 and "UNEXPECTED changed counter" in output, "a function that swaps which local static it updates fails", output)
+        tables = compile_object(directory, "tables", TABLES, *sections)
+        code, output = run(tables, compile_object(directory, "tables_same", TABLES, *sections))
+        check(code == 0 and "data 2" in output and "unexpected 0" in output, "data objects are compared and identical tables pass", output)
+        code, output = run(tables, compile_object(directory, "tables_value", TABLES.replace("{1, 2, 3, 4}", "{1, 2, 3, 5}"), *sections))
+        check(code == 1 and "UNEXPECTED changed data weights" in output and "pick" not in output, "a changed constant table fails even when the code reading it does not change", output)
+        code, output = run(tables, compile_object(directory, "tables_pointer", TABLES.replace("{one, two}", "{two, one}"), *sections))
+        check(code == 1 and "UNEXPECTED changed data operations" in output, "a table whose function pointers change fails", output)
         empty = compile_object(directory, "empty", "typedef int nothing;\n", *sections)
         code, output = run(base, empty)
         check(code == 1 and "no functions parsed from %s" % empty in output, "an object without functions fails instead of comparing nothing", output)
-    print("PASS host codegen diff: local constants, local statics and branch targets normalize, changes and additions outside ALLOW fail, empty objects fail")
+    print("PASS host codegen diff: local constants, local statics and branch targets normalize, data tables compare by content and relocations, changes and additions outside ALLOW fail, empty objects fail")
     return 0
 
 

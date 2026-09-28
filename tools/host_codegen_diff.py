@@ -14,23 +14,32 @@ SECTION = re.compile(r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\
 BRANCH = re.compile(r"^(j\w*|call\w*|loop\w*|b\.?\w*)\s+([0-9a-f]+)$")
 INLINE_RELOCATION = re.compile(r"\s*[0-9a-f]+: (R_[A-Z0-9_]+)\s+(\S+)")
 STATIC_LOCAL = re.compile(r"(\.(?:bss|data|rodata|tbss|tdata)\.[A-Za-z_]\w*)\.(\d+)\b")
+DATA_SECTION = re.compile(r"^\.(?:data|rodata)(?:\.|$)")
+RELOCATION_HEADER = re.compile(r"^RELOCATION RECORDS FOR \[(.+)\]:$")
+RELOCATION_ENTRY = re.compile(r"^([0-9a-f]+)\s+(R_\S+)\s+(\S+)$")
+NUMBERED = re.compile(r"^(.+)\.(\d+)$")
 
 
 def run(tool, *arguments):
     return subprocess.run([tool, *arguments], check=True, capture_output=True, text=True).stdout
 
 
-def local_constants(path):
-    sections, constants, data = {}, {}, Path(path).read_bytes()
+def sections(path):
+    table = {}
     for line in run(READELF, "-SW", path).splitlines():
         match = SECTION.match(line)
         if match:
-            sections[match.group(1)] = (match.group(2), int(match.group(3), 16), int(match.group(4), 16), int(match.group(5), 16))
+            table[match.group(1)] = (match.group(2), int(match.group(3), 16), int(match.group(4), 16), int(match.group(5), 16))
+    return table
+
+
+def local_constants(path):
+    table, constants, data = sections(path), {}, Path(path).read_bytes()
     for line in run(READELF, "-sW", path).splitlines():
         fields = line.split()
-        if len(fields) < 8 or not fields[7].startswith(".LC") or fields[6] not in sections:
+        if len(fields) < 8 or not fields[7].startswith(".LC") or fields[6] not in table:
             continue
-        name, offset, size, entry = sections[fields[6]]
+        name, offset, size, entry = table[fields[6]]
         start = offset + int(fields[1], 16)
         if ".str" in name:
             constants[fields[7]] = "STR(%s)" % data[start:data.index(b"\0", start)].hex()
@@ -66,6 +75,48 @@ def renumber(lines):
     return [STATIC_LOCAL.sub(local, line) for line in lines]
 
 
+def section_relocations(path):
+    table, section = {}, None
+    for line in run(OBJDUMP, "-r", "-w", path).splitlines():
+        header = RELOCATION_HEADER.match(line)
+        entry = RELOCATION_ENTRY.match(line.strip())
+        if header:
+            section = header.group(1)
+        elif section is not None and entry:
+            table.setdefault(section, []).append((int(entry.group(1), 16), entry.group(2), entry.group(3)))
+    return table
+
+
+def ordinal_names(names):
+    numbered = {}
+    for name in names:
+        match = NUMBERED.match(name)
+        if match:
+            numbered.setdefault(match.group(1), []).append((int(match.group(2)), name))
+    renamed = {name: name for name in names}
+    for base, entries in numbered.items():
+        for rank, (_, name) in enumerate(sorted(entries)):
+            renamed[name] = "%s.#%d" % (base, rank)
+    return renamed
+
+
+def data_objects(path, constants):
+    table, objects, data, relocations = sections(path), {}, Path(path).read_bytes(), section_relocations(path)
+    for line in run(READELF, "-sW", path).splitlines():
+        fields = line.split()
+        if len(fields) < 8 or fields[3] != "OBJECT" or fields[6] not in table:
+            continue
+        name, offset = table[fields[6]][0], table[fields[6]][1]
+        if not DATA_SECTION.match(name) or ".str" in name or ".cst" in name:
+            continue
+        value, size = int(fields[1], 16), int(fields[2], 0)
+        entries = ["bytes " + data[offset + value:offset + value + size].hex()]
+        entries += ["reloc +%x %s %s" % (at - value, kind, symbol(target, constants)) for at, kind, target in relocations.get(name, []) if value <= at < value + size]
+        objects[fields[7]] = "\n".join(renumber(entries))
+    renamed = ordinal_names(objects)
+    return {"data " + renamed[name]: text for name, text in objects.items()}
+
+
 def functions(path):
     constants, table, name, start, lines = local_constants(path), {}, None, 0, []
     for line in run(OBJDUMP, "-d", "-r", "--no-show-raw-insn", "-w", path).splitlines() + ["0 <end>:"]:
@@ -83,6 +134,7 @@ def functions(path):
             lines.append("reloc %s %s" % (relocation.group(1), symbol(relocation.group(2), constants)))
         else:
             lines.extend(normalize(instruction.group(2), start, constants))
+    table.update(data_objects(path, constants))
     return table
 
 
@@ -93,7 +145,7 @@ def main():
     parser.add_argument("--allow", default="", help="regex of functions allowed to change")
     args = parser.parse_args()
     base_code, head_code = functions(args.base), functions(args.head)
-    empty = [path for path, table in ((args.base, base_code), (args.head, head_code)) if not table]
+    empty = [path for path, table in ((args.base, base_code), (args.head, head_code)) if not any(not name.startswith("data ") for name in table)]
     if empty:
         print("no functions parsed from %s" % " and ".join(empty))
         return 1
@@ -106,7 +158,8 @@ def main():
         permitted = allow is not None and allow.search(name) is not None
         unexpected += 0 if permitted else 1
         print("%s %s %s" % ("allowed" if permitted else "UNEXPECTED", state, name))
-    print("functions %d identical %d unexpected %d" % (len(set(base_code) | set(head_code)), sum(1 for name in base_code if base_code[name] == head_code.get(name)), unexpected))
+    names = set(base_code) | set(head_code)
+    print("functions %d data %d identical %d unexpected %d" % (sum(1 for name in names if not name.startswith("data ")), sum(1 for name in names if name.startswith("data ")), sum(1 for name in base_code if base_code[name] == head_code.get(name)), unexpected))
     return 1 if unexpected else 0
 
 

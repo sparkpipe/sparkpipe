@@ -672,95 +672,13 @@ extern cudaError_t SparkQwen4FlashConfigureCudaKernels(void);
 static SparkStatus SparkQwen4FlashModuleAllocateSlot(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 static SparkStatus SparkQwen4FlashModuleAllocateSlotHostMirrors(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot);
 
+#include "sparkpipe/family/module/spark_module_kv_frame_ops.h"
 #include "sparkpipe/family/module/spark_module_report_ready.h"
 
-static const LmKvFrameOps SparkQwen4FlashModuleKvFrameOps =
-{
-	"qwen4_flash_stage",
-	SparkQwen4FlashModuleKvFrameBuildRestoreBatch,
-	SparkQwen4FlashModuleKvFrameBuildEvictBatch,
-	SparkQwen4FlashModuleKvFrameSubmit,
-	SparkQwen4FlashModuleKvFrameProgress,
-	SparkQwen4FlashModuleKvFrameAcknowledge
-};
-
-static SparkStatus SparkQwen4FlashModuleOpenKvTier(SparkQwen4FlashModuleState *state, const SparkFirmwareModuleHostServices *host_services)
-{
-	SparkStagePackHeaderCommon geometry;
-	const char *provider = 0,*service = 0,*socket_path = 0;
-	uint64_t pool_bytes = 0u,model_fp,layout_fp,layout_bits[3],block_record_bytes,staging_bytes;
-	uint32_t workers = 0u,block_record_elements,index;
-	SparkStatus status;
-	static const char *none = "none";
-	state->kv.tier_active = 0u;
-	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
-	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
-	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
-	if ( host_services->kv_backing_directory == 0 && host_services->kv_backing_maximum_bytes != 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	provider = getenv("SPARK_QWEN4_FLASH_STAGE_KV_STORE");
-	if ( provider == 0 )
-		provider = none;
-	if ( strcmp(provider,"none") == 0 )
-		return(SparkStageKvClientOpen(&state->kv.client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,0u,0u,0u,0u,0u,0,0,0u,0u));
-	status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_SERVICE",&service);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentText(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_SOCKET",&socket_path);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_POOL_BYTES",1u,1ull << 40u,&pool_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_WORKERS",1u,64u,&workers);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,&geometry,state->first_layer_index,state->layer_count,1u);
-	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
-	block_record_elements = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * state->attn_layer_count;
-	layout_bits[0] = block_record_elements;
-	layout_bits[1] = SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	layout_bits[2] = state->kv.block_count;
-	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
-	block_record_bytes = (uint64_t)block_record_elements * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES;
-	staging_bytes = block_record_bytes * SPARK_LLM_KV_STAGING_RECORDS;
-	if ( state->kv_physical_page_capacity != 0u && state->kv.block_count > state->kv_physical_page_capacity )
-		state->kv.block_count = state->kv_physical_page_capacity;
-	if ( state->kv.block_count == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->kv.plan.model_fingerprint = model_fp;
-	state->kv.plan.cache_layout_fingerprint = layout_fp;
-	state->kv.plan.rank_index = state->stage_index;
-	state->kv.plan.block_record_bytes = (uint32_t)block_record_bytes;
-	state->kv.plan.gdn_record_bytes = SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES;
-	state->kv.plan.lookahead_packet_count = 3u;
-	state->kv.plan.physical_block_capacity = state->kv.block_count;
-	state->kv.plan.allocated_physical_block_count = 0u;
-	state->kv.plan.staging_block_capacity = SPARK_LLM_KV_STAGING_RECORDS;
-	status = SparkStageKvClientOpen(&state->kv.client,SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	state->kv.slot_lane = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
-	state->kv.slot_logical = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
-	state->kv.slot_sequence = (uint64_t *)malloc((size_t)state->kv.block_count * sizeof(uint64_t));
-	state->kv.slot_dirty = (uint8_t *)calloc((size_t)state->kv.block_count,sizeof(uint8_t));
-	state->kv.slot_pinned = (uint8_t *)calloc((size_t)state->kv.block_count,sizeof(uint8_t));
-	state->kv.slot_free_stack = (uint32_t *)malloc((size_t)state->kv.block_count * sizeof(uint32_t));
-	state->kv.block_staging = malloc((size_t)staging_bytes);
-	state->kv.gdn_staging = malloc(SPARK_QWEN4_FLASH_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES);
-	if ( cudaMalloc((void **)&state->kv.table_indices_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t)) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaMalloc((void **)&state->kv.table_counts_device,(size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t)) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->kv.table_indices_host = (uint32_t *)malloc((size_t)SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
-	if ( state->kv.slot_lane == 0 || state->kv.slot_logical == 0 || state->kv.slot_sequence == 0 || state->kv.slot_dirty == 0 || state->kv.slot_pinned == 0 || state->kv.slot_free_stack == 0 || state->kv.block_staging == 0 || state->kv.gdn_staging == 0 || state->kv.table_indices_host == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index = 0u; index < state->kv.block_count; index++)
-		state->kv.slot_free_stack[index] = index;
-	state->kv.slot_free_count = state->kv.block_count;
-	state->kv.evict_cursor = 0u;
-	state->kv.tier_active = 1u;
-	state->kv.ops = SparkQwen4FlashModuleKvFrameOps;
-	fprintf(stderr,"%s kv_tier_open provider=%s window=%u logical=%u physical=%u backing_bytes=%llu\n",SPARK_QWEN4_FLASH_MODULE_TAG,provider,state->kv.block_count,state->kv_logical_page_capacity,state->kv_physical_page_capacity,(unsigned long long)state->kv_backing_maximum_bytes);
-	return(SPARK_STATUS_OK);
-}
+#define SPARK_QWEN4_FLASH_MODULE_KV_GEOMETRY SparkStagePackHeaderCommon
+#define SPARK_QWEN4_FLASH_MODULE_KV_EXPECTED_GEOMETRY(geometry,state) SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,(geometry),(state)->first_layer_index,(state)->layer_count,1u)
+#define SPARK_QWEN4_FLASH_MODULE_KV_BLOCK_RECORD_ELEMENTS(state) (SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS * (state)->attn_layer_count)
+#include "sparkpipe/family/module/spark_module_open_kv_tier.h"
 
 extern cudaError_t SparkQwen4FlashLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkQwen4FlashLaunchHeadTopScore(cudaStream_t stream, const void *normalized_bf16, const void *head_weight_bf16, const uint32_t *token_ids, float *score_f32, uint32_t dimension, uint32_t vocab_base, uint32_t vocab_rows);
@@ -933,7 +851,6 @@ static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 			return(status);
 		state->lazy_pack = 0;
 	}
-	SparkStageKvClientClose(&state->kv.client);
 	free(state->ple_prev_context_u32);
 	free(state->t1.stage_hidden);
 	free(state->t1.stage_route_ids);
@@ -946,20 +863,7 @@ static SparkStatus SparkQwen4FlashModuleStateTeardown(void *module_state)
 		for (slot_index = 0u; slot_index < SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT; slot_index++)
 			free(state->slots[slot_index].ple_host_history_u32);
 	}
-	free(state->kv.logical_to_slot);
-	free(state->kv.slot_lane);
-	free(state->kv.slot_logical);
-	free(state->kv.slot_sequence);
-	free(state->kv.slot_dirty);
-	free(state->kv.slot_pinned);
-	free(state->kv.slot_free_stack);
-	free(state->kv.block_staging);
-	free(state->kv.gdn_staging);
-	free(state->kv.table_indices_host);
-	if ( state->kv.table_indices_device != 0 )
-		cudaFree(state->kv.table_indices_device);
-	if ( state->kv.table_counts_device != 0 )
-		cudaFree(state->kv.table_counts_device);
+	LmKvFrameRelease(&state->kv);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1978,6 +1882,7 @@ static SparkStatus SparkQwen4FlashModuleRunMtpDraftChain(SparkQwen4FlashModuleSt
 }
 #endif
 
+#define SPARK_QWEN4_FLASH_MODULE_KV_DEVICE_SLOT_MAPPING(slot) ((slot)->slot_mapping)
 #include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 
 static SparkStatus SparkQwen4FlashModuleRunDecode(SparkQwen4FlashModuleState *state, SparkQwen4FlashModuleSlot *slot, SparkModelDriverFrame *frame, SparkQwen4FlashResidentDecodeStageFrameContext *context, uint32_t rows)

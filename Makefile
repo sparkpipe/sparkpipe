@@ -1338,7 +1338,7 @@ build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixture
 
 # Numeric verification of the math-audit fixes: includes the module's CUDA
 # source, so the tested code IS the production code.
-build/test_llm_module_contract: tests/test_llm_module_contract.c tests/test_llm_module_contract_negative.c common/common_kv_frame.h model-families/qwen38_max/include/sparkpipe/llm_defines.h | build
+build/test_llm_module_contract: tests/test_llm_module_contract.c tests/test_llm_module_contract_negative.c common/common_kv_frame.h model-families/qwen38_max/include/sparkpipe/llm_defines.h include/sparkpipe/family/spark_family.h include/sparkpipe/family/module/spark_module_kv_prepare_frame.h | build
 	$(CC) -I model-families/qwen38_max/include $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I . -c tests/test_llm_module_contract.c -o build/test_llm_module_contract_main.o
 	$(CC) -I model-families/qwen38_max/include $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I . -DSPARK_LLM_KV_BLOCK_TOKENS=65u -c tests/test_llm_module_contract_negative.c -o build/test_llm_module_contract_negative.o
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) build/test_llm_module_contract_main.o build/test_llm_module_contract_negative.o tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -lm -o $@
