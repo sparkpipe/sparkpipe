@@ -126,6 +126,7 @@ typedef struct SparkGemma4ModuleState
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	uint32_t tp_standalone;
+	uint32_t tp_deferred_rounds;
 	uint32_t tp_vocab_base;
 	uint32_t tp_vocab_rows;
 	uint32_t sliding_layer_count;
@@ -179,6 +180,10 @@ static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	{
+		const char *wait_mode = getenv("SPARK_TP_WAIT_MODE");
+		state->tp_deferred_rounds = wait_mode != 0 && strcmp(wait_mode,"hardware") == 0 ? 1u : 0u;
+	}
 	state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
 	state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
@@ -504,7 +509,7 @@ static SparkStatus SparkGemma4ModulePrepare(
 static void SparkGemma4ModuleReportReady(void *module_state)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head);
+	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u tp_rounds=%s\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head,state->tp_deferred_rounds != 0u ? "deferred" : "ordered");
 }
 
 #include "sparkpipe/family/module/spark_module_admission_kv_predicate.h"
@@ -846,6 +851,13 @@ static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSl
 
 #include "sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h"
 
+static SparkStatus SparkGemma4ModuleTpReduce(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, void *device_buffer, uint32_t count, uint32_t u64_max)
+{
+	if ( state->tp_deferred_rounds != 0u )
+		return(SparkGemma4ModuleTpSubmitDeferred(state,device_buffer,count,slot,u64_max));
+	return(u64_max != 0u ? SparkGemma4ModuleTpReduceU64Max(state,slot,(uint64_t *)device_buffer,count) : SparkGemma4ModuleTpAllReduceHidden(state,slot,device_buffer,count));
+}
+
 #define SPARK_GEMMA4_PROFILE_EVENTS 1024u
 #define SPARK_GEMMA4_PROFILE_KINDS 8u
 
@@ -1013,7 +1025,7 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 	}
 	if ( state->tp_degree > 1u )
 	{
-		status = SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->attn_output_bf16,rows);
+		status = SparkGemma4ModuleTpReduce(state,slot,slot->attn_output_bf16,rows,0u);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 		SparkGemma4ProfileMark(slot,4u);
@@ -1085,7 +1097,7 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 #endif
 	if ( state->tp_degree > 1u )
 	{
-		status = SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->mlp_down_bf16,rows);
+		status = SparkGemma4ModuleTpReduce(state,slot,slot->mlp_down_bf16,rows,0u);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 		SparkGemma4ProfileMark(slot,4u);
@@ -1167,7 +1179,7 @@ static SparkStatus SparkGemma4ModuleEmbedRows(SparkGemma4ModuleState *state, Spa
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->tp_degree > 1u )
-		return(SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->hidden_bf16,rows));
+		return(SparkGemma4ModuleTpReduce(state,slot,slot->hidden_bf16,rows,0u));
 	return(SPARK_STATUS_OK);
 }
 
@@ -1240,7 +1252,7 @@ static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, Spar
 		error = SparkGemma4LaunchHeadMaxLocPack(stream,slot->argmax_score_f32,slot->argmax_token_ids,slot->head_maxloc_u64,rows);
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
-		SparkStatus status = SparkGemma4ModuleTpReduceU64Max(state,slot,slot->head_maxloc_u64,rows);
+		SparkStatus status = SparkGemma4ModuleTpReduce(state,slot,slot->head_maxloc_u64,rows,1u);
 		if ( status != SPARK_STATUS_OK )
 			return(cudaErrorInvalidValue);
 	}
@@ -1397,7 +1409,9 @@ static SparkStatus SparkGemma4ModuleChainEnd(SparkGemma4ModuleState *state, Spar
 		if ( drain != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,drain,"tp_chain_drain"));
 	}
-	status = SparkTpDeviceCollectiveEndChain(&state->tp_device_collective,slot->cuda_stream);
+	status = SparkTpDeviceCollectiveVerifyDeferred(&state->tp_device_collective,slot->cuda_stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveEndChain(&state->tp_device_collective,slot->cuda_stream);
 	if ( frame_status != SPARK_STATUS_OK )
 		return(frame_status);
 	if ( status != SPARK_STATUS_OK )
