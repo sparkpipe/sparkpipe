@@ -58,15 +58,17 @@ class CompsecGrading(unittest.TestCase):
 
 
 class CompareRuns(unittest.TestCase):
-    def write_run(self, root, name, tokens, drop=None, malformed=None):
+    def write_run(self, root, name, tokens, drop=None, malformed=None, status=None, extra=None):
         run = Path(root) / name
         (run / "responses").mkdir(parents=True)
         for index, case in enumerate(compsec.COMPSEC_IDS, 1):
             if case == drop:
                 continue
             ids = "oops" if case == malformed else tokens.get(case, [index, index + 1, index + 2])
-            record = {"id": case, "response": {"tokens": ids}}
+            record = {"id": case, "response": {"tokens": ids, "status": (status or {}).get(case, "length")}}
             (run / "responses" / f"{index:03d}-{case}.json").write_text(json.dumps(record))
+        if extra is not None:
+            (run / "responses" / f"018-{extra}.json").write_text(json.dumps({"id": extra, "response": {"tokens": [1]}}))
         return run
 
     def compare(self, left, right):
@@ -98,6 +100,26 @@ class CompareRuns(unittest.TestCase):
             self.assertEqual(self.compare(good, self.write_run(root, "b", {}, drop="compsec-080"))[0], 2)
             self.assertEqual(self.compare(good, self.write_run(root, "c", {}, malformed="compsec-081"))[0], 2)
             self.assertEqual(self.compare(good, Path(root) / "absent")[0], 2)
+
+    def test_empty_token_lists_are_not_identical(self):
+        with tempfile.TemporaryDirectory() as root:
+            empty = {case: [] for case in compsec.COMPSEC_IDS}
+            status, text = self.compare(self.write_run(root, "a", empty), self.write_run(root, "b", empty))
+        self.assertEqual(status, 2)
+        self.assertIn("response.tokens is empty", text)
+
+    def test_unknown_extra_case_fails(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, text = self.compare(self.write_run(root, "a", {}), self.write_run(root, "b", {}, extra="compsec-999"))
+        self.assertEqual(status, 2)
+        self.assertIn("not a COMPSEC-17 case", text)
+
+    def test_same_tokens_with_different_status_differ(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, text = self.compare(self.write_run(root, "a", {}), self.write_run(root, "b", {}, status={"compsec-079": "error"}))
+        self.assertEqual(status, 1)
+        self.assertIn("compsec-079 DIFFERS status reference_status='length' candidate_status='error'", text)
+        self.assertIn("identical=16/17", text)
 
 
 if __name__ == "__main__":

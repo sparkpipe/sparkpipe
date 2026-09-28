@@ -118,7 +118,7 @@ class RunError(Exception):
 
 
 def load_run_tokens(run: Path) -> dict:
-    tokens = {}
+    tokens, statuses = {}, {}
     responses = sorted((run / "responses").glob("*.json"))
     if not responses:
         raise RunError(f"{run}: no responses/*.json")
@@ -127,17 +127,23 @@ def load_run_tokens(run: Path) -> dict:
             record = json.loads(path.read_text())
             case = record["id"]
             ids = record["response"]["tokens"]
-        except (OSError, ValueError, KeyError, TypeError) as error:
+            status = record["response"].get("status")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise RunError(f"{path}: {error!r}") from error
+        if case not in COMPSEC_IDS:
+            raise RunError(f"{path}: case {case!r} is not a COMPSEC-17 case")
         if not isinstance(ids, list) or not all(isinstance(value, int) for value in ids):
             raise RunError(f"{path}: response.tokens is not a list of token ids")
+        if not ids:
+            raise RunError(f"{path}: response.tokens is empty (status {status!r})")
         if case in tokens:
             raise RunError(f"{path}: duplicate case {case}")
         tokens[case] = ids
+        statuses[case] = status
     missing = [case for case in COMPSEC_IDS if case not in tokens]
     if missing:
         raise RunError(f"{run}: missing cases {', '.join(missing)}")
-    return tokens
+    return tokens, statuses
 
 
 def first_difference(left: list, right: list) -> int:
@@ -149,14 +155,19 @@ def first_difference(left: list, right: list) -> int:
 
 def compare_runs(reference: Path, candidate: Path, out=sys.stdout) -> int:
     try:
-        left = load_run_tokens(reference)
-        right = load_run_tokens(candidate)
+        left, left_status = load_run_tokens(reference)
+        right, right_status = load_run_tokens(candidate)
     except RunError as error:
         print(f"COMPSEC-COMPARE-ERROR {error}", file=out)
         return 2
     differing = 0
     for case in COMPSEC_IDS:
         index = first_difference(left[case], right[case])
+        if index < 0 and left_status[case] != right_status[case]:
+            differing += 1
+            print(f"COMPSEC-COMPARE {case} DIFFERS status reference_status={left_status[case]!r} "
+                  f"candidate_status={right_status[case]!r} tokens={len(left[case])}", file=out)
+            continue
         if index < 0:
             print(f"COMPSEC-COMPARE {case} IDENTICAL tokens={len(left[case])}", file=out)
             continue
