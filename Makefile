@@ -610,7 +610,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
 	tests/test_weightd_warm_family.py
-PYTHON_TEST_BINARIES := build/test_tiktoken_compiled
+PYTHON_TEST_BINARIES := build/test_tiktoken_compiled build/weightd_lazy_consumer
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
