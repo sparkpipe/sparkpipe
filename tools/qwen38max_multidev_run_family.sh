@@ -30,8 +30,8 @@
 #   SPARK_QUEUE_SIZE           must be 16
 #   QMAX_WEIGHTD_SOCKET        shared weightd socket path (supervised
 #                              daemon; this wrapper never starts one).
-#                              Defaults to the fleet shared unit:
-#                              /run/sparkpipe-weightd-shared/weightd.sock
+#                              Defaults to the fleet-agent weightd:
+#                              /tmp/spark_weightd.sock
 #   QMAX_EXPERT_POOL_BYTES     bounded routed-expert pool (arena-side
 #                              sizing: model-families/qwen38_max/
 #                              smoke_experts.json — 1,501 experts x
@@ -118,7 +118,7 @@ CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # shared-socket only: the lane-2 charter runs smoke and small B* under the
 # shared lanes; a private daemon is never started by this wrapper.
-SOCKET="${QMAX_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}}"
+SOCKET="${QMAX_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}}"
 [ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; \
 the operator must establish the shared daemon (never start one by hand)"
 
