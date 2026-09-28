@@ -84,6 +84,8 @@ def main() -> int:
            "requests": len(reqs), "tokens": total, "wall_s": round((end_ns - launch_ns) / 1e9, 3),
            "e2e_tok_s": round(total / ((end_ns - launch_ns) / 1e9), 2),
            "aggregate_decode_tok_s": round((total - len(per_request)) / ((last_all - first_all) / 1e9), 2) if last_all > first_all else None,
+           "error_events": sum(1 for e in events if e.get("event") == "error"),
+           "stopped_on_eos": sum(1 for e in tokens if e.get("stop_token")),
            "per_request": per_request, "stderr_tail": run.stderr.strip().splitlines()[-1:]}
     print(json.dumps(out))
     return 0 if run.returncode == 0 else 1
