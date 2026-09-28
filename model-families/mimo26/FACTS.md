@@ -151,6 +151,17 @@ Device-routed replay: 71.6 / 72.9 / 73.1 ms per position (about 13.8 tok/s at B1
 GB10 with every routed expert resident). The logits come back to the host for the argmax
 once per token. The replay tokens equal the first pass in all three prompts.
 
+`--tp4-slices` runs the TP4 decomposition the resident module needs, on the same GPU:
+- per-rank fused QKV segment (the v2 pack's QKV entry) with 16 q heads and a rank-local
+  KV cache (1 full / 2 SWA heads);
+- per-rank o_proj column slice;
+- per-rank partial sums of the routed experts each rank owns (64 per rank);
+- bf16 partials summed in f32, the all-reduce.
+
+It gives 16/16 tokens equal to the reference for all three prompts, with the
+device-routed replay at 77.1 / 78.2 / 77.3 ms per position. The layer-0 dense MLP is
+still computed unsliced.
+
 Numerics (capital prompt, `--teacher-forced` feeds every layer the reference's input
 stream, and route decisions are compared with the fixture):
 

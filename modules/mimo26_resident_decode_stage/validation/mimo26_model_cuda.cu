@@ -38,6 +38,10 @@
 
 using M26FullKv = LmKvGeometry<M26_FULL_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
 using M26SwaKv = LmKvGeometry<M26_SWA_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
+using M26FullRankKv = LmKvGeometry<(M26_FULL_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
+using M26SwaRankKv = LmKvGeometry<(M26_SWA_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
+#define M26_RANK_HEADS (M26_HEADS / M26_RANKS)
+#define M26_RANK_O_INPUT (M26_O_INPUT / M26_RANKS)
 
 typedef struct M26Layer
 {
@@ -48,8 +52,9 @@ typedef struct M26Layer
 	std::vector<int32_t> slot;
 	float *device_bias;
 	int32_t *device_slot;
-	uint8_t *pool;
-	LmKvView cache;
+	uint8_t *pool,*rank_pool[M26_RANKS];
+	LmKvView cache,rank_cache[M26_RANKS];
+	uint16_t *o_slice[M26_RANKS];
 }
 M26Layer;
 
@@ -58,12 +63,14 @@ typedef struct M26Buffers
 	uint16_t *stream,*normed,*fused,*query,*key,*value,*attended,*projected,*gate,*up,*act,*down,*final_norm,*lm_head;
 	float *logits,*route_weight;
 	uint32_t *route_expert,*missing;
+	uint16_t *partial;
 	uint32_t *sequence,*context,*position,*page_table,*route,*packed;
 	LmKvAccessError *error;
 }
 M26Buffers;
 
 static const char *m26_directory;
+static uint32_t m26_tp4;
 static const char *m26_projections[3] = {"gate_proj","up_proj","down_proj"};
 
 static void M26Check(cudaError_t status, const char *what)
@@ -143,10 +150,10 @@ static float M26Float(uint16_t value)
 	return(out);
 }
 
-template<uint32_t KV, uint32_t QKV>
+template<uint32_t HEADS, uint32_t KV, uint32_t QKV, uint32_t RANKS>
 __global__ void M26SplitQkvKernel(const uint16_t *fused, uint16_t *query, uint16_t *key, uint16_t *value, uint32_t position, float theta)
 {
-	const uint32_t q_local = (M26_HEADS / M26_RANKS) * M26_HEAD_DIM, k_local = (KV / M26_RANKS) * M26_HEAD_DIM, v_local = (KV / M26_RANKS) * M26_VALUE_DIM, per = q_local + k_local + v_local;
+	const uint32_t q_local = (HEADS / RANKS) * M26_HEAD_DIM, k_local = (KV / RANKS) * M26_HEAD_DIM, v_local = (KV / RANKS) * M26_VALUE_DIM, per = q_local + k_local + v_local;
 	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x, rank, local, dim, pair;
 	float angle, first, second;
 	uint16_t *target;
@@ -212,6 +219,56 @@ __global__ void M26CombineKernel(const uint16_t *down, const float *weights, uin
 	for (k = 0u; k < M26_TOP_K; k++)
 		total += weights[k] * LmBf16ToFloat(down[k * M26_HIDDEN + index]);
 	stream[index] = LmFloatToBf16(LmBf16ToFloat(stream[index]) + LmBf16ToFloat(LmFloatToBf16(total)));
+}
+
+__global__ void M26ReduceAddKernel(const uint16_t *partial, uint16_t *stream)
+{
+	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, r;
+	float total = 0.0f;
+	if ( index >= M26_HIDDEN )
+		return;
+	for (r = 0u; r < M26_RANKS; r++)
+		total += LmBf16ToFloat(partial[r * M26_HIDDEN + index]);
+	stream[index] = LmFloatToBf16(LmBf16ToFloat(stream[index]) + LmBf16ToFloat(LmFloatToBf16(total)));
+}
+
+__global__ void M26CombineRanksKernel(const uint16_t *down, const float *weights, const uint32_t *expert, uint16_t *partial)
+{
+	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, k, r;
+	float total;
+	if ( index >= M26_HIDDEN )
+		return;
+	for (r = 0u; r < M26_RANKS; r++)
+	{
+		total = 0.0f;
+		for (k = 0u; k < M26_TOP_K; k++)
+			if ( expert[k] / (M26_EXPERTS / M26_RANKS) == r )
+				total += weights[k] * LmBf16ToFloat(down[k * M26_HIDDEN + index]);
+		partial[r * M26_HIDDEN + index] = LmFloatToBf16(total);
+	}
+}
+
+static void M26LoadRankSlices(uint32_t index, M26Layer *layer, uint32_t *page_table, LmKvAccessError *error)
+{
+	char name[128];
+	uint32_t r, row;
+	size_t slot_bytes = layer->swa ? M26SwaRankKv::kSlotBytes : M26FullRankKv::kSlotBytes;
+	snprintf(name,sizeof(name),"l%02u_o_proj.bf16",index);
+	std::vector<uint8_t> full = M26Read(name,(size_t)M26_HIDDEN * M26_O_INPUT * 2u);
+	std::vector<uint16_t> slice((size_t)M26_HIDDEN * M26_RANK_O_INPUT);
+	for (r = 0u; r < M26_RANKS; r++)
+	{
+		for (row = 0u; row < M26_HIDDEN; row++)
+			memcpy(slice.data() + (size_t)row * M26_RANK_O_INPUT,(const uint16_t *)full.data() + (size_t)row * M26_O_INPUT + r * M26_RANK_O_INPUT,M26_RANK_O_INPUT * 2u);
+		layer->o_slice[r] = M26Alloc<uint16_t>(slice.size());
+		M26Check(cudaMemcpy(layer->o_slice[r],slice.data(),slice.size() * 2u,cudaMemcpyHostToDevice),"o slice");
+		layer->rank_pool[r] = M26Alloc<uint8_t>((size_t)M26_MAX_POSITIONS * slot_bytes);
+		if ( LmKvViewInitialize(&layer->rank_cache[r],layer->rank_pool[r],page_table,M26_PAGES,1u,M26_PAGES,error) != 0 )
+		{
+			fprintf(stderr,"FAIL layer %u rank %u kv view\n",index,r);
+			exit(1);
+		}
+	}
 }
 
 static void M26LoadAttention(uint32_t index, M26Layer *layer, uint32_t *page_table, LmKvAccessError *error)
@@ -321,6 +378,8 @@ static void M26LoadLayer(uint32_t index, M26Layer *layer, uint32_t *page_table, 
 		layer->slot.assign(M26_EXPERTS,-1);
 	}
 	M26LoadAttention(index,layer,page_table,error);
+	if ( m26_tp4 != 0u )
+		M26LoadRankSlices(index,layer,page_table,error);
 	M26LoadMlp(index,layer);
 	for (e = 0u; layer->moe && e < count; e++)
 		M26LoadExpert(index,layer,(uint32_t)((const int32_t *)raw.data())[e],layer->resident++);
@@ -336,18 +395,46 @@ static void M26Attention(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_
 	M26Require(LmSkinnyExperts<LmFp8>(layer->qkv,LmScaleTensorBuild(layer->qkv_scale,LM_SCALE_ENCODING_F32,1u,rows,M26_HIDDEN,1u,128u),b->normed,b->fused,b->sequence,b->sequence,1u,1u,0u,M26_HIDDEN,rows,0),"qkv fp8 skinny",index);
 	if ( layer->swa )
 	{
-		M26SplitQkvKernel<M26_SWA_KV,M26_SWA_QKV><<<(rows + 255u) / 256u,256u>>>(b->fused,b->query,b->key,b->value,position,SPARK_MIMO26_MODEL_SWA_ROPE_THETA);
+		M26SplitQkvKernel<M26_HEADS,M26_SWA_KV,M26_SWA_QKV,M26_RANKS><<<(rows + 255u) / 256u,256u>>>(b->fused,b->query,b->key,b->value,position,SPARK_MIMO26_MODEL_SWA_ROPE_THETA);
 		LmGqaKvStoreKernel<M26SwaKv,M26_THREADS,M26_SWA_KV,M26_HEAD_DIM,M26_VALUE_DIM><<<1,M26_THREADS>>>(layer->cache,b->key,b->value,b->sequence,b->position,1u);
 		LmGqaSinkAttentionDecodeKernel<M26SwaKv,M26_THREADS,M26_SWA_KV,M26_HEAD_DIM,M26_VALUE_DIM><<<dim3(1u,M26_HEADS),M26_THREADS>>>(b->query,layer->cache,b->sequence,b->context,0,0u,M26_HEADS,scale,b->attended,b->position,layer->sink);
 	}
 	else
 	{
-		M26SplitQkvKernel<M26_FULL_KV,M26_FULL_QKV><<<(rows + 255u) / 256u,256u>>>(b->fused,b->query,b->key,b->value,position,SPARK_MIMO26_MODEL_FULL_ROPE_THETA);
+		M26SplitQkvKernel<M26_HEADS,M26_FULL_KV,M26_FULL_QKV,M26_RANKS><<<(rows + 255u) / 256u,256u>>>(b->fused,b->query,b->key,b->value,position,SPARK_MIMO26_MODEL_FULL_ROPE_THETA);
 		LmGqaKvStoreKernel<M26FullKv,M26_THREADS,M26_FULL_KV,M26_HEAD_DIM,M26_VALUE_DIM><<<1,M26_THREADS>>>(layer->cache,b->key,b->value,b->sequence,b->position,1u);
 		LmGqaAttentionDecodeKernel<M26FullKv,M26_THREADS,M26_FULL_KV,M26_HEAD_DIM,M26_VALUE_DIM><<<dim3(1u,M26_HEADS),M26_THREADS>>>(b->query,layer->cache,b->sequence,b->context,0,0u,M26_HEADS,scale,b->attended,b->position);
 	}
 	M26Require(LmSkinnyDense<LmBf16Format>(layer->o_proj,b->attended,b->projected,0,1u,M26_O_INPUT,M26_HIDDEN,M26_HIDDEN,0u,0),"o_proj bf16 skinny",index);
 	M26AddKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->projected,b->stream,M26_HIDDEN);
+	LmBf16RmsNormKernel<M26_THREADS><<<1,M26_THREADS,(M26_HIDDEN + 64u) * sizeof(float)>>>(b->stream,layer->mlp_norm,b->normed,M26_HIDDEN,M26_HIDDEN,M26_EPS);
+}
+
+template<uint32_t KV, uint32_t QKV, class Geometry>
+static void M26AttentionRank(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t position, uint32_t rank, float theta)
+{
+	const uint32_t per = QKV / M26_RANKS;
+	float scale = 1.0f / sqrtf((float)M26_HEAD_DIM);
+	M26Require(LmSkinnyExperts<LmFp8>(layer->qkv + (size_t)rank * per * M26_HIDDEN,LmScaleTensorBuild(layer->qkv_scale + (size_t)rank * per * (M26_HIDDEN / 128u),LM_SCALE_ENCODING_F32,1u,per,M26_HIDDEN,1u,128u),b->normed,b->fused,b->sequence,b->sequence,1u,1u,0u,M26_HIDDEN,per,0),"rank qkv",index);
+	M26SplitQkvKernel<M26_RANK_HEADS,KV / M26_RANKS,QKV / M26_RANKS,1u><<<(per + 255u) / 256u,256u>>>(b->fused,b->query,b->key,b->value,position,theta);
+	LmGqaKvStoreKernel<Geometry,M26_THREADS,KV / M26_RANKS,M26_HEAD_DIM,M26_VALUE_DIM><<<1,M26_THREADS>>>(layer->rank_cache[rank],b->key,b->value,b->sequence,b->position,1u);
+	if ( layer->swa )
+		LmGqaSinkAttentionDecodeKernel<Geometry,M26_THREADS,KV / M26_RANKS,M26_HEAD_DIM,M26_VALUE_DIM><<<dim3(1u,M26_RANK_HEADS),M26_THREADS>>>(b->query,layer->rank_cache[rank],b->sequence,b->context,0,0u,M26_RANK_HEADS,scale,b->attended,b->position,layer->sink + rank * M26_RANK_HEADS);
+	else
+		LmGqaAttentionDecodeKernel<Geometry,M26_THREADS,KV / M26_RANKS,M26_HEAD_DIM,M26_VALUE_DIM><<<dim3(1u,M26_RANK_HEADS),M26_THREADS>>>(b->query,layer->rank_cache[rank],b->sequence,b->context,0,0u,M26_RANK_HEADS,scale,b->attended,b->position);
+	M26Require(LmSkinnyDense<LmBf16Format>(layer->o_slice[rank],b->attended,b->partial + (size_t)rank * M26_HIDDEN,0,1u,M26_RANK_O_INPUT,M26_HIDDEN,M26_HIDDEN,0u,0),"rank o_proj",index);
+}
+
+static void M26AttentionTp4(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t position)
+{
+	uint32_t rank;
+	LmBf16RmsNormKernel<M26_THREADS><<<1,M26_THREADS,(M26_HIDDEN + 64u) * sizeof(float)>>>(b->stream,layer->attn_norm,b->normed,M26_HIDDEN,M26_HIDDEN,M26_EPS);
+	for (rank = 0u; rank < M26_RANKS; rank++)
+		if ( layer->swa )
+			M26AttentionRank<M26_SWA_KV,M26_SWA_QKV,M26SwaRankKv>(index,layer,b,position,rank,SPARK_MIMO26_MODEL_SWA_ROPE_THETA);
+		else
+			M26AttentionRank<M26_FULL_KV,M26_FULL_QKV,M26FullRankKv>(index,layer,b,position,rank,SPARK_MIMO26_MODEL_FULL_ROPE_THETA);
+	M26ReduceAddKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->partial,b->stream);
 	LmBf16RmsNormKernel<M26_THREADS><<<1,M26_THREADS,(M26_HIDDEN + 64u) * sizeof(float)>>>(b->stream,layer->mlp_norm,b->normed,M26_HIDDEN,M26_HIDDEN,M26_EPS);
 }
 
@@ -402,7 +489,13 @@ static void M26Experts(uint32_t index, M26Layer *layer, M26Buffers *b)
 	M26Require(LmSkinnyExperts<LmMxfp4>(layer->projection[1],LmScaleTensorBlockUe8m0(layer->projection_scale[1],layer->capacity,M26_INTER,M26_HIDDEN,1u,32u),b->normed,b->up,b->route,b->packed,M26_TOP_K,M26_TOP_K,0u,M26_HIDDEN,M26_INTER,0),"expert up",index);
 	M26SwigluKernel<<<(M26_TOP_K * M26_INTER + 255u) / 256u,256u>>>(b->gate,b->up,b->act,M26_TOP_K * M26_INTER);
 	M26Require(LmSkinnyExperts<LmMxfp4>(layer->projection[2],LmScaleTensorBlockUe8m0(layer->projection_scale[2],layer->capacity,M26_HIDDEN,M26_INTER,1u,32u),b->act,b->down,b->route,b->packed,M26_TOP_K,M26_TOP_K,1u,M26_INTER,M26_HIDDEN,0),"expert down",index);
-	M26CombineKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->route_weight,b->stream);
+	if ( m26_tp4 != 0u )
+	{
+		M26CombineRanksKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->route_weight,b->route_expert,b->partial);
+		M26ReduceAddKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->partial,b->stream);
+	}
+	else
+		M26CombineKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->route_weight,b->stream);
 }
 
 static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids)
@@ -460,6 +553,7 @@ static void M26Allocate(M26Buffers *b)
 	b->error = M26Alloc<LmKvAccessError>(1u);
 	b->route_expert = M26Alloc<uint32_t>(M26_TOP_K);
 	b->missing = M26Alloc<uint32_t>(1u);
+	b->partial = M26Alloc<uint16_t>(M26_RANKS * M26_HIDDEN);
 	for (i = 0u; i < M26_TOP_K; i++)
 		packed[i] = i;
 	for (i = 0u; i < M26_PAGES; i++)
@@ -556,7 +650,10 @@ static uint32_t M26DevicePass(M26Layer *layers, M26Buffers *b, const std::vector
 		M26Check(cudaMemcpy(b->context,&context,4u,cudaMemcpyHostToDevice),"context");
 		for (layer = 0u; layer < M26_LAYERS; layer++)
 		{
-			M26Attention(layer,&layers[layer],b,position);
+			if ( m26_tp4 != 0u )
+				M26AttentionTp4(layer,&layers[layer],b,position);
+			else
+				M26Attention(layer,&layers[layer],b,position);
 			if ( layers[layer].moe )
 			{
 				M26RouteDevice(layer,&layers[layer],b);
@@ -591,9 +688,10 @@ int main(int argc, char **argv)
 	double error, worst = 0.0;
 	LmKvAccessError access;
 	uint32_t teacher = argc == 3 && strcmp(argv[2],"--teacher-forced") == 0 ? 1u : 0u;
-	if ( argc != 2 && teacher == 0u )
+	m26_tp4 = argc == 3 && strcmp(argv[2],"--tp4-slices") == 0 ? 1u : 0u;
+	if ( argc != 2 && teacher == 0u && m26_tp4 == 0u )
 	{
-		fprintf(stderr,"usage: %s <model-input-dir> [--teacher-forced]\n",argv[0]);
+		fprintf(stderr,"usage: %s <model-input-dir> [--teacher-forced | --tp4-slices]\n",argv[0]);
 		return(2);
 	}
 	m26_directory = argv[1];
@@ -628,7 +726,10 @@ int main(int argc, char **argv)
 				}
 				M26LoadStream(&b,position,layer - 1u);
 			}
-			M26Attention(layer,&layers[layer],&b,position);
+			if ( m26_tp4 != 0u )
+				M26AttentionTp4(layer,&layers[layer],&b,position);
+			else
+				M26Attention(layer,&layers[layer],&b,position);
 			if ( layers[layer].moe )
 			{
 				M26Moe(layer,&layers[layer],&b,ids);
