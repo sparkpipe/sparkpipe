@@ -61,6 +61,10 @@ def test_generator(output: Path) -> dict:
     limits = deployment["runtime_limits"]
     check(limits["max_inflight_submissions"] == 1, "inflight within adapter cap")
     check(limits["max_input_rows"] <= 512, "input rows within adapter cap")
+    check(limits["max_input_rows"] * 5376 * 2 + 16 <= 8 * 32768 + 64,
+          "a prefill frame's all-reduce fits one mesh slot")
+    check(limits["max_input_rows"] >= limits["max_active_sequences"],
+          "input rows cover the active sequences")
     stage = json.loads((output / "config" / "stage_00.json").read_text())
     check(limits["max_sequence_positions"] == stage["max_sequence_positions"],
           "api context limit equals the engine's sequence positions")

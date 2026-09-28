@@ -47,6 +47,10 @@ DEFAULT_MAX_SEQUENCE_POSITIONS = 32768
 DEFAULT_RESIDENT_SEQUENCES = 16
 DEFAULT_WEIGHTD_SOCKET = "/run/sparkpipe-weightd-shared/weightd.sock"
 KV_PAGE_TOKENS = 64
+HIDDEN_ROW_BYTES = 5376 * 2
+MESH_SLOT_BYTES = 8 * 32768 + 64
+MESH_ROUND_HEADER_BYTES = 16
+MAX_INPUT_ROWS = (MESH_SLOT_BYTES - MESH_ROUND_HEADER_BYTES) // HIDDEN_ROW_BYTES
 
 
 def rank_hex(rank: int) -> str:
@@ -115,7 +119,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str, hosts: list,
         "runtime_limits": {
             "max_inflight_submissions": 1,
             "max_active_sequences": sequences,
-            "max_input_rows": 32,
+            "max_input_rows": max(MAX_INPUT_ROWS, sequences),
             "resident_sequence_capacity": sequences,
             "kv_logical_page_capacity": page_capacity,
             "kv_physical_page_capacity": page_capacity,
