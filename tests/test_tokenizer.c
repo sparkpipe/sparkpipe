@@ -784,6 +784,54 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static const char *SparkTestDigitIdeographTokenizerJsonPath(void)
+{
+    return "build/test_tokenizer_digit_ideograph_bpe.json";
+}
+
+static void SparkTestDigitIdeographEncode(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    const uint32_t *expected,
+    uint32_t expected_count)
+{
+    SparkTokenizerEncoding encoding;
+    uint32_t token_ids[16u];
+    uint32_t index;
+    memset(token_ids, 0, sizeof(token_ids));
+    SparkTokenizerEncodingReset(&encoding);
+    encoding.token_capacity = 16u;
+    encoding.token_ids = token_ids;
+    assert(SparkTokenizerEncodeUtf8(tokenizer, text, (uint32_t)strlen(text), 0u, &encoding) == SPARK_STATUS_OK);
+    assert(encoding.token_count == expected_count);
+    for (index = 0u; index < expected_count; index++)
+    {
+        assert(token_ids[index] == expected[index]);
+    }
+}
+
+static void SparkTestDigitIdeographSequencePretokenizes(void)
+{
+    static const uint32_t digits[] = {6u, 4u};
+    static const uint32_t spaces[] = {8u, 10u, 11u};
+    SparkTokenizer tokenizer;
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    FILE *file;
+    file = fopen(SparkTestDigitIdeographTokenizerJsonPath(), "wb");
+    assert(file != 0);
+    assert(fputs("{\"model\": {\"type\": \"BPE\", \"unk_token\": \"<unk>\", \"byte_fallback\": false, \"vocab\": {\"<unk>\": 0, \"1\": 1, \"2\": 2, \"3\": 3, \"4\": 4, \"12\": 5, \"123\": 6, \"34\": 7, \"a\": 8, \"b\": 9, \"Ġ\": 10, \"Ġb\": 11, \"ĠĠ\": 12}, \"merges\": [\"3 4\", \"1 2\", \"12 3\", \"Ġ Ġ\", \"Ġ b\"]}, \"pre_tokenizer\": {\"type\": \"Sequence\", \"pretokenizers\": [{\"type\": \"Split\", \"pattern\": {\"Regex\": \"\\\\p{N}{1,3}\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[一-龥぀-ゟ゠-ヿ]+\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[!\\\"#$%&'()*+,\\\\-./:;<=>?@\\\\[\\\\\\\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\\\p{L}\\\\p{P}\\\\p{S}]?[\\\\p{L}\\\\p{M}]+| ?[\\\\p{P}\\\\p{S}]+[\\r\\n]*|\\\\s*[\\r\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": true, \"use_regex\": false}]}, \"added_tokens\": []}", file) >= 0);
+    assert(fclose(file) == 0);
+    SparkTokenizerReset(&tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = SparkTestDigitIdeographTokenizerJsonPath();
+    assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) == SPARK_STATUS_OK);
+    SparkTestDigitIdeographEncode(&tokenizer, "1234", digits, 2u);
+    SparkTestDigitIdeographEncode(&tokenizer, "a  b", spaces, 3u);
+    SparkTokenizerDestroy(&tokenizer);
+}
+
 int main(void)
 {
     SparkTestTokenizerPieceCacheMatchesUncached();
@@ -796,5 +844,6 @@ int main(void)
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
     SparkTestQwenTokenizerPretokenizesWithQwenSemantics();
+    SparkTestDigitIdeographSequencePretokenizes();
     return 0;
 }
