@@ -305,6 +305,7 @@ typedef struct SparkQwen38_27bServingState
 	uint64_t dflash2_draft_sequence_id;
 	uint32_t dflash2_next_draft_ids[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS];
 	uint32_t dflash2_fold_armed;
+	uint64_t dflash2_context_limit_sequence_id;
 	uint64_t dflash2_fold_position;
 	uint64_t dflash2_fold_sequence_id;
 	int32_t dflash2_fold_restore_slot;
@@ -556,14 +557,17 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	SparkSpeculationSeamConfiguration seam_configuration;
 	const char *control_value;
 	uint32_t available_sources;
+	uint32_t seam_available_sources;
 	uint32_t enabled_sources;
+	char seam_control_value[16];
 	SparkStatus status;
 	status = SparkQwen38_27bServingRejectRetiredSpeculationEnvironment();
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	available_sources = SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES;
 	if ( state->bridge_host == 0 )
-		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+		available_sources &= ~(SPARK_SPECULATION_SEAM_REMOTE_SOURCES & ~SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES);
+	seam_available_sources = state->bridge_host == 0 ? available_sources & ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES : available_sources;
 	control_value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
 	if ( control_value == 0 || (control_value[0] == '1' && control_value[1] == '\0') )
 		enabled_sources = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
@@ -587,8 +591,9 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	memset(&seam_configuration,0,sizeof(seam_configuration));
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
-	seam_configuration.available_source_mask = available_sources;
-	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+	snprintf(seam_control_value,sizeof(seam_control_value),"0x%x",enabled_sources & seam_available_sources);
+	seam_configuration.available_source_mask = seam_available_sources;
+	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & seam_available_sources;
 	seam_configuration.default_speculative_token_count = state->speculative_draft_count;
 	seam_configuration.lane_count = state->max_active_sequence_count;
 	seam_configuration.max_committed_token_count = state->max_sequence_positions;
@@ -598,7 +603,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	seam_configuration.draft_max_node_count = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
 	seam_configuration.connect_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS;
 	seam_configuration.io_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS;
-	seam_configuration.control_value = control_value;
+	seam_configuration.control_value = seam_control_value;
 	seam_configuration.bridge_host = state->bridge_host;
 	seam_configuration.bridge_port = state->bridge_port;
 	memcpy(seam_configuration.target_model,SPARK_QWEN38_27B_SERVING_MODEL_ID,sizeof(SPARK_QWEN38_27B_SERVING_MODEL_ID));
@@ -1492,6 +1497,60 @@ static SparkStatus SparkQwen38_27bServingRunSpeculativeFrame(
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkQwen38_27bServingSpeculationFitsDrafter(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint64_t end_position;
+	if ( SparkQwen38_27bServingBlockDraftMethod(state->spec_method) == 0u || submission->row_count == 0u )
+		return(1u);
+	end_position = submission->row_positions[submission->row_count - 1u] + 2u * (uint64_t)SPARK_QWEN38_27B_DSPARK_BLOCK_SIZE + 2u;
+	if ( end_position <= SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS )
+		return(1u);
+	if ( state->dflash2_context_limit_sequence_id != submission->row_sequence_ids[submission->row_count - 1u] )
+	{
+		state->dflash2_context_limit_sequence_id = submission->row_sequence_ids[submission->row_count - 1u];
+		fprintf(stderr,"qwen38_27b_spec dflash2_context_limit sequence=%llu position=%llu limit=%u speculation=off\n",(unsigned long long)state->dflash2_context_limit_sequence_id,(unsigned long long)submission->row_positions[submission->row_count - 1u],SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS);
+	}
+	return(0u);
+}
+
+static uint32_t SparkQwen38_27bServingFoldRestorePending(
+	const SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t last;
+	if ( state->dflash2_fold_armed == 0u || state->dflash2_fold_restore_slot < 0 || submission->active_sequence_count != 1u || submission->row_count != 1u )
+		return(0u);
+	last = submission->row_count - 1u;
+	return(state->dflash2_fold_sequence_id == submission->row_sequence_ids[last] && state->dflash2_fold_position == submission->row_positions[last] ? 1u : 0u);
+}
+
+static SparkStatus SparkQwen38_27bServingRunFoldRestoreDecode(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission,
+	SparkQwen38_27bServingPending *pending)
+{
+	SparkQwen38_27bGdnSnapshotView gdn_snapshot;
+	uint32_t token = submission->token_ids[0];
+	uint64_t position = submission->row_positions[0];
+	uint64_t sequence = submission->row_sequence_ids[0];
+	uint32_t slot = submission->lanes[submission->row_lane_indices[0]].resident_sequence_slot;
+	SparkStatus status;
+	memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
+	gdn_snapshot.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+	gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
+	gdn_snapshot.snapshot_index = (uint32_t)state->dflash2_fold_restore_slot;
+	state->dflash2_fold_armed = 0u;
+	fprintf(stderr,"qwen38_27b_spec_diag fold_restore_decode pos=%llu slot=%u\n",(unsigned long long)position,gdn_snapshot.snapshot_index);
+	status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,1u,&token,0,0,1u,position,sequence,position,
+		(uint32_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST
+		| (uint32_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
+	if ( status == SPARK_STATUS_OK )
+		pending->output_token_ids[submission->row_lane_indices[0]] = pending->frame_output_ids[0];
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1962,7 +2021,7 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 		SparkQwen38_27bServingRecordSubmissionTokens(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && state->speculation_enabled != 0u && SparkQwen38_27bServingOwnsFinalHead(state) != 0u && submission->active_sequence_count == 1u )
 	{
-		status = SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission);
+		status = SparkQwen38_27bServingSpeculationFitsDrafter(state,submission) != 0u ? SparkQwen38_27bServingExtendSpeculativeCoverage(state,submission) : SPARK_STATUS_CAPACITY_EXCEEDED;
 		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 		{
 			speculate = 0u;
@@ -1987,8 +2046,13 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 			(const void *)state->block_table.host_lane_physical_block_counts,
 			state->max_active_sequence_count, state->blocks_per_lane,
 			state->stage_attn_layer_count);
-		state->dflash2_fold_armed = 0u;
-		status = SparkQwen38_27bServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
+		if ( SparkQwen38_27bServingFoldRestorePending(state,submission) != 0u )
+			status = SparkQwen38_27bServingRunFoldRestoreDecode(state,submission,pending);
+		else
+		{
+			state->dflash2_fold_armed = 0u;
+			status = SparkQwen38_27bServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
+		}
 	}
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 	{

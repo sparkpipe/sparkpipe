@@ -202,3 +202,30 @@ SparkStatus SparkQwen38_27bTpReduceU64Max(
 		return SPARK_STATUS_OK;
 	return SparkQwen38_27bTpSubmit(tp,buffer,count,logical_count,cuda_stream,1u);
 }
+
+SparkStatus SparkQwen38_27bTpBeginFrame(
+	SparkQwen38_27bTpState *tp,
+	uint64_t request_id)
+{
+	if ( tp == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( tp->degree <= 1u || tp->initialized == 0u )
+		return SPARK_STATUS_OK;
+	return SparkTpDeviceCollectiveChainKey(&tp->collective,request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+}
+
+SparkStatus SparkQwen38_27bTpEndFrame(
+	SparkQwen38_27bTpState *tp,
+	void *cuda_stream,
+	SparkStatus frame_status)
+{
+	if ( tp == 0 || cuda_stream == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( tp->degree <= 1u || tp->initialized == 0u )
+		return SPARK_STATUS_OK;
+	if ( frame_status != SPARK_STATUS_OK )
+		(void)SparkTpDeviceCollectiveChainRetire(&tp->collective);
+	if ( cudaStreamSynchronize((cudaStream_t)cuda_stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	return SparkTpDeviceCollectiveEndChain(&tp->collective,cuda_stream);
+}

@@ -224,6 +224,9 @@ typedef struct SparkQwen38_27bModuleState
 	uint64_t dflash_hist_pos_host[SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DFLASH_BLOCK_KV_CAP];
 	uint32_t dflash_hist_count;
 	void *dspark_sel_out_dev;
+	uint32_t *dflash_tp_ids;
+	float *dflash_tp_scores;
+	uint64_t *dflash_tp_maxloc;
 	uint32_t *dspark_sel_out_host;
 	void *dflash_fc_out;
 	void *dflash_ctx_normed;
@@ -307,7 +310,7 @@ extern cudaError_t SparkQwen38_27bLaunchDsparkTapStore(cudaStream_t stream, cons
 extern cudaError_t SparkQwen38_27bLaunchDsparkKPrep(cudaStream_t stream, void *k_bf16, const void *k_norm_bf16, const uint64_t *positions, uint32_t rows);
 extern cudaError_t SparkQwen38_27bLaunchDsparkQPrep(cudaStream_t stream, void *q_bf16, const void *q_norm_bf16, const uint64_t *positions, uint32_t rows);
 extern cudaError_t SparkQwen38_27bLaunchDsparkCacheAttn(cudaStream_t stream, const void *q_bf16, const void *k_bf16, const void *v_bf16, const void *q_norm_bf16, const void *k_norm_bf16, const uint64_t *positions, void *attn_out_bf16, uint32_t block_rows, uint32_t nkv, uint32_t window);
-extern cudaError_t SparkQwen38_27bLaunchDsparkSelect(cudaStream_t stream, const void *logits, const void *hidden, const void *hproj_w, void *out, uint32_t block_rows, uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k);
+extern cudaError_t SparkQwen38_27bLaunchDsparkSelect(cudaStream_t stream, const void *logits, const void *hidden, const void *hproj_w, void *out, uint32_t block_rows, uint32_t vocab, uint32_t id_offset, uint32_t hidden_dim, uint32_t rank, uint32_t top_k);
 extern cudaError_t SparkQwen38_27bLaunchDsparkMarkov(cudaStream_t stream, const void *markov_w1_bf16, const void *markov_w2_bf16, const uint32_t *prev_token_ids, uint32_t draft_count, uint32_t rank, void *bias_out, uint32_t vocab);
 extern cudaError_t SparkQwen38_27bLaunchDsparkConv(cudaStream_t stream, const void *x_bf16, const void *delta_bf16, const void *base_bf16, void *out_bf16, uint32_t block_size, uint32_t num_groups, uint32_t group_size, uint32_t side);
 #define SPARK_QWEN38_27B_SMALL_BATCH_MAX_ROWS 8u
@@ -430,6 +433,16 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 	if ( state->mtp_armed != 0u && state->owns_final_head == 0u )
 	{
 		fprintf(stderr,"%s config_mtp_without_head stage=%u/%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->stage_index,state->stage_count);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->tp_degree > 1u && state->frame_graph_off == 0u )
+	{
+		fprintf(stderr,"%s frame_graph=off reason=tp_collective_completes_on_host tp_degree=%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->tp_degree);
+		state->frame_graph_off = 1u;
+	}
+	if ( state->tp_degree > 1u && state->dflash2_config.sel_check_present != 0u )
+	{
+		fprintf(stderr,"%s config_sel_check_needs_whole_head tp_degree=%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->tp_degree);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return(SPARK_STATUS_OK);
@@ -672,6 +685,12 @@ static SparkStatus SparkQwen38_27bModuleLoadDsparkPack(SparkQwen38_27bModuleStat
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * (2u * SPARK_QWEN38_27B_DSPARK_SELECTOR_TOP_K + SPARK_QWEN38_27B_DSPARK_SELECTOR_RANK) * 4u,&state->dspark_sel_out_dev);
 		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * sizeof(uint32_t),(void **)&state->dflash_tp_ids);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * sizeof(float),(void **)&state->dflash_tp_scores);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * sizeof(uint64_t),(void **)&state->dflash_tp_maxloc);
+		if ( status == SPARK_STATUS_OK )
 		{
 			state->dspark_sel_out_host = (uint32_t *)malloc((size_t)(SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_DSPARK_BLOCK_SIZE - 1u) * (2u * SPARK_QWEN38_27B_DSPARK_SELECTOR_TOP_K + SPARK_QWEN38_27B_DSPARK_SELECTOR_RANK) * 4u);
 			if ( state->dspark_sel_out_host == 0 )
@@ -799,10 +818,17 @@ static uint64_t SparkQwen38_27bModuleFrameRowCount(const SparkQwen38_27bModuleSt
 		state->max_active_sequence_count : state->max_input_row_count);
 }
 
+static uint64_t SparkQwen38_27bModuleHeadRowCount(const SparkQwen38_27bModuleState *state)
+{
+	uint64_t verify_rows = (uint64_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u;
+	_Static_assert(SPARK_QWEN38_27B_DSPARK_BLOCK_SIZE <= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u,"a DFlash2 verify block must fit the head rows");
+	return((uint64_t)state->max_active_sequence_count > verify_rows ? (uint64_t)state->max_active_sequence_count : verify_rows);
+}
+
 static SparkStatus SparkQwen38_27bModuleAllocateSlotControl(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot)
 {
 	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state),staged = rows + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
-	uint64_t head_rows = (uint64_t)state->max_active_sequence_count;
+	uint64_t head_rows = SparkQwen38_27bModuleHeadRowCount(state);
 	SparkStatus status;
 	cudaStream_t stream = 0;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
@@ -2083,6 +2109,27 @@ static void SparkQwen38_27bModuleInvalidateLaneSequenceContinuity(
     }
 }
 
+static cudaError_t SparkQwen38_27bModuleDflashReduceTopDraft(SparkQwen38_27bModuleState *state, cudaStream_t stream, uint32_t slots, uint32_t top_k)
+{
+	uint32_t *ids = (uint32_t *)state->dspark_sel_out_dev;
+	float *scores = (float *)(ids + (uint64_t)slots * top_k);
+	cudaError_t error;
+	if ( state->tp_degree <= 1u )
+		return(cudaSuccess);
+	error = cudaMemcpy2DAsync(state->dflash_tp_ids,sizeof(uint32_t),ids,(size_t)top_k * sizeof(uint32_t),sizeof(uint32_t),slots,cudaMemcpyDeviceToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(state->dflash_tp_scores,sizeof(float),scores,(size_t)top_k * sizeof(float),sizeof(float),slots,cudaMemcpyDeviceToDevice,stream);
+	if ( error == cudaSuccess )
+		error = SparkQwen38_27bLaunchHeadMaxLocPack(stream,state->dflash_tp_scores,state->dflash_tp_ids,state->dflash_tp_maxloc,slots);
+	if ( error == cudaSuccess && SparkQwen38_27bTpReduceU64Max(&state->tp,state->dflash_tp_maxloc,slots,slots,stream) != SPARK_STATUS_OK )
+		error = cudaErrorUnknown;
+	if ( error == cudaSuccess )
+		error = SparkQwen38_27bLaunchHeadMaxLocUnpack(stream,state->dflash_tp_maxloc,state->dflash_tp_ids,slots);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy2DAsync(ids,(size_t)top_k * sizeof(uint32_t),state->dflash_tp_ids,sizeof(uint32_t),sizeof(uint32_t),slots,cudaMemcpyDeviceToDevice,stream);
+	return(error);
+}
+
 static void SparkQwen38_27bModuleDflashSelCheck(
 	SparkQwen38_27bModuleState *state,
 	SparkQwen38_27bModuleSlot *slot,
@@ -2331,7 +2378,6 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 	uint8_t *scr = (uint8_t *)slot->dspark_scratch;
 	const uint32_t B = SPARK_QWEN38_27B_DSPARK_BLOCK_SIZE;
 	const uint32_t H = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-	const uint32_t V = SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT;
 	const uint32_t R = SPARK_QWEN38_27B_DSPARK_SELECTOR_RANK;
 	const uint32_t K = SPARK_QWEN38_27B_DSPARK_SELECTOR_TOP_K;
 	const uint32_t conv_groups = H / SPARK_QWEN38_27B_DSPARK_CONV_GROUP_SIZE;
@@ -2374,6 +2420,11 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 		{
 			const uint64_t base_blk = base + blk;
 			uint32_t avail = (uint32_t)(base_blk < 2048u ? base_blk : 2048u);
+			if ( base_blk + B > SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS )
+			{
+				fprintf(stderr,"%s dflash2_context_positions_exceeded base=%llu block=%u limit=%u\n",SPARK_QWEN38_27B_MODULE_TAG,(unsigned long long)base_blk,B,SPARK_QWEN38_27B_DFLASH2_CONTEXT_POSITIONS);
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+			}
 			const uint32_t window = wnd_bound < avail ? wnd_bound : avail;
 			const uint64_t window_base = base_blk - window;
 			const uint32_t nkv = window + ctx_tail + B;
@@ -2512,14 +2563,16 @@ static SparkStatus SparkQwen38_27bModuleRunDsparkBlockForward(
 		lm_head.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION;
 		lm_head.weight_format = 0u;
 		lm_head.input_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
-		lm_head.output_dimension = SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT;
+		lm_head.output_dimension = state->tp.head_rows;
 		lm_head.weight_payload = state->lm_head_weight_bf16;
-		lm_head.weight_payload_bytes = (uint64_t)SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT * 2u;
+		lm_head.weight_payload_bytes = (uint64_t)SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * state->tp.head_rows * 2u;
 		error = SparkQwen38_27bLaunchRmsNorm(stream,block_hidden,w->final_norm_bf16,norm,B,H,SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkQwen38_27bLaunchLinear(stream,&lm_head,norm,logits,B);
 		if ( error == cudaSuccess )
-			error = SparkQwen38_27bLaunchDsparkSelect(stream,logits,norm,w->selector_hidden_proj.weight_payload,state->dspark_sel_out_dev,B,V,H,R,K);
+			error = SparkQwen38_27bLaunchDsparkSelect(stream,logits,norm,w->selector_hidden_proj.weight_payload,state->dspark_sel_out_dev,B,state->tp.head_rows,state->tp_rank * state->tp.head_rows,H,R,K);
+		if ( error == cudaSuccess )
+			error = SparkQwen38_27bModuleDflashReduceTopDraft(state,stream,B - 1u,K);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(slot->dspark_hidden_host,norm,(size_t)B * H * sizeof(uint16_t),cudaMemcpyDeviceToHost,stream);
 		if ( error == cudaSuccess )
@@ -2820,6 +2873,7 @@ static SparkStatus SparkQwen38_27bModuleExecuteFrame(
     uint32_t rows;
     uint32_t row;
     uint32_t lanes_claimed;
+    uint32_t tp_frame_begun = 0u;
     SparkStatus status;
 
     state = (SparkQwen38_27bModuleState *)module_state;
@@ -2946,19 +3000,28 @@ static SparkStatus SparkQwen38_27bModuleExecuteFrame(
             &state->submitted_count,
             1u,
             memory_order_relaxed);
-        status = SparkQwen38_27bModuleRunFrame(
-            state,
-            slot,
-            context,
-            frame,
-            prefill,
-            rows);
+        status = SparkQwen38_27bTpBeginFrame(&state->tp,frame->request_id);
+        tp_frame_begun = status == SPARK_STATUS_OK ? 1u : 0u;
+        if (status == SPARK_STATUS_OK)
+            status = SparkQwen38_27bModuleRunFrame(
+                state,
+                slot,
+                context,
+                frame,
+                prefill,
+                rows);
     }
     if (status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u)
         status = SparkQwen38_27bModuleRunDsparkBlockForward(state,slot,context->dspark_draft,
             (state->owns_embedding != 0u && frame->buffer_count > 0u && frame->buffers != 0)
                 ? (const uint32_t *)frame->buffers[0].address : 0,
             rows);
+    if (tp_frame_begun != 0u)
+    {
+        SparkStatus end_status = SparkQwen38_27bTpEndFrame(&state->tp,slot->cuda_stream,status);
+        if (status == SPARK_STATUS_OK)
+            status = end_status;
+    }
     if (status == SPARK_STATUS_OK)
     {
         SparkQwen38_27bModuleCommitLaneSequenceContinuity(
@@ -3032,7 +3095,8 @@ static SparkStatus SparkQwen38_27bModuleAdmit(
     table.max_active_sequence_count = state->max_active_sequence_count;
     table.max_input_row_count = state->max_input_row_count;
     table.max_sequence_positions = SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS;
-    table.flags = SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT |
+    table.flags = (request->admission_flags == 0u ?
+            SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT : 0u) |
         SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS;
     table.predicate = SparkQwen38_27bAdmissionKvPredicate;
     table.predicate_context = state;

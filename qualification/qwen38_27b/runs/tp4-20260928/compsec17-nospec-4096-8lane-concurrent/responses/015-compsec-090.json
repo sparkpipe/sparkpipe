@@ -1,0 +1,23 @@
+{
+ "id": "compsec-090",
+ "token_ids": [
+  16,
+  17,
+  248046
+ ],
+ "decoded_text": "12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "grading": "final-answer-line",
+  "ds4_eval_passed": true,
+  "ds4_eval_extracted": "12",
+  "finish_reason": "stop",
+  "generated_token_count": 3,
+  "output_sha256": "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918"
+ }
+}

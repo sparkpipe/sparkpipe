@@ -280,7 +280,7 @@ static __global__ void SparkQwen38_27bDsparkMarkovKernel(
 static __global__ void SparkQwen38_27bDsparkSelectKernel(
 	const __nv_bfloat16 *logits, const __nv_bfloat16 *hidden, const __nv_bfloat16 *hproj_w,
 	uint32_t *out_ids, float *out_scores, float *out_hproj,
-	uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
+	uint32_t vocab, uint32_t id_offset, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
 {
 	const uint32_t slot = blockIdx.x;
 	const uint32_t tid = threadIdx.x;
@@ -339,7 +339,7 @@ static __global__ void SparkQwen38_27bDsparkSelectKernel(
 		__syncthreads();
 		if ( mine != 0ull && mine == s_best )
 		{
-			out_ids[(uint64_t)slot * K + out] = s_idx[tid * 16u + s_head[tid]];
+			out_ids[(uint64_t)slot * K + out] = s_idx[tid * 16u + s_head[tid]] + id_offset;
 			out_scores[(uint64_t)slot * K + out] = s_val[tid * 16u + s_head[tid]];
 			s_head[tid]++;
 		}

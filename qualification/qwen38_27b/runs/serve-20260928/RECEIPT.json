@@ -1,0 +1,184 @@
+{
+ "run_id": "serve-20260928",
+ "model": "Qwen/Qwen3.8-27B",
+ "revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1",
+ "topology": "TP1 on spark8 beside GLM-5.3 Flash (glm53flash.fp8.tp16), fleet weightd 3da98597 lane 3 via /tmp/spark_weightd.sock",
+ "source_commit": "8aab186",
+ "pack": "qwen38-mx2.tp1.qwen36sp FP8 E4M3+E8M0/128 sha256 ceef03e4...9b4e",
+ "drafter": "qwen38-dflash2-drafter.qwen36sp (5-layer BF16, draft count 8)",
+ "api": "rtx5090:8435 qwen27b-api user unit, internal use only",
+ "perf_window": "all timed rows ran inside tools/perf_window.py (lanes/PERF_LOG.md, lane qwen27b)",
+ "method_notes": {
+  "decode_tok_s": "sparkpipe_model_batch token events, (n-1)/(t_last-t_first), fresh residentd per run, B1, greedy",
+  "ttft_batch": "first token time minus process launch (includes connect), 427-token chat prompt",
+  "ttft_api": "POST /v1/completions max_tokens=1 wall time on rtx5090, cold prefix cache",
+  "prompts": "qualification/qwen38_27b/bench_prompts_tp1.json, Qwen chat template, thinking off"
+ },
+ "nospec": {
+  "b1_decode_tok_s_128": {
+   "median": 8.32,
+   "runs": [
+    8.02,
+    8.32,
+    8.37
+   ]
+  },
+  "b1_decode_tok_s_512": {
+   "median": 8.32,
+   "runs": [
+    8.33,
+    8.31,
+    8.32
+   ]
+  },
+  "ttft_427_ms_batch": {
+   "median": 2196.5,
+   "runs": [
+    2196.5,
+    2230.9,
+    2182.5
+   ]
+  },
+  "streams8_aggregate_decode_tok_s": 41.4,
+  "streams8_e2e_tok_s": 40.72,
+  "code512_decode_tok_s": {
+   "median": 8.28,
+   "runs": [
+    8.28
+   ]
+  },
+  "rep512_decode_tok_s": {
+   "median": 8.32,
+   "runs": [
+    8.32
+   ]
+  }
+ },
+ "dflash2": {
+  "method": "DFlash2 block drafter, 8 drafts, greedy verify, B1 only (multi-lane decode is not speculative)",
+  "prose_128": {
+   "decode_tok_s": {
+    "median": 12.39,
+    "runs": [
+     12.39,
+     12.4,
+     12.36
+    ]
+   },
+   "tokens_per_round": 3.0
+  },
+  "prose_512": {
+   "decode_tok_s": {
+    "median": 11.77,
+    "runs": [
+     11.77,
+     11.71,
+     11.8
+    ]
+   },
+   "tokens_per_round": 2.727
+  },
+  "code_512": {
+   "decode_tok_s": {
+    "median": 25.75,
+    "runs": [
+     26.9,
+     24.45,
+     25.75
+    ]
+   },
+   "tokens_per_round": 6.649
+  },
+  "repetitive_512": {
+   "decode_tok_s": {
+    "median": 31.86,
+    "runs": [
+     31.62,
+     31.88,
+     31.86
+    ]
+   },
+   "tokens_per_round": 7.969
+  },
+  "streams8_aggregate_decode_tok_s": 38.37,
+  "api": [
+   {
+    "case": "api_ttft427",
+    "mode": "dflash2",
+    "prompt_tokens": 427,
+    "completion_tokens": 1,
+    "wall_s": 2.255,
+    "e2e_tok_s": 0.44,
+    "finish_reason": "length"
+   },
+   {
+    "case": "api_ttft427",
+    "mode": "dflash2",
+    "prompt_tokens": 427,
+    "completion_tokens": 1,
+    "wall_s": 0.299,
+    "e2e_tok_s": 3.35,
+    "finish_reason": "length"
+   },
+   {
+    "case": "api_ttft427",
+    "mode": "dflash2",
+    "prompt_tokens": 427,
+    "completion_tokens": 1,
+    "wall_s": 0.282,
+    "e2e_tok_s": 3.54,
+    "finish_reason": "length"
+   },
+   {
+    "case": "api_prose256",
+    "mode": "dflash2",
+    "prompt_tokens": 40,
+    "completion_tokens": 256,
+    "wall_s": 21.732,
+    "e2e_tok_s": 11.78,
+    "finish_reason": "length"
+   },
+   {
+    "case": "api_code256",
+    "mode": "dflash2",
+    "prompt_tokens": 44,
+    "completion_tokens": 256,
+    "wall_s": 11.132,
+    "e2e_tok_s": 23.0,
+    "finish_reason": "length"
+   }
+  ],
+  "compsec17": {
+   "passed": 12,
+   "of": 17,
+   "parameters": {
+    "max_tokens": 512,
+    "temperature": 0.0,
+    "chat_template": "qwen",
+    "thinking": "off",
+    "concurrency": 1,
+    "pass_threshold": 14
+   },
+   "dir": "compsec17-dflash2"
+  }
+ },
+ "correctness": {
+  "reference": "qualification/qwen38_27b/reference/reference3_fp8_numpy.json (numpy T1 on the HF FP8 checkpoint)",
+  "nospec_exact": "72/72 tokens (capital 8, arith 32, code 32) with 8-row and 128-row prefill",
+  "dflash2_exact": "72/72 tokens",
+  "spec_vs_nospec_512": {
+   "code512": "identical",
+   "rep512": "identical",
+   "prose o512": "diverges at token 14 ('mid-fifteenth' vs 'mid-15th'); verify rows use MXFP8 activations (WS GEMM, 5+ rows) while 1-row decode uses BF16 activations"
+  },
+  "long_prompt_1360": "nospec 8-row and 128-row prefill identical over 64 tokens"
+ },
+ "earlier_receipts": {
+  "perf-132d4ba.jsonl": "before prefill fixes (TTFT 427 = 4.7 s); DFlash2 rows there ended early at a cache block boundary (engine UNSUPPORTED), superseded",
+  "perf-29b0f70.jsonl": "64-row WS tiles without prequantization (slower prefill, reverted by prequantization)",
+  "perf-cc431dc.jsonl": "DFlash2 before the engine publication fix: requests ended at the first block boundary; not valid numbers"
+ },
+ "not_measured": [
+  "COMPSEC-17 no-spec: a sequential run does not fit one 15-minute perf window (~16 min at 8.3 tok/s); a concurrency-3 run hit the prefix-store mismatch (HTTP 500), see lane notes"
+ ]
+}

@@ -1681,7 +1681,7 @@ extern "C" cudaError_t SparkQwen38_27bLaunchLinear(cudaStream_t stream, const Sp
 		const uint8_t *scale = (const uint8_t *)view->weight_scale_e8m0;
 		const uint64_t payload_stride = (uint64_t)view->output_dimension * view->input_dimension;
 		const uint64_t scale_stride = (uint64_t)view->output_dimension * (view->input_dimension / 128u);
-		if ( row_count <= 4u )
+		if ( row_count < SPARK_LM_TILE )
 			return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 		{
 			const char *ws_env = getenv("SPARK_QWEN38_27B_WS_GEMM");
@@ -1974,15 +1974,15 @@ extern "C" cudaError_t SparkQwen38_27bLaunchDsparkMarkov(cudaStream_t stream, co
 
 extern "C" cudaError_t SparkQwen38_27bLaunchDsparkSelect(cudaStream_t stream,
 	const void *logits, const void *hidden, const void *hproj_w,
-	void *out, uint32_t block_rows, uint32_t vocab, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
+	void *out, uint32_t block_rows, uint32_t vocab, uint32_t id_offset, uint32_t hidden_dim, uint32_t rank, uint32_t top_k)
 {
 	if ( block_rows < 2u )
 		return(cudaSuccess);
-	SparkQwen38_27bDsparkSelectKernel<<<block_rows - 1u, SPARK_QWEN38_27B_DSPARK_SEL_THREADS>>>(
+	SparkQwen38_27bDsparkSelectKernel<<<block_rows - 1u, SPARK_QWEN38_27B_DSPARK_SEL_THREADS, 0u, stream>>>(
 		(const __nv_bfloat16 *)logits, (const __nv_bfloat16 *)hidden, (const __nv_bfloat16 *)hproj_w,
 		(uint32_t *)out, (float *)((uint8_t *)out + (size_t)(block_rows - 1u) * top_k * 4u),
 		(float *)((uint8_t *)out + (size_t)(block_rows - 1u) * (2u * top_k * 4u)),
-		vocab, hidden_dim, rank, top_k);
+		vocab, id_offset, hidden_dim, rank, top_k);
 	return(cudaGetLastError());
 }
 
