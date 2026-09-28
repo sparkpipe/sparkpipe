@@ -1389,6 +1389,9 @@ static int cuda_stub_tree_wait(const volatile uint64_t *cell,uint64_t tag,
     }
 }
 
+uint32_t cuda_stub_mesh_tree_calls;
+uint64_t cuda_stub_mesh_tree_elements;
+
 cudaError_t SparkGlm5NextLaunchMeshTree(cudaStream_t stream,void *band_base,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry_address,
     const volatile void *shipped_address,const volatile void *cancel_address,
@@ -1408,6 +1411,8 @@ cudaError_t SparkGlm5NextLaunchMeshTree(cudaStream_t stream,void *band_base,
     uint64_t expected_cancel = control->cancel_expected;
     uint32_t round;
     (void)stream;
+    cuda_stub_mesh_tree_calls++;
+    cuda_stub_mesh_tree_elements = elements;
     for ( round = 0u; round < rounds; round++ )
     {
         uint64_t begin;
