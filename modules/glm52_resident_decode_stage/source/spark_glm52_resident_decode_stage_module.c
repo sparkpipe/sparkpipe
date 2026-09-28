@@ -542,12 +542,12 @@ static SparkStatus SparkGlm52ManifestCheck(const SparkWeightdManifest *manifest,
 		if ( entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
 			continue;
 		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
-			return(SPARK_STATUS_UNSUPPORTED);
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		for (plane=0u; plane<2u; plane++)
 		{
 			status = SparkGlm52ManifestPlane(manifest,entry,plane);
 			if ( status != SPARK_STATUS_OK )
-				return(status);
+				SPARK_RETURN(status);
 			expected += entry->group_count;
 		}
 	}
@@ -569,7 +569,7 @@ static SparkStatus SparkGlm52LazyOpen(SparkGlm52ModuleState *state,const char *p
 	memset(&request,0,sizeof(request));
 	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
 	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.identity.pack_sha256,digest,65u);
 	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM52_MODULE_TAG);
 	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);

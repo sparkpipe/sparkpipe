@@ -465,7 +465,7 @@ static SparkStatus SparkLingAllocateSlotHost(SparkLingExecutionSlot *slot)
 	uint64_t rows,words,bytes;
 	cudaError_t error;
 	if ( slot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	words = (rows * 4u) + SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT;
 	bytes = words * sizeof(uint32_t);
@@ -636,13 +636,13 @@ static SparkStatus SparkLingPageCopy(
 	cudaError_t error;
 	state = (SparkLingModuleState *)context;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
 		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
 	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
 		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
 	else
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_page_copy"));
 }
 
@@ -1797,7 +1797,7 @@ SparkStatus SparkLingResidentDecodeStageSnapshot(
 	uint32_t index,resident_count;
 	state = (SparkLingModuleState *)module_state;
 	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
 	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
 	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);

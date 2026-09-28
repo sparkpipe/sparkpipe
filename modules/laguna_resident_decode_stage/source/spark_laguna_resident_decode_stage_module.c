@@ -1699,7 +1699,6 @@ SparkStatus SparkLagunaResidentDecodeStageExecute(
 	status = SparkLagunaValidateFrame(state,frame,&context);
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"G5N-DBG execute: ValidateFrame -> %d\n",(int)status);
 		if ( state != 0 )
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 		return(status);
