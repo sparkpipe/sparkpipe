@@ -112,6 +112,7 @@ typedef struct SparkModelBatchEngineView
 	uint64_t prefix_miss_count;
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
+	uint64_t stale_prefix_isolation_count;
 	uint64_t first_token_count;
 	uint64_t queue_ns_total;
 	uint64_t prefill_ns_total;
