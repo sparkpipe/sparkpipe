@@ -564,6 +564,7 @@ PYTHON_TESTS := \
 	tests/test_status_truth.py \
 	tests/test_site.py \
 	tests/test_weightd_manifest.py \
+	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_weightd_lazy_pair.py \
 	tests/test_glm5_next_driver_probe.py \

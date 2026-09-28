@@ -31,20 +31,6 @@ join_ranks() {
   fi
 }
 
-spine_budget_of() {
-  python3 - "$CHECKOUT/model-families/k3/smoke_experts.json" "$1" <<'PY'
-import json, sys
-manifest = json.load(open(sys.argv[1]))
-rank = int(sys.argv[2])
-name = f"k3.stage{rank // 4}.rank0{rank % 4}.pack"
-for entry in manifest["provenance"]["ranks"]:
-    if entry["pack"] == name:
-        print(entry["spine_bytes"])
-        raise SystemExit(0)
-raise SystemExit(f"no spine budget for {name}")
-PY
-}
-
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
     --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
@@ -61,12 +47,12 @@ setup() {
     pack="$(pack_of "$rank")"
     (
       $SSH "$host" "test -f $pack -a -f $pack.experts -a -f $pack.sha256 && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache && find $root/packs $root/kvcache -mindepth 1 -delete"
-      scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$host:$root/bin/"
+      scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$K3_FIRMWARE/libk3_serving_adapter.so" "$host:$root/lib/"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
-      $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && echo $(spine_budget_of "$rank") > $root/spine_budget"
+      $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"
       echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
     ) &
     PIDS[$rank]=$!
