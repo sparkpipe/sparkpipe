@@ -3980,6 +3980,12 @@ static void SparkGlm5NextKdaTimingReport(SparkGlm5NextModuleState *state,uint64_
 		restore[field] = atomic_exchange_explicit(&state->kda_restore[field],0u,memory_order_relaxed);
 		capture[field] = atomic_exchange_explicit(&state->kda_capture[field],0u,memory_order_relaxed);
 	}
+	if ( state->kv_snapshot.store != 0 && pthread_mutex_lock(&state->kv_mutex) == 0 )
+	{
+		const SparkKvPageCacheSnapshot *snapshot = &state->kv_snapshot;
+		fprintf(stderr,"G5N-KV-SNAPSHOT rank=%u saves=%llu saved_pages=%llu save_us=%llu save_failures=%llu restores=%llu restored_pages=%llu restore_us=%llu restore_misses=%llu restore_failures=%llu prefetch_waits=%llu prefetch_overflows=%llu store_bytes=%llu files=%llu checksum_failures=%llu\n",state->tp_rank,(unsigned long long)snapshot->save_count,(unsigned long long)snapshot->save_page_count,(unsigned long long)(snapshot->save_ns / 1000u),(unsigned long long)snapshot->save_failure_count,(unsigned long long)snapshot->restore_count,(unsigned long long)snapshot->restore_page_count,(unsigned long long)(snapshot->restore_ns / 1000u),(unsigned long long)snapshot->restore_miss_count,(unsigned long long)snapshot->restore_failure_count,(unsigned long long)snapshot->prefetch_wait_count,(unsigned long long)snapshot->prefetch_overflow_count,(unsigned long long)state->kv_snapshot_store.used_bytes,(unsigned long long)state->kv_snapshot_store.file_count,(unsigned long long)state->kv_snapshot_store.checksum_failure_count);
+		(void)pthread_mutex_unlock(&state->kv_mutex);
+	}
 	if ( restore[SPARK_GLM5_NEXT_KDA_COUNT] != 0u || capture[SPARK_GLM5_NEXT_KDA_COUNT] != 0u )
 		fprintf(stderr,"G5N-KDA-TIMING rank=%u restores=%llu restore_bytes=%llu restore_us=%llu captures=%llu capture_bytes=%llu capture_us=%llu\n",state->tp_rank,(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(restore[SPARK_GLM5_NEXT_KDA_NS] / 1000u),(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(capture[SPARK_GLM5_NEXT_KDA_NS] / 1000u));
 }
