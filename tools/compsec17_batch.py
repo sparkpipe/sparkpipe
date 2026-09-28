@@ -80,7 +80,7 @@ def grade_run(args, chat) -> int:
     for index, case in enumerate(selected):
         rid = REQUEST_BASE + index
         ids = tokens.get(rid, [])
-        text = model_tok.decode(ids, skip_special_tokens=False)
+        text = model_tok.decode(ids[:-1] if stops.get(rid) else ids, skip_special_tokens=False)
         passed, extracted = chat.grade(text, case["answer"], args.grading)
         other_passed, other_extracted = chat.grade(text, case["answer"], other)
         finish = "stop" if stops.get(rid) else ("length" if len(ids) >= args.max_tokens else "incomplete")

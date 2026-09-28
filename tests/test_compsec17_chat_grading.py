@@ -24,6 +24,11 @@ class FinalAnswerLineTest(unittest.TestCase):
     def test_answer_line_must_be_last(self):
         self.assertEqual(chat.grade("Answer: 9\nWait, let me reconsider line 12.", "9-11", "final-answer-line"), (False, "?"))
 
+    def test_bare_line_spec_reply_passes(self):
+        self.assertEqual(chat.grade("12", "12-13", "final-answer-line"), (True, "12"))
+        self.assertEqual(chat.grade("Lines 3, 13-15", "3,13-15", "final-answer-line"), (True, "3,13-15"))
+        self.assertEqual(chat.grade("The overflow is at line 12.", "12-13", "final-answer-line"), (False, "?"))
+
     def test_wrong_line_fails(self):
         self.assertEqual(chat.grade("Answer: 2", "8,20-22", "final-answer-line"), (False, "2"))
 

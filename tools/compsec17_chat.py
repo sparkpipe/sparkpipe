@@ -12,8 +12,9 @@ decoded with the served model's tokenizer and graded two ways:
                      tools/glm5_next_compsec17.py does for GLM (falls back to the
                      last integer anywhere in the reply when no Answer line exists)
   final-answer-line  only the reply's last non-empty line counts, and only when it
-                     is an "Answer: <lines>" line (markdown emphasis allowed); a
-                     truncated or unfinished reply grades "?"
+                     is an "Answer: <lines>" line or nothing but a line spec
+                     (markdown emphasis allowed); a truncated or unfinished
+                     reply grades "?"
 
 --grading picks the rule that sets passed and the exit status; both are recorded.
 
@@ -46,6 +47,7 @@ from compare_runs import answer_matches, extract_answer, normalize_line_spec
 from glm5_next_compsec17 import COMPSEC_IDS, load_decoder
 
 FINAL_ANSWER_LINE = re.compile(r"^[\s*_#>`-]*answer[\s*_`]*:[\s*_`]*(.*)$", re.IGNORECASE)
+BARE_LINE_SPEC = re.compile(r"^[\s*_`]*(?:lines?\s*)?(\d+(?:\s*[-,]\s*\d+)*)[\s*_`.]*$", re.IGNORECASE)
 
 TEMPLATES = {
     "qwen": ("<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n",
@@ -76,7 +78,7 @@ def final_answer_line(text: str) -> str:
     lines = [line for line in surface.strip().splitlines() if line.strip()]
     if not lines:
         return "?"
-    match = FINAL_ANSWER_LINE.match(lines[-1])
+    match = FINAL_ANSWER_LINE.match(lines[-1]) or BARE_LINE_SPEC.match(lines[-1])
     return normalize_line_spec(match.group(1)) if match else "?"
 
 
