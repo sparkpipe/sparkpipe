@@ -1,5 +1,5 @@
 import sys, statistics, collections, importlib.util, glob, os, pathlib
-spec = importlib.util.spec_from_file_location("tcb", pathlib.Path(__file__).resolve().parents[5] / "tools/tp_chain_budget.py")
+spec = importlib.util.spec_from_file_location("tcb", pathlib.Path(__file__).resolve().parent / "tp_chain_budget.py")
 tcb = importlib.util.module_from_spec(spec); spec.loader.exec_module(tcb)
 d = sys.argv[1]
 ranks = {}

@@ -27,7 +27,7 @@ def check(condition, message, output):
 def rank_log(rank, formats, old):
     chain, collective, replay, key, adopt, capture = formats
     lines = [key % (5, 50, 1000) if rank == 0 else adopt % (rank, 5, 4)]
-    lines += [capture % (4, 0, 0, 2047)] if old else []
+    lines += [capture % ((4,) + (0,) * (capture.count("%d") - 2) + (2047,))] if old else []
     lines += [replay % (1, 10000000, 0), replay % (1, 10000000, 0)]
     lines += [replay % (3, 99000000, 0)] if rank < 2 and not old else []
     stages = (0.0,) * 8

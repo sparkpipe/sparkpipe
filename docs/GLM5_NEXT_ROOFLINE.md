@@ -1230,7 +1230,10 @@ unexpected. On the second it reports only skinny kernels.
 Source: the residentd logs of all 16 production ranks, aligned by chain
 epoch with `tools/tp_chain_budget.py`, and the single-GPU bench in CUDA
 graph mode (`bench-glm5-next-batch ROOFLINE_ARGS="--graph 1"`). Receipts:
-`qualification/glm5next/performance/glm_perf_20260928_09fdad6/`.
+`qualification/glm5next/performance/glm_perf_20260928_09fdad6/`. The
+per-rank table comes from `tools/tp_chain_rank_compute.py <log dir> <lo ms>
+<hi ms>` and the per-replay kernel gaps from
+`tools/nsys_graph_replay_gaps.py <nsys cuda_gpu_trace csv>`.
 
 B1 graph chains (472 chains that all 16 ranks ran, rank-mean replay wall
 below 32 ms per step), per decode step:
