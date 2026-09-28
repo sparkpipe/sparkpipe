@@ -15,6 +15,7 @@
 #define SPARK_HY4_STAGEPACK_FORMAT_VERSION 1u
 #define SPARK_HY4_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_HY4_STAGEPACK_PAYLOAD_ALIGNMENT 256u
+#define SPARK_HY4_STAGEPACK_MLA_LATENT_HEAD_COUNT 1u
 
 #define SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_BF16 SPARK_STAGEPACK_FORMAT_WEIGHT_BF16
 #define SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_F32 SPARK_STAGEPACK_FORMAT_WEIGHT_F32
@@ -378,16 +379,7 @@ static inline uint64_t SparkHy4StagePackScaleBytes(uint32_t weight_format,
 	uint32_t rows, uint32_t columns)
 {
 	if ( weight_format == SPARK_HY4_STAGEPACK_WEIGHT_FORMAT_FP8_E4M3_E8M0B32 )
-	{
-		uint64_t groups = ((uint64_t)rows * (uint64_t)columns) /
-			SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE;
-		
-
-		return ((uint64_t)rows * ((uint64_t)columns /
-			SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE)) != 0ull ?
-			((uint64_t)rows * ((uint64_t)columns /
-			SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE)) : groups;
-	}
+		return (uint64_t)rows * ((uint64_t)columns / SPARK_HY4_MODEL_EXPERT_SCALE_GROUP_SIZE);
 	return 0u;
 }
 
@@ -422,15 +414,15 @@ static inline void SparkHy4StagePackExpectedGeometry(
 	header->layer_count = SPARK_HY4_MODEL_LAYER_COUNT;
 	header->first_layer_index = 0u;
 	header->total_layer_count = SPARK_HY4_MODEL_LAYER_COUNT;
-	header->attention_period = SPARK_HY4_MODEL_INDEXER_FULL_PERIOD;
-	header->full_attention_phase = 0u;
+	header->attention_period = SPARK_LLM_ATTENTION_PERIOD;
+	header->full_attention_phase = SPARK_LLM_GLOBAL_ATTENTION_PHASE;
 	header->gdn_key_head_count = 0u;
 	header->gdn_value_head_count = 0u;
 	header->gdn_head_key_dimension = 0u;
 	header->gdn_head_value_dimension = 0u;
 	header->gdn_conv_kernel = 0u;
 	header->attn_query_head_count = SPARK_HY4_MODEL_ATTN_QUERY_HEADS_PER_RANK;
-	header->attn_kv_head_count = SPARK_HY4_MODEL_ATTN_KV_HEADS_PER_RANK;
+	header->attn_kv_head_count = SPARK_HY4_STAGEPACK_MLA_LATENT_HEAD_COUNT;
 	header->attn_head_dimension = SPARK_HY4_MODEL_QK_HEAD_DIMENSION;
 	header->attn_rope_dimension = SPARK_HY4_MODEL_QK_ROPE_HEAD_DIMENSION;
 	header->routed_expert_count = SPARK_HY4_MODEL_EXPERTS_PER_RANK;

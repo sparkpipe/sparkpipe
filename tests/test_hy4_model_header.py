@@ -18,7 +18,10 @@ def main() -> int:
     contract = json.loads(
         (ROOT / "model_contracts" / "hy4.json").read_text(encoding="utf-8"))
     assert contract["model"]["layer_count"] == 78
-    assert contract["model"]["mtp_layer_count"] == 0
+    assert contract["model"]["mtp_layer_count"] == 1
+    assert contract["model_id"] == "tencent/Hy4-preview-FP8"
+    assert contract["attention"]["indexer_full_layers"][:3] == [0, 1, 5]
+    assert len(contract["attention"]["indexer_full_layers"]) == 21
     assert contract["model"]["vocabulary_size"] == 120832
     assert contract["moe"]["routed_expert_count"] == 256
     assert contract["moe"]["experts_per_token"] == 8
@@ -26,6 +29,10 @@ def main() -> int:
     assert contract["hyper_connections"]["stream_count"] == 4
     assert contract["attention"]["index_top_k"] == 2048
     assert contract["source_index_sha256"] == (
+        "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106")
+    community = json.loads(
+        (ROOT / "model_contracts" / "hy4_ud_iq1m_authoritative.json").read_text(encoding="utf-8"))
+    assert community["source_index_sha256"] == (
         "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6")
     assert contract["runtime"]["speculative_decoding"] == "deferred"
 
@@ -55,7 +62,8 @@ def main() -> int:
     for alias in expected_aliases:
         assert alias in header, f"missing shim alias {alias}"
     assert "#define SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(layer)" in header
-    assert "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6" in header
+    assert "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106" in header
+    assert "#define SPARK_HY4_MODEL_MTP_LAYER_COUNT 1u" in header
     assert '#include "sparkpipe/llm_defines.h"' in header
 
     authoritative = json.loads(
