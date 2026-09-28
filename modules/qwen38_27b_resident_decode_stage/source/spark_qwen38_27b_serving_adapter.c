@@ -1525,7 +1525,8 @@ static SparkStatus SparkQwen38_27bServingRunFoldRestoreDecode(
 	state->dflash2_fold_armed = 0u;
 	fprintf(stderr,"qwen38_27b_spec_diag fold_restore_decode pos=%llu slot=%u\n",(unsigned long long)position,gdn_snapshot.snapshot_index);
 	status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,1u,&token,0,0,1u,position,sequence,position,
-		SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
+		(uint32_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST
+		| (uint32_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
 	if ( status == SPARK_STATUS_OK )
 		pending->output_token_ids[submission->row_lane_indices[0]] = pending->frame_output_ids[0];
 	SPARK_RETURN(status);
