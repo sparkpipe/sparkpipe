@@ -1,0 +1,5 @@
+PASS sequences=1 heads=4 rows_per_sequence=1 commit=1
+PASS sequences=8 heads=4 rows_per_sequence=1 commit=1
+PASS sequences=2 heads=4 rows_per_sequence=3 commit=1
+PASS sequences=3 heads=2 rows_per_sequence=2 commit=0
+test_delta_rule_columns PASS
