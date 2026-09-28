@@ -7903,8 +7903,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "f0007936ca95b9eb94a0e05a87102be4d8a5d05fccce32e598d436a6e52f5478",
-      "size_bytes": 121072
+      "sha256": "97a433385b56295fba3e1d21e234270005595da0e350c6bb536b64030518d52c",
+      "size_bytes": 121074
     },
     {
       "path": "runtime/README",
@@ -8258,8 +8258,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "1135550fa7683e3e58889e8f5b40a84b329ffc56d04671eb111e55ddd070a417",
-      "size_bytes": 53697
+      "sha256": "7abc07dc0d4625f8ee6eed1f06cff4ab77e27c69b9d3c031bf5db69ca0dc5b0d",
+      "size_bytes": 53851
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -10653,8 +10653,8 @@
     },
     {
       "path": "tests/test_tp_allreduce_fuzz.c",
-      "sha256": "1f22e346d22c7e9e9d5f2da1efe3f4ffad1eb9fbdd68f76fd32a24e7416f0e05",
-      "size_bytes": 96839
+      "sha256": "68979aac8460e32045be7a12e174e1259795def9fb12171203366313375b6433",
+      "size_bytes": 97114
     },
     {
       "path": "tests/test_tp_collective.c",
@@ -10673,8 +10673,8 @@
     },
     {
       "path": "tests/test_tp_device_collective_mock.c",
-      "sha256": "22f655807d5ba49356b615d9c8f2c06927f52dbf4269275b3528d6078cb4b24a",
-      "size_bytes": 41803
+      "sha256": "2fbd1151f6dbe2fb1db78487e5f83213359c2b8546abb9ed98f5648b02cc5f71",
+      "size_bytes": 44156
     },
     {
       "path": "tests/test_tp_f32_tree_host.py",
@@ -15325,5 +15325,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74107505
+  "total_bytes": 74110289
 }

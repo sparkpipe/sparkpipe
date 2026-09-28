@@ -858,11 +858,6 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
 static SparkStatus SparkTpDeviceCollectiveEnsureCells(
     SparkTpDeviceCollectiveImplementation *implementation);
 
-static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission)
-{
-    return implementation->hardware_wait == 0u && submission->logical_sequence_count == 1u ? 1u : 0u;
-}
-
 static uint32_t SparkTpDeviceCollectiveDeferred(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission)
 {
     return implementation->capture_armed == 0u && implementation->hardware_wait != 0u && submission->completion_function == 0 && (submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u ? 1u : 0u;
@@ -1006,6 +1001,12 @@ static uint64_t SparkTpDeviceCollectiveRoundBytes(const SparkTpDeviceCollectiveI
     return (uint64_t)submission->active_sequence_count * implementation->local_hidden_dimension * 2u;
 }
 
+static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
+{
+    return implementation->hardware_wait == 0u && submission->logical_sequence_count == 1u &&
+        SparkTpDeviceCollectiveRoundBytes(implementation,submission,operation_kind) + 16u <= implementation->slot_bytes ? 1u : 0u;
+}
+
 static uint32_t SparkTpDeviceCollectiveHostCombineMissing(const SparkTpDeviceCollectiveImplementation *implementation, uint32_t operation_kind)
 {
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 )
@@ -1039,14 +1040,12 @@ static SparkStatus SparkTpDeviceCollectiveRoundAdvance(SparkTpDeviceCollectiveIm
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkTpDeviceCollectiveRoundAdmit(SparkTpDeviceCollectiveImplementation *implementation, SparkTpDeviceCollectiveSubmission *submission, uint32_t operation_kind, uint64_t bytes)
+static SparkStatus SparkTpDeviceCollectiveRoundAdmit(SparkTpDeviceCollectiveImplementation *implementation, SparkTpDeviceCollectiveSubmission *submission, uint32_t operation_kind)
 {
     SparkStatus status;
-    if ( SparkTpDeviceCollectiveHostRound(implementation,submission) != 0u && bytes + 16u > implementation->slot_bytes )
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
     if ( implementation->mesh_buffer == 0 )
         return SPARK_STATUS_UNSUPPORTED;
-    if ( SparkTpDeviceCollectiveHostRound(implementation,submission) != 0u && SparkTpDeviceCollectiveHostCombineMissing(implementation,operation_kind) != 0u )
+    if ( SparkTpDeviceCollectiveHostRound(implementation,submission,operation_kind) != 0u && SparkTpDeviceCollectiveHostCombineMissing(implementation,operation_kind) != 0u )
         return SPARK_STATUS_UNSUPPORTED;
     status = SparkTpDeviceCollectiveUseStream(implementation,submission->cuda_stream);
     if ( status != SPARK_STATUS_OK )
@@ -1338,10 +1337,10 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(SparkTpDeviceCollectiveImplem
 {
     uint64_t bytes = SparkTpDeviceCollectiveRoundBytes(implementation,submission,operation_kind);
     uint64_t parity;
-    SparkStatus status = SparkTpDeviceCollectiveRoundAdmit(implementation,submission,operation_kind,bytes);
+    SparkStatus status = SparkTpDeviceCollectiveRoundAdmit(implementation,submission,operation_kind);
     if ( status != SPARK_STATUS_OK )
         return status;
-    if ( SparkTpDeviceCollectiveHostRound(implementation,submission) == 0u )
+    if ( SparkTpDeviceCollectiveHostRound(implementation,submission,operation_kind) == 0u )
         return SparkTpDeviceCollectiveRunDeviceRounds(implementation,submission,operation_kind,1u);
     if ( getenv("SPARK_TP_ROUND_TRACE") != 0 )
         fprintf(stderr,"ROUND-TRACE rank=%u armed=%u mirror=%llu cap_rounds=%u cap_parity=%u ordinal=%llu\n",implementation->tp_rank,implementation->capture_armed,(unsigned long long)implementation->cell_mirror,implementation->capture_rounds,implementation->capture_parity,(unsigned long long)submission->ordinal);
@@ -1648,7 +1647,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( submission->completion_function == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    if ( SparkTpDeviceCollectiveHostRound(implementation,submission) != 0u &&
+    if ( SparkTpDeviceCollectiveHostRound(implementation,submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != 0u &&
          implementation->combine_bf16 == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     status = SparkTpDeviceCollectiveUseStream(implementation,submission->cuda_stream);
@@ -1664,7 +1663,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
     if ( implementation->round_index + (uint64_t)round_count >=
             (1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS) )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    if ( SparkTpDeviceCollectiveHostRound(implementation,submission) == 0u )
+    if ( SparkTpDeviceCollectiveHostRound(implementation,submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == 0u )
     {
         status = SparkTpDeviceCollectiveEnsureCells(implementation);
         if ( status != SPARK_STATUS_OK ) return status;
@@ -1678,8 +1677,6 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
     }
     bytes = (uint64_t)submission->active_sequence_count *
         implementation->local_hidden_dimension * 2u;
-    if ( bytes + 16u > implementation->slot_bytes )
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
     if ( (bytes & 3ull) != 0ull )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( implementation->mesh_buffer == 0 )
