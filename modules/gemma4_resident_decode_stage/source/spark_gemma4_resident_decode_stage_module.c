@@ -67,6 +67,7 @@ typedef struct SparkGemma4ModuleSlot
 	void *attn_output_bf16;
 	void *delta_bf16;
 	void *mlp_gate_up_bf16;
+	void *mlp_activation_bf16;
 	void *mlp_down_bf16;
 	void *branch_bf16;
 	uint32_t *moe_indices_u32;
@@ -435,6 +436,7 @@ extern cudaError_t SparkGemma4LaunchKvStoreFull(cudaStream_t stream, void *pool,
 extern cudaError_t SparkGemma4LaunchAttentionDecodeSliding(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, const uint32_t *row_positions, uint32_t query_heads, void *output_bf16, uint32_t row_count, uint32_t kv_heads);
 extern cudaError_t SparkGemma4LaunchAttentionDecodeFull(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *row_positions, uint32_t query_heads, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchGatedGelu(cudaStream_t stream, void *gate_up_bf16, uint32_t row_count, uint32_t intermediate);
+extern cudaError_t SparkGemma4LaunchGatedGeluCompact(cudaStream_t stream, const void *gate_up_bf16, void *activation_bf16, uint32_t row_count, uint32_t intermediate);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
 extern uint32_t SparkGemma4HeadDirectArgmaxScratchElements(uint32_t rows);
@@ -662,6 +664,8 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,mlp_gate_up_bytes,&slot->mlp_gate_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,mlp_gate_up_bytes / 2u,&slot->mlp_activation_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->mlp_down_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -949,10 +953,10 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->gate_up,slot->normalized_bf16,slot->mlp_gate_up_bf16,rows),"mlp_gate_up");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchGatedGelu(stream,slot->mlp_gate_up_bf16,rows,local_intermediate),"mlp_gelu");
+	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchGatedGeluCompact(stream,slot->mlp_gate_up_bf16,slot->mlp_activation_bf16,rows,local_intermediate),"mlp_gelu");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->down,slot->mlp_gate_up_bf16,slot->mlp_down_bf16,rows),"mlp_down");
+	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->down,slot->mlp_activation_bf16,slot->mlp_down_bf16,rows),"mlp_down");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK

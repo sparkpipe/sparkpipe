@@ -54,6 +54,7 @@ int main(void)
         assert(capacity(slot.delta_bf16) >= full);
         assert(capacity(slot.mlp_down_bf16) >= full);
         assert(capacity(slot.branch_bf16) >= full);
+        assert(capacity(slot.mlp_activation_bf16) >= (uint64_t)input_rows * (SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION / degree) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
         assert(capacity(slot.attn_head_output_bf16) >= input_rows * SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / degree * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
         assert(capacity(slot.attn_head_output_bf16) >= input_rows * SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / degree * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
         for (unsigned i = 0; i < count; ++i) free(allocations[i]);

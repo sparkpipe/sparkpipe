@@ -171,6 +171,29 @@ extern "C" cudaError_t SparkGemma4LaunchGatedGelu(cudaStream_t stream, void *gat
 	return(cudaGetLastError());
 }
 
+static __global__ void SparkGemma4GatedGeluCompactKernel(const void *gate_up_bf16, void *activation_bf16, uint32_t row_count, uint32_t intermediate)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t row = (uint32_t)(index / intermediate),element = (uint32_t)(index % intermediate);
+	uint64_t row_base;
+	float gate,up;
+	if ( row >= row_count )
+		return;
+	row_base = (uint64_t)row * intermediate * 2u;
+	gate = SparkLmBf16ToFloat(gate_up_bf16,row_base + element);
+	up = SparkLmBf16ToFloat(gate_up_bf16,row_base + intermediate + element);
+	SparkLmFloatToBf16(activation_bf16,index,SparkGemma4GeluTanh(gate) * up);
+}
+
+extern "C" cudaError_t SparkGemma4LaunchGatedGeluCompact(cudaStream_t stream, const void *gate_up_bf16, void *activation_bf16, uint32_t row_count, uint32_t intermediate)
+{
+	uint64_t elements = (uint64_t)row_count * intermediate;
+	if ( gate_up_bf16 == 0 || activation_bf16 == 0 || gate_up_bf16 == activation_bf16 || row_count == 0u || intermediate == 0u )
+		return(cudaErrorInvalidValue);
+	SparkGemma4GatedGeluCompactKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(gate_up_bf16,activation_bf16,row_count,intermediate);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkGemma4LaunchRope(cudaStream_t stream, void *q_bf16, const uint32_t *positions, uint32_t row_count, uint32_t heads, const SparkRopeDomain *domain)
 {
 	if ( domain == 0 || domain->head_dimension < domain->rope_dimension )
