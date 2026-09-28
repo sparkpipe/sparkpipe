@@ -1408,10 +1408,20 @@ MIMO26_RANK_PACK_HEADERS := $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_
 build/mimo26_rank_pack_tool: $(MIMO26_MODULE_DIRECTORY)/tools/mimo26_rank_pack_tool.c $(MIMO26_RANK_PACK_HEADERS) src/spark_status.c src/spark_ck128.c | build
 	$(CC) -std=c11 -O2 -Wall -Werror -Iinclude -Imodel-families/mimo26/include -I$(MIMO26_MODULE_DIRECTORY)/source $< src/spark_status.c src/spark_ck128.c -o $@
 
-build/mimo26_tp_decode: $(MIMO26_MODULE_DIRECTORY)/validation/mimo26_tp_decode.cu $(MIMO26_RANK_PACK_HEADERS) $(MESH_KERNELS_HEADER) include/sparkpipe/family/module/spark_module_combine.h runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
+MIMO26_RANK_ENGINE_SOURCES := $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_engine.cu $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_engine.h
+
+build/mimo26_tp_decode: $(MIMO26_MODULE_DIRECTORY)/validation/mimo26_tp_decode.cu $(MIMO26_RANK_ENGINE_SOURCES) $(MIMO26_RANK_PACK_HEADERS) $(MESH_KERNELS_HEADER) include/sparkpipe/family/module/spark_module_combine.h runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -I. \
 		-Imodel-families/mimo26/include -I$(MIMO26_MODULE_DIRECTORY)/source \
-		-Xcompiler=-pthread $< runtime/stage_module_common.c \
+		-Xcompiler=-pthread $< $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_engine.cu runtime/stage_module_common.c \
+		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
+		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
+		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+
+build/mimo26_tp_generate: $(MIMO26_MODULE_DIRECTORY)/validation/mimo26_tp_generate.cu $(MIMO26_RANK_ENGINE_SOURCES) $(MIMO26_RANK_PACK_HEADERS) $(MESH_KERNELS_HEADER) include/sparkpipe/family/module/spark_module_combine.h runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -I. \
+		-Imodel-families/mimo26/include -I$(MIMO26_MODULE_DIRECTORY)/source \
+		-Xcompiler=-pthread $< $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_engine.cu runtime/stage_module_common.c \
 		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
 		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
 		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@

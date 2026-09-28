@@ -1,0 +1,62 @@
+#ifndef SPARKPIPE_SPARK_MIMO26_RESIDENT_DECODE_STAGE_FIRMWARE_H
+#define SPARKPIPE_SPARK_MIMO26_RESIDENT_DECODE_STAGE_FIRMWARE_H
+
+#include <stdint.h>
+
+#include "sparkpipe/spark_mimo26_model.h"
+#include "sparkpipe/spark_module_abi.h"
+#include "sparkpipe/spark_hidden_transport.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 16u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 1u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT 1024u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS 64u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_MAXIMUM_CONTEXT_TOKENS 32768u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_MIMO26_MODEL_LAYER_COUNT
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_MIMO26_MODEL_HIDDEN_DIMENSION
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_BF16_ELEMENT_BYTES SPARK_MIMO26_MODEL_BF16_ELEMENT_BYTES
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES (SPARK_MIMO26_MODEL_HIDDEN_DIMENSION * SPARK_MIMO26_MODEL_BF16_ELEMENT_BYTES)
+
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000004u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
+#define SPARK_MIMO26_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
+
+#define SPARK_ABI_TYPE(name) SparkMimo26##name
+#include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
+#include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
+
+typedef struct SparkMimo26PrefillFrameView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t lane_index;
+	uint32_t token_count;
+	uint64_t base_position;
+	uint64_t sequence_id;
+	const uint32_t *row_token_ids;
+} SparkMimo26PrefillFrameView;
+
+#include "sparkpipe/family/abi/spark_abi_frame_context.h"
+#undef SPARK_ABI_TYPE
+
+SparkStatus SparkMimo26ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration,const SparkFirmwareModuleHostServices *host_services,void **module_state);
+SparkStatus SparkMimo26ResidentDecodeStageExecute(void *module_state,SparkModelDriverFrame *frame);
+SparkStatus SparkMimo26ResidentDecodeStageAdmit(void *module_state,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);
+SparkStatus SparkMimo26ResidentDecodeStageSnapshot(void *module_state,uint32_t program_id,SparkModelDriverRuntimeSnapshot *snapshot);
+void SparkMimo26ResidentDecodeStageDestroy(void *module_state);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
