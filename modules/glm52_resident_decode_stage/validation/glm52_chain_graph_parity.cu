@@ -13,7 +13,9 @@
 #define PARITY_MODE_LINEAR 1u
 #define PARITY_MODE_GRAPH 2u
 #define PARITY_MODE_GRAPH_WRONG_REGIME 3u
-#define PARITY_MODE_COUNT 4u
+#define PARITY_MODE_PROJECTION_SPLIT 4u
+#define PARITY_MODE_SPLIT_DROP_RANK 5u
+#define PARITY_MODE_COUNT 6u
 
 typedef struct ParityRig
 {
@@ -24,13 +26,16 @@ typedef struct ParityRig
 	uint32_t *host_slot;
 	uint32_t *host_position;
 	uint16_t *boundary;
+	uint16_t *gather;
+	uint16_t *gather_sum;
+	uint16_t *residual_saved;
 	uint16_t *outputs[PARITY_MODE_COUNT];
 	uint32_t tp_degree;
 	uint32_t captures[PARITY_MODE_COUNT];
 	uint32_t replays[PARITY_MODE_COUNT];
 } ParityRig;
 
-static const char *const PARITY_MODE_NAMES[PARITY_MODE_COUNT] = {"staged","linear","graph","graph-wrong-regime"};
+static const char *const PARITY_MODE_NAMES[PARITY_MODE_COUNT] = {"staged","linear","graph","graph-wrong-regime","projection-split","split-drop-last-rank"};
 
 static void ParityBuild(ParityRig *rig,uint32_t step)
 {
@@ -80,6 +85,58 @@ static int ParityWalk(ParityRig *rig,uint32_t staged)
 	return(0);
 }
 
+__global__ static void ParityAccumulateBf16(uint16_t *sum,const uint16_t *part,uint32_t count)
+{
+	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t a,b,rounded;
+	float total;
+	if ( index >= count )
+		return;
+	a = (uint32_t)sum[index] << 16u;
+	b = (uint32_t)part[index] << 16u;
+	total = __uint_as_float(a) + __uint_as_float(b);
+	rounded = __float_as_uint(total);
+	rounded += 0x7fffu + ((rounded >> 16u) & 1u);
+	sum[index] = (uint16_t)(rounded >> 16u);
+}
+
+static int ParitySplitWalk(ParityRig *rig,uint32_t ranks)
+{
+	SparkGlm52CudaWave *wave = &rig->fixture.wave;
+	cudaStream_t stream = rig->fixture.stream;
+	uint64_t gather_bytes = (uint64_t)SPARK_GLM52_VHIDDEN * sizeof(uint16_t);
+	uint32_t layer,rank;
+	wave->projection_split = 1u;
+	rig->fixture.slot.projection_gather_bf16 = rig->gather;
+	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 || cudaStreamSynchronize(stream) != cudaSuccess )
+		return(1);
+	for (layer=0u; layer<PARITY_LAYERS; layer++)
+	{
+		if ( cudaMemcpyAsync(rig->residual_saved,rig->fixture.residual,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
+			cudaMemsetAsync(rig->gather_sum,0,gather_bytes,stream) != cudaSuccess )
+			return(5);
+		for (rank=0u; rank<ranks; rank++)
+		{
+			wave->tp_rank = rank;
+			if ( cudaMemcpyAsync(rig->fixture.residual,rig->residual_saved,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
+				SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
+				return(6);
+			ParityAccumulateBf16<<<(SPARK_GLM52_VHIDDEN + 255u) / 256u,256u,0,stream>>>(rig->gather_sum,rig->gather,SPARK_GLM52_VHIDDEN);
+		}
+		wave->tp_rank = 0u;
+		if ( cudaMemcpyAsync(rig->gather,rig->gather_sum,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
+			cudaStreamSynchronize(stream) != cudaSuccess )
+			return(7);
+		if ( SparkGlm52LaunchCudaLayerAttentionCore(wave,layer) != 0 || cudaStreamSynchronize(stream) != cudaSuccess )
+			return(8);
+		if ( SparkGlm52LaunchCudaLayerMlp(wave,layer) != 0 || cudaStreamSynchronize(stream) != cudaSuccess )
+			return(3);
+	}
+	if ( SparkGlm52LaunchCudaWaveHead(wave) != 0 )
+		return(4);
+	return(0);
+}
+
 static int ParityCapture(ParityRig *rig,uint32_t bound,cudaGraphExec_t *exec)
 {
 	cudaStream_t stream = rig->fixture.stream;
@@ -111,6 +168,8 @@ static int ParityRun(ParityRig *rig,uint32_t mode)
 		ParityBuild(rig,step);
 		if ( mode == PARITY_MODE_STAGED || mode == PARITY_MODE_LINEAR )
 			status = ParityWalk(rig,mode == PARITY_MODE_STAGED ? 1u : 0u);
+		else if ( mode == PARITY_MODE_PROJECTION_SPLIT || mode == PARITY_MODE_SPLIT_DROP_RANK )
+			status = ParitySplitWalk(rig,mode == PARITY_MODE_SPLIT_DROP_RANK ? rig->tp_degree - 1u : rig->tp_degree);
 		else
 		{
 			regime = SparkGlm52GraphRegime(rig->fixture.wave.maximum_context,PARITY_SPLIT_THRESHOLD,rig->fixture.wave.max_sequence_positions,&bound);
@@ -180,8 +239,10 @@ static int ParityRunDegree(ParityRig *rig,uint32_t tp_degree)
 		fprintf(stderr,"glm52_chain_graph_parity tp=%u FAIL staged outputs are all zero\n",tp_degree);
 		return(1);
 	}
-	for (mode=PARITY_MODE_LINEAR; mode<=PARITY_MODE_GRAPH; mode++)
+	for (mode=PARITY_MODE_LINEAR; mode<PARITY_MODE_COUNT; mode++)
 	{
+		if ( mode == PARITY_MODE_GRAPH_WRONG_REGIME || mode == PARITY_MODE_SPLIT_DROP_RANK )
+			continue;
 		differ = ParityDifferingSteps(rig,mode,&first);
 		printf("glm52_chain_graph_parity tp=%u mode=%s steps=%u differing_steps=%u first=%d captures=%u replays=%u %s\n",
 			tp_degree,PARITY_MODE_NAMES[mode],PARITY_STEPS,differ,first == UINT32_MAX ? -1 : (int)first,rig->captures[mode],rig->replays[mode],differ == 0u ? "BIT-EXACT" : "FAIL");
@@ -196,6 +257,13 @@ static int ParityRunDegree(ParityRig *rig,uint32_t tp_degree)
 	printf("glm52_chain_graph_parity tp=%u control=graph-wrong-regime differing_steps=%u first=%d (every step replayed with the other attention regime's bound) %s\n",
 		tp_degree,wrong_regime,first == UINT32_MAX ? -1 : (int)first,wrong_regime != 0u ? "SEPARATED" : "FAIL");
 	failures += wrong_regime == 0u ? 1 : 0;
+	if ( tp_degree > 1u )
+	{
+		wrong_regime = ParityDifferingSteps(rig,PARITY_MODE_SPLIT_DROP_RANK,&first);
+		printf("glm52_chain_graph_parity tp=%u control=split-drop-last-rank differing_steps=%u first=%d %s\n",
+			tp_degree,wrong_regime,first == UINT32_MAX ? -1 : (int)first,wrong_regime != 0u ? "SEPARATED" : "FAIL");
+		failures += wrong_regime == 0u ? 1 : 0;
+	}
 	return(failures);
 }
 
@@ -213,7 +281,10 @@ int main(void)
 	if ( rig->fixture.split_partials == 0 )
 		return(1);
 	if ( cudaHostAlloc((void **)&rig->host_token,3u * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess ||
-		cudaMalloc((void **)&rig->boundary,PARITY_BOUNDARY * sizeof(uint16_t)) != cudaSuccess )
+		cudaMalloc((void **)&rig->boundary,PARITY_BOUNDARY * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->gather,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->gather_sum,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->residual_saved,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess )
 		return(1);
 	rig->host_slot = rig->host_token + 1u;
 	rig->host_position = rig->host_token + 2u;

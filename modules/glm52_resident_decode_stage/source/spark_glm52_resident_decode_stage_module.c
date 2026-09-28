@@ -151,6 +151,7 @@ struct SparkGlm52ModuleState
 	uint32_t tp_device_collective_initialized;
 	atomic_ullong tp_next_ordinal;
 	uint32_t chain_mode;
+	uint32_t projection_split;
 	uint32_t chain_wait_initialized;
 	SparkStageModuleCudaWait chain_wait;
 	atomic_uint chain_busy;
@@ -167,7 +168,8 @@ typedef enum SparkGlm52ChainStage
 	SPARK_GLM52_CHAIN_STAGE_REDUCE_MLP,
 	SPARK_GLM52_CHAIN_STAGE_HEAD,
 	SPARK_GLM52_CHAIN_STAGE_REDUCE_HEAD,
-	SPARK_GLM52_CHAIN_STAGE_FINISH
+	SPARK_GLM52_CHAIN_STAGE_FINISH,
+	SPARK_GLM52_CHAIN_STAGE_REDUCE_PROJECTION
 } SparkGlm52ChainStage;
 
 typedef struct SparkGlm52TpChain
@@ -698,6 +700,7 @@ static SparkStatus SparkGlm52AllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
+	if ( status == SPARK_STATUS_OK && state->projection_split != 0u ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->projection_gather_bf16);
 	SPARK_RETURN(status);
 }
 
@@ -1025,6 +1028,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_base = state->expert_pin_base;
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
+	wave->projection_split = state->projection_split;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1496,7 +1500,31 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainFail(chain,launch_status);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_ATTENTION:
+		if ( state->projection_split != 0u )
+		{
+			if ( SparkGlm52LaunchCudaLayerAttentionProject(&chain->wave,chain->next_layer) != 0 )
+			{
+				SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+				return;
+			}
+			chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_PROJECTION;
+			launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->projection_gather_bf16);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm52TpChainFail(chain,launch_status);
+			return;
+		}
 		if ( SparkGlm52LaunchCudaLayerAttention(&chain->wave,chain->next_layer) != 0 )
+		{
+			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			return;
+		}
+		chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_ATTENTION;
+		launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->attention_out_bf16);
+		if ( launch_status != SPARK_STATUS_OK )
+			SparkGlm52TpChainFail(chain,launch_status);
+		return;
+	case SPARK_GLM52_CHAIN_STAGE_REDUCE_PROJECTION:
+		if ( SparkGlm52LaunchCudaLayerAttentionCore(&chain->wave,chain->next_layer) != 0 )
 		{
 			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
@@ -1697,7 +1725,16 @@ static uint32_t SparkGlm52WalkWave(void *context)
 	for (layer=0u; layer<wave->layer_count; layer++)
 	{
 		chain->next_layer = layer;
-		if ( SparkGlm52LaunchCudaLayerAttention(wave,layer) != 0 )
+		if ( chain->state->projection_split != 0u )
+		{
+			if ( SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
+				return(11u);
+			if ( SparkGlm52WalkReduce(chain,slot->projection_gather_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+				return(12u);
+			if ( SparkGlm52LaunchCudaLayerAttentionCore(wave,layer) != 0 )
+				return(13u);
+		}
+		else if ( SparkGlm52LaunchCudaLayerAttention(wave,layer) != 0 )
 			return(3u);
 		if ( SparkGlm52WalkReduce(chain,slot->attention_out_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
 			return(4u);
@@ -1865,6 +1902,28 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 	}
 	if ( SparkWeightdWorkerSubmit(state->lazy_pack->worker,SparkGlm52ChainSettle,chain) != SPARK_STATUS_OK )
 		SparkGlm52ChainSettle(chain);
+}
+
+static SparkStatus SparkGlm52ProjectionSplitConfigure(SparkGlm52ModuleState *state)
+{
+	const char *text = getenv("SPARK_GLM52_PROJECTION_SPLIT");
+	if ( text == 0 || strcmp(text,"0") == 0 )
+		state->projection_split = 0u;
+	else if ( strcmp(text,"1") == 0 )
+		state->projection_split = 1u;
+	else
+	{
+		fprintf(stderr,"SPARK_GLM52_PROJECTION_SPLIT must be 0 or 1\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->projection_split != 0u && state->tp_degree > 1u && state->tp_collective_disabled != 0u )
+	{
+		fprintf(stderr,"GLM52-PROJECTION-SPLIT-REFUSED reason=needs the TP collective to gather the q_a/kv_a slices\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( state->projection_split != 0u )
+		fprintf(stderr,"GLM52-PROJECTION-SPLIT rank=%u degree=%u\n",state->tp_rank,state->tp_degree);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
@@ -2183,6 +2242,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 		status = state->lazy_pack != 0 ? SparkGlm52PinAllExperts(state,SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT) : SPARK_STATUS_UNSUPPORTED;
 		fprintf(stderr,"EXPERT-RESIDENCY mode=%s keys=%u leases=%u status=%s\n",status == SPARK_STATUS_OK ? "pinned" : "EXPERT-PIN-FAILED",state->expert_pin_key_count,state->expert_pin_lease_count,SparkStatusToString(status));
 	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52ProjectionSplitConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
