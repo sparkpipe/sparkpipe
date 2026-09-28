@@ -3,6 +3,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/scale.cuh"
 #include "runtime/launch.h"
 #include <cuda_runtime.h>
@@ -105,6 +106,51 @@ struct LmSkinnyFormat<LmFp8>
 		accumulator = LmSkinnyFp8Word(weight.y,activation.low,1u,accumulator);
 		accumulator = LmSkinnyFp8Word(weight.z,activation.high,0u,accumulator);
 		return(LmSkinnyFp8Word(weight.w,activation.high,1u,accumulator));
+	}
+};
+
+typedef struct LmSkinnyQuad
+{
+	uint4 part[4];
+}
+LmSkinnyQuad;
+
+static __device__ __forceinline__ float LmSkinnyMxfp4Byte(uint32_t code, uint32_t activation, float accumulator)
+{
+	accumulator = fmaf(LmE2m1ToFloatPure(code & 15u),__uint_as_float(activation << 16u),accumulator);
+	return(fmaf(LmE2m1ToFloatPure((code >> 4u) & 15u),__uint_as_float(activation & 0xffff0000u),accumulator));
+}
+
+static __device__ __forceinline__ float LmSkinnyMxfp4Word(uint32_t weight, uint4 activation, float accumulator)
+{
+	accumulator = LmSkinnyMxfp4Byte(weight,activation.x,accumulator);
+	accumulator = LmSkinnyMxfp4Byte(weight >> 8u,activation.y,accumulator);
+	accumulator = LmSkinnyMxfp4Byte(weight >> 16u,activation.z,accumulator);
+	return(LmSkinnyMxfp4Byte(weight >> 24u,activation.w,accumulator));
+}
+
+template<>
+struct LmSkinnyFormat<LmMxfp4>
+{
+	using Activation = LmSkinnyQuad;
+	static constexpr bool kSupported = true;
+	static constexpr uint32_t kElements = 32u;
+	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
+	{
+		Activation value;
+		value.part[0] = __ldg((const uint4 *)activation);
+		value.part[1] = __ldg((const uint4 *)activation + 1);
+		value.part[2] = __ldg((const uint4 *)activation + 2);
+		value.part[3] = __ldg((const uint4 *)activation + 3);
+		return(value);
+	}
+	static __device__ __forceinline__ float Chunk(uint4 weight, Activation activation)
+	{
+		float accumulator = 0.0f;
+		accumulator = LmSkinnyMxfp4Word(weight.x,activation.part[0],accumulator);
+		accumulator = LmSkinnyMxfp4Word(weight.y,activation.part[1],accumulator);
+		accumulator = LmSkinnyMxfp4Word(weight.z,activation.part[2],accumulator);
+		return(LmSkinnyMxfp4Word(weight.w,activation.part[3],accumulator));
 	}
 };
 
@@ -212,7 +258,7 @@ static __device__ __forceinline__ void LmSkinnyWeightRows(const LmSkinnyArgument
 	uint32_t n;
 	#pragma unroll
 	for ( n = 0u; n < NPG; n++ )
-		rows[n] = (const uint4 *)(args.weight + (uint64_t)group * args.weight_group_bytes + (uint64_t)(neuron + n < args.output_dimension ? neuron + n : neuron) * args.input_dimension * (LM_SKINNY_CHUNK_BYTES / elements));
+		rows[n] = (const uint4 *)(args.weight + (uint64_t)group * args.weight_group_bytes + (uint64_t)(neuron + n < args.output_dimension ? neuron + n : neuron) * (args.input_dimension / elements) * LM_SKINNY_CHUNK_BYTES);
 }
 
 template<uint32_t NPG, uint32_t ROWS>
@@ -413,7 +459,7 @@ static int32_t LmSkinnyExperts(const void *weight, LmScaleTensor scale, const ui
 	args.route_expert = route_expert;
 	args.route_packed_row = route_packed_row;
 	args.scale = scale;
-	args.weight_group_bytes = (uint64_t)output_dimension * input_dimension * (Format::kStoredBits / 8u);
+	args.weight_group_bytes = (uint64_t)output_dimension * input_dimension * Format::kStoredBits / 8u;
 	args.rows = 1u;
 	args.pairs = pairs;
 	args.top_k = top_k;
@@ -438,7 +484,7 @@ static int32_t LmSkinnyGroupedExpertsWith(const void *weight, LmScaleTensor scal
 		args.group_row_offset = group_row_offset;
 		args.route_source_token = route_source_token;
 		args.scale = scale;
-		args.weight_group_bytes = (uint64_t)output_dimension * input_dimension * (Format::kStoredBits / 8u);
+		args.weight_group_bytes = (uint64_t)output_dimension * input_dimension * Format::kStoredBits / 8u;
 		args.rows = 1u;
 		args.pairs = pairs;
 		args.activation_packed = activation_packed;
