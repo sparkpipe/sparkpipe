@@ -61,6 +61,9 @@ def test_generator(output: Path) -> dict:
     limits = deployment["runtime_limits"]
     check(limits["max_inflight_submissions"] == 1, "inflight within adapter cap")
     check(limits["max_input_rows"] <= 512, "input rows within adapter cap")
+    stage = json.loads((output / "config" / "stage_00.json").read_text())
+    check(limits["max_sequence_positions"] == stage["max_sequence_positions"],
+          "api context limit equals the engine's sequence positions")
     check(deployment["adapter"]["shared_object_path"] == "lib/model_serving_adapter.so",
           "adapter path")
     check(deployment["driver"]["shared_object_path"] == "stages/stage_000/model_driver.so",
