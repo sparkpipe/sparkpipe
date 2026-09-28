@@ -380,6 +380,7 @@ TEST_NAMES := \
     test_weightd_mesh_mock \
     test_module_library \
     test_speculation_provider_slot \
+    test_speculation_reference_draft \
     test_driver_compiler \
     test_orchestrator \
 	test_dsv4_lane_continuity \
@@ -562,6 +563,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_topk_exact_host.py \
 	tests/test_glm5_next_graph_regime.py \
+	tests/test_glm5_next_verify_regime.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \
@@ -1702,6 +1704,9 @@ build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c include/sparkpipe/spark_speculation_reference_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_reference_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_speculation_provider_slot: tests/test_speculation_provider_slot.c runtime/speculation_provider.c include/sparkpipe/spark_speculation_provider.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_provider_slot.c runtime/speculation_provider.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 

@@ -1,0 +1,78 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "sparkpipe/spark_glm5_next_graph_regime.h"
+#include "sparkpipe/spark_status.h"
+
+#define SPARK_GLM5_NEXT_VERIFY_ROWS_MIN 2u
+#define SPARK_GLM5_NEXT_VERIFY_ROWS_MAX 8u
+#define SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT (SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - SPARK_GLM5_NEXT_VERIFY_ROWS_MIN + 1u)
+#define SPARK_GLM5_NEXT_VERIFY_ROWS_ENV "SPARK_GLM5_NEXT_VERIFY_ROWS"
+
+static inline SparkStatus SparkGlm5NextVerifyRowsParse(const char *text,uint32_t *rows_out)
+{
+	uint32_t rows;
+	*rows_out = 0u;
+	if ( text == 0 )
+		return(SPARK_STATUS_OK);
+	if ( text[0] < '0' || text[0] > '9' || text[1] != '\0' )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	rows = (uint32_t)(text[0] - '0');
+	if ( rows != 0u && (rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || rows > SPARK_GLM5_NEXT_VERIFY_ROWS_MAX) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*rows_out = rows;
+	return(SPARK_STATUS_OK);
+}
+
+static inline uint32_t SparkGlm5NextVerifyTableIndex(uint32_t rows)
+{
+	return(rows - SPARK_GLM5_NEXT_VERIFY_ROWS_MIN);
+}
+
+static inline uint32_t SparkGlm5NextVerifyRowsFit(uint32_t position,uint32_t rows,uint32_t split_threshold,uint32_t max_positions)
+{
+	uint32_t regime,fit;
+	if ( rows == 0u || position >= max_positions )
+		return(0u);
+	regime = SparkGlm5NextGraphRegime(position + 1u,split_threshold);
+	fit = 1u;
+	while ( fit < rows && position + fit < max_positions && SparkGlm5NextGraphRegime(position + fit + 1u,split_threshold) == regime )
+		fit++;
+	return(fit);
+}
+
+static inline SparkStatus SparkGlm5NextVerifyRowsAgree(uint32_t rows,const uint32_t *resident_slots,const uint32_t *positions)
+{
+	uint32_t row;
+	for (row=1u; row<rows; row++)
+		if ( resident_slots[row] != resident_slots[0] || positions[row] != positions[0] + row )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static inline SparkStatus SparkGlm5NextVerifyWaveCheck(uint32_t rows,uint32_t rows_max,uint32_t first_row,uint32_t active_sequences,uint32_t sampled,const uint32_t *resident_slots,const uint32_t *positions,uint32_t split_threshold,uint32_t max_positions)
+{
+	if ( rows_max == 0u || sampled != 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	if ( rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || rows > rows_max || first_row != 0u || active_sequences != 1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkGlm5NextVerifyRowsAgree(rows,resident_slots,positions) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkGlm5NextVerifyRowsFit(positions[0],rows,split_threshold,max_positions) != rows )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static inline uint32_t SparkGlm5NextVerifyCaptureBound(uint32_t regime,uint32_t rows,uint32_t context,uint32_t split_threshold,uint32_t max_positions)
+{
+	uint32_t bound;
+	if ( regime != SPARK_GLM5_NEXT_GRAPH_REGIME_SELECTED )
+		context = regime == SPARK_GLM5_NEXT_GRAPH_REGIME_UNSPLIT ? 1u : split_threshold;
+	if ( context == 0u || context > max_positions || SparkGlm5NextGraphRegime(context,split_threshold) != regime )
+		return(0u);
+	bound = SparkGlm5NextGraphBound(context,split_threshold,max_positions);
+	if ( bound < rows || SparkGlm5NextVerifyRowsFit(bound - rows,rows,split_threshold,max_positions) != rows )
+		return(0u);
+	return(bound);
+}
