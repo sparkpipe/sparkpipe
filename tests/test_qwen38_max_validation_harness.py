@@ -13,15 +13,19 @@ are checkable everywhere and drift silently when nobody looks:
      environment variable, and an unlocked execution gate each refuse
      with their own message and exit status BEFORE any nvcc invocation -
      the harness can never fall through to a partial validation.
-  2. The validator source pins the module contract it validates: the
-     fail-closed tier markers and the oracle comparisons that carry the
-     lane's PASS receipt (2026-08-28) stay in the translation unit.
-  3. The publish wrapper refuses to publish anything but the validator's
-     own PASS output.
+  2. Source pins, not behaviour: the receipt labels of the fail-closed
+     admit tier, the determinism tier and the MXFP4 expert oracle stay in
+     the validator translation unit. Their behaviour runs only on sm_121a.
+  3. The publish wrapper refuses a call without its two arguments, pins
+     the digest of the validator it ships, and hands the driver's refusal
+     back as its own exit status: with the digest it computes the driver
+     passes the source-digest gate and stops at the configuration gate.
 """
+import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,59 +37,73 @@ WRAPPER = VALIDATION / "publish_validator_wrapper.sh"
 HEX64 = "0" * 64
 
 
-def run_driver(arguments, environment_extra=None):
-    environment = dict(os.environ)
-    environment.pop("SPARK_QWEN38_MAX_STAGE_PACK_PATH", None)
+def run_script(script, arguments, environment_extra=None):
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("SPARK_QWEN38_MAX_")}
     if environment_extra:
         environment.update(environment_extra)
     return subprocess.run(
-        ["bash", str(DRIVER), *arguments],
+        ["bash", str(script), *arguments],
         capture_output=True, text=True, env=environment)
 
 
 def main() -> int:
     failures = 0
 
-    def expect(result, message_fragment):
+    def expect(result, message_fragment, label="driver"):
         nonlocal failures
         if result.returncode != 2 or message_fragment not in result.stderr:
             failures += 1
-            print(f"  FAIL driver contract '{message_fragment}': "
-                  f"exit={result.returncode} stderr={result.stderr.strip()[:200]}")
+            print(f"  FAIL {label} contract '{message_fragment}': "
+                  f"exit={result.returncode} stderr={result.stderr.strip()}")
 
-    expect(run_driver([]), "usage:")
-    expect(run_driver([HEX64]), "usage:")
-    expect(run_driver(["not-a-digest", "some-archive"]),
-            "validation configuration must be a lowercase SHA-256 digest")
-
-    empty_pack = Path("/tmp/qwen38_max_validation_gate_empty_pack")
-    empty_pack.write_bytes(b"")
-    expect(run_driver([HEX64, str(empty_pack)]),
-            "module archive is missing or empty")
-    empty_pack.unlink()
-
-    missing_pack = Path("/tmp/qwen38_max_validation_gate_absent_pack")
-    expect(run_driver([HEX64, str(missing_pack)]),
-            "module archive is missing or empty")
-
-    scratch = Path("/tmp/qwen38_max_validation_gate_scratch_pack")
-    scratch.write_bytes(b"qwen38-max-validation-gate-sentinel")
-    expect(run_driver([HEX64, str(scratch)], {"SPARK_QWEN38_MAX_STAGE_PACK_PATH": str(scratch)}),
-            "Qwen38_max CUDA validator expected SHA-256 is invalid")
-    expect(run_driver(
-        [HEX64, str(scratch)],
-        {"SPARK_QWEN38_MAX_STAGE_PACK_PATH": str(scratch),
-         "SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256": HEX64}),
-        "SHA-256 mismatch")
-    import hashlib
     validator_sha = hashlib.sha256(VALIDATOR.read_bytes()).hexdigest()
-    expect(run_driver(
-        [HEX64, str(scratch)],
-        {"SPARK_QWEN38_MAX_STAGE_PACK_PATH": str(scratch),
-         "SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256": validator_sha,
-         "SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION": "1"}),
-        "SPARK_QWEN38_MAX_STAGE_INDEX")
-    scratch.unlink()
+    with tempfile.TemporaryDirectory(prefix="qwen38-max-validation-") as directory:
+        temporary = Path(directory)
+        expect(run_script(DRIVER, []), "usage:")
+        expect(run_script(DRIVER, [HEX64]), "usage:")
+        expect(run_script(DRIVER, ["not-a-digest", "some-archive"]),
+               "validation configuration must be a lowercase SHA-256 digest")
+
+        empty_pack = temporary / "empty_pack"
+        empty_pack.write_bytes(b"")
+        expect(run_script(DRIVER, [HEX64, str(empty_pack)]),
+               "module archive is missing or empty")
+        expect(run_script(DRIVER, [HEX64, str(temporary / "absent_pack")]),
+               "module archive is missing or empty")
+
+        scratch = temporary / "scratch_pack"
+        scratch.write_bytes(b"qwen38-max-validation-gate-sentinel")
+        pack_environment = {"SPARK_QWEN38_MAX_STAGE_PACK_PATH": str(scratch)}
+        expect(run_script(DRIVER, [HEX64, str(scratch)], pack_environment),
+               "Qwen38_max CUDA validator expected SHA-256 is invalid")
+        expect(run_script(DRIVER, [HEX64, str(scratch)],
+                          dict(pack_environment,
+                               SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=HEX64)),
+               "SHA-256 mismatch")
+        expect(run_script(DRIVER, [HEX64, str(scratch)],
+                          dict(pack_environment,
+                               SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=validator_sha)),
+               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1")
+        expect(run_script(DRIVER, [HEX64, str(scratch)],
+                          dict(pack_environment,
+                               SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=validator_sha,
+                               SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION="1")),
+               "requires SPARK_QWEN38_MAX_STAGE_INDEX=0")
+
+        wrapper = run_script(WRAPPER, [])
+        if wrapper.returncode == 0 or "usage: wrapper CONFIGURATION_SHA ARCHIVE" not in wrapper.stderr:
+            failures += 1
+            print(f"  FAIL publish wrapper without arguments: exit={wrapper.returncode} "
+                  f"stderr={wrapper.stderr.strip()}")
+        expect(run_script(WRAPPER, [HEX64, str(temporary / "absent_pack")]),
+               "module archive is missing or empty", "wrapper")
+        expect(run_script(WRAPPER, [HEX64, str(scratch)], pack_environment),
+               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1", "wrapper")
+        expect(run_script(WRAPPER, [HEX64, str(scratch)],
+                          dict(pack_environment,
+                               SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=HEX64)),
+               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1", "wrapper")
 
     source = VALIDATOR.read_text(encoding="utf-8")
     for needle, label in (
@@ -95,20 +113,15 @@ def main() -> int:
     ):
         if needle not in source:
             failures += 1
-            print(f"  FAIL validator source lost the {label} ({needle})")
-
-    wrapper = subprocess.run(["bash", str(WRAPPER)],
-                             capture_output=True, text=True)
-    if wrapper.returncode == 0:
-        failures += 1
-        print("  FAIL publish wrapper accepted empty input")
+            print(f"  FAIL validator source pin lost the {label} receipt label ({needle})")
 
     if failures:
         print(f"\n{failures} failures")
         return 1
-    print("PASS qwen38_max validation harness contract: driver fails "
-          "closed before nvcc, validator tiers present, wrapper refuses "
-          "non-PASS output")
+    print("PASS qwen38_max validation harness contract: driver and publish "
+          "wrapper fail closed before nvcc with their stated reasons, the "
+          "wrapper pins the shipped validator digest, validator receipt "
+          "labels pinned in source")
     return 0
 
 

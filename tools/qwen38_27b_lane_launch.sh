@@ -12,8 +12,8 @@
 #   QWEN38_27B_LANE_FIRMWARE_ROOT  verified lane build
 #                               (tools/qwen38_27b_lane_build_release.sh)
 #
-# Optional environment (defaults: the tracked shared weightd socket
-# /run/sparkpipe-weightd-shared/weightd.sock, lane-1 hosts/ports/mesh
+# Optional environment (defaults: the fleet-agent weightd socket
+# /tmp/spark_weightd.sock, lane-1 hosts/ports/mesh
 # control 23016 / collective 53016 / transport 64016, weightd mesh lane 1,
 # physical mesh ranks 0,1,2,3, node-local nvfp4a16 TP4 rank packs,
 # preload ON, measurement mode ON):
@@ -32,7 +32,7 @@ set -euo pipefail
 : "${SPARK_QUEUE_SIZE:?run inside a spark_queue job}"
 : "${SPARK_QUEUE_ATTEMPT:?run inside a spark_queue job}"
 : "${QWEN38_27B_LANE_FIRMWARE_ROOT:?point at a verified lane build}"
-: "${QWEN38_27B_LANE_SHARED_SOCKET:=/run/sparkpipe-weightd-shared/weightd.sock}"
+: "${QWEN38_27B_LANE_SHARED_SOCKET:=/tmp/spark_weightd.sock}"
 export QWEN38_27B_LANE_SHARED_SOCKET
 
 if [ "${SPARK_QUEUE_SIZE}" -ne 4 ]; then

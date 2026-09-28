@@ -31,7 +31,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SOCKET="${LAGUNA_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+SOCKET="${LAGUNA_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 RUNS="${LAGUNA_WARM_RUNS:-5}"
 POOL="${LAGUNA_EXPERT_POOL_BYTES:-0}"   # 0 = this rank's chunked default
 

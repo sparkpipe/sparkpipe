@@ -1,8 +1,10 @@
-# RTX 5090 speculation node
+# RTX 5090 hub node
 
-`rtx5090` is an auxiliary GPU host attached to `sparkf`. It is not a Spark,
-does not occupy a rank, and must not be added to collectives, Ceph, or the
-`ds4ring0` fabric.
+`rtx5090` is the fleet hub and an auxiliary GPU host attached to `sparkf`.
+It serves release roots over HTTP on port 8802 from `~/release/<root>/`,
+receives every Spark's heartbeat in `~/current/<host>.json`, and runs the
+GLM API user unit `g53-api` on port 8433. It is not a Spark, does not occupy
+a rank, and must not be added to collectives, Ceph, or the `ds4ring0` fabric.
 
 ## Network contract
 
@@ -10,11 +12,15 @@ does not occupy a rank, and must not be added to collectives, Ceph, or the
 | --- | --- | --- | --- |
 | Management | Site LAN DHCP on wired and Wi-Fi interfaces | Site Wi-Fi | default route allowed |
 | Recovery | Tailscale and site-configured key-only SSH | existing fleet recovery paths | management only |
-| Speculation data | private-link endpoint A | private-link endpoint B | isolated `/30`; no gateway; MTU 9000 |
+| Fleet link | fleet-link endpoint A | fleet-link endpoint B | `/30` on the direct 10 GbE cable, MTU 9000, no default route |
 
-The direct `/30` prevents this cable from impersonating the former sparkf 10
-GbE management uplink. The Spark 100/200 GbE interfaces, routes, Ceph bindings,
-and ranks are unchanged.
+The rtx5090 routes the Spark switched-fabric network through sparkf's
+fleet-link address, and sparkf forwards IPv4 between the two. Every Spark
+runs `sparkpipe-hub-route.service`, which routes the `/30` through sparkf's
+fabric address. The Spark 100/200 GbE interfaces, Ceph bindings and ranks
+are otherwise unchanged. Busy-polled sparkf to rtx5090 UDP round trips
+measure 22.6/25.2 us p50/p99 for 64 bytes; forwarded from other Sparks the
+p50 is about 300 us.
 
 Copy the redacted example to the ignored site-local profile and fill in the
 actual addresses, interfaces, users, SSID, and recovery endpoint:
@@ -24,7 +30,9 @@ cp deployment/rtx5090_speculation/node.example.json \
   deployment/rtx5090_speculation/node.local.json
 ```
 
-Render the intended local configuration without changing either host:
+Render the intended local configuration (rtx5090 netplan, sparkf
+connection and forwarding, the Spark hub-route unit, emergency SSH) without
+changing any host:
 
 ```bash
 python3 tools/rtx5090_spec_node.py plan
@@ -36,13 +44,17 @@ After provisioning or reboot, run the end-to-end gate from the Mac controller:
 python3 tools/rtx5090_spec_node.py verify
 ```
 
-The gate requires the open NVIDIA driver, a 10 Gb/s link in both directions,
-jumbo pings across the private cable, active and enabled Tailscale, and an
-actual key-only recovery SSH login. Site-local profiles are ignored by Git.
+The gate requires the open NVIDIA driver, exactly 10 Gb/s on both link
+ends, jumbo pings across the cable, the rtx5090 route to the fabric through
+sparkf, IPv4 forwarding on sparkf, an active hub-route unit and a route
+through sparkf on a probe Spark, the release endpoint answering 200 over
+that route, an active API unit, a heartbeat from all sixteen Sparks, active
+and enabled Tailscale, and an actual key-only recovery SSH login.
+Site-local profiles are ignored by Git.
 
 Every Spark has a managed `rtx5090` host alias. General fleet nodes resolve it
-to the site management address; `sparkf` resolves it to the private-link RTX
-endpoint, keeping speculation traffic on the dedicated 10 Gb/s cable.
+to the site management address; `sparkf` resolves it to the fleet-link RTX
+endpoint on the dedicated 10 Gb/s cable.
 
 The workstation has a boot-mounted ext4 LV at `/srv/drafters`, owned by
 `spec:spec`. Drafter models are copied one at a time into

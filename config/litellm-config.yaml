@@ -21,16 +21,16 @@
 # not found", LiteLLM 1.74.0).
 #
 # Ports are the model_api HTTP ports (NOT the residentd control ports):
-#   glm-5.3-flash : spark0:8433  (glm5_next TP16; glm53 lane, mid-debug)
+#   glm-5.3-flash : rtx5090 hub :8433 (g53-api; the API never runs on a Spark)
 #   27B TP1       : sparka:8534  (proven in sparka:~/sparkdata/qwen38.fp8.tp1/co_resident_api.log)
 #                   spark9:8434  (PROVISIONAL — spark9's api never reached ready;
 #                                 no port recorded on the node; confirm at launch)
 model_list:
-  # GLM-5.3-Flash (glm5_next TP16, spark0-f) — one API instance on the head node
+  # GLM-5.3-Flash (glm5_next TP16, spark0-f) — one API instance on the rtx5090 hub
   - model_name: glm-5.3-flash
     litellm_params:
       model: vllm/glm-5.3-flash
-      api_base: http://spark0:8433
+      api_base: http://100.123.97.61:8433
       api_key: os.environ/SPARKPIPE_UPSTREAM_KEY
 
   # Qwen 3.8 27B TP1 — two staged instances (spark9, sparka). Same model_name

@@ -8,6 +8,7 @@ import tempfile
 from test_generated_control_admission import generate_admission
 
 ROOT = Path(__file__).resolve().parents[1]
+WAVE_TIMING = ROOT / "tests/fixtures/glm5_next_wave_timing.txt"
 HARNESS = r'''
 #include <assert.h>
 #include <errno.h>
@@ -77,6 +78,7 @@ SparkStatus SparkTpDeviceCollectiveChainRetire(SparkTpDeviceCollective *collecti
 }
 
 static uint32_t REAL_BACKEND;
+static uint64_t ARENA_KEY_STRIDE_SKEW;
 static int32_t ALLOCATIONS_BEFORE_FAILURE = -1;
 
 static uint32_t HEALTH_DEAD_MASK,HEALTH_CALLS;
@@ -224,6 +226,12 @@ cudaError_t cudaGraphUpload(cudaGraphExec_t exec,cudaStream_t stream) { (void)ex
 cudaError_t cudaGraphDestroy(cudaGraph_t graph) { (void)graph;abort(); }
 cudaError_t cudaEventSynchronize(cudaEvent_t event) { (void)event;abort(); }
 SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count) { (void)layer;(void)offsets;(void)expert_count;(void)packed_rows;(void)keys;(void)capacity;(void)count;abort(); }
+cudaError_t SparkTpLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width) { (void)stream;(void)destination_bf16;(void)source_bf16;(void)row_count;(void)width;abort(); }
+cudaError_t SparkTpLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count) { (void)stream;(void)destination;(void)sources;(void)source_count;(void)element_count;abort(); }
+cudaError_t SparkTpLaunchSeedF32(cudaStream_t stream,float *destination_f32,const void *source_a_bf16,const void *source_b_bf16,uint32_t element_count) { (void)stream;(void)destination_f32;(void)source_a_bf16;(void)source_b_bf16;(void)element_count;abort(); }
+cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination_f32,const void *source_bf16,uint32_t element_count) { (void)stream;(void)destination_f32;(void)source_bf16;(void)element_count;abort(); }
+cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination_bf16,const float *source_f32,uint32_t element_count) { (void)stream;(void)destination_bf16;(void)source_f32;(void)element_count;abort(); }
+cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count) { (void)stream;(void)destination;(void)source;(void)element_count;abort(); }
 
 cudaError_t cudaMalloc(void **pointer,size_t bytes)
 {
@@ -381,7 +389,6 @@ static void check_graph_epoch_ownership(void)
 	state.slots[0].host_output_token_ids = &output;
 	state.decode_miss_host = (uint32_t *)EPOCH_WORDS;
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] = 41u;
-	LEGACY_EPOCH_SETUP
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.tp_device_collective.operation_timeout_milli = 50u;
 	chain.state = &state;chain.slot = &state.slots[0];
@@ -873,7 +880,6 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 	state.decode_miss_host = (uint32_t *)EPOCH_WORDS;
 	memset(EPOCH_WORDS,0,sizeof(EPOCH_WORDS));
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] = 42u;
-	LEGACY_EPOCH_SETUP
 	state.completions[0].completion.status = completion_status;
 	state.completions[0].completion_function = observe_completion;
 	state.completions[0].steps = steps;
@@ -948,6 +954,18 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	assert(table->page_store_config.maximum_backing_bytes == state.page_count * table->page_store_config.page_bytes);
 	assert(table->arena_configuration.value_device_base == state.index_cache);
 	assert(table->arena_configuration.value_block_stride_bytes == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+	assert(table->arena_configuration.layer_count == state.kv_layer_count && table->capacity_request.layer_count == state.kv_layer_count);
+	assert(table->arena_configuration.block_token_count == SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT && table->arena_configuration.kv_head_count == 1u);
+	assert(table->arena_configuration.head_dim == SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION && table->arena_configuration.bytes_per_scalar == 2u);
+	assert(table->page_store_config.page_bytes == (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * state.kv_layer_count * SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION * 2u + table->arena_configuration.value_block_stride_bytes);
+	if ( ARENA_KEY_STRIDE_SKEW != 0u )
+	{
+		arena->key_block_stride_bytes = table->page_store_config.page_bytes - table->arena_configuration.value_block_stride_bytes + ARENA_KEY_STRIDE_SKEW;
+		arena->value_block_stride_bytes = table->arena_configuration.value_block_stride_bytes;
+		arena->logical_block_count = table->arena_configuration.logical_block_count;
+		arena->resident_block_capacity = table->arena_configuration.resident_block_capacity;
+		return(SPARK_STATUS_OK);
+	}
 	if ( REAL_BACKEND != 0u )
 	{
 		SparkKvModelTable named_store = *table;
@@ -1519,7 +1537,9 @@ static void check_execution_environment(void)
 {
 	uint64_t budget = 0u;
 	uint32_t lane;
-	const char *invalid_lanes[] = {"", "-1", "16", "4294967295", "1x", " 1", "+1"};
+	char lane_limit[16];
+	const char *invalid_lanes[] = {"", "-1", lane_limit, "4294967295", "1x", " 1", "+1"};
+	(void)snprintf(lane_limit,sizeof(lane_limit),"%u",(unsigned)SPARK_WEIGHTD_MESH_MAX_LANES);
 	assert(unsetenv("SPARK_WEIGHTD_LANE") == 0);
 	assert(SparkGlm5NextRequestedMeshLane(&lane) == SPARK_STATUS_OK && lane == SPARK_WEIGHTD_LANE_NONE);
 	for (uint32_t index=0u; index<sizeof(invalid_lanes)/sizeof(invalid_lanes[0]); index++)
@@ -1623,24 +1643,40 @@ static void check_module_reset(void)
 	assert(pthread_mutex_destroy(&state.kv_mutex) == 0);
 }
 
-static void check_small_kv(void)
+static void small_kv_state(uint32_t kv_layers,uint32_t pages)
 {
 	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
-	uint32_t pages;
-	for (pages=1u; pages<=3u; pages++)
-	{
-		memset(&state,0,sizeof(state));
-		state.kv_layer_count = 1u;
-		state.index_layer_count = 1u;
-		state.index_cache = index_pool;
-		state.page_count = pages;
-		state.physical_page_count = pages;
-		state.pages_per_sequence = pages;
-		state.resident_sequence_capacity = 1u;
-		state.kv_backing_directory = "/unused-host-fixture";
-		assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_PENDING);
-		free_cache_fixture();
-	}
+	memset(&state,0,sizeof(state));
+	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	state.kv_layer_count = kv_layers;
+	state.index_layer_count = 1u;
+	state.index_cache = index_pool;
+	state.page_count = pages;
+	state.physical_page_count = pages;
+	state.pages_per_sequence = pages;
+	state.resident_sequence_capacity = 1u;
+	state.kv_layer_stride_bytes = (uint64_t)pages * SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION * 2u;
+	state.kv_backing_directory = "/unused-host-fixture";
+}
+
+static void check_small_kv(void)
+{
+	uint32_t pages,kv_layers;
+	for (kv_layers=1u; kv_layers<=2u; kv_layers++)
+		for (pages=1u; pages<=3u; pages++)
+		{
+			small_kv_state(kv_layers,pages);
+			assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_PENDING);
+			free_cache_fixture();
+		}
+	small_kv_state(0u,2u);
+	assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	free_cache_fixture();
+	small_kv_state(2u,2u);
+	ARENA_KEY_STRIDE_SKEW = 256u;
+	assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_INTERNAL_ERROR);
+	ARENA_KEY_STRIDE_SKEW = 0u;
+	free_cache_fixture();
 	memset(&state,0,sizeof(state));
 }
 
@@ -2390,7 +2426,7 @@ static void check_wave_timing(void)
 	SparkTpDeviceCollectiveHardwareTiming collective = {1000000u,20000000u,2000000u,3000000u};
 	const uint64_t attempt[3] = {UINT64_C(1000000000),UINT64_C(6000000000),UINT64_C(12000000000)},wait[3] = {100000u,3000000u,100000u},setup[3] = {251000000u,600000u,600000u},run[3] = {60000000u,90000000u,60000000u};
 	char path[] = "/tmp/g5n_wave_timing_XXXXXX",text[2048] = {0};
-	const char *expected = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 steps=6 prefill=1 graph=2 eager=1 linear=1 graph_path=1 retries=2 busy=1/1/0/0/0 captures=1 capture_ms=250 idle_us=8388608/8388608 wait_us=128/4096 key_us=512/512 setup_us=1024/262144 run_us=65536/131072 post_us=512/512 idle_ms=10593 wait_ms=3 key_ms=0 setup_ms=252 run_ms=210 post_ms=1 graph_run_ms=150 eager_run_ms=60 linear_run_ms=60 linear_walk_ms=45 decode_wait_ms=3 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=311 worst_request=7 worst_epochs=11/12 worst_us=0/100/300/251000/60000/500\n";
+	const char *expected = EXPECTED_WAVE_TIMING "\n";
 	int descriptor = mkstemp(path),saved = dup(2);
 	uint64_t index;
 	assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
@@ -2552,13 +2588,11 @@ int32_t main(void)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--module-source', type=Path, default=ROOT / 'modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c')
-    parser.add_argument('--common-source', type=Path, default=ROOT / 'runtime/stage_module_common.c')
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
-    module = args.module_source.read_text()
-    legacy = 'state.epoch_device = EPOCH_WORDS; state.epoch_validated = 41u;' if 'epoch_validated;' in module else ''
-    harness = HARNESS.replace('LEGACY_EPOCH_SETUP', legacy).replace('"modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"', '"' + str(args.module_source.resolve()) + '"')
+    wave = WAVE_TIMING.read_text().strip()
+    assert wave.startswith("G5N-WAVE-TIMING ") and '"' not in wave and "\\" not in wave
+    harness = HARNESS.replace('EXPECTED_WAVE_TIMING', '"' + wave + '"')
     with tempfile.TemporaryDirectory() as directory:
         emitter = generate_admission(Path(directory), 1, "SparkGlm5NextResidentDecodeStageAdmit")
         Path(directory, "generated_admission.inc").write_text(subprocess.check_output([str(emitter), "module"], text=True))
@@ -2571,7 +2605,7 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), str(args.common_source.resolve()), "cache/kv_cache.c", "cache/kv_page_cache.c",
+                        str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership and terminal CUDA receipts")

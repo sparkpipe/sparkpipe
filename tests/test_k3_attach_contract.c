@@ -8,8 +8,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define ADAPTER_SO "build/libk3_serving_adapter.so"
-
 static const char *const k3_layer0_tensors[] =
 {
 	"attn_norm_weight", "attnres_attn_weight",
@@ -134,15 +132,21 @@ int main(void)
 	unsetenv("SPARK_WEIGHTD_PACK_SHA256");
 	unsetenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES");
 	unsetenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES");
-	adapter = dlopen(ADAPTER_SO, RTLD_NOW);
+	adapter = dlopen(TEST_K3_SERVING_ADAPTER_PATH, RTLD_NOW);
 	if ( adapter == 0 )
 	{
-		printf("SKIP: %s (%s)\n", ADAPTER_SO, dlerror());
+		printf("FAIL: %s did not load (%s)\n", TEST_K3_SERVING_ADAPTER_PATH, dlerror());
 		remove(pack_path);
-		return(0);
+		return(1);
 	}
 	init = (InitFunction)dlsym(adapter, "SparkK3StageRunnerInitialize");
-	failures += expect(init != 0, "SparkK3StageRunnerInitialize resolved");
+	if ( init == 0 )
+	{
+		printf("FAIL: SparkK3StageRunnerInitialize is not exported\n");
+		dlclose(adapter);
+		remove(pack_path);
+		return(1);
+	}
 	memset(&runner, 0, sizeof(runner));
 	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
 		SPARK_STATUS_BUSY,

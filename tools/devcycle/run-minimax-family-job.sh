@@ -69,7 +69,7 @@ DEVICE_MIB=18905   # dense interim (lane_budget_calc on smoke_experts.json):
                     # serving budget; bounded-TTL exception per manager ruling)
 
 WEIGHTD_MODE="${MINIMAX_WEIGHTD_MODE:-shared-socket}"
-SHARED_SOCKET="${MINIMAX_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+SHARED_SOCKET="${MINIMAX_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 
 # Family model environment: the pinned shared-lane CUDA trio. The minimax
 # module has no whole-chain graph flags - never invent new ones.

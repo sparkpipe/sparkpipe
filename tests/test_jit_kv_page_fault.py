@@ -1,165 +1,116 @@
 #!/usr/bin/env python3
-"""JIT KV cache test: verifies page fault timing and admission prefetch.
-
-Tests:
-  1. KV page capacity is configured (not zero)
-  2. Page fault at admission, not mid-round (no >100ms stalls in first decode)
-  3. Eviction respects pinned pages (active sequences never lose their KV)
-  4. Long context doesn't OOM (JIT populates pages as needed)
-
-Usage: python3 test_jit_kv_page_fault.py <node>
-"""
-
-import json
 import http.client
+import json
+import random
 import re
 import subprocess
 import sys
-import time
 
-FAILURES = []
 API_HOST = "rtx5090"
 API_PORT = 8433
+ROOT_NAME = "glm53flash.fp8.tp16"
+RESIDENTD_LOG = f"~/sparkdata/{ROOT_NAME}/residentd.log"
+LOAD_DRIVER = re.compile(r"LoadDriver rc=(-?\d+) .*kv_pages=(\d+)/(\d+)")
+CHAIN = re.compile(r"CHAIN-TIME slot=\d+ path=(\w+) steps=(\d+) status=(-?\d+) total_ms=([\d.]+)")
+CHAIN_SAMPLE = 200
+MAX_STEP_MS = 1000.0
+FAILURES = []
+
 
 def ssh(node, command, timeout=30):
     try:
         result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", node, command],
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", node, command],
             capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout.strip()
-    except Exception as e:
-        return 1, str(e)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        return 1, str(error)
+
 
 def check(name, condition, detail=""):
     if condition:
-        print(f"  PASS: {name}")
+        print(f"  PASS: {name} {detail}".rstrip())
     else:
-        print(f"  FAIL: {name} {detail}")
+        print(f"  FAIL: {name} {detail}".rstrip())
         FAILURES.append(f"{name}: {detail}")
 
-def test_kv_capacity_configured(node):
-    rc, out = ssh(node,
-        "grep -o 'kv_pages=[0-9]*' ~/sparkdata/glm53flash.fp8.tp16/residentd.log 2>/dev/null | tail -1")
-    if out:
-        match = re.search(r'kv_pages=(\d+)', out)
-        if match:
-            pages = int(match.group(1))
-            check("KV pages configured", pages >= 0,
-                  f"pages={pages} (0=disabled, >0=JIT enabled)")
-    else:
-        check("BOOTCFG line present with kv_pages", False,
-              "no kv_pages in log (BOOTCFG missing?)")
 
-def test_no_midround_stall(node):
-    rc, out = ssh(node,
-        "grep 'CHAIN-TIME' ~/sparkdata/glm53flash.fp8.tp16/residentd.log 2>/dev/null | "
-        "tail -5")
+def kv_capacity(node):
+    rc, out = ssh(node, f"grep 'LoadDriver rc=' {RESIDENTD_LOG} | tail -1")
+    match = LOAD_DRIVER.search(out) if rc == 0 else None
+    check("driver load reported", match is not None, f"rc={rc} line={out!r}")
+    if match is None:
+        return
+    status, logical, physical = (int(value) for value in match.groups())
+    check("driver loaded", status == 0, f"rc={status}")
+    check("JIT KV pages configured", logical > 0 and physical > 0, f"kv_pages={logical}/{physical}")
 
-    if out:
-        for line in out.split('\n'):
-            match = re.search(r'total_ms=([\d.]+)', line)
-            if match:
-                total_ms = float(match.group(1))
-                check(f"chain time reasonable ({total_ms:.0f}ms)",
-                      total_ms < 10000,
-                      f"total={total_ms}ms (JIT fault would show as >5s)")
-    else:
-        check("CHAIN-TIME lines present", False, "no chains ran")
 
-def test_long_context_no_oom(node):
-    conn = http.client.HTTPConnection(API_HOST, API_PORT, timeout=120)
-    tokens = list(range(1, 513))
-    body = json.dumps({
-        "model": "sparkpipe-model",
-        "prompt_token_ids": tokens,
-        "max_tokens": 4,
-        "temperature": 0,
-    })
-    t0 = time.monotonic()
+def chain_stalls(node):
+    rc, out = ssh(node, f"grep CHAIN-TIME {RESIDENTD_LOG} | tail -{CHAIN_SAMPLE}")
+    chains = [(path, int(steps), int(status), float(total)) for path, steps, status, total in CHAIN.findall(out)] if rc == 0 else []
+    check("decode chains ran", len(chains) > 0, f"rc={rc} chains={len(chains)}")
+    if not chains:
+        return
+    failed = [chain for chain in chains if chain[2] != 0 or chain[1] == 0]
+    check("every chain completed", not failed, f"failed={failed[:3]}")
+    worst = max(chain[3] / max(chain[1], 1) for chain in chains)
+    check(f"no chain step over {MAX_STEP_MS:.0f} ms", worst <= MAX_STEP_MS, f"worst_step_ms={worst:.1f} chains={len(chains)}")
+
+
+def complete(prompt, max_tokens):
+    connection = http.client.HTTPConnection(API_HOST, API_PORT, timeout=120)
+    body = json.dumps({"model": "sparkpipe-model", "prompt_token_ids": prompt, "max_tokens": max_tokens, "temperature": 0})
     try:
-        conn.request("POST", "/v1/completions", body=body,
-                     headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        data = json.loads(resp.read().decode())
-        tokens_out = data.get("tokens", [])
-        elapsed = time.monotonic() - t0
-        conn.close()
-        check("512-token context served",
-              len(tokens_out) > 0 or resp.status == 200,
-              f"status={resp.status} ntok={len(tokens_out)} t={elapsed:.1f}s")
-        check("512-token context under 60s",
-              elapsed < 60, f"elapsed={elapsed:.1f}s")
-    except Exception as e:
-        check("512-token context", False, str(e))
+        connection.request("POST", "/v1/completions", body=body, headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        payload = response.read().decode()
+        return response.status, json.loads(payload) if response.status == 200 else {"error": payload[:200]}
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+        return 0, {"error": str(error)}
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        connection.close()
 
-def test_kv_slot_reuse_on_sequence_end(node):
-    rc, out = ssh(node,
-        "grep -c 'KV-TAKEOVER\|KV-MATCH-FAIL' ~/sparkdata/glm53flash.fp8.tp16/residentd.log 2>/dev/null")
-    try:
-        count = int(out)
-        check("KV slot takeover present (reuse working)",
-              count >= 0, f"count={count} (0 is also OK = no contention)")
-    except ValueError:
-        pass
 
-def test_page_eviction_respects_active(node):
-    conn = http.client.HTTPConnection(API_HOST, API_PORT, timeout=60)
-    body = json.dumps({
-        "model": "sparkpipe-model",
-        "prompt_token_ids": list(range(1, 65)),
-        "max_tokens": 8,
-        "temperature": 0,
-    })
-    try:
-        conn.request("POST", "/v1/completions", body=body,
-                     headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        data = json.loads(resp.read().decode())
-        tokens = data.get("tokens", [])
-        conn.close()
-        check("64-token decode with 8 output tokens",
-              len(tokens) == 8 or resp.status == 200,
-              f"ntok={len(tokens)} status={resp.status}")
-        if tokens:
-            check("tokens coherent",
-                  tokens[0] > 0, f"first_token={tokens[0]}")
-    except Exception as e:
-        check("64-token decode", False, str(e))
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+def served(name, status, data, max_tokens):
+    tokens = data.get("tokens", [])
+    finish = data.get("finish_reason")
+    complete_tokens = 0 < len(tokens) <= max_tokens and (len(tokens) == max_tokens) == (finish == "length")
+    check(name, status == 200 and data.get("status") == 0 and complete_tokens,
+          f"status={status} ntok={len(tokens)} finish={finish} error={data.get('error')}")
+    return tokens
+
+
+def long_context():
+    status, data = complete(list(range(1, 513)), 4)
+    served("512-token context served", status, data, 4)
+
+
+def repeated_prompt():
+    prompt = [random.randrange(1000, 100000) for _ in range(64)]
+    status, first = complete(prompt, 8)
+    first_tokens = served("fresh 64-token prompt served", status, first, 8)
+    status, second = complete(prompt, 8)
+    second_tokens = served("repeated 64-token prompt served", status, second, 8)
+    check("repeated prompt (prefix-cache hit) decodes the same tokens as the miss", first_tokens == second_tokens,
+          f"first={first_tokens} second={second_tokens}")
+
 
 def main():
-    node = sys.argv[1] if len(sys.argv) > 1 else "spark0"
-
-    print(f"=== JIT KV cache tests on {node} ===\n")
-
-    print("1. KV capacity configured:")
-    test_kv_capacity_configured(node)
-
-    print("\n2. No mid-round stall:")
-    test_no_midround_stall(node)
-
-    print("\n3. Long context (512 tokens):")
-    test_long_context_no_oom(node)
-
-    print("\n4. KV slot reuse:")
-    test_kv_slot_reuse_on_sequence_end(node)
-
-    print("\n5. Active sequence eviction protection:")
-    test_page_eviction_respects_active(node)
-
-    print(f"\n=== summary: {len(FAILURES)} failures ===")
-    for f in FAILURES:
-        print(f"  {f}")
+    if len(sys.argv) != 2:
+        print("usage: test_jit_kv_page_fault.py <node>", file=sys.stderr)
+        return 2
+    node = sys.argv[1]
+    print(f"=== JIT KV cache on {node} ===")
+    kv_capacity(node)
+    chain_stalls(node)
+    long_context()
+    repeated_prompt()
+    print(f"=== summary: {len(FAILURES)} failures ===")
+    for failure in FAILURES:
+        print(f"  {failure}")
     return 1 if FAILURES else 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -158,6 +158,7 @@ def validate_contract(variant: str, contract: dict[str, Any]) -> None:
         require_equal(contract["source_revision"], "GA release deepseek-ai/DeepSeek-V4-Pro-0813 (HF, 2026-08-13)", "Pro source revision")
         require_equal(model["hidden_dimension"], 7168, "Pro hidden dimension")
         require_equal(model["layer_count"], 61, "Pro layer count")
+        require_equal(model["eos_token_id"], 1, "Pro EOS token")
         require_equal(model["attention_head_count"], 128, "Pro attention heads")
         require_equal(moe["routed_expert_count"], 384, "Pro routed experts")
         require_equal(attention["index_top_k"], 1024, "Pro index top-k")

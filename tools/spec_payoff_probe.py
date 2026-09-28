@@ -1,6 +1,6 @@
 """Speculation payoff probe: measures tokens/s with and without speculation on a live fleet api.
 
-Usage: python3 tools/spec_payoff_probe.py --api http://spark0:8433 --corpus corpus.json \
+Usage: python3 tools/spec_payoff_probe.py --api http://100.123.97.61:8433 --corpus corpus.json \
     --batch 8 --requests 24 --max-tokens 256 [--label mtp-on]
 
 Corpus format: {"cases": [{"id": ..., "ids": [token ints]}]} (the ds4_eval fixture shape).

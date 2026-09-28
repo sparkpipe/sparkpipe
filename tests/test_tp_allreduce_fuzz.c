@@ -770,7 +770,7 @@ static void FuzzS25S3(void)
 		    "cancel-case loop finishes bounded" );
 		for ( rank = 0u; rank < run_count; rank++ )
 		{
-			CHECK( g_tasks[rank].status != SPARK_STATUS_OK,
+			CHECK( g_tasks[rank].status == SPARK_STATUS_BUSY,
 			    "cancelled device loop fails BUSY" );
 			cancelled_done = SparkTpDeviceCollectiveDeviceRoundsDone(
 			    &g_ranks[rank].collective);
@@ -789,8 +789,8 @@ static void FuzzS25S3(void)
 		    "deadman-case loop finishes bounded" );
 		for ( rank = 0u; rank < run_count; rank++ )
 		{
-			CHECK( g_tasks[rank].status != SPARK_STATUS_OK,
-			    "unshipped device loop hits the deadline" );
+			CHECK( g_tasks[rank].status == SPARK_STATUS_BUSY,
+			    "unshipped device loop hits the deadline with BUSY" );
 			CHECK( SparkTpDeviceCollectiveGraphError(
 			        &g_ranks[rank].collective) != 0ull,
 			    "deadline failure is a loud device error" );
@@ -969,8 +969,8 @@ static void FuzzBasic(void)
 		    "held round finishes (as failure)" );
 		for ( rank = 0u; rank < run_count; rank++ )
 		{
-			CHECK( g_tasks[rank].status != SPARK_STATUS_OK,
-			    "held round fails without ships" );
+			CHECK( g_tasks[rank].status == SPARK_STATUS_BUSY,
+			    "held round fails BUSY without ships" );
 			hold_tag[rank] = *(volatile uint64_t *)(g_regions[rank] +
 			    SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0u, rank));
 			CHECK( hold_tag[rank] != 0u, "held round published" );
@@ -980,8 +980,8 @@ static void FuzzBasic(void)
 		    "second held round finishes (as failure)" );
 		for ( rank = 0u; rank < run_count; rank++ )
 		{
-			CHECK( g_tasks[rank].status != SPARK_STATUS_OK,
-			    "second held round fails without ships" );
+			CHECK( g_tasks[rank].status == SPARK_STATUS_BUSY,
+			    "second held round fails BUSY without ships" );
 			CHECK( *(volatile uint64_t *)(g_regions[rank] +
 			    SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0u, rank)) ==
 			    hold_tag[rank],
@@ -1069,8 +1069,8 @@ static uint32_t FuzzRun(uint32_t rounds, uint32_t seed, uint32_t kill_percent)
 				return(1u);
 			}
 			for ( i = 0u; i < other_count; i++ )
-				CHECK( g_tasks[others[i]].status != SPARK_STATUS_OK,
-				    "killed-before-publish rank fails peers fast" );
+				CHECK( g_tasks[others[i]].status == SPARK_STATUS_BUSY,
+				    "killed-before-publish rank fails peers fast with BUSY" );
 			recovery_pending = 1u;
 		}
 		else if ( kill != 0u )

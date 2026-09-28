@@ -1191,7 +1191,7 @@ static void test_mesh_lane_protocol(void)
         assert(SparkWeightdClientConnect(paths[rank],&contender,0) == SPARK_STATUS_OK);
         CHECK(SparkWeightdClientLaneAcquire(contender,SPARK_WEIGHTD_LANE_NONE,0,&out,timeout) == SPARK_STATUS_NO_LANE &&
             observed == (1u << SPARK_WEIGHTD_MESH_MAX_LANES) - 1u,
-            "ninth owner cannot alias any occupied pair of bands");
+            "owner beyond SPARK_WEIGHTD_MESH_MAX_LANES cannot alias an occupied lane");
         SparkWeightdClientClose(contender);
         for (job=0u; job<SPARK_WEIGHTD_MESH_MAX_LANES; job++)
             SparkWeightdClientClose(clients[rank][job]);

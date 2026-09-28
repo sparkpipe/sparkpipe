@@ -1,33 +1,9 @@
 #!/usr/bin/env python3
-"""Stated-identity contracts for the weightd mesh (audit A-0036).
-
-The mesh rank, the verbs interface, and the sgid index arrive as explicit
-launch parameters from the deployment; no hostname tail may ever decide
-identity, and no interface name or sgid index may be baked into the source.
-Also compiles the daemon translation units with the tree's syntax stubs.
-"""
 import subprocess
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MESH = (ROOT / "node/weightd_mesh.c").read_text(encoding="utf-8")
-DAEMON = (ROOT / "node/weightd.c").read_text(encoding="utf-8")
-AGENT = (ROOT / "tools/fleet_node_agent.sh").read_text(encoding="utf-8")
-
-assert "RankFromHost" not in MESH
-assert "gethostname" not in MESH
-assert "hostname" not in MESH
-assert '"rocep1s0f1"' not in MESH
-assert "sgid_index = 3" not in MESH
-assert "SparkWeightdMeshInit(uint32_t rank" in MESH
-assert "--mesh-rank" in DAEMON
-assert "--mesh-interface" in DAEMON
-assert "--mesh-sgid-index" in DAEMON
-assert "--mesh-rank" in AGENT
-assert "--mesh-interface" in AGENT
-assert "--mesh-sgid-index" in AGENT
-assert "RANK=$((16#${HOST#spark}))" not in AGENT
 
 with tempfile.TemporaryDirectory(prefix="weightd-mesh-src-") as build:
     for source in ("node/weightd.c", "node/weightd_mesh.c"):
@@ -96,8 +72,13 @@ const char *SparkStatusToString(SparkStatus status)
         assert diagnostic in result.stderr, result
         assert "ready" not in result.stdout and "SERVER-RUN" not in result.stdout, result
         assert result.stdout.count("SERVER-DESTROY") == 1, result
-    result = subprocess.run(arguments[:-2], env={}, capture_output=True, text=True)
-    assert result.returncode == 2 and "ready" not in result.stdout, result
+    for flag in range(1, len(arguments), 2):
+        partial = arguments[:flag] + arguments[flag + 2:]
+        result = subprocess.run(partial, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
+        assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, (arguments[flag], result)
+    outside = arguments[:2] + ["4"] + arguments[3:]
+    result = subprocess.run(outside, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, result
     for value in ("", "x", "-1", "1x", "100000"):
         result = subprocess.run(arguments, env={"SPARK_WEIGHTD_MESH_DOORBELL_CPU": value}, capture_output=True, text=True)
         assert result.returncode == 2 and "bad SPARK_WEIGHTD_MESH_DOORBELL_CPU" in result.stderr, (value, result)

@@ -55,7 +55,7 @@ def parse(text):
     return shape, values
 
 
-def reference(shape, values, positions_per_row):
+def reference(shape, values, positions_per_row, sinks=None):
     """softmax attention per query head, reading K and V from the ORIGINAL
     dense rows - never from the pool - so the store's layout is validated by
     the decode agreeing, not assumed."""
@@ -77,9 +77,10 @@ def reference(shape, values, positions_per_row):
                     values["query"][q_base + i] * values["key"][k_base + i]
                     for i in range(head_dim))
                 scores.append(score * scale)
-            top = max(scores)
+            sink = sinks[head] if sinks is not None else None
+            top = max(scores + ([sink] if sink is not None else []))
             weights = [math.exp(s - top) for s in scores]
-            total = sum(weights)
+            total = sum(weights) + (math.exp(sink - top) if sink is not None else 0.0)
             for element in range(value_dim):
                 acc = 0.0
                 for weight, position in zip(weights, positions_per_row[sequence]):
@@ -128,6 +129,15 @@ def main():
                  reference(shape, values, full), values["out_full"])
     ok = compare("windowed",
                  reference(shape, values, windowed), values["out_window"]) and ok
+    ok = compare("full context with sinks",
+                 reference(shape, values, full, values["sink"]), values["out_sink_full"]) and ok
+    ok = compare("windowed with sinks",
+                 reference(shape, values, windowed, values["sink"]), values["out_sink_window"]) and ok
+    moved = max(abs(a - b) for a, b in zip(values["out_full"], values["out_sink_full"]))
+    print(f"sinks move the full-context output by up to {moved:.3e}")
+    if moved < 1e-2:
+        print("FAIL the sink logits do not reach the softmax")
+        ok = False
     if not ok:
         return 1
     print("\nthe GQA store and decode kernels, run on a CPU, match the reference")

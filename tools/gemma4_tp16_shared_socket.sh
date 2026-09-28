@@ -28,7 +28,7 @@
 #
 # Usage:
 #   tools/gemma4_tp16_shared_socket.sh [--dry-run]
-#     GEMMA4_SHARED_WEIGHTD_SOCKET=/run/sparkpipe-weightd-shared/weightd.sock
+#     GEMMA4_SHARED_WEIGHTD_SOCKET=/tmp/spark_weightd.sock
 #     GEMMA4_PACK_DIR=$HOME/sparkdata/gemma4_31b.bf16.tp16/packs
 #     GEMMA4_RELEASE_DIR=build/gemma4_31b_tp16
 #     GEMMA4_DEPLOYMENT_TREE=deployment/gemma4_31b_tp16_lane6
@@ -69,7 +69,7 @@ CHECKOUT="$(pwd)"
 RELEASE="${GEMMA4_RELEASE_DIR:-build/gemma4_31b_tp16}"
 DEPLOY_TREE="${GEMMA4_DEPLOYMENT_TREE:-deployment/gemma4_31b_tp16_lane6}"
 PACK_DIR="${GEMMA4_PACK_DIR:-$HOME/sparkdata/gemma4_31b.bf16.tp16/packs}"
-WEIGHTD_SOCKET="${GEMMA4_SHARED_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+WEIGHTD_SOCKET="${GEMMA4_SHARED_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 RANK_HEX="$(printf '%x' "$RANK")"
 PACK_NAME="gemma4_31b_tp16_rank${RANK_HEX}_stage0.gemma4sp"
 
@@ -102,6 +102,9 @@ case "$SHA_HEX" in
 esac
 [ "${#SHA_HEX}" -eq 64 ] || fail "malformed pack digest sidecar: $PACK_DIR/$PACK_NAME.sha256"
 [ "$SHA_NAME" = "$PACK_NAME" ] || fail "sidecar names '$SHA_NAME', expected '$PACK_NAME'"
+TREE_SOCKET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["weightd"]["socket_path"])' "$DEPLOY_TREE/model_resident.json")" ||
+    fail "deployment tree names no weightd socket: $DEPLOY_TREE/model_resident.json"
+[ "$TREE_SOCKET" = "$WEIGHTD_SOCKET" ] || fail "deployment tree weightd socket $TREE_SOCKET differs from the attach socket $WEIGHTD_SOCKET"
 
 # The pack-identity attach path requires the digest env (no fallback:
 # runtime/spark_weightd_attach.c fails "no_identity" without it) plus the
