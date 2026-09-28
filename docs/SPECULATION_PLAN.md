@@ -438,3 +438,42 @@ separate.
    <rank log>` for tokens per round and frame fill. Report decode tok/s
    spec-off and spec-on per content class separately, with the method
    (`lookup`, rows=8) and the acceptance length.
+
+### 9.4 rtx5090 drafter over the sparkf relay: stub
+
+Status: not wired. No engine or module code calls the relay drafter and
+`SPARK_GLM5_NEXT_VERIFY_DRAFTER` cannot select it; it is a host-tested
+building block (invariant I01: a stub does not establish the feature).
+
+`include/sparkpipe/spark_speculation_relay_draft.h` is the rank-15 end of
+section 2.2, reduced to what can be tested on a host:
+
+- **Frames.** One fixed 112-byte little-endian frame for both directions:
+  magic `SPR1`, version and kind (REQUEST or DRAFT), engine generation,
+  round id, sequence id, anchor position, anchor token, token count,
+  requested count, 16 token slots (unused slots must be zero). A REQUEST
+  carries the tokens committed since the previous round (ending at the
+  anchor), so draftd keeps its per-sequence history without a separate TAP
+  frame for tap-free drafters; the prompt reaches draftd once at prefill.
+  A DRAFT carries up to the requested number of draft tokens.
+- **Mailbox drafter.** `SparkSpeculationRelayDraftIssue` opens round r and
+  encodes its REQUEST; the relay thread sends it and hands every received
+  frame to `SparkSpeculationRelayDraftDeliver`, which keeps only a DRAFT for
+  the current engine generation, round, sequence and anchor (anything else
+  is counted `stale` and dropped). `SparkSpeculationRelayDraftTokens` is a
+  `SparkSpeculationDraftFunction`: called at the round deadline it returns
+  the delivered draft once (`used`) or nothing (`misses`, a k=0 round).
+- **Test.** `build/test_speculation_relay_draft` pins the byte layout,
+  rejects malformed frames, checks stale/late/foreign drafts, and runs a
+  400-token greedy loop where an in-process draftd (the lookup drafter fed
+  only by REQUEST frames) answers through encoded frames and every fifth
+  draft arrives after the deadline: output equals the greedy stream and the
+  late rounds are counted misses.
+- **Still to build (S5).** The rank-15 relay thread (busy-polled socket on
+  the sparkf-rtx5090 link, pinned core), the root-15 mesh broadcast of each
+  round's draft ids so all 16 ranks run the same verify shape (the module's
+  draft function on ranks 0-14 then reads the broadcast, not the socket),
+  the prefill history upload, and the draftd process on the rtx5090 (lookup
+  first, then GLM layer-45 MTP at TP1). Until the broadcast exists this
+  drafter must not be selected at TP>1: a rank-local deadline would let
+  ranks disagree on k.
