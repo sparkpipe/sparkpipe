@@ -446,6 +446,11 @@ progress diary.
   onto the template needs each build to pass its description hash, as the
   ling module does through `MODEL_DESCRIPTION`; the tree holds a glm5_next
   description for fp8 only.
+- `tools/module_build_release.sh` defaults the ling firmware description to
+  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
+  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
+  script refuses without it). Commit the per-codec ling descriptions or
+  point the default at `ling_resident_decode_stage_firmware.json`.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

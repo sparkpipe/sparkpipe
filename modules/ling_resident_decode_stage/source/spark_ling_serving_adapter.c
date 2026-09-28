@@ -35,6 +35,8 @@
 #ifndef LING_MODEL_DESCRIPTION_SHA256
 #error "LING_MODEL_DESCRIPTION_SHA256 must identify the firmware model description the driver compiles"
 #endif
+_Static_assert(sizeof(LING_CONTRACT_SHA256) == 65u, "LING_CONTRACT_SHA256 must be 64 hex digits");
+_Static_assert(sizeof(LING_MODEL_DESCRIPTION_SHA256) == 65u, "LING_MODEL_DESCRIPTION_SHA256 must be 64 hex digits");
 
 #define SPARK_LING_SERVING_ADAPTER_ID \
 	"spark.ling.serving-adapter.tp16.expert_" LING_EXPERT_CODEC_NAME ".v1"
