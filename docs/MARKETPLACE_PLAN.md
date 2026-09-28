@@ -121,7 +121,7 @@ What this says:
 
 ## 7. Near-term build hooks
 
-1. liteLLM front end in front of the existing gateway (never expose `node/model_api.c` directly). **[STATUS: DONE — merged, docs/LITELLM_FRONTEND.md]**
+1. liteLLM front end in front of the existing gateway (never expose `node/model_api.c` directly). **[STATUS: merged, docs/LITELLM_FRONTEND.md; the config routes to the rtx5090 GLM API, but no completion through the door has a receipt yet]**
 2. Request-logging pipeline keyed by (driver hash, model contract hash, request) — the audit substrate.
 3. Audit service: sampler → replay scheduler → comparator → challenge/slash state machine.
 4. Provider onboarding: `sparkpipe provider register`, joining the tailnet with a tagged key under access rules, bond, pinned driver distribution, fingerprinted checkpoints.

@@ -1,5 +1,16 @@
 # Scheduler Subsystem Boundary
 
+Archived 2026-09-28. This is the 2026-08-17 scheduler-agent proposal
+(a947d65). Its consolidation plan landed as `src/spark_admission.c` (4cfa095)
+and `include/sparkpipe/spark_batch_variant_tuning_common.h` (7ecf1f5), and
+`scheduler/` also holds `continuous_batch.c` (c4e7fb4). The page and position
+budgets of §2.4 moved to [driver acceptance](../DRIVER_ACCEPTANCE.md). The
+fleet sections (§1.5, §1.8, §1.9, the fleet bullets of §2.1, §3.3) described
+`tools/fleet_swap.sh` and the COORDINATION.md tier and ring-window rules. Those
+are obsolete, so the sections were removed; `git show
+9b283b6:docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md` has the full text. Fleet
+operations are in the [fleet release runbook](../FLEET_RELEASE_RUNBOOK.md).
+
 Owner: SCHEDULER subsystem agent · Workspace: `.agents/scheduler` (clone of `unified`)
 Scope: cross-model scheduling machinery. This document inventories what scheduling
 exists on `unified`, draws the ownership boundary between the scheduler and its
@@ -153,22 +164,7 @@ integer ladders**; only the module-id tables are model content (the headers say 
 
 ### 1.5 Gang scheduling for co-resident models
 
-There is **no C "gang" struct** — gang scheduling is a policy-layer concept enforced
-by the fleet registry + swap script, and described in the architecture docs:
-
-* `README.md:114-116` — "the scheduler gang-schedules bounded all-rank quanta
-  between co-resident execution plans; it does not inject unrelated collectives
-  into committed model work."
-* `ARCHITECTURE.md:140-149` — same statement; "Model activation changes an
-  execution plan and residency assignment, not the public endpoint … Promotion …
-  publishes readiness atomically" (`145-149`).
-* `COORDINATION.md:14-17` — "Two or three models fit in one node memory. **Memory
-  is not the constraint; measurement cleanliness and big-model mutual exclusion are.**"
-* The enforcement is the **tier/scope model** (`COORDINATION.md:20-43`): always-on
-  band models coexist with one "current big model"; band big models are mutually
-  exclusive on `spark8-f`; fleet big models evict everything. Encoded in
-  `tools/devcycle/fleet_registry.json:1-4` (scope comment) and enforced by
-  `tools/fleet_swap.sh` (band vs fleet branch, `81-116`).
+Removed: obsolete fleet procedure (see the note at the top).
 
 ### 1.6 Priority / deadline / quanta
 
@@ -221,42 +217,11 @@ Lifecycle in `node/model_residentd.c` (2720 lines):
 
 ### 1.8 Fleet swap / promotion (<60 s)
 
-* **Mechanism** — `tools/fleet_swap.sh MODEL` is "the single mechanism every
-  session uses" (`COORDINATION.md:45-59`). Band scope stops the current band model
-  and starts the new one; fleet scope snapshots the running set, evicts all 16
-  residentds, starts the fleet model, and restores the snapshot on swap-out
-  (`fleet_swap.sh:81-116`). State lives at `/tmp/sparkpipe_fleet_state.json`,
-  authoritative copy on `spark0`, broadcast to all hosts
-  (`fleet_swap.sh:17-18, 26, 29, 40-45`).
-* **Promotion budget** — "Promotion is <60 s" (`COORDINATION.md:43`), repeated at
-  `COORDINATION.md:82` ("Model promotion is <60 s, so swapping is cheap").
-  `ARCHITECTURE.md:145-149` describes promotion as install shards → bind stable
-  pointers → prewarm kernels/graphs → construct communicators → publish readiness
-  atomically. `stop_model`/start_model` run `pkill` + `sleep 2` + `setsid`
-  residentd (`fleet_swap.sh:47-72`).
-* **Registry** — `tools/devcycle/fleet_registry.json` holds tier/scope/hosts/
-  rank_count/runtime_root/ports per model (`4-159`); ports are assigned per model
-  so "two deployments never share a host AND a port" (`COORDINATION.md:64-70`).
+Removed: obsolete fleet procedure (see the note at the top).
 
 ### 1.9 COORDINATION.md directive — ring windows + hourly progress rule
 
-`COORDINATION.md:86-119` (directive dated 2026-08-16):
-
-* Windows are **60 minutes** and exclusive on their hosts; four ring reservations in
-  queue order (triplet → DSV4 Pro → Qwen 3.8 Max → K3) (`88-107`).
-* **Continuation rule**: the holder keeps the hosts only while each hour produces a
-  durable artifact (landed commit on `origin`, retained receipt under
-  `qualification/`, new measured row in `PERFORMANCE_STATUS.md`, or a green CI
-  gate). "A silent hour = preemption: swap out through `tools/fleet_swap.sh` and
-  move to the back of the queue" (`109-114`).
-* A late window ends on time; the rule applies to fleet, big-band, and always-on
-  bands; every receipt records fleet state (`116-119`).
-* Fleet probe — `tools/devcycle/fleet_status.sh` prints one line per host (which
-  residentd is running, or free); run before every measured window and attach output
-  to receipts (`136-140`).
-
-**Gap**: this rule is currently a human-enforced directive, not a mechanical
-hook — nothing in `fleet_swap.sh` or the tree reads the rule (see §3.3).
+Removed: obsolete fleet procedure (see the note at the top).
 
 ---
 
@@ -276,10 +241,6 @@ correctness; everything else is review-only (charter: `AGENT_CHARTER.md:13-16`).
   content.
 * **Topology-switch state machine + admissions gate** — `scheduler/topology_switch.c`
   and `include/sparkpipe/spark_topology_switch.h`.
-* **Fleet-level gang/tier/scope policy** — `tools/fleet_swap.sh` +
-  `tools/devcycle/fleet_registry.json` + the ring-window/continuation rules of
-  `COORDINATION.md`.
-* **Ring-window enforcement hooks** (proposed, net-new — §3.3).
 
 ### 2.2 Model drivers own
 
@@ -308,24 +269,7 @@ correctness; everything else is review-only (charter: `AGENT_CHARTER.md:13-16`).
 
 ### 2.4 KV owns
 
-* `cache/nvme_tier.c` (+ `include/sparkpipe/spark_nvme_tier.h`) — the tier's clock,
-  eviction, pins, lookahead. The topology switch **consumes** it via vtable +
-  pin/reserve/plan APIs (`topology_switch.c:394-525`) but never owns the bytes.
-* `cache/prefix_cache.c` (+ `spark_prefix_cache.h`) — content-addressed prefix
-  reuse; the batch engine calls `SparkPrefixCacheCommitPrompt` /
-  `LookupPrompt` (`model_batch_engine.c:719-724, 1247-1252`).
-* Paged KV budgets — `kv_logical_page_capacity` / `kv_physical_page_capacity` are
-  **runtime/scheduler-owned limits** ("a JIT-KV driver only maps each page into its
-  model-specific byte layout", `spark_model_serving_adapter.h:146-152`). The
-  scheduler gates admission on them (`model_batch_engine.c:193-221, 1413-1441`).
-* Position budget — `runtime_limits.max_sequence_positions` (optional) is the
-  deployment's copy of the stage configs' `max_sequence_positions`. The engine
-  caps its context at it (`SparkModelBatchContextLimit`), and the API answers a
-  prompt that fills it with 400 `context_length_exceeded` and clamps
-  `max_tokens` to what is left. Without it, a request that outgrows the stage
-  configs' positions fails mid-decode in the adapter's row-order check
-  (`ROW-ORDER-POSITION`). The two values must match; nothing compares them at
-  runtime yet (TECHDEBT).
+Moved to [driver acceptance](../DRIVER_ACCEPTANCE.md), "Page and position budgets".
 
 ### 2.5 Current blur (what consolidation fixes)
 
@@ -338,7 +282,6 @@ correctness; everything else is review-only (charter: `AGENT_CHARTER.md:13-16`).
    `Spark<Model>BatchVariantBucketCeiling` integer ladder is byte-identical
    (§1.4). Model content (module-id strings) and model-neutral arithmetic (the
    ceiling walk) are entangled.
-3. **Ring-window rule has no enforcement surface** — §1.9 gap.
 
 ---
 
@@ -389,36 +332,14 @@ scheduler agent proposes, does **not** edit shared/model dirs.
 
 ### 3.3 Ring-window enforcement hooks
 
-* **Goal.** Mechanize the `COORDINATION.md:86-119` continuation rule, which today
-  has no code path.
-* **Proposal.**
-  1. **Fleet-state receipt hook** — have `tools/devcycle/fleet_status.sh` (already
-     the mandated pre-window probe, `COORDINATION.md:136-140`) also emit the current
-     big-model + running set into a machine-readable receipt line, so the
-     "every receipt records the fleet state" requirement (`COORDINATION.md:119`) is
-     mechanically checkable.
-  2. **Window lease/deadline hook** — reuse the existing `deadline_time_ns`
-     plumbing (`spark_model_serving_adapter.h:187`, `spark_model_driver.h:206`) or a
-     residentd-level window deadline to bound a measured window to 60 min with no
-     overrun (`COORDINATION.md:116`). The topology-switch budget pattern
-     (`topology_switch.c:622-652`) is the model for a `window budget` estimate.
-  3. **Hourly-artifact ledger** — a small checker (script, coordinator-owned) that
-     reads the last landed commit / newest receipt / `PERFORMANCE_STATUS.md` mtime per
-     holder and flags a silent hour for preemption; wired into `fleet_swap.sh` as an
-     advisory pre-swap guard.
-* **Owners.** Scheduler proposes the hooks + acceptance criteria; coordinator lands
-  the scripts (they are shared fleet tooling, not model dirs); the six model
-  sessions become the *subjects* of the rule, not its implementers.
+Removed: obsolete fleet procedure (see the note at the top).
 
 ---
 
 ## 4. Verification note
 
-Every `file:line` above was confirmed with grep/read against this tree. Two
-corrections to the brief, made explicit rather than silently absorbed:
+Every `file:line` above was confirmed with grep/read against this tree. One
+correction to the brief, made explicit rather than silently absorbed:
 
 * `scheduler/` contains **only** `topology_switch.c`; "admission/priorities"
   live in `include/sparkpipe/` + `src/` + `runtime/` (§1.1).
-* "Gang scheduling" is a **policy-layer** concept (registry tier/scope +
-  `fleet_swap.sh`), not a C data structure; there is no gang struct in the tree
-  (§1.5).
