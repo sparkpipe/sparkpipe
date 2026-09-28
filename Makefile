@@ -565,6 +565,7 @@ PYTHON_TESTS := \
 	tests/test_topk_exact_host.py \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
+	tests/test_spec_verify_bench.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \

@@ -1,8 +1,10 @@
 # Speculation plan
 
-Status: plan of record for the speculation lane, 2026-09-28. The first PR
-(S1, branch `spec/verify-hooks-1`) is implemented; everything after it is
-planned work. Numbers marked *model* are estimates from the fleet-calibrated
+Status: plan of record for the speculation lane, 2026-09-28. S1
+(`spec/verify-hooks-1`) and the first half of S2 (host accept and eager fold
+after the verify graph, `spec/verify-fold-2`, `spec/lookup-draft-3`,
+`spec/verify-commit-4`) are implemented; section 9 says what runs today and
+how to measure it. Everything else is planned work. Numbers marked *model* are estimates from the fleet-calibrated
 cost model in the 2026-09-28 speculation research note, not measurements.
 Speculative and non-speculative results are always reported separately
 (invariant I42), and speculative results are also reported per content
@@ -138,7 +140,10 @@ counted, never applied.
   one graph with no host round trip.
 - The host twin is `SparkSpeculationPolicyResolveVerifierTree`; the device
   kernel is pinned equal to it on random trees.
-- Greedy speculation is exact by construction. Sampled speculation uses
+- Greedy speculation is exact only when every verify row reproduces the
+  B1 step bit for bit, head included (G-ROWEQ). The acceptance rule does
+  not make that true on its own; section 9.2 lists what is proven. Sampled
+  speculation uses
   Gumbel-argmax noise keyed by (seed, absolute position, token id), applied
   identically by drafter and verifier, so seeded sampled streams are also
   byte-identical with and without speculation (S9).
@@ -317,3 +322,119 @@ Aggregate gain at batch B with k drafts per sequence is
 3. Start one engine with `SPARK_GLM5_NEXT_VERIFY_ROWS=9` and one with the
    regime on and `SPARK_GLM5_NEXT_GRAPH_PATH=0`: both must fail startup with
    the named message.
+
+## 9. What runs today (S2a) and how to measure it
+
+### 9.1 Behaviour
+
+- `SPARK_GLM5_NEXT_VERIFY_ROWS=2..8` needs `SPARK_GLM5_NEXT_VERIFY_DRAFTER`:
+  `lookup` (the prompt-lookup drafter), `oracle:PATH` or `adversary:PATH`
+  (a recorded greedy sequence, little-endian uint32 token ids from position
+  0). A drafter without the regime, the regime without a drafter, or any
+  other value fails startup with a named message.
+- Drafter interface: any `SparkSpeculationDraftFunction` (context, request
+  with lane, sequence id and anchor position, result with up to k token ids).
+  The module holds one; `lookup`, `oracle` and `adversary` are the three
+  built in. The rtx5090 relay drafter (S5) plugs in behind the same call.
+- A B1 greedy decode frame of S >= 2 tokens (the runtime's resident chain
+  frames, S <= 8, never crossing a 64-token block) asks the drafter for
+  k = min(rows - 1, S - 1) tokens, reduced so the wave stays in one
+  attention regime. No draft: the frame runs as the ordinary S-step chain.
+  Otherwise it runs verify rounds until S tokens are produced or the drafter
+  has nothing:
+  1. replay the captured verify graph for 1 + k rows with `commit=0`
+     (KDA replay record on, conv windows and recurrent state untouched);
+  2. sync, resolve the longest matching prefix on the host
+     (`SparkSpeculationPolicyResolveVerifierTokens`): a accepted drafts plus
+     the bonus token;
+  3. `SparkGlm5NextLaunchCudaReplayFold(wave, a + 1)` folds exactly the
+     committed rows into the KDA state and re-commits the conv windows;
+     rejected rows' KV and index slots are overwritten by the next round;
+  4. the drafter observes the committed tokens and the next round starts
+     from the new anchor.
+  The completion carries 1..S tokens like a chain frame. Every frame prints
+  `VERIFY-FRAME slot position budget produced rounds accepted | cumulative`.
+- Rank agreement: the frame, the drafter history (built from frames and
+  all-reduced outputs), the experts-warm flag and the verify-table flag
+  flip on the same frame on every rank. Graph state is not like that: a
+  rank can lose the graph path on its own (a stuck or failed graph, a
+  failed arm, a failed B1 capture). Plain decoding tolerates that because
+  graph and eager steps issue the same collectives, but a verify wave and
+  S plain steps do not. So a frame is classified by
+  `SparkGlm5NextVerifyFrameClass`: frame-level reasons (shape, sampling,
+  cold, no draft) give a plain frame on every rank, counted per class and
+  logged as `VERIFY-PLAIN-FRAME` at powers of two; rank-local graph state
+  on a frame that would otherwise verify is `VERIFY-RANK-LOCAL-INELIGIBLE`
+  and a terminal engine failure on that rank (the others then fail at the
+  collective timeout), never a silent plain frame. A remote drafter will
+  need the root-15 broadcast of section 2.2 instead.
+- Head: B1 greedy uses the certified FP8 head (screen, exact BF16 rescore,
+  lowest id on ties). Verify rows with a certified head loaded run the same
+  certified B1 head once per row, so the head of a verify row is the B1
+  head by construction. Cost: one certified head per row (about 0.38 ms on
+  the head-owning rank per row at TP16's vocabulary shard). The exact rows
+  kernel of #1293 replaces this with one launch (about 0.42 ms for 8 rows).
+- Not yet: the device-side accept and in-graph fold (S2b, one graph per
+  round instead of graph + host resolve + eager fold), a cost-aware k
+  controller (S4), rounds across a 64-token block or frame, B > 1, sampled
+  rows.
+
+### 9.2 Exactness evidence
+
+- `validate_mtp_parity` (sm_121a, synthetic 4-layer stack at full
+  geometry, TP1): besides the MTP chain it runs verify rounds of 2..8 rows
+  with the reference drafter in oracle, adversary and fault-at-depth modes
+  on a short walk (28 rounds) and on a walk that prefills 2040 positions and
+  decodes across context 2048 into the selected-attention regime (14
+  rounds, waves trimmed to one regime as the engine admits them), each with
+  the wave's natural maximum context and with the captured-graph bound. It
+  checks, every round, the accepted count, the committed tokens against the
+  serial greedy stream, and the KDA state, conv windows, KV and index bytes
+  against the serial decode. PASS on sparkf 2026-09-28.
+- Since the review fixes the harness runs what production runs: the
+  certified FP8 head is loaded, so B1 baseline steps take the certified
+  B1 head and verify rows take it once per row; the split threshold is the
+  deployed 64, so contexts 64..2048 run the SPLIT regime; and a final pass
+  twins every lm_head row, so every argmax is an exact tie and a row that
+  resolved ties differently from B1 fails. All of this is TP1 with
+  index_cp_degree 1. It does not prove TP16.
+- `tests/test_glm5_next_stage_context.py` drives the real module verify
+  loop (plan, resolve, fold count, observe, completion fields) with the
+  three drafters against a toy target: output equals the greedy stream,
+  and every fold receives exactly accepted + 1 rows (the count is
+  recomputed by the test from the drafts and the verifier outputs, so a
+  fold of all wave rows fails). A two-rank check gives one rank a failed B1
+  capture, a disabled graph or a lost graph path and requires that rank to
+  fail terminally while the healthy rank verifies.
+- Missing and required before a speed claim: G-ROWEQ at TP16 on the graph
+  path (a verify row must equal the B1 step bit for bit) and the fleet
+  oracle/adversary runs of 9.3.
+
+### 9.3 Fleet steps (own root, weightd lane 8, after RELEASE_DONE)
+
+`tools/spec_verify_bench.py` has no default endpoint (production g53-api
+is :8433; the dev API must be named explicitly), requires token ids in
+every response and stream event (text alone never counts as exact), and
+reports decode tok/s from the first streamed token to the last, with TTFT
+separate.
+
+1. Spec off, same build: `SPARK_GLM5_NEXT_VERIFY_ROWS` unset. Record the
+   baseline: `tools/spec_verify_bench.py run --endpoint DEV --label off
+   --out off.json` (prose, code, repetitive; 512 tokens, temperature 0) and
+   COMPSEC-17 with `tools/glm5_next_compsec17.py`.
+2. Record an oracle sequence: `tools/spec_verify_bench.py record
+   --endpoint DEV --prompt-ids p.json --max-tokens 512 --out oracle.u32`.
+3. Restart with `SPARK_GLM5_NEXT_VERIFY_ROWS=8
+   SPARK_GLM5_NEXT_VERIFY_DRAFTER=oracle:oracle.u32` and replay:
+   `tools/spec_verify_bench.py replay --endpoint DEV --prompt-ids p.json
+   --expect oracle.u32` must print `"exact": true` (exit 0), and the rank
+   logs must show `produced=8 rounds=1 accepted=7` on (almost) every
+   frame. This is the upper bound of the round machinery (tau = 8 per
+   frame) and the TP16 G-ROWEQ check.
+4. Same with `adversary:oracle.u32`: `replay` exact, `accepted=0`.
+5. Restart with `SPARK_GLM5_NEXT_VERIFY_DRAFTER=lookup` and run step 1's
+   corpus: `run --endpoint DEV --label lookup --out lookup.json`, then
+   `compare off.json lookup.json` (must print `"exact": true`) and `log
+   <rank log>` for tokens per round and frame fill. Report decode tok/s
+   spec-off and spec-on per content class separately, with the method
+   (`lookup`, rows=8) and the acceptance length.

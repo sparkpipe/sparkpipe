@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <string.h>
 
 #include "sparkpipe/spark_glm5_next_graph_regime.h"
 #include "sparkpipe/spark_status.h"
@@ -9,6 +10,22 @@
 #define SPARK_GLM5_NEXT_VERIFY_ROWS_MAX 8u
 #define SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT (SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - SPARK_GLM5_NEXT_VERIFY_ROWS_MIN + 1u)
 #define SPARK_GLM5_NEXT_VERIFY_ROWS_ENV "SPARK_GLM5_NEXT_VERIFY_ROWS"
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV "SPARK_GLM5_NEXT_VERIFY_DRAFTER"
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE 0u
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP 1u
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE 2u
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY 3u
+#define SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX "oracle:"
+#define SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX "adversary:"
+#define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH 3u
+#define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH 8u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE 0u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE 1u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED 2u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD 3u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_NO_DRAFT 4u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL 5u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT 6u
 
 static inline SparkStatus SparkGlm5NextVerifyRowsParse(const char *text,uint32_t *rows_out)
 {
@@ -23,6 +40,49 @@ static inline SparkStatus SparkGlm5NextVerifyRowsParse(const char *text,uint32_t
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*rows_out = rows;
 	return(SPARK_STATUS_OK);
+}
+
+static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint32_t rows,uint32_t *kind_out,const char **path_out)
+{
+	*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE;
+	*path_out = 0;
+	if ( rows == 0u )
+		return(text == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( text == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( strcmp(text,"lookup") == 0 )
+	{
+		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
+		return(SPARK_STATUS_OK);
+	}
+	if ( strncmp(text,SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX,sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u) == 0 && text[sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u] != '\0' )
+	{
+		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE;
+		*path_out = text + sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u;
+		return(SPARK_STATUS_OK);
+	}
+	if ( strncmp(text,SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX,sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u) == 0 && text[sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u] != '\0' )
+	{
+		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY;
+		*path_out = text + sizeof(SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX) - 1u;
+		return(SPARK_STATUS_OK);
+	}
+	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static inline uint32_t SparkGlm5NextVerifyFrameClass(uint32_t decode_single_greedy_shape,uint32_t sampled,uint32_t experts_warm,uint32_t graph_path_enabled,uint32_t graph_disabled,uint32_t b1_capture_failed,uint32_t verify_captured)
+{
+	if ( decode_single_greedy_shape == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE);
+	if ( sampled != 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED);
+	if ( experts_warm == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD);
+	if ( graph_path_enabled == 0u || graph_disabled != 0u || b1_capture_failed != 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL);
+	if ( verify_captured == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD);
+	return(SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE);
 }
 
 static inline uint32_t SparkGlm5NextVerifyTableIndex(uint32_t rows)
@@ -49,6 +109,18 @@ static inline SparkStatus SparkGlm5NextVerifyRowsAgree(uint32_t rows,const uint3
 		if ( resident_slots[row] != resident_slots[0] || positions[row] != positions[0] + row )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
+}
+
+static inline uint32_t SparkGlm5NextVerifyDepth(uint32_t budget,uint32_t produced,uint32_t rows_max,uint32_t position,uint32_t split_threshold,uint32_t max_positions)
+{
+	uint32_t depth,fit;
+	if ( rows_max < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || produced >= budget || budget - produced < 2u )
+		return(0u);
+	depth = budget - produced - 1u;
+	if ( depth > rows_max - 1u )
+		depth = rows_max - 1u;
+	fit = SparkGlm5NextVerifyRowsFit(position,depth + 1u,split_threshold,max_positions);
+	return(fit == 0u ? 0u : fit - 1u);
 }
 
 static inline SparkStatus SparkGlm5NextVerifyWaveCheck(uint32_t rows,uint32_t rows_max,uint32_t first_row,uint32_t active_sequences,uint32_t sampled,const uint32_t *resident_slots,const uint32_t *positions,uint32_t split_threshold,uint32_t max_positions)
