@@ -111,6 +111,8 @@ typedef struct SparkGemma4ModuleState
 	void *full_kv_pool_bf16;
 	uint64_t sliding_kv_pool_bytes;
 	uint64_t full_kv_pool_bytes;
+	uint64_t sliding_kv_layer_bytes;
+	uint64_t full_kv_layer_bytes;
 	uint32_t sliding_kv_heads_per_rank;
 	uint32_t full_kv_heads_per_rank;
 	SparkGemma4ModuleSlot slots[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -559,10 +561,16 @@ static SparkStatus SparkGemma4ModuleAllocatePools(SparkGemma4ModuleState *state)
 	uint64_t full_slot_bytes = SPARK_HYBRID_KV_SLOT_BYTES(state->full_kv_heads_per_rank,SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
 	if ( sliding_slot_bytes % 16u != 0u || full_slot_bytes % 16u != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->sliding_kv_pool_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,sliding_slot_bytes);
-	state->full_kv_pool_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,full_slot_bytes);
-	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->sliding_kv_pool_bytes,&state->sliding_kv_pool_bf16);
-	if ( status == SPARK_STATUS_OK )
+	if ( state->sliding_layer_count + state->full_layer_count != state->layer_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->sliding_kv_layer_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,sliding_slot_bytes);
+	state->full_kv_layer_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,full_slot_bytes);
+	state->sliding_kv_pool_bytes = state->sliding_kv_layer_bytes * state->sliding_layer_count;
+	state->full_kv_pool_bytes = state->full_kv_layer_bytes * state->full_layer_count;
+	fprintf(stderr,"%s kv_pools blocks=%u sliding=%u x %llu full=%u x %llu bytes\n",SPARK_GEMMA4_MODULE_TAG,state->kv_block_count,state->sliding_layer_count,(unsigned long long)state->sliding_kv_layer_bytes,state->full_layer_count,(unsigned long long)state->full_kv_layer_bytes);
+	if ( state->sliding_layer_count != 0u )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->sliding_kv_pool_bytes,&state->sliding_kv_pool_bf16);
+	if ( status == SPARK_STATUS_OK && state->full_layer_count != 0u )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->full_kv_pool_bytes,&state->full_kv_pool_bf16);
 	return(status);
 }
@@ -811,12 +819,16 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 	uint32_t kv_heads = is_full != 0u ? state->full_kv_heads_per_rank : state->sliding_kv_heads_per_rank;
 	uint32_t query_heads = is_full != 0u ? SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / state->tp_degree : SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree;
 	uint32_t head_dimension = is_full != 0u ? SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION : SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
-	void *pool = is_full != 0u ? state->full_kv_pool_bf16 : state->sliding_kv_pool_bf16;
+	uint32_t kind_ordinal = is_full != 0u ? state->full_ordinal_by_layer[layer] : state->sliding_ordinal_by_layer[layer];
+	uint8_t *pool = (uint8_t *)(is_full != 0u ? state->full_kv_pool_bf16 : state->sliding_kv_pool_bf16);
 	const uint32_t *page_table = table != 0 ? table->physical_block_indices : 0;
 	uint32_t page_table_stride = table != 0 ? table->lane_stride : 0u;
 	uint32_t sequence_count = table != 0 ? table->lane_capacity : state->max_active_sequence_count;
 	uint32_t pool_page_count = state->kv_block_count;
 	SparkStatus status;
+	if ( kind_ordinal >= (is_full != 0u ? state->full_layer_count : state->sliding_layer_count) || pool == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	pool += (uint64_t)kind_ordinal * (is_full != 0u ? state->full_kv_layer_bytes : state->sliding_kv_layer_bytes);
 	if ( is_full != 0u )
 	{
 		const SparkGemma4FullLayerWeights *weights = &state->full_by_layer[layer];

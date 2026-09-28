@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the gemma4-31b TP16 shared-socket deployment tree for lane 6.
+"""Generate a gemma4-31b TP deployment tree (TP16 lane 6 by default).
+
+--hosts picks the TP group (4 or 16 nodes, world rank = index in the list)
+and --lane its port blocks (control 23000+16L, transport 64000+16L); the
+TP4 serving arm is --hosts sparka,sparkb,sparkc,sparkd --lane 4 over the
+tp4 packs (~/sparkdata/gemma4_31b.bf16.tp4/packs, one 60-layer rank each).
 
 Topology: TP16 identity over spark0..sparkf (world rank = node index,
 SPARK_TP_MESH_RANKS=0..15). One stage per rank (tp16pp1 packs, landed and
@@ -29,14 +34,12 @@ import json
 import os
 from pathlib import Path
 
-RANKS = 16
-TP_DEGREE = 16
 MODEL_REVISION = "842da3794eaa0b77d5f08bae87a17459d91ff475"
 NODE_TARGET = "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
-PACK_TEMPLATE = "packs/gemma4_31b_tp16_rank%s_stage0.gemma4sp"  # rank in hex
-HOSTS = [f"spark{hex(r)[2:]}" for r in range(RANKS)]
-LANE_CONTROL_BASE = 23096
-LANE_TRANSPORT_BASE = 64096
+PACK_TEMPLATE = "packs/gemma4_31b_tp%d_rank%s_stage0.gemma4sp"
+DEFAULT_HOSTS = ",".join(f"spark{hex(r)[2:]}" for r in range(16))
+DEFAULT_LANE = 6
+SERVING_TP_DEGREES = (4, 16)
 EOS_TOKEN_IDS = [1, 106, 50]
 RUNTIME_ROOT_TEMPLATE = "${SPARK_QUEUE_RUNTIME_ROOT}"
 MAX_SEQUENCE_POSITIONS = 32768
@@ -48,29 +51,30 @@ def rank_hex(rank: int) -> str:
     return hex(rank)[2:]
 
 
-def stage_config(rank: int) -> dict:
+def stage_config(rank: int, tp_degree: int) -> dict:
     return {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
-        "stage_pack_path": PACK_TEMPLATE % rank_hex(rank),
+        "stage_pack_path": PACK_TEMPLATE % (tp_degree, rank_hex(rank)),
         "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
-        "tp_degree": TP_DEGREE,
+        "tp_degree": tp_degree,
     }
 
 
-def tp_environment(rank: int) -> dict:
+def tp_environment(rank: int, tp_degree: int) -> dict:
     return {
-        "SPARK_GEMMA4_TP_DEGREE": str(TP_DEGREE),
+        "SPARK_GEMMA4_TP_DEGREE": str(tp_degree),
         "SPARK_GEMMA4_TP_RANK": str(rank),
         "SPARK_GEMMA4_TP_STANDALONE": "0",
         "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS": "30000",
     }
 
 
-def resident_deployment(runtime_root: str, weightd_socket: str) -> dict:
+def resident_deployment(runtime_root: str, weightd_socket: str, hosts: list,
+                        lane: int) -> dict:
     page_capacity = 16 * ((MAX_SEQUENCE_POSITIONS + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS)
     nodes = []
-    for rank, host in enumerate(HOSTS):
+    for rank, host in enumerate(hosts):
         nodes.append({
             "rank_index": rank,
             # The residentd loader rejects duplicate (rank, stage) pairs:
@@ -86,7 +90,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str) -> dict:
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
-                "port": LANE_CONTROL_BASE + rank,
+                "port": 23000 + 16 * lane + rank,
             },
         })
     return {
@@ -101,7 +105,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str) -> dict:
         "transport": {
             "shared_object_path": "lib/hidden_transport.so",
             "mode": "host-rdma",
-            "control_port_base": LANE_TRANSPORT_BASE,
+            "control_port_base": 64000 + 16 * lane,
         },
         "weightd": {
             "socket_path": weightd_socket,
@@ -131,21 +135,31 @@ def main() -> int:
                              "${SPARK_QUEUE_RUNTIME_ROOT} template resolved by "
                              "the shared-socket wrapper)")
     parser.add_argument("--weightd-socket", default=DEFAULT_WEIGHTD_SOCKET)
+    parser.add_argument("--hosts", default=DEFAULT_HOSTS)
+    parser.add_argument("--lane", type=int, default=DEFAULT_LANE)
     arguments = parser.parse_args()
+    hosts = [h for h in arguments.hosts.split(",") if h]
+    tp_degree = len(hosts)
+    if tp_degree not in SERVING_TP_DEGREES or len(set(hosts)) != tp_degree:
+        parser.error(f"--hosts names {tp_degree} nodes; the dense serving arms are TP4 and TP16 over distinct nodes")
+    if not 0 <= arguments.lane < 16:
+        parser.error("--lane outside 0..15")
     runtime_root = arguments.runtime_root or RUNTIME_ROOT_TEMPLATE
     root = Path(arguments.output)
     (root / "config").mkdir(parents=True, exist_ok=True)
-    for rank in range(RANKS):
+    for rank in range(tp_degree):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            json.dumps(stage_config(rank), indent=1) + "\n")
+            json.dumps(stage_config(rank, tp_degree), indent=1) + "\n")
         (root / "config" / ("env_%02d.json" % rank)).write_text(
-            json.dumps(tp_environment(rank), indent=1, sort_keys=True) + "\n")
+            json.dumps(tp_environment(rank, tp_degree), indent=1, sort_keys=True) + "\n")
     (root / "model_resident.json").write_text(
-        json.dumps(resident_deployment(runtime_root, arguments.weightd_socket),
+        json.dumps(resident_deployment(runtime_root, arguments.weightd_socket,
+                                       hosts, arguments.lane),
                    indent=1) + "\n")
-    print(f"{root}: {RANKS} stage configs + envs + model_resident.json "
-          f"(TP16 spark0..sparkf, control {LANE_CONTROL_BASE}+, "
-          f"transport {LANE_TRANSPORT_BASE}+, "
+    print(f"{root}: {tp_degree} stage configs + envs + model_resident.json "
+          f"(TP{tp_degree} {hosts[0]}..{hosts[-1]}, lane {arguments.lane}, "
+          f"control {23000 + 16 * arguments.lane}+, "
+          f"transport {64000 + 16 * arguments.lane}+, "
           f"weightd {arguments.weightd_socket})")
     return 0
 

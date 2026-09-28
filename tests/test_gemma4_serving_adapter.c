@@ -29,6 +29,12 @@
 #ifndef TEST_GEMMA4_MOE_MODEL_REVISION
 #define TEST_GEMMA4_MOE_MODEL_REVISION ""
 #endif
+#ifndef TEST_GEMMA4_SERVING_TP_DEGREE
+#error "TEST_GEMMA4_SERVING_TP_DEGREE must name the dense adapter's serving topology"
+#endif
+#ifndef TEST_GEMMA4_SERVING_ADAPTER_ID
+#error "TEST_GEMMA4_SERVING_ADAPTER_ID must name the dense adapter's identity"
+#endif
 
 #define TEST_GEMMA4_MANDATORY_MEMBER_COUNT 10u
 
@@ -217,7 +223,7 @@ int main(void)
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,
 		&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->adapter_id,
-		"spark.gemma4.serving-adapter.tp16.v1") == 0);
+		TEST_GEMMA4_SERVING_ADAPTER_ID) == 0);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,
 		"google/gemma-4-31B-it") == 0);
 	assert(strcmp(library.adapter_interface.descriptor->model_revision,
@@ -233,8 +239,10 @@ int main(void)
 		SPARK_GEMMA4_MODEL_LAYER_COUNT);
 	assert(library.adapter_interface.descriptor->layer_count ==
 		SPARK_GEMMA4_MODEL_LAYER_COUNT);
-	assert(library.adapter_interface.descriptor->stage_count == 16u);
-	assert(library.adapter_interface.descriptor->parallel_group_size == 16u);
+	assert(library.adapter_interface.descriptor->stage_count == TEST_GEMMA4_SERVING_TP_DEGREE);
+	assert(library.adapter_interface.descriptor->parallel_group_size == TEST_GEMMA4_SERVING_TP_DEGREE);
+	assert(library.adapter_interface.descriptor->stage_layer_counts[TEST_GEMMA4_SERVING_TP_DEGREE - 1u] == SPARK_GEMMA4_MODEL_LAYER_COUNT);
+	assert(TEST_GEMMA4_SERVING_TP_DEGREE == SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT || library.adapter_interface.descriptor->stage_layer_counts[TEST_GEMMA4_SERVING_TP_DEGREE] == 0u);
 	TestGemma4ServingInterfaceCompleteness(&library.adapter_interface);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	TestGemma4ServingConfiguration(&configuration,0u,
