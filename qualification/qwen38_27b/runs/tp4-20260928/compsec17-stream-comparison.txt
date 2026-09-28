@@ -1,0 +1,18 @@
+76000 410 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76001 855 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76002 381 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76003 983 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76004 997 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76005 940 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76006 1585 nospec:= nospec-each:- dflash2-each:= dflash2-final:=
+76007 738 nospec:= nospec-each:- dflash2-each:= dflash2-final:d@217/941
+76008 368 nospec:d@1/1019 nospec-each:= dflash2-each:= dflash2-final:d@316/365
+76009 473 nospec:d@40/292 nospec-each:= dflash2-each:= dflash2-final:=
+76010 782 nospec:d@15/496 nospec-each:d@181/181 dflash2-each:= dflash2-final:=
+76011 1896 nospec:d@0/609 nospec-each:= dflash2-each:d@1554/1554 dflash2-final:=
+76012 916 nospec:d@8/756 nospec-each:= dflash2-each:= dflash2-final:d@60/587
+76013 353 nospec:d@16/152 nospec-each:= dflash2-each:= dflash2-final:=
+76014 356 nospec:d@0/3 nospec-each:= dflash2-each:= dflash2-final:=
+76015 566 nospec:d@2/750 nospec-each:= dflash2-each:= dflash2-final:=
+76016 2183 nospec:d@15/1074 nospec-each:= dflash2-each:d@1711/1711 dflash2-final:d@810/4096
+rep07 fresh-engine DFlash2 repeats (62d619b): run1 737 tokens diverges from no-spec at token 423 (181 rounds); run2 738 tokens == no-spec (182 rounds)
