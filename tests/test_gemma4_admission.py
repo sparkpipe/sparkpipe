@@ -9,7 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = r'''
 #include <assert.h>
 #include "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c"
+static uint32_t admit_lanes(SparkGemma4ModuleState *state, uint32_t rows, uint32_t prefill, uint32_t lanes, uint32_t *reason);
 static uint32_t admit(SparkGemma4ModuleState *state, uint32_t rows, uint32_t prefill, uint32_t *reason)
+{
+    return admit_lanes(state, rows, prefill, prefill ? 1u : rows, reason);
+}
+static uint32_t admit_lanes(SparkGemma4ModuleState *state, uint32_t rows, uint32_t prefill, uint32_t lanes, uint32_t *reason)
 {
     SparkModelDriverAdmissionRequest request;
     SparkModelDriverAdmissionDecision decision;
@@ -18,7 +23,7 @@ static uint32_t admit(SparkGemma4ModuleState *state, uint32_t rows, uint32_t pre
     request.program_id = 1u;
     request.request_id = 1u;
     request.sequence_id = 1u;
-    request.active_slot_count = prefill ? 1u : rows;
+    request.active_slot_count = lanes;
     request.new_token_count = rows;
     request.frame_flags = prefill ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
     assert(SparkGemma4ModuleAdmit(state, &request, &decision) == SPARK_STATUS_OK);
@@ -42,6 +47,10 @@ int main(void)
     admit(&state, 32u, 1u, &reason);
     assert(reason != SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
     assert(admit(&state, 33u, 1u, &reason) == 0u);
+    assert(reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+    admit_lanes(&state, 16u, 1u, 4u, &reason);
+    assert(reason != SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+    assert(admit_lanes(&state, 16u, 1u, 9u, &reason) == 0u);
     assert(reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
     assert(admit(&state, 9u, 0u, &reason) == 0u);
     assert(reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);

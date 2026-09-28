@@ -529,6 +529,7 @@ static SparkStatus SparkGemma4ModuleReset(SparkGemma4ModuleState *state, const S
 }
 
 #define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_input_row_count)
+#define SPARK_MODULE_ADMIT_POLICY_FLAGS SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS
 #define SPARK_MODULE_ADMIT_RESET(state,request) SparkGemma4ModuleReset((state),(request))
 #include "sparkpipe/family/module/spark_module_admit_shape.h"
 
