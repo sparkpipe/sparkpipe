@@ -435,6 +435,11 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 		fprintf(stderr,"%s config_mtp_without_head stage=%u/%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->stage_index,state->stage_count);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	if ( state->tp_degree > 1u && state->frame_graph_off == 0u )
+	{
+		fprintf(stderr,"%s frame_graph=off reason=tp_collective_completes_on_host tp_degree=%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->tp_degree);
+		state->frame_graph_off = 1u;
+	}
 	if ( state->tp_degree > 1u && state->dflash2_config.sel_check_present != 0u )
 	{
 		fprintf(stderr,"%s config_sel_check_needs_whole_head tp_degree=%u\n",SPARK_QWEN38_27B_MODULE_TAG,state->tp_degree);
@@ -2856,6 +2861,7 @@ static SparkStatus SparkQwen38_27bModuleExecuteFrame(
     uint32_t rows;
     uint32_t row;
     uint32_t lanes_claimed;
+    uint32_t tp_frame_begun = 0u;
     SparkStatus status;
 
     state = (SparkQwen38_27bModuleState *)module_state;
@@ -2982,19 +2988,28 @@ static SparkStatus SparkQwen38_27bModuleExecuteFrame(
             &state->submitted_count,
             1u,
             memory_order_relaxed);
-        status = SparkQwen38_27bModuleRunFrame(
-            state,
-            slot,
-            context,
-            frame,
-            prefill,
-            rows);
+        status = SparkQwen38_27bTpBeginFrame(&state->tp,frame->request_id);
+        tp_frame_begun = status == SPARK_STATUS_OK ? 1u : 0u;
+        if (status == SPARK_STATUS_OK)
+            status = SparkQwen38_27bModuleRunFrame(
+                state,
+                slot,
+                context,
+                frame,
+                prefill,
+                rows);
     }
     if (status == SPARK_STATUS_OK && (context->flags & SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_DRAFT_AFTER) != 0u)
         status = SparkQwen38_27bModuleRunDsparkBlockForward(state,slot,context->dspark_draft,
             (state->owns_embedding != 0u && frame->buffer_count > 0u && frame->buffers != 0)
                 ? (const uint32_t *)frame->buffers[0].address : 0,
             rows);
+    if (tp_frame_begun != 0u)
+    {
+        SparkStatus end_status = SparkQwen38_27bTpEndFrame(&state->tp,slot->cuda_stream,status);
+        if (status == SPARK_STATUS_OK)
+            status = end_status;
+    }
     if (status == SPARK_STATUS_OK)
     {
         SparkQwen38_27bModuleCommitLaneSequenceContinuity(

@@ -62,6 +62,15 @@ SparkStatus SparkQwen38_27bTpReduceU64Max(
 	uint32_t logical_count,
 	void *cuda_stream);
 
+SparkStatus SparkQwen38_27bTpBeginFrame(
+	SparkQwen38_27bTpState *tp,
+	uint64_t request_id);
+
+SparkStatus SparkQwen38_27bTpEndFrame(
+	SparkQwen38_27bTpState *tp,
+	void *cuda_stream,
+	SparkStatus frame_status);
+
 #ifdef __cplusplus
 }
 #endif
