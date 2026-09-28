@@ -63,7 +63,7 @@ python3 tools/tp_cupti_trace_report.py /absolute/unique/rank0.cupti.log --output
 ```
 
 The report merges overlapping GPU intervals before calculating covered time
-and gaps. It separates compute kernels, names containing `SparkGlm5NextMesh`,
+and gaps. It separates compute kernels, names containing `SparkTpMesh`,
 memcpy and memset, and lists the largest uncovered intervals and kernel names.
 Category intervals can overlap; their coverage is not additive. An uncovered
 interval is not automatically a network wait: it may also include CPU work,

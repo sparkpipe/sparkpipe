@@ -269,8 +269,7 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS |
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
 #else
-        /* The honest contract (manager ruling on laguna's measurement):
-         * REQUIRED_SPARK_HOST_RDMA_CAPS is what this backend implements
+        /* REQUIRED_SPARK_HOST_RDMA_CAPS is what this backend implements
          * — synchronous singles plus batch loops over them. Poll
          * descriptors, multi-lane and the remote-completion doorbell
          * are NOT implemented here; declaring them to satisfy a

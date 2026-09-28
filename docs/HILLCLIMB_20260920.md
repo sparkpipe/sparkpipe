@@ -1166,7 +1166,7 @@ full-replay illegal access (#4) and the graph-env admission rejection (#5).
   behind the existing seq_cell/epoch_cell/round_seq_device/error_word/
   diag_word/cancel_expected pointers — one cudaMalloc, zero ABI change to
   the existing publish/wait kernels; EnsureCells now allocates it once.
-- S3 = SparkGlm5NextMeshRoundLoopKernel (+ its launcher): ONE launch runs N
+- S3 = SparkTpMeshRoundLoopKernel (+ its launcher): ONE launch runs N
   allreduce rounds device-side — per round: SHIPPED-cell publish-ack spin
   (#1063 contract, device-side now), payload copydown, doorbell+tail
   publish (flat slot = rank*SLOTS_PER_RANK + parity from the DEVICE cursor;
@@ -2535,7 +2535,7 @@ PR's explicit-graph-mode default is live.
 
 `SparkWeightdClientAttachLazy` maps the local mesh file descriptor with `MAP_SHARED`
 and replaces `mesh_send_buffer_addr` with that local mapping. GLM passes this
-address to `SparkTpDeviceCollectivePrepareReceiveBf16`; `SparkGlm5NextMeshWaitKernel`
+address to `SparkTpDeviceCollectivePrepareReceiveBf16`; `SparkTpMeshWaitKernel`
 derives every peer tail from the same local band base plus the peer's slot offset.
 `SparkWeightdMeshPostTransfer` posts `IBV_WR_RDMA_WRITE` for the payload and its
 tail into the receiving peer's corresponding local mesh region. Thus

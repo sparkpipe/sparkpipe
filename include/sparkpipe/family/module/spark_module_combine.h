@@ -4,7 +4,7 @@ static SparkStatus SPARK_FAMILY(ModuleCombineFusedBf16)(void *combine_context, v
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchSumRanksF32((cudaStream_t)cuda_stream,destination_device,source_devices,source_count,(uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
+	error = SparkTpLaunchSumRanksF32((cudaStream_t)cuda_stream,destination_device,source_devices,source_count,(uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_fused"));
 }
 
@@ -12,7 +12,7 @@ static SparkStatus SPARK_FAMILY(ModuleCombineF32Seed)(void *combine_context, voi
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchSeedF32((cudaStream_t)cuda_stream,(float *)destination_f32_device,source_a_bf16_device,source_b_bf16_device,element_count);
+	error = SparkTpLaunchSeedF32((cudaStream_t)cuda_stream,(float *)destination_f32_device,source_a_bf16_device,source_b_bf16_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_f32_seed"));
 }
 
@@ -20,7 +20,7 @@ static SparkStatus SPARK_FAMILY(ModuleCombineF32Add)(void *combine_context, void
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAddF32((cudaStream_t)cuda_stream,(float *)destination_f32_device,source_bf16_device,element_count);
+	error = SparkTpLaunchAddF32((cudaStream_t)cuda_stream,(float *)destination_f32_device,source_bf16_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_f32_add"));
 }
 
@@ -28,7 +28,7 @@ static SparkStatus SPARK_FAMILY(ModuleRoundF32)(void *combine_context, void *des
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchRoundF32((cudaStream_t)cuda_stream,destination_bf16_device,(const float *)source_f32_device,element_count);
+	error = SparkTpLaunchRoundF32((cudaStream_t)cuda_stream,destination_bf16_device,(const float *)source_f32_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_f32_round"));
 }
 
@@ -36,7 +36,7 @@ static SparkStatus SPARK_FAMILY(ModuleCombineBf16)(void *combine_context, void *
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
+	error = SparkTpLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_sum"));
 }
 
@@ -44,7 +44,7 @@ static SparkStatus SPARK_FAMILY(ModuleCombineU64Max)(void *combine_context, uint
 {
 	cudaError_t error;
 	(void)combine_context;
-	error = SparkGlm5NextLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
+	error = SparkTpLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_max_u64"));
 }
 
