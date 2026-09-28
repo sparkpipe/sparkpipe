@@ -16,7 +16,7 @@ static_assert(Qwen38_27bFullKv::kSlotBytes == QWEN38_27B_KV_HEADS * (QWEN38_27B_
 	"the GQA slot is [K: heads x head_dim][V: heads x value_dim] bf16");
 
 #ifndef QWEN38_27B_LAYER_THREADS
-#define QWEN38_27B_LAYER_THREADS 256u
+#error "QWEN38_27B_LAYER_THREADS must name the layer CTA width: 256 in the device translation units, 1 in the host-CUDA layer tests"
 #endif
 #define QWEN38_27B_LAYER_TILE_N 128u
 #define QWEN38_27B_LAYER_STAGES 2u

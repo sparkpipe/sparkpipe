@@ -83,6 +83,15 @@ static inline uint32_t SparkModelServingWorkKindUsesRows(uint32_t work_kind)
 		work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE;
 }
 
+#define SPARK_MODEL_SERVING_MAX_COMPLETION_STATUS SPARK_STATUS_UNSUPPORTED
+
+static inline uint32_t SparkModelServingCompletionStatus(uint32_t status)
+{
+	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
+		return((uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(status);
+}
+
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION \
 	UINT32_C(0x00000002)

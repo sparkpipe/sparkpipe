@@ -374,7 +374,7 @@ def main():
             subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-D_GNU_SOURCE', '-O1',
                             '-ffunction-sections', '-fdata-sections',
                             '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections',
-                            *['-I' + path for path in includes], '-DSPARK_LLM_MTP_LAYER_COUNT=0u',
+                            *['-I' + path for path in includes], '-DSPARK_LLM_MTP_LAYER_COUNT=0u', '-DSPARK_BATCH_BUCKET=1024u',
                             f'-D{family.upper()}_MODEL_REVISION="fixture"', '-DQWEN38_MODEL_REVISION="fixture"',
                             f'-D{family.upper()}_CONTRACT_SHA256="fixture"',
                             '-DGLM_EXPERT_WEIGHT_CODEC=5', '-DGLM_EXPERT_CODEC_NAME="fp8"', '-DGLM_CONTRACT_SHA256="fixture"',

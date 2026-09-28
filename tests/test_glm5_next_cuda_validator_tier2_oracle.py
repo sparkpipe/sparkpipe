@@ -35,6 +35,7 @@ def main() -> int:
     build = subprocess.run(
         [compiler(), "-std=c++17", "-O1", "-x", "c++",
          "-DSPARK_GLM5_NEXT_VALIDATOR_ORACLE_SELFTEST",
+         "-DSPARK_BATCH_BUCKET=1024u",
          "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
          "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"",
          "-DGLM5_NEXT_MODEL_REVISION=\"selftest\"",

@@ -78,7 +78,7 @@ make -j8 build/sparkpipe_model_residentd build/sparkpipe_model_batch \
 # step 3: serving adapter (TP1)
 rm -f build/libqwen38_27b_serving_adapter.so
 make build/libqwen38_27b_serving_adapter.so \
-  CC="cc -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u" -j8
+  QWEN38_27B_SERVING_TOPOLOGY_FLAGS=-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u -j8
 
 # step 4: driver compile
 rm -rf /tmp/qwen38-driver-new && mkdir -p /tmp/qwen38-driver-new

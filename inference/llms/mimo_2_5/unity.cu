@@ -1,3 +1,4 @@
+#define MIMO25_LAYER_THREADS 256u
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"

@@ -1,3 +1,4 @@
+#define QWEN38_27B_LAYER_THREADS 256u
 
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/llms/qwen_3_6/layer.cuh"

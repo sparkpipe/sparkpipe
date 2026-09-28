@@ -92,7 +92,7 @@ int32_t main(void)
         source, binary = Path(directory) / ("probe.cu" if args.cuda else "probe.c"), Path(directory) / "probe"
         source.write_text(prefix + kernels + probe)
         subprocess.run([*compiler,
-                        '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', "-Iinclude",
+                        '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', "-DSPARK_BATCH_BUCKET=1024u", "-Iinclude",
                         "-Imodel-families/glm5_next/include",
                         "-Imodules/glm5_next_resident_decode_stage/include",
                         str(source), "-o", str(binary)], cwd=ROOT, check=True)

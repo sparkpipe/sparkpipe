@@ -6,14 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef SPARK_SYNTH_EMIT_MTP_TAIL
-#define SPARK_SYNTH_EMIT_MTP_TAIL 1
-#endif
-#ifndef SPARK_SYNTH_HEAD_GLOBAL_KINDS
-#define SPARK_SYNTH_HEAD_GLOBAL_KINDS SPARK_SYNTH_MTP_GLOBAL_KINDS
-#endif
-
 #ifdef SPARK_SYNTH_QWEN_TEMPLATE
+#ifndef SPARK_SYNTH_EMIT_MTP_TAIL
+#error "SPARK_SYNTH_EMIT_MTP_TAIL must say whether the pack ends with the MTP tail"
+#endif
 typedef struct SparkSynthContext
 {
 	SPARK_SYNTH_ENTRY_T entries[SPARK_SYNTH_MAX_TENSORS];
@@ -23,10 +19,6 @@ typedef struct SparkSynthContext
 	uint64_t payload_cursor;
 	uint64_t seed;
 } SparkSynthContext;
-
-#ifndef SPARK_SYNTH_CONTEXT_T
-#define SPARK_SYNTH_CONTEXT_T SparkSynthContext
-#endif
 #endif
 
 static uint64_t SparkSynthNext(uint64_t *state)

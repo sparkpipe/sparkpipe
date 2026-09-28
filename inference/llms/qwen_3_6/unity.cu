@@ -1,3 +1,4 @@
+#define QWEN38_27B_LAYER_THREADS 256u
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"

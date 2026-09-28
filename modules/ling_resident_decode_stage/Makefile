@@ -63,7 +63,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_page_store.c \
 	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_ling_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DLING_EXPERT_WEIGHT_CODEC=$(LING_EXPERT_CODEC_ID) -DLING_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DLING_MODEL_REVISION=\"$(MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
+MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DLING_EXPERT_WEIGHT_CODEC=$(LING_EXPERT_CODEC_ID) -DLING_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DLING_MODEL_REVISION=\"$(MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 
 BUILD_DIRECTORY ?= ../../build/modules/ling_resident_decode_stage/$(EXPERT_CODEC)
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/libling_resident_decode_stage_$(EXPERT_CODEC).a
@@ -94,25 +94,5 @@ GPU_VALIDATOR := validation/validate_ling_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-ADAPTER_SHARED_FLAGS := -dynamiclib
-ADAPTER_LIBRARY_EXT := dylib
-else
-ADAPTER_SHARED_FLAGS := -shared
-ADAPTER_LIBRARY_EXT := so
-endif
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libling_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
-
-.PHONY: adapter
-
-adapter:
-	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		-I$(REPOSITORY_ROOT)/src $(MODULE_INCLUDE_FLAGS) $(MODULE_COMPILE_FLAGS) -USPARK_BATCH_BUCKET -DSPARK_BATCH_BUCKET=$(lastword $(MODULE_BATCH_VARIANT_BUCKETS)) \
-		source/spark_ling_serving_adapter.c \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
+ADAPTER_SOURCE := source/spark_ling_serving_adapter.c
+ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS)

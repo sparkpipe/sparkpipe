@@ -105,6 +105,20 @@ static void TestMuseGlimmerServingConfiguration(
 	configuration->completion_context = test_state;
 }
 
+static void TestMuseGlimmerServingLeaseFailureCompletes(
+	const SparkModelServingAdapterInterface *adapter,
+	void *adapter_state,
+	SparkModelServingSubmission *submission,
+	TestMuseGlimmerServingState *test_state)
+{
+	uint64_t request_id;
+	request_id = submission->request_id;
+	submission->request_id = 7779u;
+	assert(adapter->submit(adapter_state,submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(test_state->completion_count == 2u);
+	submission->request_id = request_id;
+}
+
 static void TestMuseGlimmerServingDecodeSubmission(
 	SparkModelServingSubmission *submission,
 	SparkModelServingLane *lanes,
@@ -274,6 +288,7 @@ int main(void)
 	assert(library.adapter_interface.submit(adapter_state,&submission) ==
 		SPARK_STATUS_OK);
 	assert(test_state.completion_count == 2u);
+	TestMuseGlimmerServingLeaseFailureCompletes(&library.adapter_interface,adapter_state,&submission,&test_state);
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);

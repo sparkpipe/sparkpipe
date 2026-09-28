@@ -18,7 +18,7 @@
 #include "../node/weightd_mesh.c"
 
 #ifndef SPARK_WEIGHTD_MESH_DIR
-#define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
+#error "SPARK_WEIGHTD_MESH_DIR must name the mock mesh record directory"
 #endif
 
 #define TEST_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)

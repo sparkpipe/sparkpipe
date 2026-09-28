@@ -443,6 +443,10 @@ static SparkStatus SparkQwen38_27bModuleConfigure(SparkQwen38_27bModuleState *st
 #define SPARK_PACK_LOAD_SEEN_ONE 1u
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%08x"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) (value)
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
+#define SPARK_PACK_LOAD_LINEAR_VIEW 1
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
 	((entry)->weight_format == SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16_RANS || ((entry)->payload_bytes == SparkQwen38_27bStagePackPayloadBytes((entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkQwen38_27bStagePackScaleBytes((entry)->weight_format,(entry)->rows,(entry)->columns)))
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) \

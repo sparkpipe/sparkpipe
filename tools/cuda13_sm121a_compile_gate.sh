@@ -200,7 +200,8 @@ for codec_index in "${!glm_codecs[@]}"; do
 		-DGLM_EXPERT_WEIGHT_CODEC="${codec_id}" \
 		-DGLM_EXPERT_CODEC_NAME=\""${codec}"\" \
 		-DGLM_MODEL_REVISION=\""${model_revision}"\" \
-		-DGLM_CONTRACT_SHA256=\""${contract_sha256}"\"
+		-DGLM_CONTRACT_SHA256=\""${contract_sha256}"\" \
+		-DSPARK_BATCH_BUCKET=1024u
 done
 
 for direct_mode in 0 1; do

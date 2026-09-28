@@ -6,6 +6,7 @@
 
 
 #define SPARK_SYNTH_QWEN_TEMPLATE 1
+#define SPARK_SYNTH_CONTEXT_T SparkSynthContext
 #define SPARK_SYNTH_TOOL_NAME "qwen4_flash_pack_synthesize"
 #define SPARK_SYNTH_MAX_TENSORS 2048u
 #define SPARK_SYNTH_CHUNK_BYTES (8u * 1024u * 1024u)

@@ -33,6 +33,7 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' \
+        "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
         "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5" \
         "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"" \
         "-DGLM5_NEXT_MODEL_REVISION=\"${model_revision}\"" \
@@ -44,6 +45,7 @@ source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_co
 
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_archive
+spark_cuda_validation_check_batch_bucket
 
 if [[ "${SPARK_GLM5_NEXT_EXPERT_CODEC:-}" != "fp8" ]]; then
     echo "glm5_next MTP parity validation requires SPARK_GLM5_NEXT_EXPERT_CODEC=fp8 (the harness synthesizes fp8 expert payloads)" >&2

@@ -233,11 +233,11 @@ progress diary.
   `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
   contracts to admit against resident demand; do not merely raise the limit.
 - The KV page cache keeps every published block until an allocation finds the
-  logical pool full, then evicts one. It picks the victim by scanning every
-  entry, so once the pool is full each new page costs a pass over the whole
-  table. Keep unreferenced entries on an LRU list instead. Nothing reports how
-  full the pool is either; add used pages, retained entries and evictions to
-  the wave timeline.
+  logical pool full, then evicts the least recently used unreferenced entry
+  from the head of its LRU list. Making a page resident when the resident pool
+  is full still scans every resident slot for a victim. Nothing reports how
+  full the pool is; add used pages, retained entries and evictions to the wave
+  timeline.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
 - Select the smallest validated specialization for effective rows, including
@@ -393,32 +393,33 @@ progress diary.
     carries what its adapter sends, and qwen4_flash's module Makefile builds
     its adapter where `tools/module_build_release.sh` looks for it. The
     muse description says `NOT_MEASURED` where the copy said
-    `GPU_VALIDATED`; record a GPU receipt before changing it back.
-- Some production headers still default a build setting with `#ifndef`, so
-  a build that forgets the flag silently gets the default:
-  - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
-    module") in the glm5_next, ling, laguna, k3 and common GLM batch-tuning
-    headers and dsv41_flash's module source. dsv4 already requires it.
-    Requiring it everywhere first needs the flag in the GLM GPU validators'
-    nvcc arguments, the laguna adapter test and nine Python tests (two of
-    them the glm52 and glm5_next validator oracle self-tests), which all
-    compile these headers without it today;
-  - `SPARK_QWEN38_27B_SERVING_TP_DEGREE` (4) in both the qwen38_27b adapter
-    and `spark_qwen38_27b_serving_constants.h`; TP1 deployments pass 1;
-  - the `spark_pack_synthesize_common.h` value hooks
-    (`SPARK_SYNTH_EMIT_MTP_TAIL`, `SPARK_SYNTH_HEAD_GLOBAL_KINDS`); its
-    context type and `spark_pack_load_common.h`'s field names fail to
-    compile when wrong, so they are not silent;
-  - `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests
-    and tools get the default);
-  - `QWEN38_27B_LAYER_THREADS` and `MIMO25_LAYER_THREADS`, which the
-    host-CUDA layer tests set to 1 before including `layer.cuh`.
-
-  Pass each from every build that includes the header, and delete the
-  default. The `llm_defines.h` defaults, `SPARK_LLM_FIRST_ROUTED_LAYER`'s
-  and the serving adapters' description-hash default are already gone.
-  Test-harness paths (`TEST_*_PATH`) and platform shims (`_POSIX_C_SOURCE`,
-  `MSG_NOSIGNAL` and the like) are not build settings.
+    `GPU_VALIDATED`; record a GPU receipt before changing it back;
+  - every adapter that loads a driver now reports a weightd lease failure
+    (`NO_LANE`, `EVICT_DENIED`) as `CAPACITY_EXCEEDED`, which fails the
+    request. Before, residentd rejected such a completion and failed the
+    route as `INVALID_ARGUMENT`. The qwen38 template returned the raw status
+    from submit, and residentd's IPC cannot encode a status above
+    `UNSUPPORTED` in a submit result either.
+  - the glm52, glm5_next, laguna and ling GPU validators now compile at the
+    batch bucket of the archive they validate (`SPARK_MODULE_BATCH_BUCKET`).
+    Before, they compiled at the header default of 1024, so
+    `publish_variants` validated every tighter variant with a b1024
+    validator.
+- `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` is the last build setting a production
+  header still defaults with `#ifndef` (7, from the dsv4 contract). The dsv4
+  module Makefile passes it only for a k-sweep build (`DSPARK_SPEC_STEP`),
+  and nothing passes it to the dsv4 adapters, tests or tools, so
+  `tools/devcycle/build_remote.sh` compiles a k-sweep module at the
+  requested step and its adapter at 7. Pass the step from every dsv4 build
+  and delete the default. `tests/test_no_build_defaults.py` lists it as the
+  one pending exception. Every other build setting is now named by the
+  build that compiles it: the batch bucket (each family Makefile names 1024
+  for the default archive, and the GPU validators compile at the bucket of
+  the archive they link), qwen38_27b's serving TP degree, the
+  pack-synthesizer and pack-load template hooks, the legacy
+  `inference/llms` layer thread counts and the dsv41_flash attach probe's
+  TP degree. Platform shims (`_POSIX_C_SOURCE`, `MSG_NOSIGNAL` and the like)
+  and test-harness paths are not build settings.
 - `tools/module_build_release.sh` runs `make archive adapter` in the
   module directory and compiles
   `examples/model_descriptions/<module>_<codec>_firmware.json` unless
@@ -426,15 +427,16 @@ progress diary.
   - such a description exists only for gemma4 31B (bf16), glm52 (seven
     codecs), glm5_next (fp8) and minimax (bf16); laguna, ling, qwen38_max,
     qwen4_flash and glm5_next's other codecs need `FIRMWARE_JSON`;
-  - dsv41_flash, dsv4, hy4, muse_glimmer and qwen38_27b have no module
-    `adapter` target (their adapters build in the root Makefile), and
-    neither does the gemma4 26B's `Makefile.moe`, so the script cannot
-    release them;
-  - the seven module `adapter` recipes (gemma4, glm5_next, laguna, ling,
-    minimax, qwen38_max, qwen4_flash) differ only in their source file,
-    compile flags, output path and CUDA link; one rule in
-    `modules/resident_decode_stage_rules.mk` could build them all, checked
-    by comparing each family's `make -n adapter` before and after.
+  - dsv4, muse_glimmer and qwen38_27b build their adapters in the root
+    Makefile or a family release script, and dsv41_flash and hy4 have no
+    serving adapter. None of their module Makefiles names an
+    `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
+    `make adapter` refuses and the script cannot release them.
+- glm5_next, laguna and ling compare four driver descriptor fields in their
+  own load functions and skip `model_description_sha256`, which
+  `serving_adapter_template.c` checks for the other adapters. Moving them
+  onto the template needs each build to pass its description hash; the
+  tree holds a glm5_next description for fp8 only.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
@@ -466,13 +468,11 @@ progress diary.
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
   recovered without restarting the unit.
-- The serving completion ABI accepts statuses up to UNSUPPORTED, but weightd
-  can fail a glm5_next expert lease with NO_LANE or EVICT_DENIED, and the
-  chain passes that status up. residentd now names it
-  (`COMPLETION-REJECTED ... completion_status=20`) and fails the route with
-  invalid_argument. Map those statuses in the adapter, to BUSY where the step
-  can be retried without having advanced any recurrent state, otherwise to
-  CAPACITY_EXCEEDED.
+- Adapters map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`) to
+  `CAPACITY_EXCEEDED` through `SparkModelServingCompletionStatus`, which
+  fails the request. A family whose lease failure provably comes before any
+  recurrent state advances could return `BUSY` instead, so the engine
+  retries the step.
 - Pipeline-parallel stages still wedge after a failure on another rank. When
   one rank fails a submission's COMMIT or frame, the next stage's route has
   already posted its hidden-transport receive and waits in WAIT_INPUT for data

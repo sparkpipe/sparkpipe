@@ -112,11 +112,22 @@ the firmware description it compiles:
 | `model_description_sha256` | the description file's SHA-256 | the hash its build computes from the same file |
 
 The stage's operations name the module by its `MODULE_IDENTIFIER`.
-`tests/test_adapter_description_identity.py` expands the six qwen38-template
-adapters (gemma4 31B and 26B, minimax, muse_glimmer, qwen38_max, qwen4_flash)
-with the flags their own builds pass and checks all of this against their
-descriptions and module Makefiles. qwen38_max's revision comes from its build
-invocation, so the test supplies the one its in-tree callers pass.
+`tests/test_adapter_description_identity.py` expands the adapter of every
+family that loads a compiled driver, with the flags its own build passes:
+dsv4 (flash), gemma4 31B and 26B, glm52 at each of its seven codecs,
+glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b, qwen38_max and
+qwen4_flash. It checks what each sends against its description, and the
+description's target and module against the module Makefile. Where the
+build invocation supplies the revision (glm52, glm5_next, qwen38_max), the
+test cannot check it. glm5_next, laguna and ling do not compare the
+description hash, and dsv4 leaves the target to the loader, which compares
+it with the node target.
+
+Module Makefiles build their adapter with the one `adapter` rule in
+`modules/resident_decode_stage_rules.mk`. A module names `ADAPTER_SOURCE`,
+`ADAPTER_FLAGS` and, when it links the CUDA runtime, `ADAPTER_LINK`; the
+library lands in `$(BUILD_DIRECTORY)/lib<family>_serving_adapter_<codec>`,
+where `tools/module_build_release.sh` looks for it.
 
 ## Performance evidence
 
