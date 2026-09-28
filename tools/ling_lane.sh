@@ -13,6 +13,21 @@ UNIT="sp-ling-rd$LING_LANE"
 MESH_RANKS="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/ling-lane$LING_LANE/root"; }
+PIDS=()
+
+join_ranks() {
+  local label="$1" rank failed=""
+  for rank in $(seq 0 15); do
+    if ! wait "${PIDS[$rank]}"; then
+      failed="$failed $(host_of "$rank")"
+    fi
+  done
+  PIDS=()
+  if [ -n "$failed" ]; then
+    echo "ling_lane $label failed on:$failed" >&2
+    return 1
+  fi
+}
 
 render() {
   local out="$1"
@@ -21,7 +36,7 @@ render() {
 }
 
 setup() {
-  local generated rank host root pack
+  local generated rank host root pack budget
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
   for rank in $(seq 0 15); do
@@ -36,10 +51,15 @@ setup() {
       scp -q "$generated/config/stage_$(printf %02d "$rank").json" "$host:$root/config/"
       scp -q "$HERE/ling_multidev_lane.py" "$host:$root/"
       $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/ling_multidev_lane.py --spine-budget $pack > $root/spine_budget"
-      echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
+      budget="$($SSH "$host" cat "$root/spine_budget")"
+      echo "$host ready spine_budget=$budget"
     ) &
+    PIDS[$rank]=$!
   done
-  wait
+  if ! join_ranks setup; then
+    rm -rf "$generated"
+    exit 1
+  fi
   rm -rf "$generated"
 }
 
@@ -49,8 +69,9 @@ start() {
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$LING_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$LING_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$LING_LANE -E SPARK_TP_MESH_RANKS=$MESH_RANKS -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$LING_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $rank > residentd.log 2>&1'" &
+    PIDS[$rank]=$!
   done
-  wait
+  join_ranks start
 }
 
 status() {
@@ -66,8 +87,9 @@ stop() {
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     $SSH "$host" "systemctl --user stop $UNIT 2>/dev/null; systemctl --user reset-failed $UNIT 2>/dev/null; true" &
+    PIDS[$rank]=$!
   done
-  wait
+  join_ranks stop
 }
 
 api() {

@@ -14,7 +14,13 @@ configurations. Everything depends on the lane id:
 | residentd control | 23000 + 16·lane + rank |
 | TP collective listen and peers | 53000 + 16·lane + rank |
 | transport base (topology only) | 64000 + 16·lane |
-| session matrices (topology only) | 23168 + 64·lane, +16 for hc |
+| session matrices (topology only) | 24256 + 32·lane, +16 for hc |
+
+The template porting checklist puts session blocks at 23168 + 64·lane,
+which is disjoint from the control blocks only for lanes 0..9: lane 10's
+control block 23160..23175 would overlap lane 0's session block. The ling
+lanes therefore keep their session blocks in 24256..24767, above every
+checklist block for sixteen lanes.
 
 The collective identifier is lane-tagged and never zero. Runtime roots
 are `/home/<host>/ling-lane<lane>/root`, with KV backing inside the root
@@ -22,12 +28,17 @@ and a finite cap. `tests/test_ling_lane.py` renders all sixteen lanes and
 checks the following:
 
 - ports and runtime roots follow the table;
-- no bound port repeats across lanes;
+- no port of any plane (control, collective, transport block, both
+  session matrices) repeats across the sixteen lanes, and no ling session
+  port falls in a checklist block of any lane;
 - the adapter configuration has exactly the adapter's member set;
 - the lane-9 configuration equals `tools/ling_multidev_lane.py` outside
   the collective;
 - `--check` catches drift;
-- the script refuses to run without its settings.
+- the script refuses to run without its settings;
+- `setup`, `start` and `stop` exit non-zero and name the host when any
+  rank's remote step fails (exercised with a stub `ssh` that fails on one
+  host).
 
 Every setting is required and none has a default:
 

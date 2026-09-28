@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import subprocess
 import sys
@@ -62,6 +63,66 @@ def lane_problems(lane, files, members):
     return failures
 
 
+def lane_port_set(files):
+    deployment = files["model_resident.json"]
+    ports = set(range(deployment["transport"]["control_port_base"], deployment["transport"]["control_port_base"] + 16))
+    for node in deployment["nodes"]:
+        ports.add(node["control_endpoint"]["port"])
+        collective = files[node["adapter_configuration_path"]]["tp_collective"]
+        ports.add(collective["listen_port"])
+        ports.update(collective["peer_ports"])
+        for matrix in ("session_ports", "session_ports_hc"):
+            ports.update(value for row in collective[matrix] for value in row if value != 0)
+    return ports
+
+
+def checklist_blocks():
+    blocks = set()
+    for lane in range(16):
+        for base in (23000 + 16 * lane, 53000 + 16 * lane, 64000 + 16 * lane):
+            blocks.update(range(base, base + 16))
+        blocks.update(range(23168 + 64 * lane, 23168 + 64 * lane + 64))
+    return blocks
+
+
+STUB_SSH = """#!/bin/sh
+for argument in "$@"; do
+  if [ "$argument" = "$LING_TEST_FAIL_HOST" ]; then
+    exit 7
+  fi
+done
+echo 1024
+"""
+
+
+def script_failures(failures):
+    with tempfile.TemporaryDirectory() as directory:
+        stub = Path(directory) / "bin"
+        stub.mkdir()
+        for name, body in (("ssh", STUB_SSH), ("scp", "#!/bin/sh\nexit 0\n")):
+            (stub / name).write_text(body)
+            (stub / name).chmod(0o755)
+        firmware = Path(directory) / "firmware"
+        firmware.mkdir()
+        environment = {
+            "PATH": f"{stub}:{Path(sys.executable).parent}:/usr/bin:/bin",
+            "LING_LANE": "10", "LING_CODEC": "bf16", "LING_FIRMWARE": str(firmware),
+            "LING_EXPERT_POOL_BYTES": "4294967296", "LING_WEIGHTD_SOCKET": SOCKET, "LING_MEMORY_MAX": "12G",
+            "TMPDIR": directory,
+        }
+        for action in ("setup", "start", "stop"):
+            for fail_host in ("", "spark7", "sparkf"):
+                run = subprocess.run(["bash", str(ROOT / "tools/ling_lane.sh"), action], capture_output=True, text=True,
+                                     env=dict(environment, LING_TEST_FAIL_HOST=fail_host or "none"))
+                if fail_host:
+                    check(run.returncode != 0 and f" {fail_host}" in run.stderr,
+                          f"ling_lane.sh {action} exits {run.returncode} when {fail_host} fails: {run.stderr.strip()[-200:]}", failures)
+                else:
+                    check(run.returncode == 0, f"ling_lane.sh {action} fails with every host healthy: {run.stderr.strip()[-200:]}", failures)
+        check(sorted(os.listdir(directory)) == ["bin", "firmware"],
+              f"setup left rendered files behind: {sorted(os.listdir(directory))}", failures)
+
+
 def main():
     failures = []
     members = adapter_members()
@@ -80,6 +141,16 @@ def main():
                 check(key not in bound, f"lane {lane} rebinds {key} of lane {bound.get(key)}", failures)
                 bound[key] = lane
     check(len(identifiers) == 16, "collective identifiers repeat across lanes", failures)
+    owners = {}
+    checklist = checklist_blocks()
+    for lane in range(16):
+        for port in lane_port_set(rendered(lane)):
+            check(port not in owners, f"lane {lane} reuses port {port} of lane {owners.get(port)}", failures)
+            owners[port] = lane
+        session = ling_lane.lane_ports(lane)["session"]
+        clash = checklist.intersection(range(session, session + 32))
+        check(not clash, f"lane {lane} session block overlaps checklist ports {sorted(clash)[:4]}", failures)
+    script_failures(failures)
     legacy = ling_multidev_lane.stage_config(3, "bf16")
     ours = rendered(9)["config/stage_03.json"]
     for key in members:
@@ -108,7 +179,8 @@ def main():
         for failure in failures:
             print("FAIL", failure)
         return 1
-    print(f"PASS ling lane deployments: 16 lanes x 16 ranks, {len(bound)} bound ports disjoint, adapter member set {len(members)}")
+    print(f"PASS ling lane deployments: 16 lanes x 16 ranks, {len(bound)} bound ports and {len(owners)} topology ports disjoint, "
+          f"adapter member set {len(members)}, setup/start/stop fail loudly on a failed rank")
     return 0
 
 

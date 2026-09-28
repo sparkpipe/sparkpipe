@@ -25,7 +25,7 @@ def lane_ports(lane):
         "control": 23000 + 16 * lane,
         "collective": 53000 + 16 * lane,
         "transport": 64000 + 16 * lane,
-        "session": 23168 + 64 * lane,
+        "session": 24256 + 32 * lane,
     }
 
 
