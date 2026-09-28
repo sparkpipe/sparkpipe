@@ -27,7 +27,7 @@ case " $* " in
   *" publish "*) mkdir -p build/module_library/active ;;
   *)
     mkdir -p build
-    for tool in weightd_warm sparkpipe_model_residentd sparkpipe_weightd sparkpipe_model_api sparkpipe_model_batch sparkpipe_module_publish; do
+    for tool in weightd_warm weightd_receipt sparkpipe_model_residentd sparkpipe_weightd sparkpipe_model_api sparkpipe_model_batch sparkpipe_module_publish; do
       : > "build/$tool"
       chmod +x "build/$tool"
     done
