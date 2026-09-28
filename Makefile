@@ -774,7 +774,7 @@ $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
 GLM5_NEXT_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"
 GLM5_NEXT_CUDA_LINK = -L$(CUDA_HOME)/lib64 -lcudart -lcuda
-GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h
+GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h include/sparkpipe/family/glm/*.cuh) runtime/launch.h
 
 build:
 	mkdir -p build
@@ -832,6 +832,55 @@ test-glm5-next-row-invariance: build/test_glm5_next_row_invariance
 
 report-glm5-next-row-invariance: build/test_glm5_next_row_invariance
 	./build/test_glm5_next_row_invariance --report
+
+build/test_head_candidate_stage: tests/test_head_candidate_stage.cu inference/kernels/head.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-head-candidate-stage
+test-head-candidate-stage: build/test_head_candidate_stage
+	./build/test_head_candidate_stage --run
+
+build/test_delta_rule_columns: tests/test_delta_rule_columns.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-delta-rule-columns
+test-delta-rule-columns: build/test_delta_rule_columns
+	./build/test_delta_rule_columns --run
+
+build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/route.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-route-build-scan
+test-route-build-scan: build/test_route_build_scan
+	./build/test_route_build_scan --run
+
+build/test_latent_attention_split_group: tests/test_latent_attention_split_group.cu inference/kernels/attn.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-latent-attention-split-group
+test-latent-attention-split-group: build/test_latent_attention_split_group
+	./build/test_latent_attention_split_group --run
+
+build/test_rms_norm_staged: tests/test_rms_norm_staged.cu inference/kernels/norm.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-rms-norm-staged
+test-rms-norm-staged: build/test_rms_norm_staged
+	./build/test_rms_norm_staged --run
+
+build/test_causal_conv_streams: tests/test_causal_conv_streams.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-causal-conv-streams
+test-causal-conv-streams: build/test_causal_conv_streams
+	./build/test_causal_conv_streams --run
+
+build/test_skinny_dense_multi: tests/test_skinny_dense_multi.cu inference/kernels/skinny.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-skinny-dense-multi
+test-skinny-dense-multi: build/test_skinny_dense_multi
+	./build/test_skinny_dense_multi --run
 
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@

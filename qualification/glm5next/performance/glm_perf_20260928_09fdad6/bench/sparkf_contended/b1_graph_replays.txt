@@ -1,0 +1,47 @@
+graph replays 22 kernels/step 1457.0
+span_ms busy_ms gap_ms median_gap_us  (sorted by span)
+19.44 18.60 0.84 0.10
+21.22 20.32 0.90 0.10
+23.48 22.42 1.09 0.10
+23.55 22.49 1.10 0.10
+23.74 22.56 1.23 0.10
+23.85 22.63 1.26 0.10
+24.13 22.40 1.73 0.45
+24.26 22.54 1.72 0.48
+24.33 23.14 1.24 0.10
+25.11 22.60 2.55 0.10
+38.72 22.20 16.54 0.13
+53.52 22.82 30.74 0.10
+58.77 23.46 35.34 0.10
+59.08 22.74 36.38 0.10
+59.72 22.67 37.09 0.10
+60.00 19.14 40.87 0.10
+60.08 23.00 37.12 0.10
+60.69 23.35 37.38 0.10
+62.37 22.99 39.41 0.10
+62.61 23.19 39.45 0.10
+73.41 22.29 51.13 0.10
+73.58 24.66 48.95 0.10
+fastest replay kernel time by kernel (ms):
+  8.093 LmSkinnyKernel<LmBf16Format, 
+  2.867 LmSkinnyKernel<LmFp8, 
+  1.794 Glm5NextHcSiteKernel
+  1.296 LmHeadCandidateKernel<
+  1.012 LmLatentAttentionDecodeSplitKernel<Glm5NextKv, 
+  0.576 LmDeltaRuleKernel<
+  0.560 LmBf16RmsNormKernel<
+  0.473 LmRouteBuildKernel<
+  0.376 LmPerHeadProjectRowsKernel<
+  0.291 LmTopkWarpKernel<
+  0.242 LmCausalConvKernel<
+  0.241 LmHcPostBf16Kernel
+  0.131 LmClampedUpGateKernel<
+  0.088 LmMoeFinalizeKernel<
+  0.088 Glm5NextSplitFusedProjectionsKernel<
+  0.068 LmRmsNormSigmoidGateKernel<
+  0.065 LmAddRowsKernel<
+  0.059 LmBoundedDecayKernel<
+  0.043 LmBf16SigmoidRowsKernel<
+  0.042 Glm5NextSplitDecayGateDownKernel<
+  0.042 LmKvStoreKernel<Glm5NextKv, 
+  0.038 LmCopyRowsKernel<

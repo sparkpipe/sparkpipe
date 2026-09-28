@@ -3,6 +3,7 @@
 #include <cooperative_groups.h>
 
 #include "runtime/gemm.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/hc.cuh"
 #include "inference/kernels/attn.cuh"
@@ -422,6 +423,7 @@ static int32_t Glm5NextLayerIndexerScore(
     uint32_t rows,
     uint32_t context,
     uint32_t multiprocessors,
+    uint32_t projected,
     cudaStream_t stream)
 {
     int32_t status;
@@ -456,33 +458,33 @@ static int32_t Glm5NextLayerIndexerScore(
     {
         return status;
     }
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->index_k_weight,
-        buffers->index_key_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        GLM5_NEXT_DSA_INDEX_DIM,
-        GLM5_NEXT_DSA_INDEX_DIM,
-        0u,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    if (projected == 0u)
     {
-        return status;
-    }
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->index_compress_gate,
-        buffers->index_gate_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        GLM5_NEXT_DSA_INDEX_DIM,
-        GLM5_NEXT_DSA_INDEX_DIM,
-        0u,
-        stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
+        status = Glm5NextLaunchBf16LinearRows(
+            buffers->normed_bf16,
+            buffers->index_k_weight,
+            buffers->index_key_bf16,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            GLM5_NEXT_DSA_INDEX_DIM,
+            GLM5_NEXT_DSA_INDEX_DIM,
+            0u,
+            stream);
+        if (status == LM_LAUNCH_OK)
+            status = Glm5NextLaunchBf16LinearRows(
+                buffers->normed_bf16,
+                buffers->index_compress_gate,
+                buffers->index_gate_bf16,
+                rows,
+                GLM5_NEXT_HIDDEN,
+                GLM5_NEXT_DSA_INDEX_DIM,
+                GLM5_NEXT_DSA_INDEX_DIM,
+                0u,
+                stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
     LM_LAUNCH(
         (LmLayerNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
@@ -497,19 +499,22 @@ static int32_t Glm5NextLayerIndexerScore(
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_DIM,
         GLM5_NEXT_DSA_INDEX_EPSILON);
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->index_head_weight,
-        buffers->index_head_weight_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        GLM5_NEXT_DSA_INDEX_HEADS,
-        GLM5_NEXT_DSA_INDEX_HEADS,
-        0u,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    if (projected == 0u)
     {
-        return status;
+        status = Glm5NextLaunchBf16LinearRows(
+            buffers->normed_bf16,
+            buffers->index_head_weight,
+            buffers->index_head_weight_bf16,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            GLM5_NEXT_DSA_INDEX_HEADS,
+            GLM5_NEXT_DSA_INDEX_HEADS,
+            0u,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
     LM_LAUNCH(
         (Glm5NextIndexPackKernel<GLM5_NEXT_LAYER_THREADS>),
@@ -704,6 +709,7 @@ static int32_t Glm5NextLayerAttentionHead(
     cudaStream_t stream)
 {
     int32_t status;
+    uint32_t projected;
 
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->qk_scale <= 0.0f || buffers->hidden_bf16 == 0 ||
@@ -759,16 +765,26 @@ static int32_t Glm5NextLayerAttentionHead(
         Glm5NextProbeVecU16(stream,buffers->normed_bf16,GLM5_NEXT_HIDDEN,
             layer_index,(uint32_t)vec_pass,"attn_normed");
 
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->q_a_weight,
-        buffers->q_compressed_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        GLM5_NEXT_QUERY_A_DIM,
-        GLM5_NEXT_QUERY_A_DIM,
-        0u,
-        stream);
+    {
+        const LmSkinnyDenseTarget targets[4] = {
+            {buffers->q_a_weight, buffers->q_compressed_bf16, 0, GLM5_NEXT_QUERY_A_DIM, GLM5_NEXT_QUERY_A_DIM, 0u},
+            {buffers->index_k_weight, buffers->index_key_bf16, 0, GLM5_NEXT_DSA_INDEX_DIM, GLM5_NEXT_DSA_INDEX_DIM, 0u},
+            {buffers->index_compress_gate, buffers->index_gate_bf16, 0, GLM5_NEXT_DSA_INDEX_DIM, GLM5_NEXT_DSA_INDEX_DIM, 0u},
+            {buffers->index_head_weight, buffers->index_head_weight_bf16, 0, GLM5_NEXT_DSA_INDEX_HEADS, GLM5_NEXT_DSA_INDEX_HEADS, 0u}};
+        status = LmSkinnyDenseMulti<LmBf16Format>(targets, 4u, buffers->normed_bf16, rows, GLM5_NEXT_HIDDEN, stream);
+    }
+    projected = status == LM_LAUNCH_OK ? 1u : 0u;
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = Glm5NextLaunchBf16LinearRows(
+            buffers->normed_bf16,
+            buffers->q_a_weight,
+            buffers->q_compressed_bf16,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            GLM5_NEXT_QUERY_A_DIM,
+            GLM5_NEXT_QUERY_A_DIM,
+            0u,
+            stream);
     if (status != LM_LAUNCH_OK)
     {
         return status;
@@ -793,6 +809,7 @@ static int32_t Glm5NextLayerAttentionHead(
         rows,
         context,
         multiprocessors,
+        projected,
         stream);
 }
 
@@ -1142,6 +1159,8 @@ static int32_t Glm5NextKdaReplayRecord(
 
 #include "sparkpipe/family/glm/spark_glm_layer_kda_projections.cuh"
 
+#define GLM5_NEXT_KDA_DELTA_COLUMNS 16u
+
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1229,28 +1248,36 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"attn_norm_weight",buffers->attn_norm_weight);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"qkv_beta_weight_row0",buffers->kda_qkv_beta_weight);
     }
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->kda_qkv_beta_weight,
-        buffers->fused_qkvb_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        rank_qk * 2u + rank_v + rank_heads,
-        rank_qk * 2u + rank_v + rank_heads,
-        0u,
-        stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    status = Glm5NextLaunchBf16LinearRows(
-        buffers->normed_bf16,
-        buffers->kda_decay_gate_down_weight,
-        buffers->fused_decay_gate_bf16,
-        rows,
-        GLM5_NEXT_HIDDEN,
-        2u * GLM5_NEXT_KDA_LOW_RANK,
-        2u * GLM5_NEXT_KDA_LOW_RANK,
-        0u,
-        stream);
+    {
+        const LmSkinnyDenseTarget targets[2] = {
+            {buffers->kda_qkv_beta_weight, buffers->fused_qkvb_bf16, 0, rank_qk * 2u + rank_v + rank_heads, rank_qk * 2u + rank_v + rank_heads, 0u},
+            {buffers->kda_decay_gate_down_weight, buffers->fused_decay_gate_bf16, 0, 2u * GLM5_NEXT_KDA_LOW_RANK, 2u * GLM5_NEXT_KDA_LOW_RANK, 0u}};
+        status = LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, buffers->normed_bf16, rows, GLM5_NEXT_HIDDEN, stream);
+    }
+    if (status == LM_LAUNCH_ERR_SHAPE)
+    {
+        status = Glm5NextLaunchBf16LinearRows(
+            buffers->normed_bf16,
+            buffers->kda_qkv_beta_weight,
+            buffers->fused_qkvb_bf16,
+            rows,
+            GLM5_NEXT_HIDDEN,
+            rank_qk * 2u + rank_v + rank_heads,
+            rank_qk * 2u + rank_v + rank_heads,
+            0u,
+            stream);
+        if (status == LM_LAUNCH_OK)
+            status = Glm5NextLaunchBf16LinearRows(
+                buffers->normed_bf16,
+                buffers->kda_decay_gate_down_weight,
+                buffers->fused_decay_gate_bf16,
+                rows,
+                GLM5_NEXT_HIDDEN,
+                2u * GLM5_NEXT_KDA_LOW_RANK,
+                2u * GLM5_NEXT_KDA_LOW_RANK,
+                0u,
+                stream);
+    }
     if (status != LM_LAUNCH_OK)
         return status;
     LM_LAUNCH(
@@ -1303,57 +1330,33 @@ static int32_t Glm5NextLayerKda(
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"gate_latent",buffers->kda_gate_latent_bf16);
         GLM5_NEXT_KDA_PROBE_RAW(stream,buffers->layer_index,"beta_logit",buffers->kda_beta_logit);
     }
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_q_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->q_bf16,
-        (const uint16_t *)buffers->kda_q_conv_weight,
-        buffers->q_bf16,
-        rank_qk,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_qk + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_k_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->kv_slot_bf16,
-        (const uint16_t *)buffers->kda_k_conv_weight,
-        buffers->kv_slot_bf16,
-        rank_qk,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
-    LM_LAUNCH(
-        (LmCausalConvKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
-        dim3(sequences,(rank_v + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->kda_v_window,
-        buffers->kda_state_index,
-        buffers->sequence_row_begin,
-        0,
-        buffers->gate_up_bf16,
-        (const uint16_t *)buffers->kda_v_conv_weight,
-        buffers->gate_up_bf16,
-        rank_v,
-        sequences,
-        commit,
-        buffers->sequence_row_indices);
+    {
+        LmCausalConvStreams<uint16_t> conv;
+        conv.window[0] = buffers->kda_q_window;
+        conv.window[1] = buffers->kda_k_window;
+        conv.window[2] = buffers->kda_v_window;
+        conv.input_bf16[0] = conv.output_bf16[0] = buffers->q_bf16;
+        conv.input_bf16[1] = conv.output_bf16[1] = buffers->kv_slot_bf16;
+        conv.input_bf16[2] = conv.output_bf16[2] = buffers->gate_up_bf16;
+        conv.weight[0] = (const uint16_t *)buffers->kda_q_conv_weight;
+        conv.weight[1] = (const uint16_t *)buffers->kda_k_conv_weight;
+        conv.weight[2] = (const uint16_t *)buffers->kda_v_conv_weight;
+        conv.channels[0] = conv.channels[1] = rank_qk;
+        conv.channels[2] = rank_v;
+        LM_LAUNCH(
+            (LmCausalConvStreamsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_CONV_KERNEL,LM_CONV_SWISH,uint16_t>),
+            dim3(sequences,((rank_qk > rank_v ? rank_qk : rank_v) + GLM5_NEXT_LAYER_THREADS - 1u) / GLM5_NEXT_LAYER_THREADS,LM_CAUSAL_CONV_STREAMS),
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            conv,
+            buffers->kda_state_index,
+            buffers->sequence_row_begin,
+            0,
+            sequences,
+            commit,
+            buffers->sequence_row_indices);
+    }
     if ( Glm5NextKdaProbeActive(buffers) )
     {
         GLM5_NEXT_KDA_PROBE(stream,"q_postconv",buffers->q_bf16,256u);
@@ -1442,10 +1445,6 @@ static int32_t Glm5NextLayerKda(
         Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
         Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
     }
-    status = Glm5NextDeltaRuleOptIn(
-        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float));
-    if (status != LM_LAUNCH_OK)
-        return(status);
 #ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
     fprintf(stderr,"kda delta: grid(%u,%u) threads %u shared %u heads %u vhp %u seqs %u slot_bytes %u q=%p k=%p v=%p out=%p\n",
         sequences,rank_heads,GLM5_NEXT_LAYER_THREADS,
@@ -1455,10 +1454,10 @@ static int32_t Glm5NextLayerKda(
         (void*)buffers->attention_out_bf16);
 #endif
     LM_LAUNCH(
-        (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM>),
-        dim3(sequences,rank_heads),
+        (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float,GLM5_NEXT_KDA_DELTA_COLUMNS>),
+        dim3(sequences,rank_heads,GLM5_NEXT_KDA_VALUE_DIM / GLM5_NEXT_KDA_DELTA_COLUMNS),
         GLM5_NEXT_LAYER_THREADS,
-        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float),
+        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_DELTA_COLUMNS * sizeof(float),
         stream,
         buffers->kda_state_pool,
         buffers->kda_state_slot_bytes,
@@ -1617,17 +1616,23 @@ static __device__ __forceinline__ float Glm5NextHcRowMax(float value, uint32_t l
 	return maximum;
 }
 
-static __device__ void Glm5NextHcSinkhornWarp(const float *mixes, const float *scale3, const float *base, float *pre, float *post, float *comb_out)
+static __device__ void Glm5NextHcGatesWarp(const float *mixes, const float *scale3, const float *base, float *pre, float *post)
 {
 	constexpr uint32_t hc = GLM5_NEXT_HC;
-	const uint32_t lane = threadIdx.x % LM_WARP_LANES, cell = lane & 15u;
-	uint32_t iteration;
-	float value, total;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
 	if (lane < hc)
 	{
 		pre[lane] = 1.0f / (1.0f + __expf(-(mixes[lane] * scale3[0] + base[lane]))) + GLM5_NEXT_HC_EPSILON;
 		post[lane] = 2.0f / (1.0f + __expf(-(mixes[hc + lane] * scale3[1] + base[hc + lane])));
 	}
+}
+
+static __device__ void Glm5NextHcCombWarp(const float *mixes, const float *scale3, const float *base, float *comb_out)
+{
+	constexpr uint32_t hc = GLM5_NEXT_HC;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, cell = lane & 15u;
+	uint32_t iteration;
+	float value, total;
 	value = mixes[2u * hc + cell] * scale3[2] + base[2u * hc + cell];
 	value = __expf(value - Glm5NextHcRowMax(value, lane));
 	total = Glm5NextHcRowSum(value, lane);
@@ -1687,7 +1692,7 @@ static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, 
 	}
 }
 
-static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, float *comb)
+static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post)
 {
 	uint32_t rank;
 	float total, inverse;
@@ -1705,19 +1710,19 @@ static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &clust
 	if (threadIdx.x < GLM5_NEXT_HC_MIX)
 		mixes[threadIdx.x] = shared->mixes[threadIdx.x] = shared->mixes[threadIdx.x] * inverse;
 	__syncwarp();
-	Glm5NextHcSinkhornWarp(shared->mixes, scale3, base, shared->pre, post, comb);
+	Glm5NextHcGatesWarp(shared->mixes, scale3, base, shared->pre, post);
 	__syncwarp();
 	if (threadIdx.x < GLM5_NEXT_HC)
 		pre[threadIdx.x] = shared->pre[threadIdx.x];
 }
 
-static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first)
+static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first, uint32_t thread, uint32_t threads)
 {
 	uint32_t element, stream;
 	uint64_t index;
 	uint16_t raw;
 	float value;
-	for (element = first + threadIdx.x; element < first + GLM5_NEXT_HC_PRE_SLICE; element += GLM5_NEXT_LAYER_THREADS)
+	for (element = first + thread; element < first + GLM5_NEXT_HC_PRE_SLICE; element += threads)
 	{
 		value = 0.0f;
 		#pragma unroll
@@ -1738,19 +1743,29 @@ __global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(G
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
 	const uint32_t slice = cluster.block_rank(), row = blockIdx.x / GLM5_NEXT_HC_CLUSTER;
 	const uint16_t *streams = streams_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT;
+	uint32_t mix;
 	float total;
+	if (threadIdx.x % LM_WARP_LANES == 0u)
+		for (mix = threadIdx.x / LM_WARP_LANES; mix < GLM5_NEXT_HC_MIX; mix += GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES)
+			LmPrefetchL2(fn_f32 + (uint64_t)mix * GLM5_NEXT_HC_FLAT + slice * GLM5_NEXT_HC_SLICE, GLM5_NEXT_HC_SLICE * sizeof(float));
+	LmDependentWait();
 	total = Glm5NextHcStage(&shared, streams + slice * GLM5_NEXT_HC_SLICE);
 	Glm5NextHcDot(&shared, fn_f32, slice * GLM5_NEXT_HC_SLICE);
 	if (threadIdx.x == 0u)
 		shared.partial[GLM5_NEXT_HC_MIX] = total;
 	cluster.sync();
 	if (slice == 0u)
-		Glm5NextHcFinish(cluster, &shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC, comb_f32 + (uint64_t)row * GLM5_NEXT_HC * GLM5_NEXT_HC);
+		Glm5NextHcFinish(cluster, &shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC);
 	cluster.sync();
 	if (slice != 0u && threadIdx.x < GLM5_NEXT_HC)
 		shared.pre[threadIdx.x] = cluster.map_shared_rank(shared.pre, 0u)[threadIdx.x];
 	cluster.sync();
-	Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, slice * GLM5_NEXT_HC_PRE_SLICE);
+	if (slice != 0u)
+		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, slice * GLM5_NEXT_HC_PRE_SLICE, threadIdx.x, GLM5_NEXT_LAYER_THREADS);
+	else if (threadIdx.x >= LM_WARP_LANES)
+		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, 0u, threadIdx.x - LM_WARP_LANES, GLM5_NEXT_LAYER_THREADS - LM_WARP_LANES);
+	else
+		Glm5NextHcCombWarp(shared.mixes, scale3_f32, base_f32, comb_f32 + (uint64_t)row * GLM5_NEXT_HC * GLM5_NEXT_HC);
 }
 
 __global__ void Glm5NextHcHeadMeanKernel(
@@ -1792,7 +1807,7 @@ static int32_t Glm5NextHcSite(
         fn_weight == 0 || base_weight == 0 || scale_weight == 0 ||
         ((uintptr_t)fn_weight % 16u) != 0u)
         return LM_LAUNCH_ERR_SHAPE;
-    LM_LAUNCH(
+    LM_LAUNCH_DEPENDENT(
         (Glm5NextHcSiteKernel),
         rows * GLM5_NEXT_HC_CLUSTER,
         GLM5_NEXT_LAYER_THREADS,

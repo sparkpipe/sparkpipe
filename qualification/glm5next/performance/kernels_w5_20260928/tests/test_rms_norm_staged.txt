@@ -1,0 +1,8 @@
+PASS rows=1 dimension=4096 row_stride=4096 amplitude=4
+PASS rows=8 dimension=4096 row_stride=4096 amplitude=0.01
+PASS rows=3 dimension=1536 row_stride=1536 amplitude=30
+PASS rows=2 dimension=512 row_stride=576 amplitude=1
+PASS rows=5 dimension=1000 row_stride=1024 amplitude=2
+PASS rows=2 dimension=4097 row_stride=4100 amplitude=1
+PASS rows=1 dimension=12288 row_stride=12288 amplitude=1
+test_rms_norm_staged PASS

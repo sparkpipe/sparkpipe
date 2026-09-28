@@ -127,7 +127,7 @@ void LmHeadSampledCandidateRowsKernel(const uint16_t *__restrict__ normed_bf16, 
 }
 
 template<uint32_t THREADS, uint32_t TILE, class Score>
-static __device__ __forceinline__ void LmHeadCandidateBody(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t hidden, uint32_t vocabulary, const Score &score)
+static __device__ __forceinline__ void LmHeadCandidateScalarBody(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t hidden, uint32_t vocabulary, const Score &score)
 {
 	__shared__ float shared_score[THREADS];
 	__shared__ uint32_t shared_token[THREADS];
@@ -164,6 +164,131 @@ static __device__ __forceinline__ void LmHeadCandidateBody(const uint16_t *__res
 	{
 		candidate_score[(row * gridDim.x) + tile] = shared_score[0];
 		candidate_token[(row * gridDim.x) + tile] = shared_token[0];
+	}
+}
+
+#define LM_HEAD_STAGE_ELEMENTS 64u
+#define LM_HEAD_STAGE_PITCH (LM_HEAD_STAGE_ELEMENTS / 2u + 1u)
+#define LM_HEAD_STAGE_VECTORS (LM_HEAD_STAGE_ELEMENTS / 8u)
+
+template<uint32_t THREADS, uint32_t TILE>
+struct LmHeadStage
+{
+	static constexpr uint32_t kVectors = (TILE * LM_HEAD_STAGE_VECTORS + THREADS - 1u) / THREADS;
+	static constexpr bool kSupported = TILE <= THREADS && (THREADS % LM_HEAD_STAGE_VECTORS) == 0u && 2u * TILE * LM_HEAD_STAGE_PITCH * 4u <= 40960u;
+};
+
+template<uint32_t THREADS, uint32_t TILE>
+static __device__ __forceinline__ void LmHeadStageLoad(const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, uint32_t tile, uint32_t hidden, uint32_t vocabulary, uint32_t first, uint4 *staged)
+{
+	uint32_t vector, slot, token, index;
+	#pragma unroll
+	for (vector = 0u; vector < LmHeadStage<THREADS, TILE>::kVectors; vector++)
+	{
+		slot = threadIdx.x + vector * THREADS;
+		index = tile * TILE + slot / LM_HEAD_STAGE_VECTORS;
+		staged[vector] = make_uint4(0u, 0u, 0u, 0u);
+		if ( slot < TILE * LM_HEAD_STAGE_VECTORS && index < vocabulary )
+		{
+			token = token_ids != 0 ? token_ids[index] : index;
+			staged[vector] = __ldcs((const uint4 *)(head_weight_bf16 + (uint64_t)token * hidden + first + (slot % LM_HEAD_STAGE_VECTORS) * 8u));
+		}
+	}
+}
+
+template<uint32_t THREADS, uint32_t TILE>
+static __device__ __forceinline__ void LmHeadStageStore(uint32_t *stage, const uint4 *staged)
+{
+	uint32_t vector, slot, word;
+	#pragma unroll
+	for (vector = 0u; vector < LmHeadStage<THREADS, TILE>::kVectors; vector++)
+	{
+		slot = threadIdx.x + vector * THREADS;
+		if ( slot >= TILE * LM_HEAD_STAGE_VECTORS )
+			continue;
+		word = (slot / LM_HEAD_STAGE_VECTORS) * LM_HEAD_STAGE_PITCH + (slot % LM_HEAD_STAGE_VECTORS) * 4u;
+		stage[word] = staged[vector].x;
+		stage[word + 1u] = staged[vector].y;
+		stage[word + 2u] = staged[vector].z;
+		stage[word + 3u] = staged[vector].w;
+	}
+}
+
+template<uint32_t THREADS, uint32_t TILE, class Score>
+static __device__ __forceinline__ void LmHeadCandidateBody(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ head_weight_bf16, const uint32_t *__restrict__ token_ids, float *__restrict__ candidate_score, uint32_t *__restrict__ candidate_token, uint32_t hidden, uint32_t vocabulary, const Score &score)
+{
+	if constexpr ( !LmHeadStage<THREADS, TILE>::kSupported )
+		LmHeadCandidateScalarBody<THREADS, TILE>(normed_bf16, head_weight_bf16, token_ids, candidate_score, candidate_token, hidden, vocabulary, score);
+	else
+	{
+		__shared__ uint32_t stage[2][TILE * LM_HEAD_STAGE_PITCH];
+		__shared__ float input[2][LM_HEAD_STAGE_ELEMENTS];
+		__shared__ float shared_score[THREADS];
+		__shared__ uint32_t shared_token[THREADS];
+		const uint32_t row = blockIdx.y, tile = blockIdx.x, index = tile * TILE + threadIdx.x, chunks = hidden / LM_HEAD_STAGE_ELEMENTS;
+		const uint16_t *activation = normed_bf16 + (uint64_t)row * hidden;
+		uint4 staged[LmHeadStage<THREADS, TILE>::kVectors];
+		uint32_t chunk, element, stride, word, buffer, best_token = 0u;
+		float total = 0.0f, best = -INFINITY, value;
+		if ( (hidden % LM_HEAD_STAGE_ELEMENTS) != 0u || ((uintptr_t)head_weight_bf16 % 16u) != 0u )
+		{
+			LmHeadCandidateScalarBody<THREADS, TILE>(normed_bf16, head_weight_bf16, token_ids, candidate_score, candidate_token, hidden, vocabulary, score);
+			return;
+		}
+		LmHeadStageLoad<THREADS, TILE>(head_weight_bf16, token_ids, tile, hidden, vocabulary, 0u, staged);
+		LmHeadStageStore<THREADS, TILE>(stage[0], staged);
+		if ( threadIdx.x < LM_HEAD_STAGE_ELEMENTS )
+			input[0][threadIdx.x] = LmBf16ToFloat(activation[threadIdx.x]);
+		__syncthreads();
+		for (chunk = 0u; chunk < chunks; chunk++)
+		{
+			buffer = chunk & 1u;
+			if ( chunk + 1u < chunks )
+				LmHeadStageLoad<THREADS, TILE>(head_weight_bf16, token_ids, tile, hidden, vocabulary, (chunk + 1u) * LM_HEAD_STAGE_ELEMENTS, staged);
+			if ( threadIdx.x < TILE )
+			{
+				#pragma unroll 8
+				for (element = 0u; element < LM_HEAD_STAGE_ELEMENTS; element += 2u)
+				{
+					word = stage[buffer][threadIdx.x * LM_HEAD_STAGE_PITCH + element / 2u];
+					total = fmaf(input[buffer][element], __uint_as_float(word << 16u), total);
+					total = fmaf(input[buffer][element + 1u], __uint_as_float(word & 0xffff0000u), total);
+				}
+			}
+			if ( chunk + 1u < chunks )
+			{
+				LmHeadStageStore<THREADS, TILE>(stage[buffer ^ 1u], staged);
+				if ( threadIdx.x < LM_HEAD_STAGE_ELEMENTS )
+					input[buffer ^ 1u][threadIdx.x] = LmBf16ToFloat(activation[(chunk + 1u) * LM_HEAD_STAGE_ELEMENTS + threadIdx.x]);
+			}
+			__syncthreads();
+		}
+		if ( threadIdx.x < TILE && index < vocabulary )
+		{
+			value = score(total, row, index);
+			if ( value > best )
+			{
+				best = value;
+				best_token = token_ids != 0 ? token_ids[index] : index;
+			}
+		}
+		shared_score[threadIdx.x] = best;
+		shared_token[threadIdx.x] = best_token;
+		__syncthreads();
+		for (stride = THREADS / 2u; stride > 0u; stride >>= 1u)
+		{
+			if ( threadIdx.x < stride && shared_score[threadIdx.x + stride] > shared_score[threadIdx.x] )
+			{
+				shared_score[threadIdx.x] = shared_score[threadIdx.x + stride];
+				shared_token[threadIdx.x] = shared_token[threadIdx.x + stride];
+			}
+			__syncthreads();
+		}
+		if ( threadIdx.x == 0u )
+		{
+			candidate_score[(row * gridDim.x) + tile] = shared_score[0];
+			candidate_token[(row * gridDim.x) + tile] = shared_token[0];
+		}
 	}
 }
 
