@@ -789,6 +789,25 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(const char *spli
     assert(encoding.token_count == 1u);
     assert(token_ids[0u] == SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
 
+    {
+        static const char quoted[] = "She called it the \xe2\x80\x98" "best\xe2\x80\x99, and it was.";
+        static const uint32_t quoted_ends[] = {3u, 10u, 13u, 17u, 21u, 25u, 29u, 33u, 36u, 40u, 41u};
+        static const char numeral[] = "Chapter \xe2\x85\xa3 begins";
+        static const uint32_t numeral_ends[] = {7u, 8u, 11u, 18u};
+        static const char spaced[] = "a\xc2\xa0" "b\xc2\xa0\xc2\xa0" "c";
+        static const uint32_t spaced_ends[] = {1u, 4u, 6u, 9u};
+        uint32_t ends[16u];
+        uint32_t count = 0u;
+        assert(SparkTokenizerSplitUtf8(&tokenizer, quoted, (uint32_t)strlen(quoted), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(quoted_ends) / sizeof(quoted_ends[0]) && memcmp(ends, quoted_ends, sizeof(quoted_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, numeral, (uint32_t)strlen(numeral), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(numeral_ends) / sizeof(numeral_ends[0]) && memcmp(ends, numeral_ends, sizeof(numeral_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, spaced, (uint32_t)strlen(spaced), ends, 16u, &count) == SPARK_STATUS_OK);
+        assert(count == sizeof(spaced_ends) / sizeof(spaced_ends[0]) && memcmp(ends, spaced_ends, sizeof(spaced_ends)) == 0);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, quoted, (uint32_t)strlen(quoted), ends, 4u, &count) == SPARK_STATUS_CAPACITY_EXCEEDED);
+        assert(SparkTokenizerSplitUtf8(&tokenizer, "ab\xe2\x80", 4u, ends, 16u, &count) == SPARK_STATUS_PARSE_ERROR);
+    }
+
     SparkTokenizerDestroy(&tokenizer);
 }
 

@@ -1579,19 +1579,18 @@ SparkStatus SparkTokenizerNormalizeNfcUtf8(
     uint32_t position = 0u;
     uint32_t written = 0u;
     char *output;
+    size_t output_bytes = 1u;
+    char scratch[SPARK_UNICODE_NFC_UTF8_MAX_BYTES];
     if ((text == 0 && text_bytes != 0u) || normalized_out == 0 || normalized_bytes_out == 0 ||
-        text_bytes > UINT32_MAX / (SPARK_UNICODE_NFC_UTF8_MAX_BYTES * SPARK_UNICODE_NFC_MAX_DECOMPOSITION))
+        text_bytes > UINT32_MAX / (SPARK_UNICODE_NFC_UTF8_MAX_BYTES * SPARK_UNICODE_NFC_MAX_CODEPOINTS_PER_BYTE))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *normalized_out = 0;
     *normalized_bytes_out = 0u;
-    values = (uint32_t *)malloc(((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_DECOMPOSITION + 1u) * sizeof(uint32_t));
-    output = (char *)malloc((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_DECOMPOSITION * SPARK_UNICODE_NFC_UTF8_MAX_BYTES + 1u);
-    if (values == 0 || output == 0)
+    values = (uint32_t *)malloc(((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_CODEPOINTS_PER_BYTE + SPARK_UNICODE_NFC_MAX_DECOMPOSITION) * sizeof(uint32_t));
+    if (values == 0)
     {
-        free(values);
-        free(output);
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     while (position < text_bytes)
@@ -1601,7 +1600,6 @@ SparkStatus SparkTokenizerNormalizeNfcUtf8(
         if (length == 0u)
         {
             free(values);
-            free(output);
             return SPARK_STATUS_PARSE_ERROR;
         }
         count += SparkUnicodeNfcDecompose(value, values + count);
@@ -1609,6 +1607,16 @@ SparkStatus SparkTokenizerNormalizeNfcUtf8(
     }
     SparkUnicodeNfcReorder(values, count);
     count = SparkUnicodeNfcComposeAll(values, count);
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        output_bytes += SparkUnicodeEncodeUtf8(values[index], scratch);
+    }
+    output = (char *)malloc(output_bytes);
+    if (output == 0)
+    {
+        free(values);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
     for (uint32_t index = 0u; index < count; ++index)
     {
         written += SparkUnicodeEncodeUtf8(values[index], output + written);
@@ -1634,6 +1642,7 @@ static const char SPARK_TOKENIZER_LETTER_SPLIT_PATTERN_POSSESSIVE[] =
 #define SPARK_TOKENIZER_SPLIT_VARIANT_NONE 0u
 #define SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED 1u
 #define SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED_DIGIT_RUNS 2u
+#define SPARK_TOKENIZER_SPLIT_VARIANT_LETTERS 3u
 
 static uint32_t SparkTokenizerJsonSplitElementVariant(
     const SparkJsonDocument *document,
@@ -1661,11 +1670,15 @@ static uint32_t SparkTokenizerJsonSplitElementVariant(
         pattern_token_index = SparkJsonFindObjectMember(document,pattern_token_index,"Regex");
     }
     if (pattern_token_index >= 0 &&
-        (SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN) ||
-         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN) ||
-         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN_POSSESSIVE)))
+        SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN))
     {
         return SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED;
+    }
+    if (pattern_token_index >= 0 &&
+        (SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN) ||
+         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN_POSSESSIVE)))
+    {
+        return SPARK_TOKENIZER_SPLIT_VARIANT_LETTERS;
     }
     if (pattern_token_index >= 0 &&
         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN_DIGIT_RUNS))
@@ -1884,7 +1897,8 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
                 &split_variant) != 0u)
         {
             tokenizer->byte_level_use_regex =
-                split_variant == SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED_DIGIT_RUNS ? 3u : 2u;
+                split_variant == SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED_DIGIT_RUNS ? 3u :
+                split_variant == SPARK_TOKENIZER_SPLIT_VARIANT_LETTERS ? 4u : 2u;
         }
     }
     SparkTokenizerSortSpecialTokens(tokenizer);
@@ -2390,6 +2404,7 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->unk_token_id);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->maximum_token_id);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->byte_level_use_regex);
+    if (status == SPARK_STATUS_OK && tokenizer->byte_level_use_regex > 4u) status = SPARK_STATUS_PARSE_ERROR;
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &vocabulary_count);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &fast_merge_pair_count);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &special_token_count);
@@ -3202,18 +3217,119 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
     return *piece_bytes_out != 0u;
 }
 
+#include "unicode_class_tables.h"
+
+#define SPARK_TOKENIZER_SPLIT_MODE_NONE 0u
+#define SPARK_TOKENIZER_SPLIT_MODE_BYTE_LEVEL 1u
+#define SPARK_TOKENIZER_SPLIT_MODE_LETTERS_AND_MARKS 2u
+#define SPARK_TOKENIZER_SPLIT_MODE_DIGIT_RUNS 3u
+#define SPARK_TOKENIZER_SPLIT_MODE_LETTERS 4u
+
+static uint32_t SparkTokenizerCodepointClass(
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t position,
+    uint32_t *length_out)
+{
+    uint8_t lead = (uint8_t)text[position];
+    uint32_t value;
+    uint32_t low = 0u;
+    uint32_t high = SPARK_UNICODE_CLASS_RANGE_COUNT;
+    if (lead < 0x80u)
+    {
+        *length_out = 1u;
+        return g_spark_tokenizer_byte_class[lead];
+    }
+    *length_out = SparkUnicodeDecodeUtf8((const uint8_t *)text, text_bytes, position, &value);
+    if (*length_out == 0u)
+    {
+        return 0u;
+    }
+    while (low < high)
+    {
+        uint32_t middle = low + (high - low) / 2u;
+        if (g_spark_unicode_class_ranges[middle][0] <= value)
+        {
+            low = middle + 1u;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    if (low > 0u && g_spark_unicode_class_ranges[low - 1u][1] >= value)
+    {
+        return g_spark_unicode_class_ranges[low - 1u][2];
+    }
+    return SPARK_UNICODE_CLASS_OTHER;
+}
+
+static uint32_t SparkTokenizerScanClassMaskRun(
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t position,
+    uint32_t class_mask,
+    uint32_t maximum_codepoints,
+    uint32_t *end_out,
+    uint32_t *last_start_out)
+{
+    uint32_t count = 0u;
+    uint32_t last_start = position;
+    while (position < text_bytes && count < maximum_codepoints)
+    {
+        uint32_t length;
+        uint32_t klass = SparkTokenizerCodepointClass(text, text_bytes, position, &length);
+        if (klass == 0u)
+        {
+            return 0u;
+        }
+        if ((class_mask & (1u << klass)) == 0u)
+        {
+            break;
+        }
+        last_start = position;
+        position += length;
+        count += 1u;
+    }
+    *end_out = position;
+    *last_start_out = last_start;
+    return 1u;
+}
+
+static uint32_t SparkTokenizerMatchesFoldedContraction(
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t position,
+    uint32_t *piece_bytes_out)
+{
+    if (position + 2u < text_bytes && text[position] == '\'' &&
+        (uint8_t)text[position + 1u] == 0xC5u && (uint8_t)text[position + 2u] == 0xBFu)
+    {
+        *piece_bytes_out = 3u;
+        return 1u;
+    }
+    return SparkTokenizerMatchesContraction(text, text_bytes, position, piece_bytes_out);
+}
+
 static uint32_t SparkTokenizerFindNextExtendedPiece(
     const char *text,
     uint32_t text_bytes,
     uint32_t position,
     uint32_t digit_piece_maximum,
+    uint32_t marks_are_letters,
     uint32_t *piece_start_out,
     uint32_t *piece_bytes_out)
 {
-    uint8_t class_id;
-    uint32_t scan_position;
+    uint32_t letter_mask = (1u << SPARK_UNICODE_CLASS_LETTER) | (marks_are_letters != 0u ? 1u << SPARK_UNICODE_CLASS_MARK : 0u);
+    uint32_t symbol_mask = (1u << SPARK_UNICODE_CLASS_OTHER) | (marks_are_letters != 0u ? 0u : 1u << SPARK_UNICODE_CLASS_MARK);
+    uint32_t klass;
+    uint32_t length;
+    uint32_t next_class = 0u;
+    uint32_t next_length = 0u;
+    uint32_t end;
+    uint32_t last_start;
     uint32_t piece_bytes;
-    uint32_t last_newline;
+    uint8_t lead;
 
     if (text == 0 || piece_start_out == 0 || piece_bytes_out == 0 || position >= text_bytes)
     {
@@ -3222,60 +3338,80 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
     *piece_start_out = position;
     *piece_bytes_out = 0u;
 
-    if (SparkTokenizerMatchesContraction(text, text_bytes, position, &piece_bytes))
+    if (SparkTokenizerMatchesFoldedContraction(text, text_bytes, position, &piece_bytes))
     {
         *piece_bytes_out = piece_bytes;
         return 1u;
     }
 
-    class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
-
-    if (class_id == 2u)
+    klass = SparkTokenizerCodepointClass(text, text_bytes, position, &length);
+    if (klass == 0u)
     {
-        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 2u);
-        *piece_bytes_out = scan_position - position;
-        return 1u;
+        return 0u;
     }
-    if (text[position] != '\r' && text[position] != '\n' && class_id != 3u &&
-        position + 1u < text_bytes &&
-        g_spark_tokenizer_byte_class[(uint8_t)text[position + 1u]] == 2u)
+    if (position + length < text_bytes)
     {
-        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position + 1u, 2u);
-        *piece_bytes_out = scan_position - position;
-        return 1u;
-    }
-
-    if (class_id == 3u)
-    {
-        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 3u);
-        piece_bytes = scan_position - position;
-        if (piece_bytes > digit_piece_maximum)
+        next_class = SparkTokenizerCodepointClass(text, text_bytes, position + length, &next_length);
+        if (next_class == 0u)
         {
-            piece_bytes = digit_piece_maximum;
+            return 0u;
         }
-        *piece_bytes_out = piece_bytes;
-        return 1u;
     }
+    lead = (uint8_t)text[position];
 
-    if (class_id == 4u ||
-        (text[position] == ' ' && position + 1u < text_bytes &&
-         g_spark_tokenizer_byte_class[(uint8_t)text[position + 1u]] == 4u))
+    if ((letter_mask & (1u << klass)) != 0u)
     {
-        scan_position = text[position] == ' ' ? position + 1u : position;
-        scan_position = SparkTokenizerScanClassRun(text, text_bytes, scan_position, 4u);
-        while (scan_position < text_bytes &&
-            (text[scan_position] == '\r' || text[scan_position] == '\n'))
+        if (!SparkTokenizerScanClassMaskRun(text, text_bytes, position, letter_mask, UINT32_MAX, &end, &last_start))
         {
-            scan_position += 1u;
+            return 0u;
         }
-        *piece_bytes_out = scan_position - position;
+        *piece_bytes_out = end - position;
+        return 1u;
+    }
+    if (lead != '\r' && lead != '\n' && klass != SPARK_UNICODE_CLASS_NUMBER &&
+        next_class != 0u && (letter_mask & (1u << next_class)) != 0u)
+    {
+        if (!SparkTokenizerScanClassMaskRun(text, text_bytes, position + length, letter_mask, UINT32_MAX, &end, &last_start))
+        {
+            return 0u;
+        }
+        *piece_bytes_out = end - position;
         return 1u;
     }
 
-    if (class_id == 1u)
+    if (klass == SPARK_UNICODE_CLASS_NUMBER)
     {
-        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, 1u);
-        last_newline = scan_position;
+        if (!SparkTokenizerScanClassMaskRun(text, text_bytes, position, 1u << SPARK_UNICODE_CLASS_NUMBER, digit_piece_maximum, &end, &last_start))
+        {
+            return 0u;
+        }
+        *piece_bytes_out = end - position;
+        return 1u;
+    }
+
+    if ((symbol_mask & (1u << klass)) != 0u ||
+        (lead == ' ' && next_class != 0u && (symbol_mask & (1u << next_class)) != 0u))
+    {
+        if (!SparkTokenizerScanClassMaskRun(text, text_bytes, lead == ' ' ? position + 1u : position, symbol_mask, UINT32_MAX, &end, &last_start))
+        {
+            return 0u;
+        }
+        while (end < text_bytes && (text[end] == '\r' || text[end] == '\n'))
+        {
+            end += 1u;
+        }
+        *piece_bytes_out = end - position;
+        return 1u;
+    }
+
+    if (klass == SPARK_UNICODE_CLASS_SPACE)
+    {
+        uint32_t last_newline;
+        if (!SparkTokenizerScanClassMaskRun(text, text_bytes, position, 1u << SPARK_UNICODE_CLASS_SPACE, UINT32_MAX, &end, &last_start))
+        {
+            return 0u;
+        }
+        last_newline = end;
         while (last_newline > position &&
             text[last_newline - 1u] != '\r' && text[last_newline - 1u] != '\n')
         {
@@ -3286,16 +3422,75 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
             *piece_bytes_out = last_newline - position;
             return 1u;
         }
-        if (scan_position < text_bytes && scan_position - position > 1u)
+        if (end < text_bytes && last_start > position)
         {
-            *piece_bytes_out = scan_position - position - 1u;
+            *piece_bytes_out = last_start - position;
             return 1u;
         }
-        *piece_bytes_out = scan_position - position;
+        *piece_bytes_out = end - position;
         return 1u;
     }
 
     return 0u;
+}
+
+SparkStatus SparkTokenizerSplitUtf8(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t *piece_ends,
+    uint32_t piece_capacity,
+    uint32_t *piece_count_out)
+{
+    uint32_t position = 0u;
+    uint32_t count = 0u;
+    if (tokenizer == 0 || (text == 0 && text_bytes != 0u) || piece_count_out == 0 || (piece_ends == 0 && piece_capacity != 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *piece_count_out = 0u;
+    while (position < text_bytes)
+    {
+        uint32_t piece_start;
+        uint32_t piece_bytes;
+        uint32_t found;
+        switch (tokenizer->byte_level_use_regex)
+        {
+        case SPARK_TOKENIZER_SPLIT_MODE_NONE:
+            piece_start = position;
+            piece_bytes = text_bytes - position;
+            found = 1u;
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_BYTE_LEVEL:
+            found = SparkTokenizerFindNextRegexPiece(text, text_bytes, position, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_LETTERS_AND_MARKS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 1u, 1u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_DIGIT_RUNS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 3u, 0u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_LETTERS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 1u, 0u, &piece_start, &piece_bytes);
+            break;
+        default:
+            found = 0u;
+            break;
+        }
+        if (!found || piece_bytes == 0u)
+        {
+            return SPARK_STATUS_PARSE_ERROR;
+        }
+        if (count >= piece_capacity)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        position = piece_start + piece_bytes;
+        piece_ends[count] = position;
+        count += 1u;
+    }
+    *piece_count_out = count;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTokenizerEncodeNormalizedSegment(
@@ -3313,7 +3508,7 @@ static SparkStatus SparkTokenizerEncodeNormalizedSegment(
     {
         return SPARK_STATUS_OK;
     }
-    if (tokenizer->byte_level_use_regex == 0u ||
+    if (tokenizer->byte_level_use_regex == SPARK_TOKENIZER_SPLIT_MODE_NONE ||
         (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION) != 0u)
     {
         return SparkTokenizerEncodeByteLevelPiece(tokenizer, text, text_bytes, encode_flags, workspace, encoding);
@@ -3325,12 +3520,28 @@ static SparkStatus SparkTokenizerEncodeNormalizedSegment(
         uint32_t piece_start;
         uint32_t piece_bytes;
 
-        if (tokenizer->byte_level_use_regex == 2u
-            ? !SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 1u, &piece_start, &piece_bytes)
-            : tokenizer->byte_level_use_regex == 3u
-            ? !SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 3u, &piece_start, &piece_bytes)
-            : !SparkTokenizerFindNextRegexPiece(text, text_bytes, position, &piece_start, &piece_bytes))
+        uint32_t found;
+        switch (tokenizer->byte_level_use_regex)
         {
+        case SPARK_TOKENIZER_SPLIT_MODE_BYTE_LEVEL:
+            found = SparkTokenizerFindNextRegexPiece(text, text_bytes, position, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_LETTERS_AND_MARKS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 1u, 1u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_DIGIT_RUNS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 3u, 0u, &piece_start, &piece_bytes);
+            break;
+        case SPARK_TOKENIZER_SPLIT_MODE_LETTERS:
+            found = SparkTokenizerFindNextExtendedPiece(text, text_bytes, position, 1u, 0u, &piece_start, &piece_bytes);
+            break;
+        default:
+            found = 0u;
+            break;
+        }
+        if (!found)
+        {
+            encoding->invalid_segment_count += 1u;
             return SPARK_STATUS_PARSE_ERROR;
         }
         status = SparkTokenizerEncodeByteLevelPiece(

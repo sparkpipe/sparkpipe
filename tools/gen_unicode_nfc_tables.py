@@ -48,10 +48,12 @@ def render(combining, decompositions, compositions):
         index.append((value, len(pool), len(sequence)))
         pool.extend(sequence)
     longest = max(length for _, _, length in index)
+    per_byte = max(-(-len(unicodedata.normalize("NFD", chr(value))) // len(chr(value).encode("utf-8"))) for value in codepoints())
     lines = ["#pragma once", "", "#include <stdint.h>", ""]
     lines.append(f'#define SPARK_UNICODE_NFC_VERSION "{unicodedata.unidata_version}"')
     lines.append(f"#define SPARK_UNICODE_NFC_MAX_DECOMPOSITION {max(longest, 3)}u")
     lines.append("#define SPARK_UNICODE_NFC_UTF8_MAX_BYTES 4u")
+    lines.append(f"#define SPARK_UNICODE_NFC_MAX_CODEPOINTS_PER_BYTE {per_byte}u")
     lines.append(f"#define SPARK_UNICODE_NFC_COMBINING_COUNT {len(combining)}u")
     lines.append(f"#define SPARK_UNICODE_NFC_DECOMPOSITION_COUNT {len(index)}u")
     lines.append(f"#define SPARK_UNICODE_NFC_COMPOSITION_COUNT {len(compositions)}u")

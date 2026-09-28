@@ -519,6 +519,14 @@ progress diary.
   - gemma4's `Replace` plus `Split " "`.
 
   Implement them, then make an unknown `Split` a load error.
+- The four known letter-class splits classify code points by Unicode
+  class (`text/unicode_class_tables.h`, generated from Python
+  `unicodedata` 16.0 and checked range for range against the Oniguruma
+  classes of HF tokenizers 0.23.2 by
+  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
+  regex path (`use_regex: true` with no `Split`) still classifies by byte
+  and treats every byte >= 0x80 as a letter. Port it to the same
+  classifier before a model that uses it serves non-ASCII text.
 - The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
   skips any other normalizer without an error: gemma4's `Replace`, and
   `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
