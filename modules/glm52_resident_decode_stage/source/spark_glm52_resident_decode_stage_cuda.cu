@@ -187,7 +187,7 @@ static void SparkGlm52BindLayer(
 	buffers->dense_down_weight = weight->dense_down_bf16;
 	buffers->dense_gate_up_fused = weight->dense_gate_up_bf16 != 0 ? 1u : 0u;
 	if ( wave->expert_lease_base != 0 &&
-		wave->expert_lease_local_layer == local_layer )
+		(wave->expert_lease_pinned != 0u || wave->expert_lease_local_layer == local_layer) )
 	{
 		buffers->expert_w1_weight = wave->expert_lease_base + weight->expert_up_gate_payload_offset;
 		buffers->expert_w1_scale = weight->expert_up_gate_scale_offset == 0u ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
