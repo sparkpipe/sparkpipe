@@ -5323,8 +5323,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "1f7309aa1690e41e4643f1d7f79df11fa0aa0b767bec778c96c7193caf2d4a27",
-      "size_bytes": 49274
+      "sha256": "37ccfcfb442d1a8db1f4dffc2bd6085d7754f939af437d4048526a426a19f164",
+      "size_bytes": 46953
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -5648,8 +5648,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c",
-      "sha256": "f8d903710dedf24e61d1ac0407d245b58622a471addb2b0ddab8f2a46554e71b",
-      "size_bytes": 39973
+      "sha256": "fbdb5f67bc4fe3f916ce535a015b204e41c5e81cacf447582f8f773adf76d0d5",
+      "size_bytes": 36442
     },
     {
       "path": "modules/laguna_resident_decode_stage/source/spark_laguna_stagepack_format.h",
@@ -5743,8 +5743,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c",
-      "sha256": "698bfaed6b7855e90d6aaad3ac20e5a9f6288c291861dae9757002d10583d2d7",
-      "size_bytes": 33563
+      "sha256": "02000f42b5acf33c09a9c3be62e2bcd2721eab7c0117b2b6b3a9724a67196923",
+      "size_bytes": 30060
     },
     {
       "path": "modules/ling_resident_decode_stage/source/spark_ling_stagepack_format.h",
@@ -15295,5 +15295,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73976046
+  "total_bytes": 73966691
 }
