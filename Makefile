@@ -822,6 +822,20 @@ build/test_head_candidate_stage: tests/test_head_candidate_stage.cu inference/ke
 test-head-candidate-stage: build/test_head_candidate_stage
 	./build/test_head_candidate_stage --run
 
+build/test_delta_rule_columns: tests/test_delta_rule_columns.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-delta-rule-columns
+test-delta-rule-columns: build/test_delta_rule_columns
+	./build/test_delta_rule_columns --run
+
+build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/route.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-route-build-scan
+test-route-build-scan: build/test_route_build_scan
+	./build/test_route_build_scan --run
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 

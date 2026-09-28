@@ -1188,6 +1188,8 @@ static int32_t Glm5NextKdaReplayRecord(
 
 #include "sparkpipe/family/glm/spark_glm_layer_kda_projections.cuh"
 
+#define GLM5_NEXT_KDA_DELTA_COLUMNS 16u
+
 static int32_t Glm5NextLayerKda(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -1500,10 +1502,6 @@ static int32_t Glm5NextLayerKda(
         Glm5NextProbeVecF32(stream,buffers->kda_retention,rank_qk,buffers->layer_index,(uint32_t)vec_pass,"retention");
         Glm5NextProbeVecF32(stream,buffers->kda_write_gate,rank_heads,buffers->layer_index,(uint32_t)vec_pass,"write_gate");
     }
-    status = Glm5NextDeltaRuleOptIn(
-        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float));
-    if (status != LM_LAUNCH_OK)
-        return(status);
 #ifdef GLM5_NEXT_KDA_DEBUG_LAUNCHES
     fprintf(stderr,"kda delta: grid(%u,%u) threads %u shared %u heads %u vhp %u seqs %u slot_bytes %u q=%p k=%p v=%p out=%p\n",
         sequences,rank_heads,GLM5_NEXT_LAYER_THREADS,
@@ -1513,10 +1511,10 @@ static int32_t Glm5NextLayerKda(
         (void*)buffers->attention_out_bf16);
 #endif
     LM_LAUNCH(
-        (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM>),
-        dim3(sequences,rank_heads),
+        (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float,GLM5_NEXT_KDA_DELTA_COLUMNS>),
+        dim3(sequences,rank_heads,GLM5_NEXT_KDA_VALUE_DIM / GLM5_NEXT_KDA_DELTA_COLUMNS),
         GLM5_NEXT_LAYER_THREADS,
-        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_VALUE_DIM * sizeof(float),
+        GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_DELTA_COLUMNS * sizeof(float),
         stream,
         buffers->kda_state_pool,
         buffers->kda_state_slot_bytes,
