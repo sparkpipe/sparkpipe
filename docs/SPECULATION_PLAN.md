@@ -364,11 +364,15 @@ Aggregate gain at batch B with k drafts per sequence is
 ### 9.2 Exactness evidence
 
 - `validate_mtp_parity` (sm_121a, synthetic 4-layer stack at full
-  geometry, TP1): besides the MTP chain it now runs 28 verify rounds of 2..8
-  rows with the reference drafter in oracle, adversary and fault-at-depth
-  modes and checks, every round, the accepted count, the committed tokens
-  against the serial greedy stream, and the KDA state, conv windows, KV and
-  index bytes against the serial decode. PASS on sparkf 2026-09-28.
+  geometry, TP1): besides the MTP chain it runs verify rounds of 2..8 rows
+  with the reference drafter in oracle, adversary and fault-at-depth modes
+  on a short walk (28 rounds) and on a walk that prefills 2040 positions and
+  decodes across context 2048 into the selected-attention regime (14
+  rounds, waves trimmed to one regime as the engine admits them), each with
+  the wave's natural maximum context and with the captured-graph bound. It
+  checks, every round, the accepted count, the committed tokens against the
+  serial greedy stream, and the KDA state, conv windows, KV and index bytes
+  against the serial decode. PASS on sparkf 2026-09-28.
 - `tests/test_glm5_next_stage_context.py` drives the real module verify
   loop (plan, resolve, fold count, observe, completion fields) with the
   three drafters against a toy target: output equals the greedy stream.
