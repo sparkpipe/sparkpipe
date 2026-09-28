@@ -29,6 +29,7 @@ typedef struct SparkKvSnapshotJob
 	struct SparkKvSnapshotJob *next;
 	uint32_t ready;
 	uint32_t segment_count;
+	uint64_t capacity;
 	uint64_t file_bytes;
 	SparkKvSnapshotKey key;
 	SparkKvSnapshotSegment segments[SPARK_KV_SNAPSHOT_MAX_SEGMENTS];
@@ -49,6 +50,8 @@ typedef struct SparkKvSnapshotRuntime
 	uint32_t entry_count;
 	uint32_t entry_capacity;
 	SparkKvSnapshotJob *jobs;
+	SparkKvSnapshotJob *spare_jobs;
+	uint64_t spare_bytes;
 } SparkKvSnapshotRuntime;
 
 static uint64_t SparkKvSnapshotNowNs(void)
@@ -420,6 +423,33 @@ static void SparkKvSnapshotUnlinkJob(SparkKvSnapshotStore *store,SparkKvSnapshot
 		}
 }
 
+static void SparkKvSnapshotRecycleJob(SparkKvSnapshotStore *store,SparkKvSnapshotJob *job)
+{
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	if ( runtime->spare_bytes > store->queue_maximum_bytes || job->capacity > store->queue_maximum_bytes - runtime->spare_bytes )
+	{
+		free(job);
+		return;
+	}
+	job->next = runtime->spare_jobs;
+	runtime->spare_jobs = job;
+	runtime->spare_bytes += job->capacity;
+}
+
+static SparkKvSnapshotJob *SparkKvSnapshotTakeSpareJob(SparkKvSnapshotRuntime *runtime,uint64_t payload)
+{
+	SparkKvSnapshotJob **link,*job;
+	for (link=&runtime->spare_jobs; *link != 0; link=&(*link)->next)
+		if ( (*link)->capacity >= payload )
+		{
+			job = *link;
+			*link = job->next;
+			runtime->spare_bytes -= job->capacity;
+			return(job);
+		}
+	return(0);
+}
+
 static void *SparkKvSnapshotWriterMain(void *context)
 {
 	SparkKvSnapshotStore *store = (SparkKvSnapshotStore *)context;
@@ -446,7 +476,7 @@ static void *SparkKvSnapshotWriterMain(void *context)
 			fprintf(stderr,"KV-SNAPSHOT write status=%d tokens=%u bytes=%llu\n",(int)status,job->key.token_count,(unsigned long long)job->file_bytes);
 		pthread_mutex_lock(&runtime->mutex);
 		SparkKvSnapshotUnlinkJob(store,job);
-		free(job);
+		SparkKvSnapshotRecycleJob(store,job);
 	}
 	pthread_mutex_unlock(&runtime->mutex);
 	return(0);
@@ -557,6 +587,11 @@ void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store)
 	while ( (job = runtime->jobs) != 0 )
 	{
 		runtime->jobs = job->next;
+		free(job);
+	}
+	while ( (job = runtime->spare_jobs) != 0 )
+	{
+		runtime->spare_jobs = job->next;
 		free(job);
 	}
 	pthread_cond_destroy(&runtime->wake);
@@ -807,13 +842,14 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 		status = SPARK_STATUS_BUSY;
 	}
 	job = 0;
-	if ( status == SPARK_STATUS_OK )
-		job = (SparkKvSnapshotJob *)malloc(sizeof(*job) + (size_t)payload);
+	if ( status == SPARK_STATUS_OK && (job = SparkKvSnapshotTakeSpareJob(runtime,payload)) == 0 && (job = (SparkKvSnapshotJob *)malloc(sizeof(*job) + (size_t)payload)) != 0 )
+		job->capacity = payload;
 	if ( status == SPARK_STATUS_OK && job == 0 )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 	{
-		memset(job,0,sizeof(*job));
+		job->ready = 0u;
+		memset(job->segments,0,sizeof(job->segments));
 		job->key = *key;
 		job->segment_count = segment_count;
 		job->file_bytes = file_bytes;
@@ -863,8 +899,8 @@ void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWrite
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
 	SparkKvSnapshotUnlinkJob(store,(SparkKvSnapshotJob *)ticket->job);
+	SparkKvSnapshotRecycleJob(store,(SparkKvSnapshotJob *)ticket->job);
 	pthread_mutex_unlock(&runtime->mutex);
-	free(ticket->job);
 	memset(ticket,0,sizeof(*ticket));
 }
 

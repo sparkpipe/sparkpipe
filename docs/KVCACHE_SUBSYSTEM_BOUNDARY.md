@@ -176,7 +176,9 @@ at that block boundary. Every segment and the header carry a SHA-256.
   page and state into them and calls `SparkKvSnapshotWriteCommit`. A single
   writer thread then hashes, writes a temporary file, fsyncs, renames and
   fsyncs the directory. Under the cache lock the publisher only pays the
-  device-to-host copies. A full queue answers BUSY; the page cache leaves
+  device-to-host copies. Written job buffers are kept for reuse up to the
+  queue bound, so a steady stream of publishes does not page-fault fresh
+  multi-megabyte buffers. A full queue answers BUSY; the page cache leaves
   the entry unsaved (`save_deferred_count`) and retries at its next
   publish or release. An I/O error or ENOSPC in the writer is logged
   (`KV-SNAPSHOT write status=...`), counted in `write_failure_count` and
