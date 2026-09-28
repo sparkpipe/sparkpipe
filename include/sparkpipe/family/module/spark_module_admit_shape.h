@@ -1,10 +1,7 @@
 #pragma once
 
-#ifndef SPARK_MODULE_ADMIT_POLICY_FLAGS
-#define SPARK_MODULE_ADMIT_POLICY_FLAGS (SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT | SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS)
-#endif
-#ifndef SPARK_MODULE_ADMIT_MAX_INPUT_ROWS
-#define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_active_sequence_count)
+#if !defined(SPARK_MODULE_ADMIT_POLICY_FLAGS) || !defined(SPARK_MODULE_ADMIT_MAX_INPUT_ROWS)
+#error "a module including the shared admission shape names its policy flags and input-row cap"
 #endif
 
 static SparkStatus SPARK_FAMILY(ModuleAdmit)(void *module_state,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
