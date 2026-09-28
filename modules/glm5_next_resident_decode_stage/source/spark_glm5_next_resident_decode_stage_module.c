@@ -330,6 +330,7 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_retries;
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
+	uint32_t verify_rows_max;
 	uint32_t chain_profile_stage;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
@@ -847,6 +848,15 @@ static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
 		}
 	slot->graph_failed_rows = 0u;
 	slot->graph_exec_a = 0;
+	for ( regime = 0u; regime < SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT; regime++ )
+		for ( index = 0u; index < SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT; index++ )
+		{
+			if ( slot->verify_exec[regime][index] != 0 )
+				(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->verify_exec[regime][index]);
+			slot->verify_exec[regime][index] = 0;
+			slot->verify_bound[regime][index] = 0u;
+		}
+	slot->verify_captured = 0u;
 }
 
 static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
@@ -3196,6 +3206,212 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 	*status_out = status;
 }
 
+typedef struct SparkGlm5NextVerifySaved
+{
+	uint32_t token_ids[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	uint32_t resident_slots[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	uint32_t positions[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	const SparkGlm5NextResidentDecodeStageBatchView *batch;
+	uint32_t first_row;
+	uint32_t wave_rows;
+	uint32_t spec_verify;
+	uint32_t sampled;
+	uint32_t tp_op_index;
+	uint32_t tp_hc_op_index;
+} SparkGlm5NextVerifySaved;
+
+static void SparkGlm5NextVerifySave(const SparkGlm5NextTpChain *chain,SparkGlm5NextVerifySaved *saved)
+{
+	const SparkGlm5NextExecutionSlot *slot = chain->slot;
+	memcpy(saved->token_ids,slot->host_token_ids,sizeof(saved->token_ids));
+	memcpy(saved->resident_slots,slot->host_resident_slots,sizeof(saved->resident_slots));
+	memcpy(saved->positions,slot->host_positions,sizeof(saved->positions));
+	saved->batch = chain->batch;
+	saved->first_row = chain->first_row;
+	saved->wave_rows = chain->wave_rows;
+	saved->spec_verify = chain->spec_verify;
+	saved->sampled = slot->sampled;
+	saved->tp_op_index = chain->tp_op_index;
+	saved->tp_hc_op_index = chain->tp_hc_op_index;
+}
+
+static void SparkGlm5NextVerifyRestore(SparkGlm5NextTpChain *chain,const SparkGlm5NextVerifySaved *saved)
+{
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	memcpy(slot->host_token_ids,saved->token_ids,sizeof(saved->token_ids));
+	memcpy(slot->host_resident_slots,saved->resident_slots,sizeof(saved->resident_slots));
+	memcpy(slot->host_positions,saved->positions,sizeof(saved->positions));
+	chain->batch = saved->batch;
+	chain->first_row = saved->first_row;
+	chain->wave_rows = saved->wave_rows;
+	chain->spec_verify = saved->spec_verify;
+	slot->sampled = saved->sampled;
+	chain->tp_op_index = saved->tp_op_index;
+	chain->tp_hc_op_index = saved->tp_hc_op_index;
+}
+
+static SparkStatus SparkGlm5NextVerifyCaptureRows(SparkGlm5NextTpChain *chain,uint32_t regime,uint32_t rows,uint32_t bound,uint32_t lane)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	uint32_t row,index = SparkGlm5NextVerifyTableIndex(rows);
+	SparkStatus status;
+	void *exec = 0;
+	for (row=0u; row<rows; row++)
+	{
+		slot->host_token_ids[row] = 0u;
+		slot->host_resident_slots[row] = lane;
+		slot->host_positions[row] = bound - rows + row;
+	}
+	chain->wave_rows = rows;
+	status = SparkGlm5NextBuildWave(chain);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextGraphClaimExperts(chain);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextGraphArm(state);
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextGraphRecord(chain,&exec);
+	SparkGlm5NextGraphDisarm(state);
+	if ( status == SPARK_STATUS_OK && exec == 0 )
+		status = SPARK_STATUS_UNSUPPORTED;
+	fprintf(stderr,"GRAPH-VERIFY-CAPTURE rows=%u regime=%u bound=%u status=%d\n",rows,regime,bound,(int)status);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( slot->verify_exec[regime][index] != 0 )
+		(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->verify_exec[regime][index]);
+	slot->verify_exec[regime][index] = exec;
+	slot->verify_bound[regime][index] = bound;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextVerifyCaptureSet(SparkGlm5NextTpChain *chain,uint32_t regime,uint32_t context)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextVerifySaved saved;
+	SparkStatus status;
+	uint32_t rows,bound;
+	SparkGlm5NextVerifySave(chain,&saved);
+	batch = *chain->batch;
+	batch.row_count = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN;
+	batch.active_sequence_count = 1u;
+	chain->batch = &batch;
+	chain->first_row = 0u;
+	chain->spec_verify = 1u;
+	chain->slot->sampled = 0u;
+	status = SparkGlm5NextGraphCoverEnsure(state);
+	for (rows=SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; status == SPARK_STATUS_OK && rows<=state->verify_rows_max; rows++)
+	{
+		bound = SparkGlm5NextVerifyCaptureBound(regime,rows,context,state->decode_split_context_threshold,state->max_sequence_positions);
+		batch.row_count = rows;
+		if ( bound != 0u )
+			status = SparkGlm5NextVerifyCaptureRows(chain,regime,rows,bound,saved.resident_slots[0]);
+		chain->tp_op_index = saved.tp_op_index;
+		chain->tp_hc_op_index = saved.tp_hc_op_index;
+	}
+	SparkGlm5NextVerifyRestore(chain,&saved);
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextVerifyCaptureStart(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextAsyncCompletion *async = &chain->state->completions[chain->slot_index];
+	uint64_t started_ns = SparkGlm5NextNowNs();
+	SparkStatus status;
+	status = SparkGlm5NextVerifyCaptureSet(chain,SPARK_GLM5_NEXT_GRAPH_REGIME_UNSPLIT,0u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextVerifyCaptureSet(chain,SPARK_GLM5_NEXT_GRAPH_REGIME_SPLIT,0u);
+	async->captures++;
+	async->capture_ns += SparkGlm5NextNowNs() - started_ns;
+	chain->slot->verify_captured = status == SPARK_STATUS_OK ? 1u : 0u;
+	fprintf(stderr,"GRAPH-VERIFY-TABLE slot=%u rows_max=%u status=%d capture_ms=%llu\n",chain->slot_index,chain->state->verify_rows_max,(int)status,(unsigned long long)((SparkGlm5NextNowNs() - started_ns) / 1000000u));
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextVerifyLookup(SparkGlm5NextTpChain *chain,void **exec_out)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	uint32_t context,regime,index;
+	SparkStatus status;
+	*exec_out = 0;
+	status = SparkGlm5NextVerifyWaveCheck(chain->wave_rows,state->verify_rows_max,chain->first_row,chain->batch->active_sequence_count,slot->sampled,slot->host_resident_slots,slot->host_positions,state->decode_split_context_threshold,state->max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && chain->steps != 1u )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( state->graph_path_enabled == 0u || slot->verify_captured == 0u )
+		return(SPARK_STATUS_UNSUPPORTED);
+	context = slot->host_positions[chain->wave_rows - 1u] + 1u;
+	regime = SparkGlm5NextGraphRegime(context,state->decode_split_context_threshold);
+	index = SparkGlm5NextVerifyTableIndex(chain->wave_rows);
+	if ( regime == SPARK_GLM5_NEXT_GRAPH_REGIME_SELECTED && (slot->verify_exec[regime][index] == 0 || context > slot->verify_bound[regime][index]) )
+		status = SparkGlm5NextVerifyCaptureSet(chain,regime,context);
+	if ( status == SPARK_STATUS_OK && (slot->verify_exec[regime][index] == 0 || context > slot->verify_bound[regime][index]) )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		*exec_out = slot->verify_exec[regime][index];
+	return(status);
+}
+
+static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain)
+{
+	fprintf(stderr,"GRAPH-VERIFY-COMMIT-MISSING rows=%u: the verify regime has no device accept and state fold in this revision\n",chain->wave_rows);
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
+static void SparkGlm5NextVerifyWave(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkStatus status;
+	void *exec;
+	status = SparkGlm5NextVerifyLookup(chain,&exec);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextBuildWave(chain);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextGraphClaimExperts(chain);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GRAPH-VERIFY-REJECTED rows=%u status=%d\n",chain->wave_rows,(int)status);
+		SparkGlm5NextTpChainFail(chain,status);
+		return;
+	}
+	chain->slot->graph_exec_a = exec;
+	SparkGlm5NextGraphStep(chain,&status);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkGlm5NextTerminalFailure(state,status,"verify-graph-execution");
+		SparkGlm5NextTpChainFail(chain,status);
+		return;
+	}
+	SparkGlm5NextGraphDisarm(state);
+	status = SparkGlm5NextVerifyCommit(chain);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkGlm5NextTpChainFail(chain,status);
+		return;
+	}
+	SparkGlm5NextFinishChain(chain);
+}
+
+static uint32_t SparkGlm5NextVerifyRoute(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( chain->slot->verify_captured == 0u && state->graph_path_enabled != 0u && state->experts_warm != 0u )
+		status = SparkGlm5NextVerifyCaptureStart(chain);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkGlm5NextTerminalFailure(state,status,"verify-capture");
+		SparkGlm5NextTpChainFail(chain,status);
+		return(1u);
+	}
+	if ( chain->spec_verify == 0u )
+		return(0u);
+	SparkGlm5NextVerifyWave(chain);
+	return(1u);
+}
+
 #include "sparkpipe/family/module/spark_module_t1_enabled.h"
 
 static void SparkGlm5NextT1Streams(SparkGlm5NextTpChain *chain,uint32_t layer)
@@ -3373,6 +3589,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		     state->graph_gate_printed < 3u )
 			fprintf(stderr,
 			    "GRAPH-GATE-COLD experts not warm; eager first\n");
+		if ( state->verify_rows_max != 0u && SparkGlm5NextVerifyRoute(chain) != 0u )
+			return;
 		if ( chain->wave_rows >= 1u && chain->wave_rows <= SPARK_GLM5_NEXT_GRAPH_ROWS_MAX &&
 		     (chain->slot->graph_failed_rows & (UINT64_C(1) << (chain->wave_rows - 1u))) == 0u &&
 		     chain->first_row == 0u && chain->spec_verify == 0u &&
@@ -4776,6 +4994,39 @@ static SparkStatus SparkGlm5NextBuildHeadShadow(SparkGlm5NextModuleState *state)
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkGlm5NextConfigureVerify(SparkGlm5NextModuleState *state)
+{
+	if ( SparkGlm5NextVerifyRowsParse(getenv(SPARK_GLM5_NEXT_VERIFY_ROWS_ENV),&state->verify_rows_max) != SPARK_STATUS_OK || (state->verify_rows_max != 0u && state->graph_path_enabled == 0u) )
+	{
+		fprintf(stderr,"%s must be 0 or %u..%u, and a nonzero value needs SPARK_GLM5_NEXT_GRAPH_PATH=1\n",SPARK_GLM5_NEXT_VERIFY_ROWS_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_MIN,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	fprintf(stderr,"GLM verify regime rows=%u\n",state->verify_rows_max);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextValidateSpeculation(const SparkGlm5NextModuleState *state)
+{
+	if ( state->mtp_enabled != 0u && state->pack_has_mtp == 0u )
+	{
+		fprintf(stderr,"G5N-DBG config: MTP flag set but the pack carries no layer-45 tensors\n");
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( state->mtp_enabled != 0u && state->tp_degree != 1u )
+	{
+		fprintf(stderr,"G5N-DBG config: MTP speculation requires tp_degree 1 in this revision\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( state->verify_rows_max == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_degree < 2u || state->tp_collective_disabled != 0u || state->mtp_enabled != 0u || state->owns_embedding == 0u || state->owns_final_head == 0u || state->lazy_pack == 0 || state->execution_row_capacity < SPARK_GLM5_NEXT_VERIFY_ROWS_MAX || SparkGlm5NextPinnedExpected(state) == 0u || state->expert_pin_key_count != SparkGlm5NextPinnedExpected(state) )
+	{
+		fprintf(stderr,"GLM verify regime rows=%u needs a single-stage TP>=2 lazy pack with pinned experts, no MTP and execution_row_capacity >= %u (tp=%u mtp=%u rows=%u pinned=%u/%u)\n",state->verify_rows_max,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,state->tp_degree,state->mtp_enabled,state->execution_row_capacity,state->expert_pin_key_count,SparkGlm5NextPinnedExpected(state));
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *state)
 {
 	{
@@ -4801,7 +5052,7 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 		state->graph_record_limit = record_limit_env != 0 ?
 		    (uint32_t)strtoul(record_limit_env,0,10) : 0u;
 	}
-	return(SPARK_STATUS_OK);
+	return(SparkGlm5NextConfigureVerify(state));
 }
 
 static SparkStatus SparkGlm5NextInitializeState(
@@ -4834,16 +5085,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextPackLoad(state,pack_path);
-	if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->pack_has_mtp == 0u )
-	{
-		fprintf(stderr,"G5N-DBG config: MTP flag set but the pack carries no layer-45 tensors\n");
-		status = SPARK_STATUS_SCHEMA_ERROR;
-	}
-	if ( status == SPARK_STATUS_OK && state->mtp_enabled != 0u && state->tp_degree != 1u )
-	{
-		fprintf(stderr,"G5N-DBG config: MTP speculation requires tp_degree 1 in this revision\n");
-		status = SPARK_STATUS_UNSUPPORTED;
-	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextValidateSpeculation(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
