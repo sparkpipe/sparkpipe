@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import shutil
 import subprocess
 import types
@@ -11,8 +12,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from t1_reference_common import bf16_to_f32, f32_to_bf16_u16  # noqa: E402
-from t1_reference_dsv41 import Dsv41FlashEngine, _fp4_qdq_e4m3_16, engram_gate  # noqa: E402
+from t1_reference_common import Safetensors, bf16_to_f32, f32_to_bf16_u16  # noqa: E402
+from t1_reference_dsv41 import (Dsv41FlashEngine, _E4M3_F32, _fp4_qdq_e4m3_16,  # noqa: E402
+                                _fp8_qdq_rows, engram_gate)
 
 BINARY = ROOT / "build/test_dsv41_flash_kernels"
 HIDDEN = 5120
@@ -118,6 +120,50 @@ def check_candidates(workspace, rng):
     return int(widths.sum())
 
 
+def fp8_linear_case(workspace, name, weight, scale, activations):
+    rows, input_dimension = activations.shape
+    output_dimension = weight.shape[0]
+    paths = {key: workspace / f"{name}_{key}.bin" for key in ("w", "s", "x", "y")}
+    np.ascontiguousarray(weight, dtype=np.uint8).tofile(paths["w"])
+    np.ascontiguousarray(scale, dtype=np.uint8).tofile(paths["s"])
+    words = bf16(activations)
+    words.tofile(paths["x"])
+    run("fp8-linear", paths["w"], paths["s"], paths["x"], paths["y"], rows, input_dimension, output_dimension)
+    got = np.fromfile(paths["y"], dtype=np.uint16).reshape(rows, output_dimension)
+    block = np.exp2(scale.astype(np.float32) - 127.0)
+    dequantized = _E4M3_F32[weight] * np.repeat(np.repeat(block, 32, axis=0), 32, axis=1)
+    expected = bf16(_fp8_qdq_rows(bf16_to_f32(words)) @ dequantized.T)
+    distance = ulp_distance(got, expected)
+    worst = int(distance.max())
+    exact = int((distance == 0).sum())
+    if worst > 1 or exact < got.size * 0.98:
+        raise AssertionError(f"fp8 block linear {name}: worst {worst} bf16 ulp, {exact}/{got.size} bit-equal")
+    return got.size, exact
+
+
+def check_fp8_linear(workspace, rng):
+    total = exact = 0
+    for name, (n, k) in {"random_1280x5120": (1280, 5120), "random_4096x1280": (4096, 1280)}.items():
+        codes = rng.integers(0, 0x7E, size=(n, k), dtype=np.uint8) | (rng.integers(0, 2, size=(n, k), dtype=np.uint8) << 7)
+        scale = rng.integers(118, 128, size=(n // 32, k // 32), dtype=np.uint8)
+        size, equal = fp8_linear_case(workspace, name, codes, scale, rng.standard_normal((2, k)).astype(np.float32))
+        total += size
+        exact += equal
+    checkpoint = os.environ.get("DSV41_CHECKPOINT")
+    real = []
+    if checkpoint:
+        tensors = Safetensors(checkpoint)
+        for tensor in ("layers.0.attn.wq_a", "layers.0.attn.wq_b", "layers.2.ffn.shared_experts.w2"):
+            weight = tensors.pread(tensor + ".weight")
+            scale = tensors.pread(tensor + ".scale")
+            activations = rng.standard_normal((1, weight.shape[1])).astype(np.float32)
+            size, equal = fp8_linear_case(workspace, tensor.replace(".", "_"), weight, scale, activations)
+            total += size
+            exact += equal
+            real.append(tensor)
+    return total, exact, real
+
+
 def main():
     built = subprocess.run(["make", "-s", str(BINARY.relative_to(ROOT))], cwd=ROOT, capture_output=True, text=True)
     if built.returncode != 0:
@@ -135,11 +181,14 @@ def main():
         fp4_values = check_kv_fp4(workspace, rng)
         engram_values, engram_exact = check_engram(workspace, rng)
         candidate_values = check_candidates(workspace, rng)
+        linear_values, linear_exact, real = check_fp8_linear(workspace, rng)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
     print(f"PASS dsv41 kernels: kv fp4 e4m3/16 qdq bit-equal to the reference on {fp4_values} values; "
           f"engram gate {engram_exact}/{engram_values} bit-equal, rest within 1 bf16 ulp; "
-          f"candidate-block mask equal on {candidate_values} positions (top 2048 of 8-blocks, ties, -inf, pinned block)")
+          f"candidate-block mask equal on {candidate_values} positions (top 2048 of 8-blocks, ties, -inf, pinned block); "
+          f"fp8 32x32-block linear {linear_exact}/{linear_values} bit-equal, rest within 1 bf16 ulp"
+          + (f" (real weights: {', '.join(real)})" if real else ""))
     return 0
 
 

@@ -248,3 +248,103 @@ static inline cudaError_t SparkDsv41FlashLaunchCandidateMask(
 		scores_f32,widths,row_stride,block_scores_f32,block_stride,block_size,topk_blocks);
 	return(cudaGetLastError());
 }
+
+#define SPARK_DSV41_FLASH_FP8_BLOCK 32u
+#define SPARK_DSV41_FLASH_FP8_AMAX_FLOOR 1e-4f
+#define SPARK_DSV41_FLASH_LINEAR_WARPS 8u
+
+static __device__ __forceinline__ float SparkDsv41FlashPow2CeilScale(float amax, float inverse_max)
+{
+	uint32_t bits = __float_as_uint(amax * inverse_max);
+	int32_t exponent = (int32_t)((bits >> 23u) & 0xffu) - 127 + ((bits & 0x7fffffu) != 0u ? 1 : 0);
+	return(__uint_as_float((uint32_t)(exponent + 127) << 23u));
+}
+
+static __global__ void SparkDsv41FlashActQuantKernel(const uint16_t *input_bf16, float *output_f32, uint32_t row_count, uint32_t width)
+{
+	uint32_t groups = width / SPARK_DSV41_FLASH_FP8_BLOCK;
+	uint64_t group = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	uint64_t base;
+	uint32_t element;
+	float amax = 0.0f,scale,value;
+	if ( group >= (uint64_t)row_count * groups )
+		return;
+	base = (group / groups) * width + (group % groups) * SPARK_DSV41_FLASH_FP8_BLOCK;
+	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
+		amax = fmaxf(amax,fabsf(LmBf16ToFloat(input_bf16[base + element])));
+	scale = SparkDsv41FlashPow2CeilScale(fmaxf(amax,SPARK_DSV41_FLASH_FP8_AMAX_FLOOR),1.0f / LM_E4M3_MAX);
+	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
+	{
+		value = fminf(fmaxf(LmBf16ToFloat(input_bf16[base + element]) / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
+		output_f32[base + element] = LmE4m3ToFloat(LmFloatToE4m3(value)) * scale;
+	}
+}
+
+static __global__ void SparkDsv41FlashFp8BlockLinearKernel(
+	const uint8_t *weight_e4m3,
+	const uint8_t *scale_ue8m0,
+	const float *activation_f32,
+	uint16_t *output_bf16,
+	uint32_t input_dimension,
+	uint32_t output_dimension)
+{
+	uint32_t lane = threadIdx.x % 32u,warp = threadIdx.x / 32u;
+	uint32_t output = blockIdx.x * SPARK_DSV41_FLASH_LINEAR_WARPS + warp,row = blockIdx.y,k,pair,offset;
+	uint32_t scale_columns = input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK;
+	const uint8_t *weights;
+	const float *activation = activation_f32 + (uint64_t)row * input_dimension;
+	float total = 0.0f,partial,scale;
+	uint4 packed;
+	const uint16_t *pairs;
+	float2 values;
+	if ( output >= output_dimension )
+		return;
+	weights = weight_e4m3 + (uint64_t)output * input_dimension;
+	for (k = lane * 16u; k < input_dimension; k += 32u * 16u)
+	{
+		packed = *(const uint4 *)(weights + k);
+		pairs = (const uint16_t *)&packed;
+		scale = LmUe8m0ToFloat(scale_ue8m0[(uint64_t)(output / SPARK_DSV41_FLASH_FP8_BLOCK) * scale_columns + k / SPARK_DSV41_FLASH_FP8_BLOCK]);
+		partial = 0.0f;
+		for (pair = 0u; pair < 8u; pair++)
+		{
+			values = LmE4m3PairToFloat2(pairs[pair]);
+			partial += values.x * activation[k + 2u * pair] + values.y * activation[k + 2u * pair + 1u];
+		}
+		total += partial * scale;
+	}
+	for (offset = 16u; offset != 0u; offset >>= 1u)
+		total += __shfl_down_sync(0xffffffffu,total,offset);
+	if ( lane == 0u )
+		output_bf16[(uint64_t)row * output_dimension + output] = LmFloatToBf16(total);
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchFp8BlockLinear(
+	cudaStream_t stream,
+	const uint8_t *weight_e4m3,
+	const uint8_t *scale_ue8m0,
+	const uint16_t *input_bf16,
+	float *activation_scratch_f32,
+	uint16_t *output_bf16,
+	uint32_t row_count,
+	uint32_t input_dimension,
+	uint32_t output_dimension)
+{
+	uint64_t groups;
+	cudaError_t status;
+	if ( weight_e4m3 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || activation_scratch_f32 == 0 ||
+		output_bf16 == 0 || row_count == 0u || input_dimension == 0u || input_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u ||
+		output_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u ||
+		((uintptr_t)weight_e4m3 % 16u) != 0u )
+		return(cudaErrorInvalidValue);
+	groups = (uint64_t)row_count * (input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK);
+	SparkDsv41FlashActQuantKernel<<<(uint32_t)((groups + 255u) / 256u),256u,0,stream>>>(
+		input_bf16,activation_scratch_f32,row_count,input_dimension);
+	status = cudaGetLastError();
+	if ( status != cudaSuccess )
+		return(status);
+	SparkDsv41FlashFp8BlockLinearKernel<<<dim3((output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,row_count),
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream>>>(weight_e4m3,scale_ue8m0,activation_scratch_f32,output_bf16,
+		input_dimension,output_dimension);
+	return(cudaGetLastError());
+}

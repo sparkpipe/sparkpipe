@@ -133,14 +133,61 @@ static int RunCandidates(char **argv)
     return 0;
 }
 
+static int RunFp8Linear(char **argv)
+{
+    uint32_t rows = (uint32_t)strtoul(argv[6], 0, 10);
+    uint32_t input_dimension = (uint32_t)strtoul(argv[7], 0, 10);
+    uint32_t output_dimension = (uint32_t)strtoul(argv[8], 0, 10);
+    size_t weight_bytes = (size_t)output_dimension * input_dimension;
+    size_t scale_bytes = (size_t)(output_dimension / 32u) * (input_dimension / 32u);
+    std::vector<uint8_t> weight(weight_bytes), scale(scale_bytes);
+    std::vector<uint16_t> input = ReadWords(argv[4], (size_t)rows * input_dimension);
+    std::vector<uint16_t> output((size_t)rows * output_dimension);
+    FILE *file = fopen(argv[2], "rb");
+    if (file == 0 || fread(weight.data(), 1u, weight_bytes, file) != weight_bytes)
+    {
+        fprintf(stderr, "FAIL cannot read %s\n", argv[2]);
+        return 1;
+    }
+    fclose(file);
+    file = fopen(argv[3], "rb");
+    if (file == 0 || fread(scale.data(), 1u, scale_bytes, file) != scale_bytes)
+    {
+        fprintf(stderr, "FAIL cannot read %s\n", argv[3]);
+        return 1;
+    }
+    fclose(file);
+    uint8_t *weight_device = 0, *scale_device = 0;
+    float *scratch_device = 0;
+    uint16_t *input_device = Upload(input);
+    uint16_t *output_device = Upload(output);
+    CUDA(cudaMalloc(&weight_device, weight_bytes));
+    CUDA(cudaMalloc(&scale_device, scale_bytes));
+    CUDA(cudaMalloc(&scratch_device, (size_t)rows * input_dimension * sizeof(float)));
+    CUDA(cudaMemcpy(weight_device, weight.data(), weight_bytes, cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(scale_device, scale.data(), scale_bytes, cudaMemcpyHostToDevice));
+    CUDA(SparkDsv41FlashLaunchFp8BlockLinear(0, weight_device, scale_device, input_device, scratch_device, output_device, rows, input_dimension, output_dimension));
+    CUDA(cudaDeviceSynchronize());
+    Download(output, output_device);
+    WriteWords(argv[5], output);
+    CUDA(cudaFree(weight_device));
+    CUDA(cudaFree(scale_device));
+    CUDA(cudaFree(scratch_device));
+    CUDA(cudaFree(input_device));
+    CUDA(cudaFree(output_device));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 9 && strcmp(argv[1], "fp8-linear") == 0)
+        return RunFp8Linear(argv);
     if (argc == 8 && strcmp(argv[1], "candidates") == 0)
         return RunCandidates(argv);
     if (argc == 6 && strcmp(argv[1], "kv-fp4") == 0)
         return RunKvFp4(argv);
     if (argc == 11 && strcmp(argv[1], "engram") == 0)
         return RunEngram(argv);
-    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS | candidates IN OUT ROWS STRIDE BLOCK TOPK\n", argv[0]);
+    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS | candidates IN OUT ROWS STRIDE BLOCK TOPK | fp8-linear W SCALE IN OUT ROWS K N\n", argv[0]);
     return 2;
 }
