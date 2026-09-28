@@ -99,6 +99,7 @@ typedef struct SparkGemma4ModuleState
 	atomic_ullong tp_next_ordinal;
 	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
+	uint32_t max_input_row_count;
 	uint32_t pipeline_slot_count;
 	atomic_uint slot_states[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t kv_block_count;
@@ -198,6 +199,10 @@ static SparkStatus SparkGemma4ModuleConfigure(SparkGemma4ModuleState *state)
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_LAYER_COUNT",1u,SPARK_GEMMA4_MODEL_LAYER_COUNT,&state->layer_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&state->max_active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_MAX_INPUT_ROWS",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,state->max_active_sequence_count,&state->max_input_row_count);
+	if ( status == SPARK_STATUS_OK && state->max_input_row_count < state->max_active_sequence_count )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_PIPELINE_SLOTS",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
@@ -504,6 +509,7 @@ static void SparkGemma4ModuleReportReady(void *module_state)
 
 #include "sparkpipe/family/module/spark_module_admission_cost.h"
 
+#define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_input_row_count)
 #include "sparkpipe/family/module/spark_module_admit_shape.h"
 
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
@@ -577,7 +583,7 @@ static SparkStatus SparkGemma4ModuleAllocatePools(SparkGemma4ModuleState *state)
 
 static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot)
 {
-	uint64_t rows = state->max_active_sequence_count;
+	uint64_t rows = state->max_input_row_count;
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
@@ -1038,18 +1044,30 @@ static SparkStatus SparkGemma4ModuleEmbedRows(SparkGemma4ModuleState *state, Spa
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkModelDriverFrame *frame, uint32_t rows)
+static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkGemma4ResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	const SparkGemma4DecodeBatchView *batch;
+	uint32_t lane_capacity;
 	cudaError_t error;
 	uint32_t row;
+	batch = context != 0 && (context->flags & SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) != 0u ? context->decode_batch : 0;
+	if ( batch == 0 || batch->abi_version != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION ||
+		batch->descriptor_bytes != sizeof(*batch) || batch->row_count != rows ||
+		batch->row_lane_indices == 0 || batch->row_positions == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	lane_capacity = context->kv_block_table != 0 ? context->kv_block_table->lane_capacity : state->max_active_sequence_count;
 	for (row = 0u; row < rows; row++)
 	{
+		uint32_t lane = batch->row_lane_indices[row];
+		uint64_t position = batch->row_positions[row];
+		if ( lane >= lane_capacity || position >= UINT32_MAX )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		slot->host_row_lane_indices[row] = row;
-		slot->host_row_positions[row] = frame->sequence_position;
-		slot->host_row_positions_u32[row] = (uint32_t)frame->sequence_position;
-		slot->host_row_sequences_u32[row] = row;
-		slot->host_context_lengths[row] = (uint32_t)frame->sequence_position + 1u;
+		slot->host_row_positions[row] = position;
+		slot->host_row_positions_u32[row] = (uint32_t)position;
+		slot->host_row_sequences_u32[row] = lane;
+		slot->host_context_lengths[row] = (uint32_t)position + 1u;
 	}
 	error = cudaMemsetAsync(slot->frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),stream);
 	memset(slot->host_frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
@@ -1116,7 +1134,7 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 {
 	uint32_t layer;
 	SparkStatus status;
-	status = SparkGemma4ModuleUploadRows(state,slot,frame,rows);
+	status = SparkGemma4ModuleUploadRows(state,slot,frame,context,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->owns_embedding != 0u )
@@ -1225,7 +1243,7 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 	{
 		SparkStatus prefill_status;
 		rows = frame->new_token_count;
-		if ( rows == 0u || rows > state->max_active_sequence_count )
+		if ( rows == 0u || rows > state->max_input_row_count )
 		{
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 			return(SPARK_STATUS_INVALID_ARGUMENT);

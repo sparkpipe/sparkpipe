@@ -97,6 +97,8 @@
 #define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkGemma4ServingInitializeFamilyState(state)
 #define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkGemma4ServingPrefetch
+#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+	((state)->max_input_row_count)
 #define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH \
 	SparkGemma4ServingResolvePrefetch
 #define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkGemma4ServingReset

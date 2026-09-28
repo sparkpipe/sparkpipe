@@ -129,7 +129,7 @@ static void TestGemma4ServingConfiguration(
 	configuration->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	configuration->runtime_limits.max_inflight_submission_count = 1u;
 	configuration->runtime_limits.max_active_sequence_count = 8u;
-	configuration->runtime_limits.max_input_row_count = 8u;
+	configuration->runtime_limits.max_input_row_count = 32u;
 	configuration->runtime_limits.resident_sequence_capacity = 8u;
 	configuration->runtime_limits.kv_logical_page_capacity = 64u;
 	configuration->runtime_limits.kv_physical_page_capacity = 64u;
@@ -252,6 +252,9 @@ int main(void)
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) ==
 		SPARK_STATUS_OK);
 	assert(adapter_state != 0);
+	assert(getenv("SPARK_GEMMA4_STAGE_MAX_INPUT_ROWS") != 0);
+	assert(strcmp(getenv("SPARK_GEMMA4_STAGE_MAX_INPUT_ROWS"),"32") == 0);
+	assert(strcmp(getenv("SPARK_GEMMA4_STAGE_MAX_ACTIVE_SEQUENCES"),"8") == 0);
 	token_ids[0] = 11u;
 	token_ids[1] = 12u;
 	row_lane_indices[0] = 0u;

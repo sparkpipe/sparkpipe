@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef SPARK_MODULE_ADMIT_MAX_INPUT_ROWS
+#define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_active_sequence_count)
+#endif
+
 static SparkStatus SPARK_FAMILY(ModuleAdmit)(void *module_state,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
 	SPARK_FAMILY(ModuleState) *state;
@@ -12,7 +16,7 @@ static SparkStatus SPARK_FAMILY(ModuleAdmit)(void *module_state,const SparkModel
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
 	table.descriptor_bytes = (uint32_t)sizeof(table);
 	table.max_active_sequence_count = state->max_active_sequence_count;
-	table.max_input_row_count = state->max_active_sequence_count;
+	table.max_input_row_count = SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state);
 	table.max_sequence_positions = SPARK_FAMILY_CONST(MODEL_MAXIMUM_CONTEXT_TOKENS);
 	table.flags = SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT | SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS;
 	table.predicate = SPARK_FAMILY(AdmissionKvPredicate);
