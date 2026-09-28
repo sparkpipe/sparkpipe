@@ -5,11 +5,20 @@ implementations are qualified. A stable system needs several independent
 oracles at real module boundaries. More random rounds cannot repair an oracle
 that accepts permanent BUSY, ignores an error or never injects its named fault.
 
-Run the host campaign from a fresh checkout:
+Run the host campaign from a fresh checkout on a Spark or on sparkf (Linux
+aarch64). The receipts below are Linux runs; those that name their host ran on
+Spark0.
 
 ```
 bash tools/test_serving_reliability_host.sh --seeds 1,7,73 --rounds 128 --loopback-rounds 24
 ```
+
+The rtx5090 hub (x86_64, glibc 2.43, gcc 15.2, CUDA toolkit installed) could
+not build the campaign before a22a3af (PR #1258): glibc 2.43 declares
+`rsqrtf`, which clashed with the host CUDA shim in
+`tests/host_cuda/lm_host_cuda.cuh`, and with a toolkit present
+`test_stage_module_common` and `test_dsv4_w1_loader` linked no CUDA stub. No
+campaign receipt from the hub exists yet.
 
 An exported source archive additionally requires `--source-commit FULL_SHA`.
 The runner refuses an existing object tree, builds with explicit host CUDA
@@ -44,18 +53,76 @@ The aggregate campaign stays red if any required gate fails.
 | Memory and core ownership | Embedded descriptor lifetime, matching allocator, transaction/completion/release ordering, arenas and runtime ABI | Memory/arena/work-transaction/completion/release/runtime tests | Host backends and declared fixture boundaries |
 | Module/deployment/serialization | Module ABI/load/compile, deployment metadata, tokenizer/JSON validation, numerical error metrics and codec contracts | Model-description/module-library/compiler/stage-common/LLM/tokenizer/JSON tests; deployment generation/drift/queue tests | Compilation/metadata checks do not qualify inference or fleet behavior |
 | Module teardown ownership | Quiesce/unregister/lazy-release failures retain internal state and ledger; zero-slot partial initialization cleans up; retries release ownership once; GLM52 retired leases and K3 acquired/begun/recorded leases remain recoverable | `test_stage_module_teardown.py` executes actual Qwen4 Flash, Qwen38 Max, Gemma4 and Muse callbacks, common lifecycle, GLM52 recovery, and extracted actual K3 acquire/release bodies | CUDA/weightd boundaries are injected; K3 full destructor is not executed here. Public void module/driver teardown still cannot propagate retained cleanup status to its caller |
-| GLM graph and lazy integration | Sticky collective failure, invalid token blocked, daemon loss fencing, stage context, embedding collective, lazy dispatch, explicit geometry/configuration | GLM graph-failure/stage-context/embedding/config/driver-probe/geometry/shard-math/lazy tests | Production bodies with external boundaries mocked; GPU graph replay, cancel, recurrent restore and numerics remain open |
+| GLM graph and lazy integration | Sticky collective failure, invalid token blocked, daemon loss fencing, stage context, embedding collective, lazy dispatch, explicit geometry/configuration | GLM graph-failure/stage-context/embedding/config/driver-probe/geometry/shard-math/lazy tests | Production bodies with external boundaries mocked. The graph path is not lazy: it needs every routed expert of the stage leased (see the runtime contract), so lazy dispatch applies to eager waves only. GPU graph replay has model-output evidence (glm5_next row below); GPU graph fault, cancel and recurrent restore remain open |
+
+## Runtime contract
+
+These rules came from the PR #1077 reliability work and hold on main; the
+harnesses above test them. They were spot-checked against the source on
+2026-09-28.
+
+- A failed CUDA graph collective keeps its error until the owner consumes it.
+  Poisoned maxloc output decodes to the invalid token ID. Completion checks
+  failure before cache commit or token publication. A graph execution failure
+  is terminal for the GLM engine (`GRAPH-PATH-FAILED ... engine restart
+  required`); it is never retried as successful inference. A failed chain or
+  completion drain keeps the slot and its CUDA resources instead of releasing
+  them while the stream may still be running.
+- A graph the module cannot build returns `UNSUPPORTED`, and that wave runs
+  eager instead: after a failed capture (`GRAPH-CAPTURE-FAILED`, that row count
+  stays eager) or when the stage holds fewer leased experts than it has routed
+  experts (`GLM whole-chain graph requires N leased experts`, 78c2c21).
+- A synchronous collective rejection returns an error and queues no callback.
+  Accepted work has one terminal callback.
+- Control socket reconnection aborts the previous session and does not resume
+  partially sent frames. Prepared work is aborted, submitted work keeps its
+  route and slot claims until terminal completion, and reset completes before
+  the new HELLO_ACK enables admission. A hard reset error fences the engine.
+- A transport failure resets the whole pipeline session. Its fingerprint stays
+  unchanged until every rank is ready. Transactions terminate through their
+  callbacks. BUSY is backpressure.
+- A response that has already emitted tokens ends with an error after session
+  loss; it is never replayed from token zero. Surviving queued requests reset
+  their prefix digest and cache lookup epoch before rebuilding the prompt
+  (`runtime/model_batch_engine.c`).
+- Loss of either weightd client (lane or lazy map) puts the GLM engine in a
+  terminal state (`GLM engine terminal status=... full engine restart
+  required`, sources `weightd-lane` and `weightd-lazy`); later work fails
+  until the engine restarts. When residentd cannot quiesce the adapter it
+  keeps live resources until process exit (`node/model_residentd.c`).
+- An interrupted weightd IPC exchange closes the client socket, so a stale
+  reply cannot be read as the next response (`runtime/spark_weightd.c`).
+- The weightd TCP latch owns the singleton: a duplicate launch fails and
+  leaves the existing owner untouched (`node/weightd.c`).
+
+Configuration these rules depend on:
+
+- `SPARK_GLM5_NEXT_GRAPH_PATH` must be `0` or `1`; the module refuses anything
+  else. The fleet agent sets it from `G5_GRAPH_PATH`.
+- The graph path also needs `SPARK_GLM5_NEXT_PIN_EXPERTS=1` (fleet
+  `G5_PIN_EXPERTS=1`) and an expert pool that holds every pinned expert. For a
+  full-depth stage that is (45 − 3) × 288 = 12096 experts (arithmetic from
+  `model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h`). The
+  fleet runs with both set (`fleet-agent` drop-in `20-serving.conf`,
+  `qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`).
+  Pinning every expert contradicts the lazy-residency invariants I28-I30.
+- The GLM module refuses to start without an explicit finite
+  `SPARK_WEIGHTD_EXPERT_POOL_BYTES`. The fleet agent's default is 32 GiB
+  (`tools/fleet_node_agent.sh`).
+- `SPARK_GLM5_NEXT_PREFETCH` set to anything but `0` makes the module refuse
+  to start; warm the daemon with `build/weightd_warm` instead.
 
 ## Every repository module
 
-The campaign records the discovered `modules/` directory names. Each module
-below has a distinct qualification boundary; passing common serving tests does
-not silently qualify a different model. Modules without executable model
-coverage remain explicit gaps for the subsequent review and hardware campaign.
+The campaign records the discovered `modules/` directory names; `modules/`
+holds the 17 below. Each module has a distinct qualification boundary; passing
+common serving tests does not silently qualify a different model. Modules
+without executable model coverage remain explicit gaps for the subsequent
+review and hardware campaign.
 
 | Module | Host campaign coverage | Model execution qualification |
 | --- | --- | --- |
-| `glm5_next_resident_decode_stage` | Common fuzzers plus GLM integration harnesses listed above | OPEN: current GLM5.3 focus; real GPU/fleet gates required |
+| `glm5_next_resident_decode_stage` | Common fuzzers plus GLM integration harnesses listed above | GLM 5.3 Flash serves on 16 Sparks, TP16, graph path with every expert pinned. COMPSEC-17 scores 14/17 with the GLM chat template, thinking off and 512 tokens, byte-identical to the eager configuration ([receipt](../qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md)). OPEN: batched decode is not batch-invariant (same receipt); GPU fault/cancel and recurrent restore |
 | `dsv4_resident_decode_stage` | DSV4, TP16 and TP4xPP4 adapters; cache, lane, pool, shape, stage runner and loader fixtures | OPEN: actual model math/state and each topology |
 | `qwen38_27b_resident_decode_stage` | Serving adapter, host work-control fixture and common contracts | OPEN: actual model math/state |
 | `gemma4_resident_decode_stage` | Serving adapter; dense/MoE geometry and negative controls; actual teardown callback | OPEN: actual model math/state, dense/MoE variants |
@@ -70,6 +137,8 @@ coverage remain explicit gaps for the subsequent review and hardware campaign.
 | `qwen4_flash_resident_decode_stage` | Model-header contract test and actual teardown callback | OPEN: executable adapter fuzz and real model math/state |
 | `qwen38_max_resident_decode_stage` | Host work-control fixture, actual teardown callback and common contracts | OPEN: executable adapter fuzz and real model math/state |
 | `dsv41_flash_resident_decode_stage` | Common contract discovery only | OPEN: executable adapter fuzz and real model math/state |
+| `minimax_resident_decode_stage` | None. Outside the campaign, `tests/test_adapter_description_identity.py` checks its adapter identity and `tests/test_t1_reference_minimax.py` checks the Python reference engine, not the module | OPEN: executable adapter fuzz and real model math/state |
+| `mimo26_resident_decode_stage` | None. The module holds only `spark_mimo26_stagepack_format.h`; outside the campaign, `tests/test_mimo26_*.py` check the census, stagepack format, pack round-trip and emit order | OPEN: no module or adapter source yet |
 
 ## Reproducing and extending failures
 
@@ -233,8 +302,9 @@ Source `040f8eec545e052b38b9212a27ffa7d62ae92d6d` completed **166 PASS,
 128 rounds, 24 loopback rounds, two build jobs and 180 seconds per test. It
 selected 114/115 registered C targets; the Qwen GPU target and 164 unselected
 Python files remain separate. The non-document source digest is
-`d64118a9cedc2233064b7882a8de4a7b04b1996783b64a8375411551885d979f`. The retained receipt is
-`/private/tmp/sparkpipe-pr1082-receipts/host-040f8eec/reliability/results.json`.
+`d64118a9cedc2233064b7882a8de4a7b04b1996783b64a8375411551885d979f`. Its
+`results.json` was kept only under `/private/tmp` on the controller Mac and no
+longer exists; these counts and the digest are the remaining record.
 
 The preceding 44fe4af7 attempt exposed a GCC fixture-indentation error and
 was killed at its 8 GiB cgroup limit after 54 successful checks; it is a failed,
@@ -250,5 +320,7 @@ The final runtime candidate `852e01a2c9ee8b7b273370a793761dc70db5b005` repeated
 the same fresh Linux campaign: **166 PASS, 0 FAIL, 0 SETUP_FAIL, 0 TIMEOUT**.
 It includes the forced-alignment shared-file mapping regression. Non-documentation
 source digest: `c20ff6ac61fd91170fddb4c41854fc3b47a5cb8980449cefce9cc0862b770b94`.
-The complete inventory, unrun list and logs are retained in the release qualification
-archive; local copy: `/private/tmp/sparkpipe-pr1082-receipts/host-852e01a2/reliability/`.
+Its inventory, unrun list and logs were kept only under `/private/tmp` on the
+controller Mac and no longer exist. The committed
+`receipts/parallel-residents-852e01a2.json` covers the parallel-resident runs
+at that source, not this campaign.
