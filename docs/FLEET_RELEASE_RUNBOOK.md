@@ -62,32 +62,66 @@ scripts' default `~/sparkpipe-build` is glmdev's on sparkf).
 
 ### 2.1 Module/driver root (residentd + api + driver + adapter)
 
+On main (checked at `09fdad6`, 2026-09-28) `tools/module_build_release.sh`
+takes exactly five arguments and no branch: `FAMILY CODEC OUTPUT_NAME
+MODEL_REVISION CONTRACT`. It refuses to run outside a GPU-owned queue job
+(`SPARK_QUEUE_ID`), refuses a checkout that already has `build/obj` or
+`build/modules`, and never resets a tree, parks an agent, drains a residentd or
+writes `~/release`. The older six-argument form with a trailing `origin/main`
+or SHA fails with a usage error. The glm53flash wrapper is
+`tools/glm5_next_build_release.sh` (no arguments).
+
 ```sh
 ssh sparkf
 cd ~/g5n-rd-build
-export SPARKPIPE_BUILD_TREE=$HOME/g5n-rd-build
-git fetch -q origin main
-# publish from a merged main SHA (never a lane):
-git reset -q --hard <MAIN_SHA>          # e.g. origin/main after the PR merges
-
-tools/module_build_release.sh <family> <codec> <root> <revision> <contract-json> origin/main
-#   concrete glm53flash example:
-# tools/module_build_release.sh glm5_next fp8 glm53flash.fp8.tp16 \
-#     84c6a6aa9497188e15a635ba793b0f95a79b1033 \
-#     model_contracts/glm53_flash_authoritative.json origin/main
+git fetch -q origin
+git worktree add --detach ~/g5n-rd-build-<sha7> <MERGED_MAIN_SHA>
+# run inside the GPU-owned queue job, cwd = ~/g5n-rd-build-<sha7>:
+bash tools/glm5_next_build_release.sh
 ```
 
-What it does, in order: host-builds residentd/api/compile/transport; builds
-the serving adapter with nvcc `sm_121a`; parks sparkf's own agent and drains
-sparkf's residentds (the GPU publish needs the GPU); runs the module publish
-with GPU receipts; compiles `model_driver.so` into `~/sparkdata/out`;
-`publish_local.sh` installs everything into `~/release/<root>/` (flocked,
-staging + mv), regenerates that root's `MANIFEST` (MANIFEST is written
-LAST — it is the commit bit), restarts sparkf's agent, and re-publishes the
-core agent via `publish_core.sh agent`.
+A fresh worktree per release gives the module publish an empty
+`build/module_library`, so `publish.log` must show `validation=executed` and
+`glm5_next component validator: PASS`. `validation=reused` means the checkout
+was not fresh; do not publish it. Always name the merged SHA explicitly: never
+trust the build tree's `origin/main` ref (the refspec trap in §6).
 
-The runtime-root guard inside `publish_local.sh` rejects a
-`model_resident.json` whose `runtime_root` does not match `<root>`.
+Output: `build/glm53_release/` with `bin/`, `lib/hidden_transport.so`,
+`lib/model_serving_adapter.so` (the script finds the adapter under its real
+product name, `libglm5_next_serving_adapter_fp8.so`), `stages/stage_000/`,
+`qualification/serving-receipts/` (build, publish, driver link and inspect,
+`ldd -r` receipts), `SOURCE_COMMIT`, `SHA256SUMS`, and the tarball with its
+`.sha256`. Run `sha256sum -c SHA256SUMS` inside the directory before you use it.
+
+Assemble the release root from the root that is being served, then replace only
+the build's files:
+
+| Root path | From `build/glm53_release/` |
+| --- | --- |
+| `bin/sparkpipe_model_residentd`, `bin/sparkpipe_model_api`, `bin/sparkpipe_model_batch` | same path |
+| `lib/hidden_transport.so`, `lib/model_serving_adapter.so` | same path |
+| `stages/stage_000/model_driver.so`, `spark_model_driver_generated.c` | same path |
+| `stages/stage_000/link_units/*.a` | same path; drop the old link units from the MANIFEST |
+
+`config/`, `model_resident.json`, `bin/sparkpipe_registrar` and the root's
+inert `bin/sparkpipe_weightd` copy stay as they are unless the release changes
+them. Regenerate `MANIFEST` with the `publish_local.sh` recipe
+(`find lib bin stages config model_resident.json -type f ! -name stage.json !
+-name MANIFEST | sort | xargs sha256sum`), written through a temp file and
+`mv`, LAST.
+
+The `.wset` sidecars next to the channel-root packs must stay aside
+(`.wset.aside-20260928`): with a sidecar present the attach takes the
+full-tape batch path.
+
+Queue admission, observed 2026-09-28: the controller's persistent owners still
+name the retired `sparkpipe-glm-serving-dd3526b2.service` and
+`sparkpipe-weightd-shared.service` system units. The channel runs weightd and
+residentd inside the `fleet-agent` user unit, which has no `MemoryMax`. As a
+result `preflight` rejects every `gpu-shared` job on every Spark ("owner unit
+is not verifiably active"). The build job cannot be admitted until the queue's
+owners describe the channel units with finite budgets. Reconcile the owners
+before the next release; do not bypass the gate.
 
 ### 2.2 Core (weightd, agent) — "if needed"
 
@@ -103,6 +137,17 @@ SPARKPIPE_BUILD_TREE=$HOME/g5n-rd-build tools/publish_core.sh agent
 ```sh
 rsync -a --delete ~/release/core ~/release/<root> spec@10.10.250.2:release/
 ```
+
+Stage `~/release/core` only when this release just published it. sparkf's
+staging copy of `core` can lag behind the hub. If a stale core is staged,
+`self_update` rolls the old agent out fleet-wide (the 09-22 agent without
+`--mesh-rank-mask` did this on 2026-09-28). When core has not changed, stage
+the root alone.
+
+Before staging, keep a rollback copy of the served root, core, API channel and
+`g53-api.service` outside the served tree (for example
+`rtx5090:~/release-rollback-<date>-<sha7>/`) and check each copy against its
+`MANIFEST` or `SHA256SUMS`.
 
 ### 2.4 The weightd announce — the restart authorization
 
@@ -125,6 +170,53 @@ Announce only after you are sure the build is good: it is fleet-wide.
 curl -s http://100.123.97.61:8802/<root>/MANIFEST | head    # served sha list
 curl -s http://100.123.97.61:8802/core/WEIGHTSD_BIN         # announced sha
 ```
+
+### 2.6 The x86 API on the rtx5090 (`g53-api`)
+
+The serving API for glm53flash is the rtx5090 user unit `g53-api` (`:8433`).
+It runs from `~/g53-api-channel`, while spark0 carries `G5_API_DISABLED=1`. The
+API is an x86 build, so the aarch64 root cannot provide it: build it from the
+same merged SHA as the engines, and only after the fleet reports 16/16 `ready`
+with the new residentd and driver shas.
+
+```sh
+SHA=<MERGED_MAIN_SHA>; S7=${SHA:0:7}
+git archive --format=tar --prefix=api-build-$S7/ $SHA | ssh rtx5090 'tar -xf - -C ~'
+ssh rtx5090
+cd ~/api-build-$S7 && export PATH=/usr/local/cuda/bin:$PATH
+CONTRACT_SHA=$(sha256sum model_contracts/glm53_flash_authoritative.json | cut -d' ' -f1)
+make -j4 build/sparkpipe_model_api > build-api.log 2>&1
+make -j4 -C modules/glm5_next_resident_decode_stage adapter EXPERT_CODEC=fp8 \
+    MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033 \
+    CONTRACT_SHA256=$CONTRACT_SHA > build-adapter.log 2>&1
+ldd -r build/modules/glm5_next_resident_decode_stage/fp8/libglm5_next_serving_adapter_fp8.so
+```
+
+Install through temp+`mv` (ETXTBSY):
+
+- `bin/sparkpipe_model_api` comes from `build/sparkpipe_model_api`.
+- `runtime/lib/model_serving_adapter.so` comes from the adapter above.
+- `model_resident.json` comes from the release root's `model_resident.json`
+  with the channel's existing `tokenizer` block (`path`, `sha256`,
+  `vocabulary_size`) carried over. That block is the only intended
+  difference. Check it with a key-by-key diff.
+- `SOURCE_COMMIT` gets the merged SHA.
+
+A workaround line in `~/.config/systemd/user/g53-api.service` is removed once
+the release carries its fix. `SPARK_MODEL_API_MAX_PREFILL_ROWS=8` goes with
+#1255. Then run:
+
+```sh
+systemctl --user daemon-reload && systemctl --user restart g53-api
+cd ~/g53-api-channel && sha256sum bin/sparkpipe_model_api \
+    runtime/lib/model_serving_adapter.so runtime/tokenizer/tokenizer.json \
+    model_resident.json SOURCE_COMMIT > SHA256SUMS
+```
+
+`g53-api` is the one hub service a release restarts. Law 6 still covers every
+other process on the rtx5090. Roll back by restoring the four files and the
+unit file from the rollback copy (§2.3), then running daemon-reload and a
+restart.
 
 ## 3. Activating / triggering the fleet update
 
