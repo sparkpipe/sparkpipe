@@ -711,7 +711,7 @@ class Dsv41FlashEngine:
         return bf16_round_f32((pre_mix[:, None] * streams).sum(axis=0))
 
     def _hc_post(self, x, residual, post, comb):
-        return bf16_round_f32(post[:, None] * x[None, :] + comb @ residual)
+        return bf16_round_f32(post[:, None] * x[None, :] + comb.T @ residual)
 
     def _compressor(self, layer, x_norm, position, cache):
         ratio = self.ratios[layer]

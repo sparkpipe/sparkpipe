@@ -324,7 +324,25 @@ def expect(condition, message):
         raise AssertionError(message)
 
 
+def check_hc_post_orientation():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import numpy as np
+    from t1_reference_dsv41 import Dsv41FlashEngine
+    rng = np.random.default_rng(3)
+    comb = rng.random((4, 4)).astype(np.float32)
+    residual = rng.random((4, 8)).astype(np.float32)
+    post = rng.random(4).astype(np.float32)
+    x = rng.random(8).astype(np.float32)
+    got = Dsv41FlashEngine._hc_post(None, x, residual, post, comb)
+    official = post[:, None] * x[None, :] + np.sum(comb[:, :, None] * residual[:, None, :], axis=0)
+    expect(np.allclose(got, official, rtol=1e-2, atol=1e-2),
+           "hc_post must follow the reference sum over comb rows (comb^T @ residual)")
+    expect(not np.allclose(got, post[:, None] * x[None, :] + comb @ residual, rtol=1e-3, atol=1e-3),
+           "hc_post fixture comb must be asymmetric enough to separate the orientations")
+
+
 def main():
+    check_hc_post_orientation()
     workspace = tempfile.mkdtemp(prefix="t1ref-dsv41-")
     try:
         checkpoint = os.path.join(workspace, "checkpoint")
