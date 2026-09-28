@@ -513,6 +513,7 @@ PYTHON_TESTS := \
 	tests/test_driver_defines.py \
 	tests/test_hy4_llm_defines.py \
 	tests/test_status_truth.py \
+	tests/test_site.py \
 	tests/test_weightd_manifest.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_weightd_lazy_pair.py \
