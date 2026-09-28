@@ -1,5 +1,11 @@
 # Multi-range expert acquisition work in progress
 
+> Archived 2026-09-28. The branch this log tracked has merged. The IPC ABI is
+> now 8, an arena has 256 leases (159a000), the consumer map helper is in
+> production, and a closed connection's leases are released (7e388eb). The
+> still-valid manifest format and lease/map contract are in
+> [WEIGHTD_DESIGN.md](../WEIGHTD_DESIGN.md#expert-residency).
+
 The real GLM Flash TP16 pack has 12,096 logical experts and 24,192 weight ranges before scale ranges. The old 4,096-entry single-range ENSURE interface cannot represent this. Do not increase its cap or treat the first matching range as the whole expert.
 
 The shared version-2 manifest parser now represents explicitly typed ranges grouped by `(layer, expert)`, with bounded startup allocations and binary-search lookup. It validates complete file framing, range bounds, non-overlap and unique range kinds. The format uses a 16-byte header and 48-byte range records, documented in `spark_weightd_manifest.h`. Version 1 is not guessed or converted. Range kinds are producer-defined stable identifiers; the producer and consumer must agree on them, including separate scale ranges.
