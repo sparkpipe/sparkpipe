@@ -257,6 +257,46 @@ def wrapper_contract_gates(failures):
               f"{accepted.stderr.strip()[:200]}")
 
 
+def warm_receipt_gates(failures):
+    script = ROOT / "tools/devcycle/laguna_warm_receipt.sh"
+    text = script.read_text()
+    check("/run/sparkpipe-weightd-shared" not in text, failures,
+          "warm receipt must not name the retired shared weightd socket")
+
+    def run(env):
+        complete = {key: value for key, value in os.environ.items()
+                    if not (key.startswith("LAGUNA_")
+                            or key.startswith("SPARK_WEIGHTD_"))}
+        complete.update(env)
+        return subprocess.run(["bash", str(script)], env=complete,
+                              capture_output=True, text=True)
+
+    with tempfile.TemporaryDirectory() as temporary:
+        regular = Path(temporary) / "weightd.sock"
+        regular.write_text("")
+        cases = [
+            ("missing socket", {"LAGUNA_LANE": str(LANE)},
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("inherited socket is not used",
+             {"LAGUNA_LANE": str(LANE),
+              "SPARK_WEIGHTD_SOCKET": "/tmp/spark_weightd.sock"},
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("relative socket",
+             {"LAGUNA_LANE": str(LANE), "LAGUNA_WEIGHTD_SOCKET": "weightd.sock"},
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("socket path is not a socket",
+             {"LAGUNA_LANE": str(LANE), "LAGUNA_WEIGHTD_SOCKET": str(regular)},
+             "is not a live socket"),
+        ]
+        for name, env, expected in cases:
+            result = run(env)
+            check(result.returncode != 0, failures,
+                  f"warm receipt case '{name}' must fail closed")
+            check(expected in result.stderr, failures,
+                  f"warm receipt case '{name}': expected '{expected}' in "
+                  f"stderr, got: {result.stderr.strip()[:200]}")
+
+
 def synthetic_pack(path: Path, group_count: int, experts_per_layer: int):
     HEADER_BYTES, ENTRY_BYTES, ALIGN = 264, 64, 256
     rows = {14: 4, 15: 2}           # w1 fused gate|up rows, w2 rows
@@ -473,7 +513,8 @@ def main() -> int:
     registry_gates(failures)
 
     for script in ("tools/laguna_multidev_run_family.sh",
-                   "tools/laguna_multidev_experts_manifest.sh"):
+                   "tools/laguna_multidev_experts_manifest.sh",
+                   "tools/devcycle/laguna_warm_receipt.sh"):
         syntax = subprocess.run(
             ["bash", "-n", str(ROOT / script)],
             capture_output=True, text=True)
@@ -481,6 +522,7 @@ def main() -> int:
               f"{script}: bash -n failed: {syntax.stderr.strip()}")
 
     wrapper_contract_gates(failures)
+    warm_receipt_gates(failures)
     manifest_gates(failures)
 
     if failures:

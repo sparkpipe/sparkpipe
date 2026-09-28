@@ -93,3 +93,19 @@ systemd-run --user --unit=sp-laguna-rd -p MemoryMax=24G \
 
 systemd-run does not pass the calling shell's environment, so every input
 goes through `--setenv`.
+
+## Warm receipt
+
+`tools/devcycle/laguna_warm_receipt.sh` times weightd warms of the node's own
+pack against a running weightd. It needs `LAGUNA_WEIGHTD_SOCKET` (absolute
+path of a live socket; there is no default and `SPARK_WEIGHTD_SOCKET` is not
+read) and `LAGUNA_LANE`. Optional: `LAGUNA_WARM_RUNS` (default 5) and
+`LAGUNA_EXPERT_POOL_BYTES` (default: the whole-pack 2 MiB chunk basis from
+`--budgets`, which is what the daemon charges on acquire).
+
+It generates the `.experts` sidecar when missing, emits the rank's smoke
+working set, splits it into 512-pair chunks (the lease group limit) and
+warms them in sequence. Run 1 is the daemon-cold warm of the pack, run 2 the
+warm-daemon preload, later runs the steady state. `RUN-WALL` is the whole
+invocation; the per-chunk `WSET-WARM elapsed_ms` is the acquire and release.
+Both working-set bases (raw and 2 MiB chunked) are printed.
