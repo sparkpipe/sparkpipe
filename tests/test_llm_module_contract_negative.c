@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "sparkpipe/llm_defines.h"
+#undef SPARK_LLM_KV_BLOCK_TOKENS
+#define SPARK_LLM_KV_BLOCK_TOKENS 65u
 #include "common/common_kv_frame.h"
 
 static int g_failures = 0;

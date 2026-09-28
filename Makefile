@@ -1341,12 +1341,12 @@ build/test_qwen38_work_control: tests/test_qwen38_work_control.cpp tests/fixture
 # source, so the tested code IS the production code.
 build/test_llm_module_contract: tests/test_llm_module_contract.c tests/test_llm_module_contract_negative.c common/common_kv_frame.h model-families/qwen38_max/include/sparkpipe/llm_defines.h include/sparkpipe/family/spark_family.h include/sparkpipe/family/module/spark_module_kv_prepare_frame.h | build
 	$(CC) -I model-families/qwen38_max/include $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I . -c tests/test_llm_module_contract.c -o build/test_llm_module_contract_main.o
-	$(CC) -I model-families/qwen38_max/include $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I . -DSPARK_LLM_KV_BLOCK_TOKENS=65u -c tests/test_llm_module_contract_negative.c -o build/test_llm_module_contract_negative.o
+	$(CC) -I model-families/qwen38_max/include $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I tests/cuda_stub -I include -I src -I model-families/common/include -I . -c tests/test_llm_module_contract_negative.c -o build/test_llm_module_contract_negative.o
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) build/test_llm_module_contract_main.o build/test_llm_module_contract_negative.o tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -lm -o $@
 
 build/test_llm_stagepack_format: tests/test_llm_stagepack_format.c tests/test_llm_stagepack_format_negative.c common/common_stagepack_format_ext.h model-families/qwen4_flash/include/sparkpipe/llm_defines.h runtime/stagepack_format.c | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I model-families/qwen4_flash/include/sparkpipe -I include -I model-families/qwen4_flash/include -I modules/qwen4_flash_resident_decode_stage/include -I . -c tests/test_llm_stagepack_format.c -o build/test_llm_stagepack_format_main.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I model-families/qwen4_flash/include/sparkpipe -I include -I model-families/qwen4_flash/include -I modules/qwen4_flash_resident_decode_stage/include -I . -c tests/test_llm_stagepack_format_negative.c -o build/test_llm_stagepack_format_negative.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I model-families/qwen4_flash/include/sparkpipe -I include -I model-families/qwen4_flash/include -I modules/qwen4_flash_resident_decode_stage/include -I . -DSPARK_LLM_MTP_LAYER_COUNT=1u -c tests/test_llm_stagepack_format.c -o build/test_llm_stagepack_format_main.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -D_GNU_SOURCE -I model-families/qwen4_flash/include/sparkpipe -I include -I model-families/qwen4_flash/include -I modules/qwen4_flash_resident_decode_stage/include -I . -DSPARK_LLM_MTP_LAYER_COUNT=1u -c tests/test_llm_stagepack_format_negative.c -o build/test_llm_stagepack_format_negative.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I include -c runtime/stagepack_format.c -o build/test_llm_stagepack_format_runtime.o
 	$(CC) $(CFLAGS) build/test_llm_stagepack_format_main.o build/test_llm_stagepack_format_negative.o build/test_llm_stagepack_format_runtime.o -o $@
 

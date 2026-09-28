@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "265f5a706b60dea282a075f15acf11099197681a389a728ae3182636f7ed17f8",
-      "size_bytes": 139445
+      "sha256": "a992335aa5fb170e9a11b58b85950ddc78570f90be0cebe34c56f5f959e87474",
+      "size_bytes": 139475
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -4383,8 +4383,8 @@
     },
     {
       "path": "model-families/gemma4/include/sparkpipe/llm_defines.h",
-      "sha256": "722244fb716df4c44c75f34ab1ce933f7a6307da80281eef44fa77945a76c9ea",
-      "size_bytes": 12817
+      "sha256": "f537ecdf8e2f4ce06d24e364c782cca11c30f5c4c0b2cc0019cd95671995f6c2",
+      "size_bytes": 12782
     },
     {
       "path": "model-families/gemma4/include/sparkpipe/spark_gemma4_model.h",
@@ -4638,8 +4638,8 @@
     },
     {
       "path": "model-families/minimax/include/sparkpipe/llm_defines.h",
-      "sha256": "05ca905d49c79d1b8e8dcdda2c8a846f265bcfe181c94e1947149ca501e081b7",
-      "size_bytes": 2412
+      "sha256": "29d2fe63b35fa7f99b9788ebe5e611fa54601c9829874f6b7d501afd70ebdaa0",
+      "size_bytes": 2371
     },
     {
       "path": "model-families/minimax/smoke_experts.json",
@@ -4678,8 +4678,8 @@
     },
     {
       "path": "model-families/qwen38_27b/include/sparkpipe/llm_defines.h",
-      "sha256": "cd567e70828151f62f0964b851f1d8749c8e8ae8fcfa025c61902228f18e6469",
-      "size_bytes": 4850
+      "sha256": "45072114e66b9ae1b3c452d25c85778536c117fe85a956a7bd8fd42dba53ed11",
+      "size_bytes": 4768
     },
     {
       "path": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
@@ -4713,8 +4713,8 @@
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/llm_defines.h",
-      "sha256": "ae73b2050e31f4c5fb5a7d3882162cfe251ec30bba637606159f9c7c52d5fea0",
-      "size_bytes": 8004
+      "sha256": "78b7f82d69e5efaaad7ddcceaf23a3035a53b8ced2d30c9cc4bd95e175f52aaf",
+      "size_bytes": 7885
     },
     {
       "path": "model-families/qwen38_max/include/sparkpipe/spark_qwen38_max_model.h",
@@ -4743,8 +4743,8 @@
     },
     {
       "path": "model-families/qwen4_flash/include/sparkpipe/llm_defines.h",
-      "sha256": "27248cca49d87ec8163d58a7bd2f2d094490eed6544750bc9a679894145e5055",
-      "size_bytes": 16485
+      "sha256": "9ee53e27d0330a8d9d6982d0abbe8dd26fde02b1349bce13c1fda83a6c2e2f92",
+      "size_bytes": 16409
     },
     {
       "path": "model-families/qwen4_flash/include/sparkpipe/spark_qwen4_flash_model.h",
@@ -9878,8 +9878,8 @@
     },
     {
       "path": "tests/test_llm_module_contract_negative.c",
-      "sha256": "5d93c57912034a3226cd4054561ddc2369a16b968118eb2734418b6092bbbb80",
-      "size_bytes": 5913
+      "sha256": "94008a8df78977befaed019f559096d531504c60c7caa0f345ff7bc01c12cdbb",
+      "size_bytes": 5984
     },
     {
       "path": "tests/test_llm_stagepack_format.c",
@@ -10263,8 +10263,8 @@
     },
     {
       "path": "tests/test_qwen4_flash_model_header.py",
-      "sha256": "98b60e38bcc1d5612ed9204b2f54f173237b22929b03cf386be73ddd233c2914",
-      "size_bytes": 6608
+      "sha256": "98f9928b23675c49af9401b9a369043e0d6cecd9233f7124b5814a71cfda1f6f",
+      "size_bytes": 6614
     },
     {
       "path": "tests/test_qwen4_flash_pack_verify_receipts.py",
@@ -10643,8 +10643,8 @@
     },
     {
       "path": "tests/test_tp_standalone_configuration.py",
-      "sha256": "c323524e51e451d30e5fda315f6816166ea3a7991821665d842360e3a6206f32",
-      "size_bytes": 3545
+      "sha256": "8d33e894fddfce856ebea181013b52e0bff780d7661c3e35c2d43333f0df3660",
+      "size_bytes": 3579
     },
     {
       "path": "tests/test_transport_stability.py",
@@ -13143,8 +13143,8 @@
     },
     {
       "path": "tools/qwen38_stagepack_layout_audit.py",
-      "sha256": "986a4adaac1e436326ec77c123cb81c479f0eefefd69753124e14f91c13a7406",
-      "size_bytes": 12235
+      "sha256": "660c6560e3457c863881e57b97ccb150ce45b7de3f063b3fb5ba8362466524b4",
+      "size_bytes": 12300
     },
     {
       "path": "tools/qwen38_stagepack_layout_probe.c",
@@ -15275,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73940779
+  "total_bytes": 73940632
 }

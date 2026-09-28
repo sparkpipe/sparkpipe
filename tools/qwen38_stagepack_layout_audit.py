@@ -37,7 +37,7 @@ Usage:
 
 The probe binary is built once (see the report or the Makefile snippet
 in docs/AGENT_LANE_BRIEFS/reports/qwen38max-v2-cpu-audit-2026-08-30.md):
-  cc -std=c11 -o /tmp/probe tools/qwen38_stagepack_layout_probe.c \\
+  cc -std=c11 -DSPARK_LLM_MTP_LAYER_COUNT=1u -o /tmp/probe tools/qwen38_stagepack_layout_probe.c \\
      -Imodules/qwen38_max_resident_decode_stage/source \\
      -Imodules/qwen38_max_resident_decode_stage/include \\
      -Imodel-families/qwen38_max/include -Iinclude
@@ -203,7 +203,7 @@ def git_ref_audit(git_ref, repo):
         "model-families/qwen38_max/include",
         "include")]
     probe_bin = work / "probe"
-    build = subprocess.run(["cc", "-std=c11", *includes, "-o", str(probe_bin),
+    build = subprocess.run(["cc", "-std=c11", "-DSPARK_LLM_MTP_LAYER_COUNT=1u", *includes, "-o", str(probe_bin),
                             str(probe_src)], capture_output=True, text=True)
     if build.returncode != 0:
         print(f"== {git_ref}: probe build failed (C header does not compile):")
