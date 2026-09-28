@@ -69,6 +69,7 @@ ssh-keyscan() { return 0; }
 curl() { return 1; }
 source "$TEST_AGENT_HEAD" "$TEST_ROOTS" sparkf
 mem_available_gib() { cat "$TEST_MEM"; }
+node_uptime_s() { cat "$TEST_UPTIME"; }
 restart_ok() { return 0; }
 sleep() { command sleep 0.05; }
 wait_ready() {
@@ -125,6 +126,8 @@ class FleetAgentMultiRoot(unittest.TestCase):
         (self.home / "agent_head.sh").write_text(HEAD)
         self.mem = self.home / "mem"
         self.mem.write_text("100\n")
+        self.uptime = self.home / "uptime"
+        self.uptime.write_text("3600\n")
         self.prod = self.home / "sparkdata" / PROD
         self.make_prod()
         self.dev = self.home / "lanes" / DEV / "root"
@@ -177,7 +180,7 @@ class FleetAgentMultiRoot(unittest.TestCase):
 
     def run_agent(self, body, roots=PROD):
         env = dict(os.environ, HOME=str(self.home), TEST_AGENT_HEAD=str(self.home / "agent_head.sh"),
-                   TEST_ROOTS=roots, TEST_MEM=str(self.mem), TEST_LOG_DIR=str(self.home),
+                   TEST_ROOTS=roots, TEST_MEM=str(self.mem), TEST_UPTIME=str(self.uptime), TEST_LOG_DIR=str(self.home),
                    PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         for key in ("FLEET_AGENT_ROOTS_FILE", "FLEET_AGENT_HEADROOM_GIB", "G5_PIN_EXPERTS",
                     "G5_GRAPH_PATH", "G5_LAUNCH_BLOCKING", "G5_EXPERT_POOL_BYTES"):
@@ -300,6 +303,28 @@ start_root {PROD} && wait_ready {PROD} || exit 4
 echo "STATE $(root_state {PROD})"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STATE ready", result.stdout)
+
+    def test_autospawn_waits_fifteen_minutes_after_boot(self):
+        self.uptime.write_text("899\n")
+        result = self.run_agent(f'''
+ensure_root {PROD}
+ensure_root {DEV}
+echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{PROD}: node up 899s (<15min); autospawn blocked", result.stdout)
+        self.assertEqual(result.stdout.count("autospawn blocked"), 1)
+        self.assertIn("PIDS 0 0", result.stdout)
+        self.assertFalse((self.prod / "launch.txt").exists())
+        self.assertFalse((self.dev / "launch.txt").exists())
+        self.uptime.write_text("900\n")
+        result = self.run_agent(f'''
+ensure_root {PROD} && wait_ready {PROD} || exit 4
+echo "STATE $(root_state {PROD})"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("autospawn blocked", result.stdout)
         self.assertIn("STATE ready", result.stdout)
 
     def test_dev_root_waits_for_production(self):
