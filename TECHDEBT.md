@@ -515,6 +515,31 @@ progress diary.
   apart (docs/T1_REFERENCE_COMPARE.md). Add the clamp to the routed and
   shared expert activation for those layers, and make the contract name
   the lists as required behaviour.
+- `text/tokenizer.c` knows split regexes only by exact string. It knows
+  the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
+  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
+  possessive quantifiers). Every other `Split` is skipped without an
+  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
+  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
+  - laguna, whose newline split precedes the letter pattern;
+  - dsv4 and dsv4.1, with three splits;
+  - muse-glimmer's case-aware letters;
+  - gemma4's `Replace` plus `Split " "`.
+
+  Implement them, then make an unknown `Split` a load error.
+- The four known letter-class splits classify code points by Unicode
+  class (`text/unicode_class_tables.h`, generated from Python
+  `unicodedata` 16.0 and checked range for range against the Oniguruma
+  classes of HF tokenizers 0.23.2 by
+  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
+  regex path (`use_regex: true` with no `Split`) still classifies by byte
+  and treats every byte >= 0x80 as a letter. Port it to the same
+  classifier before a model that uses it serves non-ASCII text.
+- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
+  skips any other normalizer without an error: gemma4's `Replace`, and
+  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
+  those, then make an unknown normalizer a load error. A tokenizer with
+  NFC cannot be saved in the compiled format, which has no field for it.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head
