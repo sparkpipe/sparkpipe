@@ -216,8 +216,8 @@ cudaError_t SparkGlm5NextLaunchAddF32(stream, float *dest, const void *b, uint32
 cudaError_t SparkGlm5NextLaunchRoundF32(stream, void *dest, const float *src, uint32_t n);
 cudaError_t SparkGlm5NextLaunchAccumU64Max(stream, uint64_t *dest, const uint64_t *src, uint32_t n);
 cudaError_t SparkGlm5NextLaunchMeshPublish/Wait/Guard(stream, ...);  /* transport-internal */
-/* register.h (host C): ONE call fills the transport config */
-void SparkTpMeshRegisterCommonCombines(SparkTpDeviceCollectiveConfig *configuration);
+/* family/module/spark_module_combine.h: one call fills the transport config */
+static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveConfig *configuration);
 ```
 Params (llm_defines): none beyond `SPARK_LLM_TILE_THREADS`-class constants. Adoption:
 delete the private kernel copies in cuda.cu. Done for every TP driver except k3: the
@@ -325,13 +325,21 @@ uint64_t SparkHybridSlotBytes(const SparkLlmHybridPlan *plan);
 ## 13. Mesh-kernel adoption status (the pilot)
 
 M-0 is the pilot of this system: extracted from glm5_next (fused FP32 sum by-value
-16-source kernel, seed/add/round fallback, u64 max, mesh publish/wait/guard), one-call
-registration via `SparkTpMeshRegisterCommonCombines`, glm5_next converted (private
-copies deleted).
+16-source kernel, seed/add/round fallback, u64 max, mesh publish/wait/guard), with
+glm5_next converted (private copies deleted).
 
 Every module whose driver runs `tp_device_collective.c` compiles the header, because
-the collective calls its mesh launchers and a driver without them does not link. Every
-TP driver except glm5_next and k3 registers the combines through
-`SparkTpMeshRegisterCommonCombines`; glm5_next registers its own wrappers over the same
-kernels, and k3 still runs the hidden transport. `tests/test_tp_collective_open.py`
-checks the registration for every mesh driver.
+the collective calls its mesh launchers and a driver without them does not link.
+`spark_tp_mesh_register.h` declares the six launchers the combines call.
+
+**One set of combines.** `include/sparkpipe/family/module/spark_module_combine.h` holds
+the six combine wrappers (fused FP32 sum, FP32 seed, add and round, BF16 sum, u64 max)
+and `SPARK_FAMILY(ModuleRegisterCombines)`. Each wrapper reports a failed launch
+through `SparkStageModuleCudaStatus` with the family's module tag: it logs the site and
+returns `SPARK_STATUS_CAPACITY_EXCEEDED` for an out-of-memory error and
+`SPARK_STATUS_INTERNAL_ERROR` for any other. The TP-open templates register them for
+nine drivers, qwen38_27b's `spark_qwen38_27b_tp.c` for its own, and glm5_next assigns
+them itself because its HC collective takes five of the six. k3 still runs the hidden
+transport. `tests/test_tp_collective_open.py` checks, for every mesh driver, that each
+collective registers its family's combines and that they classify a failed launch that
+way.

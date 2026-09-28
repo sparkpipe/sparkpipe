@@ -1387,13 +1387,13 @@ GLM5_NEXT_CUDA_SOURCE := \
 MESH_KERNELS_HEADER := \
 	model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh
 
-build/mesh_lane_ladder: tools/mesh_lane_ladder.cu $(GLM5_NEXT_CUDA_SOURCE) $(MESH_KERNELS_HEADER) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
+build/mesh_lane_ladder: tools/mesh_lane_ladder.cu $(GLM5_NEXT_CUDA_SOURCE) $(MESH_KERNELS_HEADER) include/sparkpipe/family/module/spark_module_combine.h runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) \
 		-Imodel-families/glm5_next/include \
 		-Imodules/glm5_next_resident_decode_stage/include \
 		-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
 		-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" \
-		-Xcompiler=-pthread $< $(GLM5_NEXT_CUDA_SOURCE) \
+		-Xcompiler=-pthread $< $(GLM5_NEXT_CUDA_SOURCE) runtime/stage_module_common.c \
 		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
 		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
 		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@

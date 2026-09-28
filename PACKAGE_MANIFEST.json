@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "a0199fb55cde8f93bb7b6602788875fd8f5176338becb4589294c660d678abe0",
-      "size_bytes": 139293
+      "sha256": "8fb39e96c87b1fc51366f4f23c7fbdae964f126c0f50731bdef9a46ada8af674",
+      "size_bytes": 139408
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -643,8 +643,8 @@
     },
     {
       "path": "docs/COMMON_MODULE_ARCHITECTURE.md",
-      "sha256": "97a8ff9276ea4d34e103cab29bc2755dfe31c1a89bcedb300339ffeb6d8cdb20",
-      "size_bytes": 23166
+      "sha256": "c0b8540489ad712938a8c39f5bc9cdf9ec0ac5102b5fe015d1d36d3da9116c99",
+      "size_bytes": 23778
     },
     {
       "path": "docs/CONSTANT_AUDIT.md",
@@ -723,8 +723,8 @@
     },
     {
       "path": "docs/GEMMA4_DRIVER_DESIGN.md",
-      "sha256": "ac87f48d90678552caa0d4d9785577815a963d0483e42342c50e88e0423faca6",
-      "size_bytes": 30913
+      "sha256": "31b7af31a5a62493b3dce3c40eebf01d8abfb219255b79a1ff754f750c25945a",
+      "size_bytes": 30946
     },
     {
       "path": "docs/GLM5_NEXT_ROOFLINE.md",
@@ -868,8 +868,8 @@
     },
     {
       "path": "docs/MIGRATION_GLM5_NEXT_COMMON.md",
-      "sha256": "8f13534f1b1e9964fba21d7166fc4fb60c7d8058d0451cedb836b8b99eae4c0e",
-      "size_bytes": 5455
+      "sha256": "bbbeff1518c89d7b41abc558fff1efa11bd64ca5f8c7bae24cb69e3ef08bef84",
+      "size_bytes": 5435
     },
     {
       "path": "docs/MODEL_DEV_GUIDE.md",
@@ -3238,13 +3238,13 @@
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_tp_open_environment.h",
-      "sha256": "68c15903777e96d0a27438f823ee0f9332594f6455e6da539e3ad429d095291a",
-      "size_bytes": 1743
+      "sha256": "b01f58fa0a057c3d841346a6ed85188f669e5d630d60062316aeb33fef6f97c9",
+      "size_bytes": 1805
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_tp_open_node_context.h",
-      "sha256": "6bcfc1fdead20fcbf76e59569aad8f00065909b69f1c92a2e74e79d158601f41",
-      "size_bytes": 1567
+      "sha256": "554aedc94b0e3abe0592a69de5f4833b1e464faa3e1d4f8bd5c4f2b1f445a1e6",
+      "size_bytes": 1629
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_tp_submit_ordered.h",
@@ -4283,8 +4283,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_register.h",
-      "sha256": "c1f3b2b91ce2245356f8c35b0288417256bad4863cbf0104736c94de73c6175a",
-      "size_bytes": 4361
+      "sha256": "ecf06b64c46262214c96acf973215b8c06d17a73d424165212658354cf684123",
+      "size_bytes": 984
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h",
@@ -5943,8 +5943,8 @@
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c",
-      "sha256": "bb7bd8ccf1fdf3f38184b3d7288a85c895dd20b366159ca2f94a19b2d57fea92",
-      "size_bytes": 7523
+      "sha256": "fb7f6a701ccc7a6a325dcff77a39b8164ec881ac411accc267933770fcd8509e",
+      "size_bytes": 7803
     },
     {
       "path": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.h",
@@ -9023,8 +9023,8 @@
     },
     {
       "path": "tests/test_dsv4_native_compute_source.py",
-      "sha256": "78b69936e1fcfe6740759b11a032c018a49230097f59202408aca8e4585558cd",
-      "size_bytes": 28194
+      "sha256": "7a62ff7b584dc44254f32259f3ea87150ebe7ca0399fdf1299be24a45358541a",
+      "size_bytes": 28198
     },
     {
       "path": "tests/test_dsv4_paged_cache.c",
@@ -10608,8 +10608,8 @@
     },
     {
       "path": "tests/test_tp_collective_open.py",
-      "sha256": "a199ab96786106d2c2f44a1bb1927a286974f7549a1fa57d07e841e428897b10",
-      "size_bytes": 12195
+      "sha256": "868ac299ea59d12404c4e3e1ce362fafbe705c6212dbf402507fb75519dfa5ad",
+      "size_bytes": 14752
     },
     {
       "path": "tests/test_tp_cupti_trace_report.py",
@@ -12718,8 +12718,8 @@
     },
     {
       "path": "tools/mesh_lane_ladder.cu",
-      "sha256": "1a7863a6d51b9c1ceaec46fa2caf13517ead96d2ae196688b2a2a04f4e397113",
-      "size_bytes": 24986
+      "sha256": "7bcd4fcc2a3563a4814a52eb524e1b4654f068d092457f88327a16b95c55ee0c",
+      "size_bytes": 25377
     },
     {
       "path": "tools/mesh_lane_ladder_receipt.py",
@@ -15270,5 +15270,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73936508
+  "total_bytes": 73937227
 }

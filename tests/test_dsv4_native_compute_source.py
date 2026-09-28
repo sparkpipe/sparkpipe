@@ -482,8 +482,8 @@ def main() -> int:
             "SparkTpDeviceCollectiveSubmitU64Max",
             "generic device max collective")
     require(body(module, "SparkDsv4ModuleInitializeTpCollective"),
-            "SparkTpMeshRegisterCommonCombines(&configuration)",
-            "common mesh combines, including the maxloc reduction")
+            "SparkDsv4ModuleRegisterCombines(&configuration)",
+            "the family's mesh combines, including the maxloc reduction")
     require(body(module, "SparkDsv4ModuleResolvedShape"),
             "state->vocabulary_rows_per_rank", "rank-local head pack shape")
     require(body(module, "SparkDsv4ModuleLaunchTpFinalIsland"),
