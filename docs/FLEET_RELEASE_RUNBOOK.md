@@ -180,8 +180,8 @@ curl -s http://100.123.97.61:8802/core/WEIGHTSD_BIN         # announced sha
 ### 2.6 The x86 API on the rtx5090 (`g53-api`)
 
 The serving API for glm53flash is the rtx5090 user unit `g53-api` (`:8433`).
-It runs from `~/g53-api-channel`, while spark0 carries `G5_API_DISABLED=1`. The
-API is an x86 build, so the aarch64 root cannot provide it: build it from the
+It runs from `~/g53-api-channel`; the fleet agent starts no API on a Spark
+(#1261). The API is an x86 build, so the aarch64 root cannot provide it: build it from the
 same merged SHA as the engines, and only after the fleet reports 16/16 `ready`
 with the new residentd and driver shas.
 
