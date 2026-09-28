@@ -958,7 +958,7 @@ static SparkStatus SparkLagunaValidateRoundMajor(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkRowLayoutDirectLaneMapInitialize(&lanes,ordinals,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
 }
 
@@ -975,7 +975,7 @@ static SparkStatus SparkLagunaValidateSequenceContinuity(
 	SparkStatus status;
 	status = SparkLagunaLoadSequenceContinuity(state,batch,bound,sequence_ids,next_positions);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	for (row=0u; row<batch->row_count; row++)
 	{
 		slot = batch->row_resident_slots[row];
@@ -1021,7 +1021,7 @@ static SparkStatus SparkLagunaPrepareClaimedContinuity(void *prepare_context)
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = SparkLagunaValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions);
 	(void)pthread_mutex_unlock(&context->state->kv_mutex);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkLagunaValidateFrame(
@@ -1437,7 +1437,7 @@ static SparkStatus SparkLagunaLazyRecoverLease(SparkLagunaModuleState *state,uin
 		atomic_store_explicit(&state->lazy_retained[slot],chain,memory_order_release);
 	else
 		*out = chain;
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static void SparkLagunaLazyRetryRetained(void *context)
@@ -1741,7 +1741,7 @@ static SparkStatus SparkLagunaClaimCacheFrame(SparkLagunaModuleState *state,cons
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = SparkKvLaneTransactionsClaim(&state->kv_transactions,frame);
 	(void)pthread_mutex_unlock(&state->kv_mutex);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageFrameContext *context,uint32_t slot_index)
