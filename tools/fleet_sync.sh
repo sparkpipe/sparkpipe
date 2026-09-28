@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # fleet_sync.sh — install/start/stop the per-node release agents on the
-# fleet. Each node pulls its runtime roots from the reference base itself
-# (parallel, no fan-out), restarts a root only on the UPDATE sentinel
-# (down:/up: ledger -> TERM -> start), and reports running versions to
-# hub:current/. The reference base is the manifest: build into it, the
-# fleet converges.
+# fleet. Each node pulls its runtime roots from the HTTP hub itself
+# (parallel, no fan-out), restarts a root only on a MANIFEST diff, and
+# reports running versions to the hub's current/ view. The MANIFEST is
+# the version: build into the hub release base, and the fleet converges.
 #
-# usage: tools/fleet_sync.sh REFERENCE_BASE ROOTS_CSV [start|stop|status|retire-update]
+# usage: tools/fleet_sync.sh ROOTS_CSV [start|stop|status] [HUB]
+#   ROOTS_CSV  comma-separated runtime root names the agent manages,
+#              e.g. glm53flash.fp8.tp16
+#   HUB        defaults to $FLEET_HUB, then spec@100.123.97.61 (the
+#              rtx5090 release hub; release files serve over :8802)
+#
+# The unit runs the agent from ~/sparkdata/core/bin/fleet_node_agent.sh —
+# the path sync_core updates and self_update execs. Installing or running
+# it from any other path defeats self-update.
 set -uo pipefail
-REF="${1:?reference base dir}"
-ROOTS="${2:?comma-separated runtime root names}"
-CMD="${3:-start}"
-HUB="${FLEET_HUB:-sparkf}"
+ROOTS="${1:?comma-separated runtime root names}"
+CMD="${2:-start}"
+HUB="${3:-${FLEET_HUB:-spec@100.123.97.61}}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
@@ -20,14 +26,22 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 case "$CMD" in
 start)
     for h in "${HOSTS[@]}"; do
-        scp -q "$HERE/fleet_node_agent.sh" "$h:~/fleet_node_agent.sh" &
+        $SSH "$h" "mkdir -p ~/sparkdata/core/bin" && \
+        scp -q "$HERE/fleet_node_agent.sh" \
+            "$h:sparkdata/core/bin/fleet_node_agent.sh" &
     done
     wait
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "mkdir -p current ~/.config/systemd/user; chmod +x ~/fleet_node_agent.sh; printf '[Unit]\nDescription=fleet release agent\nAfter=network-online.target\n\n[Service]\nExecStart=%s/fleet_node_agent.sh %s %s %s\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n' \"\$HOME\" '$REF' '$ROOTS' '$HUB' > ~/.config/systemd/user/fleet-agent.service; systemctl --user daemon-reload; systemctl --user enable fleet-agent.service; systemctl --user restart fleet-agent.service" &
+        $SSH "$h" "chmod 755 ~/sparkdata/core/bin/fleet_node_agent.sh; \
+            mkdir -p ~/.config/systemd/user; \
+            printf '[Unit]\nDescription=fleet release agent\nAfter=network-online.target\n\n[Service]\nExecStart=%%h/sparkdata/core/bin/fleet_node_agent.sh %s %s\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n' \
+              '$ROOTS' '$HUB' > ~/.config/systemd/user/fleet-agent.service; \
+            systemctl --user daemon-reload; \
+            systemctl --user enable fleet-agent.service; \
+            systemctl --user restart fleet-agent.service" &
     done
     wait
-    echo "release agents running on ${#HOSTS[@]} hosts -> $REF (view: $HUB:current/)"
+    echo "release agents running on ${#HOSTS[@]} hosts, roots=$ROOTS, hub=$HUB"
     ;;
 stop)
     for h in "${HOSTS[@]}"; do
@@ -37,22 +51,16 @@ stop)
     echo "agents stopped"
     ;;
 status)
-    $SSH "$HUB" 'for f in current/*.json; do echo "== $f"; cat "$f"; done' 2>/dev/null \
-        || echo "no view on $HUB yet"
+    $SSH "$HUB" 'for f in current/*.json; do
+        h=${f##*/}; h=${h%.json}
+        printf "%-8s wd=%s agent=%s %s\n" "$h" \
+          "$(grep -o "\"weightd\":\"[^\"]*\"" $f | cut -d\" -f4)" \
+          "$(grep -o "\"agent\":\"[^\"]*\"" $f | cut -d\" -f4)" \
+          "$(grep -o "\"roots\":{[^}]*}" $f | head -c 200)"
+      done' 2>/dev/null || echo "no view on $HUB yet"
     ;;
-retire-update)
-    # weightd UPDATE sentinel holds the target sha16; retire it from the
-    # hub only once every node's current/<host>.json reports that sha.
-    refhost="${REF%%:*}" refdir="${REF#*:}"
-    target=$($SSH "$refhost" "cat '$refdir/weightd/UPDATE'" 2>/dev/null | tr -d '[:space:]')
-    [ -n "$target" ] || { echo "no weightd UPDATE on $REF (nothing to retire)"; exit 1; }
-    missing=""
-    for h in "${HOSTS[@]}"; do
-        sha=$($SSH "$HUB" "grep -o '\"weightd\":\"[^\"]*\"' 'current/$h.json' 2>/dev/null | cut -d'\"' -f4" 2>/dev/null)
-        [ "$sha" = "$target" ] || missing="$missing $h(${sha:-no-report})"
-    done
-    [ -z "$missing" ] || { echo "NOT retiring:$missing not on $target" >&2; exit 1; }
-    $SSH "$refhost" "rm '$refdir/weightd/UPDATE'" \
-        && echo "retired weightd UPDATE ($target): all ${#HOSTS[@]} nodes report it"
+*)
+    echo "unknown command: $CMD (start|stop|status)" >&2
+    exit 2
     ;;
 esac

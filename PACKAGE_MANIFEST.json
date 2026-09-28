@@ -1,5 +1,5 @@
 {
-  "file_count": 3059,
+  "file_count": 3060,
   "files": [
     {
       "path": ".gitattributes",
@@ -710,6 +710,11 @@
       "path": "docs/FLEET_RELEASE.md",
       "sha256": "b14f1d0eaffdb10ba080603a9aa8156d76e991abbbfe4f12594b54c9786fb3af",
       "size_bytes": 8478
+    },
+    {
+      "path": "docs/FLEET_RELEASE_RUNBOOK.md",
+      "sha256": "a88026ad3d79038ac8af68ef695ef653c91da11a5a7bf2e953681440e0292540",
+      "size_bytes": 11558
     },
     {
       "path": "docs/FLEET_RUNBOOK.md",
@@ -11618,8 +11623,8 @@
     },
     {
       "path": "tools/fleet_sync.sh",
-      "sha256": "2db31a3156b7c432c1c8bdc553a32ba0fe2ffe2a148d53bbddc0f96eaf3ae7c1",
-      "size_bytes": 2828
+      "sha256": "07edbaca87d10e2e7cd9ef5de62fea80c70a4fe1b375999315d8944f16046fa9",
+      "size_bytes": 2849
     },
     {
       "path": "tools/fleet_view_serve.py",
@@ -15300,5 +15305,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74054844
+  "total_bytes": 74066423
 }
