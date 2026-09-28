@@ -380,32 +380,7 @@ static SparkStatus SparkLingModuleBindLayer(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingModuleBindGlobal(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry,
-	void *payload)
-{
-	switch ( entry->tensor_kind )
-	{
-	case SPARK_LING_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM: state->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
-	default: SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	}
-}
-
-static SparkStatus SparkLingModuleBindMtp(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry,
-	void *payload,
-	void *scale)
-{
-	(void)state;
-	(void)entry;
-	(void)payload;
-	(void)scale;
-	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_bind_laguna.h"
 
 static uint64_t SparkLingModuleExpectedLayerBits(
 	const SparkLingModuleState *state,
