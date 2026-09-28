@@ -311,6 +311,7 @@ def main():
     parser.add_argument("--memory-fraction", type=float, default=0.6)
     parser.add_argument("--max-seq-len", type=int, default=256)
     parser.add_argument("--capture-dir")
+    parser.add_argument("--token-by-token", action="store_true")
     arguments = parser.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -350,9 +351,13 @@ def main():
         for prompt in prompts:
             ids = list(prompt["prompt_token_ids"])
             tokens = torch.tensor([ids], device=arguments.device)
+            if arguments.token_by_token:
+                for position in range(len(ids) - 1):
+                    transformer.forward(tokens[:, position:position + 1], position)
+                tokens = tokens[:, len(ids) - 1:]
             generated = []
             margins = []
-            start = 0
+            start = len(ids) - 1 if arguments.token_by_token else 0
             step_started = time.time()
             for step in range(arguments.new_tokens):
                 _, logits, _ = transformer.forward(tokens, start)
