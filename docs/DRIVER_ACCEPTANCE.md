@@ -126,6 +126,10 @@ into its model's byte layout; it does not set or enforce the budgets.
   runtime yet ([`TECHDEBT.md`](../TECHDEBT.md), Serving API).
 - Prefix reuse goes through `cache/prefix_cache.c`: the batch engine calls
   `SparkPrefixCacheLookupPrompt` and `SparkPrefixCacheCommitPrompt`.
+- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
+  `scheduler/topology_switch.c` uses it only through the tier's public calls
+  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
+  `OffsetOf`, `PlanLookahead`).
 
 ## Prefix reuse capability
 
@@ -165,10 +169,6 @@ Decode checkpoints depend on how the adapter speculates:
   sequence may have captured state past the boundary, so the engine does not
   index that checkpoint and names no further decode checkpoints for that
   request. Its prompt checkpoints stay indexed.
-- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
-  `scheduler/topology_switch.c` uses it only through the tier's public calls
-  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
-  `OffsetOf`, `PlanLookahead`).
 
 ## Driver identity
 
