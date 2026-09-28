@@ -46,7 +46,10 @@ On the fleet after PR #1208 (2026-09-25), an 8 KiB 16-rank all-reduce on the
 weightd mesh took 167 µs p50, 472 µs p90, 3 ms p99 and 12 ms at most
 ([`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md)). Every
 hardware-wait round crosses weightd's CPU relay twice
-([`TECHDEBT.md`](TECHDEBT.md), Mesh collectives).
+([`TECHDEBT.md`](TECHDEBT.md), Mesh collectives). At the 92 all-reduces per
+GLM 5.3 Flash step used in the planning table below, the p50 alone is about
+15.4 ms per token when nothing overlaps (arithmetic). No other single cost in
+the GLM B1 step is that large.
 
 ### Hub link
 
@@ -54,7 +57,8 @@ On 2026-09-28 a busy-polled 64-byte UDP round trip between `sparkf`
 (`enP7s7`, 10.10.250.1) and the rtx5090 hub (`eno1`, 10.10.250.2) over the
 direct 10 GbE link took 22.6 µs p50 and 25.2 µs p99. From another Spark,
 routed through `sparkf`, the p50 was about 300 µs. Source: lead-dev
-measurement; no receipt is committed.
+measurement; no receipt is committed. A draft model hosted on the rtx5090
+would use this link.
 
 ## Measured model performance
 
@@ -67,6 +71,17 @@ steps at 23 to 24.5 ms per token. The TP16 memory floor for this model is
 8.0 ms per token, 125 tok/s
 ([`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md)), so a step takes
 2.9 to 3.1 times the floor (arithmetic: 23 / 8.0 and 24.5 / 8.0).
+
+In context (all arithmetic):
+
+- End to end works out to 27.6 ms per token (3.53 s / 128), which also counts
+  the time spent outside the chain steps.
+- 36 tok/s is 29% of the 125 tok/s ceiling.
+- The best public 4-Spark B1 result for GLM 5.3 Flash FP8 without speculation
+  is 23.2 tok/s (lead-dev survey, 2026-09-28). 36 tok/s is 1.55 times that.
+  The TP16 target of 3 to 3.5 times it is 70-81 tok/s.
+- The 167 µs mesh all-reduce above, times 92 per step, is about 15.4 ms of a
+  23-24.5 ms step.
 
 Source: lead-dev measurement. The raw client stream is not committed; the
 next run should retain one, with three unprofiled runs.
@@ -136,7 +151,7 @@ per session.
 | Session | Sweep tok/s | Best |
 | --- | --- | ---: |
 | 2026-09-26, #1228 qualification | 114.8 / 126.3 / 125.6 / 129.9 | 129.9 |
-| 2026-09-27, after full-station restart | 120.7 / 125.8 / 120.3 / 125.3 | 125.3 |
+| 2026-09-27, after full-station restart | 120.7 / 125.8 / 120.3 / 125.3 | 125.8 |
 
 The 2026-09-26 session is receipted in the #1228 thread (summarized outputs;
 identical load and stack). The 2026-09-27 session re-ran the same load after a
@@ -150,6 +165,45 @@ investigation on #1229 is a separate issue and did not occur here.
 | --- | --- |
 | [client-8stream-sweeps.txt](qualification/glm5next/performance/tp16_b8_20260927/client-8stream-sweeps.txt) | 8f78436bc4734dd1f3f6d49ea67dd9c9283d7e75acbfd3c8b7b23b050bb223bd |
 | [rank0-wave-window.log](qualification/glm5next/performance/tp16_b8_20260927/rank0-wave-window.log) | dcb332ecc624198ffc52f202c6521fa4466192230f9d67e346addf4a0d2b76f3 |
+
+### Earlier points carried over from the performance ledger
+
+These rows were folded in from
+[`docs/archive/PERFORMANCE_LEDGER.md`](docs/archive/PERFORMANCE_LEDGER.md)
+when it was archived on 2026-09-28. Only rows with a measurement identity
+are kept. Its projections, status notes and the retracted Qwen 3.8 27B batch
+curve are left out.
+
+| Model | Cell | Result | Identity | Date |
+| --- | --- | ---: | --- | --- |
+| Qwen 3.8 27B FP8 | TP1 B1, DFlash2 k=8, 512 output tokens | 24.5 tok/s wall | merged main; stream `d7f798801a6e43a6`, 77 rounds, E≈5.66 | 2026-08-28 |
+| Qwen 3.8 27B FP8 | TP1 B1, no speculation, 512 output tokens | 7.7 tok/s | merged main; stream `5d6ee525deb999f5` | 2026-08-28 |
+| Qwen 3.8 27B | TP1 B1, no speculation, high-water mark | 8.03 tok/s | mixed/FP8 29.9 GB pack; dashboard reading | 2026-08-28 |
+| Qwen 3.8 Max FP8 | TP4 x PP4, B1 per request | 1.29 tok/s | measured anchors | 2026-08 |
+| K3 MXFP4 | warm B1 step of stage 0 (24 layers) of a TP4 rank pack, one Spark | 55.5 ms per stage step | [`docs/K3_PERF.md`](docs/K3_PERF.md) | 2026-08-16 |
+| DSV4 Flash FP8 | TP4 B1, 128 output tokens, main plus PR #731 | 40.46 / 40.35 / 40.19 tok/s | exact token hash `211462f2…` | 2026-08-28 |
+| DSV4 Flash FP8 | TP4 B1, exact 32K cell, lean branch | 29.37 tok/s | ledger scoreboard only | 2026-08-28 |
+
+No Qwen 3.8 27B point has a frozen qualification bundle; the ledger kept
+only the stream hashes. The DSV4 rows exist only as ledger scoreboard
+entries, with no committed receipt. K3's only measured point is that one
+stage step, not a fleet run. The 18.0 tok/s TP4xPP4 pipelined rate and about
+4.5 tok/s for one sequence through four stages are arithmetic from it, and the
+20.6 tok/s roofline is calculated ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
+
+Public comparables are other stacks' numbers, graded as their authors
+announced them. None of them is a SparkPipe measurement:
+
+| Stack | Point | Speculation | Grading |
+| --- | ---: | --- | --- |
+| gb10-vllm v5-prd, K3, 16 Sparks, TP16+DCP8 | C1 29.81 tok/s | DSpark nst6 | announced |
+| gb10-vllm v5-prd, K3, llama tg2048 | 23.59 t/s at depth 4000 | none | announced |
+| Best public GLM 5.3 Flash FP8, 4 Sparks, B1 | 23.2 tok/s | none | lead-dev survey, 2026-09-28 |
+
+The ledger's K3 row of 29.0 tok/s, which claimed to supersede SparkPipe's
+18.0, was the gb10-vllm author's speculative result
+([`docs/K3_VS_GB10_VLLM.md`](docs/K3_VS_GB10_VLLM.md)). It is not a SparkPipe
+number.
 
 ## Planning projections
 
@@ -187,9 +241,14 @@ all-reduces, plus 0.5 ms of host work:
 | 256 | 25.1 GB | 122.6 ms | 31.6 ms | 154.7 ms | 1,655 | 6.5 | 2,780 | - |
 
 The bytes and the ceiling are from the batch roofline in
-`docs/GLM5_NEXT_ROOFLINE.md`. The measured column is the B1 run of
-2026-09-28 and the 8-stream load reported with #1228 (2026-09-26), both
-above.
+`docs/GLM5_NEXT_ROOFLINE.md`. The measured B1 value is the 2026-09-28 run
+above: `dd3526b` engines with `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1` and
+`SPARK_TP_WAIT_MODE=hardware`, 36 tok/s at 23 to 24.5 ms per step of 8-step
+graph chains. Before that the fleet measured 27.6-29.8 tok/s after PR #1208
+(2026-09-25). The measured B8 value is the 8-stream load reported with #1228
+(2026-09-26), receipted only in the PR thread; the committed re-run's best is
+125.8 tok/s. The current breakdown is "Where it stands" in
+[`docs/GLM5_NEXT_ROOFLINE.md`](docs/GLM5_NEXT_ROOFLINE.md).
 
 At 70% or 80% of bandwidth the projections move by about 5% either way: 66 to
 73 tok/s at B1, and 1,570 to 1,740 at B256. The M1 and M2 exit criteria in
