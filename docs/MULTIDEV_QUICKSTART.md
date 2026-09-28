@@ -2,7 +2,7 @@
 
 This guide covers running several driver jobs on the 16 Sparks while GLM 5.3
 Flash keeps serving. The daemon contract behind it is
-[WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md); queue mechanics and PR evidence are in
+[WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md); queue mechanics (exclusive perf runs only) and PR evidence are in
 [PARALLEL_DRIVER_DEBUG.md](PARALLEL_DRIVER_DEBUG.md). Statements marked
 "observed 2026-09-28" come from read-only checks on the fleet that day and will
 drift.
@@ -12,6 +12,17 @@ leases and mesh transport. Drivers supply layouts, routing and model math. Each
 API process serves one deployment; request `model` does not select another
 model. Apply the model's chat template outside the API; it only joins message
 content.
+
+## When to use the queue
+
+Owner ruling, 2026-09-28:
+- `tools/spark_queue.py` is only for dedicated, exclusive 16-Spark performance runs, meaning measurements that need the whole fleet quiet.
+- Development and validation runs do not go through the queue. They run directly on the node or nodes assigned to the developer.
+- Each such run uses its own runtime root, its own weightd mesh lane (lane 0 is production), its own ports, a memory budget from `tools/devcycle/lane_budget_calc.py`, and a `.wset` working set for MoE models.
+- Start every process in its own transient unit (`systemd-run --user --unit=...`) so cleanup is exact. Never start one inside the `fleet-agent` cgroup.
+- Before a load benchmark, check that no exclusive perf window is held.
+
+The queue mechanics below apply to those exclusive runs, and to CI-style jobs that want its bookkeeping. They are not a gate on day-to-day driver work. Node assignments for driver and core lanes are kept by the lead dev.
 
 ## What every job shares
 

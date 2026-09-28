@@ -9,6 +9,17 @@ tensor descriptions and model math. Reuse stage_module_common for ownership,
 weightd for shared residency, the serving adapter/session lifecycle, the topology
 generator and tp_device_collective. Do not fork these protocols per model.
 
+## When to use the queue
+
+Owner ruling, 2026-09-28:
+- `tools/spark_queue.py` is only for dedicated, exclusive 16-Spark performance runs, meaning measurements that need the whole fleet quiet.
+- Development and validation runs do not go through the queue. They run directly on the node or nodes assigned to the developer.
+- Each such run uses its own runtime root, its own weightd mesh lane (lane 0 is production), its own ports, a memory budget from `tools/devcycle/lane_budget_calc.py`, and a `.wset` working set for MoE models.
+- Start every process in its own transient unit (`systemd-run --user --unit=...`) so cleanup is exact. Never start one inside the `fleet-agent` cgroup.
+- Before a load benchmark, check that no exclusive perf window is held.
+
+The queue mechanics below apply to those exclusive runs, and to CI-style jobs that want its bookkeeping. They are not a gate on day-to-day driver work. Node assignments for driver and core lanes are kept by the lead dev.
+
 ## Queue v2 contract
 
 One controller runs tools/spark_queue.py serve. All developer tasks on that
