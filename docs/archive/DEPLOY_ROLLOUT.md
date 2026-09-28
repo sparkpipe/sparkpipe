@@ -1,5 +1,11 @@
 # Fleet rollout: multi-dev deploy protocol
 
+> Archived 2026-09-28. Do not run these steps. `tools/publish_core.sh` always
+> installs from `~/sparkpipe-build` (`publish_core.sh:4`), and a weightsd system
+> unit cannot hold weightd's loopback latch port 61900 next to the fleet-agent
+> weightd (`node/weightd.c:72`, `node/weightd.c:343-362`). The current procedure is
+> [`../FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
+
 This document describes the historical global fleet publisher. For concurrent
 development use [the current development cycle](DEVCYCLE.md).
 `module_build_release.sh` now builds an isolated artifact and rejects the legacy

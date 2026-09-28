@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fleet registrar unit tests (docs/FLEET_STARTUP_PROTOCOL.md phases 1+1b).
+"""Fleet registrar unit tests (docs/archive/FLEET_STARTUP_PROTOCOL.md phases 1+1b).
 
 Loopback multi-instance: the launch table is N copies of 127.0.0.1, one
 registrar process per rank, distinct ports via --port-base. Runs the real
