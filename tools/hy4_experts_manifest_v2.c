@@ -8,22 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* hy4 .experts v2 generator.
- *
- * Emits one 48-byte SPARK_WEIGHTD v2 record per routed-expert range:
- *   layer u32 | expert u32 | kind u32 | zero u32 |
- *   offset u64 | bytes u64 | ck128 16B
- * with kind = tensor_kind * 2 + plane (0 payload, 1 scale) and
- * tensor kinds 0 = gate_up, 1 = down, over the 16 local experts of a
- * rank pack. The pack is the per-rank safetensors file; every geometry
- * fact (layers present, expert count, offsets, slab sizes) is derived
- * from the pack's own header directory — exactly one file argument,
- * no CLI numbers, no side tables. Layers are discovered by scanning
- * the header for model.layers.N.mlp.experts.gate_up_proj names. */
 #define HY4_JSON_MAX (8ull << 20)
 #define HY4_NAME_MAX 160u
 #define HY4_LAYERS_MAX 128u
-#define HY4_EXPERTS_PER_RANK 16ull
+#define HY4_EXPERTS_MAX 256ull
 #define HY4_CHUNK_BYTES (1ull << 20)
 
 typedef struct
@@ -78,8 +66,6 @@ static int json_pair_after(const char *at, const char *key,
 	{
 		if (at[0] == '"')
 		{
-			/* skip string literals: names like F8_E4M3 carry
-			   digits that are not JSON numbers */
 			at++;
 			while (at[0] != '\0' && at[0] != '"')
 				at++;
@@ -117,6 +103,7 @@ typedef struct
 	FILE *out;
 	uint8_t *buffer;
 	uint32_t count;
+	unsigned long long experts;
 } Hy4Writer;
 
 static int32_t range_write(Hy4Writer *writer, uint32_t layer,
@@ -186,7 +173,7 @@ static int32_t class_ranges(Hy4Writer *writer, const Hy4Json *json,
 	if (json_pair_after(at, "data_offsets", &scale_start,
 		&scale_end) == 0)
 		return 2;
-	if (payload_experts != HY4_EXPERTS_PER_RANK)
+	if (payload_experts != writer->experts)
 	{
 		fprintf(stderr, "%s: expert dim %llu\n", payload_name,
 			payload_experts);
@@ -194,7 +181,7 @@ static int32_t class_ranges(Hy4Writer *writer, const Hy4Json *json,
 	}
 	payload_slab = (payload_end - payload_start) / payload_experts;
 	scale_slab = (scale_end - scale_start) / payload_experts;
-	for (expert = 0ull; expert < HY4_EXPERTS_PER_RANK; expert++)
+	for (expert = 0ull; expert < writer->experts; expert++)
 	{
 		int32_t status = range_write(writer, layer,
 			(uint32_t)expert, kind * 2u,
@@ -240,6 +227,20 @@ static int32_t layer_ranges(Hy4Writer *writer, const Hy4Json *json,
 	if (status != 0)
 		fprintf(stderr, "down layer %u: status %d\n", layer, status);
 	return status;
+}
+
+static unsigned long long layer_experts(const Hy4Json *json, uint32_t layer)
+{
+	char name[HY4_NAME_MAX];
+	const char *at;
+	unsigned long long experts = 0ull;
+	unsigned long long rows = 0ull;
+	snprintf(name, sizeof(name),
+		"model.layers.%u.mlp.experts.gate_up_proj", layer);
+	at = json_find(json, name);
+	if (at == 0 || json_pair_after(at, "shape", &experts, &rows) == 0)
+		return 0ull;
+	return experts;
 }
 
 static uint32_t layer_present(const Hy4Json *json, uint32_t layer)
@@ -315,6 +316,14 @@ int main(int argc, char **argv)
 		fprintf(stderr, "no routed-expert layers in header\n");
 		return 1;
 	}
+	writer.experts = layer_experts(&view, layer_ids[0]);
+	if (writer.experts == 0ull || writer.experts > HY4_EXPERTS_MAX ||
+	    (unsigned long long)layers_found * 4ull * writer.experts >
+	    SPARK_WEIGHTD_RANGE_COUNT_MAX)
+	{
+		fprintf(stderr, "bad routed-expert count %llu\n", writer.experts);
+		return 1;
+	}
 	snprintf(path, sizeof(path), "%s.experts", argv[1]);
 	out = fopen(path, "wb");
 	if (out == 0)
@@ -324,7 +333,7 @@ int main(int argc, char **argv)
 	}
 	memcpy(wire, &magic, 4u);
 	memcpy(wire + 4u, &version, 4u);
-	total = layers_found * 4u * (uint32_t)HY4_EXPERTS_PER_RANK;
+	total = layers_found * 4u * (uint32_t)writer.experts;
 	memcpy(wire + 8u, &total, 4u);
 	fwrite(wire, 1u, sizeof(wire), out);
 	unsigned long long data_base = 8ull + json_bytes;
@@ -344,7 +353,13 @@ int main(int argc, char **argv)
 	free(json);
 	fclose(out);
 	fclose(pack);
+	if (writer.count != total)
+	{
+		fprintf(stderr, "%s: wrote %u ranges, header says %u\n", path,
+			writer.count, total);
+		return 1;
+	}
 	printf("%s: %u ranges (%u layers x 4 ranges x %llu experts)\n",
-		path, writer.count, layers_found, HY4_EXPERTS_PER_RANK);
+		path, writer.count, layers_found, writer.experts);
 	return 0;
 }
