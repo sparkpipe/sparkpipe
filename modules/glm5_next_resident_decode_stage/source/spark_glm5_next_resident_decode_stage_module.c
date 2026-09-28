@@ -347,6 +347,7 @@ struct SparkGlm5NextModuleState
 	uint64_t verify_proposed;
 	uint64_t verify_accepted;
 	uint64_t verify_tokens;
+	uint64_t verify_plain_steps;
 	uint64_t verify_accept_depth[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
 	uint32_t *verify_depth_cap;
 	uint64_t *verify_depth_sequence;
@@ -1764,6 +1765,7 @@ typedef struct SparkGlm5NextTpChain
 	uint32_t verify_draft_count;
 	uint32_t verify_rounds;
 	uint32_t verify_accepted;
+	uint32_t verify_plain;
 	uint64_t verify_sequence_id;
 	uint64_t verify_position;
 	uint32_t verify_draft[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
@@ -2411,7 +2413,8 @@ static SparkStatus SparkGlm5NextVerifyDriveDraft(
 	if ( SparkGlm5NextFrameSteps(frame) < 2u || (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
 		batch->row_count != 1u || batch->active_sequence_count != 1u || batch->token_ids == 0 ||
 		batch->row_sampling[0].inverse_temperature != 0.0f || chain->spec_verify != 0u ||
-		state->graph_path_enabled == 0u || state->experts_warm == 0u || slot->verify_captured == 0u )
+		state->graph_path_enabled == 0u || state->experts_warm == 0u || slot->verify_captured == 0u ||
+		slot->graph_disabled != 0u || (slot->graph_failed_rows & UINT64_C(1)) != 0u )
 		return(SPARK_STATUS_OK);
 	chain->verify_budget = SparkGlm5NextFrameSteps(frame);
 	chain->verify_produced = 0u;
@@ -3571,6 +3574,56 @@ static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain,uint32_
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkGlm5NextVerifyPlainStep(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	SparkStatus status;
+	slot->host_token_ids[0] = chain->verify_tokens[chain->verify_produced - 1u];
+	slot->host_positions[0] = (uint32_t)chain->verify_position;
+	slot->host_resident_slots[0] = chain->verify_lane;
+	chain->wave_rows = 1u;
+	chain->spec_verify = 0u;
+	status = SparkGlm5NextBuildWave(chain);
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextGraphEnsure(chain,&status);
+	if ( status == SPARK_STATUS_OK && SparkGlm5NextBoundedStreamSync(state,slot->stream,UINT64_C(35000000000)) != 0 )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"VERIFY-PLAIN-STEP-FAILED position=%llu status=%d\n",(unsigned long long)chain->verify_position,(int)status);
+		SPARK_RETURN(status);
+	}
+	chain->verify_tokens[chain->verify_produced] = slot->host_output_token_ids[0];
+	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
+	{
+		status = SparkSpeculationLookupDraftObserve(&state->verify_lookup,chain->verify_lane,chain->verify_sequence_id,chain->verify_position + 1u,slot->host_output_token_ids,1u);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	chain->verify_produced++;
+	chain->verify_position++;
+	chain->verify_plain++;
+	state->verify_plain_steps++;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextVerifyContinue(SparkGlm5NextTpChain *chain,uint32_t *more)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	while ( *more == 0u && chain->verify_produced < chain->verify_budget )
+	{
+		status = SparkGlm5NextSettleStep(chain);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm5NextVerifyPlainStep(chain);
+		if ( status == SPARK_STATUS_OK )
+			*more = SparkGlm5NextVerifyPlanRound(chain,chain->verify_tokens[chain->verify_produced - 1u],&status);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextVerifyFinish(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextModuleState *state = chain->state;
@@ -3587,10 +3640,10 @@ static SparkStatus SparkGlm5NextVerifyFinish(SparkGlm5NextTpChain *chain)
 	async->lane_next_positions[0] += produced - 1u;
 	async->completion.tokens_per_sequence = produced;
 	state->verify_tokens += produced;
-	fprintf(stderr,"VERIFY-FRAME slot=%u position=%llu budget=%u produced=%u rounds=%u accepted=%u | frames=%llu plain=%llu rounds=%llu proposed=%llu accepted=%llu tokens=%llu\n",
-		chain->slot_index,(unsigned long long)(chain->verify_position - produced),chain->verify_budget,produced,chain->verify_rounds,chain->verify_accepted,
+	fprintf(stderr,"VERIFY-FRAME slot=%u position=%llu budget=%u produced=%u rounds=%u accepted=%u steps=%u | frames=%llu plain=%llu rounds=%llu proposed=%llu accepted=%llu steps=%llu tokens=%llu\n",
+		chain->slot_index,(unsigned long long)(chain->verify_position - produced),chain->verify_budget,produced,chain->verify_rounds,chain->verify_accepted,chain->verify_plain,
 		(unsigned long long)state->verify_frames,(unsigned long long)state->verify_plain_frames,(unsigned long long)state->verify_rounds,
-		(unsigned long long)state->verify_proposed,(unsigned long long)state->verify_accepted,(unsigned long long)state->verify_tokens);
+		(unsigned long long)state->verify_proposed,(unsigned long long)state->verify_accepted,(unsigned long long)state->verify_plain_steps,(unsigned long long)state->verify_tokens);
 	return(SPARK_STATUS_OK);
 }
 
@@ -3621,6 +3674,8 @@ static void SparkGlm5NextVerifyWave(SparkGlm5NextTpChain *chain)
 	}
 	SparkGlm5NextGraphDisarm(state);
 	status = SparkGlm5NextVerifyCommit(chain,&more);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextVerifyContinue(chain,&more);
 	if ( status == SPARK_STATUS_OK && more != 0u )
 	{
 		status = SparkGlm5NextSettleStep(chain);

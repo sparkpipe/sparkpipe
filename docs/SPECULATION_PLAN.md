@@ -337,8 +337,10 @@ Aggregate gain at batch B with k drafts per sequence is
   frames, S <= 8, never crossing a 64-token block) asks the drafter for
   k = min(rows - 1, S - 1) tokens, reduced so the wave stays in one
   attention regime. No draft: the frame runs as the ordinary S-step chain.
-  Otherwise it runs verify rounds until S tokens are produced or the drafter
-  has nothing:
+  Otherwise the frame produces exactly S tokens from verify rounds and,
+  where the drafter has nothing (or one token is left), plain B1 steps on
+  the production B1 graph; after each plain step the drafter is asked
+  again. A verify round:
   1. replay the captured verify graph for 1 + k rows with `commit=0`
      (KDA replay record on, conv windows and recurrent state untouched);
   2. sync, resolve the longest matching prefix on the host
@@ -356,8 +358,10 @@ Aggregate gain at batch B with k drafts per sequence is
   drafter that keeps missing therefore costs 2-row waves, not 8-row ones,
   until it hits again. The cap only reads committed counts, so it is
   identical on every rank. The goodput controller of S4 replaces it.
-  The completion carries 1..S tokens like a chain frame. Every frame prints
-  `VERIFY-FRAME slot position budget produced rounds accepted | cumulative`.
+  The completion carries the S tokens like a chain frame, so spec-on and
+  spec-off runs have the same frame count. Every frame prints
+  `VERIFY-FRAME slot position budget produced rounds accepted steps |
+  cumulative` (steps are the plain B1 steps inside the frame).
 - Rank agreement: every input to the round decision (frame, drafter history
   built from frames and outputs, all-reduced argmax, the warm and capture
   flags, which flip on the same frame everywhere) is identical on all TP

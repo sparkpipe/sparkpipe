@@ -31,7 +31,7 @@ PROMPTS = {
     ],
 }
 
-FRAME = re.compile(r"VERIFY-FRAME slot=(\d+) position=(\d+) budget=(\d+) produced=(\d+) rounds=(\d+) accepted=(\d+)")
+FRAME = re.compile(r"VERIFY-FRAME slot=(\d+) position=(\d+) budget=(\d+) produced=(\d+) rounds=(\d+) accepted=(\d+)(?: steps=(\d+))?")
 
 
 def post(endpoint: str, path: str, body: dict, timeout: int) -> tuple[dict, float]:
@@ -117,7 +117,7 @@ def compare(args: argparse.Namespace) -> int:
 
 
 def parse_log(lines) -> dict:
-    frames = rounds = accepted = produced = budget = 0
+    frames = rounds = accepted = produced = budget = steps = 0
     for line in lines:
         match = FRAME.search(line)
         if match is None:
@@ -127,8 +127,9 @@ def parse_log(lines) -> dict:
         produced += int(match.group(4))
         rounds += int(match.group(5))
         accepted += int(match.group(6))
-    return {"verify_frames": frames, "rounds": rounds, "accepted_drafts": accepted, "produced_tokens": produced,
-            "tokens_per_round": produced / rounds if rounds else 0.0,
+        steps += int(match.group(7) or 0)
+    return {"verify_frames": frames, "rounds": rounds, "accepted_drafts": accepted, "plain_steps": steps, "produced_tokens": produced,
+            "tokens_per_round": (produced - steps) / rounds if rounds else 0.0,
             "tokens_per_frame": produced / frames if frames else 0.0,
             "frame_fill": produced / budget if budget else 0.0}
 

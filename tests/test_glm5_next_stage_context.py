@@ -345,11 +345,14 @@ const void *SparkWeightdMapEpochDevice(const SparkWeightdMap *map)
 { (void)map;return(EPOCH_WORDS); }
 static uint32_t GRAPH_LAUNCHES;
 static uint64_t GRAPH_ERROR;
+static void (*GRAPH_LAUNCH_HOOK)(void);
 
 cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream)
 {
 	assert(exec == (cudaGraphExec_t)(uintptr_t)9u && stream == state.execution_stream);
 	GRAPH_LAUNCHES++;
+	if ( GRAPH_LAUNCH_HOOK != 0 )
+		GRAPH_LAUNCH_HOOK();
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64]++;
 	return(cudaSuccess);
 }
@@ -639,20 +642,31 @@ static uint32_t VerifyTarget(const uint32_t *history,uint32_t length)
 	return(history[length - 11u]);
 }
 
+static const uint32_t *VERIFY_EXPECTED;
+
+static void verify_plain_graph(void)
+{
+	SparkGlm5NextExecutionSlot *slot = &state.slots[0];
+	assert(VERIFY_EXPECTED != 0 && slot->host_token_ids[0] == VERIFY_EXPECTED[slot->host_positions[0]]);
+	slot->host_output_token_ids[0] = VERIFY_EXPECTED[slot->host_positions[0] + 1u];
+}
+
 static void check_verify_rounds(uint32_t drafter)
 {
 	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
-	uint32_t host_tokens[8],host_positions[8],host_slots[8],host_output[8],row_slot = 1u,token,index,length,produced,more,frames = 0u,rounds = 0u;
+	uint32_t host_tokens[8],host_positions[8],host_slots[8],host_output[8],host_run_begin[9],host_run_rows[8],host_run_state[8],row_slot = 1u,token,index,length,produced,more,frames = 0u,rounds = 0u,regime;
 	uint64_t row_position,row_sequence = 44u,positions[VERIFY_PROMPT],sequences[VERIFY_PROMPT];
 	uint32_t slots[VERIFY_PROMPT];
-	SparkRowSampling sampling;
+	SparkRowSampling sampling,host_sampling[8];
 	SparkModelDriverFrame frame;
 	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextResidentDecodeStageFrameContext context;
 	SparkGlm5NextTpChain *chain;
 	SparkGlm5NextAsyncCompletion *async;
 	SparkStatus status;
 	memset(&state,0,sizeof(state));
 	memset(&sampling,0,sizeof(sampling));
+	memset(&context,0,sizeof(context));
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
@@ -668,6 +682,20 @@ static void check_verify_rounds(uint32_t drafter)
 	state.slots[0].host_positions = host_positions;
 	state.slots[0].host_resident_slots = host_slots;
 	state.slots[0].host_output_token_ids = host_output;
+	memset(host_sampling,0,sizeof(host_sampling));
+	state.slots[0].host_row_sampling = host_sampling;
+	state.slots[0].host_run_begin = host_run_begin;
+	state.slots[0].host_run_row_indices = host_run_rows;
+	state.slots[0].host_run_state_index = host_run_state;
+	state.tp_degree = 1u;
+	state.execution_row_capacity = 8u;
+	state.decode_cover_device = (uint32_t *)(uintptr_t)1u;
+	state.tp_device_collective.operation_timeout_milli = 50u;
+	for (regime=0u; regime<SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT; regime++)
+	{
+		state.slots[0].graph_exec_rows[regime][0] = (void *)(uintptr_t)9u;
+		state.slots[0].graph_bound_rows[regime][0] = VERIFY_CAPACITY;
+	}
 	state.completions[0].state = &state;
 	for (index=0u; index<VERIFY_PROMPT; index++)
 	{
@@ -679,6 +707,9 @@ static void check_verify_rounds(uint32_t drafter)
 	for (length=VERIFY_PROMPT; length<VERIFY_CAPACITY; length++)
 		history[length] = VerifyTarget(history,length);
 	memcpy(expected,history,sizeof(history));
+	VERIFY_EXPECTED = expected;
+	GRAPH_LAUNCH_HOOK = verify_plain_graph;
+	GRAPH_ERROR = 0u;
 	state.verify_drafter = drafter;
 	state.verify_depth_cap = calloc(2u,sizeof(uint32_t));
 	state.verify_depth_sequence = calloc(2u,sizeof(uint64_t));
@@ -733,6 +764,7 @@ static void check_verify_rounds(uint32_t drafter)
 		chain->state = &state;
 		chain->slot = &state.slots[0];
 		chain->frame = &frame;
+		chain->context = &context;
 		chain->batch = &batch;
 		chain->wave_rows = 1u;
 		chain->steps = 8u;
@@ -765,15 +797,17 @@ static void check_verify_rounds(uint32_t drafter)
 				status = SparkGlm5NextVerifyCommit(chain,&more);
 				assert(status == SPARK_STATUS_OK && FOLD_LAST >= 1u && FOLD_LAST <= 8u);
 				rounds++;
+				assert(SparkGlm5NextVerifyContinue(chain,&more) == SPARK_STATUS_OK);
 			} while ( more != 0u );
 			assert(SparkGlm5NextVerifyFinish(chain) == SPARK_STATUS_OK);
 			produced = chain->verify_produced;
-			assert(produced >= 1u && produced <= 8u && async->burst_token_count == produced && async->cache_extra_tokens == produced - 1u);
+			assert(produced == 8u && async->burst_token_count == produced && async->cache_extra_tokens == produced - 1u);
 			assert(async->completion.tokens_per_sequence == produced && async->lane_next_positions[0] == length + produced - 1u);
 			if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
-				assert(produced == 8u && chain->verify_rounds == 1u && chain->verify_accepted == 7u);
+				assert(chain->verify_rounds == 1u && chain->verify_accepted == 7u && chain->verify_plain == 0u);
 			if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
-				assert(produced == 7u && chain->verify_rounds == 7u && chain->verify_accepted == 0u);
+				assert(chain->verify_rounds == 7u && chain->verify_accepted == 0u && chain->verify_plain == 1u);
+			assert(chain->verify_rounds + chain->verify_accepted + chain->verify_plain == 8u);
 		}
 		for (index=0u; index<produced; index++)
 			assert(host_output[index] == expected[length + index]);
@@ -791,6 +825,8 @@ static void check_verify_rounds(uint32_t drafter)
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
 		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
 	FOLD_ANY = 0u;
+	GRAPH_LAUNCH_HOOK = 0;
+	VERIFY_EXPECTED = 0;
 	SparkGlm5NextReleaseDrafter(&state);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 }
