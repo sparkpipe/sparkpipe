@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NODE=spark8
+NODE=spark9
 LANE=3
 ROOT=/home/${NODE}/sparkdata/qwen27b.fp8.tp1
 PACK_REL=packs/qwen38-mx2.tp1.qwen36sp
