@@ -912,9 +912,9 @@ static void SparkGemma4ProfileEnd(const SparkGemma4ModuleState *state, uint32_t 
 		SparkGemma4Profile.frame_milliseconds += elapsed;
 	SparkGemma4Profile.frames++;
 	SparkGemma4Profile.rows += rows;
-	if ( (SparkGemma4Profile.frames % 32u) == 0u && state->tp_rank == 0u )
+	if ( (SparkGemma4Profile.frames % 32u) == 0u )
 	{
-		fprintf(stderr,"G4-PROFILE frames=%llu rows_per_frame=%.2f frame_ms=%.3f",(unsigned long long)SparkGemma4Profile.frames,(double)SparkGemma4Profile.rows / (double)SparkGemma4Profile.frames,SparkGemma4Profile.frame_milliseconds / (double)SparkGemma4Profile.frames);
+		fprintf(stderr,"G4-PROFILE rank=%u frames=%llu rows_per_frame=%.2f frame_ms=%.3f",state->tp_rank,(unsigned long long)SparkGemma4Profile.frames,(double)SparkGemma4Profile.rows / (double)SparkGemma4Profile.frames,SparkGemma4Profile.frame_milliseconds / (double)SparkGemma4Profile.frames);
 		for (index = 0u; index < SPARK_GEMMA4_PROFILE_KINDS; index++)
 			fprintf(stderr," %s=%.3f",SparkGemma4ProfileNames[index],SparkGemma4Profile.milliseconds[index] / (double)SparkGemma4Profile.frames);
 		fputc('\n',stderr);
