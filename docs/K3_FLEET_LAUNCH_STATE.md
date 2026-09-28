@@ -172,16 +172,14 @@ one wave owner).
    qualification/ds4_eval/quality-fixtures-kimi-k3.json (92 cases, 17
    COMPSEC, max 769 tokens — all fit kv_pages=64 with 4.5x room).
 
-## TP4 equivalence across a real stage (staged, runs in the window)
+## TP4 equivalence across a real stage (no harness)
 
-The full 93-layer stage-0 pack cannot register on any 119 GiB node
-(cudaHostRegister OOM at 103 GB — session-2 receipt), so the equivalence
-runs on the k3_stage_0_4.slice (first=0 count=4, 55,337,455,488 B full +
-four 13,890,672,768 B rank packs, staged on sparke 02:40-02:52): five
-single-spark tp1 steps of one token, full[k] vs Σ rank[k] via
-tests/test_k3_runner_step.cu --dump, checked by
-tools/k3_tp4_equivalence_check.py. GOTCHA (live-verified): the slice pack
-must run with --pp1 — the PP4 stage tables VALIDATION_FAIL a 0_4 pack
-(INIT FAIL 9); --pp1 takes the slice bounds from the pack manifest.
-Run INSIDE the exclusive window while the K3 fleet is down (the full
-slice registers ~52 GiB on sparke).
+The planned check was five single-spark tp1 steps of one token on the
+k3_stage_0_4.slice (first=0 count=4, 55,337,455,488 B full + four
+13,890,672,768 B rank packs), comparing full[k] with the sum of rank[k]
+through tools/k3_tp4_equivalence_check.py. Its dump producer,
+tests/test_k3_runner_step.cu, and the single-spark and serial-TP16 build
+scripts (tools/k3_single_spark_step.sh, tools/devcycle/k3_serial_tp_replay.sh)
+were removed with the direct-load runner in a29ea53 (A-0023): the runner now
+attaches its weights through weightd only and the dump hooks are gone. The
+equivalence needs a new harness on the lazy-weightd runner before it can run.

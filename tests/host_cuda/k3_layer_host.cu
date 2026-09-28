@@ -56,6 +56,40 @@ static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
 static uint32_t group_tiles_down[K3_EXPERTS + 1u];
 static uint32_t dense_offsets[2], dense_tiles[2];
 
+static void K3LayerHostRun(K3LayerBuffers *b, uint32_t interleave, uint32_t tile_k)
+{
+	uint32_t index;
+	for (index = 0u; index < ROWS * K3_HIDDEN; ++index)
+		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17));
+	memset(shared_out, 0, sizeof(shared_out));
+	lm_recorded_gemms.clear();
+	b->expert_interleave = interleave;
+	b->expert_tile_k = tile_k;
+	printf("config interleave %u tile_k %u\n", interleave, tile_k); fflush(stdout);
+	if ( K3LayerLatentMoe<LmHostRecorderFormat>(b, ROWS, ROUTES, 1u, 0, 0u) != LM_LAUNCH_OK ||
+		K3LayerLatentMoe<LmHostRecorderFormat>(b, ROWS, ROUTES, 1u, 0, 1u) != LM_LAUNCH_OK )
+	{
+		printf("launch refused\n");
+		return;
+	}
+	for (size_t i = 0u; i < lm_recorded_gemms.size(); ++i)
+	{
+		const LmRecordedGemm &g = lm_recorded_gemms[i];
+		const char *name = g.output == (void *)hidden ? "hidden"
+			: g.output == (void *)shared_out ? "shared_out"
+			: g.output == (void *)latent ? "latent"
+			: g.output == (void *)gate_up ? "gate_up"
+			: g.output == (void *)router_logits ? "router_logits" : "other";
+		printf("gemm %zu dest %s in %u out %u rows %u grouped %d ind %d il %d tk %u abits %u wbits %u\n",
+			i, name, g.input_dimension, g.output_dimension,
+			g.packed_rows, g.grouped ? 1 : 0, g.indirect ? 1 : 0,
+			g.interleaved ? 1 : 0, g.tile_k, g.activation_stored_bits,
+			g.weight_stored_bits);
+	}
+	printf("hidden[0] %.6f\n", (double)LmBf16ToFloat(hidden[0]));
+	printf("shared_out[0] %.6f\n", (double)LmBf16ToFloat(shared_out[0]));
+}
+
 int main(void)
 {
 	static K3LayerBuffers b;
@@ -63,12 +97,8 @@ int main(void)
 	memset(&b, 0, sizeof(b));
 	for (index = 0u; index < K3_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
-	for (index = 0u; index < ROWS * K3_HIDDEN; ++index)
-		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17));
 	for (index = 0u; index < ROUTES; ++index)
-	{
 		route_weight[index] = 1.0f / (float)K3_TOP_K;
-	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
 	b.latent_bf16 = latent; b.gate_up_bf16 = gate_up;
@@ -82,27 +112,9 @@ int main(void)
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
-	b.expert_interleave = 0u;
-
-	printf("start\n"); fflush(stdout);
-	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0, 0u);
-	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0, 1u);
-	printf("survived\n"); fflush(stdout);
-
-	printf("gemms %u\n", (unsigned)lm_recorded_gemms.size());
-	for (size_t i = 0u; i < lm_recorded_gemms.size(); ++i)
-	{
-		const LmRecordedGemm &g = lm_recorded_gemms[i];
-		const char *name = g.output == (void *)hidden ? "hidden"
-			: g.output == (void *)shared_out ? "shared_out"
-			: g.output == (void *)latent ? "latent"
-			: g.output == (void *)gate_up ? "gate_up"
-			: g.output == (void *)router_logits ? "router_logits" : "other";
-		printf("gemm %zu dest %s in %u out %u rows %u grouped %d ind %d\n",
-			i, name, g.input_dimension, g.output_dimension,
-			g.packed_rows, g.grouped ? 1 : 0, g.indirect ? 1 : 0);
-	}
-	printf("hidden[0] %.6f\n", (double)LmBf16ToFloat(hidden[0]));
-	printf("shared_out[0] %.6f\n", (double)LmBf16ToFloat(shared_out[0]));
+	K3LayerHostRun(&b, 0u, 128u);
+	K3LayerHostRun(&b, 1u, 128u);
+	K3LayerHostRun(&b, 1u, 32u);
+	printf("survived\n");
 	return 0;
 }

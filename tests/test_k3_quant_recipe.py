@@ -6,8 +6,8 @@ MXFP4. The checkpoint sets input_activations null: it quantises weights and
 says nothing about activations, so an inference stack runs BF16 activations
 against streamed MXFP4 weights. The expert GEMM now keeps A at 16 stored bits
 with no scale against B at 4 with an E8M0 scale every 32; reintroducing
-activation quantisation fails this gate. docs/K3_WEIGHT_ONLY_MXFP4.md has the
-full requirement.
+activation quantisation fails this gate. docs/archive/K3_WEIGHT_ONLY_MXFP4.md
+has the full requirement.
 
 config.json's quantization_config quantises weights to 4 bits at group 32 and
 carries an ignore list: self_attn, shared_experts, the dense mlp projections,
@@ -62,25 +62,29 @@ def main():
                   "the checkpoint sets input_activations null")
             failures += 1
 
-    # the expert GEMMs must be WEIGHT-ONLY launches of the Format: BF16
-    # activations against the quantised stream, E8M0 decoded in the load. A
-    # symmetric LmGemmLaunch<Format> would quantise the activations again, so
-    # its count outside the helper must be zero, not two. w1 is the INDIRECT
-    # weight-only launch - A rows staged through route_source_token, the
-    # gather deleted (roadmap D9) - and w2 the packed one, one of each.
     helper = re.search(r"static int32_t K3Project\b.*?\n\}", text, re.S)
     outside = text.replace(helper.group(0), "") if helper else text
-    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<\s*Format", outside))
-    indirect_gemms = len(re.findall(r"LmGemmWeightOnlyIndirectLaunch<\s*Format", outside))
-    if expert_gemms != 1 or indirect_gemms != 1:
-        print(f"  FAIL {expert_gemms} packed and {indirect_gemms} indirect "
-              f"weight-only expert GEMMs take Format, expected one of each "
-              f"(w1 indirect through the route map, w2 packed)")
+    launches = re.findall(r"\b(Lm\w*Launch\w*)<\s*Format\b", outside)
+    quantising = sorted({name for name in launches
+                         if not name.startswith("LmGemmWeightOnly")})
+    if quantising:
+        print(f"  FAIL {quantising} take Format; only a weight-only launch "
+              f"keeps the activations BF16, anything else quantises them")
         failures += 1
-    symmetric = len(re.findall(r"LmGemmLaunch<\s*Format", outside))
-    if symmetric != 0:
-        print(f"  FAIL {symmetric} symmetric GEMMs take Format; a symmetric "
-              f"launch quantises the activations the checkpoint leaves alone")
+    w1 = [name for name in launches if name.startswith("LmGemmWeightOnlyIndirect")]
+    w2 = [name for name in launches if name.startswith("LmGemmWeightOnly")
+          and not name.startswith("LmGemmWeightOnlyIndirect")]
+    expert_gemms = len(w1) + len(w2)
+    for name in ("LmGemmWeightOnlyIndirectInterleavedLaunch",
+                 "LmGemmWeightOnlyInterleavedLaunch"):
+        if name not in launches:
+            print(f"  FAIL no {name} takes Format; the pack V2 interleaved "
+                  f"stream is the production expert layout")
+            failures += 1
+    if len(w1) != len(w2):
+        print(f"  FAIL {len(w1)} indirect w1 launches against {len(w2)} packed "
+              f"w2 launches; every expert layout needs both halves, w1 "
+              f"reading A through the route map")
         failures += 1
     if "K3Quantise" in text:
         print("  FAIL an activation quantiser still exists in the layer; the "

@@ -316,6 +316,9 @@ TEST_NAMES := \
 	test_k3_llm_defines \
 	test_k3_run_equivalence \
 	test_k3_attach_contract \
+	test_k3_pool_sizing \
+	test_k3_pack_bind \
+	test_k3_serving_adapter \
 	test_kv_model_table \
     test_nvme_tier \
     test_jit_kv_slice \
@@ -946,8 +949,19 @@ ifeq ($(strip $(HOST_CUDA_CXX)),)
 HOST_CUDA_CXX := g++
 endif
 
-build/test_k3_attach_contract: tests/test_k3_attach_contract.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h include/sparkpipe/spark_status.h | build
-	$(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) -ldl -o $@
+build/test_k3_attach_contract: tests/test_k3_attach_contract.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h include/sparkpipe/spark_status.h $(K3_SERVING_ADAPTER) | build
+	@if [ -f "$(K3_SERVING_ADAPTER)" ]; then $(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include -DTEST_K3_SERVING_ADAPTER_PATH=\"$(K3_SERVING_ADAPTER)\" $(CFLAGS) $< $(LDFLAGS) -ldl -o $@; else echo "SKIP $@ ($(K3_SERVING_ADAPTER) not built on this host; spark-gated test)"; fi
+
+build/test_k3_pool_sizing: tests/test_k3_pool_sizing.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_pool_sizing.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
+	$(CC) -I. -Iinclude -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+K3_PACK_BIND_SOURCES := modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+
+build/test_k3_pack_bind: tests/test_k3_pack_bind.c $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_k3_serving_adapter: tests/test_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/configs/model_resident.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_k3_run_equivalence: tests/host_cuda/k3_run_equivalence.cu tests/host_cuda/lm_host_cuda.cuh inference/kernels/linear_attn.cuh inference/kernels/norm.cuh inference/kernels/dtype.cuh
 	$(HOST_CUDA_CXX) -std=c++17 -O0 -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
