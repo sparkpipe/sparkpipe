@@ -126,6 +126,10 @@ into its model's byte layout; it does not set or enforce the budgets.
   runtime yet ([`TECHDEBT.md`](../TECHDEBT.md), Serving API).
 - Prefix reuse goes through `cache/prefix_cache.c`: the batch engine calls
   `SparkPrefixCacheLookupPrompt` and `SparkPrefixCacheCommitPrompt`.
+- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
+  `scheduler/topology_switch.c` uses it only through the tier's public calls
+  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
+  `OffsetOf`, `PlanLookahead`).
 
 ## Prefix reuse capability
 
@@ -139,10 +143,13 @@ declare it; adapter validation rejects a prefix lane for any other adapter
 with `UNSUPPORTED`. At connect the engine logs one line per adapter:
 
 ```
-batch engine adapter=<id> prefix_reuse=on|off decode_checkpoints=inline|deferred|inline-until-speculative
+batch engine adapter=<id> prefix_reuse=on|off|deployment-off decode_checkpoints=inline|deferred|inline-until-speculative
 ```
 
 `prefix_reuse=off` is an I23 gap owned by that adapter, not an engine choice.
+`prefix_reuse=deployment-off` means the adapter declares the capability but
+the deployment sets `prefix_reuse` false, so the engine looks up no cached
+prefixes either.
 The adapters that declare the capability are glm5_next (paged KV plus KDA
 state from the recurrent store) and dsv4 (paged KV, index and compressor state
 resolved through per-lane page tables). qwen38_27b, gemma4, glm52, ling,
@@ -165,10 +172,6 @@ Decode checkpoints depend on how the adapter speculates:
   sequence may have captured state past the boundary, so the engine does not
   index that checkpoint and names no further decode checkpoints for that
   request. Its prompt checkpoints stay indexed.
-- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
-  `scheduler/topology_switch.c` uses it only through the tier's public calls
-  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
-  `OffsetOf`, `PlanLookahead`).
 
 ## Driver identity
 

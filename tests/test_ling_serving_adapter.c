@@ -18,6 +18,9 @@
 #ifndef TEST_LING_SERVING_DRIVER_PATH
 #define TEST_LING_SERVING_DRIVER_PATH ""
 #endif
+#ifndef TEST_LING_SERVING_DRIFTED_DRIVER_PATH
+#error "TEST_LING_SERVING_DRIFTED_DRIVER_PATH must name the fixture driver with a drifted description hash"
+#endif
 #ifndef TEST_LING_SERVING_CONFIG_PATH
 #define TEST_LING_SERVING_CONFIG_PATH ""
 #endif
@@ -236,6 +239,13 @@ int main(void)
 		SPARK_LING_MODEL_LAYER_COUNT);
 	TestLingServingInterfaceCompleteness(&library.adapter_interface);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
+	TestLingServingConfiguration(&configuration,
+		TEST_LING_SERVING_CONFIG_PATH,runtime_root,
+		TEST_LING_SERVING_DRIFTED_DRIVER_PATH,&test_state);
+	adapter_state = 0;
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) ==
+		SPARK_STATUS_TARGET_MISMATCH);
+	assert(adapter_state == 0);
 	TestLingServingConfiguration(&configuration,
 		TEST_LING_SERVING_CONFIG_PATH,runtime_root,
 		TEST_LING_SERVING_DRIVER_PATH,&test_state);

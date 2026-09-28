@@ -149,6 +149,60 @@ tests/test_jit_kv_slice.c on the host.
 Consumers: tests/test_jit_kv_slice.c. Family wiring (dsv4 first) is the W1
 seam; the pager is deliberately model-neutral.
 
+### 1.5b cache/kv_snapshot.c + spark_kv_snapshot.h - NVMe prefix snapshot store
+
+Published prefix blocks survive a residentd restart as files in one directory
+per rank. Each file is `<layout>-<identity>-<tokens>.kvs` and holds the
+block's chain links, its KV page and, for recurrent models, the state captured
+at that block boundary. Every segment and the header carry a SHA-256.
+
+- Ownership: `SparkKvSnapshotStoreOpen` takes an exclusive `flock` on
+  `.kvs-lock`; a second store on the same directory gets BUSY. Temporary
+  files left by a crash are removed at open and the remaining files are
+  indexed in memory, oldest modification first.
+- Budget: `maximum_bytes` is a hard cap enforced by least-recently-used
+  eviction (reads, duplicate saves and writes refresh an entry). A save
+  larger than the whole budget is refused with CAPACITY_EXCEEDED before any
+  copy or hash work. A store opened with a smaller budget evicts at open.
+  Eviction can remove an ancestor block of a longer chain; restoring that
+  chain then misses (NOT_FOUND) and the request recomputes.
+- Layouts: the layout digest must name everything that makes the bytes
+  valid (model, pack, contract, codec, driver binary, geometry, rank).
+  `SparkKvSnapshotPrune(layout)` removes every file of another layout;
+  drivers call it right after open.
+- Writes are asynchronous. The publishing thread calls
+  `SparkKvSnapshotWriteBegin`, which reserves space in a bounded queue
+  (`queue_maximum_bytes`) and returns host buffers. The caller copies the
+  page and state into them and calls `SparkKvSnapshotWriteCommit`. A single
+  writer thread then hashes, writes a temporary file, fsyncs, renames and
+  fsyncs the directory. Under the cache lock the publisher only pays the
+  device-to-host copies. Written job buffers are kept for reuse up to the
+  queue bound, so a steady stream of publishes does not page-fault fresh
+  multi-megabyte buffers. A full queue answers BUSY; the page cache leaves
+  the entry unsaved (`save_deferred_count`) and retries at its next
+  publish or release. An I/O error or ENOSPC in the writer is logged
+  (`KV-SNAPSHOT write status=...`), counted in `write_failure_count` and
+  latches `failed_status`; every later save returns that status at once
+  without copying anything, and the page cache logs each change of save
+  status once. A save failure never fails the request that published the
+  block, because the block is still valid in memory.
+- Integrity: a truncated file, a bad header or a segment checksum mismatch
+  deletes the file, logs `KV-SNAPSHOT discarded corrupt file`, counts
+  `checksum_failure_count` and returns HASH_MISMATCH. The page cache turns
+  that into NOT_FOUND (`restore_corrupt_count`), so the engine recomputes the
+  prefix. A structurally inconsistent chain whose checksums are valid is a
+  writer bug and stays VALIDATION_FAILED, which fails the request.
+- Recurrent state is stored in every block file, because any block boundary
+  can be the target of a later prefix hit. For GLM this is about 9.3 MB of
+  KDA state next to about 1.1 MB of KV per block per rank, so the budget
+  fills roughly nine times faster than with KV alone. Only the chain's last
+  block's state is read on restore.
+- Scope: snapshots help when residentd restarts and the API process keeps
+  its prefix index. After an API restart the engine index is empty, the
+  first request misses and recomputes, and its publishes overwrite nothing
+  (the files are keyed by content identity and are reused on the next hit
+  only once the engine index knows the prefix again).
+
 ### 1.6 cache/prefix_cache.c + spark_prefix_cache.h - content-addressed prefix cache
 
 The prompt-prefix reuse index, owned by the runtime batch engine (see 2.3).
@@ -160,6 +214,33 @@ The prompt-prefix reuse index, owned by the runtime batch engine (see 2.3).
 - Lookahead protection (SparkPrefixCacheProtectPromptLookahead) and reuse-scored
   resident eviction (SparkPrefixCacheTrimResidentBlocksByReuseScore) -
   spark_prefix_cache.h:249-262.
+- Tombstones (SparkPrefixCacheTombstonePrompt): the engine index is a hint,
+  and the ranks own the state. When the ranks reject a prefill wave at
+  prepare with NOT_FOUND and exactly one lane of that wave carried a cached
+  prefix, the engine releases that lane's bindings and tombstones the deepest
+  entry of its prefix. The entry loses REUSABLE and gains STALE, so no lookup
+  finds it again. It is freed at once when unreferenced, otherwise when its
+  last binding is released; a sequence already bound to it may still extend
+  it. The lane restarts from position zero, and every other lane of the wave
+  is requeued unchanged with no backoff. Each retry drops one reachable
+  entry, so a prompt recomputes at most once per cached block.
+- A NOT_FOUND wave with two or more prefix lanes does not say which prefix
+  is stale, so nothing is tombstoned. Each prefix lane is marked isolated and
+  requeued; an isolated prefix lane is dispatched alone in its own prefill
+  wave until one is admitted. A NOT_FOUND on that single-lane wave tombstones
+  exactly its prefix, and valid prefixes are never destroyed alongside it.
+  `stale_prefix_isolation_count` counts these waves.
+- VALIDATION_FAILED is never a stale-prefix signal. It is the status for
+  protocol and ownership violations, so it takes the ordinary rejection path
+  and fails its requests loudly. A rank that finds a corrupt or truncated
+  snapshot file discards it and answers NOT_FOUND after logging the checksum
+  failure. Waves that failed after admission keep failing their requests, and
+  BUSY keeps its backoff. `stale_prefix_recompute_count` in the engine view
+  counts the recomputes (I23).
+- Prefix hits and misses are counted when the prefill wave is admitted, not
+  when it is dispatched, so a stale hint that is rejected and recomputed
+  counts one miss and no hit. `first_dispatch_ns` is the dispatch time of the
+  first admitted wave, so BUSY and PENDING retry time is queue time.
 
 Consumers: runtime/model_batch_engine.c, tests/test_kv_cache.c.
 

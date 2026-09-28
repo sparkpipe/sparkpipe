@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Bind the ling geometry header to the authoritative contract.
 
-The contract (model_contracts/ling_authoritative.json) is pre-freeze:
-geometry is pinned to the publisher config (inclusionAI/Ling-3.0-flash @
-e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3) and the checkpoint shard shas
-get pinned at freeze, after the warm download. This test binds
-model-families/ling/include/sparkpipe/spark_ling_model.h to that contract
-so header and contract stay in lockstep through the freeze. The C compiler
-evaluates every macro, including the per-layer MLA/KDA predicates.
+The contract (model_contracts/ling_authoritative.json) pins geometry to
+the publisher config (inclusionAI/Ling-3.0-flash @
+e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3). This test binds
+model-families/ling/include/sparkpipe/spark_ling_model.h to that contract.
 Run: python3 tests/test_ling_model_header.py
 """
 
