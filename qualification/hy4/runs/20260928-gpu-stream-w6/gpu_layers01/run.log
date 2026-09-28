@@ -1,0 +1,4 @@
+tensors 2838 files 130 prompts 3 layers 2 steps 1
+layer 0 rows 28 0.6s elapsed 2s
+layer 1 rows 28 4.1s elapsed 6s
+done 6s

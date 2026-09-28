@@ -1,0 +1,91 @@
+{
+  "checkpoint": {
+    "config_sha256": "8f08e75af6c46578a6fc93883b4446189c67cc8b6ff47f20a51c43cd3dd9d6d4",
+    "id": "tencent/Hy4-preview-FP8",
+    "index_sha256": "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106",
+    "path": "/mnt/model-warm/hy4-preview-fp8-official",
+    "revision": "4215ec29de873a998e849cee902654490c7ff4d1"
+  },
+  "date_utc": "2026-09-28",
+  "files": {
+    "compare_cpu_vs_cpu_bf16.txt": "081abf66ab65460a06b991ae9cc91deb1521c53fbb784d9db186a6438e674df6",
+    "compare_forced.txt": "cae8dd4f06e2ddc3c1432c8931ca8c21b81262ffbb34bdce5b144300ea200cc9",
+    "compare_free_prefill.txt": "cebc3b2c065e1178e3bab406c2e3f5a464b486b248fb0b6220bdbf3244eb5ea4",
+    "compare_free_tokens.txt": "3e4f31b9792262e20b160f6f9e0bd2ae90db9e703063bfea51849a43ba871805",
+    "compare_gpu_vs_cpu_bf16.txt": "07c780ae8978a5734f766c6a31d53dd8d52465a62688b65799c8ad3e3a38b39c",
+    "compare_layers01.txt": "e8133ac9ec4c4ce9a6f34feeb75baed1351f41752f0c5cf9fcf164b3cf8b25a4",
+    "cpu/capital.txt": "709f2adc7a3fe5a6ee9417a41c3fe5389a8f01a3bb4720a2c17a4517f3a06cb1",
+    "cpu/code.txt": "24d3f73cab802c836f019705a0f21bbd9791945f093695d65cfce92241e3a4de",
+    "cpu/run.log": "203a7c439cc631529b3839e32a58774d9af79d9c0cc0a60cf6e8a5bd7a223c40",
+    "cpu/science.txt": "c8360c59b75eb97979dc9426288e784cffe90497d1ba91d426c90f12f1023329",
+    "cpu_bf16_prefill/bf16_rounding.patch": "06074fc89e601f44c5e4dac29a716b317db14ec4009da6629ba41c212de75027",
+    "cpu_bf16_prefill/capital.txt": "eee66cca637cae730c97a79b612cb8cfbd055d6391f63034cdbacc80ce568023",
+    "cpu_bf16_prefill/code.txt": "013ea436cc1f1b4fbcc894a441c64a55490deaf54fc45d24f5109f415095d517",
+    "cpu_bf16_prefill/run.log": "e6bc742cfa13e60d22520782d92ec7f070c378015a7fd14e0673ba22f5286045",
+    "cpu_bf16_prefill/science.txt": "4668ecfbd1c5214d867181e64dda13add49e252ebd133d3a19d3b965a1b1c6e3",
+    "gpu_forced/capital.txt": "52378177bc6067ff9edee0648c992fe81f0453335e190d9e7733405ce8415c7d",
+    "gpu_forced/code.txt": "08ebd3245bdeedca7b66d66ff7262c21f384775260b03f056ff59a3e0b3c03b6",
+    "gpu_forced/run.log": "8a40058fe234ea243bae65ffeca2bd2c29dd558dbd05d4401d9da7629759cff9",
+    "gpu_forced/science.txt": "72aa5de1f48348725e951ab8e439cbed1e4fa838c4b9c97e83ed3c7cd4c84081",
+    "gpu_free/capital.txt": "52378177bc6067ff9edee0648c992fe81f0453335e190d9e7733405ce8415c7d",
+    "gpu_free/code.txt": "c5326895139438e54950272617d6996c35dbffa6fcd5f385a633d858fcdfa6a5",
+    "gpu_free/run.log": "0a366873cd35c282198719c9159fa3a923cfc8ed63cfa89edc8a6b7f586ff39a",
+    "gpu_free/science.txt": "fce0c0abb163a5875a1580afbc18b933af3d9523f45691566d0898a1f301febe",
+    "gpu_layers01/capital.txt": "a7aff3974931d4cea19aa76d923faf6fdba959b3da6d5d17e9a8f3ac25780137",
+    "gpu_layers01/code.txt": "40c58c55d0806ad152117fc18cf89a8a4a0d8c9f8db2db45955c4610a0115921",
+    "gpu_layers01/run.log": "54988b899663a07a6dd0b0427f86afb81ebd48e31cac0830fbc26616b33d11ce",
+    "gpu_layers01/science.txt": "a2eb94ed3bc94f2dfbe90060c4d53af70a593f7aac252f55367ef1d436409ebc"
+  },
+  "lane": "hy4 (w6)",
+  "prompts": "qualification/t1_reference/hy4/prompts.json",
+  "prompts_sha256": "b8f30393b4de9eb30d504d35df4999bdf80ecbf6e4d7bd97e762681285d16335",
+  "results": {
+    "deep_layer_drift": "GPU vs fp32 and BF16-CPU vs fp32 differ by the same order (layer 77 cosine 0.98-0.998); inherent BF16 sensitivity",
+    "first_token_all_prompts_equal": true,
+    "free_running_tokens_equal": {
+      "capital": "16/16",
+      "code": "5/16 then flips at a 0.23-logit reference near-tie",
+      "science": "2/16 then flips at a 0.58-logit reference near-tie"
+    },
+    "layers01_streams": "max rel <= 0.008, cosine >= 0.99999 over all 28 prompt positions, except science layer 1 (0.047) after one near-tie expert swap",
+    "teacher_forced_head_top1_equal": {
+      "capital": "16/16",
+      "code": "13/16, 3 flips at reference margins 0.04-0.23",
+      "science": "15/16, 1 flip at reference margin 0.58"
+    }
+  },
+  "runs": {
+    "cpu": {
+      "host": "spark5",
+      "mode": "fp32 reference, 3 prompts x 16 greedy tokens",
+      "threads": 24,
+      "tool": "tools/hy4_reference/hy4_fp8_reference.c",
+      "tool_sha256": "ff3a4f00bf3c7892dfde5b58c208d36781c0a6219007062867909075da6456d5"
+    },
+    "cpu_bf16_prefill": {
+      "host": "spark9",
+      "mode": "prefill only, linear inputs and outputs rounded to BF16",
+      "tool": "hy4_fp8_reference.c + cpu_bf16_prefill/bf16_rounding.patch"
+    },
+    "gpu_forced": {
+      "args": "78 16 <cpu run dir>",
+      "host": "spark1",
+      "mode": "teacher-forced on the CPU reference tokens",
+      "tool": "tools/hy4_reference/hy4_gpu_stream_forward.cu",
+      "tool_sha256": "5e042fe36cd19970435b08b8adfb1ba52db9c33c1728b347539ab0750a8643c4"
+    },
+    "gpu_free": {
+      "args": "78 16",
+      "host": "spark1",
+      "mode": "free-running greedy",
+      "tool": "tools/hy4_reference/hy4_gpu_stream_forward.cu"
+    },
+    "gpu_layers01": {
+      "args": "78 layers limited to 2, 1 step",
+      "host": "spark1",
+      "mode": "single GB10, no residentd, no weightd",
+      "tool": "tools/hy4_reference/hy4_gpu_stream_forward.cu"
+    }
+  },
+  "speed_claims": "none; both tools are bound by reads from Ceph"
+}

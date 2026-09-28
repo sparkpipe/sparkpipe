@@ -1,0 +1,67 @@
+PASS capital layer 0 streams over 5 positions: max rel 0.008071, min cosine 0.999992
+PASS capital layer 1 streams over 5 positions: max rel 0.00414, min cosine 0.999995
+PASS capital layer 5 streams over 5 positions: max rel 0.003082, min cosine 0.999996
+FAIL capital layer 77 streams over 5 positions: max rel 0.02162, min cosine 0.999771
+NOTE capital routes: 372/385 (position, layer) expert sets equal, max weight rel 0.1026
+PASS capital tokens: reference [15641, 13, 499, 8778, 299, 12749, 341, 15641, 13, 499, 8778, 299, 12749, 341, 15641, 13] candidate [15641, 13, 499, 8778, 299, 12749, 341, 15641, 13, 499, 8778, 299, 12749, 341, 15641, 13]
+  head 4: reference 15641 15.8117 (margin 0.3532) candidate 15641 15.7963
+  head 5: reference 13 16.8173 (margin 1.9135) candidate 13 16.5705
+  head 6: reference 499 16.4940 (margin 1.1363) candidate 499 15.8611
+  head 7: reference 8778 15.2612 (margin 0.2187) candidate 8778 16.2766
+  head 8: reference 299 19.4328 (margin 2.3823) candidate 299 19.2015
+  head 9: reference 12749 16.4224 (margin 1.9967) candidate 12749 16.4716
+  head 10: reference 341 17.6575 (margin 2.8995) candidate 341 17.8592
+  head 11: reference 15641 17.5762 (margin 5.0169) candidate 15641 17.6564
+  head 12: reference 13 16.2684 (margin 3.6095) candidate 13 16.4223
+  head 13: reference 499 14.2060 (margin 0.2188) candidate 499 14.0036
+  head 14: reference 8778 17.0455 (margin 4.6302) candidate 8778 16.8380
+  head 15: reference 299 18.2098 (margin 2.0677) candidate 299 17.8764
+  head 16: reference 12749 17.4548 (margin 3.0090) candidate 12749 17.4017
+  head 17: reference 341 18.5053 (margin 3.9723) candidate 341 18.6367
+  head 18: reference 15641 17.8097 (margin 5.4685) candidate 15641 17.5440
+  head 19: reference 13 17.1161 (margin 4.0379) candidate 13 17.1022
+PASS code layer 0 streams over 15 positions: max rel 0.007825, min cosine 0.999992
+PASS code layer 1 streams over 15 positions: max rel 0.003893, min cosine 0.999994
+PASS code layer 5 streams over 15 positions: max rel 0.01265, min cosine 0.999909
+FAIL code layer 77 streams over 15 positions: max rel 0.05632, min cosine 0.986184
+NOTE code routes: 939/1155 (position, layer) expert sets equal, max weight rel 0.2556
+FAIL code tokens: reference [326, 762, 312, 9548, 220, 16, 25, 1315, 220, 16, 198, 326, 762, 312, 676, 220] candidate [326, 762, 312, 9548, 220, 15, 25, 198, 454, 1315, 312, 198, 326, 762, 312, 676]
+  head 14: reference 326 15.9123 (margin 1.9777) candidate 326 15.8801
+  head 15: reference 762 16.3974 (margin 1.7395) candidate 762 16.5292
+  head 16: reference 312 18.2100 (margin 5.0838) candidate 312 18.2972
+  head 17: reference 9548 16.3363 (margin 0.0850) candidate 9548 16.1616
+  head 18: reference 220 19.0627 (margin 2.7356) candidate 220 18.9239
+  head 19: reference 16 18.3318 (margin 0.2322) candidate 15 17.9349
+  head 20: reference 25 16.7536 (margin 1.1297) candidate 25 16.6995
+  head 21: reference 1315 15.1073 (margin 0.0443) candidate 198 15.4350
+  head 22: reference 220 16.1679 (margin 0.9832) candidate 454 16.0656
+  head 23: reference 16 18.3407 (margin 1.3609) candidate 1315 15.7890
+  head 24: reference 198 13.9743 (margin 0.0601) candidate 312 16.2178
+  head 25: reference 326 15.5429 (margin 1.4072) candidate 198 15.5558
+  head 26: reference 762 15.8440 (margin 1.6947) candidate 326 16.3344
+  head 27: reference 312 16.6803 (margin 3.1280) candidate 762 16.3801
+  head 28: reference 676 15.9807 (margin 0.3161) candidate 312 17.1497
+  head 29: reference 220 16.9973 (margin 0.8927) candidate 676 16.2555
+PASS science layer 0 streams over 8 positions: max rel 0.008023, min cosine 0.999991
+FAIL science layer 1 streams over 8 positions: max rel 0.04663, min cosine 0.999329
+FAIL science layer 5 streams over 8 positions: max rel 0.03015, min cosine 0.999662
+FAIL science layer 77 streams over 8 positions: max rel 0.2388, min cosine 0.984867
+NOTE science routes: 461/616 (position, layer) expert sets equal, max weight rel 0.831
+FAIL science tokens: reference [299, 269, 28680, 4975, 341, 220, 16, 10227, 13, 3477, 341, 269, 30869, 1767, 299, 2599] candidate [299, 269, 23017, 4975, 16686, 28680, 4975, 13, 1832, 435, 4479, 269, 4975, 11, 269, 30869]
+  head 7: reference 299 17.3883 (margin 1.5684) candidate 299 17.8289
+  head 8: reference 269 14.4208 (margin 1.6008) candidate 269 15.1581
+  head 9: reference 28680 13.9181 (margin 0.5781) candidate 23017 14.5981
+  head 10: reference 4975 20.6761 (margin 5.6090) candidate 4975 21.2824
+  head 11: reference 341 17.8232 (margin 1.0162) candidate 16686 18.5720
+  head 12: reference 220 18.2219 (margin 2.4936) candidate 28680 17.7881
+  head 13: reference 16 18.4551 (margin 0.7027) candidate 4975 16.0161
+  head 14: reference 10227 15.8948 (margin 0.5039) candidate 13 16.4159
+  head 15: reference 13 17.0750 (margin 1.8463) candidate 1832 14.7460
+  head 16: reference 3477 15.7557 (margin 0.8610) candidate 435 17.4284
+  head 17: reference 341 16.3038 (margin 0.8113) candidate 4479 16.4127
+  head 18: reference 269 18.1436 (margin 3.4088) candidate 269 18.2992
+  head 19: reference 30869 15.9667 (margin 2.0384) candidate 4975 17.3736
+  head 20: reference 1767 19.5354 (margin 4.2049) candidate 11 17.0321
+  head 21: reference 299 17.8097 (margin 0.8871) candidate 269 17.9535
+  head 22: reference 2599 17.9336 (margin 2.9930) candidate 30869 16.0995
+RESULT: FAIL (7)

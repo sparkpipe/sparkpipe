@@ -1,0 +1,22 @@
+PASS capital layer 0 streams over 5 positions: max rel 0.008072, min cosine 0.999992
+PASS capital layer 1 streams over 5 positions: max rel 0.004796, min cosine 0.999989
+FAIL capital layer 5 streams over 5 positions: max rel 0.02019, min cosine 0.999756
+FAIL capital layer 77 streams over 5 positions: max rel 0.1243, min cosine 0.997980
+NOTE capital routes: 324/385 (position, layer) expert sets equal, max weight rel 0.197
+PASS capital tokens: reference [15641] candidate [15641]
+  head 4: reference 15641 15.8117 (margin 0.3532) candidate 15641 15.8125
+PASS code layer 0 streams over 15 positions: max rel 0.007826, min cosine 0.999992
+PASS code layer 1 streams over 15 positions: max rel 0.004799, min cosine 0.999994
+FAIL code layer 5 streams over 15 positions: max rel 0.02037, min cosine 0.999908
+FAIL code layer 77 streams over 15 positions: max rel 0.06074, min cosine 0.983733
+NOTE code routes: 872/1155 (position, layer) expert sets equal, max weight rel 0.3201
+PASS code tokens: reference [326] candidate [326]
+  head 14: reference 326 15.9123 (margin 1.9777) candidate 326 15.9375
+PASS science layer 0 streams over 8 positions: max rel 0.01117, min cosine 0.999990
+FAIL science layer 1 streams over 8 positions: max rel 0.04667, min cosine 0.999329
+FAIL science layer 5 streams over 8 positions: max rel 0.0306, min cosine 0.999660
+FAIL science layer 77 streams over 8 positions: max rel 0.1684, min cosine 0.990884
+NOTE science routes: 462/616 (position, layer) expert sets equal, max weight rel 0.5354
+PASS science tokens: reference [299] candidate [299]
+  head 7: reference 299 17.3883 (margin 1.5684) candidate 299 17.5000
+RESULT: FAIL (7)

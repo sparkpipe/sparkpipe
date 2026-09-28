@@ -1,0 +1,10 @@
+PASS capital layer 0 streams over 5 positions: max rel 0.008071, min cosine 0.999992
+PASS capital layer 1 streams over 5 positions: max rel 0.00414, min cosine 0.999995
+PASS capital routes: 5/5 (position, layer) expert sets equal, max weight rel 0.006258
+PASS code layer 0 streams over 15 positions: max rel 0.007825, min cosine 0.999992
+PASS code layer 1 streams over 15 positions: max rel 0.003893, min cosine 0.999994
+PASS code routes: 15/15 (position, layer) expert sets equal, max weight rel 0.004707
+PASS science layer 0 streams over 8 positions: max rel 0.008023, min cosine 0.999991
+FAIL science layer 1 streams over 8 positions: max rel 0.04663, min cosine 0.999329
+NOTE science routes: 7/8 (position, layer) expert sets equal, max weight rel 0.003899
+RESULT: FAIL (1)

@@ -1,0 +1,17 @@
+PASS capital layer 0 streams over 5 positions: max rel 0.008071, min cosine 0.999992
+PASS capital layer 1 streams over 5 positions: max rel 0.00414, min cosine 0.999995
+PASS capital routes: 5/5 (position, layer) expert sets equal, max weight rel 0.006258
+PASS capital teacher-forced head top1: 16/16 equal, 0 reference near-ties (margin < 1.0)
+PASS code layer 0 streams over 15 positions: max rel 0.007825, min cosine 0.999992
+PASS code layer 1 streams over 15 positions: max rel 0.003893, min cosine 0.999994
+PASS code routes: 15/15 (position, layer) expert sets equal, max weight rel 0.004707
+  TIE  code head 19: reference 16 margin 0.2322 over 15, candidate 15 17.9349 vs 16 17.9207
+  TIE  code head 21: reference 1315 margin 0.0443 over 198, candidate 198 15.2252 vs 1315 15.0943
+  TIE  code head 24: reference 198 margin 0.0601 over 762, candidate 762 14.1882 vs 198 13.9073
+PASS code teacher-forced head top1: 13/16 equal, 3 reference near-ties (margin < 1.0)
+PASS science layer 0 streams over 8 positions: max rel 0.008023, min cosine 0.999991
+FAIL science layer 1 streams over 8 positions: max rel 0.04663, min cosine 0.999329
+NOTE science routes: 7/8 (position, layer) expert sets equal, max weight rel 0.003899
+  TIE  science head 9: reference 28680 margin 0.5781 over 23017, candidate 23017 14.5981 vs 28680 14.3902
+PASS science teacher-forced head top1: 15/16 equal, 1 reference near-ties (margin < 1.0)
+RESULT: FAIL (1)
