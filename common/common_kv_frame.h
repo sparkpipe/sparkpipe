@@ -263,8 +263,10 @@ static inline SparkStatus LmKvFrameClaimSlot(LmKvFrameState *state, uint32_t *sl
 		status = LmKvFrameEvictSlot(state,state->evict_cursor);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
+		state->evict_cursor = (state->evict_cursor + 1u) % state->block_count;
 	}
 	*slot_index = state->slot_free_stack[--state->slot_free_count];
+	state->slot_pinned[*slot_index] = 1u;
 	return(SPARK_STATUS_OK);
 }
 static inline SparkStatus LmKvFrameFlushRestore(LmKvFrameState *state, LmKvFrameRestore *restore, const LmKvFrameSlot *slot, uint32_t lane_stride)
@@ -382,7 +384,10 @@ static inline SparkStatus LmKvFrameUnwind(LmKvFrameState *state, const LmKvFrame
 {
 	uint32_t index;
 	for (index = restore->committed; index < restore->count; index++)
+	{
+		state->slot_pinned[restore->slot[index]] = 0u;
 		state->slot_free_stack[state->slot_free_count++] = restore->slot[index];
+	}
 	LmKvFrameSetPins(state,lanes,lane_stride,0u);
 	return(status);
 }

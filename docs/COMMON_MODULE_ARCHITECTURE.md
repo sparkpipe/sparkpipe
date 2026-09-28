@@ -282,7 +282,9 @@ SparkStatus SparkCommonPackLoadBind(const SparkLlmPackPlan *plan,   /* 12 macro 
 5. `LmKvFrameUploadTables` and `LmKvFrameMapRows` upload the frame's block table and slot mapping.
 6. The pins are released. On failure, `LmKvFrameUnwind` also returns the slots claimed for blocks that were not restored.
 
-`tests/test_llm_module_contract.c` covers restores that span several batches, lane order, write-back on eviction, and the unwind.
+**Eviction.** A slot the frame claims stays pinned until the frame ends, so a later eviction in the same frame cannot take it back. A frame that needs more blocks than the pool holds fails with `SPARK_STATUS_CAPACITY_EXCEEDED` and returns every slot it claimed. The eviction cursor moves past each slot it evicts, so the pool evicts in slot order instead of evicting again the block the previous frame restored.
+
+`tests/test_llm_module_contract.c` covers restores that span several batches, lane order, write-back on eviction, two evictions in one frame, a frame larger than the pool, eviction order, and the unwind.
 
 ### M-8 `common_kv_geometry.h` — capacity fillers + asserts (glm twins differ by 7 keys).
 

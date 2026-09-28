@@ -494,6 +494,67 @@ static void TestKvFrameEvictDirty(void)
 	FreeState(&state);
 }
 
+static void TestKvFrameTwoEvictions(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[1] = {0u},contexts[1] = {3u * SPARK_LLM_KV_BLOCK_TOKENS},host_mapping[1] = {0u},device_mapping[1] = {0u};
+	uint32_t host_blocks[8] = {0u},host_counts[2] = {3u,3u},stale_device[8] = {0u};
+	uint64_t positions[1] = {3u * SPARK_LLM_KV_BLOCK_TOKENS - 1u},sequence_ids[1] = {501u};
+	MakeStateSized(&state,4u,2u,4u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,2u,4u,host_blocks,host_counts,stale_device);
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK && state.slot_free_count == 1u,"kv_frame holds three blocks of the first lane");
+	lane_indices[0] = 1u;
+	sequence_ids[0] = 502u;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK,"kv_frame evicts twice in one frame");
+	Check(state.logical_to_slot[4] != 0u && state.logical_to_slot[5] != 0u && state.logical_to_slot[6] != 0u && state.logical_to_slot[4] != state.logical_to_slot[5] && state.logical_to_slot[5] != state.logical_to_slot[6] && state.logical_to_slot[4] != state.logical_to_slot[6],"kv_frame gives each block of a frame its own slot");
+	Check(state.table_indices_host[4] < 4u && state.table_indices_host[5] < 4u && state.table_indices_host[6] < 4u,"kv_frame table holds valid slots after two evictions");
+	Check(KvFrameResidencyConsistent(&state,4u),"kv_frame residency and data consistent after two evictions");
+	FreeState(&state);
+}
+
+static void TestKvFrameOverDemand(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[1] = {0u},contexts[1] = {3u * SPARK_LLM_KV_BLOCK_TOKENS},host_mapping[1] = {0u},device_mapping[1] = {0u};
+	uint32_t host_blocks[4] = {0u},host_counts[1] = {3u},stale_device[4] = {0u};
+	uint64_t positions[1] = {3u * SPARK_LLM_KV_BLOCK_TOKENS - 1u},sequence_ids[1] = {701u};
+	MakeStateSized(&state,2u,1u,4u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,1u,4u,host_blocks,host_counts,stale_device);
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_CAPACITY_EXCEEDED,"kv_frame refuses a frame that needs more blocks than the pool");
+	Check(state.slot_free_count == 2u && state.logical_to_slot[0] == 0u && state.logical_to_slot[1] == 0u && state.logical_to_slot[2] == 0u,"kv_frame over-demand returns every claimed slot");
+	Check(state.slot_pinned[0] == 0u && state.slot_pinned[1] == 0u,"kv_frame over-demand releases its pins");
+	FreeState(&state);
+}
+
+static void TestKvFrameEvictionOrder(void)
+{
+	LmKvFrameState state;
+	LmKvFrameSlot view;
+	LmKvFrameTable table;
+	uint32_t lane_indices[3] = {0u,1u,2u},contexts[3] = {1u,1u,1u},host_mapping[3] = {0u},device_mapping[3] = {0u};
+	uint32_t host_blocks[10] = {0u},host_counts[5] = {1u,1u,1u,1u,1u},stale_device[10] = {0u};
+	uint64_t positions[3] = {0u,0u,0u},sequence_ids[3] = {801u,802u,803u};
+	MakeStateSized(&state,3u,5u,2u);
+	FillSlotView(&view,lane_indices,positions,contexts,host_mapping,device_mapping);
+	FillTable(&table,5u,2u,host_blocks,host_counts,stale_device);
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,3u) == SPARK_STATUS_OK && state.slot_free_count == 0u,"kv_frame fills the pool with three lanes");
+	lane_indices[0] = 3u;
+	sequence_ids[0] = 804u;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK && state.logical_to_slot[6] != 0u,"kv_frame restores a fourth lane");
+	lane_indices[0] = 4u;
+	sequence_ids[0] = 805u;
+	Check(LmKvFramePrepareFrame(&state,&view,sequence_ids,&table,1u) == SPARK_STATUS_OK && state.logical_to_slot[8] != 0u,"kv_frame restores a fifth lane");
+	Check(state.logical_to_slot[6] != 0u,"kv_frame does not evict the block the previous frame restored");
+	Check(KvFrameResidencyConsistent(&state,2u),"kv_frame eviction order residency consistent");
+	FreeState(&state);
+}
+
 int LlmModuleNegativeControlRun(void);
 
 #define SPARK_FAMILY_CAMEL KvProbe
@@ -569,6 +630,9 @@ int main(void)
 	TestKvFrameMultiBatch();
 	TestKvFrameLaneOrder();
 	TestKvFrameEvictDirty();
+	TestKvFrameTwoEvictions();
+	TestKvFrameOverDemand();
+	TestKvFrameEvictionOrder();
 	TestKvFrameTemplateTierOff();
 	failures += LlmModuleNegativeControlRun();
 	if ( failures == 0 )

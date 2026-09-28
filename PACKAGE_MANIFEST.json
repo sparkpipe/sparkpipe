@@ -168,8 +168,8 @@
     },
     {
       "path": "common/common_kv_frame.h",
-      "sha256": "ab2f0bf40751d9b52f9adbe6ff27810a297c2327342c65756713cd5ab712f60b",
-      "size_bytes": 18481
+      "sha256": "17637bd373ec4aa67ebb38554b266f93e482d9a5bd17db47d724707cb8cc57c2",
+      "size_bytes": 18648
     },
     {
       "path": "common/common_kv_geometry.h",
@@ -643,8 +643,8 @@
     },
     {
       "path": "docs/COMMON_MODULE_ARCHITECTURE.md",
-      "sha256": "146a482b814d872fc0cc739209a34f1f7474e31e4e7be4ef4f52edf53235fc00",
-      "size_bytes": 21862
+      "sha256": "997a9624479cc0128bf42db76a65b30a0751bef1a179206f4fbb80450fe2e408",
+      "size_bytes": 22349
     },
     {
       "path": "docs/CONSTANT_AUDIT.md",
@@ -9868,8 +9868,8 @@
     },
     {
       "path": "tests/test_llm_module_contract.c",
-      "sha256": "197f023d2ff4fd7c338ce9572e16b6d908c769c31d3b68c1cbccea4d15d701e7",
-      "size_bytes": 24655
+      "sha256": "51e5b8d577c6207327b7d3c0ef18a8a89bb57bed6ed0283fafcbacecaae1df9e",
+      "size_bytes": 28717
     },
     {
       "path": "tests/test_llm_module_contract_negative.c",
@@ -15265,5 +15265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73927937
+  "total_bytes": 73932653
 }
