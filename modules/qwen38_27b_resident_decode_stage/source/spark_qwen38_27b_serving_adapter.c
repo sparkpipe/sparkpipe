@@ -1496,6 +1496,41 @@ static SparkStatus SparkQwen38_27bServingRunSpeculativeFrame(
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkQwen38_27bServingFoldRestorePending(
+	const SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t last;
+	if ( state->dflash2_fold_armed == 0u || state->dflash2_fold_restore_slot < 0 || submission->active_sequence_count != 1u || submission->row_count != 1u )
+		return(0u);
+	last = submission->row_count - 1u;
+	return(state->dflash2_fold_sequence_id == submission->row_sequence_ids[last] && state->dflash2_fold_position == submission->row_positions[last] ? 1u : 0u);
+}
+
+static SparkStatus SparkQwen38_27bServingRunFoldRestoreDecode(
+	SparkQwen38_27bServingState *state,
+	const SparkModelServingSubmission *submission,
+	SparkQwen38_27bServingPending *pending)
+{
+	SparkQwen38_27bGdnSnapshotView gdn_snapshot;
+	uint32_t token = submission->token_ids[0];
+	uint64_t position = submission->row_positions[0];
+	uint64_t sequence = submission->row_sequence_ids[0];
+	uint32_t slot = submission->lanes[submission->row_lane_indices[0]].resident_sequence_slot;
+	SparkStatus status;
+	memset(&gdn_snapshot,0,sizeof(gdn_snapshot));
+	gdn_snapshot.abi_version = SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION;
+	gdn_snapshot.descriptor_bytes = sizeof(gdn_snapshot);
+	gdn_snapshot.snapshot_index = (uint32_t)state->dflash2_fold_restore_slot;
+	state->dflash2_fold_armed = 0u;
+	fprintf(stderr,"qwen38_27b_spec_diag fold_restore_decode pos=%llu slot=%u\n",(unsigned long long)position,gdn_snapshot.snapshot_index);
+	status = SparkQwen38_27bServingRunSpeculativeFrame(state,submission,pending,slot,1u,&token,0,0,1u,position,sequence,position,
+		SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_VERIFY_ROW,0,0,&gdn_snapshot,1u);
+	if ( status == SPARK_STATUS_OK )
+		pending->output_token_ids[submission->row_lane_indices[0]] = pending->frame_output_ids[0];
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkQwen38_27bServingSubmitSpeculativeDecode(
 	SparkQwen38_27bServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -1991,8 +2026,13 @@ static SparkStatus SparkQwen38_27bServingSubmit(
 			(const void *)state->block_table.host_lane_physical_block_counts,
 			state->max_active_sequence_count, state->blocks_per_lane,
 			state->stage_attn_layer_count);
-		state->dflash2_fold_armed = 0u;
-		status = SparkQwen38_27bServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
+		if ( SparkQwen38_27bServingFoldRestorePending(state,submission) != 0u )
+			status = SparkQwen38_27bServingRunFoldRestoreDecode(state,submission,pending);
+		else
+		{
+			state->dflash2_fold_armed = 0u;
+			status = SparkQwen38_27bServingRunFrame(state,submission,pending,0u,0u,0u,submission->row_count);
+		}
 	}
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 	{

@@ -38,7 +38,7 @@ usage: $0 ACTION [ARG]
   publish SHA             module GPU validation on ${STAGE_HOST} (TP1 pack, lane ${LANE}, arena reclaimed after) and driver compile
   install SHA             ${HOSTS[*]}: rank pack from ${PACK_HOST}, binaries/driver/TP4 adapter from src-SHA, drafter from the TP1 root
   configs                 write the TP4 deployment and per-rank adapter configs to every node and build/api.tp4.model_resident.json
-  launch nospec|dflash2   residentd rank R on HOSTS[R] in unit ${UNIT} (lane ${LANE}, mesh ${MESH_RANKS}); refuses unless ${GATE_FILE} says DEPLOYED
+  launch MODE [DEPLOY]   MODE nospec|dflash2, DEPLOY names config/model_resident.DEPLOY.json (default MODE); residentd rank R on HOSTS[R] in unit ${UNIT} (lane ${LANE}, mesh ${MESH_RANKS}); refuses unless ${GATE_FILE} says DEPLOYED
   status | stop | fresh MODE | reclaim
   refcheck MODE FILE      reference prompts through sparkpipe_model_batch on rank 0 (fresh ranks per prompt)
   repeat MODE CASE N OUT  N requests of one bench case on ONE single-lane engine (sequential, prefix cache warm after the first)
@@ -309,11 +309,11 @@ case "$ACTION" in
 	publish) publish "${2:-}" ;;
 	install) install "${2:-}" ;;
 	configs) configs ;;
-	launch) launch "${2:-}" ;;
+	launch) launch "${2:-}" "${3:-${2:-}}" ;;
 	status) status ;;
 	stop) stop ;;
 	reclaim) reclaim ;;
-	fresh) fresh "${2:-}" ;;
+	fresh) fresh "${2:-}" "${3:-${2:-}}" ;;
 	refcheck) refcheck "${2:-}" "${3:-}" ;;
 	repeat) repeat_case "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
 	perf) perf "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-128}" ;;
