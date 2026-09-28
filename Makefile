@@ -540,6 +540,7 @@ PYTHON_TESTS := \
 	tests/test_template_adoption.py \
 	tests/test_driver_defines.py \
 	tests/test_hy4_llm_defines.py \
+	tests/test_hy4_reference_compare.py \
 	tests/test_status_truth.py \
 	tests/test_site.py \
 	tests/test_weightd_manifest.py \
