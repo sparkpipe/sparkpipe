@@ -3138,8 +3138,8 @@
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_combine.h",
-      "sha256": "61d60b74e6ddb56655d19fc21aa902be06312ef1b2447a376916226108b4b71a",
-      "size_bytes": 957
+      "sha256": "9d8764470db8953b6dafcf623d2f1b8a83dd17b97174353b59f179340ad77232",
+      "size_bytes": 3512
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_describe.h",
@@ -5318,8 +5318,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
-      "sha256": "1dfa128f2c8a2d0dc82a56041967856fb305194fa09f414a824c26a017bef58d",
-      "size_bytes": 246770
+      "sha256": "2f6ff3434281f5b3568d14b270d4d86764775d3260c45cf1f0cca891b6fab386",
+      "size_bytes": 244688
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
@@ -15270,5 +15270,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73936035
+  "total_bytes": 73936508
 }
