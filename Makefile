@@ -1541,13 +1541,13 @@ build/test_weightd_expert: tests/test_weightd_expert.c $(RUNTIME_LIBRARY) $(CORE
 build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage_module_common.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
+build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
 # W3 weightd (docs/WEIGHTD_DESIGN.md): the fd tier - chunk shareable-fd
 # export over SCM_RIGHTS and the consumer's import/map, including a real
 # forked consumer process for the cross-process receipt. Stub-pinned like
 # its W2 siblings.
-build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
-
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 

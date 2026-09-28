@@ -71,6 +71,12 @@ flow or collective ordinals, so hardware-wait collectives cannot deadlock.
   - When exactly one rank lacks experts, every rollback is local on that rank
     and remote on the other 15.
   - State slots outside the wave are untouched.
+  - With a replay limit of 2 on a cold working set, steps that miss at more
+    than two layers exhaust their replays. All 16 ranks agree on
+    `SPARK_STEP_ACTION_EXHAUSTED`, restore the snapshot and run that step
+    eager (per-layer router readback and expert load, no cover, snapshot or
+    poison). On sparkf 2 of 32 steps ran eager, and the tokens and final
+    recurrent state are still bit-identical to the all-pinned graph.
 - `build/test_expert_working_set` (host, part of `make test`) checks:
   - `Add` atomicity, with W1 checked from inside the acquire hook;
   - anchors;

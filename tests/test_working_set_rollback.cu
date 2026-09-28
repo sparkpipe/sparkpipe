@@ -377,6 +377,7 @@ static void WorldCreate(World *world,uint32_t partial,uint32_t lone,cudaStream_t
 typedef struct RunStats
 {
 	uint64_t graph_launches;
+	uint64_t eager_steps;
 	uint64_t rollback_steps;
 	uint64_t local;
 	uint64_t remote;
@@ -409,7 +410,51 @@ static void RecoverRank(World *world,Rank *rank,SparkStepVerdict verdict,cudaStr
 	stats->grown += rank->set.grown - before;
 }
 
-static void RunChain(World *world,const uint32_t *prompt,uint32_t *tokens,cudaStream_t stream,RunStats *stats)
+static void EagerStep(World *world,cudaStream_t stream)
+{
+	uint32_t routes[ROWS * TOPK],keys[ROWS * TOPK],layer,rank,item;
+	Rank *entry;
+	for (rank=0u; rank<RANKS; rank++)
+		EmbedKernel<<<ROWS,HIDDEN,0,stream>>>(world->ranks[rank].hidden,EMBED,world->input_tokens);
+	for (layer=0u; layer<LAYERS; layer++)
+	{
+		for (rank=0u; rank<RANKS; rank++)
+			RecurrentKernel<<<ROWS,HIDDEN,0,stream>>>(world->ranks[rank].state,world->ranks[rank].decay,world->ranks[rank].hidden,world->ranks[rank].partial,world->state_index,layer);
+		AllReduceSumKernel<<<ROWS,HIDDEN,0,stream>>>(world->partials,world->hiddens);
+		for (rank=0u; rank<RANKS; rank++)
+		{
+			entry = &world->ranks[rank];
+			RouterKernel<<<1,32,0,stream>>>(entry->hidden,ROUTER,layer,entry->route_expert,entry->route_weight);
+			CUDA_CHECK(cudaMemcpyAsync(routes,entry->route_expert,sizeof(routes),cudaMemcpyDeviceToHost,stream));
+			CUDA_CHECK(cudaStreamSynchronize(stream));
+			for (item=0u; item<ROWS * TOPK; item++)
+			{
+				CHECK(routes[item] < EXPERTS);
+				keys[item] = layer * PACK_STRIDE + routes[item];
+			}
+			CHECK(AcquireExperts(entry,keys,ROWS * TOPK) == SPARK_STATUS_OK);
+			ExpertKernel<<<ROWS,HIDDEN,0,stream>>>(entry->hidden,entry->pool,entry->route_expert,entry->route_weight,layer,entry->partial);
+		}
+		AllReduceSumKernel<<<ROWS,HIDDEN,0,stream>>>(world->partials,world->hiddens);
+	}
+	for (rank=0u; rank<RANKS; rank++)
+	{
+		entry = &world->ranks[rank];
+		HeadKernel<<<1,32,0,stream>>>(entry->hidden,EMBED,rank,entry->head_scores,entry->head_tokens);
+		TestWsHeadMaxlocPackKernel<<<1,32,0,stream>>>(entry->head_scores,entry->head_tokens,entry->maxloc,ROWS,rank * VOCAB_SHARD);
+	}
+	AllReduceMaxKernel<<<1,32,0,stream>>>(world->maxlocs);
+	for (rank=0u; rank<RANKS; rank++)
+	{
+		entry = &world->ranks[rank];
+		LmHeadMaxlocUnpackPoisonKernel<<<1,32,0,stream>>>(entry->maxloc,entry->tokens_device,ROWS);
+		CUDA_CHECK(cudaMemcpyAsync(entry->tokens_host,entry->tokens_device,ROWS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream));
+	}
+	CUDA_CHECK(cudaGetLastError());
+	CUDA_CHECK(cudaStreamSynchronize(stream));
+}
+
+static void RunChain(World *world,const uint32_t *prompt,uint32_t *tokens,uint32_t limit,cudaStream_t stream,RunStats *stats)
 {
 	SparkStepReplay replay[RANKS];
 	SparkStepVerdict verdict[RANKS];
@@ -418,7 +463,7 @@ static void RunChain(World *world,const uint32_t *prompt,uint32_t *tokens,cudaSt
 	double start = Now();
 	memset(replay,0,sizeof(replay));
 	for (rank=0u; rank<RANKS; rank++)
-		replay[rank].limit = LAYERS + 1u;
+		replay[rank].limit = limit;
 	memcpy(input,prompt,sizeof(input));
 	for (step=0u; step<STEPS; step++)
 	{
@@ -435,7 +480,7 @@ static void RunChain(World *world,const uint32_t *prompt,uint32_t *tokens,cudaSt
 				verdict[rank] = SparkStepVerdictClassify(world->ranks[rank].tokens_host,ROWS,ring != 0 ? ring[SPARK_STEP_MISS_FLAG] : 0u);
 				action[rank] = SparkStepReplayNext(&replay[rank],verdict[rank]);
 				CHECK(action[rank] == action[0]);
-				CHECK(action[rank] == SPARK_STEP_ACTION_COMMIT || action[rank] == SPARK_STEP_ACTION_REPLAY);
+				CHECK(action[rank] == SPARK_STEP_ACTION_COMMIT || action[rank] == SPARK_STEP_ACTION_REPLAY || action[rank] == SPARK_STEP_ACTION_EXHAUSTED);
 				locals += verdict[rank] == SPARK_STEP_VERDICT_ROLLBACK_LOCAL ? 1u : 0u;
 				stats->local += verdict[rank] == SPARK_STEP_VERDICT_ROLLBACK_LOCAL ? 1u : 0u;
 				stats->remote += verdict[rank] == SPARK_STEP_VERDICT_ROLLBACK_REMOTE ? 1u : 0u;
@@ -447,6 +492,14 @@ static void RunChain(World *world,const uint32_t *prompt,uint32_t *tokens,cudaSt
 			stats->rollback_steps++;
 			for (rank=0u; rank<RANKS; rank++)
 				RecoverRank(world,&world->ranks[rank],verdict[rank],stream,stats);
+			if ( action[0] == SPARK_STEP_ACTION_EXHAUSTED )
+			{
+				for (rank=0u; rank<RANKS; rank++)
+					CHECK(replay[rank].attempts == 0u && replay[rank].exhausted == replay[0].exhausted);
+				EagerStep(world,stream);
+				stats->eager_steps++;
+				break;
+			}
 		}
 		for (rank=0u; rank<RANKS; rank++)
 			for (row=0u; row<ROWS; row++)
@@ -501,20 +554,21 @@ static void CheckUntouchedSlots(const World *world)
 
 int main(void)
 {
-	static uint32_t reference[STEPS * ROWS],repeat[STEPS * ROWS],cold[STEPS * ROWS],warm[STEPS * ROWS],single[STEPS * ROWS];
+	static uint32_t reference[STEPS * ROWS],repeat[STEPS * ROWS],cold[STEPS * ROWS],warm[STEPS * ROWS],single[STEPS * ROWS],eager[STEPS * ROWS];
 	uint32_t prompt[ROWS] = {17u,301u};
 	uint64_t index,embed_count = (uint64_t)VOCAB * HIDDEN,router_count = (uint64_t)LAYERS * EXPERTS * HIDDEN;
 	float *host = (float *)malloc((embed_count > router_count ? embed_count : router_count) * sizeof(float));
-	World *full = (World *)calloc(1u,sizeof(World)),*pristine = (World *)calloc(1u,sizeof(World)),*partial = (World *)calloc(1u,sizeof(World)),*lone = (World *)calloc(1u,sizeof(World));
-	RunStats full_stats,repeat_stats,cold_stats,warm_stats,lone_stats;
+	World *full = (World *)calloc(1u,sizeof(World)),*pristine = (World *)calloc(1u,sizeof(World)),*partial = (World *)calloc(1u,sizeof(World)),*lone = (World *)calloc(1u,sizeof(World)),*capped = (World *)calloc(1u,sizeof(World));
+	RunStats full_stats,repeat_stats,cold_stats,warm_stats,lone_stats,capped_stats;
 	cudaStream_t stream;
 	uint32_t rank;
-	CHECK(host != 0 && full != 0 && pristine != 0 && partial != 0 && lone != 0);
+	CHECK(host != 0 && full != 0 && pristine != 0 && partial != 0 && lone != 0 && capped != 0);
 	memset(&full_stats,0,sizeof(full_stats));
 	memset(&repeat_stats,0,sizeof(repeat_stats));
 	memset(&cold_stats,0,sizeof(cold_stats));
 	memset(&warm_stats,0,sizeof(warm_stats));
 	memset(&lone_stats,0,sizeof(lone_stats));
+	memset(&capped_stats,0,sizeof(capped_stats));
 	CUDA_CHECK(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
 	for (index=0u; index<embed_count; index++)
 		host[index] = Uniform(UINT64_C(0x20000000) + index);
@@ -528,15 +582,16 @@ int main(void)
 	WorldCreate(pristine,0u,0u,stream);
 	WorldCreate(partial,1u,0u,stream);
 	WorldCreate(lone,1u,1u,stream);
+	WorldCreate(capped,1u,0u,stream);
 	CompareState(full,partial,0u);
-	RunChain(full,prompt,reference,stream,&full_stats);
+	RunChain(full,prompt,reference,LAYERS + 1u,stream,&full_stats);
 	CompareState(full,pristine,1u);
 	CheckUntouchedSlots(full);
 	ResetState(full,pristine);
-	RunChain(full,prompt,repeat,stream,&repeat_stats);
+	RunChain(full,prompt,repeat,LAYERS + 1u,stream,&repeat_stats);
 	CHECK(memcmp(reference,repeat,sizeof(reference)) == 0);
 	printf("ok all-pinned graph is deterministic: %u steps x %u rows, nodes=%zu\n",STEPS,ROWS,full->nodes);
-	RunChain(partial,prompt,cold,stream,&cold_stats);
+	RunChain(partial,prompt,cold,LAYERS + 1u,stream,&cold_stats);
 	CHECK(memcmp(reference,cold,sizeof(reference)) == 0);
 	CompareState(full,partial,0u);
 	CheckUntouchedSlots(partial);
@@ -547,16 +602,25 @@ int main(void)
 		CHECK(partial->ranks[rank].set.key_count < LAYERS * EXPERTS);
 	ResetState(partial,pristine);
 	ResetState(full,pristine);
-	RunChain(full,prompt,repeat,stream,&repeat_stats);
-	RunChain(partial,prompt,warm,stream,&warm_stats);
+	RunChain(full,prompt,repeat,LAYERS + 1u,stream,&repeat_stats);
+	RunChain(partial,prompt,warm,LAYERS + 1u,stream,&warm_stats);
 	CHECK(memcmp(reference,warm,sizeof(reference)) == 0 && warm_stats.rollback_steps == 0u && warm_stats.graph_launches == STEPS);
 	CompareState(full,partial,0u);
 	printf("ok warm working set: zero rollbacks, bit-identical; keys held rank0=%u rank%u=%u of %u\n",partial->ranks[0].set.key_count,LONE_RANK,partial->ranks[LONE_RANK].set.key_count,LAYERS * EXPERTS);
-	RunChain(lone,prompt,single,stream,&lone_stats);
+	RunChain(lone,prompt,single,LAYERS + 1u,stream,&lone_stats);
 	CHECK(memcmp(reference,single,sizeof(reference)) == 0);
 	CompareState(full,lone,0u);
 	CHECK(lone_stats.rollback_steps != 0u && lone_stats.local == lone_stats.rollback_steps && lone_stats.lone_misses == lone_stats.rollback_steps && lone_stats.remote == (RANKS - 1u) * lone_stats.rollback_steps);
 	printf("ok single-rank miss: rank %u alone lacked experts; every rollback was local on rank %u and remote on the other %u ranks; rollbacks=%llu grown=%llu, bit-identical\n",LONE_RANK,LONE_RANK,RANKS - 1u,(unsigned long long)lone_stats.rollback_steps,(unsigned long long)lone_stats.grown);
+	ResetState(full,pristine);
+	RunChain(full,prompt,repeat,LAYERS + 1u,stream,&repeat_stats);
+	RunChain(capped,prompt,eager,2u,stream,&capped_stats);
+	CHECK(memcmp(reference,eager,sizeof(reference)) == 0);
+	CompareState(full,capped,0u);
+	CheckUntouchedSlots(capped);
+	CHECK(capped_stats.eager_steps != 0u && capped_stats.graph_launches == STEPS - capped_stats.eager_steps + capped_stats.rollback_steps);
+	printf("ok replay limit 2 on a cold working set: %llu steps exhausted their replays and ran eager; tokens and recurrent state bit-identical to all-pinned; launches=%llu rollbacks=%llu\n",
+		(unsigned long long)capped_stats.eager_steps,(unsigned long long)capped_stats.graph_launches,(unsigned long long)capped_stats.rollback_steps);
 	printf("TIMING toy chain %u steps: all-pinned %.3f ms/step, working-set warm %.3f ms/step (graph nodes %zu vs %zu)\n",STEPS,repeat_stats.seconds * 1e3 / STEPS,warm_stats.seconds * 1e3 / STEPS,full->nodes,partial->nodes);
 	printf("PASS working-set graph: a missing expert is detected on every rank, rolled back and replayed with output bit-identical to the all-pinned graph\n");
 	return(0);
