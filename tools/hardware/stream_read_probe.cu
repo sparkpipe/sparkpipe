@@ -133,7 +133,7 @@ int main(int argc, char **argv)
 	PROBE_CUDA(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
 	PROBE_CUDA(cudaMalloc(&base,arena));
 	PROBE_CUDA(cudaMemset(base,1,arena));
-	PROBE_CUDA(cudaMalloc((void **)&sink,4));
+	PROBE_CUDA(cudaMalloc((void **)&sink,sizeof(*sink)));
 	printf("PROBE-DEVICE name=%s sm=%d.%d multiprocessors=%d l2_bytes=%d\n",properties.name,properties.major,properties.minor,properties.multiProcessorCount,properties.l2CacheSize);
 	memset(&context,0,sizeof(context));
 	context.base = (const uint8_t *)base;
