@@ -170,24 +170,24 @@ def check_yarn_matches_numpy_reference(failures):
         failures.append("sliding rope must be theta 1e4 over the whole head")
 
 
-def check_numpy_reference_bias(failures):
-    import t1_reference_common as common
-    import t1_reference_laguna as numpy_reference
-    for key in ("experts", "gate", None):
-        with tempfile.TemporaryDirectory() as directory:
-            write_checkpoint(directory, bias_key=key, bias_expert=5)
-            engine = numpy_reference.LagunaEngine.__new__(numpy_reference.LagunaEngine)
-            engine.st = common.Safetensors(directory)
-            try:
-                bias = engine.correction_bias(1)
-            except numpy_reference.LagunaConfigError:
-                if key is not None:
-                    failures.append(f"numpy reference refused the bias under mlp.{key}")
-                continue
-            if key is None:
-                failures.append("numpy reference must refuse a layer without a correction bias")
-            elif int(np.argmax(bias)) != 5 or abs(float(bias[5]) - 4.0) > 0:
-                failures.append(f"numpy reference read the bias under mlp.{key} wrongly: {bias}")
+def publisher_sliding_mask(queries, keys, window):
+    return [[key <= query and query - key < window for key in keys] for query in queries]
+
+
+def check_sliding_window_mask(failures):
+    window = 4
+    keys = list(range(12))
+    expected_last = [False] * 8 + [True] * 4
+    for queries in ([11], list(range(12)), [3, 4, 5]):
+        got = ref.attention_allowed(torch.tensor(queries), torch.tensor(keys), window).tolist()
+        if got != publisher_sliding_mask(queries, keys, window):
+            failures.append(f"sliding mask for queries {queries} disagrees with the publisher: {got}")
+    last = ref.attention_allowed(torch.tensor([11]), torch.tensor(keys), window).tolist()[0]
+    if last != expected_last:
+        failures.append(f"query 11 with window 4 must see keys 8..11 only: {last}")
+    full = ref.attention_allowed(torch.tensor([5]), torch.tensor(keys), None).tolist()[0]
+    if full != [True] * 6 + [False] * 6:
+        failures.append(f"full attention must be causal only: {full}")
 
 
 def check_unsupported_config_fails(failures):
@@ -210,12 +210,12 @@ def main():
     check_missing_bias_fails(failures)
     check_yarn_matches_numpy_reference(failures)
     check_unsupported_config_fails(failures)
-    check_numpy_reference_bias(failures)
+    check_sliding_window_mask(failures)
     for failure in failures:
         print("FAIL " + failure)
     if failures:
         return 1
-    print("PASS laguna torch reference: incremental decode, correction bias, yarn, refusals")
+    print("PASS laguna torch reference: incremental decode, sliding mask, correction bias, yarn, refusals")
     return 0
 
 

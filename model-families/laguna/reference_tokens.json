@@ -7,6 +7,7 @@
  "index_sha256": "91f9cb0e426b0720b3f801ccaf0413879300f07a072b83de957b4177bcab8b6d",
  "prompts_sha256": "2f90704c8fd71a39d99815f7cffdd1bb90b6cdea2d7f4a3ecc9b75a74dbb60eb",
  "generated_utc": "2026-09-28T10:30:01Z",
+ "tie_margin": 0.1,
  "results": [
   {
    "name": "capital_of_france",
@@ -37,6 +38,7 @@
     395
    ],
    "generated_text": " Paris. (placeholders: what is the capital of France?, the answer is",
+   "strict_steps": 13,
    "steps": [
     {
      "position": 5,
@@ -262,6 +264,7 @@
     87
    ],
    "generated_text": "    \"\"\"Check if a number is prime.\"\"\"\n    if n < 2",
+   "strict_steps": 16,
    "steps": [
     {
      "position": 6,
@@ -490,6 +493,7 @@
     81
    ],
    "generated_text": " four, five, six, seven, eight, nine, ten, eleven,",
+   "strict_steps": 13,
    "steps": [
     {
      "position": 9,

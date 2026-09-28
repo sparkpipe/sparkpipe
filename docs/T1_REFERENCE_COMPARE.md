@@ -148,17 +148,50 @@ python3 tools/laguna_reference_torch.py --checkpoint /mnt/model-warm/laguna-s-2.
 
 On the rtx5090 (torch 2.11, 32 GB) the three prompts x 16 tokens take
 about 10 minutes. About 9-18 s per token is spent reading experts from the
-ceph mount. `model-families/laguna/reference_tokens.json` holds the result:
-each prompt's generated ids and text, and the f32 top-2 at every step. The
-engine comparison must treat capital_of_france step 13 as a near-tie. There
-the f32 margin is 0.006 and the bf16 argmax (340) differs from the f32
-argmax (22345), so later tokens of that prompt depend on the tie.
-`tests/test_laguna_reference_torch.py` checks the tool on a synthetic
-checkpoint and needs torch. It checks that incremental decode equals full
-recompute across the sliding window, that the correction bias is read
-under both names, and that a missing bias or attention sinks are refused. It
-also checks that the yarn table equals the numpy engine's and that the numpy
-engine reads the bias correctly.
+ceph mount. The raw `out/reference.json` keeps routes, bf16 logits, timings
+and the absolute checkpoint path. The committed
+`model-families/laguna/reference_tokens.json` is derived from it by
+`tools/laguna_reference_fixture.py`, which drops the per-run fields, rounds
+the f32 top-2 logits to 4 places, decodes the generated text and records the
+strict prefix of every prompt:
+
+```sh
+python3 tools/laguna_reference_fixture.py --raw out/reference.json \
+  --tokenizer /mnt/model-warm/laguna-s-2.1/tokenizer.json \
+  --checkpoint-label "poolside/Laguna-S-2.1 0f573140834b11cfac0c2af97a101a7a69a13e22 (bf16)" \
+  --tie-margin 0.1 --output model-families/laguna/reference_tokens.json
+```
+
+Engine comparison rule: `strict_steps` is the index of the first step whose
+f32 top-2 margin is below `tie_margin` (0.1). The engine must emit exactly
+the reference tokens before that step, must emit one of the two f32
+candidates at that step, and is not compared after it, because the
+continuation depends on the tie. capital_of_france and count_up both stop at
+step 13 (margins 0.006 and 0.058; at capital_of_france step 13 the bf16
+argmax 340 is not the f32 argmax 22345). python_is_prime has no near tie
+(smallest margin 0.73), so all 16 tokens are strict.
+
+Tests:
+- `tests/test_laguna_reference_fixture.py` (in `make test`, no torch) checks
+  the derivation, its refusals (foreign generator, token/step disagreement, a
+  token outside the f32 top-2, missing header fields) and that the committed
+  fixture matches `reference_prompts.json` by sha256 and ids, follows
+  `tie_margin`, and is byte-identical to the tool's encoding.
+- `tests/test_t1_reference_engines.py` (in `make test`) checks the numpy
+  engine's router bias on a single-file synthetic checkpoint: the bias is
+  read under `mlp.experts.` and `mlp.gate.` with identical fixtures, a +4
+  bias forces an expert into every route and a -4 bias excludes it, and a
+  checkpoint without the bias is refused with an error naming
+  `e_score_correction_bias`. The name lookup goes through
+  `Safetensors.has`, which reads the shard header, so it works with and
+  without `model.safetensors.index.json`.
+- `tests/test_laguna_reference_torch.py` needs torch and is run by hand on a
+  torch host. It checks that incremental decode equals full recompute
+  across the sliding window, pins the sliding mask against the publisher
+  rule (`key > query - window`: a query sees itself and the previous
+  window-1 keys), checks the correction bias under both names and the
+  refusal of a missing bias or attention sinks, and checks that the yarn
+  table equals the numpy engine's.
 
 Checkpoint staging note: the wave's fixture runs decoded from
 byte-identical node-local copies of the warm checkpoints

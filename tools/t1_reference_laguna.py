@@ -270,7 +270,7 @@ class LagunaEngine:
     def correction_bias(self, index):
         for name in (f"{PREFIX}{index}.mlp.experts.e_score_correction_bias",
                      f"{PREFIX}{index}.mlp.gate.e_score_correction_bias"):
-            if name in self.st.map:
+            if self.st.has(name):
                 return self.tensor(name).reshape(-1)
         raise LagunaConfigError(
             f"layer {index} has no router e_score_correction_bias")

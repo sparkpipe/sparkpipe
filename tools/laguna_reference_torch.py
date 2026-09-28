@@ -77,6 +77,13 @@ def apply_rope(x, cos, sin):
     return torch.cat([rotated, x[..., width:]], dim=-1)
 
 
+def attention_allowed(query_positions, key_positions, window):
+    allowed = key_positions[None, :] <= query_positions[:, None]
+    if window is not None:
+        allowed = allowed & (key_positions[None, :] > query_positions[:, None] - window)
+    return allowed
+
+
 def default_inv_freq(parameters, head_dim):
     dim = int(head_dim * parameters.get("partial_rotary_factor", 1.0))
     base = float(parameters["rope_theta"])
@@ -254,10 +261,8 @@ class Laguna:
             v = torch.cat([cache[layer][1], v], dim=1)
         cache[layer] = (k, v)
         total = k.shape[1]
-        key_positions = torch.arange(total, device=x.device)
-        allowed = key_positions[None, :] <= positions[:, None]
-        if self.types[layer] == "sliding_attention":
-            allowed = allowed & (key_positions[None, :] > positions[:, None] - self.window)
+        window = self.window if self.types[layer] == "sliding_attention" else None
+        allowed = attention_allowed(positions, torch.arange(total, device=x.device), window)
         mask = torch.zeros(allowed.shape, dtype=x.dtype, device=x.device).masked_fill(~allowed, torch.finfo(x.dtype).min)
         group = heads // self.kv_heads
         k = k.repeat_interleave(group, dim=0)
