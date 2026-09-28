@@ -65,7 +65,7 @@ int main(void)
 }
 ''')
             paths = ['.', 'include', 'src', 'runtime', 'tests/cuda_stub', 'model-families/common/include', 'model-families/gemma4/include', 'model-families/gemma4/include/sparkpipe', 'modules/gemma4_resident_decode_stage/include', 'modules/gemma4_resident_decode_stage/source']
-            command = ['cc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DARWIN_C_SOURCE', '-ffunction-sections', '-fdata-sections', *['-I'+str(ROOT/p) for p in paths], str(source), 'runtime/stage_module_common.c', 'tests/cuda_stub/cuda_runtime_stub.c', 'build/libsparkpipe_runtime.a', 'build/libsparkpipe_core.a', '-pthread', '-lm', '-Wl,-dead_strip' if os.uname().sysname == 'Darwin' else '-Wl,--gc-sections', '-o', str(Path(temp)/'test')]
+            command = ['cc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DEFAULT_SOURCE', '-D_DARWIN_C_SOURCE', '-ffunction-sections', '-fdata-sections', *['-I'+str(ROOT/p) for p in paths], str(source), 'runtime/stage_module_common.c', 'tests/cuda_stub/cuda_runtime_stub.c', 'build/libsparkpipe_runtime.a', 'build/libsparkpipe_core.a', '-pthread', '-lm', '-Wl,-dead_strip' if os.uname().sysname == 'Darwin' else '-Wl,--gc-sections', '-o', str(Path(temp)/'test')]
             for flavor, flags in [('dense', []), ('moe', ['-DSPARK_GEMMA4_MOE_BUILD=1', '-DSPARK_GEMMA4_MODEL_MOE_BLOCK=1'])]:
                 with self.subTest(flavor=flavor):
                     built = subprocess.run(command + flags, cwd=ROOT, text=True, capture_output=True)

@@ -38,8 +38,6 @@ def main() -> int:
     assert flash["precision"]["non_expert_activation_format"] == "bf16"
     assert flash["precision"]["routed_expert_activation_format"] == "fp8_e4m3"
     assert pro["precision"]["non_expert_activation_format"] == "bf16"
-    assert pro["precision"]["_first_light_note"].startswith(
-        "non-expert activations run BF16")
     assert flash["source_index_sha256"] == (
         "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b")
     source_files = flash["source_files"]

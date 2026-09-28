@@ -1,6 +1,27 @@
 {
  "schema_version": 1,
- "model_id": "XiaomiMiMo/mimo-v2.6-pro-rl",
+ "model_id": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
+ "source_revision": "54b10491b1811c76aa9681a9d0ff872396a4064c",
+ "license": "mit",
+ "source": {
+  "path_on_sparks": "/mnt/model-warm/mimo-v2.6-pro-rl",
+  "config_sha256": "a9dc00e2a0c2c172efd198f42e81e41c95472021b57c65366c06587d44038b62",
+  "index_sha256": "e855ee9dd7ae748a6258b0725ca217d382a93561d17fc3dbf84d83a152deb54b",
+  "upstream_head": {
+   "revision": "73875d00b30a89ef8cc353a0b60b0e9f9561952d",
+   "checked": "2026-09-28",
+   "weight_identical": true,
+   "changed_files": [
+    "README.md",
+    "MiMo_V2_6_technical_report.pdf"
+   ]
+  },
+  "same_geometry_variant": {
+   "model_id": "XiaomiMiMo/MiMo-V2.6-Pro-MOPD",
+   "revision": "adea8e2c5373181e5a973fa1ecb343cb31af214b",
+   "status": "not downloaded"
+  }
+ },
  "architecture": "MiMoV2ForCausalLM (hybrid full/sliding-window GQA, MoE; text stack of the multimodal RL checkpoint)",
  "sources": {
   "host_geometry": "model-families/mimo26/include/sparkpipe/spark_mimo26_pro_model.h, derived 2026-09-22 from the released config.json, modeling_mimo_v2.py and the safetensors shard headers (ranged header reads - exact dtypes and shapes, not inference)",

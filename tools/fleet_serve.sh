@@ -6,13 +6,13 @@
 # One instance per root, ever: full stops first, start refuses if running.
 #
 # usage: tools/fleet_serve.sh RUNTIME_ROOT_NAME [stop|start|api|full] [--force-kill]
-#        (default full; api host spark0 port 8433 unless G5_API_HOST/PORT)
+#        (default full; G5_API_HOST is required, the API never runs on a Spark by default)
 set -uo pipefail
 NAME="${1:?runtime root name (under ~/sparkdata/)}"
 CMD="${2:-full}"
 FORCE_KILL=0
 [ "${3:-}" = "--force-kill" ] && FORCE_KILL=1
-API_HOST="${G5_API_HOST:-spark0}"
+API_HOST="${G5_API_HOST:?G5_API_HOST is required: the API host is not a Spark by default}"
 API_PORT="${G5_API_PORT:-8433}"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)

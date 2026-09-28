@@ -63,24 +63,10 @@ MODEL_LITERAL_ALLOWLIST = {
     "12288": {"model-families/glm52/include/sparkpipe/spark_glm52_model.h"},
 }
 TYPED_FIELD_CALLS = {"ALLOC_FIELD", "ALLOC_FIELD_MAPPED", "ZERO_FIELD"}
-NON_GLM_MODEL_PREFIXES = (
-    "model-families/dsv4/",
-    "model-families/k3/",
-    "model-families/mimo25/",
-    "model-families/qwen38_27b/",
-    "modules/dsv4_",
-    "modules/k3_",
-    "modules/mimo25_",
-    "modules/qwen38_27b_",
-    "inference/llms/deepseek_v4/",
-    "inference/llms/deepseek_v4_pro/",
-    "inference/llms/kimi_k3/",
-    "inference/llms/mimo_2_5/",
-    "inference/llms/qwen_3_6/",
-    "tools/generate_k3_contract.py",
-    "tools/generate_dsv4_contracts.py",
-    "tools/qwen38_27b_stagepack.py",
-)
+GLM_LINEAGE_FAMILIES = {"common", "glm52", "glm5_next"}
+NON_GLM_FAMILIES = tuple(sorted(
+    path.name for path in (ROOT / "model-families").iterdir()
+    if path.is_dir() and path.name not in GLM_LINEAGE_FAMILIES))
 SIZE_ARGUMENTS_BY_CALL = {
     "cudaHostAlloc": (1,),
     "cudaMalloc": (1,),
@@ -110,8 +96,27 @@ RAW_DIRECT_BYTE_COUNT = re.compile(
     r"(?:\([^)]+\))?\s*(?:[2-9]|[1-9][0-9]+)(?:u|ul|ull)?")
 
 
+def names_family(stem, family):
+    tokens, family_tokens = stem.split("_"), family.split("_")
+    return any(tokens[index:index + len(family_tokens)] == family_tokens
+               for index in range(len(tokens)))
+
+
 def glm_model_literal_scope(relative_path):
-    return not relative_path.startswith(NON_GLM_MODEL_PREFIXES)
+    parts = pathlib.PurePosixPath(relative_path).parts
+    if len(parts) > 2 and parts[:2] == ("inference", "llms"):
+        return parts[2].startswith("glm")
+    for family in NON_GLM_FAMILIES:
+        if len(parts) > 1 and parts[0] in {"model-families", "qualification"} and \
+                parts[1] == family:
+            return False
+        if len(parts) > 1 and parts[0] == "modules" and \
+                parts[1].startswith(family + "_"):
+            return False
+        if parts[0] == "tools" and \
+                names_family(pathlib.PurePosixPath(relative_path).stem, family):
+            return False
+    return True
 
 
 def source_paths():
@@ -251,8 +256,6 @@ def main():
                     f"{match.group(1)} is not derived from its wire type")
         for literal, allowed_paths in MODEL_LITERAL_ALLOWLIST.items():
             if not glm_model_literal_scope(relative) or relative in allowed_paths:
-                continue
-            if path.suffix == ".py" and relative.startswith("tests/"):
                 continue
             if path.suffix == ".py":
                 pattern = re.compile(rf"(?<![A-Za-z0-9_]){literal}(?![A-Za-z0-9_])")

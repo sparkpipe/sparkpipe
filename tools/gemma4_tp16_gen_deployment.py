@@ -26,14 +26,18 @@ each node's own home.
 
 Usage:
   python3 tools/gemma4_tp16_gen_deployment.py --output deployment/gemma4_31b_tp16_lane6 \
-      --weightd-socket /run/sparkpipe-weightd-shared/weightd.sock
+      --weightd-socket /tmp/spark_weightd.sock
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_weightd import FLEET_WEIGHTD_SOCKET, fleet_weightd_socket_error  # noqa: E402
 
 MODEL_REVISION = "842da3794eaa0b77d5f08bae87a17459d91ff475"
 NODE_TARGET = "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
@@ -45,7 +49,6 @@ EOS_TOKEN_IDS = [1, 106, 50]
 RUNTIME_ROOT_TEMPLATE = "${SPARK_QUEUE_RUNTIME_ROOT}"
 DEFAULT_MAX_SEQUENCE_POSITIONS = 32768
 DEFAULT_RESIDENT_SEQUENCES = 16
-DEFAULT_WEIGHTD_SOCKET = "/run/sparkpipe-weightd-shared/weightd.sock"
 KV_PAGE_TOKENS = 64
 MAX_INPUT_ROWS = 96
 
@@ -134,7 +137,7 @@ def main() -> int:
                         help="fixed runtime root (default: the literal "
                              "${SPARK_QUEUE_RUNTIME_ROOT} template resolved by "
                              "the shared-socket wrapper)")
-    parser.add_argument("--weightd-socket", default=DEFAULT_WEIGHTD_SOCKET)
+    parser.add_argument("--weightd-socket", default=FLEET_WEIGHTD_SOCKET)
     parser.add_argument("--hosts", default=DEFAULT_HOSTS)
     parser.add_argument("--lane", type=int, default=DEFAULT_LANE)
     parser.add_argument("--max-sequence-positions", type=int,
@@ -148,6 +151,9 @@ def main() -> int:
         parser.error(f"--hosts names {tp_degree} nodes; the dense serving arms are TP4 and TP16 over distinct nodes")
     if not 0 <= arguments.lane < 16:
         parser.error("--lane outside 0..15")
+    socket_error = fleet_weightd_socket_error(arguments.weightd_socket)
+    if socket_error:
+        raise SystemExit(socket_error)
     runtime_root = arguments.runtime_root or RUNTIME_ROOT_TEMPLATE
     root = Path(arguments.output)
     (root / "config").mkdir(parents=True, exist_ok=True)

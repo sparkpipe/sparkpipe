@@ -14,6 +14,7 @@ host, not only where sm_121a hardware exists.
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,7 +22,8 @@ VALIDATOR = (ROOT / "modules" / "glm52_resident_decode_stage" / "validation" /
              "spark_glm52_resident_decode_stage_cuda_validation.cu")
 STUBS = ROOT / "tests" / "glm52_validator_oracle_selftest_stubs.cpp"
 CUDA_STUB = ROOT / "tests" / "cuda_stub" / "cuda_runtime_stub.c"
-BINARY = Path("/tmp") / "glm52_validator_oracle_selftest"
+WORK_DIRECTORY = tempfile.TemporaryDirectory()
+BINARY = Path(WORK_DIRECTORY.name) / "glm52_validator_oracle_selftest"
 
 
 def compiler() -> str:

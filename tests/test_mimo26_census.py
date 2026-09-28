@@ -49,6 +49,10 @@ def check_arm(tag, header_name, macro_prefix):
     assert int(macros[macro_prefix + "EXPERTS_PER_TOKEN"]) == cfg["num_experts_per_tok"]
     assert macros[macro_prefix + "RMS_NORM_EPSILON"] == cfg["layernorm_epsilon"]
     assert macros[macro_prefix + "ATTN_VALUE_SCALE"] == cfg["attention_value_scale"]
+    assert int(macros[macro_prefix + "FULL_SINK_BIAS"]) == int(cfg["add_full_attention_sink_bias"])
+    assert int(macros[macro_prefix + "SWA_SINK_BIAS"]) == int(cfg["add_swa_attention_sink_bias"])
+    assert int(macros[macro_prefix + "ATTN_ROPE_DIMENSION"]) == int(cfg["head_dim"] * cfg["partial_rotary_factor"])
+    assert (cfg["scoring_func"], cfg["topk_method"], cfg["norm_topk_prob"]) == ("sigmoid", "noaux_tc", True)
 
     patterns = c["patterns"]
     assert c["index_cross_check"]["match"], f"{tag} index cross-check"
@@ -137,11 +141,29 @@ def check_topology_registration():
     assert pro["required_features"] and flash["required_features"]
 
 
+def check_contract_identity():
+    flash = json.loads((ROOT / "model_contracts" / "mimo26_flash_authoritative.json").read_text(encoding="utf-8"))
+    measured = census("flash")
+    macros, _, _ = header_macros(FAMILY / "include" / "sparkpipe" / "spark_mimo26_model.h", "SPARK_MIMO26_MODEL_")
+    assert re.fullmatch(r"[0-9a-f]{40}", flash["source_revision"])
+    assert flash["source"]["receipt"]["revision"] == flash["source_revision"]
+    assert flash["source"]["receipt"]["repo"] == flash["model_id"]
+    assert flash["source"]["receipt"]["bytes"] == measured["provenance"]["receipt_bytes"]
+    assert flash["source"]["config_sha256"] == measured["config_sha256"]
+    assert flash["source"]["path_on_sparks"] == measured["path"]
+    assert int(macros["SPARK_MIMO26_MODEL_ROUTER_GROUP_COUNT"]) == flash["moe"]["group_count"]
+    assert int(macros["SPARK_MIMO26_MODEL_ROUTER_TOP_GROUP_COUNT"]) == flash["moe"]["top_group_count"]
+    assert flash["speculation"]["mtp"]["layer_count"] == measured["config"]["num_nextn_predict_layers"]
+    assert flash["speculation"]["mtp"]["tensor_count"] == measured["group_totals"]["mtp"]["tensors"]
+    assert flash["tokens"]["config_eos_token_id"] in flash["tokens"]["eos_token_ids"]
+
+
 def main() -> int:
     check_arm("pro", "spark_mimo26_pro_model.h", "SPARK_MIMO26_PRO_MODEL_")
     check_arm("flash", "spark_mimo26_model.h", "SPARK_MIMO26_MODEL_")
     check_qkv_geometry()
     check_topology_registration()
+    check_contract_identity()
     print("PASS mimo26 census/facts binding")
     return 0
 

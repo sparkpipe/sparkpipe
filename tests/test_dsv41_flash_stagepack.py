@@ -13,6 +13,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
@@ -75,7 +76,7 @@ def build_checkpoint(warm: Path):
         count = 1
         for dim in shape:
             count *= dim
-        shard = 1 + (hash(name) % conv.SHARD_COUNT)
+        shard = 1 + (zlib.crc32(name.encode()) % conv.SHARD_COUNT)
         shards[shard][name] = (dtype, shape, tensor_bytes(name, count * dtype_bytes[dtype]))
     weight_map = {}
     for shard in sorted(shards):

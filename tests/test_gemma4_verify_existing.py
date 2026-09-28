@@ -80,15 +80,27 @@ def run_verify(pack: Path, *extra: str):
     return done.returncode, done.stdout + done.stderr
 
 
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def verify_receipt(pack: Path) -> dict:
+    receipt = Path(str(pack) + ".verify-receipt.json")
+    require(receipt.is_file(), f"no verify receipt beside {pack}")
+    return json.loads(receipt.read_text())
+
+
 def test_own_rank_verify_passes_end_to_end():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "stage2.gemma4sp"
         build_stage_pack(pack, Path(str(pack).rsplit(".", 1)[0] + ".experts"), 0)
         code, output = run_verify(pack, "--verify-ranks", "0")
-        assert code == 0, output
-        assert "proof=True" in output and "manifest_ok=True" in output
-        verify_receipt = Path(str(pack) + ".verify-receipt.json")
-        assert verify_receipt.is_file()
+        require(code == 0, output)
+        require("proof=True" in output and "manifest_ok=True" in output, output)
+        receipt = verify_receipt(pack)
+        require(receipt["experts_manifest_ok"] is True, receipt)
+        require(receipt["placement_proof"]["passed"] is True, receipt)
 
 
 def test_wrong_rank_fails_on_expert_span():
@@ -96,7 +108,12 @@ def test_wrong_rank_fails_on_expert_span():
         pack = Path(tmp) / "stage2.gemma4sp"
         build_stage_pack(pack, Path(str(pack).rsplit(".", 1)[0] + ".experts"), 0)
         code, output = run_verify(pack, "--verify-ranks", "1")
-        assert code == 1, output
+        require(code == 1, output)
+        require("proof=True manifest_ok=False" in output,
+                f"the placement proof holds and only the manifest fails: {output}")
+        problems = verify_receipt(pack)["experts_manifest_problems"]
+        require(any("outside the rank 1 span" in problem for problem in problems),
+                f"expected an expert-span problem for rank 1: {problems}")
 
 
 def test_rank_zero_plan_regression_is_gone():
@@ -104,11 +121,10 @@ def test_rank_zero_plan_regression_is_gone():
         pack = Path(tmp) / "stage2.gemma4sp"
         build_stage_pack(pack, Path(str(pack).rsplit(".", 1)[0] + ".experts"), 3)
         code, output = run_verify(pack, "--verify-ranks", "3")
-        assert code == 0, output
-        receipt = json.loads(
-            Path(str(pack) + ".verify-receipt.json").read_text())
-        assert receipt["verify_ranks"] == [3]
-        assert receipt["experts_manifest_problems"] == []
+        require(code == 0, output)
+        receipt = verify_receipt(pack)
+        require(receipt["verify_ranks"] == [3], receipt["verify_ranks"])
+        require(receipt["experts_manifest_problems"] == [], receipt["experts_manifest_problems"])
 
 
 def test_directory_corruption_fails():
@@ -121,7 +137,11 @@ def test_directory_corruption_fails():
             handle.seek(G.HEADER_BYTES + 3 * G.ENTRY_BYTES + 24)
             handle.write(struct.pack("<I", fields[0] + 8))
         code, output = run_verify(pack, "--verify-ranks", "0")
-        assert code == 1, output
+        require(code == 1, output)
+        require("proof=False manifest_ok=True" in output,
+                f"the corrupted directory fails the placement proof: {output}")
+        proof = verify_receipt(pack)["placement_proof"]
+        require(proof["passed"] is False and proof["ranks"]["0"]["mismatched_entries"] > 0, proof)
 
 
 if __name__ == "__main__":

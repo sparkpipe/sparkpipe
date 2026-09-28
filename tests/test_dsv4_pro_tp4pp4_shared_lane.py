@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,13 +26,23 @@ GENERATOR = ROOT / "tools" / "dsv4_pro_tp4pp4_gen_deployment.py"
 WRAPPER = ROOT / "tools" / "devcycle" / "run-dsv4-pro-family-job.sh"
 DEPLOYMENT = ROOT / "deployment" / "dsv4_pro_tp4pp4" / "model_resident.json"
 STAGE = ROOT / "deployment" / "dsv4_pro_tp4pp4" / "config" / "dsv4_pro_tp4_pp4_stage.json"
+CONTRACT = ROOT / "model_contracts" / "dsv4_pro.json"
+FLEET_AGENT = ROOT / "tools" / "fleet_node_agent.sh"
 
 LANE = 5
 CONTROL = range(23080, 23096)
 COLLECTIVE = range(53080, 53096)
 TRANSPORT = range(64080, 64096)
 RANKS = 16
-ATTEMPT = "a" * 32
+ATTEMPT = uuid.uuid4().hex
+
+
+def fleet_weightd_socket() -> str:
+    sockets = re.findall(r'/sparkpipe_weightd" --socket (\S+)',
+                         FLEET_AGENT.read_text(encoding="utf-8"))
+    if len(sockets) != 1:
+        raise AssertionError(f"fleet agent weightd launch sockets: {sockets}")
+    return sockets[0]
 
 
 class DeploymentContract(unittest.TestCase):
@@ -59,7 +71,7 @@ class DeploymentContract(unittest.TestCase):
                           node["runtime_root"])
         self.assertIn(document["transport"]["control_port_base"], TRANSPORT)
         self.assertEqual(document["weightd"]["socket_path"],
-                         "/run/sparkpipe-weightd-shared/weightd.sock")
+                         fleet_weightd_socket())
 
     def test_runtime_limits_match_validated_deployment(self):
         document = json.loads(DEPLOYMENT.read_text())
@@ -71,7 +83,9 @@ class DeploymentContract(unittest.TestCase):
             "kv_logical_page_capacity": 1048576,
             "kv_physical_page_capacity": 16384,
         })
-        self.assertEqual(document["eos_token_ids"], [])
+        contract = json.loads(CONTRACT.read_text())
+        self.assertEqual(document["eos_token_ids"],
+                         [contract["model"]["eos_token_id"]])
 
     def test_stage_config_collective_block(self):
         config = json.loads(STAGE.read_text())
