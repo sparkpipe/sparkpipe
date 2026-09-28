@@ -30,7 +30,9 @@ The `hdra`, `pdl` and `rms` columns in ab/ab_hc.txt are the `hdr` binary (the be
 Dropped after measurement: programmatic dependent launch plus L2 prefetch for every skinny GEMV (c7 vs c6: +0.04 ms, ab_commits; c11 vs c10: no change, ab_c12) and 8 delta-rule columns instead of 16 (c12 vs c11: no change).
 
 ## Multi-projection skinny launch (ab/ab_multi.txt, 7 rounds, branch perf/glm-kw5-multi)
-KDA qkv_beta and decay_gate_down in one launch: B1 13.017 -> 12.922 ms (stdev 0.064 / 0.040), B8 32.067 -> 31.958. Base in that window 15.842 / 32.250.
+- KDA qkv_beta and decay_gate_down in one launch (c15): B1 13.017 -> 12.922 ms (stdev 0.064 / 0.040), B8 32.067 -> 31.958. Base in that window 15.842 / 32.250.
+- Plus DSA q_a, index_k, index_gate and index_head in one launch (c16, ab/ab_multi2.txt): B1 12.919 -> 12.828, B8 32.057 -> 31.798. Base 15.692 / 32.291.
+- ab/ab_multi3.txt: base 15.719 -> c16 12.874 ms at B1 (-18.1%), 32.442 -> 31.915 at B8. The c17 column (KDA decay_up and gate_up in one launch, per-part activations) measured 12.863, which is no gain, so it was dropped.
 
 ## Bandwidth and per kernel
 - stream_read_probe_sparke.txt: streaming read peaks at 243 GB/s (4-64 MB per launch), 237 GB/s at 1 GB; copy 222 GB/s read+write; an empty graph node costs 0.41 us; a 256 KB read costs 2.0 us, 1 MB 5.1 us.
