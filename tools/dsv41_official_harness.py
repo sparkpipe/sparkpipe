@@ -326,11 +326,26 @@ def main():
     captured = {}
     if arguments.capture_dir:
         os.makedirs(arguments.capture_dir, exist_ok=True)
+        calls = {"count": 0}
+
+        def save(key, tensor):
+            captured[f"call{calls['count']:03d}_{key}"] = tensor.detach().to(torch.bfloat16).view(torch.int16).cpu().numpy().view(np.uint16)
+
+        def save_float(key, tensor):
+            captured[f"call{calls['count']:03d}_{key}"] = tensor.detach().float().cpu().numpy()
+
+        def count_call(module, inputs, output):
+            calls["count"] += 1
+
         for layer_index, layer in enumerate(transformer.layers):
-            def hook(module, inputs, output, layer_index=layer_index):
-                captured[f"call{len(captured) // len(transformer.layers):03d}_layer{layer_index:02d}_streams"] = \
-                    output[0].detach().to(torch.bfloat16).view(torch.int16).cpu().numpy().view(np.uint16)
-            layer.register_forward_hook(hook)
+            layer.register_forward_hook(lambda module, inputs, output, i=layer_index: save(f"layer{i:02d}_streams", output[0]))
+            layer.register_forward_hook(lambda module, inputs, output, i=layer_index: save_float(f"layer{i:02d}_pre_mix_out", output[1]))
+            layer.register_forward_pre_hook(lambda module, inputs, i=layer_index: save(f"layer{i:02d}_input", inputs[0]))
+            layer.attn.register_forward_hook(lambda module, inputs, output, i=layer_index: save(f"layer{i:02d}_attn_out", output))
+            layer.attn.register_forward_pre_hook(lambda module, inputs, i=layer_index: save(f"layer{i:02d}_attn_in", inputs[0]))
+            layer.ffn.register_forward_hook(lambda module, inputs, output, i=layer_index: save(f"layer{i:02d}_ffn_out", output))
+            layer.ffn.register_forward_pre_hook(lambda module, inputs, i=layer_index: save(f"layer{i:02d}_ffn_in", inputs[0]))
+        transformer.head.register_forward_hook(count_call)
     with torch.inference_mode():
         for prompt in prompts:
             ids = list(prompt["prompt_token_ids"])
