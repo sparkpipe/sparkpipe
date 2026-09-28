@@ -22,6 +22,7 @@ QWEN4_FLASH_MODEL_REVISION := f5d08274bafd880402bd16f5e3e6c514136ec06c
 # "/model_contracts/..." and pinned an EMPTY contract hash into the adapter
 # provenance.
 QWEN4_FLASH_CONTRACT_SHA256 := $(shell sha256sum $(CURDIR)/../../model_contracts/qwen4_flash_authoritative.json | awk '{print $$1}')
+QWEN4_FLASH_MODEL_DESCRIPTION_SHA256 := $(shell sha256sum $(CURDIR)/../../examples/model_descriptions/qwen4_flash_resident_decode_stage_firmware.json | awk '{print $$1}')
 MTP_LAYER_COUNT ?= 0
 MODULE_COMPILE_FLAGS := \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
@@ -84,3 +85,21 @@ RUNTIME_CONFIGURATION := \
 GPU_VALIDATOR := validation/validate_qwen4_flash_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
+
+ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/$(EXPERT_CODEC)/libqwen4_flash_serving_adapter_$(EXPERT_CODEC).so
+
+.PHONY: adapter
+adapter:
+	@test "$(EXPERT_CODEC)" = fp8 || { echo "adapter: EXPERT_CODEC=fp8 is required, got '$(EXPERT_CODEC)'" >&2; exit 2; }
+	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
+	@mkdir -p "$(dir $(ADAPTER_LIBRARY))"
+	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -shared \
+		-I$(REPOSITORY_ROOT)/src -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) \
+		$(MODULE_COMPILE_FLAGS) \
+		-DQWEN4_FLASH_MODEL_DESCRIPTION_SHA256=\"$(QWEN4_FLASH_MODEL_DESCRIPTION_SHA256)\" \
+		source/spark_qwen4_flash_serving_adapter.c \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
+		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
+		-L"$(CUDA_HOME)/lib64" -lcudart -ldl -pthread \
+		-o "$(ADAPTER_LIBRARY)"

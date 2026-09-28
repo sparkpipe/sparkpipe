@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sparkpipe/family/module/spark_module_combine.h"
+
 static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(
 	SPARK_FAMILY(ModuleState) *state,
 	const SPARK_FAMILY(ResidentDecodeStageNodeContext) *context)
@@ -19,7 +21,7 @@ static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(
 	configuration.local_hidden_dimension = SPARK_FAMILY_CONST(MODEL_HIDDEN_DIMENSION);
 	configuration.max_active_sequence_count = SPARK_FAMILY_CONST(MODULE_TP_ROW_CAPACITY)(state);
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	SparkTpMeshRegisterCommonCombines(&configuration);
+	SPARK_FAMILY(ModuleRegisterCombines)(&configuration);
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);

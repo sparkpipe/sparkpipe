@@ -106,6 +106,25 @@ typedef struct LmKvFrameTable
 	const uint32_t *lane_physical_block_counts;
 } LmKvFrameTable;
 
+typedef struct LmKvFrameLanes
+{
+	uint32_t count;
+	uint32_t lane[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t required[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t sequence[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t index_of[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
+} LmKvFrameLanes;
+
+typedef struct LmKvFrameRestore
+{
+	uint32_t count;
+	uint32_t committed;
+	LmKvFramePendingLane pending[SPARK_LLM_KV_STAGING_RECORDS];
+	uint32_t logical[SPARK_LLM_KV_STAGING_RECORDS];
+	uint32_t slot[SPARK_LLM_KV_STAGING_RECORDS];
+	uint32_t lane[SPARK_LLM_KV_STAGING_RECORDS];
+} LmKvFrameRestore;
+
 static inline SparkStatus LmKvFrameWaitBatch(LmKvFrameState *state, LmKvFrameBatchState *batch)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -136,7 +155,7 @@ static inline SparkStatus LmKvFrameEvictSlot(LmKvFrameState *state, uint32_t slo
 	LmKvFrameBatchState *batch = &state->work.evict;
 	SparkKvStoreBlock blocks[1];
 	uint32_t block_count = 0u,logical;
-	uint64_t sequence_id;
+	uint64_t sequence_id,evict_index;
 	cudaError_t error;
 	SparkStatus status;
 	if ( state->slot_dirty[slot] != 0u )
@@ -154,12 +173,10 @@ static inline SparkStatus LmKvFrameEvictSlot(LmKvFrameState *state, uint32_t slo
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
-	if ( state->logical_to_slot != 0 && state->slot_lane[slot] != UINT32_MAX &&
-		state->slot_logical[slot] != UINT32_MAX && state->logical_stride != 0u )
+	if ( state->logical_to_slot != 0 && state->slot_lane[slot] != UINT32_MAX && state->slot_logical[slot] != UINT32_MAX && state->logical_stride != 0u )
 	{
-		uint64_t evict_index = (uint64_t)state->slot_lane[slot] * state->logical_stride + state->slot_logical[slot];
-		if ( evict_index < state->logical_to_slot_capacity &&
-			state->logical_to_slot[evict_index] == slot + 1u )
+		evict_index = (uint64_t)state->slot_lane[slot] * state->logical_stride + state->slot_logical[slot];
+		if ( evict_index < state->logical_to_slot_capacity && state->logical_to_slot[evict_index] == slot + 1u )
 			state->logical_to_slot[evict_index] = 0u;
 	}
 	state->slot_dirty[slot] = 0u;
@@ -170,24 +187,10 @@ static inline SparkStatus LmKvFrameEvictSlot(LmKvFrameState *state, uint32_t slo
 	state->slot_free_stack[state->slot_free_count++] = slot;
 	return(SPARK_STATUS_OK);
 }
-static inline SparkStatus LmKvFramePrepareFrame(LmKvFrameState *state, const LmKvFrameSlot *slot, const uint64_t *row_sequence_ids, LmKvFrameTable *table, uint32_t rows)
+static inline SparkStatus LmKvFrameCheckTable(LmKvFrameState *state, const uint64_t *row_sequence_ids, const LmKvFrameTable *table)
 {
-	LmKvFrameBatchState *restore_batch = &state->work.restore;
-	SparkKvStoreBlock blocks[SPARK_LLM_KV_STAGING_RECORDS];
-	uint32_t packet_lane_counts[1],block_count,lanes_built;
-	uint32_t lane_required[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint64_t lane_sequence[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_list[SPARK_LLM_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_count = 0u,row,lane_index,logical,slot_index;
 	uint64_t logical_capacity;
-	SparkStatus status;
-	cudaError_t error;
-	uint32_t uncommitted[SPARK_LLM_KV_STAGING_RECORDS];
-	uint32_t uncommitted_count = 0u;
-	uint32_t unwind_index;
-	SparkStatus fail_status;
-	if ( state->tier_active == 0u )
-		return(SPARK_STATUS_OK);
+	uint32_t *grown;
 	if ( row_sequence_ids == 0 || table == 0 || table->host_physical_block_indices == 0 || table->host_lane_physical_block_counts == 0 || table->physical_block_indices == 0 || table->lane_physical_block_counts == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	logical_capacity = (uint64_t)table->lane_count * table->lane_stride;
@@ -195,229 +198,223 @@ static inline SparkStatus LmKvFramePrepareFrame(LmKvFrameState *state, const LmK
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( logical_capacity > state->logical_to_slot_capacity )
 	{
-		uint32_t *grown = (uint32_t *)realloc(state->logical_to_slot,(size_t)logical_capacity * sizeof(uint32_t));
+		grown = (uint32_t *)realloc(state->logical_to_slot,(size_t)logical_capacity * sizeof(uint32_t));
 		if ( grown == 0 )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		memset(grown + state->logical_to_slot_capacity,0,(size_t)(logical_capacity - state->logical_to_slot_capacity) * sizeof(uint32_t));
 		state->logical_to_slot = grown;
 		state->logical_to_slot_capacity = logical_capacity;
-		state->logical_stride = table->lane_stride;
 	}
 	state->logical_stride = table->lane_stride;
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameCollectLanes(LmKvFrameLanes *lanes, const LmKvFrameSlot *slot, const uint64_t *row_sequence_ids, const LmKvFrameTable *table, uint32_t rows)
+{
+	uint32_t row,lane,required,index;
+	memset(lanes->index_of,0xff,(size_t)table->lane_count * sizeof(uint32_t));
+	lanes->count = 0u;
 	for (row = 0u; row < rows; row++)
 	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint32_t required_for_row = (slot->host_context_lengths[row] + SPARK_LLM_KV_BLOCK_TOKENS - 1u) / SPARK_LLM_KV_BLOCK_TOKENS;
-		uint64_t sequence_id = row_sequence_ids[row];
-		if ( lane >= table->lane_count || required_for_row > table->lane_stride || sequence_id == 0u )
+		lane = slot->host_row_lane_indices[row];
+		required = (slot->host_context_lengths[row] + SPARK_LLM_KV_BLOCK_TOKENS - 1u) / SPARK_LLM_KV_BLOCK_TOKENS;
+		if ( lane >= table->lane_count || required > table->lane_stride || row_sequence_ids[row] == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
-			if ( lane_list[lane_index] == lane )
-				break;
-		if ( lane_index == lane_count )
+		index = lanes->index_of[lane];
+		if ( index == UINT32_MAX )
 		{
-			lane_list[lane_count] = lane;
-			lane_required[lane_count] = 0u;
-			lane_sequence[lane_count] = sequence_id;
-			lane_count++;
+			index = lanes->count++;
+			lanes->index_of[lane] = index;
+			lanes->lane[index] = lane;
+			lanes->required[index] = 0u;
+			lanes->sequence[index] = row_sequence_ids[row];
 		}
-		if ( required_for_row > lane_required[lane_index] )
-			lane_required[lane_index] = required_for_row;
+		if ( required > lanes->required[index] )
+			lanes->required[index] = required;
 	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
+	return(SPARK_STATUS_OK);
+}
+static inline void LmKvFrameSetPins(LmKvFrameState *state, const LmKvFrameLanes *lanes, uint32_t lane_stride, uint8_t pinned)
+{
+	uint32_t index,logical,slot_index;
+	const uint32_t *residency;
+	for (index = 0u; index < lanes->count; index++)
 	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
+		residency = state->logical_to_slot + (uint64_t)lanes->lane[index] * lane_stride;
+		for (logical = 0u; logical < lanes->required[index]; logical++)
 		{
-			slot_index = state->logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
+			slot_index = residency[logical];
 			if ( slot_index != 0u )
-				state->slot_pinned[slot_index - 1u] = 1u;
+				state->slot_pinned[slot_index - 1u] = pinned;
 		}
 	}
+}
+static inline SparkStatus LmKvFrameClaimSlot(LmKvFrameState *state, uint32_t *slot_index)
+{
+	uint32_t scans = 0u;
+	SparkStatus status;
+	if ( state->slot_free_count == 0u )
 	{
-		LmKvFramePendingLane pending_lanes[SPARK_LLM_KV_STAGING_RECORDS];
-		uint32_t pending_slots[SPARK_LLM_KV_STAGING_RECORDS];
-		uint32_t pending_logical[SPARK_LLM_KV_STAGING_RECORDS];
-		uint64_t pending_lane_index[SPARK_LLM_KV_STAGING_RECORDS];
-		uint32_t batch_block_count = 0u,batch_index;
-		memset(pending_lanes,0,sizeof(pending_lanes));
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
+		while ( state->slot_pinned[state->evict_cursor] != 0u )
 		{
-			uint32_t lane = lane_list[lane_index];
-			for (logical = 0u; logical < lane_required[lane_index]; logical++)
-			{
-				uint32_t *residency = &state->logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-				if ( *residency != 0u )
-					continue;
-				if ( state->slot_free_count == 0u )
-				{
-					uint32_t scans = 0u;
-					while ( state->slot_pinned[state->evict_cursor] != 0u )
-					{
-						state->evict_cursor = (state->evict_cursor + 1u) % state->block_count;
-						if ( ++scans > state->block_count )
-							{
-								fail_status = SPARK_STATUS_CAPACITY_EXCEEDED;
-								goto fail;
-							}
-					}
-					status = LmKvFrameEvictSlot(state,state->evict_cursor);
-					if ( status != SPARK_STATUS_OK )
-						{
-							fail_status = status;
-							goto fail;
-						}
-				}
-			slot_index = state->slot_free_stack[--state->slot_free_count];
-			uncommitted[uncommitted_count++] = slot_index;
-			pending_lanes[batch_block_count].sequence_id = lane_sequence[lane_index];
-			pending_lanes[batch_block_count].nonresident_blocks = &pending_logical[batch_block_count];
-			pending_lanes[batch_block_count].nonresident_block_count = 1u;
-			pending_lanes[batch_block_count].gdn_nonresident = 0u;
-			pending_logical[batch_block_count] = logical;
-			pending_slots[batch_block_count] = slot_index;
-			pending_lane_index[batch_block_count] = (uint64_t)lane_index;
-			batch_block_count++;
-			if ( batch_block_count == SPARK_LLM_KV_STAGING_RECORDS )
-			{
-				packet_lane_counts[0] = batch_block_count;
-				block_count = 0u;
-				lanes_built = 0u;
-				status = state->ops.build_restore_batch(&state->plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->block_staging,SPARK_LLM_KV_STAGING_RECORDS,state->gdn_staging,1u,blocks,SPARK_LLM_KV_STAGING_RECORDS,&block_count,&lanes_built);
-				if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-					status = SPARK_STATUS_CAPACITY_EXCEEDED;
-				if ( status == SPARK_STATUS_OK )
-					status = state->ops.submit(&state->client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_LLM_KV_RESTORE_PRIORITY_IMMEDIATE);
-				if ( status == SPARK_STATUS_OK )
-					status = LmKvFrameWaitBatch(state,restore_batch);
-				if ( status != SPARK_STATUS_OK )
-					{
-						fail_status = status;
-						goto fail;
-					}
-				for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-				{
-					error = cudaMemcpyAsync((uint8_t *)state->cache_bf16 + (uint64_t)pending_slots[batch_index] * state->plan.block_record_bytes,(const uint8_t *)state->block_staging + ((uint64_t)batch_index * state->plan.block_record_bytes),(size_t)state->plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-					if ( error != cudaSuccess )
-						{
-							fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_restore_copy");
-							goto fail;
-						}
-					state->slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-					state->slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-					state->slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-					state->slot_dirty[pending_slots[batch_index]] = 0u;
-					state->logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-					for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-						if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-						{
-							uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-							break;
-						}
-				}
-				batch_block_count = 0u;
-			}
+			state->evict_cursor = (state->evict_cursor + 1u) % state->block_count;
+			if ( ++scans > state->block_count )
+				return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
+		status = LmKvFrameEvictSlot(state,state->evict_cursor);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		state->evict_cursor = (state->evict_cursor + 1u) % state->block_count;
 	}
-	if ( batch_block_count != 0u )
+	*slot_index = state->slot_free_stack[--state->slot_free_count];
+	state->slot_pinned[*slot_index] = 1u;
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameFlushRestore(LmKvFrameState *state, LmKvFrameRestore *restore, const LmKvFrameSlot *slot, uint32_t lane_stride)
+{
+	SparkKvStoreBlock blocks[SPARK_LLM_KV_STAGING_RECORDS];
+	uint32_t packet_lane_counts[1],block_count = 0u,lanes_built = 0u,index,slot_index;
+	SparkStatus status;
+	cudaError_t error;
+	packet_lane_counts[0] = restore->count;
+	status = state->ops.build_restore_batch(&state->plan,restore->pending,restore->count,packet_lane_counts,1u,state->block_staging,SPARK_LLM_KV_STAGING_RECORDS,state->gdn_staging,1u,blocks,SPARK_LLM_KV_STAGING_RECORDS,&block_count,&lanes_built);
+	if ( status == SPARK_STATUS_OK && lanes_built != restore->count )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK )
+		status = state->ops.submit(&state->client,&state->work.restore,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_LLM_KV_RESTORE_PRIORITY_IMMEDIATE);
+	if ( status == SPARK_STATUS_OK )
+		status = LmKvFrameWaitBatch(state,&state->work.restore);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (index = 0u; index < restore->count; index++)
 	{
-			packet_lane_counts[0] = batch_block_count;
-			block_count = 0u;
-			lanes_built = 0u;
-			status = state->ops.build_restore_batch(&state->plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->block_staging,SPARK_LLM_KV_STAGING_RECORDS,state->gdn_staging,1u,blocks,SPARK_LLM_KV_STAGING_RECORDS,&block_count,&lanes_built);
-			if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-				status = SPARK_STATUS_CAPACITY_EXCEEDED;
-			if ( status == SPARK_STATUS_OK )
-				status = state->ops.submit(&state->client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_LLM_KV_RESTORE_PRIORITY_IMMEDIATE);
-			if ( status == SPARK_STATUS_OK )
-				status = LmKvFrameWaitBatch(state,restore_batch);
+		slot_index = restore->slot[index];
+		error = cudaMemcpyAsync((uint8_t *)state->cache_bf16 + (uint64_t)slot_index * state->plan.block_record_bytes,(const uint8_t *)state->block_staging + (uint64_t)index * state->plan.block_record_bytes,(size_t)state->plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(state->ops.tag,error,"kv_restore_copy"));
+		state->slot_lane[slot_index] = restore->lane[index];
+		state->slot_logical[slot_index] = restore->logical[index];
+		state->slot_sequence[slot_index] = restore->pending[index].sequence_id;
+		state->slot_dirty[slot_index] = 0u;
+		state->logical_to_slot[(uint64_t)restore->lane[index] * lane_stride + restore->logical[index]] = slot_index + 1u;
+		restore->committed++;
+	}
+	restore->count = 0u;
+	restore->committed = 0u;
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameQueueRestore(LmKvFrameState *state, LmKvFrameRestore *restore, const LmKvFrameSlot *slot, uint32_t lane, uint64_t sequence_id, uint32_t logical, uint32_t lane_stride)
+{
+	uint32_t slot_index,entry;
+	SparkStatus status;
+	status = LmKvFrameClaimSlot(state,&slot_index);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	entry = restore->count++;
+	restore->pending[entry].sequence_id = sequence_id;
+	restore->pending[entry].nonresident_blocks = &restore->logical[entry];
+	restore->pending[entry].nonresident_block_count = 1u;
+	restore->pending[entry].gdn_nonresident = 0u;
+	restore->logical[entry] = logical;
+	restore->slot[entry] = slot_index;
+	restore->lane[entry] = lane;
+	if ( restore->count == SPARK_LLM_KV_STAGING_RECORDS )
+		return(LmKvFrameFlushRestore(state,restore,slot,lane_stride));
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameRestoreMissing(LmKvFrameState *state, const LmKvFrameLanes *lanes, LmKvFrameRestore *restore, const LmKvFrameSlot *slot, uint32_t lane_stride)
+{
+	uint32_t index,logical;
+	const uint32_t *residency;
+	SparkStatus status;
+	for (index = 0u; index < lanes->count; index++)
+	{
+		residency = state->logical_to_slot + (uint64_t)lanes->lane[index] * lane_stride;
+		for (logical = 0u; logical < lanes->required[index]; logical++)
+		{
+			if ( residency[logical] != 0u )
+				continue;
+			status = LmKvFrameQueueRestore(state,restore,slot,lanes->lane[index],lanes->sequence[index],logical,lane_stride);
 			if ( status != SPARK_STATUS_OK )
-				{
-					fail_status = status;
-					goto fail;
-				}
-			for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-			{
-				error = cudaMemcpyAsync((uint8_t *)state->cache_bf16 + (uint64_t)pending_slots[batch_index] * state->plan.block_record_bytes,(const uint8_t *)state->block_staging + ((uint64_t)batch_index * state->plan.block_record_bytes),(size_t)state->plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-				if ( error != cudaSuccess )
-					{
-						fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_restore_copy");
-						goto fail;
-					}
-				state->slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-				state->slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-				state->slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-				state->slot_dirty[pending_slots[batch_index]] = 0u;
-				for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-					if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-					{
-						uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-						break;
-					}
-				state->logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-			}
+				return(status);
 		}
 	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
+	if ( restore->count != 0u )
+		return(LmKvFrameFlushRestore(state,restore,slot,lane_stride));
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameUploadTables(LmKvFrameState *state, const LmKvFrameLanes *lanes, const LmKvFrameSlot *slot, LmKvFrameTable *table)
+{
+	uint32_t index,logical;
+	uint64_t lane_slice;
+	cudaError_t error;
+	for (index = 0u; index < lanes->count; index++)
 	{
-		uint32_t lane = lane_list[lane_index];
-		uint64_t lane_slice = (uint64_t)lane * table->lane_stride;
+		lane_slice = (uint64_t)lanes->lane[index] * table->lane_stride;
 		memcpy(state->table_indices_host + lane_slice,table->host_physical_block_indices + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t));
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
+		for (logical = 0u; logical < lanes->required[index]; logical++)
 			state->table_indices_host[lane_slice + logical] = state->logical_to_slot[lane_slice + logical] - 1u;
 		error = cudaMemcpyAsync((uint8_t *)state->table_indices_device + (lane_slice * sizeof(uint32_t)),state->table_indices_host + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 		if ( error != cudaSuccess )
-			{
-				fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_table_upload");
-				goto fail;
-			}
+			return(SparkStageModuleCudaStatus(state->ops.tag,error,"kv_table_upload"));
 	}
 	table->physical_block_indices = state->table_indices_device;
 	table->lane_physical_block_counts = state->table_counts_device;
 	error = cudaMemcpyAsync((void *)state->table_counts_device,(const void *)table->host_lane_physical_block_counts,(size_t)table->lane_count * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
 	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_table_upload");
-			goto fail;
-		}
+		return(SparkStageModuleCudaStatus(state->ops.tag,error,"kv_table_upload"));
+	return(SPARK_STATUS_OK);
+}
+static inline SparkStatus LmKvFrameMapRows(LmKvFrameState *state, const LmKvFrameSlot *slot, uint32_t lane_stride, uint32_t rows)
+{
+	uint32_t row,slot_index;
+	uint64_t position;
+	cudaError_t error;
 	for (row = 0u; row < rows; row++)
 	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint64_t position = slot->host_row_positions[row];
-		slot_index = state->logical_to_slot[((uint64_t)lane * table->lane_stride) + (uint32_t)(position / SPARK_LLM_KV_BLOCK_TOKENS)] - 1u;
+		position = slot->host_row_positions[row];
+		slot_index = state->logical_to_slot[(uint64_t)slot->host_row_lane_indices[row] * lane_stride + (uint32_t)(position / SPARK_LLM_KV_BLOCK_TOKENS)] - 1u;
 		slot->host_slot_mapping[row] = slot_index * SPARK_LLM_KV_BLOCK_TOKENS + (uint32_t)(position % SPARK_LLM_KV_BLOCK_TOKENS);
 	}
 	error = slot->slot_mapping != 0 ? cudaMemcpyAsync(slot->slot_mapping,slot->host_slot_mapping,(size_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream) : cudaSuccess;
 	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(state->ops.tag,error,"kv_slot_upload");
-			goto fail;
-		}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->slot_pinned[slot_index - 1u] = 0u;
-		}
-	}
+		return(SparkStageModuleCudaStatus(state->ops.tag,error,"kv_slot_upload"));
 	return(SPARK_STATUS_OK);
-fail:
-	for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-		state->slot_free_stack[state->slot_free_count++] = uncommitted[unwind_index];
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
+}
+static inline SparkStatus LmKvFrameUnwind(LmKvFrameState *state, const LmKvFrameLanes *lanes, const LmKvFrameRestore *restore, uint32_t lane_stride, SparkStatus status)
+{
+	uint32_t index;
+	for (index = restore->committed; index < restore->count; index++)
 	{
-		uint32_t fail_lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->logical_to_slot[((uint64_t)fail_lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->slot_pinned[slot_index - 1u] = 0u;
-		}
+		state->slot_pinned[restore->slot[index]] = 0u;
+		state->slot_free_stack[state->slot_free_count++] = restore->slot[index];
 	}
-	return(fail_status);
+	LmKvFrameSetPins(state,lanes,lane_stride,0u);
+	return(status);
+}
+static inline SparkStatus LmKvFramePrepareFrame(LmKvFrameState *state, const LmKvFrameSlot *slot, const uint64_t *row_sequence_ids, LmKvFrameTable *table, uint32_t rows)
+{
+	LmKvFrameLanes lanes;
+	LmKvFrameRestore restore;
+	SparkStatus status;
+	if ( state->tier_active == 0u )
+		return(SPARK_STATUS_OK);
+	status = LmKvFrameCheckTable(state,row_sequence_ids,table);
+	if ( status == SPARK_STATUS_OK )
+		status = LmKvFrameCollectLanes(&lanes,slot,row_sequence_ids,table,rows);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	restore.count = 0u;
+	restore.committed = 0u;
+	LmKvFrameSetPins(state,&lanes,table->lane_stride,1u);
+	status = LmKvFrameRestoreMissing(state,&lanes,&restore,slot,table->lane_stride);
+	if ( status == SPARK_STATUS_OK )
+		status = LmKvFrameUploadTables(state,&lanes,slot,table);
+	if ( status == SPARK_STATUS_OK )
+		status = LmKvFrameMapRows(state,slot,table->lane_stride,rows);
+	if ( status != SPARK_STATUS_OK )
+		return(LmKvFrameUnwind(state,&lanes,&restore,table->lane_stride,status));
+	LmKvFrameSetPins(state,&lanes,table->lane_stride,0u);
+	return(SPARK_STATUS_OK);
 }
 static inline void LmKvFrameRelease(LmKvFrameState *state)
 {

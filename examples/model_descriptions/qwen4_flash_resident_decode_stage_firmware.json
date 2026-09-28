@@ -1,11 +1,15 @@
 {
  "schema_version": 1,
  "model": {
-  "id": "alibaba.qwen3.8-flash.resident-decode-stage-firmware",
-  "revision": "bf16-h2560-l48-gdn36-full12-v248320-mtp1-hc4-ple-v3pack-v1"
+  "id": "qwen4_flash.resident-decode-stage-firmware",
+  "revision": "f5d08274bafd880402bd16f5e3e6c514136ec06c"
  },
  "metadata": {
   "architecture": "qwen4_flash_resident_decode_stage",
+  "identity_notes": {
+   "model_id_note": "model.id is SPARK_QWEN4_FLASH_SERVING_DRIVER_MODEL_ID: the serving adapter sends it as driver_model_id and serving_adapter_template.c refuses a driver whose descriptor differs with TARGET_MISMATCH.",
+   "revision_note": "model.revision is the contract source_revision, the checkpoint revision the module Makefile passes as QWEN4_FLASH_MODEL_REVISION and the adapter sends as driver_model_revision. The former revision string bf16-h2560-l48-gdn36-full12-v248320-mtp1-hc4-ple-v3pack-v1 documents the geometry: 48 layers (36 GDN / 12 full attention), hidden 2560, vocab 248320, one MTP layer, 4-stream hyper-connection, PLE, v3 pack."
+  },
   "purpose": "resident decode-stage firmware for Qwen3.8-Flash-Next: 3:1 Gated DeltaNet to indexer-gated full attention, 4-stream hyper-connection residual, layer-1 PLE n-gram block, routed MoE (512 experts, top-10, one shared), block-128 FP8 experts, BF16 spine, one-layer MTP",
   "provenance": {
    "status": "in bring-up; whole-stack TP4 standalone validator PASS, v3 packs (hc+indexer+PLE) building",

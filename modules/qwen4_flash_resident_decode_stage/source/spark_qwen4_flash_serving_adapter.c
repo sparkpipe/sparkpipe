@@ -23,6 +23,9 @@
 #ifndef QWEN4_FLASH_CONTRACT_SHA256
 #error "QWEN4_FLASH_CONTRACT_SHA256 must identify the exact package contract"
 #endif
+#ifndef QWEN4_FLASH_MODEL_DESCRIPTION_SHA256
+#error "QWEN4_FLASH_MODEL_DESCRIPTION_SHA256 must identify the firmware model description the driver compiles"
+#endif
 
 #define SPARK_QWEN4_FLASH_SERVING_ADAPTER_ID \
 	"spark.qwen4_flash.serving-adapter.tp4pp4.v1"
@@ -178,6 +181,7 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 };
 
 #define SparkModelServingAdapterGetInterface SparkQwen4FlashServingTemplateGetInterface
+#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 QWEN4_FLASH_MODEL_DESCRIPTION_SHA256
 #include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
 #undef SparkModelServingAdapterGetInterface
 

@@ -17,6 +17,13 @@
 
 #define SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI 120000u
 
+#define SPARK_FAMILY_CAMEL Qwen38_27b
+#define SPARK_FAMILY_UPPER QWEN38_27B
+#define SPARK_FAMILY_LOWER qwen38_27b
+#include "sparkpipe/family/spark_family.h"
+#define SPARK_QWEN38_27B_MODULE_TAG SPARK_QWEN38_27B_TP_TAG
+#include "sparkpipe/family/module/spark_module_combine.h"
+
 static void SparkQwen38_27bTpPendingCompletion(void *context, const SparkTpDeviceCollectiveCompletion *completion)
 {
 	SparkQwen38_27bTpPending *pending = (SparkQwen38_27bTpPending *)context;
@@ -83,7 +90,7 @@ static SparkStatus SparkQwen38_27bTpOpen(SparkQwen38_27bTpState *tp,uint32_t max
 	configuration.local_hidden_dimension = SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION;
 	configuration.max_active_sequence_count = max_active_sequence_count;
 	configuration.operation_timeout_milli = SPARK_QWEN38_27B_TP_OPERATION_TIMEOUT_MILLI;
-	SparkTpMeshRegisterCommonCombines(&configuration);
+	SparkQwen38_27bModuleRegisterCombines(&configuration);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&tp->collective);
 	if ( status != SPARK_STATUS_OK )
 	{

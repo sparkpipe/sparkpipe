@@ -18,7 +18,7 @@ nvcc -std=c++17 -O3 -arch=sm_121a \
 	-Imodules/qwen4_flash_resident_decode_stage/include \
 	-Imodules/qwen4_flash_resident_decode_stage/source \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
-	-DSPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT=0u \
+	-DSPARK_LLM_MTP_LAYER_COUNT=0u \
 	tools/t1_q3f_harness.c \
 	"$ARCHIVE" \
 	"$G5N_ARCHIVE" \

@@ -96,7 +96,7 @@ static void TestMuseGlimmerServingConfiguration(
 	configuration->runtime_limits.kv_physical_page_capacity = 64u;
 	configuration->runtime_root = runtime_root;
 	configuration->node_id = "spark-test";
-	configuration->node_target = "cuda.sm121.muse_glimmer.resident_decode_stage.bf16";
+	configuration->node_target = "cuda.sm121.muse.resident_decode_stage.bf16";
 	configuration->adapter_configuration_path = config_path;
 	configuration->driver_shared_object_path = driver_path;
 	configuration->driver_program_name = "resident_decode";

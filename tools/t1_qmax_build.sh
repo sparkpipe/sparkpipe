@@ -14,7 +14,7 @@ nvcc -std=c++17 -O3 -arch=sm_121a \
 	-Imodules/qwen38_max_resident_decode_stage/include \
 	-Imodules/qwen38_max_resident_decode_stage/source \
 	-DSPARK_QWEN38_MAX_MODULE_BUILD=1 \
-	-DSPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT=0u \
+	-DSPARK_LLM_MTP_LAYER_COUNT=0u \
 	-DQWEN38_MODEL_REVISION="d2dc35658bcf77e66643428cb52e774cc3b5bd29" \
 	tools/t1_qmax_harness.c \
 	build/modules/qwen38_resident_decode_stage/libqwen38_resident_decode_stage.a \

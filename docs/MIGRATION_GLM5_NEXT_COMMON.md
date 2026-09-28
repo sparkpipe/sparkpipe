@@ -66,9 +66,8 @@ deleted in the same commit that flips the include.
    module.c binding block is the template). Delete the 16 identical
    function bodies. glm5_next keeps its superset functions (graph capture,
    MTP, KDA recurrent, page copy, worker completion).
-6. M-0: glm5_next already runs these kernels; wire
-   `SparkTpMeshRegisterCommonCombines` in
-   `SparkGlm5NextModuleInitializeTpCollective` and delete the private
+6. M-0: glm5_next already runs these kernels and takes its combine
+   wrappers from `family/module/spark_module_combine.h`; delete the private
    `SparkGlm5NextLaunchAccumAdd`/`AccumU64Max` copies from its cuda.cu. The
    numerics win (FP32 accumulate, one rounding step) is coredev's fleet
    receipt; the win here is deletion.

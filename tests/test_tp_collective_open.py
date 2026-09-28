@@ -54,6 +54,7 @@ def environment_setup(prefix: str, degree: str, rank: str) -> str:
 def glm_cluster(family: str, tag: str, codec: str, lazy: bool, extra: str = "", creates: int = 1, u64: int = 1, common: int = 1) -> dict:
     return {
         "family": family,
+        "tag": tag,
         "codec": codec,
         "include": f"modules/{family}_resident_decode_stage/source/spark_{family}_resident_decode_stage_module.c",
         "setup": f"static Spark{tag}ModuleState state;\n"
@@ -72,6 +73,7 @@ def glm_cluster(family: str, tag: str, codec: str, lazy: bool, extra: str = "", 
 def qwen_cluster(family: str, tag: str, prefix: str, codec: str, lazy: bool, degree: str, rank: str) -> dict:
     return {
         "family": family,
+        "tag": tag,
         "codec": codec,
         "include": f"modules/{family}_resident_decode_stage/source/spark_{family}_resident_decode_stage_module.c",
         "setup": f"static Spark{tag}ModuleState state;\n"
@@ -89,6 +91,7 @@ def qwen_cluster(family: str, tag: str, prefix: str, codec: str, lazy: bool, deg
 CASES = (
     {
         "family": "dsv4",
+        "tag": "Dsv4",
         "codec": "fp8",
         "include": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
         "setup": "static SparkDsv4ModuleState state;\n" + CONTEXT.format(context="SparkDsv4ResidentDecodeStageNodeContext"),
@@ -101,7 +104,7 @@ CASES = (
     glm_cluster("glm52", "Glm52", "fp8", True),
     glm_cluster("ling", "Ling", "fp8", False),
     glm_cluster("laguna", "Laguna", "fp8", True),
-    glm_cluster("glm5_next", "Glm5Next", "fp8", True, "state.pipeline_slot_count = 2u;\nstate.lane_client = (SparkWeightdClient *)&state;\n", 2, 1, 0),
+    glm_cluster("glm5_next", "Glm5Next", "fp8", True, "state.pipeline_slot_count = 2u;\nstate.lane_client = (SparkWeightdClient *)&state;\n", 2, 1, 2),
     qwen_cluster("qwen38_max", "Qwen38Max", "QWEN38_MAX", "fp8", True, "STAGE_TP_DEGREE", "STAGE_TP_RANK"),
     qwen_cluster("qwen4_flash", "Qwen4Flash", "QWEN4_FLASH", "fp8", True, "TP_DEGREE", "TP_RANK"),
     qwen_cluster("gemma4", "Gemma4", "GEMMA4", "bf16", False, "TP_DEGREE", "TP_RANK"),
@@ -109,6 +112,7 @@ CASES = (
     qwen_cluster("minimax", "Minimax", "MINIMAX", "bf16", False, "TP_DEGREE", "TP_RANK"),
     {
         "family": "qwen38_27b",
+        "tag": "Qwen38_27b",
         "codec": "bf16",
         "include": "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c",
         "setup": "static SparkQwen38_27bTpState state;\nunsetenv(\"SPARK_QWEN38_27B_TP_SESSION_PORTS\");\nunsetenv(\"SPARK_QWEN38_27B_TP_STANDALONE\");\n",
@@ -127,15 +131,58 @@ HARNESS = r'''
 #include "@INCLUDE@"
 #include "sparkpipe/spark_tp_mesh_register.h"
 static uint32_t TpOpenCreates,TpOpenAttaches,TpOpenRegions;
+static cudaError_t TpOpenLaunchError;
+cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count)
+{
+	(void)stream;(void)destination;(void)sources;(void)source_count;(void)element_count;
+	return(TpOpenLaunchError);
+}
+cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,float *destination,const void *a,const void *b,uint32_t element_count)
+{
+	(void)stream;(void)destination;(void)a;(void)b;(void)element_count;
+	return(TpOpenLaunchError);
+}
+cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count)
+{
+	(void)stream;(void)destination;(void)b;(void)element_count;
+	return(TpOpenLaunchError);
+}
+cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,void *destination,const float *source,uint32_t element_count)
+{
+	(void)stream;(void)destination;(void)source;(void)element_count;
+	return(TpOpenLaunchError);
+}
+cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination,const void *source,uint32_t row_count,uint32_t width)
+{
+	(void)stream;(void)destination;(void)source;(void)row_count;(void)width;
+	return(TpOpenLaunchError);
+}
+cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+{
+	(void)stream;(void)destination;(void)source;(void)element_count;
+	return(TpOpenLaunchError);
+}
+static uint32_t TpOpenCombineStatuses(const SparkTpDeviceCollectiveConfig *config)
+{
+	SparkStatus failed,exhausted,passed;
+	TpOpenLaunchError = cudaErrorLaunchFailure;
+	failed = config->combine_bf16_function(0,0,0,1u,1u,0);
+	TpOpenLaunchError = cudaErrorMemoryAllocation;
+	exhausted = config->round_f32_function(0,0,0,1u,0);
+	TpOpenLaunchError = cudaSuccess;
+	passed = config->combine_fused_bf16_function(0,0,0,2u,1u,1u,0);
+	return(failed == SPARK_STATUS_INTERNAL_ERROR && exhausted == SPARK_STATUS_CAPACITY_EXCEEDED && passed == SPARK_STATUS_OK ? 1u : 0u);
+}
 SparkStatus SparkTpOpenMeshCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out);
 SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out)
 {
 	SparkStatus status;
-	uint32_t fp32,common;
+	uint32_t fp32,common,classified;
 	status = SparkTpOpenMeshCreate(config,collective_out);
 	fp32 = config->combine_fused_bf16_function != 0 && config->combine_f32_seed_function != 0 && config->combine_f32_add_function != 0 && config->round_f32_function != 0 && config->combine_bf16_function != 0;
-	common = config->combine_fused_bf16_function == SparkTpMeshCombineFusedBf16 && config->combine_f32_seed_function == SparkTpMeshCombineF32Seed && config->combine_f32_add_function == SparkTpMeshCombineF32Add && config->round_f32_function == SparkTpMeshRoundF32 && config->combine_bf16_function == SparkTpMeshCombineBf16 && config->combine_u64_max_function == SparkTpMeshCombineU64Max;
-	printf("TP-OPEN create mesh_status=%d fp32_combines=%u common_combines=%u u64_combine=%u\n",(int)status,fp32,common,config->combine_u64_max_function != 0 ? 1u : 0u);
+	common = config->combine_fused_bf16_function == Spark@TAG@ModuleCombineFusedBf16 && config->combine_f32_seed_function == Spark@TAG@ModuleCombineF32Seed && config->combine_f32_add_function == Spark@TAG@ModuleCombineF32Add && config->round_f32_function == Spark@TAG@ModuleRoundF32 && config->combine_bf16_function == Spark@TAG@ModuleCombineBf16 && (config->combine_u64_max_function == 0 || config->combine_u64_max_function == Spark@TAG@ModuleCombineU64Max);
+	classified = fp32 != 0u ? TpOpenCombineStatuses(config) : 0u;
+	printf("TP-OPEN create mesh_status=%d fp32_combines=%u common_combines=%u u64_combine=%u classified_errors=%u\n",(int)status,fp32,common,config->combine_u64_max_function != 0 ? 1u : 0u,classified);
 	if ( status != SPARK_STATUS_UNSUPPORTED || fp32 == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	collective_out->implementation = &TpOpenCreates;
@@ -214,6 +261,7 @@ def run_case(case: dict, mesh_object: Path, directory: Path) -> str | None:
     harness = HARNESS.replace("@INCLUDE@", str(ROOT / case["include"]))
     harness = harness.replace("@SETUP@", "\n".join("\t" + line for line in case["setup"].strip().split("\n")))
     harness = harness.replace("@CALL@", case["call"])
+    harness = harness.replace("@TAG@", case["tag"])
     source.write_text(harness)
     command = ["cc", "-std=c11", "-D_GNU_SOURCE", "-O0", "-ffunction-sections", "-fdata-sections",
                "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
@@ -231,8 +279,9 @@ def run_case(case: dict, mesh_object: Path, directory: Path) -> str | None:
     expected = f"TP-OPEN status=0 creates={case['creates']} attaches={case['creates']} regions={case['regions']}"
     u64 = ran.stdout.count("u64_combine=1")
     common = ran.stdout.count("common_combines=1")
-    if ran.returncode != 0 or expected not in ran.stdout or u64 != case["u64"] or common != case["common"]:
-        return f"{case['family']}: expected '{expected}', {case['u64']} U64 max combine(s) and {case['common']} common combine set(s)\n{ran.stdout[-800:]}{ran.stderr[-800:]}"
+    classified = ran.stdout.count("classified_errors=1")
+    if ran.returncode != 0 or expected not in ran.stdout or u64 != case["u64"] or common != case["common"] or classified != case["creates"]:
+        return f"{case['family']}: expected '{expected}', {case['u64']} U64 max combine(s), {case['common']} family template combine set(s) and {case['creates']} collective(s) whose combines report CUDA failures as INTERNAL_ERROR or CAPACITY_EXCEEDED\n{ran.stdout[-800:]}{ran.stderr[-800:]}"
     return None
 
 
@@ -252,7 +301,7 @@ def main() -> int:
             if failure is not None:
                 failures.append(failure)
             else:
-                print(f"  ok {case['family']}: {case['creates']} collective(s) pass the mesh's own validation, reduce in FP32 and attach")
+                print(f"  ok {case['family']}: {case['creates']} collective(s) pass the mesh's own validation, reduce in FP32 through the family's combines and attach")
     if failures:
         print("\n".join("FAIL " + failure for failure in failures))
         return 1
