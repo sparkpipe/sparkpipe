@@ -295,7 +295,7 @@ static SparkStatus SparkLingPackValidateRanges(
 #define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen
 #define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen
 #define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
-#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#define SPARK_PACK_LOAD_LINEAR_VIEW 0
 
 #include "sparkpipe/spark_pack_load_common.h"
 
@@ -380,32 +380,7 @@ static SparkStatus SparkLingModuleBindLayer(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingModuleBindGlobal(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry,
-	void *payload)
-{
-	switch ( entry->tensor_kind )
-	{
-	case SPARK_LING_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_FINAL_NORM: state->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LING_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
-	default: return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-}
-
-static SparkStatus SparkLingModuleBindMtp(
-	SparkLingModuleState *state,
-	const SparkLingStagePackEntry *entry,
-	void *payload,
-	void *scale)
-{
-	(void)state;
-	(void)entry;
-	(void)payload;
-	(void)scale;
-	return(SPARK_STATUS_SCHEMA_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_bind_laguna.h"
 
 static uint64_t SparkLingModuleExpectedLayerBits(
 	const SparkLingModuleState *state,
@@ -484,32 +459,7 @@ static SparkStatus SparkLingAllocateBytes(
 	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
 }
 
-static SparkStatus SparkLingAllocateSlotHost(SparkLingExecutionSlot *slot)
-{
-	uint32_t *cursor;
-	uint64_t rows,words,bytes;
-	cudaError_t error;
-	if ( slot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	rows = SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	words = (rows * 4u) + SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT;
-	bytes = words * sizeof(uint32_t);
-	error = cudaHostAlloc(&slot->host_staging,bytes,cudaHostAllocPortable);
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"host_staging"));
-	memset(slot->host_staging,0,bytes);
-	cursor = (uint32_t *)slot->host_staging;
-	slot->host_token_ids = cursor;
-	cursor += rows;
-	slot->host_resident_slots = cursor;
-	cursor += rows;
-	slot->host_positions = cursor;
-	cursor += rows;
-	slot->host_output_token_ids = cursor;
-	cursor += rows;
-	slot->host_kv_access_error = cursor;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_allocate_slot_host_staging.h"
 
 static void SparkLingReleaseSlotHost(SparkLingModuleState *state)
 {
@@ -650,26 +600,7 @@ static SparkStatus SparkLingBuildPageTable(SparkLingModuleState *state)
 	return(status);
 }
 
-static SparkStatus SparkLingPageCopy(
-	void *context,
-	uint32_t direction,
-	uintptr_t device_address,
-	void *host_address,
-	uint64_t bytes)
-{
-	SparkLingModuleState *state;
-	cudaError_t error;
-	state = (SparkLingModuleState *)context;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_page_copy"));
-}
+#include "sparkpipe/family/module/spark_module_page_copy.h"
 
 static SparkStatus SparkLingKvAllocateArrays(SparkLingModuleState *state,uint64_t block_bytes)
 {
@@ -1020,52 +951,7 @@ static SparkStatus SparkLingValidateRoundMajor(
 	return(row == batch->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static SparkStatus SparkLingValidateSequenceContinuity(
-	const SparkLingModuleState *state,
-	const SparkLingResidentDecodeStageBatchView *batch,
-	uint8_t *bound,
-	uint64_t *sequence_ids,
-	uint64_t *next_positions)
-{
-	uint8_t touched[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t position,sequence;
-	uint32_t lane,row,slot;
-	SparkStatus status;
-	for (lane=0u; lane<batch->active_sequence_count; lane++)
-	{
-		slot = batch->row_resident_slots[lane];
-		if ( slot >= state->resident_sequence_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		bound[lane] = atomic_load_explicit(&state->lane_bound[slot],memory_order_acquire);
-		sequence_ids[lane] = atomic_load_explicit(&state->lane_sequence_ids[slot],memory_order_acquire);
-		next_positions[lane] = atomic_load_explicit(&state->lane_next_positions[slot],memory_order_acquire);
-	}
-	for (row=0u; row<batch->row_count; row++)
-	{
-		slot = batch->row_resident_slots[row];
-		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,slot,&lane);
-		position = batch->row_positions[row];
-		sequence = batch->row_sequence_ids[row];
-		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( position == 0u )
-		{
-			if ( touched[lane] != 0u )
-				return(SPARK_STATUS_SCHEMA_ERROR);
-			bound[lane] = 1u;
-			sequence_ids[lane] = sequence;
-			next_positions[lane] = 1u;
-		}
-		else
-		{
-			if ( bound[lane] == 0u || sequence_ids[lane] != sequence || next_positions[lane] != position )
-				return(SPARK_STATUS_SCHEMA_ERROR);
-			next_positions[lane] = position + 1u;
-		}
-		touched[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_validate_sequence_continuity.h"
 
 typedef struct SparkLingClaimedContinuityContext
 {
@@ -1092,45 +978,7 @@ static SparkStatus SparkLingValidateFrameBuffers(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkLingValidateFrame(
-	const SparkLingModuleState *state,
-	const SparkModelDriverFrame *frame,
-	const SparkLingResidentDecodeStageFrameContext **context_out)
-{
-	const SparkLingResidentDecodeStageFrameContext *context;
-	const SparkLingResidentDecodeStageBatchView *batch;
-	uint32_t expected_flags,prefill;
-	uint64_t boundary_bytes;
-	SparkStatus status;
-	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (const SparkLingResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != sizeof(*context) || context->reserved0 != 0u || (context->flags & ~SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS) != 0u || context->batch == 0 )
-		return(SPARK_STATUS_ABI_MISMATCH);
-	batch = context->batch;
-	if ( batch->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != sizeof(*batch) || batch->row_count == 0u || batch->row_count > SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || batch->active_sequence_count == 0u || batch->active_sequence_count > state->resident_sequence_capacity || batch->row_resident_slots == 0 || batch->row_positions == 0 || batch->row_sequence_ids == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
-	if ( prefill == 0u && batch->row_count != batch->active_sequence_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->active_slot_count != batch->active_sequence_count || frame->new_token_count != batch->row_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	expected_flags = prefill != 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
-	expected_flags |= state->owns_embedding == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
-	expected_flags |= state->owns_final_head == 0u ? SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	if ( context->flags != expected_flags )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	boundary_bytes = (uint64_t)batch->row_count * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LING_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkLingValidateRoundMajor(state,batch);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLingValidateFrameBuffers(state,frame,batch->row_count);
-	*context_out = status == SPARK_STATUS_OK ? context : 0;
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_validate_frame_laguna.h"
 
 #define SPARK_LING_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LING_TP_COLLECTIVE_HC_PORT_STRIDE 512u
@@ -1401,10 +1249,7 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 	return(SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16));
 }
 
-static SparkStatus SparkLingModuleReduceAttentionOut(SparkLingTpChain *chain,void *device_bf16)
-{
-	return(SparkLingModuleReduceHidden(chain,device_bf16));
-}
+#include "sparkpipe/family/module/spark_module_reduce_attention_out_laguna.h"
 
 static SparkStatus SparkLingModuleReduceHeadMax(SparkLingTpChain *chain)
 {
@@ -1758,27 +1603,7 @@ static SparkStatus SparkLingExecuteBatch(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkLingResidentDecodeStageExecute(
-	void *module_state,
-	SparkModelDriverFrame *frame)
-{
-	SparkLingModuleState *state;
-	const SparkLingResidentDecodeStageFrameContext *context;
-	SparkStatus status;
-	state = (SparkLingModuleState *)module_state;
-	context = 0;
-	status = SparkLingValidateFrame(state,frame,&context);
-	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state != 0 )
-			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(status);
-	}
-	status = SparkLingExecuteBatch(state,frame,context);
-	if ( status != SPARK_STATUS_OK )
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
 
 SparkStatus SparkLingResidentDecodeStageAdmit(
 	void *module_state,
@@ -1813,28 +1638,7 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	return(status);
 }
 
-SparkStatus SparkLingResidentDecodeStageSnapshot(
-	void *module_state,
-	uint32_t program_id,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkLingModuleState *state;
-	uint32_t index,resident_count;
-	state = (SparkLingModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
-	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
-	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);
-	snapshot->rejected_count = atomic_load_explicit(&state->rejected_count,memory_order_relaxed);
-	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-	resident_count = 0u;
-	for (index=0u; index<state->resident_sequence_capacity; index++)
-		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
-	snapshot->resident_sequence_count = resident_count;
-	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
 
 void SparkLingResidentDecodeStageDestroy(void *module_state)
 {

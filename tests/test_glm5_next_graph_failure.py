@@ -35,8 +35,8 @@ KERNEL_PREFIX = r'''
 #define __global__
 struct HostDim { unsigned x; } threadIdx={0},blockIdx={0},blockDim={1};
 static unsigned long long host_timer;
-static unsigned long long SparkGlm5NextGlobalTimerNs(void) { return ++host_timer; }
-static uint64_t SparkGlm5NextLdcvU64(const volatile void *p) { return *(const volatile uint64_t *)p; }
+static unsigned long long SparkTpGlobalTimerNs(void) { return ++host_timer; }
+static uint64_t SparkTpLdcvU64(const volatile void *p) { return *(const volatile uint64_t *)p; }
 static void __nanosleep(unsigned nanoseconds) { (void)nanoseconds; }
 static unsigned long long atomicExch(unsigned long long *p,unsigned long long x)
 {
@@ -52,25 +52,25 @@ int main(void)
     unsigned long long sequence=(1ull<<32)|1ull;
     unsigned long long error=0,diag=0,arrivals[256]={0},maxloc=0;
     uint32_t token=123;
-    SparkGlm5NextMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
+    SparkTpMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
     assert(error==sequence && arrivals[1]==0);
-    SparkGlm5NextMeshGuardKernel(&error,&maxloc);
+    SparkTpMeshGuardKernel(&error,&maxloc);
     SparkGlm5NextHeadMaxlocUnpackKernel((const uint64_t *)&maxloc,&token,1);
     assert(error==sequence && token==UINT32_MAX);
-    SparkGlm5NextMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
+    SparkTpMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
     assert(error==sequence && arrivals[1]==0);
     error=0;
     band[11]=sequence;
     maxloc=(0x80000000ull<<32)|(UINT32_MAX-123u);
-    SparkGlm5NextMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
-    SparkGlm5NextMeshGuardKernel(&error,&maxloc);
+    SparkTpMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,0,0,arrivals);
+    SparkTpMeshGuardKernel(&error,&maxloc);
     SparkGlm5NextHeadMaxlocUnpackKernel((const uint64_t *)&maxloc,&token,1);
     assert(error==0 && arrivals[1]!=0 && token==123);
     uint64_t cancel=2;
     unsigned long long expected=1;
     arrivals[1]=0;
-    SparkGlm5NextMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,&cancel,&expected,arrivals);
-    SparkGlm5NextMeshGuardKernel(&error,&maxloc);
+    SparkTpMeshWaitKernel(band,32,&sequence,2,0,2,&error,1,&diag,&cancel,&expected,arrivals);
+    SparkTpMeshGuardKernel(&error,&maxloc);
     SparkGlm5NextHeadMaxlocUnpackKernel((const uint64_t *)&maxloc,&token,1);
     assert(error==(SPARK_TP_MESH_ERROR_CANCELLED|sequence));
     assert(arrivals[1]==0 && token==UINT32_MAX);
@@ -173,7 +173,7 @@ def main():
     cuda = read_source(CUDA)
     module = read_source(MODULE)
     cancelled = '\n'.join(re.findall(r'(?m)^#define SPARK_TP_MESH_(?:ERROR_CANCELLED|WAIT_[A-Z_]+) .*$', mesh))
-    kernels = [function(mesh, name) for name in ['SparkGlm5NextMeshWaitKernel', 'SparkGlm5NextMeshGuardKernel']]
+    kernels = [function(mesh, name) for name in ['SparkTpMeshWaitKernel', 'SparkTpMeshGuardKernel']]
     kernels.append(function(cuda, 'SparkGlm5NextHeadMaxlocUnpackKernel'))
     run(KERNEL_PREFIX + cancelled + '\n' + '\n'.join(kernels) + KERNEL_MAIN,
         os.environ.get('CXX', 'c++'), '.cc', ['-std=c++17'])

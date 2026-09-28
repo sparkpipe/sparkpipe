@@ -585,30 +585,7 @@ static SparkStatus SparkGlm5NextAllocateBytes(
 
 #include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
 
-static SparkStatus SparkGlm5NextManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
-{
-	const SparkGlm5NextManifestContext *context = (const SparkGlm5NextManifestContext *)opaque;
-	const SparkGlm5NextStagePackEntry *entry;
-	SparkStatus status;
-	uint64_t expected = 0u;
-	uint32_t index,plane;
-	for (index=0u; index<context->count; index++)
-	{
-		entry = &context->entries[index];
-		if ( entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
-			continue;
-		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		for (plane=0u; plane<2u; plane++)
-		{
-			status = SparkGlm5NextManifestPlane(manifest,entry,plane);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-			expected += entry->group_count;
-		}
-	}
-	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_manifest_check_fp8.h"
 
 static SparkStatus SparkGlm5NextPinAllExperts(SparkGlm5NextModuleState *state);
 
@@ -1568,86 +1545,9 @@ static SparkStatus SparkGlm5NextAdmissionPredicate(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm5NextValidateRoundMajor(
-	const SparkGlm5NextModuleState *state,
-	const SparkGlm5NextResidentDecodeStageBatchView *batch)
-{
-	uint32_t ordinals[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t counts[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t last_rows[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	SparkRowLayoutDirectLaneContext lanes;
-	SparkStatus status;
-	if ( state == 0 || batch == 0 || batch->row_count < batch->active_sequence_count || state->resident_sequence_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkRowLayoutDirectLaneMapInitialize(&lanes,ordinals,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
-}
-
 #include "sparkpipe/family/module/spark_module_load_sequence_continuity.h"
 
-static SparkStatus SparkGlm5NextValidateSequenceContinuity(
-	const SparkGlm5NextModuleState *state,
-	const SparkGlm5NextResidentDecodeStageBatchView *batch,
-	uint8_t *bound,
-	uint64_t *sequence_ids,
-	uint64_t *next_positions)
-{
-	uint8_t touched[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t position,sequence;
-	uint32_t lane,row,slot;
-	SparkStatus status;
-	status = SparkGlm5NextLoadSequenceContinuity(state,batch,bound,sequence_ids,next_positions);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	for (row=0u; row<batch->row_count; row++)
-	{
-		slot = batch->row_resident_slots[row];
-		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,slot,&lane);
-		position = batch->row_positions[row];
-		sequence = batch->row_sequence_ids[row];
-		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( position == 0u )
-		{
-			if ( touched[lane] != 0u )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			bound[lane] = 1u;
-			sequence_ids[lane] = sequence;
-			next_positions[lane] = 1u;
-		}
-		else
-		{
-			if ( bound[lane] == 0u || sequence_ids[lane] != sequence || next_positions[lane] != position )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			next_positions[lane] = position + 1u;
-		}
-		touched[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-typedef struct SparkGlm5NextClaimedContinuityContext
-{
-	SparkGlm5NextModuleState *state;
-	const SparkGlm5NextResidentDecodeStageBatchView *batch;
-	uint8_t *bound;
-	uint64_t *sequence_ids;
-	uint64_t *next_positions;
-} SparkGlm5NextClaimedContinuityContext;
-
-static SparkStatus SparkGlm5NextPrepareClaimedContinuity(void *prepare_context)
-{
-	SparkGlm5NextClaimedContinuityContext *context;
-	SparkStatus status;
-	context = (SparkGlm5NextClaimedContinuityContext *)prepare_context;
-	if ( pthread_mutex_lock(&context->state->kv_mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkGlm5NextValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions);
-	(void)pthread_mutex_unlock(&context->state->kv_mutex);
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/module/spark_module_claimed_continuity_locked.h"
 
 static uint32_t SparkGlm5NextFrameSteps(const SparkModelDriverFrame *frame)
 {
@@ -2583,22 +2483,7 @@ static SparkStatus SparkGlm5NextLazyRelease(SparkGlm5NextTpChain *chain)
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextLazyRecoverLease(SparkGlm5NextModuleState *state,uint32_t slot,SparkGlm5NextTpChain **out)
-{
-	SparkGlm5NextTpChain *chain;
-	SparkStatus status = SPARK_STATUS_OK;
-	*out = 0;
-	chain = atomic_exchange_explicit(&state->lazy_retained[slot],0,memory_order_acq_rel);
-	if ( chain == 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	if ( chain->expert_lease != 0u )
-		status = SparkGlm5NextLazyRelease(chain);
-	if ( status != SPARK_STATUS_OK )
-		atomic_store_explicit(&state->lazy_retained[slot],chain,memory_order_release);
-	else
-		*out = chain;
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/module/spark_module_lazy_recover_lease.h"
 
 static void SparkGlm5NextLazyRetryRetained(void *context)
 {
@@ -2613,14 +2498,7 @@ static void SparkGlm5NextLazyRetryRetained(void *context)
 		}
 }
 
-static void SparkGlm5NextTpChainReduceMlp(SparkGlm5NextTpChain *chain)
-{
-	SparkStatus status;
-	chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_MLP;
-	status = SparkGlm5NextModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
-	if ( status != SPARK_STATUS_OK )
-		SparkGlm5NextTpChainFail(chain,status);
-}
+#include "sparkpipe/family/module/spark_module_tp_chain_reduce_mlp.h"
 
 static uint32_t SparkGlm5NextFirstRoutedLayer(const SparkGlm5NextModuleState *state)
 {
@@ -4246,23 +4124,7 @@ static int SparkGlm5NextBoundedStreamSync(SparkGlm5NextModuleState *state,void *
 	return(status == SPARK_STATUS_OK ? 0 : status == SPARK_STATUS_BUSY ? 1 : -1);
 }
 
-static SparkStatus SparkGlm5NextClaimCacheFrame(SparkGlm5NextModuleState *state,const SparkModelDriverFrame *frame,const SparkGlm5NextResidentDecodeStageBatchView *batch,const uint64_t *next_positions)
-{
-	uint32_t lane;
-	SparkStatus status;
-	if ( frame->cache_lanes == 0 || frame->cache_lane_count != batch->active_sequence_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) == 0u || frame->driver_dispatch_slot != (uint32_t)(frame->request_id % state->pipeline_slot_count) )
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	for (lane=0u; lane<frame->cache_lane_count; lane++)
-		if ( frame->cache_lanes[lane].resident_sequence_slot != batch->row_resident_slots[lane] || frame->cache_lanes[lane].sequence_id != batch->row_sequence_ids[lane] || frame->cache_lanes[lane].sequence_position != batch->row_positions[lane] || frame->cache_lanes[lane].context_token_count != next_positions[lane] )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkKvLaneTransactionsClaim(&state->kv_transactions,frame);
-	(void)pthread_mutex_unlock(&state->kv_mutex);
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/module/spark_module_claim_cache_frame.h"
 
 static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state,uint32_t resident)
 {

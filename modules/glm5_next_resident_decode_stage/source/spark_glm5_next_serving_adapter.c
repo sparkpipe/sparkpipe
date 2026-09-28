@@ -508,7 +508,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-	completion.status = matches != 0u ? (uint32_t)driver_completion->status : SPARK_STATUS_SCHEMA_ERROR;
+	completion.status = matches != 0u ? SparkModelServingCompletionStatus((uint32_t)driver_completion->status) : SPARK_STATUS_SCHEMA_ERROR;
 	completion.submission_id = pending->submission_id;
 	completion.request_id = pending->request_id;
 	completion.sequence_id = pending->sequence_id;
@@ -809,24 +809,7 @@ static void SparkGlm5NextServingBuildFrame(
 	frame->completion_context = pending;
 }
 
-static SparkStatus SparkGlm5NextServingAdmit(
-	SparkGlm5NextServingState *state,
-	const SparkModelServingSubmission *submission,
-	SparkGlm5NextServingPending *pending,
-	SparkModelDriverFrame *frame)
-{
-	SparkServingCacheAdmission cache;
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	cache = SparkGlm5NextServingCacheContext(state,pending->cache_lanes);
-	status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	frame->cache_lanes = pending->cache_lanes;
-	frame->cache_lane_count = request.cache_lane_count;
-	return(SparkAdmissionEvaluateAndApply(state->driver.interface,state->driver_instance,&request,frame,&decision));
-}
+#include "sparkpipe/family/serving/spark_serving_admit_cache_lanes.h"
 
 static SparkStatus SparkGlm5NextServingSubmit(
 	void *adapter_state,
@@ -882,82 +865,13 @@ static SparkStatus SparkGlm5NextServingProgress(
 		state->program->program_id,&snapshot));
 }
 
-static SparkStatus SparkGlm5NextServingSnapshot(
-	void *adapter_state,
-	SparkModelServingAdapterSnapshot *snapshot)
-{
-	SparkGlm5NextServingState *state;
-	SparkModelDriverRuntimeSnapshot driver_snapshot;
-	uint32_t available;
-	SparkStatus status;
-	state = (SparkGlm5NextServingState *)adapter_state;
-	if ( state == 0 || snapshot == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&driver_snapshot,0,sizeof(driver_snapshot));
-	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
-	available = SparkGlm5NextServingAvailableSubmissionCount(state);
-	if ( available > driver_snapshot.available_dispatch_slot_count )
-		available = driver_snapshot.available_dispatch_slot_count;
-	snapshot->available_submission_count = state->quiescing == 0u ? available : 0u;
-	snapshot->active_submission_count = state->pipeline_slot_count - SparkGlm5NextServingAvailableSubmissionCount(state);
-	snapshot->submitted_count = driver_snapshot.submitted_count;
-	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed);
-	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
-	snapshot->resident_token_count = driver_snapshot.resident_token_count;
-	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
-	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
-	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/serving/spark_serving_snapshot.h"
 
 #include "sparkpipe/family/serving/spark_serving_quiesce.h"
 
-static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t control_generation)
-{
-	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
-	SparkModelDriverAdmissionRequest request = {0};
-	SparkModelDriverAdmissionDecision decision;
-	SparkStatus status;
-	if ( state == 0 || control_generation == 0u || control_generation <= atomic_load_explicit(&state->reset_generation,memory_order_acquire) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkGlm5NextServingQuiesce(state,UINT64_MAX);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	request.descriptor_bytes = sizeof(request);
-	request.program_id = state->program->program_id;
-	request.control_generation = control_generation;
-	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	status = state->driver.interface->admit(state->driver_instance,&request,&decision);
-	if ( status == SPARK_STATUS_OK && decision.accepted == 0u )
-		status = SPARK_STATUS_VALIDATION_FAILED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		atomic_store_explicit(&state->reset_generation,control_generation,memory_order_release);
-		atomic_store_explicit(&state->quiescing,0u,memory_order_release);
-	}
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset_control_atomic.h"
 
-static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t control_generation)
-{
-	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
-	uint32_t expected = 0u;
-	SparkStatus status;
-	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
-		return(SPARK_STATUS_BUSY);
-	status = SparkGlm5NextServingResetControl(state,control_generation);
-	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	SPARK_RETURN(status);
-}
+#include "sparkpipe/family/serving/spark_serving_reset.h"
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 {

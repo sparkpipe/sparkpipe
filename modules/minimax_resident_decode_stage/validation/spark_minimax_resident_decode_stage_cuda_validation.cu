@@ -35,8 +35,8 @@ extern "C" cudaError_t SparkMinimaxLaunchHeadNormRope(cudaStream_t stream,void *
 extern "C" cudaError_t SparkMinimaxLaunchSwiGlu(cudaStream_t stream,const void *gate_bf16,const void *up_bf16,void *activated_bf16,uint32_t row_count,uint32_t dimension);
 extern "C" cudaError_t SparkMinimaxLaunchVocabArgmax(cudaStream_t stream,const void *lm_head_bf16,const void *input_bf16,uint64_t *argmax_reduce_u64,uint32_t row_count,uint32_t local_vocab_rows,uint32_t input_dimension,uint32_t local_vocab_base);
 extern "C" cudaError_t SparkMinimaxLaunchArgmaxResolve(cudaStream_t stream,const uint64_t *argmax_reduce_u64,uint32_t *token_ids,uint32_t row_count);
-extern "C" cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
-extern "C" cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
+extern "C" cudaError_t SparkTpLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count);
+extern "C" cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 
 static uint32_t validation_seed = 20260923u;
 
@@ -414,7 +414,7 @@ static int ValidationTpCombine(const struct ValidationBuffers *buffers,cudaStrea
 		return(1);
 	if ( ValidationCheckCuda(cudaMemcpy(buffers->device_b,buffers->host_b,elements * sizeof(uint16_t),cudaMemcpyHostToDevice),"combine upload b") != 0 )
 		return(1);
-	if ( ValidationCheckCuda(SparkGlm5NextLaunchSumRanksF32(stream,buffers->device_out,sources,2u,elements),"combine bf16 launch") != 0 )
+	if ( ValidationCheckCuda(SparkTpLaunchSumRanksF32(stream,buffers->device_out,sources,2u,elements),"combine bf16 launch") != 0 )
 		return(1);
 	if ( ValidationCheckCuda(cudaStreamSynchronize(stream),"combine bf16 sync") != 0 )
 		return(1);
@@ -439,7 +439,7 @@ static int ValidationTpCombine(const struct ValidationBuffers *buffers,cudaStrea
 			return(1);
 		if ( ValidationCheckCuda(cudaMemcpy(buffers->device_u64_second,host_u64_second,sizeof(host_u64_second),cudaMemcpyHostToDevice),"combine u64 upload second") != 0 )
 			return(1);
-		if ( ValidationCheckCuda(SparkGlm5NextLaunchAccumU64Max(stream,buffers->device_u64,buffers->device_u64_second,64u),"combine u64 launch") != 0 )
+		if ( ValidationCheckCuda(SparkTpLaunchAccumU64Max(stream,buffers->device_u64,buffers->device_u64_second,64u),"combine u64 launch") != 0 )
 			return(1);
 		if ( ValidationCheckCuda(cudaStreamSynchronize(stream),"combine u64 sync") != 0 )
 			return(1);

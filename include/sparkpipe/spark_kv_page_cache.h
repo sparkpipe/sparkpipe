@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 4u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 5u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE UINT32_C(0x00000001)
@@ -31,6 +31,8 @@ typedef struct SparkKvPageCacheEntry
 	uint32_t reference_count;
 	uint32_t hash_next;
 	uint32_t free_next;
+	uint32_t lru_prev;
+	uint32_t lru_next;
 	uint64_t last_used_epoch;
 	SparkModelDriverCacheIdentity identity;
 }
@@ -73,6 +75,8 @@ typedef struct SparkKvPageCache
 	uint32_t hash_bucket_count;
 	uint32_t free_entry_head;
 	uint32_t live_sequence_count;
+	uint32_t lru_head;
+	uint32_t lru_tail;
 	SparkKvCacheArena *kv_cache_arena;
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;

@@ -6,6 +6,11 @@
   cannot be waived by driver flags, stubs or compatibility paths.
 - No comments in code. Put explanations in documentation and PRs. Tests must
   verify behavior and contracts, not comment wording.
+- Shared code is model-neutral: a generic function, type, macro or file
+  carries a generic name. Model and driver names belong only under that
+  model's `model-families/<model>/`, `modules/<driver>/`, tools and tests.
+  `tests/test_dry_law.py` enforces this for the runtime, transport, cache,
+  serving, kernel and common paths; its `PENDING` list may only shrink.
 
 ## GitHub authentication
 

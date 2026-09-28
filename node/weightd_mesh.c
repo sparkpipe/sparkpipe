@@ -30,15 +30,13 @@
 #define SPARK_WEIGHTD_MESH_REPAIR_INTERVAL_NS UINT64_C(10000000)
 #define SPARK_WEIGHTD_MESH_STATS_NS UINT64_C(10000000000)
 #define SPARK_WEIGHTD_MESH_TIMING_PEER_TEXT 80u
-#ifndef SPARK_WEIGHTD_MESH_DIR
-#define SPARK_WEIGHTD_MESH_DIR "/tmp/weightd-mesh"
-#endif
+#define SPARK_WEIGHTD_MESH_DEFAULT_DIR "/tmp/weightd-mesh"
 
 /* Two weightd-line daemons can share one host (the fleet's weightd and the
  * driver developers' standalone weightsd): the record directory must be
  * per-deployment or they clobber each other's mesh-<rank>.rec and .ready.
  * Set at init; the define is only the default. */
-static const char *weightd_mesh_dir = SPARK_WEIGHTD_MESH_DIR;
+static const char *weightd_mesh_dir = SPARK_WEIGHTD_MESH_DEFAULT_DIR;
 
 static void SparkWeightdMeshReadyPath(char *path, uint64_t bytes)
 {

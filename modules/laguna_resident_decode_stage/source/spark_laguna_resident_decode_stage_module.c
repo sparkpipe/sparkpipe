@@ -310,36 +310,7 @@ static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest
 	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 }
 
-static SparkStatus SparkLagunaLazyOpen(SparkLagunaModuleState *state,const char *path,uint64_t bytes,const SparkLagunaStagePackEntry *entries,uint32_t count)
-{
-	SparkWeightdLazyAttachRequest request;
-	SparkLagunaManifestContext context = {entries,count};
-	SparkStatus status;
-	const char *digest;
-	uint64_t spine_budget;
-	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memset(&request,0,sizeof(request));
-	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	memcpy(request.identity.pack_sha256,digest,65u);
-	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_LAGUNA_MODULE_TAG);
-	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = bytes;
-	request.identity.topology = state->tp_degree;
-	memcpy(request.pack_path,path,strlen(path) + 1u);
-	status = SparkStageModuleEnvironmentUnsigned64(SPARK_LAGUNA_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_LAGUNA_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkLagunaManifestCheck,&context,&state->lazy_pack);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_lazy_open.h"
 
 static void SparkLagunaModulePackExpectGeometry(
 	const SparkLagunaModuleState *state,
@@ -461,32 +432,7 @@ static int SparkLagunaModuleRegionHook(
 	return(status == SPARK_STATUS_OK ? 1 : 0);
 }
 
-static SparkStatus SparkLagunaModuleBindMtp(
-	SparkLagunaModuleState *state,
-	const SparkLagunaStagePackEntry *entry,
-	void *payload,
-	void *scale)
-{
-	(void)state;
-	(void)entry;
-	(void)payload;
-	(void)scale;
-	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-}
-
-static SparkStatus SparkLagunaModuleBindGlobal(
-	SparkLagunaModuleState *state,
-	const SparkLagunaStagePackEntry *entry,
-	void *payload)
-{
-	switch ( entry->tensor_kind )
-	{
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_EMBEDDING: state->embedding_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_FINAL_NORM: state->final_norm_bf16 = payload; return(SPARK_STATUS_OK);
-	case SPARK_LAGUNA_STAGEPACK_TENSOR_LM_HEAD: state->lm_head_bf16 = payload; return(SPARK_STATUS_OK);
-	default: SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	}
-}
+#include "sparkpipe/family/module/spark_module_bind_laguna.h"
 
 static SparkStatus SparkLagunaModuleBindLayer(
 	SparkLagunaModuleState *state,
@@ -519,12 +465,15 @@ static uint64_t SparkLagunaModuleExpectedLayerBits(
 #define SPARK_PACK_LOAD_TYPE(name) SparkLaguna##name
 #define SPARK_PACK_LOAD_CONST(name) SPARK_LAGUNA_##name
 #define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
-#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#define SPARK_PACK_LOAD_LINEAR_VIEW 0
 #define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) (SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING(layer))
 #define SPARK_PACK_LOAD_SEEN_TYPE uint64_t
 #define SPARK_PACK_LOAD_SEEN_ONE UINT64_C(1)
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) ((entry)->payload_bytes != 0u)
 #define SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY(entry) ((entry)->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT)
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkLagunaModulePackExpectGeometry((state),(expected))
@@ -942,124 +891,9 @@ static uint32_t SparkLagunaRoundMajorWaveRows(
 	return(SparkRowLayoutRoundMajorWaveRowCount(first_row,batch->row_count,batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes));
 }
 
-static SparkStatus SparkLagunaValidateRoundMajor(
-	const SparkLagunaModuleState *state,
-	const SparkLagunaResidentDecodeStageBatchView *batch)
-{
-	uint32_t ordinals[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t counts[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t last_rows[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	SparkRowLayoutDirectLaneContext lanes;
-	SparkStatus status;
-	if ( state == 0 || batch == 0 || batch->row_count < batch->active_sequence_count || state->resident_sequence_capacity > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkRowLayoutDirectLaneMapInitialize(&lanes,ordinals,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	return(SparkRowLayoutValidateRoundMajor(batch->row_count,batch->active_sequence_count,batch->row_resident_slots,SparkRowLayoutDirectLaneOrdinal,&lanes,counts,last_rows));
-}
+#include "sparkpipe/family/module/spark_module_claimed_continuity_locked.h"
 
-static SparkStatus SparkLagunaValidateSequenceContinuity(
-	const SparkLagunaModuleState *state,
-	const SparkLagunaResidentDecodeStageBatchView *batch,
-	uint8_t *bound,
-	uint64_t *sequence_ids,
-	uint64_t *next_positions)
-{
-	uint8_t touched[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT] = {0u};
-	uint64_t position,sequence;
-	uint32_t lane,row,slot;
-	SparkStatus status;
-	status = SparkLagunaLoadSequenceContinuity(state,batch,bound,sequence_ids,next_positions);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	for (row=0u; row<batch->row_count; row++)
-	{
-		slot = batch->row_resident_slots[row];
-		status = SparkStageModuleIndexClaimOrdinal(state->lane_states,state->resident_sequence_capacity,slot,&lane);
-		position = batch->row_positions[row];
-		sequence = batch->row_sequence_ids[row];
-		if ( status != SPARK_STATUS_OK || lane >= batch->active_sequence_count || batch->row_resident_slots[lane] != slot || position >= state->max_sequence_positions )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( position == 0u )
-		{
-			if ( touched[lane] != 0u )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			bound[lane] = 1u;
-			sequence_ids[lane] = sequence;
-			next_positions[lane] = 1u;
-		}
-		else
-		{
-			if ( bound[lane] == 0u || sequence_ids[lane] != sequence || next_positions[lane] != position )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			next_positions[lane] = position + 1u;
-		}
-		touched[lane] = 1u;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-typedef struct SparkLagunaClaimedContinuityContext
-{
-	SparkLagunaModuleState *state;
-	const SparkLagunaResidentDecodeStageBatchView *batch;
-	uint8_t *bound;
-	uint64_t *sequence_ids;
-	uint64_t *next_positions;
-} SparkLagunaClaimedContinuityContext;
-
-static SparkStatus SparkLagunaPrepareClaimedContinuity(void *prepare_context)
-{
-	SparkLagunaClaimedContinuityContext *context;
-	SparkStatus status;
-	context = (SparkLagunaClaimedContinuityContext *)prepare_context;
-	if ( pthread_mutex_lock(&context->state->kv_mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkLagunaValidateSequenceContinuity(context->state,context->batch,context->bound,context->sequence_ids,context->next_positions);
-	(void)pthread_mutex_unlock(&context->state->kv_mutex);
-	return(status);
-}
-
-static SparkStatus SparkLagunaValidateFrame(
-	const SparkLagunaModuleState *state,
-	const SparkModelDriverFrame *frame,
-	const SparkLagunaResidentDecodeStageFrameContext **context_out)
-{
-	const SparkLagunaResidentDecodeStageFrameContext *context;
-	const SparkLagunaResidentDecodeStageBatchView *batch;
-	uint32_t expected_flags,prefill;
-	uint64_t boundary_bytes;
-	SparkStatus status;
-	if ( state == 0 || frame == 0 || context_out == 0 || frame->user_context == 0 || frame->execution_stream != state->execution_stream || frame->completion_function == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	context = (const SparkLagunaResidentDecodeStageFrameContext *)frame->user_context;
-	if ( context->abi_version != SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != sizeof(*context) || context->reserved0 != 0u || (context->flags & ~SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_KNOWN_FLAGS) != 0u || context->batch == 0 )
-		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	batch = context->batch;
-	if ( batch->abi_version != SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION || batch->descriptor_bytes != sizeof(*batch) || batch->row_count == 0u || batch->row_count > SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || batch->active_sequence_count == 0u || batch->active_sequence_count > state->resident_sequence_capacity || batch->row_resident_slots == 0 || batch->row_positions == 0 || batch->row_sequence_ids == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
-	if ( prefill == 0u && batch->row_count != batch->active_sequence_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( frame->active_slot_count != batch->active_sequence_count || frame->new_token_count != batch->row_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( state->owns_embedding != 0u && batch->token_ids == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	expected_flags = prefill != 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
-	expected_flags |= state->owns_embedding == 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT : 0u;
-	expected_flags |= state->owns_final_head == 0u ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_OUTPUT : 0u;
-	if ( context->flags != expected_flags )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	boundary_bytes = (uint64_t)batch->row_count * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_BYTES;
-	if ( (state->owns_embedding == 0u && (context->hidden_input_bf16 == 0 || context->hidden_input_bytes < boundary_bytes)) || (state->owns_embedding != 0u && (context->hidden_input_bf16 != 0 || context->hidden_input_bytes != 0u)) || (state->owns_final_head == 0u && (context->hidden_output_bf16 == 0 || context->hidden_output_bytes < boundary_bytes)) || (state->owns_final_head != 0u && (context->hidden_output_bf16 != 0 || context->hidden_output_bytes != 0u)) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkLagunaValidateRoundMajor(state,batch);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkLagunaValidateFrameBuffers(state,frame,batch->row_count);
-	*context_out = status == SPARK_STATUS_OK ? context : 0;
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_validate_frame_laguna.h"
 
 #define SPARK_LAGUNA_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LAGUNA_TP_CHAIN_OPERATIONS ((2u * SPARK_LAGUNA_MODEL_LAYER_COUNT + 16u) * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT)
@@ -1327,10 +1161,7 @@ static SparkStatus SparkLagunaModuleReduceHidden(SparkLagunaTpChain *chain,void 
 	}
 }
 
-static SparkStatus SparkLagunaModuleReduceAttentionOut(SparkLagunaTpChain *chain,void *device_bf16)
-{
-	return(SparkLagunaModuleReduceHidden(chain,device_bf16));
-}
+#include "sparkpipe/family/module/spark_module_reduce_attention_out_laguna.h"
 
 static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
 {
@@ -1420,22 +1251,7 @@ static SparkStatus SparkLagunaLazyRelease(SparkLagunaTpChain *chain)
 	return(status);
 }
 
-static SparkStatus SparkLagunaLazyRecoverLease(SparkLagunaModuleState *state,uint32_t slot,SparkLagunaTpChain **out)
-{
-	SparkLagunaTpChain *chain;
-	SparkStatus status = SPARK_STATUS_OK;
-	*out = 0;
-	chain = atomic_exchange_explicit(&state->lazy_retained[slot],0,memory_order_acq_rel);
-	if ( chain == 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	if ( chain->expert_lease != 0u )
-		status = SparkLagunaLazyRelease(chain);
-	if ( status != SPARK_STATUS_OK )
-		atomic_store_explicit(&state->lazy_retained[slot],chain,memory_order_release);
-	else
-		*out = chain;
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_lazy_recover_lease.h"
 
 static void SparkLagunaLazyRetryRetained(void *context)
 {
@@ -1447,14 +1263,7 @@ static void SparkLagunaLazyRetryRetained(void *context)
 			SparkLagunaTpChainFail(chain,chain->retained_status);
 }
 
-static void SparkLagunaTpChainReduceMlp(SparkLagunaTpChain *chain)
-{
-	SparkStatus status;
-	chain->stage = SPARK_LAGUNA_CHAIN_STAGE_REDUCE_MLP;
-	status = SparkLagunaModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
-	if ( status != SPARK_STATUS_OK )
-		SparkLagunaTpChainFail(chain,status);
-}
+#include "sparkpipe/family/module/spark_module_tp_chain_reduce_mlp.h"
 
 static SparkStatus SparkLagunaLazyExperts(SparkLagunaTpChain *chain)
 {
@@ -1723,23 +1532,7 @@ static void CUDART_CB SparkLagunaCompleteAsync(void *context)
 		fprintf(stderr,"GLM completion handoff failed: status %d; retaining lane and slot ownership\n",(int32_t)status);
 }
 
-static SparkStatus SparkLagunaClaimCacheFrame(SparkLagunaModuleState *state,const SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageBatchView *batch,const uint64_t *next_positions)
-{
-	uint32_t lane;
-	SparkStatus status;
-	if ( frame->cache_lanes == 0 || frame->cache_lane_count != batch->active_sequence_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) == 0u || frame->driver_dispatch_slot != (uint32_t)(frame->request_id % state->pipeline_slot_count) )
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	for (lane=0u; lane<frame->cache_lane_count; lane++)
-		if ( frame->cache_lanes[lane].resident_sequence_slot != batch->row_resident_slots[lane] || frame->cache_lanes[lane].sequence_id != batch->row_sequence_ids[lane] || frame->cache_lanes[lane].sequence_position != batch->row_positions[lane] || frame->cache_lanes[lane].context_token_count != next_positions[lane] )
-			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	if ( pthread_mutex_lock(&state->kv_mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkKvLaneTransactionsClaim(&state->kv_transactions,frame);
-	(void)pthread_mutex_unlock(&state->kv_mutex);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_claim_cache_frame.h"
 
 static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,SparkModelDriverFrame *frame,const SparkLagunaResidentDecodeStageFrameContext *context,uint32_t slot_index)
 {
@@ -1824,28 +1617,7 @@ static SparkStatus SparkLagunaExecuteBatch(SparkLagunaModuleState *state,SparkMo
 	return(status);
 }
 
-SparkStatus SparkLagunaResidentDecodeStageExecute(
-	void *module_state,
-	SparkModelDriverFrame *frame)
-{
-	SparkLagunaModuleState *state;
-	const SparkLagunaResidentDecodeStageFrameContext *context;
-	SparkStatus status;
-	state = (SparkLagunaModuleState *)module_state;
-	context = 0;
-	status = SparkLagunaValidateFrame(state,frame,&context);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"G5N-DBG execute: ValidateFrame -> %d\n",(int)status);
-		if ( state != 0 )
-			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(status);
-	}
-	status = SparkLagunaExecuteBatch(state,frame,context);
-	if ( status != SPARK_STATUS_OK )
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
 
 static SparkStatus SparkLagunaResetExecutionState(SparkLagunaModuleState *state)
 {
@@ -1970,28 +1742,7 @@ SparkStatus SparkLagunaResidentDecodeStageAdmit(
 	return(status);
 }
 
-SparkStatus SparkLagunaResidentDecodeStageSnapshot(
-	void *module_state,
-	uint32_t program_id,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkLagunaModuleState *state;
-	uint32_t index,resident_count;
-	state = (SparkLagunaModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
-	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
-	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);
-	snapshot->rejected_count = atomic_load_explicit(&state->rejected_count,memory_order_relaxed);
-	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-	resident_count = 0u;
-	for (index=0u; index<state->resident_sequence_capacity; index++)
-		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
-	snapshot->resident_sequence_count = resident_count;
-	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
 
 static void SparkLagunaReleaseCaches(SparkLagunaModuleState *state)
 {

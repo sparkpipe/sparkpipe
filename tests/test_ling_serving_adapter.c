@@ -129,6 +129,23 @@ static void TestLingServingFailedSubmitAbortsCache(
 	assert(dlclose(driver) == 0);
 }
 
+static void TestLingServingLeaseFailureCompletes(
+	const SparkModelServingAdapterInterface *adapter,
+	void *adapter_state,
+	SparkModelServingSubmission *submission,
+	TestLingServingState *test_state)
+{
+	uint64_t request_id;
+	request_id = submission->request_id;
+	submission->request_id = 7779u;
+	assert(adapter->submit(adapter_state,submission) == SPARK_STATUS_OK);
+	assert(test_state->completion_count == 3u);
+	assert(test_state->completion.status == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(test_state->completion.token_count == 0u);
+	assert(SparkModelServingAdapterValidateCompletion(adapter->descriptor,&test_state->completion) == SPARK_STATUS_OK);
+	submission->request_id = request_id;
+}
+
 static void TestLingServingDecodeSubmission(
 	SparkModelServingSubmission *submission,
 	SparkModelServingLane *lanes,
@@ -302,6 +319,7 @@ int main(void)
 	assert(test_state.completion_count == 2u);
 	TestLingServingFailedSubmitAbortsCache(&library.adapter_interface,adapter_state,&submission);
 	assert(test_state.completion_count == 2u);
+	TestLingServingLeaseFailureCompletes(&library.adapter_interface,adapter_state,&submission,&test_state);
 	library.adapter_interface.destroy(adapter_state);
 	SparkModelServingAdapterUnloadInterface(&library);
 	assert(cudaStreamDestroy((cudaStream_t)test_state.execution_stream) == cudaSuccess);

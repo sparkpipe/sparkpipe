@@ -86,20 +86,12 @@ GPU_VALIDATOR := validation/validate_qwen4_flash_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/$(EXPERT_CODEC)/libqwen4_flash_serving_adapter_$(EXPERT_CODEC).so
+ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/$(EXPERT_CODEC)/libqwen4_flash_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
+ADAPTER_SOURCE := source/spark_qwen4_flash_serving_adapter.c
+ADAPTER_FLAGS = $(ADAPTER_CUDA_FLAGS) -DQWEN4_FLASH_MODEL_DESCRIPTION_SHA256=\"$(QWEN4_FLASH_MODEL_DESCRIPTION_SHA256)\"
+ADAPTER_LINK = $(ADAPTER_CUDA_LINK)
 
-.PHONY: adapter
-adapter:
-	@test "$(EXPERT_CODEC)" = fp8 || { echo "adapter: EXPERT_CODEC=fp8 is required, got '$(EXPERT_CODEC)'" >&2; exit 2; }
-	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(dir $(ADAPTER_LIBRARY))"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -shared \
-		-I$(REPOSITORY_ROOT)/src -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) \
-		$(MODULE_COMPILE_FLAGS) \
-		-DQWEN4_FLASH_MODEL_DESCRIPTION_SHA256=\"$(QWEN4_FLASH_MODEL_DESCRIPTION_SHA256)\" \
-		source/spark_qwen4_flash_serving_adapter.c \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
-		-L"$(CUDA_HOME)/lib64" -lcudart -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
+.PHONY: require_fp8_adapter
+adapter: require_fp8_adapter
+require_fp8_adapter:
+	@test "$(EXPERT_CODEC)" = fp8 || { echo "qwen4_flash: the adapter needs EXPERT_CODEC=fp8, got '$(EXPERT_CODEC)'" >&2; exit 2; }

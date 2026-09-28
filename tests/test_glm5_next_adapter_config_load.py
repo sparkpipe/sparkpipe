@@ -446,7 +446,7 @@ def main() -> int:
                "-I" + str(ROOT / "model-families/glm5_next/include"),
                "-I" + str(ROOT / "modules/glm5_next_resident_decode_stage/include"),
                "-I" + str(ROOT / "modules/glm5_next_resident_decode_stage/source"),
-               "-O0", "-D_GNU_SOURCE",
+               "-O0", "-D_GNU_SOURCE", "-DSPARK_BATCH_BUCKET=1024u",
                "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"",
                "-DGLM5_NEXT_MODEL_REVISION=\"" + revision + "\"",

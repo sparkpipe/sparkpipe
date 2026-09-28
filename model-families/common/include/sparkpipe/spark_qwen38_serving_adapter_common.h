@@ -38,7 +38,7 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDriverCompletion)(
 		pending->frame_status = SPARK_STATUS_SCHEMA_ERROR;
 		return;
 	}
-	pending->frame_status = (SparkStatus)driver_completion->status;
+	pending->frame_status = (SparkStatus)SparkModelServingCompletionStatus((uint32_t)driver_completion->status);
 	pending->residency = driver_completion->residency;
 	pending->accepted_token_count += driver_completion->accepted_token_count;
 	pending->queue_delay_ns += driver_completion->queue_delay_ns;

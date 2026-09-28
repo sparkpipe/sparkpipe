@@ -424,7 +424,7 @@ static void SparkGlm52ServingDriverCompletion(
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-	completion.status = matches != 0u ? (uint32_t)driver_completion->status : SPARK_STATUS_SCHEMA_ERROR;
+	completion.status = matches != 0u ? SparkModelServingCompletionStatus((uint32_t)driver_completion->status) : SPARK_STATUS_SCHEMA_ERROR;
 	completion.submission_id = pending->common.submission_id;
 	completion.request_id = pending->common.request_id;
 	completion.sequence_id = pending->common.sequence_id;
@@ -702,29 +702,7 @@ static SparkStatus SparkGlm52ServingAdmit(
 
 #include "sparkpipe/family/serving/spark_serving_cache_context.h"
 
-static SparkStatus SparkGlm52ServingPrefetch(void *adapter_state,const SparkModelServingSubmission *submissions,uint32_t submission_count)
-{
-	SparkGlm52ServingState *state;
-	SparkServingCacheAdmission cache;
-	state = (SparkGlm52ServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 || submissions == 0 || submission_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	cache = SparkGlm52ServingCacheContext(state,state->prefetch_lanes);
-	return(SparkServingCacheAdmissionRun(&cache,submissions,submission_count,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE));
-}
-
-static SparkStatus SparkGlm52ServingResolvePrefetch(void *adapter_state,const SparkModelServingSubmission *submission,uint32_t resolution)
-{
-	SparkGlm52ServingState *state;
-	SparkServingCacheAdmission cache;
-	uint32_t flags;
-	state = (SparkGlm52ServingState *)adapter_state;
-	if ( state == 0 || state->program == 0 || submission == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	flags = resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ? SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
-	cache = SparkGlm52ServingCacheContext(state,state->prefetch_lanes);
-	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
-}
+#include "sparkpipe/family/serving/spark_serving_prefetch_scratch.h"
 
 static SparkStatus SparkGlm52ServingSubmit(
 	void *adapter_state,

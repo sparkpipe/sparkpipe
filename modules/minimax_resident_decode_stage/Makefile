@@ -87,32 +87,7 @@ BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/minimax_resident_decode_stag
 
 include ../resident_decode_stage_rules.mk
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-ADAPTER_SHARED_FLAGS := -dynamiclib
-ADAPTER_LIBRARY_EXT := dylib
-else
-ADAPTER_SHARED_FLAGS := -shared
-ADAPTER_LIBRARY_EXT := so
-endif
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libminimax_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
-
-.PHONY: adapter
-
-# TP4 text-tower serving adapter in the codec-scoped module build slot
-# tools/module_build_release.sh expects (gemma4 dense precedent).
-adapter:
-	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		-D_POSIX_C_SOURCE=200809L \
-		-DMINIMAX_MODEL_REVISION=\"$(MINIMAX_MODEL_REVISION)\" \
-		-DMINIMAX_CONTRACT_SHA256=\"$(MINIMAX_CONTRACT_SHA256)\" \
-		-I"$(CUDA_HOME)/include" \
-		$(MODULE_INCLUDE_FLAGS) -DSPARK_BATCH_BUCKET=1024u \
-		source/spark_minimax_serving_adapter.c \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
-		-L"$(CUDA_HOME)/lib64" -lcudart -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
+ADAPTER_SOURCE := source/spark_minimax_serving_adapter.c
+ADAPTER_FLAGS = -D_POSIX_C_SOURCE=200809L -DMINIMAX_MODEL_REVISION=\"$(MINIMAX_MODEL_REVISION)\" -DMINIMAX_CONTRACT_SHA256=\"$(MINIMAX_CONTRACT_SHA256)\" \
+	-I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) -DSPARK_BATCH_BUCKET=1024u
+ADAPTER_LINK = $(ADAPTER_CUDA_LINK)

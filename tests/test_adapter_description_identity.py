@@ -10,27 +10,43 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 DESCRIPTIONS = ROOT / "examples/model_descriptions"
-FIELDS = (
-    ("model_id", "SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DRIVER_MODEL_ID)"),
-    ("model_revision", "SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION"),
-    ("stage_name", "SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_NAME)"),
-    ("target", "SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_TARGET)"),
-    ("model_description_sha256", "SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256"),
-)
+NAMES = ("model_id", "model_revision", "stage_name", "target", "model_description_sha256")
+TEMPLATE = ("SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DRIVER_MODEL_ID)", "SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION", "SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_NAME)", "SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_TARGET)", "SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256")
 LIBRARY = "dylib" if os.uname().sysname == "Darwin" else "so"
-QWEN38_MAX_BUILD = ["EXPERT_CODEC=fp8", "MODEL_REVISION=d2dc35658bcf77e66643428cb52e774cc3b5bd29", "CONTRACT_SHA256=" + "0" * 64]
+INVOKED = ["MODEL_REVISION=build-supplied", "CONTRACT_SHA256=" + "0" * 64]
+
+
+def own(prefix, revision, description_hash):
+    return (f"SPARK_{prefix}_SERVING_DRIVER_MODEL_ID", revision, f"SPARK_{prefix}_SERVING_STAGE_NAME", f"SPARK_{prefix}_SERVING_TARGET", description_hash)
+
+
+def root_case(name, family, fields, description, module_arguments):
+    return (name, ".", [f"build/lib{name}_serving_adapter.{LIBRARY}"], family, fields, description, ["-C", f"modules/{family}_resident_decode_stage", *module_arguments])
+
+
+def module_case(family, fields, description, arguments):
+    return (family, f"modules/{family}_resident_decode_stage", ["adapter", *arguments], family, fields, description, ["-C", f"modules/{family}_resident_decode_stage", *arguments])
+
+
+def glm52_case(codec):
+    fields = ("SPARK_GLM52_SERVING_DRIVER_MODEL_ID", None, "SPARK_GLM52_SERVING_STAGE_NAME", "SPARK_GLM52_SERVING_TARGET", "GLM_MODEL_DESCRIPTION_SHA256")
+    return module_case("glm52", fields, f"glm52_resident_decode_stage_{codec}_firmware.json", [f"EXPERT_CODEC={codec}", *INVOKED])
+
+
 CASES = (
-    ("gemma4", ".", [f"build/libgemma4_serving_adapter.{LIBRARY}"], "gemma4", "gemma4_resident_decode_stage_bf16_firmware.json", ["-C", "modules/gemma4_resident_decode_stage"]),
-    ("gemma4_moe", ".", [f"build/libgemma4_moe_serving_adapter.{LIBRARY}"], "gemma4", "gemma4_26b_resident_decode_stage_firmware.json", ["-C", "modules/gemma4_resident_decode_stage", "-f", "Makefile.moe"]),
-    ("muse_glimmer", ".", [f"build/libmuse_glimmer_serving_adapter.{LIBRARY}"], "muse_glimmer", "muse_glimmer_resident_decode_stage_firmware.json", ["-C", "modules/muse_glimmer_resident_decode_stage"]),
-    ("minimax", "modules/minimax_resident_decode_stage", ["adapter"], "minimax", "minimax_resident_decode_stage_bf16_firmware.json", ["-C", "modules/minimax_resident_decode_stage"]),
-    ("qwen38_max", "modules/qwen38_max_resident_decode_stage", ["adapter", *QWEN38_MAX_BUILD], "qwen38_max", "qwen38_max_resident_decode_stage_firmware.json", ["-C", "modules/qwen38_max_resident_decode_stage", *QWEN38_MAX_BUILD]),
-    ("qwen4_flash", "modules/qwen4_flash_resident_decode_stage", ["adapter", "EXPERT_CODEC=fp8"], "qwen4_flash", "qwen4_flash_resident_decode_stage_firmware.json", ["-C", "modules/qwen4_flash_resident_decode_stage"]),
+    root_case("gemma4", "gemma4", TEMPLATE, "gemma4_resident_decode_stage_bf16_firmware.json", []),
+    root_case("gemma4_moe", "gemma4", TEMPLATE, "gemma4_26b_resident_decode_stage_firmware.json", ["-f", "Makefile.moe"]),
+    root_case("muse_glimmer", "muse_glimmer", TEMPLATE, "muse_glimmer_resident_decode_stage_firmware.json", []),
+    root_case("laguna", "laguna", own("LAGUNA", "LAGUNA_MODEL_REVISION", None), "laguna_resident_decode_stage_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
+    root_case("ling", "ling", own("LING", "LING_MODEL_REVISION", None), "ling_resident_decode_stage_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
+    root_case("qwen38_27b", "qwen38_27b", own("QWEN38_27B", "QWEN38_27B_MODEL_REVISION", "QWEN38_27B_CONTRACT_SHA256"), "qwen38_27b_resident_decode_stage_firmware.json", []),
+    root_case("dsv4", "dsv4", ("SPARK_DSV4_SERVING_DRIVER_MODEL_ID", "SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION", "SPARK_DSV4_SERVING_DRIVER_STAGE_NAME", None, "SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256"), "dsv4_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
+    module_case("minimax", TEMPLATE, "minimax_resident_decode_stage_bf16_firmware.json", []),
+    module_case("qwen4_flash", TEMPLATE, "qwen4_flash_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8"]),
+    module_case("qwen38_max", TEMPLATE[:1] + (None,) + TEMPLATE[2:], "qwen38_max_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
+    module_case("glm5_next", own("GLM5_NEXT", None, None), "glm5_next_resident_decode_stage_fp8_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
+    *(glm52_case(codec) for codec in ("bf16", "int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")),
 )
-
-
-def adapter_source(family):
-    return ROOT / f"modules/{family}_resident_decode_stage/source/spark_{family}_serving_adapter.c"
 
 
 def run(command, cwd):
@@ -56,11 +72,11 @@ def compile_flags(directory, goals, source):
     return flags
 
 
-def adapter_contract(directory, goals, family):
-    source = adapter_source(family)
+def adapter_contract(directory, goals, family, fields):
+    source = ROOT / f"modules/{family}_resident_decode_stage/source/spark_{family}_serving_adapter.c"
     with tempfile.TemporaryDirectory() as temp:
         probe = Path(temp) / "probe.c"
-        probe.write_text(f'#include "{source}"\n' + "".join(f"spark_probe_{name} {expression}\n" for name, expression in FIELDS))
+        probe.write_text(f'#include "{source}"\n' + "".join(f"spark_probe_{name} {expression}\n" for name, expression in zip(NAMES, fields) if expression))
         output = run(["cc", "-E", "-P", *compile_flags(directory, goals, source), "-I" + str(ROOT / "tests/cuda_stub"), str(probe)], ROOT / directory)
     values = {}
     for line in output.splitlines():
@@ -77,15 +93,15 @@ def module_identity(arguments):
 
 class AdapterDescriptionIdentity(unittest.TestCase):
     def test_adapters_send_what_their_description_compiles_to(self):
-        for name, directory, goals, family, description, module_arguments in CASES:
-            with self.subTest(adapter=name):
+        for name, directory, goals, family, fields, description, module_arguments in CASES:
+            with self.subTest(adapter=name, description=description):
                 path = DESCRIPTIONS / description
                 document = json.loads(path.read_text())
                 (stage,) = document["stages"]
                 modules = {operation["module"] for program in stage["programs"] for operation in program["operations"]}
+                described = dict(zip(NAMES, (document["model"]["id"], document["model"]["revision"], stage["name"], stage["target"], hashlib.sha256(path.read_bytes()).hexdigest())))
                 identifier, target = module_identity(module_arguments)
-                contract = adapter_contract(directory, goals, family)
-                self.assertEqual(contract, {"model_id": document["model"]["id"], "model_revision": document["model"]["revision"], "stage_name": stage["name"], "target": stage["target"], "model_description_sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+                self.assertEqual(adapter_contract(directory, goals, family, fields), {name: described[name] for name, expression in zip(NAMES, fields) if expression})
                 self.assertEqual((stage["target"], modules), (target, {identifier}))
 
 

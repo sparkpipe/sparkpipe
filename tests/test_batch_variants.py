@@ -9,8 +9,9 @@ units with -DSPARK_BATCH_BUCKET=<n> the only difference, and every
 per-bucket constant lives in the family's spark_<model>_batch_tuning.h. A
 bucket is a capacity ceiling - b8 serves 1-8 rows - and runtime selection
 takes the tightest ceiling at or above the microbatch, so a live batch pads
-to at most twice itself; B1024 is the unflagged build and keeps the family's
-published unbucketed module identifier.
+to at most twice itself; B1024 is the default archive, which every family
+Makefile names explicitly, and keeps the family's published unbucketed
+module identifier.
 
 What fails here:
   * a per-bucket fork: a second bucket-rule template, a hand-written bucket
@@ -20,6 +21,7 @@ What fails here:
   * a make target declared .PHONY but never defined (the variant targets
     were born exactly that way)
   * a firmware capacity ceiling that no longer tracks the compiled bucket
+  * a tuning header that compiles without -DSPARK_BATCH_BUCKET
   * a selection function that disagrees with the ceiling contract - checked
     by compiling and running a host probe per bucket, no CUDA involved
 """
@@ -81,6 +83,33 @@ K3_ID_SUFFIX = "v2"
 DSV4_ID_PREFIX = ("spark.dsv4.flash.resident_decode_stage.linear_fp8."
                   "expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731")
 DSV4_ID_SUFFIX = "v4"
+
+DEFAULT_PROBES = (
+    ("dsv4", ("sparkpipe/spark_dsv4_model.h", "sparkpipe/spark_dsv4_batch_tuning.h"),
+     ("-Iinclude", "-Imodel-families/dsv4/include",
+      "-Imodules/dsv4_resident_decode_stage/include")),
+    ("glm52", ("sparkpipe/spark_glm52_batch_tuning.h",),
+     ("-I.", "-Iinclude", "-Imodel-families/glm52/include",
+      "-Imodules/glm52_resident_decode_stage/include",
+      '-DGLM_EXPERT_CODEC_NAME="mxfp4"')),
+    ("k3", ("sparkpipe/spark_k3_batch_tuning.h",),
+     ("-I.", "-Iinclude", "-Imodules/k3_resident_decode_stage/include")),
+    ("glm5_next", ("sparkpipe/spark_glm5_next_batch_tuning.h",),
+     ("-Iinclude", "-Imodel-families/common/include",
+      "-Imodel-families/glm5_next/include",
+      "-Imodules/glm5_next_resident_decode_stage/include",
+      '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"')),
+    ("laguna", ("sparkpipe/spark_laguna_batch_tuning.h",),
+     ("-Iinclude", "-Imodel-families/common/include",
+      "-Imodel-families/laguna/include",
+      "-Imodules/laguna_resident_decode_stage/include",
+      '-DLAGUNA_EXPERT_CODEC_NAME="bf16"')),
+    ("ling", ("sparkpipe/spark_ling_batch_tuning.h",),
+     ("-Iinclude", "-Imodel-families/common/include",
+      "-Imodel-families/ling/include",
+      "-Imodules/ling_resident_decode_stage/include",
+      '-DLING_EXPERT_CODEC_NAME="bf16"')),
+)
 
 FAILURES = []
 
@@ -184,15 +213,13 @@ def check_tuning_header(path, family, id_prefix, id_suffix, extra_paths=()):
         text += open(extra_path).read()
     upper = family.upper()
 
-    if family == "dsv4":
-        if "#define SPARK_BATCH_BUCKET" in text:
-            report("explicit bucket", rel,
-                   "DSV4 must fail when the build omits its bucket")
-        if not text.startswith("#pragma once\n") or "#ifndef" in text:
-            report("header guard", rel,
-                   "DSV4 uses pragma once and no ifndef fallback")
-    elif "#define SPARK_BATCH_BUCKET 1024u" not in text:
-        report("default bucket", rel, "the unflagged build must be b1024")
+    if "#define SPARK_BATCH_BUCKET" in text:
+        report("explicit bucket", rel,
+               "the build must fail when it omits its bucket")
+    if family == "dsv4" and (not text.startswith("#pragma once\n") or
+                             "#ifndef" in text):
+        report("header guard", rel,
+               "DSV4 uses pragma once and no ifndef fallback")
     # The guard closes the set: every bucket named exactly as the flag spells
     # it, so a typo'd -DSPARK_BATCH_BUCKET is a build error, not a silent tune.
     guard = re.search(r"#if SPARK_BATCH_BUCKET != 1u.*?#error", text, re.S)
@@ -427,21 +454,22 @@ def check_selection_contract():
                 report("probe run", f"bucket b{bucket}",
                        "the compiled selection contract asserted")
 
-        # DSV4 has no implicit bucket.  Its root and module Makefiles name
-        # B1024 explicitly, while every generated variant supplies its rung.
-        default_source = _scratch("probe_default.c")
-        pathlib.Path(default_source).write_text(
-            '#include "sparkpipe/spark_dsv4_model.h"\n'
-            '#include "sparkpipe/spark_dsv4_batch_tuning.h"\n'
-            'int main(void) { return(0); }\n'
-        )
-        built = subprocess.run(
-            [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", codec_flag,
-             *include_flags, default_source, "-o", os.devnull],
-            cwd=ROOT, capture_output=True, text=True)
-        if built.returncode == 0:
-            report("probe default", "unflagged DSV4 build",
-                   "a missing bucket must fail loudly")
+        # No family has an implicit bucket. Each Makefile names B1024 for
+        # the default archive, and every generated variant supplies its rung.
+        for label, headers, flags in DEFAULT_PROBES:
+            default_source = _scratch(f"probe_default_{label}.c")
+            pathlib.Path(default_source).write_text(
+                "".join(f'#include "{header}"\n' for header in headers) +
+                'int main(void) { return(0); }\n'
+            )
+            for bucket_flags, expect_built in ((["-DSPARK_BATCH_BUCKET=1024u"], True), ([], False)):
+                built = subprocess.run(
+                    [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                     *bucket_flags, *flags, default_source, "-o", os.devnull],
+                    cwd=ROOT, capture_output=True, text=True)
+                if (built.returncode == 0) != expect_built:
+                    report("probe default", f"{label} build {bucket_flags}",
+                           "a missing bucket must fail loudly, a named one must build")
 
         # A bucket outside the set must not compile at all: the variant list
         # is closed, so a typo'd bucket is a build error, not a silent tune.

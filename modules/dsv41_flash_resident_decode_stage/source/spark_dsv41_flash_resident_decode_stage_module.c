@@ -21,10 +21,6 @@
 
 #define SPARK_DSV41_FLASH_MODULE_TAG "dsv41_flash_stage"
 
-#ifndef SPARK_BATCH_BUCKET
-#define SPARK_BATCH_BUCKET 1024u
-#endif
-
 typedef struct SparkDsv41FlashManifestContext
 {
 	const SparkDsv41FlashStagePackEntry *entries;

@@ -208,14 +208,14 @@ stdint, `SparkStatus` returns). Modules marked *(shim)* wrap existing shared sea
 The fused FP32 allreduce (100us path, piece 1) + publish/wait/guard + u64 maxloc.
 ```c
 /* kernels.cuh (CUDACC only): launchers take (cudaStream_t, ...) */
-cudaError_t SparkGlm5NextLaunchSumRanksF32(stream, void *dest,
+cudaError_t SparkTpLaunchSumRanksF32(stream, void *dest,
     const void *const *sources, uint32_t source_count, uint32_t element_count);
-cudaError_t SparkGlm5NextLaunchSeedF32(stream, float *dest, const void *a,
+cudaError_t SparkTpLaunchSeedF32(stream, float *dest, const void *a,
     const void *b, uint32_t element_count);          /* fallback path */
-cudaError_t SparkGlm5NextLaunchAddF32(stream, float *dest, const void *b, uint32_t n);
-cudaError_t SparkGlm5NextLaunchRoundF32(stream, void *dest, const float *src, uint32_t n);
-cudaError_t SparkGlm5NextLaunchAccumU64Max(stream, uint64_t *dest, const uint64_t *src, uint32_t n);
-cudaError_t SparkGlm5NextLaunchMeshPublish/Wait/Guard(stream, ...);  /* transport-internal */
+cudaError_t SparkTpLaunchAddF32(stream, float *dest, const void *b, uint32_t n);
+cudaError_t SparkTpLaunchRoundF32(stream, void *dest, const float *src, uint32_t n);
+cudaError_t SparkTpLaunchAccumU64Max(stream, uint64_t *dest, const uint64_t *src, uint32_t n);
+cudaError_t SparkTpLaunchMeshPublish/Wait/Guard(stream, ...);  /* transport-internal */
 /* family/module/spark_module_combine.h: one call fills the transport config */
 static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveConfig *configuration);
 ```

@@ -79,34 +79,7 @@ GPU_VALIDATOR := validation/validate_gemma4_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-ADAPTER_SHARED_FLAGS := -dynamiclib
-ADAPTER_LIBRARY_EXT := dylib
-else
-ADAPTER_SHARED_FLAGS := -shared
-ADAPTER_LIBRARY_EXT := so
-endif
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libgemma4_serving_adapter_$(EXPERT_CODEC).$(ADAPTER_LIBRARY_EXT)
-
-.PHONY: adapter
-
-# Dense 31B TP16 serving adapter: same sources and defines as the
-# top-level build/libgemma4_serving_adapter target, placed in the
-# codec-scoped module build slot tools/module_build_release.sh expects.
-adapter:
-	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC $(ADAPTER_SHARED_FLAGS) \
-		-D_POSIX_C_SOURCE=200809L \
-		-DGEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" \
-		-DGEMMA4_CONTRACT_SHA256=\"$(GEMMA4_CONTRACT_SHA256)\" \
-		-DGEMMA4_MODEL_DESCRIPTION_SHA256=\"$(GEMMA4_MODEL_DESCRIPTION_SHA256)\" \
-		-I"$(CUDA_HOME)/include" \
-		$(MODULE_INCLUDE_FLAGS) -DSPARK_BATCH_BUCKET=1024u \
-		source/spark_gemma4_serving_adapter.c \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
-		-L"$(CUDA_HOME)/lib64" -lcudart -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
+ADAPTER_SOURCE := source/spark_gemma4_serving_adapter.c
+ADAPTER_FLAGS = -D_POSIX_C_SOURCE=200809L -DGEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" -DGEMMA4_CONTRACT_SHA256=\"$(GEMMA4_CONTRACT_SHA256)\" \
+	-DGEMMA4_MODEL_DESCRIPTION_SHA256=\"$(GEMMA4_MODEL_DESCRIPTION_SHA256)\" -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) -DSPARK_BATCH_BUCKET=1024u
+ADAPTER_LINK = $(ADAPTER_CUDA_LINK)

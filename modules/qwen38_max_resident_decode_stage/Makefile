@@ -132,23 +132,6 @@ RUNTIME_CONFIGURATION += \
 	SPARK_QWEN38_MAX_STAGE_TP_RANK=$(VALIDATION_NODE_RANK)
 endif
 
-# Serving adapter: the shared object the residentd dlopens. Nothing else in
-# the tree builds it (build-r2: "No rule to make target 'adapter'" on all 16
-# nodes); this is the glm5_next module-local pattern, plus the real CUDA
-# runtime link this adapter needs (it includes cuda_runtime.h directly).
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libqwen38_max_serving_adapter_$(EXPERT_CODEC).so
-
-.PHONY: adapter
-adapter:
-	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
-	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -shared \
-		-I$(REPOSITORY_ROOT)/src -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) \
-		$(MODULE_COMPILE_FLAGS) \
-		-DQWEN38_MAX_MODEL_DESCRIPTION_SHA256=\"$(QWEN38_MAX_MODEL_DESCRIPTION_SHA256)\" \
-		source/spark_qwen38_max_serving_adapter.c \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_runtime.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
-		$(REPOSITORY_ROOT)/build/libsparkpipe_core.a \
-		-L"$(CUDA_HOME)/lib64" -lcudart -ldl -pthread \
-		-o "$(ADAPTER_LIBRARY)"
+ADAPTER_SOURCE := source/spark_qwen38_max_serving_adapter.c
+ADAPTER_FLAGS = $(ADAPTER_CUDA_FLAGS) -DQWEN38_MAX_MODEL_DESCRIPTION_SHA256=\"$(QWEN38_MAX_MODEL_DESCRIPTION_SHA256)\"
+ADAPTER_LINK = $(ADAPTER_CUDA_LINK)

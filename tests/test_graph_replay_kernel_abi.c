@@ -81,10 +81,10 @@ int main(int argc, char **argv)
     fprintf(stderr, "\n3. Key kernel symbols:\n");
     {
         const char *kernels[] = {
-            "SparkGlm5NextMeshWaitKernel",
-            "SparkGlm5NextMeshPublishKernel",
-            "SparkGlm5NextMeshCopyDownKernel",
-            "SparkGlm5NextSumRanksF32Kernel",
+            "SparkTpMeshWaitKernel",
+            "SparkTpMeshPublishKernel",
+            "SparkTpMeshCopyDownKernel",
+            "SparkTpSumRanksF32Kernel",
         };
         uint32_t i;
         for (i = 0; i < 4; i++) {

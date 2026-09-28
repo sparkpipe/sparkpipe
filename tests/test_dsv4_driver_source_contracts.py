@@ -4,6 +4,7 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 from family_source import read_source
 
@@ -22,6 +23,19 @@ def require(text: str, needle: str, label: str) -> None:
 def reject(text: str, needle: str, label: str) -> None:
 	if needle in text:
 		raise SystemExit(f"forbidden {label}: {needle}")
+
+
+def make_database() -> tuple[dict, dict]:
+	database = subprocess.run(["make", "-p", "-q", "--no-print-directory", "--eval", "spark-noop: ;", "spark-noop"], cwd=ROOT, capture_output=True, text=True).stdout
+	variables, rules = {}, {}
+	for line in database.splitlines():
+		name, assignment, value = line.partition(" := ")
+		if assignment and " " not in name:
+			variables[name] = value
+		target, separator, prerequisites = line.partition(": ")
+		if separator and not line.startswith(("#", "\t")) and " = " not in prerequisites:
+			rules.setdefault(target, set()).update(prerequisites.split())
+	return variables, rules
 
 
 def function_body(text: str, name: str) -> str:
@@ -436,7 +450,6 @@ def main() -> None:
 	reject(validator, "node_context->stage_count = 2u", "hardcoded validator topology")
 	reject(validator + validator_script + module, "ALLOW_UNQUALIFIED", "runtime qualification bypass")
 	require(validation_common, "-lcuda", "CUDA Driver API validator link (moved to the shared driver by DRY wave 1, 61d6edc)")
-	require(validator_script, 'batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"', "published batch variant identity")
 	require(validator_script, '"-DSPARK_BATCH_BUCKET=${batch_bucket}"', "matching validator batch geometry")
 	require(validator_script, "qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128", "retained GA stage-0 fixture")
 	require(validator_script, '"${SPARK_DSV4_STAGE_INDEX:-}" == "0"', "reference stage index gate")
@@ -455,9 +468,9 @@ def main() -> None:
 	require(module_makefile, "SPARK_DSV4_CUDA_VALIDATOR_SHA256=$(DSV4_CUDA_VALIDATOR_SHA256)", "CUDA validator digest configuration")
 	require(module_makefile, "SPARK_DSV4_REFERENCE_VERIFIER_SHA256=$(DSV4_REFERENCE_VERIFIER_SHA256)", "reference verifier digest configuration")
 	require(root_makefile, "DSV4_MODEL_HEADER := model-families/dsv4/include/sparkpipe/spark_dsv4_model.h", "DSV4 generated-header dependency")
+	variables, rules = make_database()
 	for target in ("DSV4_SERVING_ADAPTER", "DSV4_TP16_SERVING_ADAPTER", "DSV4_TP4_SERVING_ADAPTER", "DSV4_TP4_B1_SERVING_ADAPTER", "DSV4_TP4_PP4_SERVING_ADAPTER", "DSV4_TP4_PP4_B1_SERVING_ADAPTER", "TEST_DSV4_SERVING_DRIVER_MODULE", "TEST_DSV4_TP16_SERVING_DRIVER_MODULE", "TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE"):
-		rule = next(line for line in root_makefile.splitlines() if line.startswith(f"$({target}):"))
-		require(rule, "$(DSV4_MODEL_HEADER)", f"{target} generated-header rebuild dependency")
+		require(" ".join(sorted(rules.get(variables[target], ()))), variables["DSV4_MODEL_HEADER"], f"{target} generated-header rebuild dependency")
 	require(validation_common, 'validator_env="${validation_env_prefix}_CUDA_VALIDATOR_SHA256"', "CUDA validator digest env composition (DRY wave 1, 61d6edc)")
 	require(validation_common, 'require_source_digest "${!validator_env:-}" "${cuda_validator}"', "CUDA validator source binding (shared driver)")
 	require(validator_script, 'validation_env_prefix="SPARK_DSV4"', "dsv4 validator digest prefix binding")
