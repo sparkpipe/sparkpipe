@@ -18,6 +18,8 @@
 #define SPARK_TOKENIZER_SYMBOL_NONE UINT32_MAX
 #define SPARK_TOKENIZER_METASPACE_TEXT "\xe2\x96\x81"
 #define SPARK_TOKENIZER_METASPACE_BYTES 3u
+#define SPARK_TOKENIZER_BYTE_FALLBACK_PREFIX "<0x"
+#define SPARK_TOKENIZER_BYTE_FALLBACK_PREFIX_BYTES ((uint32_t)(sizeof(SPARK_TOKENIZER_BYTE_FALLBACK_PREFIX) - 1u))
 
 static uint32_t SparkTokenizerNextPowerOfTwo(
     uint32_t value)
@@ -3708,7 +3710,7 @@ static SparkStatus SparkTokenizerDecodeMetaspaceTokenText(
     uint8_t high;
     uint8_t low;
 
-    if (token_text_bytes == 6u && memcmp(token_text, "<0x", 3u) == 0 && token_text[5] == '>' &&
+    if (token_text_bytes == 6u && memcmp(token_text, SPARK_TOKENIZER_BYTE_FALLBACK_PREFIX, SPARK_TOKENIZER_BYTE_FALLBACK_PREFIX_BYTES) == 0 && token_text[5] == '>' &&
         SparkTokenizerHexNibble((uint8_t)token_text[3], &high) != 0u &&
         SparkTokenizerHexNibble((uint8_t)token_text[4], &low) != 0u)
     {
