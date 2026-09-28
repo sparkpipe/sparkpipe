@@ -214,19 +214,32 @@ def verify_archive_round_trip_does_not_contaminate_payload() -> None:
 
 def verify_required_cuda_gate_checks_package_manifest() -> None:
     gate_source = CUDA_GATE.read_text()
-    required_command = (
-        'python3 "${repository_root}/tools/verify_package_manifest.py"'
-    )
+    required_command = '"${repository_root}/tools/source_package_gate.sh"'
     if required_command not in gate_source:
         raise AssertionError(
-            "required CUDA gate does not verify the package manifest"
+            "required CUDA gate does not verify the source package"
         )
+
+
+def verify_source_package_gate_builds_and_verifies_head() -> None:
+    inside = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        print("SKIP source package gate: not a git work tree")
+        return
+    for name in ("PACKAGE_MANIFEST.json", "SHA256SUMS"):
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", name], capture_output=True)
+        if tracked.returncode == 0:
+            raise AssertionError(f"{name} is generated per package and must not be tracked")
+    result = subprocess.run([str(ROOT / "tools" / "source_package_gate.sh")], capture_output=True, text=True)
+    if result.returncode != 0 or "package manifest, payload, and checksums match" not in result.stdout:
+        raise AssertionError("source package gate failed on HEAD:\n" + result.stdout + result.stderr)
 
 
 def main() -> int:
     verify_manifest_rejects_payload_drift()
     verify_archive_round_trip_does_not_contaminate_payload()
     verify_required_cuda_gate_checks_package_manifest()
+    verify_source_package_gate_builds_and_verifies_head()
     print("package manifest generation and Git-independent verification pass")
     return 0
 

@@ -24,3 +24,5 @@ tools_local/
 *.orig
 api_submission.seq
 mock-pipeline-deployment.json
+/PACKAGE_MANIFEST.json
+/SHA256SUMS

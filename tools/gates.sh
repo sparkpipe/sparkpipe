@@ -12,4 +12,4 @@ python3 tests/test_complexity_ceiling.py
 
 make -j8 test
 tools/cuda13_sm121a_compile_gate.sh
-python3 tools/verify_package_manifest.py
+tools/source_package_gate.sh
