@@ -149,7 +149,7 @@ def build_tensors(quant):
             store(name + "_scale",
                   np.full((values.shape[0],
                            values.shape[1] // 16), 0x38, dtype=np.uint8))
-            store(name + "_scale_2", np.float32(2.0))
+            store(name + "_scale_2", np.float32(1.0))
         else:
             bf16_name(name, values)
 
@@ -441,6 +441,49 @@ def hand_computed_layer0(engine, token_id):
         + bf16_round_f32(bf16_round_f32(comb).T @ streams))
 
 
+OCP_E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+
+
+class Nvfp4Store:
+    def __init__(self, arrays):
+        self.arrays = arrays
+
+    def pread(self, name):
+        return self.arrays[name]
+
+    def entry(self, name):
+        return {"dtype": "U8" if self.arrays[name].dtype == np.uint8
+                else "F32"}
+
+
+def nvfp4_semantics_arrays(name, global_scale):
+    codes = np.array([list(range(16)), list(range(15, -1, -1))],
+                     dtype=np.uint8)
+    payload = (codes[:, 0::2] | (codes[:, 1::2] << 4)).astype(np.uint8)
+    scales = np.array([[0x38], [0x40]], dtype=np.uint8)
+    want = np.array([[(-1.0 if c & 8 else 1.0) * OCP_E2M1[c & 7]
+                      for c in row] for row in codes], dtype=np.float32)
+    want *= np.array([[1.0], [2.0]], dtype=np.float32) * np.float32(
+        global_scale)
+    arrays = {name: payload, name + "_scale": scales,
+              name + "_scale_2": np.array(global_scale, dtype=np.float32)}
+    return arrays, want
+
+
+def nvfp4_scale_semantics(module):
+    name = "w.weight"
+    arrays, want = nvfp4_semantics_arrays(name, 0.75)
+    engine = object.__new__(module.ENGINE_CLASS)
+    engine.st = Nvfp4Store(arrays)
+    engine.raw = engine.st.pread
+    spine = engine.tensor(name)
+    expect(np.array_equal(spine, want),
+           f"nvfp4 spine decode is not e2m1 x e4m3 x scale_2: {spine} vs {want}")
+    expert = engine.expert_weight(name)
+    expect(np.array_equal(expert, want),
+           f"nvfp4 expert decode is not e2m1 x e4m3 x scale_2: {expert} vs {want}")
+
+
 def main():
     workspace = tempfile.mkdtemp(prefix="t1ref-flash-test-")
     try:
@@ -494,6 +537,7 @@ def main():
         from t1_reference_common import parse_llm_defines
         defines = parse_llm_defines(header)
         config = config_document()["text_config"]
+        nvfp4_scale_semantics(module)
         engine = module.ENGINE_CLASS(checkpoint, defines, config)
         hand = f32_to_bf16_u16(hand_computed_layer0(engine, 3).reshape(-1))
         engine_out = arrays["pos0000_layer0000_streams"]
@@ -550,7 +594,8 @@ def main():
                    f"failure must name kv_b_proj: {error}")
         shutil.rmtree(workspace, ignore_errors=True)
         print("PASS t1_reference_glm53flash synthetic proof: determinism, "
-              "bf16/fp8/nvfp4 codec invariance, hand-computed layer 0 "
+              "bf16/fp8/nvfp4 codec invariance, nvfp4 OCP scale semantics, "
+              "hand-computed layer 0 "
               "bit-identical, manifest sha, negative control, "
               "defines/config fail-closed, dtype fail-closed")
         return 0

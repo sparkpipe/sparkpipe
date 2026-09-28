@@ -1,0 +1,2 @@
+PASS index context parallel degree=2 rows=1 pools=512 local_stride=256 bitwise_equal=yes
+FAIL line=107 test=SparkGlm5NextIndexCpGatherSequences(item.rows,stride) <= item.rows

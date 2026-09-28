@@ -293,8 +293,10 @@ int main(void)
 	MockResidentClientFireResult(0u, 2u, SPARK_STATUS_OK);
 	MockResidentClientFireResult(0u, 2u, SPARK_STATUS_OK);
 	(void)SparkModelPipelineClientProgress(pipeline, 8u);
-	if ( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK )
-		CHECK( view.failed_status == SPARK_STATUS_OK, "duplicate result is not fatal");
+	CHECK( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK &&
+		view.failed_status == SPARK_STATUS_OK &&
+		view.active_transaction_count == 1u,
+		"duplicate result is not fatal");
 
 	TestFireAllRanksResult(2u, SPARK_STATUS_OK);
 	(void)SparkModelPipelineClientProgress(pipeline, 8u);
@@ -307,16 +309,24 @@ int main(void)
 		.submission_id = 999u,
 	});
 	(void)SparkModelPipelineClientProgress(pipeline, 8u);
-	if ( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK )
-		CHECK( view.failed_status == SPARK_STATUS_OK, "unknown-submission completion is not fatal");
+	CHECK( cb.completion_count == 2u && cb.last_completion_status == SPARK_STATUS_OK,
+		"submission 2 completes once");
+	CHECK( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK &&
+		view.failed_status == SPARK_STATUS_OK &&
+		view.active_transaction_count == 0u &&
+		view.completed_count == 2u,
+		"unknown-submission completion is not fatal");
 
 	MockResidentClientFireResult(0u, 3u, SPARK_STATUS_OK);
 	(void)SparkModelPipelineClientProgress(pipeline, 8u);
-	if ( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK )
-		CHECK( view.failed_status == SPARK_STATUS_OK, "late result after invalidation is not fatal");
+	CHECK( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK &&
+		view.failed_status == SPARK_STATUS_OK &&
+		view.active_transaction_count == 0u &&
+		cb.result_count == 2u,
+		"result for a never-submitted id is dropped and not fatal");
 
 	TestBuildSubmission(&submission, lanes, 3u);
-	status = SparkModelPipelineClientSubmit(pipeline, &submission);
+	CHECK( SparkModelPipelineClientSubmit(pipeline, &submission) == SPARK_STATUS_OK, "submit 3");
 	MockResidentClientFireResult(0u, 3u, SPARK_STATUS_OK);
 	MockResidentClientFireResult(1u, 3u, SPARK_STATUS_BUSY);
 	MockResidentClientFireResult(2u, 3u, SPARK_STATUS_OK);
@@ -324,11 +334,23 @@ int main(void)
 	MockResidentClientFireDecision(0u, 3u, SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT, SPARK_STATUS_OK);
 	MockResidentClientFireDecision(2u, 3u, SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT, SPARK_STATUS_OK);
 	(void)SparkModelPipelineClientProgress(pipeline, 8u);
-	if ( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK )
-	{
-		CHECK( view.rejected_count != 0u || view.failed_status != SPARK_STATUS_OK,
-			"a rank's real error surfaces (not swallowed)");
-	}
+	CHECK( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK &&
+		view.rejected_count == 1u && view.failed_status == SPARK_STATUS_OK &&
+		view.active_transaction_count == 0u,
+		"a rank's BUSY rejects the submission without failing the pipeline");
+	CHECK( cb.result_count == 3u && cb.last_submission_id == 3u &&
+		cb.last_result_status == SPARK_STATUS_BUSY,
+		"a rank's BUSY surfaces as the submission result");
+	CHECK( cb.completion_count == 3u && cb.last_completion_status == SPARK_STATUS_BUSY,
+		"the aborted submission completes once with the rank's status");
+
+	MockResidentClientFireResult(1u, 3u, SPARK_STATUS_OK);
+	MockResidentClientFireDecision(1u, 3u, SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT, SPARK_STATUS_OK);
+	(void)SparkModelPipelineClientProgress(pipeline, 8u);
+	CHECK( SparkModelPipelineClientGetView(pipeline, &view) == SPARK_STATUS_OK &&
+		view.failed_status == SPARK_STATUS_OK && view.rejected_count == 1u &&
+		cb.result_count == 3u && cb.completion_count == 3u,
+		"late result and decision after invalidation are dropped and not fatal");
 
 	fingerprint_b = SparkModelPipelineClientSessionFingerprint(pipeline);
 	CHECK( fingerprint_a == fingerprint_b, "fingerprint stable without disconnects");

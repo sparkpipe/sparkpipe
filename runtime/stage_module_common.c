@@ -1510,6 +1510,53 @@ static uint64_t SparkStageModuleMonotonicNanoseconds(void)
         (uint64_t)current_time.tv_nsec;
 }
 
+SparkStatus SparkStageModulePauseTimespec(
+    uint64_t nanoseconds,
+    struct timespec *pause)
+{
+    uint64_t seconds;
+
+    if (pause == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    seconds = nanoseconds / 1000000000ull;
+    if ((time_t)seconds < 0 || (uint64_t)(time_t)seconds != seconds)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    pause->tv_sec = (time_t)seconds;
+    pause->tv_nsec = (long)(nanoseconds % 1000000000ull);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModulePauseNanoseconds(uint64_t nanoseconds)
+{
+    struct timespec pause;
+    struct timespec remaining;
+    SparkStatus status;
+
+    status = SparkStageModulePauseTimespec(nanoseconds, &pause);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (;;)
+    {
+        remaining.tv_sec = 0;
+        remaining.tv_nsec = 0;
+        if (nanosleep(&pause, &remaining) == 0)
+        {
+            return SPARK_STATUS_OK;
+        }
+        if (errno != EINTR)
+        {
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        pause = remaining;
+    }
+}
+
 static int SparkStageModuleAdmissionRejectionIsValid(
     SparkModelDriverAdmissionRejection rejection_reason)
 {

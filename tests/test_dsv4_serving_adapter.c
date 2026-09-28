@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,6 +61,20 @@ static void TestDsv4ServingPrepareAndCommit(
 		SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
 }
 
+static uint32_t TestDsv4DriverCudaGraphCount(const char *driver_path)
+{
+	uint32_t (*graph_count)(void);
+	uint32_t count;
+	void *driver;
+	driver = dlopen(driver_path,RTLD_NOW | RTLD_NOLOAD);
+	assert(driver != 0);
+	graph_count = (uint32_t (*)(void))dlsym(driver,"TestDsv4ServingDriverLastCreatedCudaGraphCount");
+	assert(graph_count != 0);
+	count = graph_count();
+	dlclose(driver);
+	return(count);
+}
+
 int main(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
@@ -75,8 +90,9 @@ int main(void)
 	uint64_t row_positions[4],row_sequence_ids[4];
 	uint64_t hidden_input_bytes;
 	char runtime_root[4096];
+	assert(unsetenv("SPARK_DSV4_DSPARK") == 0 && unsetenv("SPARK_DSV4_SPECULATORS") == 0);
 	memset(&test_state,0,sizeof(test_state));
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&library) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"deepseek-ai/DeepSeek-V4-Flash-0731") == 0);
 	assert(library.adapter_interface.descriptor->max_speculative_token_count == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);
@@ -106,7 +122,7 @@ int main(void)
 	configuration.runtime_limits.kv_physical_page_capacity = 1024u;
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	configuration.runtime_root = runtime_root;
-	configuration.node_id = "spark12";
+	configuration.node_id = "sparkc";
 	configuration.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
 	configuration.adapter_configuration_path = TEST_DSV4_SERVING_CONFIG_PATH;
 	configuration.driver_shared_object_path = TEST_DSV4_SERVING_DRIVER_PATH;
@@ -115,6 +131,10 @@ int main(void)
 	configuration.completion_function = TestDsv4ServingCompletion;
 	configuration.completion_context = &test_state;
 	adapter_state = 0;
+	assert(setenv("SPARK_DSV4_DSPARK","1",1) == 0);
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(adapter_state == 0);
+	assert(unsetenv("SPARK_DSV4_DSPARK") == 0);
 	initialize_status = library.adapter_interface.initialize(&configuration,&adapter_state);
 	if ( initialize_status != SPARK_STATUS_OK )
 		fprintf(stderr,"DSV4 adapter initialize status=%d\n",(int)initialize_status);
@@ -333,7 +353,7 @@ int main(void)
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
 	assert(snapshot.submitted_count == 5u);
 	assert(snapshot.completed_count == 5u);
-	assert(snapshot.kv_token_capacity == 0u);
+	assert(TestDsv4DriverCudaGraphCount(TEST_DSV4_SERVING_DRIVER_PATH) == 0u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.validate_submission(adapter_state,&submission) == SPARK_STATUS_BUSY);
@@ -354,7 +374,7 @@ int main(void)
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) == SPARK_STATUS_OK);
 	assert(adapter_state != 0);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
-	assert(snapshot.kv_token_capacity == SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT);
+	assert(TestDsv4DriverCudaGraphCount(TEST_DSV4_SERVING_DRIVER_PATH) == SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_GRAPH_COUNT);
 	library.adapter_interface.destroy(adapter_state);
 	configuration.adapter_configuration_path = TEST_DSV4_SERVING_GRAPHS_OVERRUN_CONFIG_PATH;
 	adapter_state = 0;

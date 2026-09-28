@@ -21,6 +21,7 @@ _donor = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_donor)
 bf16, f32, write_safetensors = (_donor.bf16, _donor.f32,
                                 _donor.write_safetensors)
+from t1_reference_common import f32_to_bf16_u16  # noqa: E402
 
 
 def write_header(path, text):
@@ -298,7 +299,12 @@ def gemma4_moe_tensors():
     return t
 
 
-def laguna_tensors():
+def laguna_bias(values):
+    return f32_to_bf16_u16(np.asarray(values, dtype=np.float32))
+
+
+def laguna_tensors(bias_key="experts", bias=None):
+    bias_rng = np.random.default_rng(23)
     rng = np.random.default_rng(17)
     t = {}
     t["model.embed_tokens.weight"] = bf16("e", (32, 16), rng)
@@ -323,6 +329,10 @@ def laguna_tensors():
             t[p + "mlp.down_proj.weight"] = bf16("dn", (16, 8), rng)
         else:
             t[p + "mlp.gate.weight"] = bf16("gw", (4, 16), rng, scale=0.5)
+            layer_bias = (bf16("eb", (4,), bias_rng) if bias is None
+                          else laguna_bias(bias))
+            if bias_key is not None:
+                t[p + f"mlp.{bias_key}.e_score_correction_bias"] = layer_bias
             for e in range(4):
                 ep = p + f"mlp.experts.{e}."
                 t[ep + "gate_proj.weight"] = bf16("g", (4, 16), rng)
@@ -549,6 +559,69 @@ def check_family(workspace, family, tensors, config, defines, engine):
                f"{family}: failure must name the mismatched MoE define")
 
 
+def laguna_generate(workspace, name, tensors):
+    checkpoint = os.path.join(workspace, f"laguna_{name}_checkpoint")
+    os.makedirs(checkpoint, exist_ok=True)
+    write_safetensors(os.path.join(checkpoint, "model.safetensors"), tensors)
+    write_json(os.path.join(checkpoint, "config.json"), laguna_config())
+    header = os.path.join(workspace, f"laguna_{name}_defines.h")
+    write_header(header, LAGUNA_DEFINES)
+    prompts = os.path.join(workspace, f"laguna_{name}_prompts.json")
+    write_json(prompts, {"prompts": [{
+        "name": "synth", "prompt_token_ids": [5, 9, 13], "new_tokens": 2,
+        "capture_layers": [3]}]})
+    output = os.path.join(workspace, f"laguna_{name}_out")
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "tools", "t1_reference_decoder.py"),
+         "--family", "laguna", "--checkpoint", checkpoint, "--header", header,
+         "--prompts", prompts, "--output", output],
+        capture_output=True, text=True)
+    fixture = os.path.join(output, "laguna", "synth.t1r")
+    if result.returncode != 0:
+        return result, None
+    return result, read_fixture(fixture)[1]
+
+
+def laguna_routes(arrays):
+    return [arrays[name].tolist() for name in sorted(arrays)
+            if name.endswith("_route_ids")]
+
+
+def check_laguna_router_bias(workspace):
+    forced = [0.0, 0.0, 4.0, 0.0]
+    barred = [0.0, 0.0, -4.0, 0.0]
+    result, under_experts = laguna_generate(
+        workspace, "experts", laguna_tensors("experts", forced))
+    expect(under_experts is not None,
+           f"laguna: bias under mlp.experts refused: {result.stderr}")
+    routes = laguna_routes(under_experts)
+    expect(len(routes) == 15,
+           f"laguna: expected 5 positions x 3 sparse layers of routes: {routes}")
+    expect(all(2 in route for route in routes),
+           f"laguna: a +4 correction bias must select expert 2: {routes}")
+    result, under_gate = laguna_generate(
+        workspace, "gate", laguna_tensors("gate", forced))
+    expect(under_gate is not None,
+           f"laguna: bias under mlp.gate refused: {result.stderr}")
+    expect(sorted(under_gate) == sorted(under_experts) and
+           all(np.array_equal(under_gate[k], under_experts[k])
+               for k in under_experts),
+           "laguna: the bias must read the same under mlp.gate and mlp.experts")
+    result, excluded = laguna_generate(
+        workspace, "barred", laguna_tensors("experts", barred))
+    expect(excluded is not None,
+           f"laguna: bias -4 run refused: {result.stderr}")
+    expect(all(2 not in route for route in laguna_routes(excluded)),
+           "laguna: a -4 correction bias must exclude expert 2")
+    result, missing = laguna_generate(
+        workspace, "missing", laguna_tensors(None))
+    expect(missing is None and result.returncode != 0,
+           "laguna: a checkpoint without a router correction bias must be "
+           "refused")
+    expect("e_score_correction_bias" in result.stderr,
+           f"laguna: the refusal must name the bias: {result.stderr}")
+
+
 def main():
     workspace = tempfile.mkdtemp(prefix="t1ref-engines-")
     try:
@@ -557,6 +630,9 @@ def main():
                          engine)
             print(f"PASS {family}: determinism, manifest sha, negative control, "
                   "defines/config fail-closed")
+        check_laguna_router_bias(workspace)
+        print("PASS laguna router bias: both tensor names, selection "
+              "follows the bias, missing bias refused")
         shutil.rmtree(workspace, ignore_errors=True)
         return 0
     except AssertionError:

@@ -172,6 +172,27 @@ make -C "${repository_root}" -j2 build/glm5_next_driver_probe \
 	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
 	> "${output_directory}/logs/glm5-next-driver-probe.txt" 2>&1
 python3 "${repository_root}/tests/test_glm5_next_driver_probe.py"
+glm5_next_gpu_tests=(
+	build/test_glm5_next_head_offset
+	build/test_glm5_next_hc_mix
+	build/test_glm5_next_index_cp
+	build/test_glm5_next_rows_kernels
+)
+if ! make -C "${repository_root}" -j2 "${glm5_next_gpu_tests[@]}" \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
+	> "${output_directory}/logs/glm5-next-gpu-tests.txt" 2>&1; then
+	echo "glm5_next GPU tests do not build for sm_121a; see logs/glm5-next-gpu-tests.txt" >&2
+	exit 5
+fi
+for gpu_test in "${glm5_next_gpu_tests[@]}"; do
+	elf_listing="$(cuobjdump --list-elf "${repository_root}/${gpu_test}")"
+	if ! grep -q 'sm_121a' <<<"${elf_listing}"; then
+		echo "CUDA test binary missing sm_121a target: ${gpu_test}" >&2
+		exit 4
+	fi
+done
 compile_cuda \
 	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu \
 	glm5_next_resident_decode_stage_fp8 \

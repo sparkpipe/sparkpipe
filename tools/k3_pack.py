@@ -42,11 +42,11 @@ transforms, each removing a defect the V1 format baked in:
                 loader binds with adds, not parsing.
 
   q-fold        kv_b's k_nope half absorbed into q_b, per head:
-                A[h] = kv_b_k[h]^T @ q_b_nope[h], then the unrotated rows -
-                heads * (kv_lora + rope) rows over q_lora
-  kv_b split    the value half of kv_b as its own [heads * v_head, kv_lora]
-                per-head table (the gate lives in v-space and does not
-                commute, so o_proj stays as shipped)
+                A[h] = kv_b_k[h]^T @ q_b_nope[h], then the unrotated rows
+                byte for byte - heads * (kv_lora + rope) rows over q_lora
+  kv_b split    the value half of kv_b, byte for byte, as its own
+                [heads * v_head, kv_lora] per-head table (the gate lives in
+                v-space and does not commute, so o_proj stays as shipped)
   gamma folds   every attention-residual score projection multiplied
                 elementwise by its RMSNorm gamma - exact, the kernel norms
                 without a weight
@@ -415,20 +415,22 @@ def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
         kv_b = bf16_to_f32(np.frombuffer(kv_b_raw, dtype=np.uint16)
                            .reshape(kv_shape))
         absorbed = np.einsum("hnl,hnq->hlq", kv_b[:, :nope, :], q_b[:, :nope, :])
-        folded = np.concatenate([absorbed, q_b[:, nope:, :]], axis=1)
-        return f32_to_bf16(folded.reshape(-1)).tobytes(), \
-            f32_to_bf16(kv_b[:, nope:, :].reshape(-1)).tobytes()
+        q_b_bits = np.frombuffer(q_b_raw, dtype=np.uint16).reshape(q_shape)
+        kv_b_bits = np.frombuffer(kv_b_raw, dtype=np.uint16).reshape(kv_shape)
+        folded = np.concatenate([f32_to_bf16(absorbed), q_b_bits[:, nope:, :]],
+                                axis=1)
+        return folded.tobytes(), kv_b_bits[:, nope:, :].tobytes()
     print("ADVISORY numpy not importable: the MLA q-fold is running the "
           "pure-python reference (f32-exact, sequential accumulation; "
           "verification-grade, not ship-grade speed)")
     q_b = bf16_raw_to_f32(q_b_raw)
     kv_b = bf16_raw_to_f32(kv_b_raw)
-    q_up = [0.0] * (heads * (kv_lora + rope) * q_lora)
-    value = [0.0] * (heads * v_head * kv_lora)
+    q_up = bytearray()
+    value = bytearray()
     for h in range(heads):
         q_base = h * (nope + rope) * q_lora
         kv_base = h * (nope + v_head) * kv_lora
-        out_base = h * (kv_lora + rope) * q_lora
+        absorbed = []
         for l in range(kv_lora):
             for q in range(q_lora):
                 acc = 0.0
@@ -436,17 +438,13 @@ def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
                     acc = f32_round(acc + f32_round(
                         kv_b[kv_base + n * kv_lora + l]
                         * q_b[q_base + n * q_lora + q]))
-                q_up[out_base + l * q_lora + q] = acc
-        for r in range(rope):
-            for q in range(q_lora):
-                q_up[out_base + (kv_lora + r) * q_lora + q] = \
-                    q_b[q_base + (nope + r) * q_lora + q]
-        v_base = h * v_head * kv_lora
-        for v in range(v_head):
-            for l in range(kv_lora):
-                value[v_base + v * kv_lora + l] = \
-                    kv_b[kv_base + (nope + v) * kv_lora + l]
-    return f32_list_to_bf16_raw(q_up), f32_list_to_bf16_raw(value)
+                absorbed.append(acc)
+        q_up += f32_list_to_bf16_raw(absorbed)
+        q_up += q_b_raw[2 * (q_base + nope * q_lora):
+                        2 * (q_base + (nope + rope) * q_lora)]
+        value += kv_b_raw[2 * (kv_base + nope * kv_lora):
+                          2 * (kv_base + (nope + v_head) * kv_lora)]
+    return bytes(q_up), bytes(value)
 
 
 # -- the pack itself ------------------------------------------------------------

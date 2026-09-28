@@ -47,6 +47,9 @@ int main(void)
 	static uint16_t query[SEQUENCES * HEADS * HEAD_DIM];
 	static uint16_t output_full[SEQUENCES * HEADS * VALUE_DIM];
 	static uint16_t output_window[SEQUENCES * HEADS * VALUE_DIM];
+	static uint16_t output_sink_full[SEQUENCES * HEADS * VALUE_DIM];
+	static uint16_t output_sink_window[SEQUENCES * HEADS * VALUE_DIM];
+	static uint16_t sinks[HEADS];
 	static uint32_t context_length[SEQUENCES];
 	static uint32_t query_sequence[SEQUENCES];
 	static uint32_t window_positions[SEQUENCES * WINDOW];
@@ -79,6 +82,8 @@ int main(void)
 	}
 	for (index = 0u; index < SEQUENCES * HEADS * HEAD_DIM; ++index)
 		query[index] = LmFloatToBf16(NextRandom());
+	for (index = 0u; index < HEADS; ++index)
+		sinks[index] = LmFloatToBf16(2.0f * NextRandom());
 	for (sequence = 0u; sequence < SEQUENCES; ++sequence)
 		for (index = 0u; index < WINDOW; ++index)
 			window_positions[(sequence * WINDOW) + index] =
@@ -90,6 +95,8 @@ int main(void)
 		printf("value %.9g\n", (double)LmBf16ToFloat(value_rows[index]));
 	for (index = 0u; index < SEQUENCES * HEADS * HEAD_DIM; ++index)
 		printf("query %.9g\n", (double)LmBf16ToFloat(query[index]));
+	for (index = 0u; index < HEADS; ++index)
+		printf("sink %.9g\n", (double)LmBf16ToFloat(sinks[index]));
 
 	LmKvView view;
 	LmKvAccessErrorReset(&access_error);
@@ -115,8 +122,22 @@ int main(void)
 			query, view, query_sequence, context_length,
 			window_positions, WINDOW, HEADS, QK_SCALE, output_window, 0)));
 
+	LM_HOST_LAUNCH(dim3(SEQUENCES, HEADS),
+		(LmGqaSinkAttentionDecodeKernel<HostGqaKv, THREADS, KV_HEADS, HEAD_DIM, VALUE_DIM>(
+			query, view, query_sequence, context_length,
+			0, 0u, HEADS, QK_SCALE, output_sink_full, 0, sinks)));
+
+	LM_HOST_LAUNCH(dim3(SEQUENCES, HEADS),
+		(LmGqaSinkAttentionDecodeKernel<HostGqaKv, THREADS, KV_HEADS, HEAD_DIM, VALUE_DIM>(
+			query, view, query_sequence, context_length,
+			window_positions, WINDOW, HEADS, QK_SCALE, output_sink_window, 0, sinks)));
+
 	for (index = 0u; index < SEQUENCES * HEADS * VALUE_DIM; ++index)
 		printf("out_full %.9g\n", (double)LmBf16ToFloat(output_full[index]));
+	for (index = 0u; index < SEQUENCES * HEADS * VALUE_DIM; ++index)
+		printf("out_sink_full %.9g\n", (double)LmBf16ToFloat(output_sink_full[index]));
+	for (index = 0u; index < SEQUENCES * HEADS * VALUE_DIM; ++index)
+		printf("out_sink_window %.9g\n", (double)LmBf16ToFloat(output_sink_window[index]));
 	for (index = 0u; index < SEQUENCES * HEADS * VALUE_DIM; ++index)
 		printf("out_window %.9g\n", (double)LmBf16ToFloat(output_window[index]));
 	return 0;

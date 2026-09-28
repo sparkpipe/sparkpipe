@@ -86,3 +86,4 @@ template<class Body> static void LmHostThreadsLaunch(dim3 grid,unsigned threads,
 }
 
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) LmHostThreadsLaunch((grid),(block),[&]() { LM_UNPAREN kernel(__VA_ARGS__); })
+#define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) LM_LAUNCH(kernel, grid, block, shared, stream, __VA_ARGS__)

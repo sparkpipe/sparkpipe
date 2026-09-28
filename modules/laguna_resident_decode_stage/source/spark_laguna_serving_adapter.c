@@ -29,6 +29,12 @@
 #ifndef LAGUNA_CONTRACT_SHA256
 #error "LAGUNA_CONTRACT_SHA256 must identify the exact package contract"
 #endif
+#ifndef LAGUNA_MODEL_DESCRIPTION_SHA256
+#error "LAGUNA_MODEL_DESCRIPTION_SHA256 must identify the firmware model description the driver compiles"
+#endif
+
+_Static_assert(sizeof(LAGUNA_MODEL_DESCRIPTION_SHA256) == 65u,
+	"LAGUNA_MODEL_DESCRIPTION_SHA256 must be a 64-digit SHA-256 hex digest");
 
 #define SPARK_LAGUNA_SERVING_ADAPTER_ID \
 	"spark.laguna.serving-adapter.tp8.expert_" LAGUNA_EXPERT_CODEC_NAME ".v1"
@@ -148,13 +154,6 @@ static const SparkModelServingAdapterDescriptor SparkLagunaServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE,
 	.stage_count = SPARK_LAGUNA_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_LAGUNA_MODEL_LAYER_COUNT,
-	/* Hybrid TP8xPP2: the 16 deployment stages are two parallel groups
-	   of eight; SparkDescriptorCheckStageLayerTotals sums ONE stage's
-	   layers per group (24 + 24 = 48) and the pairing check requires
-	   PARALLEL_FANOUT | HIDDEN_TRANSPORT alongside HYBRID_TP_PP (the k3
-	   TP4xPP4 descriptor shape - the laguna descriptor declared a
-	   pipeline topology without the hybrid flag and failed adapter_load
-	   with INVALID_ARGUMENT at the totals check). */
 	.parallel_group_size = SPARK_LAGUNA_SERVING_TP_DEGREE,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_BOUNDARY_ELEMENT_COUNT,
@@ -211,7 +210,6 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 		state->tp_collective_control_port_base = config.control_port_base;
 		state->tp_collective_topology = config.topology;
 	}
-	(void)fprintf(stderr,"LAGUNA-ADAPTER LoadTpCollective rc=%d backend=%u\n",(int)status,state->tp_collective_backend_kind);
 	return(status);
 }
 
@@ -269,7 +267,6 @@ static SparkStatus SparkLagunaServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
 	free(relative_stage_pack_path);
-	(void)fprintf(stderr,"LAGUNA-ADAPTER LoadConfiguration rc=%d\n",(int)status);
 	return(status);
 }
 
@@ -378,45 +375,28 @@ static void SparkLagunaServingDriverCompletion(
 #include "sparkpipe/family/serving/spark_serving_orphan_driver_completion_atomic.h"
 #include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
+#include "sparkpipe/family/serving/spark_serving_accepts_program.h"
+
 static SparkStatus SparkLagunaServingLoadDriver(
 	SparkLagunaServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
-	const SparkModelDriverDescriptor *descriptor;
-	SparkModelDriverCreateRequest request;
-	char error_buffer[512];
+	SparkServingAdapterDriverRequest request;
+	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
-	SparkLoadedModelDriverReset(&state->driver);
-	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_LAGUNA_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,LAGUNA_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_LAGUNA_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_LAGUNA_SERVING_TARGET) != 0 )
-		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
-	if ( state->program == 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_LAGUNA_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-	SparkModelDriverInitializeCreateRequest(&request);
-	request.node_id = configuration->node_id;
-	request.node_target = configuration->node_target;
+	request.contract.driver_model_id = SPARK_LAGUNA_SERVING_DRIVER_MODEL_ID;
+	request.contract.driver_model_revision = LAGUNA_MODEL_REVISION;
+	request.contract.driver_stage_name = SPARK_LAGUNA_SERVING_STAGE_NAME;
+	request.contract.driver_target = SPARK_LAGUNA_SERVING_TARGET;
+	request.contract.model_description_sha256 = LAGUNA_MODEL_DESCRIPTION_SHA256;
 	request.node_context = &state->node_context;
-	request.kv_logical_page_capacity =
-		configuration->runtime_limits.kv_logical_page_capacity;
-	request.kv_physical_page_capacity =
-		configuration->runtime_limits.kv_physical_page_capacity;
-	request.kv_backing_directory = configuration->kv_backing_directory;
-	request.kv_backing_maximum_bytes =
-		configuration->kv_backing_maximum_bytes;
-	request.execution_stream = configuration->execution_stream;
-	request.completion_function = SparkLagunaServingOrphanDriverCompletion;
 	request.completion_context = state;
+	request.completion_function = SparkLagunaServingOrphanDriverCompletion;
 	request.wake_function = SparkLagunaServingDriverWake;
-	request.wake_context = state;
-	status = state->driver.interface->create(&request,&state->driver_instance);
-	(void)fprintf(stderr,"LAGUNA-ADAPTER LoadDriver rc=%d\n",(int)status);
-	return(status == SPARK_STATUS_OK && state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : status);
+	program = 0;
+	status = SparkServingAdapterTemplateLoadDriver(&request,configuration,&state->driver,&program,SparkLagunaServingAcceptsProgram,state,&state->driver_instance);
+	state->program = program;
+	SPARK_RETURN(status);
 }
 
 #include "sparkpipe/family/serving/spark_serving_validate_configuration.h"
@@ -506,18 +486,6 @@ static SparkStatus SparkLagunaServingValidateBoundaries(
 	const SparkModelServingSubmission *submission)
 {
 	uint32_t pp_stage;
-	/* The hidden-transport fields are bound by the residentd route AFTER
-	   submission validation, per the rank plan the pipeline runtime
-	   derives from the descriptor's boundary geometry - the raw submit
-	   path structurally cannot carry them, so the adapter must not
-	   demand them here (the qwen38/dsv4 common-header pattern: the
-	   common validator owns pointer/bytes pairing, the runtime owns
-	   stage geometry). The 011d rank-11 abort (CAPACITY_EXCEEDED at
-	   submission validation) was this function requiring a hidden
-	   input on the second pipeline stage before the route bind filled
-	   it; the boundary_bytes placeholder never guarded a real contract.
-	   Keep laguna's own stage derivation as the hybrid TP8xPP2
-	   topology guard and reject sideband on the raw path. */
 	pp_stage = state->stage_index / SPARK_LAGUNA_SERVING_TP_DEGREE;
 	if ( pp_stage >= SPARK_LAGUNA_SERVING_PIPELINE_STAGES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -577,15 +545,6 @@ static void SparkLagunaServingBuildFrame(
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
-	/* The module's ValidateFrame derives the expected flag set from the
-	   stage plan (owns_embedding/owns_final_head): a frame consuming a
-	   route-bound hidden input carries FRAME_FLAG_HIDDEN_INPUT, a frame
-	   shipping one carries FRAME_FLAG_HIDDEN_OUTPUT, and only the final
-	   stage (no hidden output to ship) materializes token ids. Derive
-	   the flags and the token buffer from the SAME bound fields so the
-	   frame the adapter builds matches the plan the route filled -
-	   011f died at ValidateFrame (schema_error): the flags were always
-	   zero and the WRITE buffer rode every stage. */
 	context->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	if ( submission->hidden_input_address != 0 )
 		context->flags |= SPARK_LAGUNA_RESIDENT_DECODE_STAGE_FRAME_FLAG_HIDDEN_INPUT;
@@ -643,8 +602,6 @@ static SparkStatus SparkLagunaServingSubmit(
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	SparkLagunaServingBuildFrame(state,submission,pending);
 	status = SparkLagunaServingAdmit(state,submission,pending,&pending->frame);
-	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"G5N-DBG submit: admit -> %d\n",(int)status);
 	if ( status == SPARK_STATUS_OK )
 	{
 		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
@@ -658,8 +615,6 @@ static SparkStatus SparkLagunaServingSubmit(
 		}
 		else
 			status = state->program->submit(state->driver_instance,&pending->frame);
-		if ( status != SPARK_STATUS_OK )
-			fprintf(stderr,"G5N-DBG submit: program->submit -> %d\n",(int)status);
 	}
 	if ( status != SPARK_STATUS_OK )
 		atomic_store_explicit(&pending->active,0u,memory_order_release);

@@ -3,11 +3,13 @@
 
 Validates tools/gemma4_tp16_gen_deployment.py output against the lane 6
 port blocks (control 23096-23111, collective 53200-53215, transport
-64096-64111; tools/devcycle/lane_assignments.json) and the adapter's exact
-configuration members, then exercises tools/gemma4_tp16_shared_socket.sh
-end to end in --dry-run against a synthetic checkout: layout, pack sidecar
-fail-closed behavior, ${SPARK_QUEUE_RUNTIME_ROOT} substitution, and the
-exactly-one-digest rule for shared weightd attachment.
+64096-64111; tools/devcycle/lane_assignments.json), the fleet weightd
+socket and the adapter's exact configuration members, then exercises
+tools/gemma4_tp16_shared_socket.sh against a synthetic checkout: the
+--dry-run layout, ${SPARK_QUEUE_RUNTIME_ROOT} substitution and the
+exactly-one-digest rule, each fail-closed case with its stated reason, and
+a full launch through a stand-in residentd that records the environment
+and arguments the wrapper hands it.
 
 Run: python3 tests/test_gemma4_tp16_shared_socket.py
 """
@@ -18,6 +20,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +32,14 @@ GENERATOR = REPOSITORY / "tools/gemma4_tp16_gen_deployment.py"
 WRAPPER = REPOSITORY / "tools/gemma4_tp16_shared_socket.sh"
 
 RANKS = 16
+FLEET_WEIGHTD_SOCKET = "/tmp/spark_weightd.sock"
+STALE_SHARED_UNIT_SOCKET = "/run/sparkpipe-weightd-shared/weightd.sock"
+IDENTITY_MODEL = "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
+MESH_RANKS = ",".join(str(rank) for rank in range(RANKS))
+RESIDENTD_STAND_IN = """#!/usr/bin/env bash
+printf 'ARG %s\\n' "$@"
+env | sed 's/^/ENV /'
+"""
 LANE_CONTROL_BASE, LANE_CONTROL_END = 23096, 23111
 LANE_TRANSPORT_BASE, LANE_TRANSPORT_END = 64096, 64111
 MODEL_REVISION = "842da3794eaa0b77d5f08bae87a17459d91ff475"
@@ -53,9 +65,23 @@ def generate(temporary: Path) -> Path:
     return output
 
 
+def test_generator_refuses_foreign_socket(temporary: Path) -> None:
+    for refused in (STALE_SHARED_UNIT_SOCKET, str(temporary / "private.sock")):
+        output = temporary / "refused"
+        result = subprocess.run([sys.executable, str(GENERATOR), "--output", str(output),
+                                 "--weightd-socket", refused],
+                                capture_output=True, text=True)
+        check(result.returncode != 0 and
+              f"weightd socket {refused} is not the fleet weightd" in result.stderr,
+              f"generator must refuse {refused}: rc={result.returncode} {result.stderr}")
+        check(not output.exists(), f"refused socket {refused} still wrote a tree")
+
+
 def test_generator(output: Path) -> dict:
     deployment = json.loads((output / "model_resident.json").read_text())
     check(deployment["schema_version"] == 2, "model_resident schema_version")
+    check(deployment["weightd"]["socket_path"] == FLEET_WEIGHTD_SOCKET,
+          f"weightd socket {deployment['weightd']['socket_path']} must be the fleet weightd")
     check(deployment["coordinator_rank_index"] == 0, "coordinator rank")
     check(deployment["eos_token_ids"] == [1, 106, 50], "eos token ids")
     limits = deployment["runtime_limits"]
@@ -117,6 +143,9 @@ def synthetic_checkout(temporary: Path, deployment_tree: Path) -> Path:
         path = release / artifact
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("synthetic")
+    residentd = release / "bin/sparkpipe_model_residentd"
+    residentd.write_text(RESIDENTD_STAND_IN)
+    residentd.chmod(residentd.stat().st_mode | stat.S_IXUSR)
     (release / "SOURCE_COMMIT").write_text("0" * 40)
     (release / "SHA256SUMS").write_text("")
     tree = checkout / "deployment/gemma4_31b_tp16_lane6"
@@ -130,8 +159,10 @@ def synthetic_checkout(temporary: Path, deployment_tree: Path) -> Path:
     return checkout
 
 
-def run_wrapper(checkout: Path, temporary: Path, rank: int) -> subprocess.CompletedProcess:
-    environment = dict(os.environ)
+def wrapper_environment(checkout: Path, temporary: Path, rank: int, **overrides) -> dict:
+    environment = {key: value for key, value in os.environ.items()
+                   if not (key.startswith("SPARK_QUEUE_") or key.startswith("GEMMA4_")
+                           or key.startswith("SPARK_WEIGHTD_"))}
     environment.update({
         "SPARK_QUEUE_RANK": str(rank),
         "SPARK_QUEUE_SIZE": str(RANKS),
@@ -140,17 +171,90 @@ def run_wrapper(checkout: Path, temporary: Path, rank: int) -> subprocess.Comple
         "GEMMA4_RELEASE_DIR": "build/gemma4_31b_tp16",
         "GEMMA4_DEPLOYMENT_TREE": "deployment/gemma4_31b_tp16_lane6",
         "GEMMA4_PACK_DIR": str(checkout / "packs"),
-        "GEMMA4_SHARED_WEIGHTD_SOCKET": str(temporary / "absent.sock"),
     })
-    return subprocess.run(["bash", str(WRAPPER), "--dry-run"], cwd=checkout, env=environment,
+    for key, value in overrides.items():
+        if value is None:
+            environment.pop(key, None)
+        else:
+            environment[key] = value
+    return environment
+
+
+def run_wrapper(checkout: Path, environment: dict, *arguments: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(WRAPPER), *arguments], cwd=checkout, env=environment,
                           capture_output=True, text=True)
+
+
+def expect_refusal(checkout: Path, environment: dict, reason: str, name: str) -> None:
+    result = run_wrapper(checkout, environment, "--dry-run")
+    check(result.returncode != 0 and reason in result.stderr,
+          f"{name} must fail closed with '{reason}': rc={result.returncode} {result.stderr}")
+    check(not Path(environment["SPARK_QUEUE_RUNTIME_ROOT"]).exists(),
+          f"{name} created the runtime root before failing")
+
+
+def set_tree_socket(checkout: Path, socket_path: str) -> None:
+    tree = checkout / "deployment/gemma4_31b_tp16_lane6/model_resident.json"
+    deployment = json.loads(tree.read_text())
+    deployment["weightd"]["socket_path"] = socket_path
+    tree.write_text(json.dumps(deployment, indent=1) + "\n")
+
+
+def test_wrapper_launch(checkout: Path, temporary: Path) -> None:
+    absent = str(temporary / "absent.sock")
+    set_tree_socket(checkout, absent)
+    environment = wrapper_environment(checkout, temporary, 12,
+                                      GEMMA4_SHARED_WEIGHTD_SOCKET=absent)
+    result = run_wrapper(checkout, environment)
+    check(result.returncode != 0 and
+          f"shared weightd socket is not present: {absent}" in result.stderr,
+          f"launch without a live weightd socket must fail closed: {result.stderr}")
+    live_path = temporary / "weightd.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(live_path))
+        listener.listen(1)
+        set_tree_socket(checkout, str(live_path))
+        environment = wrapper_environment(checkout, temporary, 11,
+                                          GEMMA4_SHARED_WEIGHTD_SOCKET=str(live_path))
+        result = run_wrapper(checkout, environment)
+    finally:
+        listener.close()
+        set_tree_socket(checkout, FLEET_WEIGHTD_SOCKET)
+    check(result.returncode == 0, f"launch through the stand-in residentd failed: {result.stderr}")
+    root = temporary / "runtime-11"
+    arguments = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG ")]
+    check(arguments == ["--deployment", str(root / "deployment.json"), "--rank-index", "11"],
+          f"residentd arguments: {arguments}")
+    exported = dict(line[4:].split("=", 1) for line in result.stdout.splitlines()
+                    if line.startswith("ENV ") and "=" in line)
+    expected = {
+        "SPARK_WEIGHTD_ATTACH": "1",
+        "SPARK_WEIGHTD_PACK_SHA256": "a" * 64,
+        "SPARK_WEIGHTD_IDENTITY_MODEL": IDENTITY_MODEL,
+        "SPARK_WEIGHTD_SOCKET": str(live_path),
+        "SPARK_WEIGHTD_LANE": "6",
+        "SPARK_TP_MESH_RANKS": MESH_RANKS,
+        "SPARK_GEMMA4_TP_DEGREE": "16",
+        "SPARK_GEMMA4_TP_RANK": "11",
+        "SPARK_GEMMA4_TP_STANDALONE": "0",
+    }
+    for key, value in expected.items():
+        check(exported.get(key) == value,
+              f"residentd environment {key}={exported.get(key)!r}, expected {value!r}")
+    deployment = json.loads((root / "deployment.json").read_text())
+    check(deployment["weightd"]["socket_path"] == str(live_path),
+          "the launched deployment names the attach socket")
 
 
 def test_wrapper(deployment_tree: Path, temporary: Path) -> None:
     checkout = synthetic_checkout(temporary, deployment_tree)
-    result = run_wrapper(checkout, temporary, 11)
+    environment = wrapper_environment(checkout, temporary, 11)
+    result = run_wrapper(checkout, environment, "--dry-run")
     if result.returncode != 0:
         fail(f"wrapper dry-run rank 11 failed: {result.stderr}")
+    check(f"socket={FLEET_WEIGHTD_SOCKET} lane=6" in result.stdout,
+          f"dry-run attaches through the fleet weightd: {result.stdout}")
     root = temporary / "runtime-11"
     deployment = json.loads((root / "deployment.json").read_text())
     for node in deployment["nodes"]:
@@ -164,46 +268,41 @@ def test_wrapper(deployment_tree: Path, temporary: Path) -> None:
           "sidecar names exactly its pack")
     check((root / "config/stage.json").exists(), "stage config materialized")
     check((root / "kv").is_dir(), "kv backing directory materialized (residentd requires a real dir)")
-    wrapper_source = WRAPPER.read_text()
-    check("SPARK_WEIGHTD_PACK_SHA256" in wrapper_source and
-          "SPARK_WEIGHTD_ATTACH=1" in wrapper_source and
-          "SPARK_WEIGHTD_IDENTITY_MODEL" in wrapper_source,
-          "wrapper exports the pack-identity attach envs")
-    check((root / "config/env.json").exists(), "module env materialized")
+    check(json.loads((root / "config/env.json").read_text()) ==
+          json.loads((deployment_tree / "config/env_11.json").read_text()),
+          "module env materialized from the rank's env json")
+    shutil.rmtree(root)
 
-    # fail-closed: malformed sidecar
-    (checkout / "packs/gemma4_31b_tp16_rankb_stage0.gemma4sp.sha256").write_text("nothex  x\n")
-    result = run_wrapper(checkout, temporary, 11)
-    check(result.returncode != 0, "malformed sidecar must fail closed")
-    # fail-closed: missing sidecar entirely (the nvfp4 arm today)
-    (checkout / "packs/gemma4_31b_tp16_rankb_stage0.gemma4sp.sha256").unlink()
-    result = run_wrapper(checkout, temporary, 11)
-    check(result.returncode != 0, "missing sidecar must fail closed")
-    # fail-closed: rank out of range
-    result = run_wrapper(checkout, temporary, 16)
-    check(result.returncode != 0, "rank 16 must fail closed")
-    # fail-closed: unbounded memory (the hard rule - refuse queue-less runs)
-    environment = dict(os.environ)
-    environment.update({
-        "SPARK_QUEUE_RANK": "0", "SPARK_QUEUE_RUNTIME_ROOT": str(temporary / "runtime-unbounded"),
-        "GEMMA4_RELEASE_DIR": "build/gemma4_31b_tp16", "GEMMA4_PACK_DIR": str(checkout / "packs"),
-    })
-    environment.pop("SPARK_QUEUE_MEMORY_MIB", None)
-    result = subprocess.run(["bash", str(WRAPPER), "--dry-run"], cwd=checkout, env=environment,
-                            capture_output=True, text=True)
-    check(result.returncode != 0, "missing SPARK_QUEUE_MEMORY_MIB must fail closed (hard rule)")
-    # fail-closed: missing release artifacts
-    environment = dict(os.environ)
-    environment.update({
-        "SPARK_QUEUE_RANK": "0", "SPARK_QUEUE_RUNTIME_ROOT": str(temporary / "runtime-x"),
-        "GEMMA4_RELEASE_DIR": "build/absent", "GEMMA4_PACK_DIR": str(checkout / "packs"),
-    })
-    result = subprocess.run(["bash", str(WRAPPER), "--dry-run"], cwd=checkout, env=environment,
-                            capture_output=True, text=True)
-    check(result.returncode != 0, "missing release must fail closed")
-    # dry-run never requires the shared socket (runtime validation is gated
-    # on the operator-established weightd; the non-dry path fails closed)
-    check("shared weightd socket" not in result.stdout, "no socket requirement in dry-run")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11,
+                                                 SPARK_QUEUE_MEMORY_MIB=None),
+                   "SPARK_QUEUE_MEMORY_MIB is unset/zero", "missing memory bound")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11,
+                                                 SPARK_QUEUE_MEMORY_MIB="0"),
+                   "SPARK_QUEUE_MEMORY_MIB is unset/zero", "zero memory bound")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 16),
+                   "SPARK_QUEUE_RANK 16 outside 0..15", "rank 16")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11,
+                                                 GEMMA4_RELEASE_DIR="build/absent"),
+                   "release missing:", "missing release")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11,
+                                                 GEMMA4_DEPLOYMENT_TREE="deployment/absent"),
+                   "deployment tree missing:", "missing deployment tree")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11,
+                                                 GEMMA4_SHARED_WEIGHTD_SOCKET=str(temporary / "other.sock")),
+                   f"deployment tree weightd socket {FLEET_WEIGHTD_SOCKET} differs from the attach "
+                   f"socket {temporary / 'other.sock'}", "attach socket differing from the tree")
+    sidecar = checkout / "packs/gemma4_31b_tp16_rankb_stage0.gemma4sp.sha256"
+    sidecar.write_text("nothex  x\n")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11),
+                   "malformed pack digest sidecar", "malformed sidecar")
+    sidecar.write_text(f"{'a' * 64}  gemma4_31b_tp16_rank3_stage0.gemma4sp\n")
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11),
+                   "sidecar names 'gemma4_31b_tp16_rank3_stage0.gemma4sp'", "sidecar naming another pack")
+    sidecar.unlink()
+    expect_refusal(checkout, wrapper_environment(checkout, temporary, 11),
+                   "pack digest sidecar missing", "missing sidecar")
+    sidecar.write_text(f"{'a' * 64}  gemma4_31b_tp16_rankb_stage0.gemma4sp\n")
+    test_wrapper_launch(checkout, temporary)
 
 
 def main() -> int:
@@ -211,6 +310,7 @@ def main() -> int:
         temporary = Path(directory)
         deployment_tree = generate(temporary)
         test_generator(deployment_tree)
+        test_generator_refuses_foreign_socket(temporary)
         test_wrapper(deployment_tree, temporary)
     print("gemma4 tp16 shared-socket contracts: PASS")
     return 0

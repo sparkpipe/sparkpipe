@@ -139,10 +139,14 @@ static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 
 static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 {
-	uint32_t widened;
-	asm volatile("cvt.rn.bf16x2.ue8m0x2 %0, %1;\n"
-		: "=r"(widened) : "h"((uint16_t)value));
-	return(LmBf16ToFloat((uint16_t)(widened & 0xffffu)));
+	return(__uint_as_float(value == 0u ? 0x00400000u : (value == 0xffu ? 0x7fffffffu : (uint32_t)value << 23u)));
+}
+
+static __device__ __forceinline__ float LmE2m1ToFloatPure(uint32_t nibble)
+{
+	uint32_t exponent = (nibble >> 1u) & 3u, sign = (nibble & 8u) << 28u;
+	uint32_t magnitude = exponent != 0u ? ((exponent + 126u) << 23u) | ((nibble & 1u) << 22u) : ((nibble & 1u) != 0u ? 0x3f000000u : 0u);
+	return(__uint_as_float(sign | magnitude));
 }
 
 static __device__ __forceinline__ uint32_t LmRoundPositiveToNearestEven(

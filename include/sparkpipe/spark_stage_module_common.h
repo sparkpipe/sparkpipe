@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 #include <cuda_runtime.h>
 
@@ -296,6 +297,10 @@ SparkStatus SparkStageModuleWaitForSlots(
     const atomic_uint *slot_states,
     uint32_t slot_count,
     uint64_t timeout_nanoseconds);
+SparkStatus SparkStageModulePauseTimespec(
+    uint64_t nanoseconds,
+    struct timespec *pause);
+SparkStatus SparkStageModulePauseNanoseconds(uint64_t nanoseconds);
 void SparkStageModuleSlotRelease(
     atomic_uint *slot_states,
     uint32_t slot_index);

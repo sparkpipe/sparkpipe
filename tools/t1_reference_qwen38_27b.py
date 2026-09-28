@@ -168,7 +168,7 @@ class Qwen38_27bEngine:
                 w = nvfp4_to_f32(payload[r0:r1],
                                  scale.reshape(rows, -1)[r0:r1], r1 - r0,
                                  cols)
-                stored[r0:r1] = f32_to_bf16_u16(w * (np.float32(0.5) / scalar))
+                stored[r0:r1] = f32_to_bf16_u16(w / scalar)
             fresh = True
         else:
             raw = self.st.pread(name)

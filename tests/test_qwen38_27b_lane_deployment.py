@@ -3,7 +3,8 @@
 
 The shared-socket family wrapper must fail closed without a GPU: verified
 firmware, exactly one staged *.sha256 digest, listeners inside the reserved
-lane blocks, an exact-member stage configuration, and a private deployment
+lane blocks, an exact-member stage configuration, the fleet weightd socket,
+the model EOS tokens every serving engine requires, and a private deployment
 tree under the queue runtime root.
 """
 import hashlib
@@ -24,6 +25,8 @@ lane = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lane)
 
 ATTEMPT = "0123456789abcdef0123456789abcdef"
+FLEET_WEIGHTD_SOCKET = "/tmp/spark_weightd.sock"
+QWEN_EOS_TOKEN_IDS = [248046, 248044]
 
 
 def digest_bytes(payload: bytes) -> str:
@@ -68,7 +71,7 @@ class FakeLane(unittest.TestCase):
             "SPARK_QUEUE_SIZE": "4",
             "SPARK_QUEUE_ATTEMPT": self.attempt,
             "QWEN38_27B_LANE_FIRMWARE_ROOT": str(self.firmware),
-            "QWEN38_27B_LANE_SHARED_SOCKET": "/tmp/shared-weightd.sock",
+            "QWEN38_27B_LANE_SHARED_SOCKET": FLEET_WEIGHTD_SOCKET,
             "QWEN38_27B_LANE_PACK_DIR": str(self.pack_dir),
             "QWEN38_27B_LANE_HOSTS": "spark0,spark1,spark2,spark3",
             "SPARK_QUEUE_PORTS": "23016:23031,53016:53031,64016:64031",
@@ -100,7 +103,8 @@ class LaneStagingTests(FakeLane):
         runtime = Path(staged["runtime_root"])
         self.assertEqual(str(runtime), str(root / "runtime"))
         deployment = json.loads((root / "deployment.json").read_text())
-        self.assertEqual(deployment["weightd"]["socket_path"], "/tmp/shared-weightd.sock")
+        self.assertEqual(deployment["weightd"]["socket_path"], FLEET_WEIGHTD_SOCKET)
+        self.assertEqual(deployment["eos_token_ids"], QWEN_EOS_TOKEN_IDS)
         self.assertEqual(deployment["schema_version"], 2)
         self.assertEqual(deployment["driver"]["program_name"], "resident_decode")
         self.assertEqual(len(deployment["nodes"]), 4)
@@ -260,8 +264,26 @@ class LaneFailClosedTests(FakeLane):
             self.stage(env)
         env = dict(self.env)
         env["QWEN38_27B_LANE_SHARED_SOCKET"] = "weightd.sock"
-        with self.assertRaises(lane.LaneError):
+        with self.assertRaisesRegex(lane.LaneError, "is not the fleet weightd"):
             self.stage(env)
+
+    def test_socket_other_than_the_fleet_weightd_refused(self):
+        for refused in ("/run/sparkpipe-weightd-shared/weightd.sock",
+                        "/tmp/shared-weightd.sock"):
+            env = dict(self.env)
+            env["QWEN38_27B_LANE_SHARED_SOCKET"] = refused
+            with self.assertRaisesRegex(lane.LaneError,
+                                        f"weightd socket {refused} is not the fleet weightd"):
+                self.stage(env)
+            self.assertFalse(self.queue_root.exists())
+
+    def test_default_socket_is_the_fleet_weightd(self):
+        env = dict(self.env)
+        del env["QWEN38_27B_LANE_SHARED_SOCKET"]
+        staged = self.stage(env)
+        self.assertEqual(staged["shared_socket"], FLEET_WEIGHTD_SOCKET)
+        deployment = json.loads((self.queue_root / "deployment.json").read_text())
+        self.assertEqual(deployment["weightd"]["socket_path"], FLEET_WEIGHTD_SOCKET)
 
     def test_sequence_position_cap(self):
         env = dict(self.env)

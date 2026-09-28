@@ -1,5 +1,9 @@
 # The Inference OS — design notes for true hardware independence (2026-08-27)
 
+The design dates from 2026-08-27. The status column and the "What exists
+today" and "Space discipline" sections were brought up to date with the
+code on 2026-09-28. The open work is in TECHDEBT §Hardware independence.
+
 Response to the sharpest critique of the HAL plan: a device API that
 only wraps launch/streams is a *driver*, not an *operating system*. The
 deep coupling is memory — unified vs split address spaces, DMA paths,
@@ -16,18 +20,20 @@ in the kernel. Mapped honestly to what exists:
 | OS subsystem | SparkPipe analog | Status |
 |---|---|---|
 | Syscall ABI / process model | serving adapter ABI, module ABI, dlopen chain | exists, device-opaque |
-| Scheduler | batch engine, B* admission (compute-bound quantum), expert-grouped batching | in flight (spark3 lane) |
+| Scheduler | batch engine (`runtime/model_batch_engine.c`): submission-wave continuous batching, expert-grouped MoE | exists; qualifying larger capacities is open (TECHDEBT §Dynamic batching) |
 | Virtual memory / paging | KV page store, prefix cache, JIT-KV NVMe overflow | exists for KV only |
-| Physical memory manager | cudaMalloc/cudaMallocHost/managed calls scattered per family | **missing** |
-| Block I/O / DMA engine | open-coded cudaMemcpyAsync, memlink lanes for network | **missing as a layer** |
+| Physical memory manager | weightd weight arenas (CUDA VMM, README §weightd); `SparkMemoryBuffer` (`include/sparkpipe/spark_memory_buffer.h`) for tagged buffers; direct CUDA allocation calls elsewhere in modules | partial: `SparkMemoryBuffer` is used by the dsv4, k3 and qwen38_27b serving adapters |
+| Block I/O / DMA engine | `SparkMemoryBufferCopy` (space-aware copy); open-coded cudaMemcpyAsync elsewhere; memlink lanes for network | partial |
 | Filesystem / storage tiers | pack format v2, warm/ceph + cold archive, verifier | exists (model-scoped) |
 | Driver discovery | hardware probes (topology/kernel/transport, dlopen'd) | probe pattern exists |
-| Device drivers / HAL | spark_device.h (Phase 1B) | not started |
-| IPC / network stack | collectives (two-backend), hidden transport, memlink, fabric topology | exists — flat peers, config-picked backend; link classes + island model are the addendum below |
+| Device drivers / HAL | no `spark_device.h`; `SparkMemoryBuffer` is the first device-layer piece | started (memory only) |
+| IPC / network stack | weightd RDMA mesh (README §The mesh) driven by `ring/transport/tp_device_collective.c`; memlink; fabric topology | exists — flat peers; link classes + island model are the addendum below |
 
-The two missing rows are both memory. That is the critique, and it is
-correct: today "a pointer" in this tree means five different things
-depending on which family allocated it and on which hardware it runs.
+When this was written, the two missing rows were both memory. That was the
+critique, and it was correct: "a pointer" in this tree meant five different
+things, depending on which family allocated it and on which hardware it
+ran. `SparkMemoryBuffer` has since started the fix: a buffer now carries its
+space tag.
 
 ## The memory space model
 
@@ -99,7 +105,8 @@ are the ones that silently work on GB10 and die on the first discrete
 port. Revised:
 
 1. **M1 — buffer handles + alloc/free/copy.** `SparkDeviceBuffer{ptr,
-   space, bytes}` and a space-aware copy. Lands inside the DRY adapter
+   space, bytes}` and a space-aware copy. (Started as `SparkMemoryBuffer`
+   with `SparkMemoryBufferAllocate/Free/Copy`.) Lands inside the DRY adapter
    template (Phase 1A) so it wraps ONE lifecycle, not seven — one new
    call site per family, not fifty.
 2. **M2 — register + map_file.** Absorb K3's chunked registration and
@@ -177,21 +184,41 @@ M7 — hierarchical collectives: the two-tier all-reduce; NCCL and
 hidden_transport become per-link-class engines instead of config-picked
 wholes.
 
-**What exists today:** two-backend collective switch, memlink lanes,
-hidden transport, the fabric topology descriptor (rails/switches/MTU),
-transport/kernel/topology probes. **Missing:** rank != node awareness,
-link classes, derived peer sets, hierarchical collective decomposition.
+**What exists today (2026-09-28):**
 
-## Lane discipline NOW (no infrastructure required)
+- **The weightd RDMA mesh.** It is wired all-to-all at boot, and every TP
+  group runs its collectives over it through `tp_device_collective`
+  (README §The mesh).
+- **Wait mode.** `SPARK_TP_WAIT_MODE` chooses between two modes:
+  - `spin`, the default: a logical B1 payload that fits one slot takes a host
+    round, and anything else takes `SparkTpLaunchMeshTree`;
+  - `hardware`: direct rounds through `SparkTpLaunchMeshHardware`.
 
-While M1-M4 wait on the DRY template, three rules hold today and are in
-the lane contract: every allocation names its space kind in a one-line
-comment (device-private / pinned / coherent / file-backed); any NEW
-allocation kind or new CUDA API category in a family goes into the
-integration-request inventory; cross-space copies never assume pointer
-identity (no open-coded cudaMemcpy between "a host pointer" and "a
-device pointer" without the comment saying which spaces). Zero-cost to
-follow, and it makes the M1-M4 inventory complete when extraction runs.
+  The fleet runs `hardware`, according to the lead dev's 2026-09-28 facts.
+- **Backend kind.** `spark_tp_device_collective.h` still has a configured
+  backend kind: hidden transport or NCCL.
+- **Other pieces:** memlink lanes, the fabric topology descriptor
+  (rails, switches, MTU), and the transport, kernel and topology probes.
+
+**Missing:** rank ≠ node awareness, link classes, derived peer sets and
+hierarchical collective decomposition.
+
+## Space discipline now
+
+Code carries no comments (`AGENTS.md`, invariant I48), so a buffer's space
+is recorded in the code itself:
+
+- **Allocate** non-weight buffers with `SparkMemoryBufferAllocate`. It
+  records the buffer's `SparkMemorySpace` and allocates host coherent, host
+  pinned or device private memory. A file-backed mapping is described with
+  `SPARK_MEMORY_BUFFER_VIEW`.
+- **Copy** between spaces with `SparkMemoryBufferCopy`. It chooses memcpy,
+  a device-to-device copy or a host-device copy from the two tags, and it
+  refuses file-backed buffers. Do not open-code a cudaMemcpy between an
+  untagged "host pointer" and "device pointer".
+- **Record new kinds.** A new allocation kind, or a new CUDA API category in
+  a module, goes into TECHDEBT §Hardware independence. That keeps the
+  device-layer inventory complete.
 
 ## What this deliberately does NOT do
 
