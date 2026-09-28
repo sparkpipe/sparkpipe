@@ -3,13 +3,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_verify_regime.h"
 #include "sparkpipe/spark_speculation_depth.h"
 #include "sparkpipe/spark_speculation_drafter_mix.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_speculation_policy.h"
 
-#define REPLAY_VOCAB 154880u
+#define REPLAY_VOCAB SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT
+#define REPLAY_SYNTHETIC_PREFIX "synthetic:"
+#define REPLAY_MIX_PREFIX "lookup+synthetic:"
+#define REPLAY_PREFIX_BYTES(prefix) (sizeof(prefix) - 1u)
 #define REPLAY_MAX_POSITIONS 1048576u
 #define REPLAY_FRAME_MAX 32u
 #define REPLAY_PREFILL_WAVE_ROWS 128u
@@ -92,7 +96,7 @@ static uint32_t *ReplayRead(const char *path,uint32_t *prompt_out,uint32_t *leng
 {
 	FILE *file = fopen(path,"rb");
 	uint32_t head[2],*tokens;
-	if ( file == 0 || fread(head,sizeof(uint32_t),2u,file) != 2u || head[0] == 0u || head[1] <= head[0] || head[1] > REPLAY_MAX_POSITIONS )
+	if ( file == 0 || fread(head,sizeof(head[0]),sizeof(head) / sizeof(head[0]),file) != sizeof(head) / sizeof(head[0]) || head[0] == 0u || head[1] <= head[0] || head[1] > REPLAY_MAX_POSITIONS )
 	{
 		if ( file != 0 )
 			fclose(file);
@@ -267,15 +271,15 @@ static int ReplayParse(int argc,char **argv,ReplayConfig *config,int *first_file
 			const char *text = argv[++index];
 			if ( strcmp(text,"lookup") == 0 )
 				config->mode = REPLAY_MODE_LOOKUP;
-			else if ( strncmp(text,"synthetic:",10) == 0 )
+			else if ( strncmp(text,REPLAY_SYNTHETIC_PREFIX,REPLAY_PREFIX_BYTES(REPLAY_SYNTHETIC_PREFIX)) == 0 )
 			{
 				config->mode = REPLAY_MODE_SYNTHETIC;
-				config->accept_milli = (uint32_t)strtoul(text + 10,0,10);
+				config->accept_milli = (uint32_t)strtoul(text + REPLAY_PREFIX_BYTES(REPLAY_SYNTHETIC_PREFIX),0,10);
 			}
-			else if ( strncmp(text,"lookup+synthetic:",17) == 0 )
+			else if ( strncmp(text,REPLAY_MIX_PREFIX,REPLAY_PREFIX_BYTES(REPLAY_MIX_PREFIX)) == 0 )
 			{
 				config->mode = REPLAY_MODE_MIX;
-				config->accept_milli = (uint32_t)strtoul(text + 17,0,10);
+				config->accept_milli = (uint32_t)strtoul(text + REPLAY_PREFIX_BYTES(REPLAY_MIX_PREFIX),0,10);
 			}
 			else
 				return(1);
