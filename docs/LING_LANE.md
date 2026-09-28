@@ -93,15 +93,25 @@ API on the rtx5090. Receipts are in
   `LING_EXPERT_POOL_BYTES` is passed through but ling does not attach
   lazily.
 
-Measured in the perf window (no speculation, firmware 8cc64a4):
+Measured in the perf window (no speculation, final build c3148b3,
+receipts in `qualification/ling/runs/ling3-tp16-20260928-c3148b3/`):
 
 | case | result |
 | --- | --- |
-| B1 decode, 128 tokens | 52.3 tok/s (18.6-22.3 ms/token) |
-| B1 decode, 512 tokens | 43.1 tok/s (about 23 ms/token) |
-| TTFT, 298-token prompt | 5.9 s median (5.1-8.2 s) |
-| 8 streams x 128 tokens | 52.7 tok/s aggregate, 63.3 steady |
+| B1 decode, 128 tokens | 54.5 tok/s |
+| B1 decode, 512 tokens | 49.1 tok/s |
+| TTFT, 298-token prompt | 4.75 s median |
+| 8 streams x 128 tokens | 50.6 tok/s aggregate |
+| six concurrent reference requests | each equals its solo tokens |
 | COMPSEC-17, thinking off | 14/17 |
+
+The earlier 2a01137 run (B1 52.3, 8 streams 52.7) predates the KDA state
+index fix: its single-stream numbers stand, but its concurrent outputs
+were wrong. Every wave holds one row
+(`SparkLingRoundMajorWaveRows`), so 8 streams cost what 8 sequential B1
+steps cost; see TECHDEBT. Spin waits beat hardware waits on this lane
+(B1 55.3 against 50.6 tok/s,
+`qualification/ling/runs/ling3-tp16-20260928-waitmode-ab/`).
 
 `tools/api_serving_perf.py` is the streaming client that produced the
 table:

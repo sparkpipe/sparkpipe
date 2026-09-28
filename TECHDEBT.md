@@ -517,9 +517,14 @@ progress diary.
   wave rule), so a prompt costs one full 86-collective chain per token:
   298 prompt tokens take 5.1-8.2 s to the first token. Chunked KDA
   prefill (many rows of one sequence per wave) is the fix.
-- A ling decode wave of 8 sequences costs about 126 ms against 19 ms for
-  one (8-stream aggregate 52.7 tok/s against 52.3 B1). Find which layer
-  kernels scale with rows before tuning anything else.
+- `SparkLingRoundMajorWaveRows` clamps every wave to one row, so a
+  decode step of 8 sequences runs 8 full chains (8-stream aggregate
+  equals B1, about 52 tok/s). Removing the clamp gives waves of several
+  sequences, and those produce wrong tokens after the first decode step;
+  the Q-projection stride and the KDA state index were two of the
+  multi-row defects and are fixed, at least one remains. Find it with a
+  T1 route comparison of a multi-row wave against the same prompts solo,
+  then drop the clamp.
 - The ling TP chain advances from host callbacks and keys the single
   device collective per chain, so a ling lane runs one submission in
   flight (`tools/ling_lane.py` renders `max_inflight_submissions` 1).
