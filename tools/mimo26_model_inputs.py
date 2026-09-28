@@ -31,6 +31,16 @@ def routed_experts(arrays, layers):
     return [sorted(s) for s in used]
 
 
+def require_route_sets(arrays, moe_layer_freq):
+    positions = len(arrays["prompt_token_ids"]) + len(arrays["generated_token_ids"]) - 1
+    missing = [f"pos{p:04d}_layer{layer:04d}_route_ids" for p in range(positions)
+               for layer, moe in enumerate(moe_layer_freq) if moe
+               and f"pos{p:04d}_layer{layer:04d}_route_ids" not in arrays]
+    if missing:
+        raise SystemExit(f"fixture lacks {len(missing)} route sets the harness compares, first {missing[0]}")
+    return positions * sum(1 for moe in moe_layer_freq if moe)
+
+
 def dense_rows(st, name):
     payload = st.pread(name)
     grid = st.pread(name + "_scale_inv")
@@ -51,6 +61,7 @@ def main():
     experts = int(config["n_routed_experts"])
     _, arrays = read_fixture(args.fixture)
     used = routed_experts(arrays, layers)
+    route_sets = require_route_sets(arrays, config["moe_layer_freq"])
     st = Safetensors(args.checkpoint)
     os.makedirs(args.out, exist_ok=True)
 
@@ -68,7 +79,7 @@ def main():
             put(key + ".bf16", arrays[key])
         if key.endswith("_route_ids"):
             put(key + ".i32", np.asarray(arrays[key], dtype=np.int32))
-    summary = {"layers": layers, "experts": [len(u) for u in used]}
+    summary = {"layers": layers, "experts": [len(u) for u in used], "route_sets": route_sets}
     if args.weights_from is not None:
         source = os.path.abspath(args.weights_from)
         for name in sorted(os.listdir(source)):

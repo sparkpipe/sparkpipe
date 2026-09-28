@@ -579,6 +579,7 @@ PYTHON_TESTS := \
 	tests/test_ling_verify_pack.py \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
+	tests/test_mimo26_model_inputs.py \
 	tests/test_mimo26_stagepack.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \

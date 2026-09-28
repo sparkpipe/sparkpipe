@@ -36,10 +36,10 @@
 #define M26_PAGES (M26_MAX_POSITIONS / M26_PAGE_SLOTS)
 #define M26_SPARE_SLOTS 16u
 
-using M26FullKv = LmKvGeometry<M26_FULL_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
-using M26SwaKv = LmKvGeometry<M26_SWA_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
-using M26FullRankKv = LmKvGeometry<(M26_FULL_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
-using M26SwaRankKv = LmKvGeometry<(M26_SWA_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * 2u, M26_PAGE_SLOTS, true>;
+using M26FullKv = LmKvGeometry<M26_FULL_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * sizeof(uint16_t), M26_PAGE_SLOTS, true>;
+using M26SwaKv = LmKvGeometry<M26_SWA_KV * (M26_HEAD_DIM + M26_VALUE_DIM) * sizeof(uint16_t), M26_PAGE_SLOTS, true>;
+using M26FullRankKv = LmKvGeometry<(M26_FULL_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * sizeof(uint16_t), M26_PAGE_SLOTS, true>;
+using M26SwaRankKv = LmKvGeometry<(M26_SWA_KV / M26_RANKS) * (M26_HEAD_DIM + M26_VALUE_DIM) * sizeof(uint16_t), M26_PAGE_SLOTS, true>;
 #define M26_RANK_HEADS (M26_HEADS / M26_RANKS)
 #define M26_RANK_O_INPUT (M26_O_INPUT / M26_RANKS)
 
@@ -254,14 +254,14 @@ static void M26LoadRankSlices(uint32_t index, M26Layer *layer, uint32_t *page_ta
 	uint32_t r, row;
 	size_t slot_bytes = layer->swa ? M26SwaRankKv::kSlotBytes : M26FullRankKv::kSlotBytes;
 	snprintf(name,sizeof(name),"l%02u_o_proj.bf16",index);
-	std::vector<uint8_t> full = M26Read(name,(size_t)M26_HIDDEN * M26_O_INPUT * 2u);
+	std::vector<uint8_t> full = M26Read(name,(size_t)M26_HIDDEN * M26_O_INPUT * sizeof(uint16_t));
 	std::vector<uint16_t> slice((size_t)M26_HIDDEN * M26_RANK_O_INPUT);
 	for (r = 0u; r < M26_RANKS; r++)
 	{
 		for (row = 0u; row < M26_HIDDEN; row++)
-			memcpy(slice.data() + (size_t)row * M26_RANK_O_INPUT,(const uint16_t *)full.data() + (size_t)row * M26_O_INPUT + r * M26_RANK_O_INPUT,M26_RANK_O_INPUT * 2u);
+			memcpy(slice.data() + (size_t)row * M26_RANK_O_INPUT,(const uint16_t *)full.data() + (size_t)row * M26_O_INPUT + r * M26_RANK_O_INPUT,M26_RANK_O_INPUT * sizeof(uint16_t));
 		layer->o_slice[r] = M26Alloc<uint16_t>(slice.size());
-		M26Check(cudaMemcpy(layer->o_slice[r],slice.data(),slice.size() * 2u,cudaMemcpyHostToDevice),"o slice");
+		M26Check(cudaMemcpy(layer->o_slice[r],slice.data(),slice.size() * sizeof(uint16_t),cudaMemcpyHostToDevice),"o slice");
 		layer->rank_pool[r] = M26Alloc<uint8_t>((size_t)M26_MAX_POSITIONS * slot_bytes);
 		if ( LmKvViewInitialize(&layer->rank_cache[r],layer->rank_pool[r],page_table,M26_PAGES,1u,M26_PAGES,error) != 0 )
 		{
@@ -277,19 +277,19 @@ static void M26LoadAttention(uint32_t index, M26Layer *layer, uint32_t *page_tab
 	uint32_t rows = layer->swa ? M26_SWA_QKV : M26_FULL_QKV;
 	size_t slot_bytes = layer->swa ? M26SwaKv::kSlotBytes : M26FullKv::kSlotBytes;
 	snprintf(name,sizeof(name),"l%02u_attn_norm.bf16",index);
-	layer->attn_norm = M26Upload<uint16_t>(name,M26_HIDDEN * 2u);
+	layer->attn_norm = M26Upload<uint16_t>(name,M26_HIDDEN * sizeof(uint16_t));
 	snprintf(name,sizeof(name),"l%02u_mlp_norm.bf16",index);
-	layer->mlp_norm = M26Upload<uint16_t>(name,M26_HIDDEN * 2u);
+	layer->mlp_norm = M26Upload<uint16_t>(name,M26_HIDDEN * sizeof(uint16_t));
 	snprintf(name,sizeof(name),"l%02u_qkv.fp8",index);
 	layer->qkv = M26Upload<uint8_t>(name,(size_t)rows * M26_HIDDEN);
 	snprintf(name,sizeof(name),"l%02u_qkv_scale_rows.f32",index);
-	layer->qkv_scale = M26Upload<float>(name,(size_t)rows * (M26_HIDDEN / 128u) * 4u);
+	layer->qkv_scale = M26Upload<float>(name,(size_t)rows * (M26_HIDDEN / 128u) * sizeof(float));
 	snprintf(name,sizeof(name),"l%02u_o_proj.bf16",index);
-	layer->o_proj = M26Upload<uint16_t>(name,(size_t)M26_HIDDEN * M26_O_INPUT * 2u);
+	layer->o_proj = M26Upload<uint16_t>(name,(size_t)M26_HIDDEN * M26_O_INPUT * sizeof(uint16_t));
 	if ( layer->swa )
 	{
 		snprintf(name,sizeof(name),"l%02u_sink.bf16",index);
-		layer->sink = M26Upload<uint16_t>(name,M26_HEADS * 2u);
+		layer->sink = M26Upload<uint16_t>(name,M26_HEADS * sizeof(uint16_t));
 	}
 	layer->pool = M26Alloc<uint8_t>((size_t)M26_MAX_POSITIONS * slot_bytes);
 	if ( LmKvViewInitialize(&layer->cache,layer->pool,page_table,M26_PAGES,1u,M26_PAGES,error) != 0 )
@@ -312,7 +312,7 @@ static void M26LoadMlp(uint32_t index, M26Layer *layer)
 			snprintf(name,sizeof(name),"l%02u_dense_%s.fp8",index,m26_projections[p]);
 			layer->projection[p] = M26Upload<uint8_t>(name,(size_t)rows * columns);
 			snprintf(name,sizeof(name),"l%02u_dense_%s_scale_rows.f32",index,m26_projections[p]);
-			layer->dense_scale[p] = M26Upload<float>(name,(size_t)rows * (columns / 128u) * 4u);
+			layer->dense_scale[p] = M26Upload<float>(name,(size_t)rows * (columns / 128u) * sizeof(float));
 			continue;
 		}
 		layer->projection[p] = M26Alloc<uint8_t>((size_t)layer->capacity * rows * columns / 2u);
@@ -321,9 +321,9 @@ static void M26LoadMlp(uint32_t index, M26Layer *layer)
 	if ( !layer->moe )
 		return;
 	snprintf(name,sizeof(name),"l%02u_router.bf16",index);
-	layer->router = M26Upload<uint16_t>(name,(size_t)M26_EXPERTS * M26_HIDDEN * 2u);
+	layer->router = M26Upload<uint16_t>(name,(size_t)M26_EXPERTS * M26_HIDDEN * sizeof(uint16_t));
 	snprintf(name,sizeof(name),"l%02u_router_bias.f32",index);
-	layer->device_bias = M26Upload<float>(name,M26_EXPERTS * 4u);
+	layer->device_bias = M26Upload<float>(name,M26_EXPERTS * sizeof(float));
 	layer->device_slot = M26Alloc<int32_t>(M26_EXPERTS);
 }
 
@@ -372,8 +372,8 @@ static void M26LoadLayer(uint32_t index, M26Layer *layer, uint32_t *page_table, 
 	if ( layer->moe )
 	{
 		snprintf(name,sizeof(name),"l%02u_expert_used.i32",index);
-		count = (uint32_t)(M26FileBytes(name) / 4u);
-		raw = M26Read(name,count * 4u);
+		count = (uint32_t)(M26FileBytes(name) / sizeof(int32_t));
+		raw = M26Read(name,count * sizeof(int32_t));
 		layer->capacity = count + M26_SPARE_SLOTS;
 		layer->slot.assign(M26_EXPERTS,-1);
 	}
@@ -384,7 +384,7 @@ static void M26LoadLayer(uint32_t index, M26Layer *layer, uint32_t *page_table, 
 	for (e = 0u; layer->moe && e < count; e++)
 		M26LoadExpert(index,layer,(uint32_t)((const int32_t *)raw.data())[e],layer->resident++);
 	if ( layer->moe )
-		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * 4u,cudaMemcpyHostToDevice),"slot map");
+		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * sizeof(int32_t),cudaMemcpyHostToDevice),"slot map");
 }
 
 static void M26Attention(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t position)
@@ -458,10 +458,13 @@ static void M26CompareRoute(uint32_t position, uint32_t layer, const uint32_t *i
 	snprintf(path,sizeof(path),"%s/pos%04u_layer%04u_route_ids.i32",m26_directory,position,layer);
 	file = fopen(path,"rb");
 	if ( file == 0 )
-		return;
-	if ( fread(want,4u,M26_TOP_K,file) != M26_TOP_K )
 	{
-		fprintf(stderr,"FAIL %s is short\n",path);
+		fprintf(stderr,"FAIL %s is missing: every MoE layer of every position needs the reference route set (restage with tools/mimo26_model_inputs.py)\n",path);
+		exit(1);
+	}
+	if ( fread(want,sizeof(want[0]),M26_TOP_K,file) != M26_TOP_K || fgetc(file) != EOF )
+	{
+		fprintf(stderr,"FAIL %s is not exactly %u route ids\n",path,M26_TOP_K);
 		exit(1);
 	}
 	fclose(file);
@@ -502,7 +505,7 @@ static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids
 {
 	uint32_t k, changed = 0u;
 	M26RouteDevice(index,layer,b);
-	M26Check(cudaMemcpy(ids,b->route_expert,M26_TOP_K * 4u,cudaMemcpyDeviceToHost),"route ids");
+	M26Check(cudaMemcpy(ids,b->route_expert,M26_TOP_K * sizeof(int32_t),cudaMemcpyDeviceToHost),"route ids");
 	for (k = 0u; k < M26_TOP_K; k++)
 	{
 		if ( ids[k] >= M26_EXPERTS )
@@ -523,7 +526,7 @@ static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids
 		changed = 1u;
 	}
 	if ( changed != 0u )
-		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * 4u,cudaMemcpyHostToDevice),"slot map");
+		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * sizeof(int32_t),cudaMemcpyHostToDevice),"slot map");
 	M26Experts(index,layer,b);
 }
 
@@ -560,9 +563,9 @@ static void M26Allocate(M26Buffers *b)
 		pages[i] = i;
 	M26Check(cudaMemcpy(b->packed,packed,sizeof(packed),cudaMemcpyHostToDevice),"packed");
 	M26Check(cudaMemcpy(b->page_table,pages,sizeof(pages),cudaMemcpyHostToDevice),"pages");
-	M26Check(cudaMemcpy(b->sequence,&zero,4u,cudaMemcpyHostToDevice),"sequence");
-	b->final_norm = M26Upload<uint16_t>("final_norm.bf16",M26_HIDDEN * 2u);
-	b->lm_head = M26Upload<uint16_t>("lm_head.bf16",(size_t)M26_VOCAB * M26_HIDDEN * 2u);
+	M26Check(cudaMemcpy(b->sequence,&zero,sizeof(zero),cudaMemcpyHostToDevice),"sequence");
+	b->final_norm = M26Upload<uint16_t>("final_norm.bf16",M26_HIDDEN * sizeof(uint16_t));
+	b->lm_head = M26Upload<uint16_t>("lm_head.bf16",(size_t)M26_VOCAB * M26_HIDDEN * sizeof(uint16_t));
 }
 
 static uint32_t M26Head(M26Buffers *b, float *score)
@@ -571,7 +574,7 @@ static uint32_t M26Head(M26Buffers *b, float *score)
 	uint32_t best = 0u, v;
 	LmBf16RmsNormKernel<M26_THREADS><<<1,M26_THREADS,(M26_HIDDEN + 64u) * sizeof(float)>>>(b->stream,b->final_norm,b->normed,M26_HIDDEN,M26_HIDDEN,M26_EPS);
 	M26Require(LmSkinnyDense<LmBf16Format>(b->lm_head,b->normed,0,b->logits,1u,M26_HIDDEN,M26_VOCAB,M26_VOCAB,0u,0),"lm_head",M26_LAYERS);
-	M26Check(cudaMemcpy(logits.data(),b->logits,M26_VOCAB * 4u,cudaMemcpyDeviceToHost),"head logits");
+	M26Check(cudaMemcpy(logits.data(),b->logits,M26_VOCAB * sizeof(float),cudaMemcpyDeviceToHost),"head logits");
 	for (v = 1u; v < M26_VOCAB; v++)
 		best = logits[v] > logits[best] ? v : best;
 	*score = logits[best];
@@ -592,8 +595,8 @@ static double M26StreamError(M26Buffers *b, uint32_t position, uint32_t layer)
 	double error = 0.0, norm = 0.0, want;
 	uint32_t k;
 	snprintf(name,sizeof(name),"pos%04u_layer%04u_streams.bf16",position,layer);
-	std::vector<uint8_t> raw = M26Read(name,M26_HIDDEN * 2u);
-	M26Check(cudaMemcpy(got.data(),b->stream,M26_HIDDEN * 2u,cudaMemcpyDeviceToHost),"stream");
+	std::vector<uint8_t> raw = M26Read(name,M26_HIDDEN * sizeof(uint16_t));
+	M26Check(cudaMemcpy(got.data(),b->stream,M26_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToHost),"stream");
 	for (k = 0u; k < M26_HIDDEN; k++)
 	{
 		want = M26Float(((const uint16_t *)raw.data())[k]);
@@ -607,8 +610,8 @@ static void M26LoadStream(M26Buffers *b, uint32_t position, uint32_t layer)
 {
 	char name[128];
 	snprintf(name,sizeof(name),"pos%04u_layer%04u_streams.bf16",position,layer);
-	std::vector<uint8_t> raw = M26Read(name,M26_HIDDEN * 2u);
-	M26Check(cudaMemcpy(b->stream,raw.data(),M26_HIDDEN * 2u,cudaMemcpyHostToDevice),"teacher stream");
+	std::vector<uint8_t> raw = M26Read(name,M26_HIDDEN * sizeof(uint16_t));
+	M26Check(cudaMemcpy(b->stream,raw.data(),M26_HIDDEN * sizeof(uint16_t),cudaMemcpyHostToDevice),"teacher stream");
 }
 
 static void M26Embed(M26Buffers *b, uint32_t token)
@@ -618,7 +621,7 @@ static void M26Embed(M26Buffers *b, uint32_t token)
 	FILE *file;
 	snprintf(path,sizeof(path),"%s/embed.bf16",m26_directory);
 	file = fopen(path,"rb");
-	if ( token >= M26_VOCAB || file == 0 || fseek(file,(long)token * M26_HIDDEN * 2L,SEEK_SET) != 0 || fread(row,2u,M26_HIDDEN,file) != M26_HIDDEN )
+	if ( token >= M26_VOCAB || file == 0 || fseek(file,(long)token * M26_HIDDEN * (long)sizeof(uint16_t),SEEK_SET) != 0 || fread(row,sizeof(row[0]),M26_HIDDEN,file) != M26_HIDDEN )
 	{
 		fprintf(stderr,"FAIL embedding row %u\n",token);
 		exit(1);
@@ -636,18 +639,18 @@ static uint32_t M26DevicePass(M26Layer *layers, M26Buffers *b, const std::vector
 	for (position = 0u; position < inputs.size(); position++)
 	{
 		M26Embed(b,inputs[position]);
-		M26Check(cudaMemcpy(rows + (size_t)position * M26_HIDDEN,b->stream,M26_HIDDEN * 2u,cudaMemcpyDeviceToDevice),"embed row");
+		M26Check(cudaMemcpy(rows + (size_t)position * M26_HIDDEN,b->stream,M26_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToDevice),"embed row");
 	}
-	M26Check(cudaMemset(b->missing,0,4u),"missing");
+	M26Check(cudaMemset(b->missing,0,sizeof(uint32_t)),"missing");
 	M26Check(cudaEventCreate(&start),"event");
 	M26Check(cudaEventCreate(&stop),"event");
 	M26Check(cudaEventRecord(start,0),"record");
 	for (position = 0u; position < inputs.size(); position++)
 	{
 		context = position + 1u;
-		M26Check(cudaMemcpy(b->stream,rows + (size_t)position * M26_HIDDEN,M26_HIDDEN * 2u,cudaMemcpyDeviceToDevice),"stream");
-		M26Check(cudaMemcpy(b->position,&position,4u,cudaMemcpyHostToDevice),"position");
-		M26Check(cudaMemcpy(b->context,&context,4u,cudaMemcpyHostToDevice),"context");
+		M26Check(cudaMemcpy(b->stream,rows + (size_t)position * M26_HIDDEN,M26_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToDevice),"stream");
+		M26Check(cudaMemcpy(b->position,&position,sizeof(position),cudaMemcpyHostToDevice),"position");
+		M26Check(cudaMemcpy(b->context,&context,sizeof(context),cudaMemcpyHostToDevice),"context");
 		for (layer = 0u; layer < M26_LAYERS; layer++)
 		{
 			if ( m26_tp4 != 0u )
@@ -669,7 +672,7 @@ static uint32_t M26DevicePass(M26Layer *layers, M26Buffers *b, const std::vector
 	M26Check(cudaEventRecord(stop,0),"record");
 	M26Check(cudaEventSynchronize(stop),"sync");
 	M26Check(cudaEventElapsedTime(milliseconds,start,stop),"elapsed");
-	M26Check(cudaMemcpy(&missing,b->missing,4u,cudaMemcpyDeviceToHost),"missing");
+	M26Check(cudaMemcpy(&missing,b->missing,sizeof(missing),cudaMemcpyDeviceToHost),"missing");
 	if ( missing != 0u )
 	{
 		fprintf(stderr,"FAIL device routing chose %u non-resident experts in the replay\n",missing);
@@ -695,10 +698,10 @@ int main(int argc, char **argv)
 		return(2);
 	}
 	m26_directory = argv[1];
-	prompt_count = (uint32_t)(M26FileBytes("prompt.i32") / 4u);
-	budget = (uint32_t)(M26FileBytes("generated.i32") / 4u);
+	prompt_count = (uint32_t)(M26FileBytes("prompt.i32") / sizeof(int32_t));
+	budget = (uint32_t)(M26FileBytes("generated.i32") / sizeof(int32_t));
 	total = prompt_count + budget;
-	std::vector<uint8_t> prompt = M26Read("prompt.i32",prompt_count * 4u), expected = M26Read("generated.i32",budget * 4u);
+	std::vector<uint8_t> prompt = M26Read("prompt.i32",prompt_count * sizeof(int32_t)), expected = M26Read("generated.i32",budget * sizeof(int32_t));
 	std::vector<uint32_t> generated;
 	if ( total > M26_MAX_POSITIONS || total > M26_WINDOW )
 	{
@@ -712,9 +715,9 @@ int main(int argc, char **argv)
 	{
 		token = position < prompt_count ? ((const uint32_t *)prompt.data())[position] : generated[position - prompt_count];
 		M26Embed(&b,token);
-		M26Check(cudaMemcpy(b.position,&position,4u,cudaMemcpyHostToDevice),"position");
+		M26Check(cudaMemcpy(b.position,&position,sizeof(position),cudaMemcpyHostToDevice),"position");
 		uint32_t context = position + 1u;
-		M26Check(cudaMemcpy(b.context,&context,4u,cudaMemcpyHostToDevice),"context");
+		M26Check(cudaMemcpy(b.context,&context,sizeof(context),cudaMemcpyHostToDevice),"context");
 		for (layer = 0u; layer < M26_LAYERS; layer++)
 		{
 			if ( teacher != 0u && layer != 0u )
@@ -764,6 +767,11 @@ int main(int argc, char **argv)
 	for (layer = 0u; layer < M26_LAYERS; layer++)
 		demand += layers[layer].demand;
 	printf("model summary tokens=%zu mismatches=%u worst_anchor_stream_rel_l2=%.3e kv_error=%u demand_loaded_experts=%u route_sets_differing=%u/%u\n",generated.size(),mismatches,worst,access.error_code,demand,m26_route_flips,m26_route_checked);
+	if ( m26_route_checked == 0u )
+	{
+		fprintf(stderr,"FAIL no route set was compared\n");
+		return(1);
+	}
 	if ( mismatches != 0u || access.error_code != 0u )
 	{
 		fprintf(stderr,"FAIL greedy tokens differ from the CPU reference\n");
