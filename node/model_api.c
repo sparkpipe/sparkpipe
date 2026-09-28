@@ -799,7 +799,13 @@ static int api_resolve_seed(ApiOptions *options)
 	if ( options->temperature == 0.0f )
 		options->seed = 0u;
 	else if ( options->seeded == 0u )
+	{
+#if defined(__APPLE__)
+		return getentropy(&options->seed,sizeof(options->seed)) == 0;
+#else
 		return getrandom(&options->seed,sizeof(options->seed),0) == (ssize_t)sizeof(options->seed);
+#endif
+	}
 	return 1;
 }
 
@@ -1100,6 +1106,106 @@ static void api_stream(int fd, ApiRequest *req, int chat_format)
 	api_stream_close(fd,req,&stream,chat_format,stops,stop_count,alive);
 }
 
+static int api_chat_append(char **buffer, size_t *capacity, size_t *length,
+	const char *piece, size_t piece_bytes)
+{
+	size_t need;
+	char *grown;
+	if ( buffer == 0 || capacity == 0 || length == 0 || piece == 0 )
+		return 0;
+	need = *length + piece_bytes + 1u;
+	if ( need > *capacity )
+	{
+		while ( need > *capacity )
+			*capacity *= 2u;
+		grown = realloc(*buffer,*capacity);
+		if ( grown == 0 )
+			return 0;
+		*buffer = grown;
+	}
+	memcpy(*buffer + *length,piece,piece_bytes);
+	*length += piece_bytes;
+	return 1;
+}
+
+/* Messages arrive as {role, content} turns; the model is trained on the GLM
+ * chat layout, so the prompt must carry it: [gMASK]<sop> role markers and a
+ * trailing <|assistant|> header for the generation. A bare concatenation
+ * makes the model continue the turn instead of answering it. */
+static char *api_build_chat_prompt(const SparkJsonDocument *doc, int32_t root,
+	uint32_t *text_bytes_out)
+{
+	static const char chat_prefix[] = "[gMASK]<sop>";
+	static const char chat_generation[] = "<|assistant|>\n";
+	uint32_t message_index;
+	uint32_t message_count = 0u;
+	int32_t messages;
+	char *chat_text;
+	size_t chat_cap = 4096u;
+	size_t chat_len = 0u;
+	if ( doc == 0 || root < 0 || text_bytes_out == 0 )
+		return 0;
+	*text_bytes_out = 0u;
+	messages = SparkJsonFindObjectMember(doc,root,"messages");
+	if ( messages < 0 || !SparkJsonTokenIsType(doc,messages,SPARK_JSON_TOKEN_ARRAY) )
+		return 0;
+	message_count = SparkJsonGetArrayElementCount(doc,messages);
+	chat_text = malloc(chat_cap);
+	if ( chat_text == 0 || message_count == 0u )
+	{
+		free(chat_text);
+		return 0;
+	}
+	if ( !api_chat_append(&chat_text,&chat_cap,&chat_len,chat_prefix,sizeof(chat_prefix) - 1u) )
+	{
+		free(chat_text);
+		return 0;
+	}
+	for ( message_index = 0u; message_index < message_count; ++message_index )
+	{
+		int32_t entry = SparkJsonGetArrayElement(doc,messages,message_index);
+		int32_t role;
+		int32_t content;
+		char *piece = 0;
+		const char *marker;
+		size_t marker_bytes;
+		if ( entry < 0 || !SparkJsonTokenIsType(doc,entry,SPARK_JSON_TOKEN_OBJECT) )
+			continue;
+		content = SparkJsonFindObjectMember(doc,entry,"content");
+		if ( content < 0 || !SparkJsonTokenIsType(doc,content,SPARK_JSON_TOKEN_STRING) ||
+			SparkJsonCopyString(doc,content,&piece) != SPARK_STATUS_OK )
+			continue;
+		role = SparkJsonFindObjectMember(doc,entry,"role");
+		if ( role >= 0 && SparkJsonTokenIsType(doc,role,SPARK_JSON_TOKEN_STRING) &&
+			SparkJsonStringEquals(doc,role,"assistant") )
+			marker = "<|assistant|>\n", marker_bytes = sizeof("<|assistant|>\n") - 1u;
+		else if ( role >= 0 && SparkJsonTokenIsType(doc,role,SPARK_JSON_TOKEN_STRING) &&
+			SparkJsonStringEquals(doc,role,"observation") )
+			marker = "<|observation|>\n", marker_bytes = sizeof("<|observation|>\n") - 1u;
+		else if ( role >= 0 && SparkJsonTokenIsType(doc,role,SPARK_JSON_TOKEN_STRING) &&
+			SparkJsonStringEquals(doc,role,"system") )
+			marker = "<|system|>\n", marker_bytes = sizeof("<|system|>\n") - 1u;
+		else
+			marker = "<|user|>\n", marker_bytes = sizeof("<|user|>\n") - 1u;
+		if ( !api_chat_append(&chat_text,&chat_cap,&chat_len,marker,marker_bytes) ||
+			!api_chat_append(&chat_text,&chat_cap,&chat_len,piece,strlen(piece)) )
+		{
+			free(piece);
+			free(chat_text);
+			return 0;
+		}
+		free(piece);
+	}
+	if ( !api_chat_append(&chat_text,&chat_cap,&chat_len,chat_generation,sizeof(chat_generation) - 1u) )
+	{
+		free(chat_text);
+		return 0;
+	}
+	chat_text[chat_len] = '\0';
+	*text_bytes_out = (uint32_t)chat_len;
+	return chat_text;
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len,
 	int chat_format)
 {
@@ -1107,6 +1213,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	int32_t root, mt;
 	uint32_t *request_stops = 0;
 	uint32_t request_stop_count = 0;
+	uint32_t chat_request = 0;
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
 	ApiOptions options;
@@ -1141,60 +1248,14 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	}
 	if (prompt_text == 0 && prompt == 0 && root >= 0)
 	{
-		int32_t messages = SparkJsonFindObjectMember(&doc, root, "messages");
-		size_t chat_cap = 4096u;
-		size_t chat_len = 0u;
-		uint32_t message_index;
-		uint32_t message_count = 0u;
 		char *chat_text;
-		if (messages >= 0 &&
-			SparkJsonTokenIsType(&doc, messages, SPARK_JSON_TOKEN_ARRAY))
-			message_count = SparkJsonGetArrayElementCount(&doc, messages);
-		chat_text = message_count > 0u ? malloc(chat_cap) : 0;
-		for (message_index = 0u;
-			chat_text != 0 && message_index < message_count;
-			++message_index)
-		{
-			int32_t entry = SparkJsonGetArrayElement(&doc, messages, message_index);
-			int32_t content;
-			char *piece = 0;
-			size_t piece_bytes;
-			size_t need;
-			if (entry < 0 ||
-				!SparkJsonTokenIsType(&doc, entry, SPARK_JSON_TOKEN_OBJECT))
-				continue;
-			content = SparkJsonFindObjectMember(&doc, entry, "content");
-			if (content < 0 ||
-				!SparkJsonTokenIsType(&doc, content, SPARK_JSON_TOKEN_STRING) ||
-				SparkJsonCopyString(&doc, content, &piece) != SPARK_STATUS_OK)
-				continue;
-			piece_bytes = strlen(piece);
-			need = chat_len + piece_bytes + 2u;
-			if (need > chat_cap)
-			{
-				char *grown;
-				while (need > chat_cap)
-					chat_cap *= 2u;
-				grown = realloc(chat_text, chat_cap);
-				if (grown == 0)
-				{
-					free(piece);
-					free(chat_text);
-					chat_text = 0;
-					break;
-				}
-				chat_text = grown;
-			}
-			memcpy(chat_text + chat_len, piece, piece_bytes);
-			chat_len += piece_bytes;
-			chat_text[chat_len++] = '\n';
-			free(piece);
-		}
+		uint32_t chat_bytes;
+		chat_text = api_build_chat_prompt(&doc, root, &chat_bytes);
 		if (chat_text != 0)
 		{
-			chat_text[chat_len] = '\0';
 			prompt_text = chat_text;
-			prompt_text_bytes = (uint32_t)chat_len;
+			prompt_text_bytes = chat_bytes;
+			chat_request = 1u;
 		}
 	}
 	if (root >= 0)
@@ -1205,6 +1266,44 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			request_stops = stops, request_stop_count = stop_len;
 		else
 			free(stops);
+	}
+	/* A chat reply ends at the next turn marker, not at the token budget. */
+	if (chat_request != 0u && request_stops == 0 &&
+		Sidecar.tokenizer.special_tokens != 0)
+	{
+		static const char *const chat_stop_text[] =
+			{"<|user|>", "<|observation|>", "<|assistant|>"};
+		uint32_t chat_stop_ids[sizeof(chat_stop_text) / sizeof(chat_stop_text[0])];
+		uint32_t chat_stop_found = 0u;
+		uint32_t stop_index;
+		uint32_t special_index;
+		for (stop_index = 0u;
+			stop_index < sizeof(chat_stop_text) / sizeof(chat_stop_text[0]);
+			++stop_index)
+			for (special_index = 0u;
+				special_index < Sidecar.tokenizer.special_token_count;
+				++special_index)
+				if (Sidecar.tokenizer.special_tokens[special_index].text != 0 &&
+					strlen(chat_stop_text[stop_index]) ==
+						Sidecar.tokenizer.special_tokens[special_index].text_bytes &&
+					memcmp(chat_stop_text[stop_index],
+						Sidecar.tokenizer.special_tokens[special_index].text,
+						Sidecar.tokenizer.special_tokens[special_index].text_bytes) == 0)
+				{
+					chat_stop_ids[chat_stop_found++] =
+						Sidecar.tokenizer.special_tokens[special_index].token_id;
+					break;
+				}
+		if (chat_stop_found != 0u)
+		{
+			request_stops = malloc(chat_stop_found * sizeof(uint32_t));
+			if (request_stops != 0)
+			{
+				memcpy(request_stops, chat_stop_ids,
+					chat_stop_found * sizeof(uint32_t));
+				request_stop_count = chat_stop_found;
+			}
+		}
 	}
 	mt = SparkJsonFindObjectMember(&doc, root, "max_tokens");
 	if (mt >= 0)
