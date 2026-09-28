@@ -416,11 +416,11 @@ def build_plan(arm: str, config: dict, tp_degree: int, tp_rank: int,
                 name = f"model.layers.{layer}.mlp.{mat}.weight"
                 s0, sc = block_window(tp_rank * dense_rows, dense_rows)
                 add(kind_code, layer, WEIGHT_FP8_E4M3_F32B128,
-                    dense_rows, g["dense_inter"], name,
+                    dense_rows, g["hidden"], name,
                     [Span(SPAN_DENSE, name, "F8_E4M3", tp_rank * dense_rows,
-                          dense_rows, g["dense_inter"],
+                          dense_rows, g["hidden"],
                           scale_name=name + "_scale_inv", scale_row0=s0,
-                          scale_rows=sc, scale_columns=g["dense_inter"] // FP8_BLOCK)])
+                          scale_rows=sc, scale_columns=g["hidden"] // FP8_BLOCK)])
             name = f"model.layers.{layer}.mlp.down_proj.weight"
             c0, cc = block_window(tp_rank * dense_cols, dense_cols)
             add(KIND_DENSE_MLP_DOWN, layer, WEIGHT_FP8_E4M3_F32B128,

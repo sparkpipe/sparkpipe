@@ -34,7 +34,7 @@ import mimo26_stagepack as packer  # noqa: E402
 
 MINI = dict(
     hidden=256, layers=5, heads=8, head_dim=64, v_head_dim=64,
-    kv_full=2, kv_swa=2, vocab=512, dense_inter=256,
+    kv_full=2, kv_swa=2, vocab=512, dense_inter=512,
     experts=8, experts_per_token=2, expert_inter=128,
     swa_window=8, default_tp=2,
 )
@@ -145,6 +145,32 @@ def build_checkpoint(directory: Path) -> dict:
     return tensors
 
 
+def source_bytes(checkpoint: Path, name: str, start: int, count: int) -> bytes:
+    index = json.loads((checkpoint / "model.safetensors.index.json").read_text())
+    with open(checkpoint / index["weight_map"][name], "rb") as file:
+        (n,) = struct.unpack("<Q", file.read(8))
+        header = json.loads(file.read(n))
+        file.seek(8 + n + header[name]["data_offsets"][0] + start)
+        return file.read(count)
+
+
+def check_dense_slices(checkpoint: Path, pack: Path, rank: int, entries: list) -> None:
+    rows = MINI["dense_inter"] // 2
+    blocks = (rows // 128) * (MINI["hidden"] // 128)
+    for kind, mat in ((packer.KIND_DENSE_MLP_GATE, "gate_proj"), (packer.KIND_DENSE_MLP_UP, "up_proj")):
+        (entry,) = [e for e in entries if e[0] == kind]
+        assert entry[1:5] == (0, packer.WEIGHT_FP8_E4M3_F32B128, rows, MINI["hidden"]), entry
+        assert (entry[7], entry[9]) == (rows * MINI["hidden"], blocks * 4), entry
+        name = f"model.layers.0.mlp.{mat}.weight"
+        with open(pack, "rb") as file:
+            file.seek(entry[6])
+            payload = file.read(entry[7])
+            file.seek(entry[8])
+            scale = file.read(entry[9])
+        assert payload == source_bytes(checkpoint, name, rank * rows * MINI["hidden"], entry[7])
+        assert scale == source_bytes(checkpoint, name + "_scale_inv", rank * blocks * 4, entry[9])
+
+
 class Args:
     def __init__(self, **kw):
         self.arm = "pro"
@@ -200,6 +226,7 @@ def main() -> int:
                            (MINI["expert_inter"] if mat_kind != packer.KIND_EXPERT_DOWN
                             else MINI["hidden"]) for e in slabs)
             assert (packer.KIND_SINK_BIAS, ) not in kinds
+            check_dense_slices(tmp / "ckpt", out, rank, entries)
             expert_bytes.append(sum(e[3] * e[4] // 2 for e in entries
                                     if e[0] in (packer.KIND_EXPERT_GATE,
                                                 packer.KIND_EXPERT_UP,

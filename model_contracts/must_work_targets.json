@@ -121,7 +121,7 @@
     {
       "id": "mimo26_pro_mxfp4_experts_fp8_spine",
       "model_family": "mimo26_pro",
-      "model_id": "XiaomiMiMo/mimo-v2.6-pro-rl",
+      "model_id": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
       "contract": "model_contracts/mimo26_pro_authoritative.json",
       "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
       "routed_expert_activation_format": "bf16",
@@ -145,7 +145,7 @@
     {
       "id": "mimo26_flash_mxfp4_experts_fp8_spine",
       "model_family": "mimo26_flash",
-      "model_id": "XiaomiMiMo/mimo-v2.6-flash-rl",
+      "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
       "contract": "model_contracts/mimo26_flash_authoritative.json",
       "routed_expert_weight_format": "mxfp4_e2m1_e8m0_block32",
       "routed_expert_activation_format": "bf16",
