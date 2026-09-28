@@ -1296,7 +1296,10 @@ static uint32_t SparkModelBatchDefersDecodePublication(const SparkModelBatchEngi
 
 static void SparkModelBatchLogCacheMode(const SparkModelBatchEngine *engine)
 {
-	const char *decode_mode;
+	const char *decode_mode,*prefix_mode;
+	prefix_mode = "off";
+	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u )
+		prefix_mode = engine->prefix_reuse_disabled != 0u ? "deployment-off" : "on";
 	decode_mode = "inline";
 	if ( SparkModelBatchDefersDecodePublication(engine) != 0u )
 		decode_mode = "deferred";
@@ -1304,8 +1307,7 @@ static void SparkModelBatchLogCacheMode(const SparkModelBatchEngine *engine)
 		decode_mode = "inline-until-speculative";
 	fprintf(stderr,"batch engine adapter=%s prefix_reuse=%s decode_checkpoints=%s\n",
 		engine->adapter_descriptor->adapter_id != 0 ? engine->adapter_descriptor->adapter_id : "unnamed",
-		(engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u ? "on" : "off",
-		decode_mode);
+		prefix_mode,decode_mode);
 }
 
 static SparkStatus SparkModelBatchInitialize(

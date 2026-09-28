@@ -462,7 +462,7 @@ static SparkModelBatchEngine *TestConnectCapturingLog(const SparkModelResidentDe
 	return(engine);
 }
 
-static void TestScenarioAdapterWithoutPrefixReuse(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+static void TestScenarioAdapterWithoutPrefixReuse(const SparkModelResidentDeployment *deployment,const char *runtime_root,const char *expected_mode)
 {
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
@@ -473,7 +473,7 @@ static void TestScenarioAdapterWithoutPrefixReuse(const SparkModelResidentDeploy
 	engine = TestConnectCapturingLog(deployment,&state,runtime_root,log,sizeof(log));
 	if ( engine == 0 )
 		return;
-	CHECK(strstr(log,"adapter=test.model.serving.adapter.without-prefix-reuse.v1 prefix_reuse=off decode_checkpoints=inline") != 0,"no prefix reuse: startup names the adapter's cache mode");
+	CHECK(strstr(log,expected_mode) != 0,"no prefix reuse: startup names the adapter's cache mode");
 	MockResidentClientSetAutoTokens(1u);
 	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
 	TestSubmitPrompt(engine,1u,700u,1u,prompt,8u);
@@ -1218,7 +1218,12 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	SparkModelResidentDeployment deployment;
 	char path[512];
 	TestLoadVariantDeployment(runtime_root,"without-prefix-reuse",TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH,path,sizeof(path),&deployment);
-	TestScenarioAdapterWithoutPrefixReuse(&deployment,runtime_root);
+	TestScenarioAdapterWithoutPrefixReuse(&deployment,runtime_root,"adapter=test.model.serving.adapter.without-prefix-reuse.v1 prefix_reuse=off decode_checkpoints=inline");
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"prefix-reuse-deployment-off",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
+	deployment.prefix_reuse_disabled = 1u;
+	TestScenarioAdapterWithoutPrefixReuse(&deployment,runtime_root,"adapter=test.model.serving.adapter.v1 prefix_reuse=deployment-off decode_checkpoints=inline");
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"speculative-inline",TEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH,path,sizeof(path),&deployment);
