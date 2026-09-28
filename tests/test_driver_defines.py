@@ -56,6 +56,8 @@ NEGATIVE_CONTROLS = [
      "SPARK_LLM_MLA_LATENT_DIMENSION"),
     ("kv_page_slots_deleted", r"#define SPARK_LLM_KV_PAGE_SLOTS .*\n", None,
      "SPARK_LLM_KV_PAGE_SLOTS"),
+    ("first_routed_layer_deleted", r"#define SPARK_LLM_FIRST_ROUTED_LAYER .*\n", None,
+     "set SPARK_LLM_FIRST_ROUTED_LAYER"),
     ("head_count_flip", r"#define SPARK_LLM_MLA_HEAD_COUNT .*\n",
      "#define SPARK_LLM_MLA_HEAD_COUNT 33u\n", "divide by 16"),
     ("expert_count_flip", r"#define SPARK_LLM_MOE_EXPERT_COUNT .*\n",

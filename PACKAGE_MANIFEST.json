@@ -4213,8 +4213,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_driver_defines.h",
-      "sha256": "b952084c852b1d33f9ce94f31e8fd633fef8460e9854a52123921d27a96a5ed8",
-      "size_bytes": 9632
+      "sha256": "4914bfe3569bccf1c36d5721559737dd647d51ca201be8503ee224330054a167",
+      "size_bytes": 9694
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
@@ -8918,8 +8918,8 @@
     },
     {
       "path": "tests/test_driver_defines.py",
-      "sha256": "edb1fcc2dff8cabbde9c826d018a7c9be322b1d418f6fe2a7d79d4206613daf4",
-      "size_bytes": 6555
+      "sha256": "d7dbcf31dd6dcec24dd7e1e5fdf02ce4d4d1b3eb03723badafdc59abe03cb155",
+      "size_bytes": 6684
     },
     {
       "path": "tests/test_dry_law.py",
@@ -15275,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73945377
+  "total_bytes": 73945568
 }
