@@ -1,5 +1,5 @@
 {
-  "file_count": 3060,
+  "file_count": 3061,
   "files": [
     {
       "path": ".gitattributes",
@@ -780,6 +780,11 @@
       "path": "docs/GOALS.md",
       "sha256": "b6fb788c7a5cbc84fac6684d33019f8d1891c823fae23198bc8399d933fbef29",
       "size_bytes": 14855
+    },
+    {
+      "path": "docs/HANDOFF_FLEET_2026-09-28.md",
+      "sha256": "a2d3ec3b119d4849f686fe7e7d2e42a5a506e33a65ff254a73b67eef4f749000",
+      "size_bytes": 10364
     },
     {
       "path": "docs/HARDWARE_INDEPENDENCE.md",
@@ -15305,5 +15310,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74066423
+  "total_bytes": 74076787
 }
