@@ -80,6 +80,19 @@ TRANSPORT_BASE = 64048                          # 64048 .. 64063
 
 TP_COLLECTIVE_PORT = COLLECTIVE_BASE      # + tp rank (group-local, bound)
 DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4 # packed 12-number table below
+
+
+def select_lane(lane: int) -> None:
+    global LANE, CONTROL_BASE, COLLECTIVE_BASE, TRANSPORT_BASE
+    global TP_COLLECTIVE_PORT, DEVICE_SESSION_BASE
+    if lane < 1 or lane > 15:
+        raise SystemExit(f"lane {lane} outside 1..15 (lane 0 is production)")
+    LANE = lane
+    CONTROL_BASE = 23000 + 16 * lane
+    COLLECTIVE_BASE = 53000 + 16 * lane
+    TRANSPORT_BASE = 64000 + 16 * lane
+    TP_COLLECTIVE_PORT = COLLECTIVE_BASE
+    DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4
 MESH_RANKS = ",".join(str(i) for i in range(WORLD))
 
 DEPLOYED_PACK_TEMPLATE = (
@@ -166,7 +179,7 @@ def adapter_config(rank: int, kv_pages: int = 64) -> dict:
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
             "local_host": host_of(rank),
-            "collective_identifier": 0x0003_0000_0000_0000 | stage_of(rank),
+            "collective_identifier": (LANE << 48) | stage_of(rank),
             "listen_port": TRANSPORT_BASE + 15,
             "connect_timeout_milli": 300000,
             "operation_timeout_milli": 30000,
@@ -192,14 +205,15 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES) -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
+        root = runtime_root.format(host=host)
         nodes.append({
             "rank_index": rank,
             "stage_index": rank,
-            "runtime_root": runtime_root,
+            "runtime_root": root,
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/adapter.json",
-            "kv_backing_directory": os.path.join(runtime_root, "kvcache"),
+            "kv_backing_directory": os.path.join(root, "kvcache"),
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {
                 "kind": "tcp",
@@ -282,11 +296,15 @@ def main() -> int:
     parser.add_argument("--rank", type=int, choices=range(WORLD), default=None,
                         help="emit only this rank's adapter.json "
                              "(default: all sixteen)")
+    parser.add_argument("--lane", type=int, default=LANE,
+                        help="weightd mesh lane and port block "
+                             "(default %(default)d)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
     arguments = parser.parse_args()
 
+    select_lane(arguments.lane)
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv-backing-bytes must be positive and finite")
 
