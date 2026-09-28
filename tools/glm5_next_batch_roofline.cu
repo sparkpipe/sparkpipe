@@ -14,6 +14,7 @@
 #define ROOF_MAX_COPIES 8u
 #define ROOF_MAX_BATCHES 16u
 #define ROOF_PHASES 7u
+#define ROOF_MAX_BATCH_ROWS_PRINT 64u
 #define ROOF_PHASE_EVENTS (2u + ROOF_LAYERS * 5u)
 #define ROOF_EXPERT_INTERMEDIATE (SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / ROOF_TP)
 #define ROOF_EXPERT_W1_ROWS (2u * ROOF_EXPERT_INTERMEDIATE)
@@ -639,6 +640,24 @@ static uint32_t RoofHiddenFinite(const RoofState *state,uint32_t rows)
 	return(finite);
 }
 
+static void RoofHash(const RoofState *state,uint32_t rows)
+{
+	uint64_t count,index,hash;
+	uint16_t *hidden;
+	uint32_t tokens[ROOF_MAX_BATCH_ROWS_PRINT];
+	count = (uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	hidden = (uint16_t *)malloc(count * sizeof(uint16_t));
+	if ( hidden == 0 )
+		exit(1);
+	ROOF_CUDA(cudaMemcpy(hidden,state->slot.hidden_bf16,count * sizeof(uint16_t),cudaMemcpyDeviceToHost));
+	ROOF_CUDA(cudaMemcpy(tokens,state->slot.output_token,(rows < ROOF_MAX_BATCH_ROWS_PRINT ? rows : ROOF_MAX_BATCH_ROWS_PRINT) * sizeof(uint32_t),cudaMemcpyDeviceToHost));
+	hash = 0xcbf29ce484222325ull;
+	for (index=0u; index<count; index++)
+		hash = (hash ^ hidden[index]) * 0x100000001b3ull;
+	printf("ROOFLINE-HASH rows=%u hidden_fnv=%016llx token0=%u\n",rows,(unsigned long long)hash,tokens[0]);
+	free(hidden);
+}
+
 static void RoofReport(const RoofModel *model,const RoofState *state,const RoofConfig *config,uint32_t rows,double step_ms)
 {
 	double distinct,bytes,payload,direct_ms,rsag_ms,collectives;
@@ -808,6 +827,7 @@ int main(int argc,char **argv)
 	for (batch=0u; batch<config.batch_count; batch++)
 	{
 		RoofReport(&model,&state,&config,config.batches[batch],RoofMeasure(&state,&config,config.batches[batch],stream));
+		RoofHash(&state,config.batches[batch]);
 		RoofProfile(&state,config.batches[batch],stream);
 		RoofExpertsProfile(&state,config.batches[batch],stream);
 	}
