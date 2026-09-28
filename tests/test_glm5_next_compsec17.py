@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -52,6 +55,49 @@ class CompsecGrading(unittest.TestCase):
 
     def test_text_without_any_line_number_fails(self):
         self.assertEqual(compsec.grade("The function is safe.", "17-20")[0], False)
+
+
+class CompareRuns(unittest.TestCase):
+    def write_run(self, root, name, tokens, drop=None, malformed=None):
+        run = Path(root) / name
+        (run / "responses").mkdir(parents=True)
+        for index, case in enumerate(compsec.COMPSEC_IDS, 1):
+            if case == drop:
+                continue
+            ids = "oops" if case == malformed else tokens.get(case, [index, index + 1, index + 2])
+            record = {"id": case, "response": {"tokens": ids}}
+            (run / "responses" / f"{index:03d}-{case}.json").write_text(json.dumps(record))
+        return run
+
+    def compare(self, left, right):
+        out = io.StringIO()
+        return compsec.compare_runs(left, right, out), out.getvalue()
+
+    def test_identical_runs_pass(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, text = self.compare(self.write_run(root, "a", {}), self.write_run(root, "b", {}))
+        self.assertEqual(status, 0)
+        self.assertIn("identical=17/17", text)
+
+    def test_one_changed_token_names_the_case_and_index(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, text = self.compare(self.write_run(root, "a", {}), self.write_run(root, "b", {"compsec-092": [17, 99, 19]}))
+        self.assertEqual(status, 1)
+        self.assertIn("compsec-092 DIFFERS first_token_index=1 reference_token=18 candidate_token=99", text)
+        self.assertIn("identical=16/17", text)
+
+    def test_shorter_output_differs_at_its_end(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, text = self.compare(self.write_run(root, "a", {}), self.write_run(root, "b", {"compsec-079": [4, 5]}))
+        self.assertEqual(status, 1)
+        self.assertIn("compsec-079 DIFFERS first_token_index=2 reference_token=6 candidate_token=None", text)
+
+    def test_missing_or_malformed_runs_fail_with_status_2(self):
+        with tempfile.TemporaryDirectory() as root:
+            good = self.write_run(root, "a", {})
+            self.assertEqual(self.compare(good, self.write_run(root, "b", {}, drop="compsec-080"))[0], 2)
+            self.assertEqual(self.compare(good, self.write_run(root, "c", {}, malformed="compsec-081"))[0], 2)
+            self.assertEqual(self.compare(good, Path(root) / "absent")[0], 2)
 
 
 if __name__ == "__main__":
