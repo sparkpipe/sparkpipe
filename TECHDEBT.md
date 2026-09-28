@@ -365,9 +365,32 @@ progress diary.
     Record a precision receipt with each requalification.
   - qwen4_flash refused every prefill frame from 2026-09-19 to 2026-09-28:
     its KV frame wrapper demanded a decode batch before asking whether the
-    KV tier was on;
+    KV tier was on. The same check refused qwen38_max decode frames that
+    carry no frame context (single-stage runs, unqualified execution, the
+    T1 harness);
   - muse_glimmer's JIT KV tier (`SPARK_MUSE_GLIMMER_STAGE_KV_STORE`) now
-    runs the common KV frame.
+    runs the common KV frame;
+  - with the JIT KV tier on, qwen38_max, qwen4_flash and muse_glimmer could
+    restore two blocks into one slot in a frame that evicted twice. Claimed
+    slots are now pinned and the eviction cursor advances; exercise the
+    tier with a pool smaller than the working set;
+  - qwen38_max's FP8 grouped-expert launcher refuses views whose rows per
+    expert or input width are off the 128 block again;
+  - dsv4, gemma4, glm52, laguna, ling, minimax, muse_glimmer, qwen38_27b,
+    qwen38_max and qwen4_flash now report a failed TP combine launch as
+    `INTERNAL_ERROR` or `CAPACITY_EXCEEDED` with a log line, as glm5_next
+    does, instead of a silent `IO_ERROR` the engine treated as transport
+    trouble.
+- Five `llm_defines.h` files default a build flag with `#ifndef`:
+  `SPARK_LLM_MTP_LAYER_COUNT` (qwen38_27b, qwen38_max, qwen4_flash, default
+  1), `SPARK_LLM_KV_BLOCK_TOKENS` (minimax, qwen38_27b, qwen38_max,
+  qwen4_flash) and `SPARK_GEMMA4_MODEL_MOE_BLOCK` (gemma4). A build that
+  forgets the flag silently gets the default: the qwen38_max GPU validator
+  and two T1 harnesses were built with MTP 1 against MTP-0 archives this way
+  until `bc63e11f`. Pass the flags in every build that includes these
+  headers and delete the defaults. `test_llm_module_contract`'s negative
+  control relies on the KV block default today; it can pass the constant to
+  both of its translation units instead.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
