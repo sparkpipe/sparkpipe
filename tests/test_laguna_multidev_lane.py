@@ -1,41 +1,4 @@
 #!/usr/bin/env python3
-"""Lane-8 laguna shared-socket deployment gates (stdlib only).
-
-tools/laguna_multidev_lane.py builds the private multidev deployment for
-developer lane 8 (laguna, TP8xPP2, spark0..sparkf). This gate holds the
-lane contract:
-
-  1. the deployment keeps the hybrid identity rank_index == stage_index
-     == 0..15 (the adapter derives tp_rank = stage_index % 8 and the
-     pipeline stage = stage_index // 8 from it) and 16 unique per-host
-     control endpoints inside the lane-8 control block 23128..23143;
-  2. the weightd socket is wired through deployment.weightd.socket_path
-     and the KV backing stays a finite cap under the private runtime
-     root (never the shared sparkdata tree);
-  3. every adapter configuration carries the serving adapter's EXACT
-     member set (10 top-level + 15 tp_collective members - a missing OR
-     extra member is a load error), binds its host TCP collective inside
-     53128..53135 GROUP-LOCALLY (both PP stages reuse the block on
-     disjoint hosts), points at the rank's deployed pack under the
-     GLOBAL-rank filename convention (stage{rank//8}.rank{rank}.lgsp -
-     the M1 inventory finding), and keeps the session matrices inside
-     the lane-8 session block 23680..23743;
-  4. no port of any kind lands outside lane 8's four blocks
-     (23128-23143, 53128-53143, 64128-64143, 23680-23743), and no host
-     listens one number twice;
-  5. the mesh map is the identity permutation (logical rank = index in
-     --nodes), the wrapper scripts parse, and the generator's --check
-     mode reproduces its own output byte for byte;
-  6. the family wrapper upholds the shared-socket template queue contract
-     (tools/devcycle/templates/run-family-job.sh.template): attempt id,
-     job namespace, size/rank bounds and queue-reserved port membership
-     all fail closed before any filesystem work, and a fully reserved
-     lane reaches the shared-socket liveness check;
-  7. the .lgsp routed-expert manifest generator emits a loader-verified
-     v2 sidecar from a synthetic pack directory with correct per-expert
-     spans (uniform bf16 interleave), and --budgets derives the exact
-     expert-pool / spine numbers from that sidecar.
-"""
 import json
 import os
 import shutil
@@ -50,14 +13,18 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import laguna_multidev_lane as lane  # noqa: E402
 
-LANE_BLOCKS = (
-    set(range(lane.CONTROL_BASE, lane.CONTROL_BASE + 16)),
-    set(range(lane.COLLECTIVE_BASE, lane.COLLECTIVE_BASE + 16)),
-    set(range(lane.TRANSPORT_BASE, lane.TRANSPORT_BASE + 16)),
-    set(range(lane.SESSION_BASE, lane.SESSION_BASE + 64)),
-)
-ALL_LANE_PORTS = LANE_BLOCKS[0] | LANE_BLOCKS[1] | LANE_BLOCKS[2] | LANE_BLOCKS[3]
+LANE = 11
+PORTS = lane.lane_ports(LANE)
+CONTROL_BASE = PORTS["control"]
+COLLECTIVE_BASE = PORTS["collective"]
+TRANSPORT_BASE = PORTS["transport"]
+SESSION_BASE = PORTS["session"]
+ALL_LANE_PORTS = (set(range(CONTROL_BASE, CONTROL_BASE + 16))
+                  | set(range(COLLECTIVE_BASE, COLLECTIVE_BASE + 16))
+                  | set(range(TRANSPORT_BASE, TRANSPORT_BASE + 16))
+                  | set(range(SESSION_BASE, SESSION_BASE + 64)))
 HEX = lane.HEX
+GENERATOR = str(ROOT / "tools/laguna_multidev_lane.py")
 
 ADAPTER_MEMBERS = {
     "schema_version", "model_revision", "expert_weight_codec",
@@ -82,7 +49,7 @@ def deployment_gates(deployment, runtime_root, socket, failures):
     check(deployment["schema_version"] == 2, failures,
           "deployment schema_version must be 2")
     check(deployment["weightd"]["socket_path"] == socket, failures,
-          "weightd socket path must be the shared socket")
+          "weightd socket path must be the requested socket")
     check(deployment["driver"]["program_name"] == "resident_decode",
           failures, "driver program must be resident_decode")
     check(deployment["adapter"]["shared_object_path"]
@@ -102,7 +69,7 @@ def deployment_gates(deployment, runtime_root, socket, failures):
         check(node["stage_index"] == i, failures,
               f"node {i}: stage_index {node['stage_index']} != linear rank")
         check(node["runtime_root"] == runtime_root, failures,
-              f"node {i}: runtime_root must be the private queue root")
+              f"node {i}: runtime_root must be the requested root")
         backing = node["kv_backing_directory"]
         check(backing.startswith(runtime_root + "/"), failures,
               f"node {i}: kv backing {backing} escapes the private root")
@@ -112,13 +79,13 @@ def deployment_gates(deployment, runtime_root, socket, failures):
         host = f"spark{HEX[i]}"
         check(endpoint["host"] == host, failures,
               f"node {i}: control host {endpoint['host']} != {host}")
-        check(endpoint["port"] == lane.CONTROL_BASE + i, failures,
+        check(endpoint["port"] == CONTROL_BASE + i, failures,
               f"node {i}: control port {endpoint['port']}")
         endpoints.add((endpoint["host"], endpoint["port"]))
     check(len(endpoints) == 16, failures, "control endpoints must be unique")
     transport = deployment["transport"]
-    check(lane.TRANSPORT_BASE <= transport["control_port_base"]
-          <= lane.TRANSPORT_BASE + 15, failures,
+    check(TRANSPORT_BASE <= transport["control_port_base"]
+          <= TRANSPORT_BASE + 15, failures,
           "transport control base must sit inside the lane transport block")
 
 
@@ -150,9 +117,9 @@ def adapter_gates(config, rank, failures, per_host_ports):
           f"extra {sorted(cmembers - TP_COLLECTIVE_MEMBERS)}")
     check(collective["backend"] == "hidden_transport", failures,
           f"{host}: collective backend")
-    check(collective["listen_port"] == lane.COLLECTIVE_BASE + tp, failures,
+    check(collective["listen_port"] == COLLECTIVE_BASE + tp, failures,
           f"{host}: tp_collective listen_port {collective['listen_port']}")
-    check(collective["peer_ports"] == [lane.COLLECTIVE_BASE + t
+    check(collective["peer_ports"] == [COLLECTIVE_BASE + t
                                        for t in range(8)], failures,
           f"{host}: peer_ports must be contiguous group-local")
     check(collective["peer_hosts"] == [f"spark{HEX[stage * 8 + t]}"
@@ -166,7 +133,7 @@ def adapter_gates(config, rank, failures, per_host_ports):
     check(len(collective["step_rail_indices"]) == 8, failures,
           f"{host}: step_rail_indices must cover the 8 peers")
     per_host_ports.setdefault(host, set()).add(collective["listen_port"])
-    per_host_ports[host].add(lane.CONTROL_BASE + rank)
+    per_host_ports[host].add(CONTROL_BASE + rank)
 
     for member in ("session_ports", "session_ports_hc"):
         table = collective[member]
@@ -179,11 +146,11 @@ def adapter_gates(config, rank, failures, per_host_ports):
                     check(value == 0, failures,
                           f"{host}: {member}[{a}][{b}] diagonal must be 0")
                 else:
-                    check(lane.SESSION_BASE <= value < lane.SESSION_BASE + 64,
+                    check(SESSION_BASE <= value < SESSION_BASE + 64,
                           failures,
                           f"{host}: {member}[{a}][{b}]={value} outside the "
-                          f"session block {lane.SESSION_BASE}.."
-                          f"{lane.SESSION_BASE + 63}")
+                          f"session block {SESSION_BASE}.."
+                          f"{SESSION_BASE + 63}")
                     check(value not in sessions, failures,
                           f"{host}: {member} value {value} used twice")
                     sessions.add(value)
@@ -192,71 +159,86 @@ def adapter_gates(config, rank, failures, per_host_ports):
 
 
 def wrapper_contract_gates(failures):
-    """Exercise the template-aligned queue contract of the family wrapper.
-
-    Every case must fail closed BEFORE any filesystem work (the contract
-    and socket checks precede the first mkdir), so driving the real script
-    with a synthetic environment is side-effect free.
-    """
     script = ROOT / "tools/laguna_multidev_run_family.sh"
     attempt = "a" * 32
-    base = {
-        "SPARK_QUEUE_ATTEMPT": attempt,
-        "SPARK_QUEUE_RUNTIME_ROOT": f"/tmp/sparkqueue-{attempt}",
-        "SPARK_QUEUE_RANK": "0",
-        "SPARK_QUEUE_SIZE": "16",
+    common = {
+        "LAGUNA_LANE": str(LANE),
+        "LAGUNA_KV_BACKING_BYTES": str(2 << 30),
+        "LAGUNA_KV_PAGE_CAPACITY": "2048",
         "LAGUNA_WEIGHTD_SOCKET": "/nonexistent/weightd.sock",
         "HOME": "/nonexistent",
     }
-    lane_ranges = (f"{lane.CONTROL_BASE}:{lane.CONTROL_BASE + 15},"
-                   f"{lane.COLLECTIVE_BASE}:{lane.COLLECTIVE_BASE + 15},"
-                   f"{lane.TRANSPORT_BASE}:{lane.TRANSPORT_BASE + 15},"
-                   f"{lane.SESSION_BASE}:{lane.SESSION_BASE + 63}")
+    base = dict(common, LAGUNA_MODE="queue", SPARK_QUEUE_ATTEMPT=attempt,
+                SPARK_QUEUE_RUNTIME_ROOT=f"/tmp/sparkqueue-{attempt}",
+                SPARK_QUEUE_RANK="0", SPARK_QUEUE_SIZE="16")
+    direct = dict(common, LAGUNA_MODE="direct",
+                  LAGUNA_RUNTIME_ROOT=f"/tmp/sp-laguna-lane{LANE}",
+                  LAGUNA_RANK="0", LAGUNA_COLLECTIVE_ID="4242")
+    lane_ranges = (f"{CONTROL_BASE}:{CONTROL_BASE + 15},"
+                   f"{COLLECTIVE_BASE}:{COLLECTIVE_BASE + 15},"
+                   f"{TRANSPORT_BASE}:{TRANSPORT_BASE + 15},"
+                   f"{SESSION_BASE}:{SESSION_BASE + 63}")
 
     def run(env):
-        # hermetic: strip every queue/lane variable the host may carry -
-        # under a real queue job SPARK_QUEUE_ATTEMPT/RANK/SIZE/RUNTIME_ROOT
-        # leak in through os.environ and flip which fail-closed case fires
         complete = {key: value for key, value in os.environ.items()
                     if not (key.startswith("SPARK_QUEUE_")
                             or key.startswith("LAGUNA_")
-                            or key == "SPARK_WEIGHTD_SOCKET")}
+                            or key.startswith("SPARK_WEIGHTD_"))}
         complete.update(env)
         return subprocess.run(["bash", str(script)], env=complete,
                               capture_output=True, text=True)
 
+    def without(env, key):
+        return {k: v for k, v in env.items() if k != key}
+
+    reserved = dict(base, SPARK_QUEUE_PORTS=lane_ranges)
     cases = [
-        ("missing attempt id",
-         {k: v for k, v in base.items()
-          if k != "SPARK_QUEUE_ATTEMPT"},
-         "authoritative spark queue"),
-        ("malformed attempt id",
-         dict(base, SPARK_QUEUE_ATTEMPT="z" * 32),
-         "bad attempt id"),
-        ("short attempt id",
-         dict(base, SPARK_QUEUE_ATTEMPT="abc"),
-         "bad attempt id"),
-        ("job namespace mismatch",
-         dict(base, SPARK_QUEUE_RUNTIME_ROOT="/tmp/elsewhere"),
+        ("missing lane", without(reserved, "LAGUNA_LANE"), "LAGUNA_LANE is required"),
+        ("lane out of range", dict(reserved, LAGUNA_LANE="16"), "LAGUNA_LANE must be 0..15"),
+        ("missing mode", without(reserved, "LAGUNA_MODE"), "LAGUNA_MODE must be queue or direct"),
+        ("unknown mode", dict(reserved, LAGUNA_MODE="shared"), "LAGUNA_MODE must be queue or direct"),
+        ("missing attempt id", without(base, "SPARK_QUEUE_ATTEMPT"), "authoritative spark queue"),
+        ("malformed attempt id", dict(base, SPARK_QUEUE_ATTEMPT="z" * 32), "bad attempt id"),
+        ("short attempt id", dict(base, SPARK_QUEUE_ATTEMPT="abc"), "bad attempt id"),
+        ("job namespace mismatch", dict(base, SPARK_QUEUE_RUNTIME_ROOT="/tmp/elsewhere"),
          "unexpected job namespace"),
-        ("queue size mismatch",
-         dict(base, SPARK_QUEUE_SIZE="8"),
-         "SPARK_QUEUE_SIZE must be 16"),
-        ("rank out of range",
-         dict(base, SPARK_QUEUE_RANK="16"),
-         "SPARK_QUEUE_RANK must be 0..15"),
-        ("no reserved ports",
-         dict(base),
-         "queue reserved no ports"),
-        ("ports outside the lane blocks",
-         dict(base, SPARK_QUEUE_PORTS="7000:7001"),
+        ("queue size mismatch", dict(base, SPARK_QUEUE_SIZE="8"), "SPARK_QUEUE_SIZE must be 16"),
+        ("rank out of range", dict(base, SPARK_QUEUE_RANK="16"), "rank must be 0..15"),
+        ("no reserved ports", dict(base), "queue reserved no ports"),
+        ("ports outside the lane blocks", dict(base, SPARK_QUEUE_PORTS="7000:7001"),
+         "not inside a queue-reserved range"),
+        ("lane 8 ports reserved for lane 11",
+         dict(base, SPARK_QUEUE_PORTS="23128:23143,53128:53143,64128:64143,23680:23743"),
          "not inside a queue-reserved range"),
         ("session block unreserved",
          dict(base, SPARK_QUEUE_PORTS=(
-             f"{lane.CONTROL_BASE}:{lane.CONTROL_BASE + 15},"
-             f"{lane.COLLECTIVE_BASE}:{lane.COLLECTIVE_BASE + 15},"
-             f"{lane.TRANSPORT_BASE}:{lane.TRANSPORT_BASE + 15}")),
+             f"{CONTROL_BASE}:{CONTROL_BASE + 15},"
+             f"{COLLECTIVE_BASE}:{COLLECTIVE_BASE + 15},"
+             f"{TRANSPORT_BASE}:{TRANSPORT_BASE + 15}")),
          "not inside a queue-reserved range"),
+        ("missing kv backing", without(reserved, "LAGUNA_KV_BACKING_BYTES"),
+         "LAGUNA_KV_BACKING_BYTES must be a positive decimal"),
+        ("missing kv pages", without(reserved, "LAGUNA_KV_PAGE_CAPACITY"),
+         "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
+        ("zero kv pages", dict(reserved, LAGUNA_KV_PAGE_CAPACITY="0"),
+         "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
+        ("bad pool override", dict(reserved, LAGUNA_EXPERT_POOL_BYTES="12k"),
+         "LAGUNA_EXPERT_POOL_BYTES must be a positive decimal"),
+        ("missing socket", without(reserved, "LAGUNA_WEIGHTD_SOCKET"),
+         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+        ("inherited socket is not used",
+         dict(without(reserved, "LAGUNA_WEIGHTD_SOCKET"), SPARK_WEIGHTD_SOCKET="/tmp/spark_weightd.sock"),
+         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+        ("relative socket", dict(reserved, LAGUNA_WEIGHTD_SOCKET="weightd.sock"),
+         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+        ("direct root elsewhere", dict(direct, LAGUNA_RUNTIME_ROOT="/tmp/elsewhere"),
+         f"LAGUNA_RUNTIME_ROOT must be /tmp/sp-laguna-lane{LANE}"),
+        ("direct missing rank", without(direct, "LAGUNA_RANK"), "LAGUNA_RANK is required"),
+        ("direct bad rank", dict(direct, LAGUNA_RANK="x"), "rank must be 0..15"),
+        ("direct missing collective id", without(direct, "LAGUNA_COLLECTIVE_ID"),
+         "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
+        ("direct zero collective id", dict(direct, LAGUNA_COLLECTIVE_ID="0"),
+         "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
     ]
     for name, env, expected in cases:
         result = run(env)
@@ -266,26 +248,20 @@ def wrapper_contract_gates(failures):
               f"wrapper case '{name}': expected '{expected}' in stderr, "
               f"got: {result.stderr.strip()[:200]}")
 
-    accepted = run(dict(base, SPARK_QUEUE_PORTS=lane_ranges))
-    check(accepted.returncode != 0, failures,
-          "wrapper must still fail without a live shared socket")
-    check("not a live socket" in accepted.stderr, failures,
-          f"wrapper with reserved lane ranges should reach the socket "
-          f"check, got: {accepted.stderr.strip()[:200]}")
+    for name, env in (("queue", reserved), ("direct", direct)):
+        accepted = run(env)
+        check(accepted.returncode != 0, failures,
+              f"{name} wrapper must still fail without a live socket")
+        check("not a live socket" in accepted.stderr, failures,
+              f"{name} wrapper should reach the socket check, got: "
+              f"{accepted.stderr.strip()[:200]}")
 
 
 def synthetic_pack(path: Path, group_count: int, experts_per_layer: int):
-    """Emit a minimal but structurally faithful .lgsp for the generator.
-
-    Two routed-expert tensors (kinds 14/15) on one layer with the uniform
-    bf16 per-expert interleave the real packer emits, plus one spine
-    tensor so the sidecar spine arithmetic has a complement to compute.
-    """
     HEADER_BYTES, ENTRY_BYTES, ALIGN = 264, 64, 256
     rows = {14: 4, 15: 2}           # w1 fused gate|up rows, w2 rows
     cols = {14: 6, 15: 3}
     entries = []
-    # spine tensor first: attention input norm, one f32 scalar payload
     entries.append([3, 0, 2, 0, 0, 1, 1, 1, 0, 4, 0, 0])
     for kind in (14, 15):
         per_expert = rows[kind] * cols[kind] * 2
@@ -318,7 +294,6 @@ def synthetic_pack(path: Path, group_count: int, experts_per_layer: int):
 
 
 def manifest_gates(failures):
-    """Drive the .lgsp -> .experts generator on a synthetic pack."""
     if shutil.which("cc") is None:
         return
     with tempfile.TemporaryDirectory() as temporary:
@@ -362,8 +337,6 @@ def manifest_gates(failures):
                   f"expert {expert} kind {kind}: span bytes")
             expert_total += span_bytes
             spans[(offset, span_bytes)] = True
-        # spine complement: every non-expert byte of the pack (the f32
-        # spine tensor plus inter-tensor padding)
         pack_bytes = pack.stat().st_size
         spine = pack_bytes - expert_total
         budget = subprocess.run(
@@ -381,7 +354,6 @@ def manifest_gates(failures):
             check(int(spine_text) == spine + 256, failures,
                   f"spine budget {spine_text} != complement {spine} + 256 "
                   "(the aligned spine allocation)")
-        # idempotence: a valid sidecar is left untouched
         before = sidecar.read_bytes()
         again = subprocess.run(
             ["bash", str(ROOT / "tools/laguna_multidev_experts_manifest.sh"),
@@ -390,23 +362,92 @@ def manifest_gates(failures):
               failures, "generator must be idempotent on a valid sidecar")
 
 
+def generate(output, runtime_root, socket_path, identifier, *extra):
+    return subprocess.run(
+        [sys.executable, GENERATOR, "--lane", str(LANE),
+         "--runtime-root", runtime_root, "--weightd-socket", socket_path,
+         "--output-dir", str(output), "--collective-identifier", identifier,
+         "--kv-backing-bytes", str(2 << 30), "--kv-page-capacity", "2048",
+         *extra], capture_output=True, text=True)
+
+
+def generator_refusal_gates(output, failures):
+    good = ["--lane", str(LANE), "--runtime-root", f"/tmp/sp-laguna-lane{LANE}",
+            "--weightd-socket", "/tmp/spark_weightd.sock", "--output-dir", str(output),
+            "--collective-identifier", "7", "--kv-backing-bytes", "1024",
+            "--kv-page-capacity", "2048"]
+
+    def replaced(flag, value):
+        arguments = list(good)
+        index = arguments.index(flag)
+        if value is None:
+            del arguments[index:index + 2]
+        else:
+            arguments[index + 1] = value
+        return arguments
+
+    cases = [
+        ("missing lane", replaced("--lane", None), "--lane"),
+        ("lane 16", replaced("--lane", "16"), "lane must be 0..15"),
+        ("missing kv pages", replaced("--kv-page-capacity", None), "--kv-page-capacity"),
+        ("zero kv pages", replaced("--kv-page-capacity", "0"), "kv page capacity must be positive"),
+        ("missing kv backing", replaced("--kv-backing-bytes", None), "--kv-backing-bytes"),
+        ("relative root", replaced("--runtime-root", "tmp/root"), "runtime root must be an absolute"),
+        ("unnormalized root", replaced("--runtime-root", "/tmp/a/../b"), "runtime root must be an absolute"),
+        ("sparkdata root", replaced("--runtime-root", "/home/spark0/sparkdata/root"), "sparkdata"),
+        ("relative socket", replaced("--weightd-socket", "weightd.sock"), "weightd socket must be an absolute"),
+        ("zero collective id", replaced("--collective-identifier", "0"), "collective identifier must be positive"),
+    ]
+    for name, arguments, expected in cases:
+        result = subprocess.run([sys.executable, GENERATOR, *arguments],
+                                capture_output=True, text=True)
+        check(result.returncode != 0 and expected in result.stderr, failures,
+              f"generator case '{name}' must fail naming '{expected}': "
+              f"rc={result.returncode} {result.stderr.strip()[:200]}")
+    accepted = subprocess.run([sys.executable, GENERATOR, *good],
+                              capture_output=True, text=True)
+    check(accepted.returncode == 0, failures,
+          f"generator must accept a direct-mode root and the production socket: "
+          f"{accepted.stderr.strip()[:200]}")
+
+
+def registry_gates(failures):
+    registry = json.loads((ROOT / "tools/devcycle/lane_assignments.json").read_text())
+    ours = lane.lane_ports(LANE)
+    for entry in registry["lanes"]:
+        if entry["driver"] == "laguna":
+            ports = lane.lane_ports(entry["lane"])
+            check(entry["ports"] == {key: ports[key] for key in entry["ports"]}, failures,
+                  f"laguna registry lane {entry['lane']}: generator ports {ports} "
+                  f"disagree with {entry['ports']}")
+            continue
+        for key, first in entry["ports"].items():
+            check(abs(first - ours[key]) >= 16, failures,
+                  f"lane {LANE} {key} block {ours[key]} overlaps registry lane "
+                  f"{entry['lane']} ({entry['driver']}) at {first}")
+    check(lane.lane_ports(LANE) == {"control": 23176, "collective": 53176,
+                                    "transport": 64176, "session": 23872},
+          failures, f"lane {LANE} ports: {lane.lane_ports(LANE)}")
+
+
 def main() -> int:
     failures = []
-    attempt = "b" * 32
     with tempfile.TemporaryDirectory() as temporary:
-        runtime_root = f"/tmp/sparkqueue-{attempt}"
-        socket_path = "/run/sparkpipe-weightd-shared/weightd.sock"
+        runtime_root = f"/tmp/sp-laguna-lane{LANE}"
+        socket_path = "/tmp/spark_weightd.sock"
         output = Path(temporary) / "generated"
-        subprocess.run(
-            [sys.executable, str(ROOT / "tools/laguna_multidev_lane.py"),
-             "--runtime-root", runtime_root,
-             "--weightd-socket", socket_path,
-             "--output-dir", str(output),
-             "--collective-identifier", "12345678901"],
-            check=True, capture_output=True)
+        first = generate(output, runtime_root, socket_path, "12345678901")
+        check(first.returncode == 0, failures,
+              f"generator failed: {first.stderr.strip()[:300]}")
 
         deployment = json.loads((output / "deployment.json").read_text())
         deployment_gates(deployment, runtime_root, socket_path, failures)
+        for key in ("kv_logical_page_capacity", "kv_physical_page_capacity"):
+            check(deployment["runtime_limits"][key] == 2048, failures,
+                  f"{key} must be the requested 2048 pages")
+        check(all(node["kv_backing_maximum_bytes"] == 2 << 30
+                  for node in deployment["nodes"]), failures,
+              "kv backing cap must be the requested bytes")
 
         per_host_ports = {}
         for rank in range(16):
@@ -415,47 +456,31 @@ def main() -> int:
             adapter_gates(config, rank, failures, per_host_ports)
 
         for host, ports in per_host_ports.items():
-            check(len(ports) == len(set(ports)), failures,
-                  f"{host}: duplicate listener {ports - set(ports)}")
             outside = ports - ALL_LANE_PORTS
             check(not outside, failures,
-                  f"{host}: ports outside lane 8 blocks: {sorted(outside)}")
+                  f"{host}: ports outside lane {LANE} blocks: {sorted(outside)}")
 
         check(lane.MESH_RANKS == ",".join(str(i) for i in range(16)),
               failures, "mesh map must be the identity permutation")
 
-        check_run = subprocess.run(
-            [sys.executable, str(ROOT / "tools/laguna_multidev_lane.py"),
-             "--runtime-root", runtime_root,
-             "--weightd-socket", socket_path,
-             "--output-dir", str(output),
-             "--collective-identifier", "12345678901", "--check"],
-            capture_output=True, text=True)
+        check_run = generate(output, runtime_root, socket_path, "12345678901", "--check")
         check(check_run.returncode == 0, failures,
               f"--check failed: {check_run.stderr.strip()}")
-
-        drift = subprocess.run(
-            [sys.executable, str(ROOT / "tools/laguna_multidev_lane.py"),
-             "--runtime-root", runtime_root,
-             "--weightd-socket", socket_path,
-             "--output-dir", str(output),
-             "--collective-identifier", "999", "--check"],
-            capture_output=True, text=True)
+        drift = generate(output, runtime_root, socket_path, "999", "--check")
         check(drift.returncode != 0, failures,
               "--check must flag a drifted collective identifier")
+        generator_refusal_gates(Path(temporary) / "refusals", failures)
+    registry_gates(failures)
 
     for script in ("tools/laguna_multidev_run_family.sh",
                    "tools/laguna_multidev_experts_manifest.sh"):
-        if shutil.which("bash") is None:
-            continue
         syntax = subprocess.run(
             ["bash", "-n", str(ROOT / script)],
             capture_output=True, text=True)
         check(syntax.returncode == 0, failures,
               f"{script}: bash -n failed: {syntax.stderr.strip()}")
 
-    if shutil.which("bash") is not None:
-        wrapper_contract_gates(failures)
+    wrapper_contract_gates(failures)
     manifest_gates(failures)
 
     if failures:

@@ -47,8 +47,8 @@ def profile(family, version):
             for key in ("max_sequences", "max_rows", "resident_capacity"):
                 config[key] = 1
     elif family == "laguna":
-        deployment = laguna.resident_deployment(root, SOCKET, 0x8000000000001, 2 * GIB)
-        configs = [laguna.adapter_config(r, 0x8000000000001) for r in range(16)]
+        deployment = laguna.resident_deployment(root, SOCKET, 2 * GIB, 8192, 8)
+        configs = [laguna.adapter_config(r, 0x8000000000001, 8) for r in range(16)]
         deployment["driver"]["shared_object_path"] = "stages/stage_000/model_driver.so"
         packs = [laguna.deployed_pack(r) for r in range(16)]
     elif family == "ling":
