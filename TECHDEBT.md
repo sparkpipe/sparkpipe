@@ -513,14 +513,31 @@ progress diary.
   belongs to the model: carry it in the deployment's tokenizer or model
   description and let the API render whatever the model declares, then drop
   `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
-- The ling driver applies no SwiGLU clamp. The publisher serving code
-  (sglang and vLLM `bailing_moe_v3`) clamps `silu(gate)` to at most L and
-  `up` to [-L, L] on layers 34-41, using `expert_swiglu_limit_list` and
-  `share_expert_swiglu_limit_list`; the HF modeling and our contract treat
-  the lists as inert. The three reference prompts cannot tell the two
-  apart (docs/T1_REFERENCE_COMPARE.md). Add the clamp to the routed and
-  shared expert activation for those layers, and make the contract name
-  the lists as required behaviour.
+- Ling TP16 prefill runs one row per sequence per wave (the round-major
+  wave rule), so a prompt costs one full 86-collective chain per token:
+  298 prompt tokens take 5.1-8.2 s to the first token. Chunked KDA
+  prefill (many rows of one sequence per wave) is the fix.
+- A ling decode wave of 8 sequences costs about 126 ms against 19 ms for
+  one (8-stream aggregate 52.7 tok/s against 52.3 B1). Find which layer
+  kernels scale with rows before tuning anything else.
+- The ling TP chain advances from host callbacks and keys the single
+  device collective per chain, so a ling lane runs one submission in
+  flight (`tools/ling_lane.py` renders `max_inflight_submissions` 1).
+- Ling keeps no KDA state per cached prefix, so its deployment sets
+  `prefix_reuse` false. Prefix reuse for ling needs KDA state capture at
+  block boundaries, as the GLM JIT KV work does.
+- laguna's TP chain has the shape ling had before 2026-09-28: it keeps the
+  adapter's stack-allocated batch view and frame context across
+  asynchronous collectives and takes no collective chain key, so a TP>1
+  laguna lane should expect a dead-stack read on multi-wave prefill and
+  CAPACITY_EXCEEDED after 1024 collectives. Port the ling fixes
+  (chain-owned views, `SparkTpDeviceCollectiveChainKey` per execute).
+- The ling T1 stream dump prints hidden plus the reduced MLP delta, which
+  does not equal the fixture's residual stream at early layers (layer 0
+  norm 1.1 against 226); `tools/t1_ling_log_assembly.py` also expects a
+  prefix field that raw residentd logs do not carry. Route ids and head
+  tokens compare; streams need the dump brought back to the fixture's
+  definition.
 - `text/tokenizer.c` knows split regexes only by exact string. It knows
   the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
   letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with

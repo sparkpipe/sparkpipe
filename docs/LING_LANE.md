@@ -71,3 +71,44 @@ root and checks that digest.
 
 Expected first tokens are the publisher-code reference in
 `qualification/ling_reference/ling_hf_reference.json`.
+
+## Serving on the fleet (2026-09-28)
+
+The lane serves Ling-3.0-flash at TP16 bf16 beside GLM, one weightd lane,
+API on the rtx5090. Receipts are in
+`qualification/ling/runs/ling3-tp16-20260928-2a01137/`.
+
+- Greedy tokens against the reference, 3 prompts x 16 tokens: count_up and
+  python_fibonacci 16/16; capital_of_france 2/16, then " The" (468) where
+  the reference has "\n" (363). The reference's own logits at that step
+  are 15.125 and 15.0625, one bf16 ulp apart and inside its 0.5
+  run-to-run spread, so this is a tie, not a driver defect.
+- The driver applies the publisher serving SwiGLU limits on layers 34-41
+  (`spark_ling_swiglu_limits.h`, both contracts carry the lists).
+- The deployment sets `prefix_reuse` false (the driver keeps no KDA state
+  per cached prefix) and one submission in flight (the TP chain keys the
+  single device collective per chain).
+- Memory per node is about 22 GiB: the weightd arena holds the whole
+  15.7 GiB rank pack, and the residentd holds about 6.7 GiB of GPU memory.
+  `LING_EXPERT_POOL_BYTES` is passed through but ling does not attach
+  lazily.
+
+Measured in the perf window (no speculation, firmware 8cc64a4):
+
+| case | result |
+| --- | --- |
+| B1 decode, 128 tokens | 52.3 tok/s (18.6-22.3 ms/token) |
+| B1 decode, 512 tokens | 43.1 tok/s (about 23 ms/token) |
+| TTFT, 298-token prompt | 5.9 s median (5.1-8.2 s) |
+| 8 streams x 128 tokens | 52.7 tok/s aggregate, 63.3 steady |
+| COMPSEC-17, thinking off | 14/17 |
+
+`tools/api_serving_perf.py` is the streaming client that produced the
+table:
+
+```sh
+python3 tools/api_serving_perf.py --endpoint http://127.0.0.1:8437 \
+    --cases o128,o512,ttft230 --repeats 3 --label nospec --output perf.jsonl
+python3 tools/api_serving_perf.py --endpoint http://127.0.0.1:8437 \
+    --cases streams8x128 --repeats 1 --label nospec --output perf.jsonl
+```
