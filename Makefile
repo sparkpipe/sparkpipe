@@ -369,6 +369,7 @@ TEST_NAMES := \
     test_weight_codec \
     test_topology_switch \
     test_qwen38_math_kernels \
+    test_gdn_stage_launch_checks \
     test_llm_module_contract \
     test_llm_stagepack_format
 
@@ -1350,6 +1351,9 @@ build/test_llm_stagepack_format: tests/test_llm_stagepack_format.c tests/test_ll
 
 build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_qwen38_math_kernels (no nvcc on this host)"; fi
+
+build/test_gdn_stage_launch_checks: tests/test_gdn_stage_launch_checks.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu common/common_gdn_stage_kernels.cu common/common_gdn_stage_kernels.h
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_gdn_stage_launch_checks (no nvcc on this host)"; fi
 
 # Real-pack decode smoke (the execute test): needs nvcc AND a stage pack on
 # the host, both explicit - TEST_QWEN38_MAX_EXECUTE_PACK names the pack so the

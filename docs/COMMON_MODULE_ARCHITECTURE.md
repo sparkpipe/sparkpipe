@@ -225,13 +225,12 @@ private copies summed rank by rank in BF16, and the common combines sum all rank
 FP32 and round once.
 
 ### M-1 `common_gdn_stage_kernels.cu` — qwen decode kernel suite
-Entry points mirror the 22-kernel suite (AttnDecode/Prepare/ChunkStep/MoE gather/
-scatter/router); names normalize `Qwen38Max<X>` -> `SparkLlm<X>`. Interface:
-```c
-int SparkLlmStageKernelsRegister(SparkLlmKernelTable *table);  /* fills fn ptrs */
-```
-The module consumes `SPARK_LLM_MLA_*`, `SPARK_LLM_MOE_*`, `SPARK_LLM_TILE_*` keys.
-Seed: qwen38_max cuda.cu. Identity: renamed-symbol link-equal + one correctness vector.
+
+`common/common_gdn_stage_kernels.cu` holds the GDN, attention, MoE and head kernels with their `LmGdnStageLaunch*` launchers, declared in `common_gdn_stage_kernels.h`. qwen38_max and qwen4_flash include it into their CUDA unit, and each family's `llm_defines.h` supplies the `SPARK_LLM_*` geometry. qwen38_27b still carries its own copies.
+
+**Grouped expert views are rank-local.** `LmGdnStageLaunchGroupedExpertLinear` and `LmGdnStageLaunchGroupedExpertTileLinear` take the stage pack's view of this rank's expert shard. With `SPARK_LLM_ROUTED_EXPERT_COUNT` experts over `tp_degree` ranks, the view's `output_dimension` is `experts_per_rank × rows_per_expert`, and its payload and scales start at this rank's first expert. Only the route tables (`group_row_offset`, `group_tile_prefix`) are global, so the launchers offset them by `tp_rank × experts_per_rank`.
+
+The launchers validate `tp_degree` and `tp_rank` before dividing by the degree. An FP8 block-128 view needs `rows_per_expert` and `input_dimension` to be multiples of 128, because its scales are stored per 128×128 block. An NVFP4 view needs `input_dimension` to be a multiple of 16. `tests/test_gdn_stage_launch_checks.cu` checks these refusals; it needs nvcc but no GPU.
 
 ### M-2 `common_glm_cuda_tree` — GLM kernel tree
 `config.h` + `unity.cu` + `layer.cuh` with the family prefix parameterized by

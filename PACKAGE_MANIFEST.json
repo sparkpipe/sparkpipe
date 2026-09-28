@@ -1,5 +1,5 @@
 {
-  "file_count": 3052,
+  "file_count": 3053,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "05d19540296c2817d0316b22a46ef8aa88ca4efdf5686ce53431036909a5a0df",
-      "size_bytes": 138638
+      "sha256": "a0199fb55cde8f93bb7b6602788875fd8f5176338becb4589294c660d678abe0",
+      "size_bytes": 139293
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -123,8 +123,8 @@
     },
     {
       "path": "common/common_gdn_stage_kernels.cu",
-      "sha256": "9ddcffa33b3a0764b1d7e012363c03b5a777c5d3d0e4ecc65bc0ee0968c6a675",
-      "size_bytes": 73842
+      "sha256": "a4078dce13058a4ccd24c2a551399ea501555afa15d33246d0350f4ed2d0544d",
+      "size_bytes": 73151
     },
     {
       "path": "common/common_gdn_stage_kernels.h",
@@ -643,8 +643,8 @@
     },
     {
       "path": "docs/COMMON_MODULE_ARCHITECTURE.md",
-      "sha256": "997a9624479cc0128bf42db76a65b30a0751bef1a179206f4fbb80450fe2e408",
-      "size_bytes": 22349
+      "sha256": "97a8ff9276ea4d34e103cab29bc2755dfe31c1a89bcedb300339ffeb6d8cdb20",
+      "size_bytes": 23166
     },
     {
       "path": "docs/CONSTANT_AUDIT.md",
@@ -9157,6 +9157,11 @@
       "size_bytes": 1676
     },
     {
+      "path": "tests/test_gdn_stage_launch_checks.cu",
+      "sha256": "ce570adf36bea126007ab1c2d2ab38afc41b3e1807f32c8b919e55e68dae42ab",
+      "size_bytes": 2601
+    },
+    {
       "path": "tests/test_gemm_descriptor_cache.cpp",
       "sha256": "16e845f4a6c0620583a0e5002e158f853b87466a5f2cb2c2a167093b8011f6fa",
       "size_bytes": 14852
@@ -15265,5 +15270,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73932653
+  "total_bytes": 73936035
 }
