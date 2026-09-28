@@ -98,12 +98,12 @@ KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS 
 CONTRACT = json.loads((Path(__file__).resolve().parents[1] /
                        "model_contracts/k3_authoritative.json").read_text())
 try:
-    K3_EOS_TOKEN_IDS = [int(CONTRACT["tokens"]["end_of_text"])]
-except (KeyError, TypeError, ValueError):
-    raise SystemExit("k3 contract missing tokens.end_of_text; refusing to emit "
+    K3_EOS_TOKEN_IDS = sorted(int(value) for value in CONTRACT["eos_token_ids"].values())
+except (KeyError, TypeError, ValueError, AttributeError):
+    raise SystemExit("k3 contract missing eos_token_ids; refusing to emit "
                      "a deployment the batch engine would reject")
-if K3_EOS_TOKEN_IDS[0] <= 0:
-    raise SystemExit("k3 contract tokens.end_of_text must be a positive id")
+if not K3_EOS_TOKEN_IDS or K3_EOS_TOKEN_IDS[0] <= 0:
+    raise SystemExit("k3 contract eos_token_ids must hold positive ids")
 
 
 def host_of(rank: int) -> str:

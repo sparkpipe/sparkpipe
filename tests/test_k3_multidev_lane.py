@@ -66,7 +66,7 @@ def deployment_gates(deployment, runtime_root, socket, failures):
     # first-decode failure). The list must hold the authoritative contract's
     # end_of_text id, never a hardcoded copy.
     contract = json.loads((ROOT / "model_contracts/k3_authoritative.json").read_text())
-    expected_eos = [int(contract["tokens"]["end_of_text"])]
+    expected_eos = sorted(int(value) for value in contract["eos_token_ids"].values())
     check(deployment.get("eos_token_ids") == expected_eos, failures,
           f"deployment eos_token_ids must be {expected_eos} from the "
           f"authoritative contract, got {deployment.get('eos_token_ids')!r}")
