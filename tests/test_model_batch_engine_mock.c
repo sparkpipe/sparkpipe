@@ -876,37 +876,30 @@ int main(void)
 	deployment.eos_token_count = 1u;
 	deployment.eos_token_ids[0] = 154820u;
 
-	if ( getenv("ONLY_BUSY") != 0 )
-	{
-		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
-	}
-	else
-	{
-		char *coordinator_root = deployment.nodes[0].runtime_root;
-		deployment.nodes[0].runtime_root = "/remote-resident-only/runtime";
-		TestScenarioHappyPath(&deployment,runtime_root);
-		deployment.nodes[0].runtime_root = coordinator_root;
-		TestScenarioEventDeadlines(&deployment,runtime_root);
-		TestScenarioHappyPath(&deployment,runtime_root);
-		TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
-		TestScenarioRankDiesMidDecode(&deployment,runtime_root);
-		TestScenarioRankKilledAndRevived(&deployment,runtime_root);
-		TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
-		TestScenarioPartialPrefixAppend(&deployment,runtime_root);
-		TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
-		TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
-		TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
-		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
-		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
-		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
-		TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
-		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
-		TestScenarioSamplingValidation(&deployment,runtime_root);
-		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
-		TestScenarioDriverIoError(&deployment,runtime_root);
-		TestScenarioEosEarlyStop(&deployment,runtime_root);
-		TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
-	}
+	char *coordinator_root = deployment.nodes[0].runtime_root;
+	deployment.nodes[0].runtime_root = "/remote-resident-only/runtime";
+	TestScenarioHappyPath(&deployment,runtime_root);
+	deployment.nodes[0].runtime_root = coordinator_root;
+	TestScenarioEventDeadlines(&deployment,runtime_root);
+	TestScenarioHappyPath(&deployment,runtime_root);
+	TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
+	TestScenarioRankDiesMidDecode(&deployment,runtime_root);
+	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
+	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
+	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
+	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
+	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
+	TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
+	TestScenarioChainEosCheckpoint(&deployment,runtime_root);
+	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
+	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
+	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
+	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
+	TestScenarioSamplingValidation(&deployment,runtime_root);
+	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
+	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioEosEarlyStop(&deployment,runtime_root);
+	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 
 	SparkModelResidentDeploymentReset(&deployment);
 	MockResidentClientReset();

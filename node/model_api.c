@@ -1128,15 +1128,24 @@ static int api_chat_append(char **buffer, size_t *capacity, size_t *length,
 	return 1;
 }
 
-/* Messages arrive as {role, content} turns; the model is trained on the GLM
- * chat layout, so the prompt must carry it: [gMASK]<sop> role markers and a
- * trailing <|assistant|> header for the generation. A bare concatenation
- * makes the model continue the turn instead of answering it. */
+static int api_parse_chat_thinking(const SparkJsonDocument *doc, int32_t root, bool *thinking)
+{
+	static const char *const kwargs_members[] = {"enable_thinking"};
+	int32_t kwargs;
+	*thinking = false;
+	kwargs = root >= 0 ? SparkJsonFindObjectMember(doc,root,"chat_template_kwargs") : -1;
+	if ( kwargs < 0 )
+		return 1;
+	return SparkJsonValidateObjectMembersExact(doc,kwargs,kwargs_members,1u) == SPARK_STATUS_OK &&
+		SparkJsonGetBoolean(doc,SparkJsonFindObjectMember(doc,kwargs,"enable_thinking"),thinking) == SPARK_STATUS_OK;
+}
+
 static char *api_build_chat_prompt(const SparkJsonDocument *doc, int32_t root,
-	uint32_t *text_bytes_out)
+	bool thinking, uint32_t *text_bytes_out)
 {
 	static const char chat_prefix[] = "[gMASK]<sop>";
-	static const char chat_generation[] = "<|assistant|>\n";
+	const char *assistant_header = thinking ? "<|assistant|>\n<think>" : "<|assistant|>\n<think></think>\n";
+	size_t assistant_header_bytes = strlen(assistant_header);
 	uint32_t message_index;
 	uint32_t message_count = 0u;
 	int32_t messages;
@@ -1178,7 +1187,7 @@ static char *api_build_chat_prompt(const SparkJsonDocument *doc, int32_t root,
 		role = SparkJsonFindObjectMember(doc,entry,"role");
 		if ( role >= 0 && SparkJsonTokenIsType(doc,role,SPARK_JSON_TOKEN_STRING) &&
 			SparkJsonStringEquals(doc,role,"assistant") )
-			marker = "<|assistant|>\n", marker_bytes = sizeof("<|assistant|>\n") - 1u;
+			marker = assistant_header, marker_bytes = assistant_header_bytes;
 		else if ( role >= 0 && SparkJsonTokenIsType(doc,role,SPARK_JSON_TOKEN_STRING) &&
 			SparkJsonStringEquals(doc,role,"observation") )
 			marker = "<|observation|>\n", marker_bytes = sizeof("<|observation|>\n") - 1u;
@@ -1196,7 +1205,7 @@ static char *api_build_chat_prompt(const SparkJsonDocument *doc, int32_t root,
 		}
 		free(piece);
 	}
-	if ( !api_chat_append(&chat_text,&chat_cap,&chat_len,chat_generation,sizeof(chat_generation) - 1u) )
+	if ( !api_chat_append(&chat_text,&chat_cap,&chat_len,assistant_header,assistant_header_bytes) )
 	{
 		free(chat_text);
 		return 0;
@@ -1214,6 +1223,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	uint32_t *request_stops = 0;
 	uint32_t request_stop_count = 0;
 	uint32_t chat_request = 0;
+	bool chat_thinking = false;
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
 	ApiOptions options;
@@ -1246,11 +1256,24 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			prompt_text_bytes = (uint32_t)strlen(prompt_text);
 		}
 	}
+	if (!api_parse_chat_thinking(&doc, root, &chat_thinking) ||
+		((prompt_text != 0 || prompt != 0) &&
+			SparkJsonFindObjectMember(&doc, root, "chat_template_kwargs") >= 0))
+	{
+		SparkJsonDocumentDestroy(&doc);
+		free(prompt);
+		free(prompt_text);
+		send_response(fd, 400,
+			"{\"error\":{\"message\":\"chat_template_kwargs applies only to messages and "
+			"must be exactly {\\\"enable_thinking\\\": boolean}\","
+			"\"type\":\"invalid_request_error\",\"code\":\"invalid_option\"}}");
+		return;
+	}
 	if (prompt_text == 0 && prompt == 0 && root >= 0)
 	{
 		char *chat_text;
 		uint32_t chat_bytes;
-		chat_text = api_build_chat_prompt(&doc, root, &chat_bytes);
+		chat_text = api_build_chat_prompt(&doc, root, chat_thinking, &chat_bytes);
 		if (chat_text != 0)
 		{
 			prompt_text = chat_text;
