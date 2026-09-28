@@ -240,11 +240,6 @@ ENGRAM_DEFINES_VS_CONFIG = [
 ]
 
 DEFINES_RECORDED_ONLY = [
-    ("VALUE_HEAD_DIMENSION",
-     "family header counts a 64-wide value head; the official inference "
-     "attends with the full 512-wide latent per head and wo_a measures "
-     "[8192, 4096], so the reference follows the official inference "
-     "semantics"),
     ("KV_GLOBAL_SCALE_CHANNELS",
      "compressed-KV fp4 activation scale group width 16 per the official "
      "kernel"),
