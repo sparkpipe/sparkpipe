@@ -21,6 +21,7 @@
 #define TEST_LING_DRIVER_KV_BLOCKS 16u
 #define TEST_LING_DRIVER_FAILING_REQUEST 7777u
 #define TEST_LING_DRIVER_BUSY_REQUEST 7778u
+#define TEST_LING_DRIVER_NO_LANE_REQUEST 7779u
 
 static uint64_t TestLingServingDriverAbortAdmissions;
 
@@ -116,13 +117,31 @@ static SparkStatus TestLingServingDriverAdmit(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestLingServingDriverComplete(
+	TestLingServingDriver *driver,
+	SparkModelDriverFrame *frame,
+	SparkStatus status)
+{
+	SparkModelDriverCompletion completion;
+	driver->submitted_count++;
+	driver->completed_count++;
+	memset(&completion,0,sizeof(completion));
+	completion.request_id = frame->request_id;
+	completion.sequence_id = frame->sequence_id;
+	completion.sequence_position = frame->sequence_position;
+	completion.program_id = frame->program_id;
+	completion.accepted_token_count = status == SPARK_STATUS_OK ? frame->new_token_count : 0u;
+	completion.status = status;
+	frame->completion_function(frame->completion_context,&completion);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus TestLingServingDriverSubmit(
 	void *driver_instance,
 	SparkModelDriverFrame *frame)
 {
 	TestLingServingDriver *driver;
 	SparkLingResidentDecodeStageFrameContext *context;
-	SparkModelDriverCompletion completion;
 	uint32_t rows,row;
 	uint32_t *tokens;
 	driver = (TestLingServingDriver *)driver_instance;
@@ -132,6 +151,8 @@ static SparkStatus TestLingServingDriverSubmit(
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( frame->request_id == TEST_LING_DRIVER_BUSY_REQUEST )
 		return(SPARK_STATUS_BUSY);
+	if ( frame->request_id == TEST_LING_DRIVER_NO_LANE_REQUEST )
+		return(TestLingServingDriverComplete(driver,frame,SPARK_STATUS_NO_LANE));
 	context = (SparkLingResidentDecodeStageFrameContext *)frame->user_context;
 	if ( context->abi_version != SPARK_LING_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes < (uint32_t)sizeof(*context) || context->batch == 0 )
 		return(SPARK_STATUS_ABI_MISMATCH);
@@ -143,17 +164,7 @@ static SparkStatus TestLingServingDriverSubmit(
 	tokens = (uint32_t *)frame->buffers[0].address;
 	for (row=0u; row<rows; row++)
 		tokens[row] = 4200u + row;
-	driver->submitted_count++;
-	driver->completed_count++;
-	memset(&completion,0,sizeof(completion));
-	completion.request_id = frame->request_id;
-	completion.sequence_id = frame->sequence_id;
-	completion.sequence_position = frame->sequence_position;
-	completion.program_id = frame->program_id;
-	completion.accepted_token_count = frame->new_token_count;
-	completion.status = SPARK_STATUS_OK;
-	frame->completion_function(frame->completion_context,&completion);
-	return(SPARK_STATUS_OK);
+	return(TestLingServingDriverComplete(driver,frame,SPARK_STATUS_OK));
 }
 
 static SparkStatus TestLingServingDriverSnapshot(

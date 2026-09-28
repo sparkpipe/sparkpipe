@@ -322,7 +322,7 @@ static void SparkLagunaServingDriverCompletion(
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-	completion.status = matches != 0u ? (uint32_t)driver_completion->status : SPARK_STATUS_SCHEMA_ERROR;
+	completion.status = matches != 0u ? SparkModelServingCompletionStatus((uint32_t)driver_completion->status) : SPARK_STATUS_SCHEMA_ERROR;
 	completion.submission_id = pending->submission_id;
 	completion.request_id = pending->request_id;
 	completion.sequence_id = pending->sequence_id;

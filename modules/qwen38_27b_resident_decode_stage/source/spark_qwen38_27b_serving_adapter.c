@@ -1855,7 +1855,7 @@ static void SparkQwen38_27bServingComplete(
 	memset(&completion,0,sizeof(completion));
 	completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-	completion.status = (uint32_t)status;
+	completion.status = SparkModelServingCompletionStatus((uint32_t)status);
 	completion.submission_id = pending->common.submission_id;
 	completion.request_id = pending->common.request_id;
 	completion.sequence_id = pending->common.sequence_id;

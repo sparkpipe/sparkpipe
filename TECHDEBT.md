@@ -393,7 +393,13 @@ progress diary.
     carries what its adapter sends, and qwen4_flash's module Makefile builds
     its adapter where `tools/module_build_release.sh` looks for it. The
     muse description says `NOT_MEASURED` where the copy said
-    `GPU_VALIDATED`; record a GPU receipt before changing it back.
+    `GPU_VALIDATED`; record a GPU receipt before changing it back;
+  - every adapter that loads a driver now reports a weightd lease failure
+    (`NO_LANE`, `EVICT_DENIED`) as `CAPACITY_EXCEEDED`, which fails the
+    request. Before, residentd rejected such a completion and failed the
+    route as `INVALID_ARGUMENT`. The qwen38 template returned the raw status
+    from submit, and residentd's IPC cannot encode a status above
+    `UNSUPPORTED` in a submit result either.
 - Some production headers still default a build setting with `#ifndef`, so
   a build that forgets the flag silently gets the default:
   - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
@@ -467,13 +473,11 @@ progress diary.
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
   recovered without restarting the unit.
-- The serving completion ABI accepts statuses up to UNSUPPORTED, but weightd
-  can fail a glm5_next expert lease with NO_LANE or EVICT_DENIED, and the
-  chain passes that status up. residentd now names it
-  (`COMPLETION-REJECTED ... completion_status=20`) and fails the route with
-  invalid_argument. Map those statuses in the adapter, to BUSY where the step
-  can be retried without having advanced any recurrent state, otherwise to
-  CAPACITY_EXCEEDED.
+- Adapters map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`) to
+  `CAPACITY_EXCEEDED` through `SparkModelServingCompletionStatus`, which
+  fails the request. A family whose lease failure provably comes before any
+  recurrent state advances could return `BUSY` instead, so the engine
+  retries the step.
 - Pipeline-parallel stages still wedge after a failure on another rank. When
   one rank fails a submission's COMMIT or frame, the next stage's route has
   already posted its hidden-transport receive and waits in WAIT_INPUT for data

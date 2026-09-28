@@ -19,6 +19,7 @@
 #define TEST_MUSE_GLIMMER_DRIVER_STAGE_COUNT 1u
 #define TEST_MUSE_GLIMMER_DRIVER_CAPTURE_ROWS 16u
 #define TEST_MUSE_GLIMMER_DRIVER_PROGRAM_ID 1u
+#define TEST_MUSE_GLIMMER_DRIVER_NO_LANE_REQUEST 7779u
 
 typedef struct TestMuseGlimmerServingDriver
 {
@@ -138,13 +139,33 @@ static SparkStatus TestMuseGlimmerServingDriverAdmit(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestMuseGlimmerServingDriverComplete(
+	TestMuseGlimmerServingDriver *driver,
+	SparkModelDriverFrame *frame,
+	SparkStatus status)
+{
+	SparkModelDriverCompletion completion;
+	driver->submitted_count++;
+	driver->completed_count++;
+	memset(&completion,0,sizeof(completion));
+	completion.request_id = frame->request_id;
+	completion.sequence_id = frame->sequence_id;
+	completion.sequence_position = frame->sequence_position;
+	completion.program_id = frame->program_id;
+	completion.accepted_token_count = status == SPARK_STATUS_OK ? frame->new_token_count : 0u;
+	completion.tokens_per_sequence = frame->tokens_per_sequence;
+	completion.residency = frame->residency;
+	completion.status = status;
+	frame->completion_function(frame->completion_context,&completion);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus TestMuseGlimmerServingDriverSubmit(
 	void *driver_instance,
 	SparkModelDriverFrame *frame)
 {
 	TestMuseGlimmerServingDriver *driver;
 	SparkMuseGlimmerResidentDecodeStageFrameContext *context;
-	SparkModelDriverCompletion completion;
 	uint32_t prefill,rows,row;
 	uint32_t *tokens;
 	driver = (TestMuseGlimmerServingDriver *)driver_instance;
@@ -178,25 +199,15 @@ static SparkStatus TestMuseGlimmerServingDriverSubmit(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->buffers[1].slot != 1u || frame->buffers[1].flags != SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE || frame->buffers[1].address == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( frame->request_id == TEST_MUSE_GLIMMER_DRIVER_NO_LANE_REQUEST )
+		return(TestMuseGlimmerServingDriverComplete(driver,frame,SPARK_STATUS_NO_LANE));
 	tokens = (uint32_t *)frame->buffers[1].address;
 	if ( prefill != 0u )
 		tokens[0] = 4242u;
 	else
 		for (row=0u; row<rows; row++)
 			tokens[row] = 4200u + row;
-	driver->submitted_count++;
-	driver->completed_count++;
-	memset(&completion,0,sizeof(completion));
-	completion.request_id = frame->request_id;
-	completion.sequence_id = frame->sequence_id;
-	completion.sequence_position = frame->sequence_position;
-	completion.program_id = frame->program_id;
-	completion.accepted_token_count = frame->new_token_count;
-	completion.tokens_per_sequence = frame->tokens_per_sequence;
-	completion.residency = frame->residency;
-	completion.status = SPARK_STATUS_OK;
-	frame->completion_function(frame->completion_context,&completion);
-	return(SPARK_STATUS_OK);
+	return(TestMuseGlimmerServingDriverComplete(driver,frame,SPARK_STATUS_OK));
 }
 
 static SparkStatus TestMuseGlimmerServingDriverSnapshot(
