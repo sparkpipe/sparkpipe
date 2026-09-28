@@ -106,22 +106,29 @@ def grade(text: str, answer: str) -> tuple:
     return answer_matches(case, extracted), extracted
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+def arguments(description: str, thinking_modes) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--endpoint", default="http://127.0.0.1:8433")
     ap.add_argument("--fixture", required=True)
     ap.add_argument("--tokenizer", required=True,
                     help="tokenizer.json (vocab used to decode token ids)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--thinking", required=True, choices=sorted(GLM_THINKING_OPEN))
+    ap.add_argument("--thinking", required=True, choices=sorted(thinking_modes))
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--pass-threshold", type=int, default=14)
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--timeout", type=int, default=600)
-    args = ap.parse_args()
+    return ap
 
+
+def main() -> int:
+    args = arguments(__doc__, GLM_THINKING_OPEN).parse_args()
     decode = load_decoder(Path(args.tokenizer))
+    return run(args, build_prompt, "glm", decode, decode)
+
+
+def run(args, prompt_builder, chat_template: str, decode, decode_output) -> int:
 
     fixture = json.loads(Path(args.fixture).read_text())
     cases = [c for c in fixture["cases"] if c["id"] in COMPSEC_IDS]
@@ -133,7 +140,7 @@ def main() -> int:
     out = Path(args.out)
     (out / "responses").mkdir(parents=True, exist_ok=True)
 
-    prompts = [build_prompt(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
+    prompts = [prompt_builder(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
         replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
@@ -145,7 +152,7 @@ def main() -> int:
         payload = r["payload"]
         tokens = payload.get("tokens") or []
         choices = payload.get("choices") or [{}]
-        text = choices[0].get("text") if choices[0].get("text") is not None else decode(tokens)
+        text = choices[0].get("text") if choices[0].get("text") is not None else decode_output(tokens)
         passed, extracted = grade(text, c["answer"])
         rec = {
             "index": i,
@@ -192,7 +199,7 @@ def main() -> int:
         "wall_s": round(wall_s, 2),
         "parameters": {"max_tokens": args.max_tokens,
                        "temperature": args.temperature,
-                       "chat_template": "glm", "thinking": args.thinking,
+                       "chat_template": chat_template, "thinking": args.thinking,
                        "concurrency": args.concurrency,
                        "pass_threshold": args.pass_threshold},
         "grading_rule": ("qualification/ds4_eval/compare_runs.py: last Answer: line after "
