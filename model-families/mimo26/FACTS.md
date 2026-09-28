@@ -134,13 +134,22 @@ counted.
 the binary, stages the inputs (`tools/mimo26_model_inputs.py`, about 160 GB on the first
 prompt, then symlinks for the others) and runs each prompt.
 
+Routing uses the shared `LmTopkSmallKernel<..., 8, renormalise, 1, 1, LM_TOPK_SCORE_SIGMOID>`
+with the correction bias, which is the noaux_tc rule. A second pass replays the same
+positions with no host synchronisation inside the layer loop; any non-resident expert
+fails it through a device counter.
+
 Measured on sparkf, with production GLM resident, non-speculative, B1, greedy:
 
 | prompt | tokens equal to the CPU reference | demand-loaded experts | wall (load + 20 positions) |
 | --- | --- | --- | --- |
-| capital | 16 / 16 | 34 | about 60 s |
-| code | 16 / 16 | 71 | 79.7 s |
-| science | 16 / 16 | 52 | 55.2 s |
+| capital | 16 / 16 | 40 | about 60 s |
+| code | 16 / 16 | 70 | about 80 s |
+| science | 16 / 16 | 50 | about 55 s |
+
+Device-routed replay: 71.6 / 72.9 / 73.1 ms per position (about 13.8 tok/s at B1 on one
+GB10 with every routed expert resident). The logits come back to the host for the argmax
+once per token. The replay tokens equal the first pass in all three prompts.
 
 Numerics (capital prompt, `--teacher-forced` feeds every layer the reference's input
 stream, and route decisions are compared with the fixture):

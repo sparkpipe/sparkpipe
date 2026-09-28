@@ -7,6 +7,7 @@
 
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/gqa.cuh"
+#include "inference/kernels/topk.cuh"
 #include "sparkpipe/spark_mimo26_model.h"
 
 #define M26_HIDDEN SPARK_MIMO26_MODEL_HIDDEN_DIMENSION
@@ -44,8 +45,9 @@ typedef struct M26Layer
 	uint16_t *attn_norm,*mlp_norm,*sink,*o_proj,*router;
 	uint8_t *qkv,*projection[3],*projection_scale[3];
 	float *qkv_scale,*dense_scale[3];
-	std::vector<float> bias;
 	std::vector<int32_t> slot;
+	float *device_bias;
+	int32_t *device_slot;
 	uint8_t *pool;
 	LmKvView cache;
 }
@@ -55,6 +57,7 @@ typedef struct M26Buffers
 {
 	uint16_t *stream,*normed,*fused,*query,*key,*value,*attended,*projected,*gate,*up,*act,*down,*final_norm,*lm_head;
 	float *logits,*route_weight;
+	uint32_t *route_expert,*missing;
 	uint32_t *sequence,*context,*position,*page_table,*route,*packed;
 	LmKvAccessError *error;
 }
@@ -188,6 +191,18 @@ __global__ void M26SwigluKernel(const uint16_t *gate, const uint16_t *up, uint16
 	out[index] = LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(g / (1.0f + __expf(-g)))) * LmBf16ToFloat(up[index]));
 }
 
+__global__ void M26SlotKernel(const uint32_t *expert, const int32_t *slot, uint32_t *route, uint32_t *missing)
+{
+	uint32_t k = threadIdx.x;
+	int32_t local;
+	if ( k >= M26_TOP_K )
+		return;
+	local = slot[expert[k]];
+	route[k] = local >= 0 ? (uint32_t)local : 0u;
+	if ( local < 0 )
+		atomicAdd(missing,1u);
+}
+
 __global__ void M26CombineKernel(const uint16_t *down, const float *weights, uint16_t *stream)
 {
 	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, k;
@@ -231,7 +246,6 @@ static void M26LoadMlp(uint32_t index, M26Layer *layer)
 {
 	char name[128];
 	uint32_t p, rows, columns;
-	std::vector<uint8_t> raw;
 	for (p = 0u; p < 3u; p++)
 	{
 		rows = p == 2u ? M26_HIDDEN : (layer->moe ? M26_INTER : M26_DENSE);
@@ -252,8 +266,8 @@ static void M26LoadMlp(uint32_t index, M26Layer *layer)
 	snprintf(name,sizeof(name),"l%02u_router.bf16",index);
 	layer->router = M26Upload<uint16_t>(name,(size_t)M26_EXPERTS * M26_HIDDEN * 2u);
 	snprintf(name,sizeof(name),"l%02u_router_bias.f32",index);
-	raw = M26Read(name,M26_EXPERTS * 4u);
-	layer->bias.assign((const float *)raw.data(),(const float *)raw.data() + M26_EXPERTS);
+	layer->device_bias = M26Upload<float>(name,M26_EXPERTS * 4u);
+	layer->device_slot = M26Alloc<int32_t>(M26_EXPERTS);
 }
 
 static void M26ReadAt(const char *name, size_t offset, void *out, size_t bytes)
@@ -310,6 +324,8 @@ static void M26LoadLayer(uint32_t index, M26Layer *layer, uint32_t *page_table, 
 	M26LoadMlp(index,layer);
 	for (e = 0u; layer->moe && e < count; e++)
 		M26LoadExpert(index,layer,(uint32_t)((const int32_t *)raw.data())[e],layer->resident++);
+	if ( layer->moe )
+		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * 4u,cudaMemcpyHostToDevice),"slot map");
 }
 
 static void M26Attention(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t position)
@@ -344,48 +360,7 @@ static void M26Dense(uint32_t index, M26Layer *layer, M26Buffers *b)
 	M26AddKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->stream,M26_HIDDEN);
 }
 
-static float m26_margin;
 static uint32_t m26_route_checked, m26_route_flips;
-
-static void M26Route(uint32_t index, M26Layer *layer, const float *logits, uint32_t *ids, uint32_t *slots, float *weights)
-{
-	float scores[M26_EXPERTS], total = 0.0f;
-	bool used[M26_EXPERTS] = {false};
-	uint32_t k, e, best;
-	for (e = 0u; e < M26_EXPERTS; e++)
-		scores[e] = 1.0f / (1.0f + expf(-logits[e]));
-	for (k = 0u; k < M26_TOP_K; k++)
-	{
-		best = M26_EXPERTS;
-		for (e = 0u; e < M26_EXPERTS; e++)
-			if ( !used[e] && (best == M26_EXPERTS || scores[e] + layer->bias[e] > scores[best] + layer->bias[best]) )
-				best = e;
-		used[best] = true;
-		ids[k] = best;
-		weights[k] = scores[best];
-		total += scores[best];
-		if ( layer->slot[best] < 0 )
-		{
-			if ( layer->resident == layer->capacity )
-			{
-				fprintf(stderr,"FAIL layer %u expert %u: all %u spare slots already demand-loaded\n",index,best,M26_SPARE_SLOTS);
-				exit(1);
-			}
-			printf("demand-load layer %u expert %u (outside the CPU reference route set)\n",index,best);
-			M26LoadExpert(index,layer,best,layer->resident);
-			layer->resident++;
-			layer->demand++;
-		}
-		slots[k] = (uint32_t)layer->slot[best];
-	}
-	for (k = 0u; k < M26_TOP_K; k++)
-		weights[k] /= total + SPARK_MIMO26_MODEL_ROUTER_NORM_EPSILON;
-	best = M26_EXPERTS;
-	for (e = 0u; e < M26_EXPERTS; e++)
-		if ( !used[e] && (best == M26_EXPERTS || scores[e] + layer->bias[e] > scores[best] + layer->bias[best]) )
-			best = e;
-	m26_margin = scores[ids[M26_TOP_K - 1u]] + layer->bias[ids[M26_TOP_K - 1u]] - scores[best] - layer->bias[best];
-}
 
 static void M26CompareRoute(uint32_t position, uint32_t layer, const uint32_t *ids)
 {
@@ -410,25 +385,53 @@ static void M26CompareRoute(uint32_t position, uint32_t layer, const uint32_t *i
 	if ( shared != M26_TOP_K )
 	{
 		m26_route_flips++;
-		printf("route-flip position %u layer %u shared %u/8 gpu_margin_8th_vs_9th %.3e\n",position,layer,shared,m26_margin);
+		printf("route-flip position %u layer %u shared %u/8\n",position,layer,shared);
 	}
 }
 
-static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids)
+static void M26RouteDevice(uint32_t index, M26Layer *layer, M26Buffers *b)
 {
-	std::vector<float> logits(M26_EXPERTS);
-	uint32_t slots[M26_TOP_K];
-	float weights[M26_TOP_K];
 	M26Require(LmSkinnyDense<LmBf16Format>(layer->router,b->normed,0,b->logits,1u,M26_HIDDEN,M26_EXPERTS,M26_EXPERTS,0u,0),"router",index);
-	M26Check(cudaMemcpy(logits.data(),b->logits,M26_EXPERTS * 4u,cudaMemcpyDeviceToHost),"logits");
-	M26Route(index,layer,logits.data(),ids,slots,weights);
-	M26Check(cudaMemcpy(b->route,slots,M26_TOP_K * 4u,cudaMemcpyHostToDevice),"route");
-	M26Check(cudaMemcpy(b->route_weight,weights,M26_TOP_K * 4u,cudaMemcpyHostToDevice),"route weights");
+	LmTopkSmallKernel<M26_THREADS,M26_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<1,M26_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t)>>>(b->logits,M26_EXPERTS,b->route_expert,b->route_weight,layer->device_bias,0,SPARK_MIMO26_MODEL_ROUTED_SCALING_FACTOR);
+}
+
+static void M26Experts(uint32_t index, M26Layer *layer, M26Buffers *b)
+{
+	M26SlotKernel<<<1,32>>>(b->route_expert,layer->device_slot,b->route,b->missing);
 	M26Require(LmSkinnyExperts<LmMxfp4>(layer->projection[0],LmScaleTensorBlockUe8m0(layer->projection_scale[0],layer->capacity,M26_INTER,M26_HIDDEN,1u,32u),b->normed,b->gate,b->route,b->packed,M26_TOP_K,M26_TOP_K,0u,M26_HIDDEN,M26_INTER,0),"expert gate",index);
 	M26Require(LmSkinnyExperts<LmMxfp4>(layer->projection[1],LmScaleTensorBlockUe8m0(layer->projection_scale[1],layer->capacity,M26_INTER,M26_HIDDEN,1u,32u),b->normed,b->up,b->route,b->packed,M26_TOP_K,M26_TOP_K,0u,M26_HIDDEN,M26_INTER,0),"expert up",index);
 	M26SwigluKernel<<<(M26_TOP_K * M26_INTER + 255u) / 256u,256u>>>(b->gate,b->up,b->act,M26_TOP_K * M26_INTER);
 	M26Require(LmSkinnyExperts<LmMxfp4>(layer->projection[2],LmScaleTensorBlockUe8m0(layer->projection_scale[2],layer->capacity,M26_HIDDEN,M26_INTER,1u,32u),b->act,b->down,b->route,b->packed,M26_TOP_K,M26_TOP_K,1u,M26_INTER,M26_HIDDEN,0),"expert down",index);
 	M26CombineKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->route_weight,b->stream);
+}
+
+static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids)
+{
+	uint32_t k, changed = 0u;
+	M26RouteDevice(index,layer,b);
+	M26Check(cudaMemcpy(ids,b->route_expert,M26_TOP_K * 4u,cudaMemcpyDeviceToHost),"route ids");
+	for (k = 0u; k < M26_TOP_K; k++)
+	{
+		if ( ids[k] >= M26_EXPERTS )
+		{
+			fprintf(stderr,"FAIL layer %u routed to expert id %u\n",index,ids[k]);
+			exit(1);
+		}
+		if ( layer->slot[ids[k]] >= 0 )
+			continue;
+		if ( layer->resident == layer->capacity )
+		{
+			fprintf(stderr,"FAIL layer %u expert %u: all %u spare slots already demand-loaded\n",index,ids[k],M26_SPARE_SLOTS);
+			exit(1);
+		}
+		printf("demand-load layer %u expert %u (outside the CPU reference route set)\n",index,ids[k]);
+		M26LoadExpert(index,layer,ids[k],layer->resident++);
+		layer->demand++;
+		changed = 1u;
+	}
+	if ( changed != 0u )
+		M26Check(cudaMemcpy(layer->device_slot,layer->slot.data(),M26_EXPERTS * 4u,cudaMemcpyHostToDevice),"slot map");
+	M26Experts(index,layer,b);
 }
 
 static void M26Allocate(M26Buffers *b)
@@ -455,6 +458,8 @@ static void M26Allocate(M26Buffers *b)
 	b->route = M26Alloc<uint32_t>(M26_TOP_K);
 	b->packed = M26Alloc<uint32_t>(M26_TOP_K);
 	b->error = M26Alloc<LmKvAccessError>(1u);
+	b->route_expert = M26Alloc<uint32_t>(M26_TOP_K);
+	b->missing = M26Alloc<uint32_t>(1u);
 	for (i = 0u; i < M26_TOP_K; i++)
 		packed[i] = i;
 	for (i = 0u; i < M26_PAGES; i++)
@@ -528,6 +533,55 @@ static void M26Embed(M26Buffers *b, uint32_t token)
 	M26Check(cudaMemcpy(b->stream,row,sizeof(row),cudaMemcpyHostToDevice),"embed");
 }
 
+static uint32_t M26DevicePass(M26Layer *layers, M26Buffers *b, const std::vector<uint32_t> &inputs, const std::vector<uint32_t> &want, uint32_t first_output, float *milliseconds)
+{
+	uint32_t position, layer, token, missing = 0u, mismatches = 0u, context;
+	float score;
+	uint16_t *rows = M26Alloc<uint16_t>(inputs.size() * M26_HIDDEN);
+	cudaEvent_t start, stop;
+	for (position = 0u; position < inputs.size(); position++)
+	{
+		M26Embed(b,inputs[position]);
+		M26Check(cudaMemcpy(rows + (size_t)position * M26_HIDDEN,b->stream,M26_HIDDEN * 2u,cudaMemcpyDeviceToDevice),"embed row");
+	}
+	M26Check(cudaMemset(b->missing,0,4u),"missing");
+	M26Check(cudaEventCreate(&start),"event");
+	M26Check(cudaEventCreate(&stop),"event");
+	M26Check(cudaEventRecord(start,0),"record");
+	for (position = 0u; position < inputs.size(); position++)
+	{
+		context = position + 1u;
+		M26Check(cudaMemcpy(b->stream,rows + (size_t)position * M26_HIDDEN,M26_HIDDEN * 2u,cudaMemcpyDeviceToDevice),"stream");
+		M26Check(cudaMemcpy(b->position,&position,4u,cudaMemcpyHostToDevice),"position");
+		M26Check(cudaMemcpy(b->context,&context,4u,cudaMemcpyHostToDevice),"context");
+		for (layer = 0u; layer < M26_LAYERS; layer++)
+		{
+			M26Attention(layer,&layers[layer],b,position);
+			if ( layers[layer].moe )
+			{
+				M26RouteDevice(layer,&layers[layer],b);
+				M26Experts(layer,&layers[layer],b);
+			}
+			else
+				M26Dense(layer,&layers[layer],b);
+		}
+		token = M26Head(b,&score);
+		if ( position >= first_output )
+			mismatches += token != want[position - first_output] ? 1u : 0u;
+	}
+	M26Check(cudaEventRecord(stop,0),"record");
+	M26Check(cudaEventSynchronize(stop),"sync");
+	M26Check(cudaEventElapsedTime(milliseconds,start,stop),"elapsed");
+	M26Check(cudaMemcpy(&missing,b->missing,4u,cudaMemcpyDeviceToHost),"missing");
+	if ( missing != 0u )
+	{
+		fprintf(stderr,"FAIL device routing chose %u non-resident experts in the replay\n",missing);
+		exit(1);
+	}
+	cudaFree(rows);
+	return(mismatches);
+}
+
 int main(int argc, char **argv)
 {
 	static M26Layer layers[M26_LAYERS];
@@ -598,6 +652,13 @@ int main(int argc, char **argv)
 			printf("position %u greedy %u reference %u score %.4f\n",position,token,((const uint32_t *)expected.data())[position + 1u - prompt_count],score);
 		}
 	}
+	std::vector<uint32_t> inputs;
+	for (position = 0u; position + 1u < total; position++)
+		inputs.push_back(position < prompt_count ? ((const uint32_t *)prompt.data())[position] : generated[position - prompt_count]);
+	float replay_ms = 0.0f;
+	uint32_t replay_mismatches = M26DevicePass(layers,&b,inputs,generated,prompt_count - 1u,&replay_ms);
+	printf("device-routed replay positions=%zu mismatches_vs_host_routed=%u ms_per_position=%.2f\n",inputs.size(),replay_mismatches,replay_ms / (float)inputs.size());
+	mismatches += replay_mismatches;
 	M26Check(cudaMemcpy(&access,b.error,sizeof(access),cudaMemcpyDeviceToHost),"kv error");
 	for (layer = 0u; layer < M26_LAYERS; layer++)
 		demand += layers[layer].demand;
