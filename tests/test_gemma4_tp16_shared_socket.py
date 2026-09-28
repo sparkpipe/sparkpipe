@@ -110,8 +110,11 @@ def test_generator(output: Path) -> dict:
         check(env["SPARK_GEMMA4_TP_DEGREE"] == "16", f"rank {rank} env tp degree")
         check(env["SPARK_GEMMA4_TP_RANK"] == str(rank), f"rank {rank} env tp rank")
         check(env["SPARK_GEMMA4_TP_STANDALONE"] == "0", f"rank {rank} standalone")
+        check(env["SPARK_TP_WAIT_MODE"] == "hardware",
+              f"rank {rank} collective waits on the device like the fleet stations")
         check(set(env) == {"SPARK_GEMMA4_TP_DEGREE", "SPARK_GEMMA4_TP_RANK",
-                           "SPARK_GEMMA4_TP_STANDALONE", "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS"},
+                           "SPARK_GEMMA4_TP_STANDALONE", "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",
+                           "SPARK_TP_WAIT_MODE"},
               f"rank {rank} env names only what the module reads: {sorted(env)}")
     return deployment
 
