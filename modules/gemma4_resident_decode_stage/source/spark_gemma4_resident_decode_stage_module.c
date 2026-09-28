@@ -817,7 +817,7 @@ static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleS
 }
 #endif
 
-static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t first_row, uint32_t copy_rows)
+static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t position_row, uint32_t copy_rows)
 {
 	static uint32_t *tokens_host = 0;
 	static float *scores_host = 0;
@@ -834,12 +834,12 @@ static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSl
 		head_capacity = tokens_host != 0 && scores_host != 0 ? copy_rows : 0u;
 	}
 	if ( tokens_host == 0 || scores_host == 0 ||
-		cudaMemcpy(tokens_host,slot->argmax_token_ids + first_row,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(scores_host,slot->argmax_score_f32 + first_row,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		cudaMemcpy(tokens_host,slot->argmax_token_ids,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(scores_host,slot->argmax_score_f32,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
 		return;
 	for (i = 0u; i < copy_rows; i++)
 		fprintf(stderr,"G4-T1 head pos%u token %u score_bits %08x\n",
-			slot->host_row_positions_u32[first_row + i],tokens_host[i],
+			slot->host_row_positions_u32[position_row + i],tokens_host[i],
 			((const uint32_t *)scores_host)[i]);
 }
 
@@ -1136,10 +1136,11 @@ static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, Sp
 	return(SPARK_STATUS_OK);
 }
 
-static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t rows, uint32_t first_row, uint32_t copy_rows)
+static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t first_row, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	cudaError_t error = SparkGemma4LaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+	const uint8_t *head_hidden = (const uint8_t *)slot->hidden_bf16 + (uint64_t)first_row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
+	cudaError_t error = SparkGemma4LaunchRmsNorm(stream,head_hidden,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadDirectArgmax(stream,slot->normalized_bf16,state->token_embedding_bf16,slot->argmax_scratch,slot->argmax_candidate_counts,slot->argmax_token_ids,slot->argmax_score_f32,state->tp_vocab_base,rows,state->tp_vocab_rows);
 	if ( error == cudaSuccess )
@@ -1162,7 +1163,7 @@ static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, Spar
 		return(cudaErrorInvalidValue);
 	}
 	if ( error == cudaSuccess && frame->buffer_count >= 2u && frame->buffers[1].address != 0 )
-		error = cudaMemcpyAsync(frame->buffers[1].address,slot->argmax_token_ids + first_row,copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		error = cudaMemcpyAsync(frame->buffers[1].address,slot->argmax_token_ids,rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
 		error = cudaStreamSynchronize(stream);
 	return(error);
@@ -1190,7 +1191,7 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 	}
 	if ( state->owns_final_head != 0u )
 	{
-		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows,0u,rows);
+		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,0u,rows);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"emit_head"));
 		SparkGemma4T1Head(state,slot,0u,rows);
@@ -1264,7 +1265,7 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 	}
 	if ( state->owns_final_head != 0u )
 	{
-		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows,rows - 1u,1u);
+		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows - 1u,1u);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"prefill_emit_head"));
 		SparkGemma4T1Head(state,slot,rows - 1u,1u);
