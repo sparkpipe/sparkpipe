@@ -41,7 +41,7 @@ usage: $0 ACTION [ARG]
   launch nospec|dflash2   residentd rank R on HOSTS[R] in unit ${UNIT} (lane ${LANE}, mesh ${MESH_RANKS}); refuses unless ${GATE_FILE} says DEPLOYED
   status | stop | fresh MODE | reclaim
   refcheck MODE FILE      reference prompts through sparkpipe_model_batch on rank 0 (fresh ranks per prompt)
-  repeat MODE CASE N OUT  N sequential requests of one bench case on ONE engine (one batch file), token hashes per request
+  repeat MODE CASE N OUT  N requests of one bench case on ONE single-lane engine (sequential, prefix cache warm after the first)
   perf MODE CASES REPS OUT tools/qwen38_27b_tp1_bench.py cases on rank 0, fresh ranks per run
   api-install SHA         x86 API + TP4 adapter on ${HUB}, stage ${API_CHANNEL}, write qwen27b-api.service
   api-start | api-stop | smoke
@@ -141,7 +141,7 @@ spec_env() {
 }
 
 launch() {
-	local mode=${1:?nospec|dflash2} rank host root
+	local mode=${1:?nospec|dflash2} deployment=${2:-$1} rank host root
 	gate
 	for rank in "${!HOSTS[@]}"; do
 		host=${HOSTS[$rank]}
@@ -150,7 +150,7 @@ launch() {
 systemctl --user is-active --quiet ${UNIT} && { echo '${host}: ${UNIT} already running'; exit 2; }
 test -S ${WEIGHTD_SOCKET} || { echo '${host}: weightd socket missing'; exit 2; }
 cd ${root} && log=${root}/logs/residentd-${mode}-\$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn \$log ${root}/logs/current.log && echo ${mode} > ${root}/logs/current.mode
-systemd-run --user --collect --unit=${UNIT} --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${root}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E SPARK_TP_MESH_RANKS=${MESH_RANKS} -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 $(spec_env "$mode" "$root") ${QWEN27B_DIAG_ENV:-} ${root}/bin/sparkpipe_model_residentd --deployment ${root}/config/model_resident.${mode}.json --rank-index ${rank} > /dev/null" &
+systemd-run --user --collect --unit=${UNIT} --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${root}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E SPARK_TP_MESH_RANKS=${MESH_RANKS} -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 $(spec_env "$mode" "$root") ${QWEN27B_DIAG_ENV:-} ${root}/bin/sparkpipe_model_residentd --deployment ${root}/config/model_resident.${deployment}.json --rank-index ${rank} > /dev/null" &
 	done
 	wait
 	for rank in "${!HOSTS[@]}"; do
@@ -187,7 +187,7 @@ reclaim() {
 
 fresh() {
 	stop > /dev/null
-	launch "${1:?mode}"
+	launch "${1:?mode}" "${2:-$1}"
 }
 
 coordinator() { printf '%s' "${HOSTS[0]}"; }
@@ -222,17 +222,20 @@ repeat_case() {
 	host=$(coordinator)
 	root=$(root_of "$host")
 	scp -q "$HERE/qualification/qwen38_27b/bench_prompts_tp1.json" "${host}:${root}/logs/bench_prompts_tp1.json"
-	fresh "$mode" > /dev/null
+	for h in "${HOSTS[@]}"; do
+		on "$h" "cd $(root_of "$h")/config && python3 -c 'import json; d = json.load(open(\"model_resident.${mode}.json\")); d[\"runtime_limits\"].update(max_active_sequences=1, resident_sequence_capacity=1); json.dump(d, open(\"model_resident.${mode}.lane1.json\", \"w\"), indent=1)'"
+	done
+	fresh "$mode" "${mode}.lane1" > /dev/null
 	on "$host" "cd ${root} && python3 - ${mode} ${case} ${count} <<'EOF'
 import hashlib, json, os, subprocess, sys
 mode, case, count = sys.argv[1], sys.argv[2], int(sys.argv[3])
 prompts = json.load(open('logs/bench_prompts_tp1.json'))
 key = {'o128': ('prose', 128), 'o512': ('prose', 512), 'code512': ('code', 512), 'rep512': ('repetitive', 512)}[case]
 reqs = [{'request_id': 5000 + i, 'sequence_id': 5000 + i, 'priority': 0, 'output_token_budget': key[1], 'prompt_token_ids': prompts[key[0]]} for i in range(count)]
-batch = {'schema_version': 1, 'connect_timeout_ms': 30000, 'request_capacity': 2, 'max_context_tokens': 4096, 'max_prefill_rows_per_submission': 128, 'maximum_messages_per_rank_per_progress': 8, 'maximum_new_submissions_per_progress': 1, 'stop_token_ids': [], 'requests': reqs}
+batch = {'schema_version': 1, 'connect_timeout_ms': 30000, 'request_capacity': count, 'max_context_tokens': 4096, 'max_prefill_rows_per_submission': 128, 'maximum_messages_per_rank_per_progress': 8, 'maximum_new_submissions_per_progress': 1, 'stop_token_ids': [], 'requests': reqs}
 json.dump(batch, open('logs/repeat.json', 'w'))
 env = dict(os.environ, LD_LIBRARY_PATH='${root}/lib')
-run = subprocess.run(['bin/sparkpipe_model_batch', '--deployment', 'config/model_resident.%s.json' % mode, '--runtime-root', '${root}', '--batch', 'logs/repeat.json'], capture_output=True, text=True, env=env)
+run = subprocess.run(['bin/sparkpipe_model_batch', '--deployment', 'config/model_resident.%s.lane1.json' % mode, '--runtime-root', '${root}', '--batch', 'logs/repeat.json'], capture_output=True, text=True, env=env)
 toks = {}
 for line in run.stdout.splitlines():
     if line.startswith('{'):

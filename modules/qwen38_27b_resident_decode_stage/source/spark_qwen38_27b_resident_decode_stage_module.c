@@ -818,10 +818,17 @@ static uint64_t SparkQwen38_27bModuleFrameRowCount(const SparkQwen38_27bModuleSt
 		state->max_active_sequence_count : state->max_input_row_count);
 }
 
+static uint64_t SparkQwen38_27bModuleHeadRowCount(const SparkQwen38_27bModuleState *state)
+{
+	uint64_t verify_rows = (uint64_t)SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u;
+	_Static_assert(SPARK_QWEN38_27B_DSPARK_BLOCK_SIZE <= SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS + 1u,"a DFlash2 verify block must fit the head rows");
+	return((uint64_t)state->max_active_sequence_count > verify_rows ? (uint64_t)state->max_active_sequence_count : verify_rows);
+}
+
 static SparkStatus SparkQwen38_27bModuleAllocateSlotControl(SparkQwen38_27bModuleState *state, SparkQwen38_27bModuleSlot *slot)
 {
 	uint64_t rows = SparkQwen38_27bModuleFrameRowCount(state),staged = rows + SPARK_QWEN38_27B_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS;
-	uint64_t head_rows = (uint64_t)state->max_active_sequence_count;
+	uint64_t head_rows = SparkQwen38_27bModuleHeadRowCount(state);
 	SparkStatus status;
 	cudaStream_t stream = 0;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_27B_MODULE_TAG,cudaStreamCreate(&stream),"cudaStreamCreate");
