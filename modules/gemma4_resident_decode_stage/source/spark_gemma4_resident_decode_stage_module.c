@@ -529,10 +529,10 @@ static SparkStatus SparkGemma4ModuleAdmit(
 	table.cost_context = state;
 	status = SparkAdmissionEvaluateShape(&table,available_slot_count,request,decision);
 	if (status != SPARK_STATUS_OK)
-		return(status);
+		SPARK_RETURN(status);
 	if (decision->accepted == 0u)
 		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
@@ -1016,15 +1016,15 @@ static SparkStatus SparkGemma4ModuleValidateFrameContext(SparkGemma4ModuleState 
 			: SPARK_STATUS_INVALID_ARGUMENT);
 	if ( context->abi_version != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
 		context->descriptor_bytes != sizeof(*context) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	has_input = (context->flags & SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u ? 1u : 0u;
 	has_output = (context->flags & SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( has_input != wants_input || has_output != wants_output )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( has_input != 0u && (context->hidden_input_transport_session == 0 || context->hidden_input_post_receive_function == 0) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( has_output != 0u && (context->hidden_output_transport_session == 0 || context->hidden_output_send_function == 0) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 

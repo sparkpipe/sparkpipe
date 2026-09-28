@@ -870,17 +870,17 @@ static SparkStatus SparkMuseGlimmerModuleValidateFrameContext(SparkMuseGlimmerMo
 			: SPARK_STATUS_INVALID_ARGUMENT);
 	if ( context->abi_version != SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION ||
 		context->descriptor_bytes != sizeof(*context) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	has_input = (context->flags & SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u ? 1u : 0u;
 	has_output = (context->flags & SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u ? 1u : 0u;
 	if ( has_input != wants_input || has_output != wants_output )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( has_input != 0u && (context->hidden_input_transport_session == 0 || context->hidden_input_post_receive_function == 0) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( has_output != 0u && (context->hidden_output_transport_session == 0 || context->hidden_output_send_function == 0) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->flags & SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW) != 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -893,11 +893,11 @@ static SparkStatus SparkMuseGlimmerModuleConsumeHiddenInput(SparkMuseGlimmerModu
 	memset(packet,0,sizeof(*packet));
 	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,packet);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( packet->hidden_bf16 == 0 || packet->active_sequence_count < rows ||
 		packet->hidden_dimension != SPARK_MUSE_GLIMMER_MODEL_HIDDEN_DIMENSION ||
 		packet->bytes_per_sequence < SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	error = cudaMemcpyAsync(slot->hidden_bf16,packet->hidden_bf16,(uint64_t)rows * SPARK_MUSE_GLIMMER_MODEL_HIDDEN_BF16_BYTES,cudaMemcpyDeviceToDevice,stream);
 	return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"hidden_input"));
 }

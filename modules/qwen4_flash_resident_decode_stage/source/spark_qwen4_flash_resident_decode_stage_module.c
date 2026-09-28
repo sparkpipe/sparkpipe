@@ -805,7 +805,6 @@ static SparkStatus SparkQwen4FlashModuleAdmit(
 	SparkAdmissionPolicyTable table;
 	uint32_t available_slot_count;
 	SparkStatus status;
-
 	state = (SparkQwen4FlashModuleState *)module_state;
 	available_slot_count = SparkStageModuleSlotCountFree(
 		state->slot_states,

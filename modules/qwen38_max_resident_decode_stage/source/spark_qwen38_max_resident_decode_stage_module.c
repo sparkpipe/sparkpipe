@@ -745,7 +745,7 @@ static SparkStatus SparkQwen38MaxModuleAdmit(
 	(void)module_state;
 	(void)request;
 	(void)decision;
-	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_UNSUPPORTED);
 }
 
 #include "sparkpipe/family/module/spark_module_describe.h"
@@ -773,7 +773,7 @@ SparkStatus SparkQwen38MaxResidentDecodeStageSnapshot(
 	(void)module_state;
 	(void)program_id;
 	(void)snapshot;
-	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_UNSUPPORTED);
 }
 
 #define SPARK_QWEN38_MAX_MODULE_STAGED_ROW_CAPACITY \

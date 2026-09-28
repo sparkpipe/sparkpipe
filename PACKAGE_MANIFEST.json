@@ -5218,8 +5218,8 @@
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c",
-      "sha256": "fcb9f217b1f59748f70c145b3819a4be9d57e989e2d6979b9fdc0a9326a4ea0a",
-      "size_bytes": 78531
+      "sha256": "9e49dac92da7337f8d9becd82daab0af4e7f36fbc8616589d81f8cb39fff343a",
+      "size_bytes": 78559
     },
     {
       "path": "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
@@ -5313,8 +5313,8 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c",
-      "sha256": "232abafcf0e7902081ca7f33403e8cda56e64e6354ed8a722bfa39ae345ac299",
-      "size_bytes": 38754
+      "sha256": "17032a25e44857303363e5bdc7991a4b95d02cdb5b1392186d09963bd7e8ae02",
+      "size_bytes": 38762
     },
     {
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h",
@@ -5933,8 +5933,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c",
-      "sha256": "91ef09803b503a23a30c52e2fd91ed99c4afecb76688270fa235452c97a26a97",
-      "size_bytes": 60825
+      "sha256": "54286795a3f1121aa19582d4c733b62fab63198b4c1fd04fbde1c0618d765874",
+      "size_bytes": 60855
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
@@ -6068,8 +6068,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c",
-      "sha256": "cbe6bbb093db46c19a7cf7c76a257c317409b98cf25d33bd2ac6a7285d43d191",
-      "size_bytes": 93401
+      "sha256": "5dcb476dee01ae7ae0e48265b6e9990fd118dae068cec63c31639ff13adb45d1",
+      "size_bytes": 93393
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_serving_adapter.c",
@@ -6123,8 +6123,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c",
-      "sha256": "18351543f111ddeeeaf7327f68c27001d89da70852c2c1a4e74947b03e7bd97c",
-      "size_bytes": 140288
+      "sha256": "a9bca8dd09296d16451ed564c2d14b11eb9000cfc077e4c757043a4af76ab5cc",
+      "size_bytes": 140287
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_serving_adapter.c",
@@ -15375,5 +15375,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73949576
+  "total_bytes": 73949633
 }
