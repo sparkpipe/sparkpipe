@@ -60,6 +60,8 @@ def deployment_gates(deployment, runtime_root, socket, failures):
                 "max_input_rows", "resident_sequence_capacity",
                 "kv_logical_page_capacity", "kv_physical_page_capacity"):
         check(limits[key] > 0, failures, f"{key} must stay positive")
+    check(limits["max_inflight_submissions"] == 1, failures,
+          "each submission keys the TP collective chain, so one may be in flight")
     nodes = deployment["nodes"]
     check(len(nodes) == 16, failures, f"expected 16 nodes, got {len(nodes)}")
     endpoints = set()

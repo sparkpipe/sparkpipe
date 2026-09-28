@@ -156,7 +156,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "socket_path": weightd_socket,
         },
         "runtime_limits": {
-            "max_inflight_submissions": 4,
+            "max_inflight_submissions": 1,
             "max_active_sequences": 16,
             "max_input_rows": 128,
             "resident_sequence_capacity": 16,

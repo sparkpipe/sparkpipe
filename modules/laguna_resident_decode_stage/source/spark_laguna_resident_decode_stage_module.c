@@ -1560,7 +1560,12 @@ static SparkStatus SparkLagunaStartClaimedBatch(SparkLagunaModuleState *state,Sp
 	chain->stage = SPARK_LAGUNA_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkLagunaUploadPageTables(state,&state->completions[slot_index],slot->stream);
+	status = SPARK_STATUS_OK;
+	if ( state->tp_degree > 1u && state->tp_collective_disabled == 0u && state->tp_device_collective_initialized != 0u &&
+	    state->tp_device_collective.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL )
+		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkLagunaUploadPageTables(state,&state->completions[slot_index],slot->stream);
 	if ( status == SPARK_STATUS_OK )
 	{
 		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LAGUNA_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
