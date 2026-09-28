@@ -37,6 +37,7 @@
 typedef struct SparkGemma4ModuleSlot
 {
 	uint32_t logical_sequence_count;
+	uint32_t frame_max_context;
 	void *cuda_stream;
 	uint32_t *host_row_lane_indices;
 	uint64_t *host_row_positions;
@@ -988,6 +989,7 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 		const SparkGemma4SlidingLayerWeights *weights = &state->sliding_by_layer[layer];
 		uint32_t kv_per_rank = state->sliding_kv_heads_per_rank;
 		uint32_t kv_half_dimension = kv_per_rank * head_dimension;
+		uint32_t windowed = slot->frame_max_context > SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS ? 1u : 0u;
 		SparkGemma4LinearView key_view = weights->kv_fused;
 		SparkGemma4LinearView value_view = weights->kv_fused;
 		key_view.output_dimension = kv_half_dimension;
@@ -1010,12 +1012,12 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->sliding_kv_bf16,slot->row_positions_u32,rows,kv_per_rank,&state->sliding_rope);
 		SparkGemma4ProfileMark(slot,1u);
-		if ( error == cudaSuccess )
+		if ( error == cudaSuccess && windowed != 0u )
 			error = SparkGemma4LaunchSlidingWindowPositions(stream,slot->row_sequences_u32,slot->context_lengths,slot->row_positions_u32,rows,slot->window_positions_u32);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_kv_bf16,slot->sliding_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,slot->row_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
+			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,windowed != 0u ? slot->window_positions_u32 : 0,slot->row_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
 		SparkGemma4ProfileMark(slot,2u);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
@@ -1196,6 +1198,7 @@ static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, Sp
 		batch->row_lane_indices == 0 || batch->row_positions == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	lane_capacity = context->kv_block_table != 0 ? context->kv_block_table->lane_capacity : state->max_active_sequence_count;
+	slot->frame_max_context = 0u;
 	if ( lane_capacity > SPARK_GEMMA4_MODULE_HOST_ROW_CAPACITY )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row = 0u; row < rows; row++)
@@ -1209,6 +1212,8 @@ static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, Sp
 		slot->host_row_positions_u32[row] = (uint32_t)position;
 		slot->host_row_sequences_u32[row] = lane;
 		slot->host_context_lengths[lane] = (uint32_t)position + 1u;
+		if ( (uint32_t)position + 1u > slot->frame_max_context )
+			slot->frame_max_context = (uint32_t)position + 1u;
 		if ( lane + 1u > lane_span )
 			lane_span = lane + 1u;
 	}
@@ -1333,6 +1338,7 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 	if ( view->lane_index >= SPARK_GEMMA4_MODULE_HOST_ROW_CAPACITY )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	slot->host_context_lengths[view->lane_index] = view->base_position + rows;
+	slot->frame_max_context = view->base_position + rows;
 	if ( cudaMemsetAsync(slot->frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),stream) != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaGetLastError(),"prefill_frame_error"));
 	memset(slot->host_frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
