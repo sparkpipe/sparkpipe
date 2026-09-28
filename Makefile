@@ -503,6 +503,7 @@ PYTHON_TESTS := \
 	tests/test_qwen38_max_validation_harness.py \
 	tests/test_qwen38max_multidev_lane.py \
 	tests/test_ling_multidev_lane.py \
+	tests/test_ling_lane.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
