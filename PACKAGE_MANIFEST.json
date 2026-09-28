@@ -6018,8 +6018,8 @@
     },
     {
       "path": "modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh",
-      "sha256": "0d11baf6e18d97d2e83e751ef8a3364f17fd8413d9ea684aae6c7e526a2bf422",
-      "size_bytes": 3486
+      "sha256": "2d4a0d04a0f3a196fb7d10a8537fe443e1467e9d794214571eafbcc1f237a756",
+      "size_bytes": 3473
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/Makefile",
@@ -13613,8 +13613,8 @@
     },
     {
       "path": "tools/t1_q3f_build.sh",
-      "sha256": "6d8e898b6ea469d54f291c6103c600a2f5d4d8b2668ffae1bf36fa5f17afa1b7",
-      "size_bytes": 1860
+      "sha256": "6b6de79784f6b24e30332b8acb22036620b6a314824b08ae8f0a41862d33154f",
+      "size_bytes": 1846
     },
     {
       "path": "tools/t1_q3f_fixtures.sh",
@@ -13658,8 +13658,8 @@
     },
     {
       "path": "tools/t1_qmax_build.sh",
-      "sha256": "fed314783c26f81402e42317eee6320557ba6d996f8f6a6db5894362aa7d3347",
-      "size_bytes": 2067
+      "sha256": "efcafa7333b0b6e960244ed1d013c7b1f544e56bb2c624956a390592e7a92221",
+      "size_bytes": 2054
     },
     {
       "path": "tools/t1_qmax_harness.c",
@@ -15275,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73939270
+  "total_bytes": 73939230
 }
