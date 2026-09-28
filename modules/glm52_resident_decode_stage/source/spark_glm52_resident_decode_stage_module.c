@@ -24,7 +24,7 @@
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_tp_chain_graph.h"
-#include "inference/kernels/attn_split.h"
+#include "sparkpipe/spark_glm52_graph_regime.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 #define SPARK_FAMILY_CAMEL Glm52
@@ -1646,8 +1646,6 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 }
 
 #define SPARK_GLM52_CHAIN_SETTLE_TIMEOUT_NS UINT64_C(35000000000)
-#define SPARK_GLM52_GRAPH_REGIME_UNSPLIT 0u
-#define SPARK_GLM52_GRAPH_REGIME_SPLIT 1u
 #define SPARK_GLM52_GRAPH_GATE_NONE UINT32_MAX
 #define SPARK_GLM52_GRAPH_GATE_MULTI_WAVE 0u
 #define SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT 1u
@@ -1719,24 +1717,11 @@ static uint32_t SparkGlm52WalkWave(void *context)
 	return(0u);
 }
 
-static uint32_t SparkGlm52GraphRegime(const SparkGlm52ModuleState *state,uint32_t context,uint32_t *bound)
-{
-	uint32_t threshold = state->decode_split_context_threshold,limit;
-	limit = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT < state->max_sequence_positions ? SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT : state->max_sequence_positions;
-	if ( LmLatentAttentionContextSplits(context,threshold) != 0u )
-	{
-		*bound = limit;
-		return(SPARK_GLM52_GRAPH_REGIME_SPLIT);
-	}
-	*bound = threshold != 0u && threshold - 1u < limit ? threshold - 1u : limit;
-	return(SPARK_GLM52_GRAPH_REGIME_UNSPLIT);
-}
-
 static uint32_t SparkGlm52GraphGate(const SparkGlm52TpChain *chain)
 {
 	if ( chain->wave_rows != chain->batch->row_count )
 		return(SPARK_GLM52_GRAPH_GATE_MULTI_WAVE);
-	if ( chain->wave.maximum_context > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
+	if ( SparkGlm52GraphReplayable(chain->wave.maximum_context) == 0u )
 		return(SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT);
 	if ( chain->wave_rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
 		return(SPARK_GLM52_GRAPH_GATE_ROWS);
@@ -1750,7 +1735,7 @@ static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpCha
 	uint32_t regime,bound,context;
 	SparkStatus status = SPARK_STATUS_OK;
 	context = chain->wave.maximum_context;
-	regime = SparkGlm52GraphRegime(state,context,&bound);
+	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound);
 	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,chain->wave_rows);
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
