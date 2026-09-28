@@ -25,6 +25,8 @@
 
 typedef LmKvGeometry<SPARK_HYBRID_KV_HEAD_SLOT_BYTES(SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),SPARK_GEMMA4_CUDA_PAGE_SLOTS,true> SparkGemma4SlidingGeometry1;
 typedef LmKvGeometry<SPARK_HYBRID_KV_SLOT_BYTES(2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),SPARK_GEMMA4_CUDA_PAGE_SLOTS,true> SparkGemma4SlidingGeometry2;
+typedef LmKvGeometry<SPARK_HYBRID_KV_SLOT_BYTES(4u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),SPARK_GEMMA4_CUDA_PAGE_SLOTS,true> SparkGemma4SlidingGeometry4;
+typedef LmKvGeometry<SPARK_HYBRID_KV_SLOT_BYTES(8u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),SPARK_GEMMA4_CUDA_PAGE_SLOTS,true> SparkGemma4SlidingGeometry8;
 typedef LmKvGeometry<SPARK_HYBRID_KV_HEAD_SLOT_BYTES(SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),SPARK_GEMMA4_CUDA_PAGE_SLOTS,true> SparkGemma4FullGeometry1;
 
 static_assert(SparkGemma4SlidingGeometry1::kSlotBytes ==
@@ -35,6 +37,14 @@ static_assert(SparkGemma4SlidingGeometry2::kSlotBytes ==
 		SPARK_HYBRID_KV_SLOT_BYTES(2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,
 		    SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),
 	"two sliding kv heads store bf16 k and v rows");
+static_assert(SparkGemma4SlidingGeometry4::kSlotBytes ==
+		SPARK_HYBRID_KV_SLOT_BYTES(4u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,
+		    SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),
+	"four sliding kv heads store bf16 k and v rows");
+static_assert(SparkGemma4SlidingGeometry8::kSlotBytes ==
+		SPARK_HYBRID_KV_SLOT_BYTES(8u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,
+		    SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),
+	"eight sliding kv heads store bf16 k and v rows");
 static_assert(SparkGemma4FullGeometry1::kSlotBytes ==
 		SPARK_HYBRID_KV_HEAD_SLOT_BYTES(SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION,
 		    SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES),
@@ -184,6 +194,10 @@ extern "C" cudaError_t SparkGemma4LaunchKvStoreSliding(cudaStream_t stream, void
 		LmGqaKvStoreKernel<SparkGemma4SlidingGeometry1,SPARK_GEMMA4_CUDA_THREADS,1u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<row_count,SPARK_GEMMA4_CUDA_THREADS,0,stream>>>(view,(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
 	else if ( kv_heads == 2u )
 		LmGqaKvStoreKernel<SparkGemma4SlidingGeometry2,SPARK_GEMMA4_CUDA_THREADS,2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<row_count,SPARK_GEMMA4_CUDA_THREADS,0,stream>>>(view,(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
+	else if ( kv_heads == 4u )
+		LmGqaKvStoreKernel<SparkGemma4SlidingGeometry4,SPARK_GEMMA4_CUDA_THREADS,4u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<row_count,SPARK_GEMMA4_CUDA_THREADS,0,stream>>>(view,(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
+	else if ( kv_heads == 8u )
+		LmGqaKvStoreKernel<SparkGemma4SlidingGeometry8,SPARK_GEMMA4_CUDA_THREADS,8u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<row_count,SPARK_GEMMA4_CUDA_THREADS,0,stream>>>(view,(const uint16_t *)key_bf16,(const uint16_t *)value_bf16,sequence_of_row,positions,row_count);
 	else
 		return(cudaErrorInvalidValue);
 	return(cudaGetLastError());
@@ -207,6 +221,10 @@ extern "C" cudaError_t SparkGemma4LaunchAttentionDecodeSliding(cudaStream_t stre
 		LmGqaAttentionDecodeKernel<SparkGemma4SlidingGeometry1,SPARK_GEMMA4_CUDA_THREADS,1u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<dim3(row_count,query_heads),SPARK_GEMMA4_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,view,sequence_of_row,context_lengths,window_positions,SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS,query_heads,SPARK_GEMMA4_MODEL_QK_SCALE,(uint16_t *)output_bf16,0);
 	else if ( kv_heads == 2u )
 		LmGqaAttentionDecodeKernel<SparkGemma4SlidingGeometry2,SPARK_GEMMA4_CUDA_THREADS,2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<dim3(row_count,query_heads),SPARK_GEMMA4_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,view,sequence_of_row,context_lengths,window_positions,SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS,query_heads,SPARK_GEMMA4_MODEL_QK_SCALE,(uint16_t *)output_bf16,0);
+	else if ( kv_heads == 4u )
+		LmGqaAttentionDecodeKernel<SparkGemma4SlidingGeometry4,SPARK_GEMMA4_CUDA_THREADS,4u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<dim3(row_count,query_heads),SPARK_GEMMA4_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,view,sequence_of_row,context_lengths,window_positions,SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS,query_heads,SPARK_GEMMA4_MODEL_QK_SCALE,(uint16_t *)output_bf16,0);
+	else if ( kv_heads == 8u )
+		LmGqaAttentionDecodeKernel<SparkGemma4SlidingGeometry8,SPARK_GEMMA4_CUDA_THREADS,8u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION><<<dim3(row_count,query_heads),SPARK_GEMMA4_CUDA_THREADS,0,stream>>>((const uint16_t *)query_bf16,view,sequence_of_row,context_lengths,window_positions,SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS,query_heads,SPARK_GEMMA4_MODEL_QK_SCALE,(uint16_t *)output_bf16,0);
 	else
 		return(cudaErrorInvalidValue);
 	return(cudaGetLastError());

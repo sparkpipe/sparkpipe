@@ -1158,37 +1158,42 @@ static int SparkGemma4ValCheckKvSliding(void)
 	free(actual_f);
 	free(expected_f);
 	SparkGemma4ValKvTeardown(&kv);
-	error = SparkGemma4ValKvSetup(&kv,2u,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,context);
-	if (error == cudaSuccess)
-		error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,context,2u);
-	if (error == cudaSuccess) error = SparkGemma4ValSync();
-	if (error == cudaSuccess && SparkGemma4ValKvCheckStored(&kv,1029u) != 0)
-		return(1);
-	if (error == cudaSuccess && SparkGemma4ValKvCheckErrorClear(&kv,"kv_sliding_g2") != 0)
-		return(1);
-	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(query_device,query,count * 2u);
-	if (error == cudaSuccess)
-		error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,2u);
-	if (error == cudaSuccess) error = SparkGemma4ValSync();
-	if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual,output_device,count * 2u);
-	if (SparkGemma4ValCuda(error,"kv_sliding_g2") != 0)
-		return(1);
-	SparkGemma4ValMirrorDecode(&kv,query,window,window_count,query_heads,expected,SPARK_GEMMA4_VAL_ROWS);
-	actual_f = (float *)malloc(count * sizeof(float));
-	expected_f = (float *)malloc(count * sizeof(float));
-	if (actual_f == 0 || expected_f == 0)
-		return(SparkGemma4ValFail("kv_sliding_g2","mirror_alloc"));
-	for (element = 0u; element < count; element++)
+	for (uint32_t kv_index = 0u; kv_index < 3u; kv_index++)
 	{
-		actual_f[element] = SparkGemma4ValFromBf16(actual[element]);
-		expected_f[element] = SparkGemma4ValFromBf16(expected[element]);
+		const uint32_t kv_heads = 2u << kv_index;
+		const char *tag = kv_index == 0u ? "kv_sliding_two_heads_geometry2" : kv_index == 1u ? "kv_sliding_four_heads_geometry4" : "kv_sliding_eight_heads_geometry8";
+		error = SparkGemma4ValKvSetup(&kv,kv_heads,SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION,context);
+		if (error == cudaSuccess)
+			error = SparkGemma4LaunchKvStoreSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,kv.key_device,kv.value_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.positions_device,context,kv_heads);
+		if (error == cudaSuccess) error = SparkGemma4ValSync();
+		if (error == cudaSuccess && SparkGemma4ValKvCheckStored(&kv,1029u) != 0)
+			return(1);
+		if (error == cudaSuccess && SparkGemma4ValKvCheckErrorClear(&kv,tag) != 0)
+			return(1);
+		if (error == cudaSuccess) error = SparkGemma4ValCopyUp(query_device,query,count * 2u);
+		if (error == cudaSuccess)
+			error = SparkGemma4LaunchAttentionDecodeSliding(cudaStreamPerThread,kv.pool,kv.page_table,kv.page_count,1u,kv.page_count,kv.access_error,query_device,(const uint32_t *)kv.sequence_rows_device,(const uint32_t *)kv.context_device,(const uint32_t *)window_device,query_heads,output_device,SPARK_GEMMA4_VAL_ROWS,kv_heads);
+		if (error == cudaSuccess) error = SparkGemma4ValSync();
+		if (error == cudaSuccess) error = SparkGemma4ValCopyDown(actual,output_device,count * 2u);
+		if (SparkGemma4ValCuda(error,tag) != 0)
+			return(1);
+		SparkGemma4ValMirrorDecode(&kv,query,window,window_count,query_heads,expected,SPARK_GEMMA4_VAL_ROWS);
+		actual_f = (float *)malloc(count * sizeof(float));
+		expected_f = (float *)malloc(count * sizeof(float));
+		if (actual_f == 0 || expected_f == 0)
+			return(SparkGemma4ValFail(tag,"mirror_alloc"));
+		for (element = 0u; element < count; element++)
+		{
+			actual_f[element] = SparkGemma4ValFromBf16(actual[element]);
+			expected_f[element] = SparkGemma4ValFromBf16(expected[element]);
+		}
+		SparkGemma4ValMeasure(&metrics,actual_f,expected_f,count);
+		if (SparkGemma4ValReport(tag,&metrics,5e-3,0.999) != 0)
+			return(1);
+		free(actual_f);
+		free(expected_f);
+		SparkGemma4ValKvTeardown(&kv);
 	}
-	SparkGemma4ValMeasure(&metrics,actual_f,expected_f,count);
-	if (SparkGemma4ValReport("kv_sliding_two_heads_geometry2",&metrics,5e-3,0.999) != 0)
-		return(1);
-	free(actual_f);
-	free(expected_f);
-	SparkGemma4ValKvTeardown(&kv);
 	cudaFree(query_device);
 	cudaFree(output_device);
 	cudaFree(row_position_device);

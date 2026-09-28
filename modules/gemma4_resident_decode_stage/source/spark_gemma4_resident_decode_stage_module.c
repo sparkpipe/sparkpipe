@@ -881,6 +881,8 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 			error = SparkGemma4LaunchAttentionDecodeFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_query_bf16,slot->row_sequences_u32,slot->context_lengths,query_heads,slot->attn_head_output_bf16,rows);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"full_attention"));
 	}
 	else
 	{
@@ -916,6 +918,8 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"sliding_attention"));
 	}
 	if ( state->tp_degree > 1u )
 	{
