@@ -108,6 +108,12 @@ class Safetensors:
             self.fds[fname] = fh
         return self.headers[fname]
 
+    def has(self, name):
+        if self.map and name not in self.map:
+            return False
+        hdr, _ = self._open(self.map.get(name, "model.safetensors"))
+        return name in hdr
+
     def _entry(self, name):
         fname = self.map.get(name, "model.safetensors")
         hdr, base = self._open(fname)

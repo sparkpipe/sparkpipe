@@ -150,8 +150,80 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   attention factor 1.4852030263919618, 64-dim partial rotation) and
   sliding layers theta 1e4 full-head rotation, half-split pairing,
   per-head q/k RMSNorms, softplus per-head output gating, sigmoid router
-  with e_score_correction_bias (zeros when absent) top-10 with routed
-  scaling 2.5, shared expert, dense layer 0.
+  with e_score_correction_bias top-10 with routed scaling 2.5, shared
+  expert, dense layer 0. The checkpoint stores the bias as
+  `mlp.experts.e_score_correction_bias` (the publisher remaps it onto the
+  router at load). Before 2026-09-28 the engine looked only for
+  `mlp.gate.e_score_correction_bias` and silently used zeros when it was
+  absent. The engine now reads either name and refuses a layer that has
+  neither. In revision 0f573140 all 47 bias vectors are exactly zero, so
+  the committed fixtures do not change. The canonical T1 prompt set has no
+  BOS token (id 2, which the tokenizer adds by default), and that is why
+  its greedy text is degenerate (" isThe ofThe"). The fixtures remain a
+  valid engine reference for those exact ids.
+
+### laguna torch reference (publisher semantics, GPU)
+
+`tools/laguna_reference_torch.py` is a second, independent laguna
+reference. It follows `modeling_laguna.py` step by step in bf16 with the
+publisher's casts: RMSNorm in f32 then cast, rope cos/sin cast to bf16, SDPA
+attention, softplus gate in f32, bf16 router logits upcast before the sigmoid,
+and experts accumulated in expert order. Tensors stream from the safetensors
+shards through a GPU LRU of routed experts. It prefills the prompt, then
+decodes with a KV cache.
+
+```sh
+python3 tools/laguna_reference_torch.py --checkpoint /mnt/model-warm/laguna-s-2.1 \
+  --prompts model-families/laguna/reference_prompts.json --output out \
+  --device cuda:0 --expert-cache 400
+```
+
+On the rtx5090 (torch 2.11, 32 GB) the three prompts x 16 tokens take
+about 10 minutes. About 9-18 s per token is spent reading experts from the
+ceph mount. The raw `out/reference.json` keeps routes, bf16 logits, timings
+and the absolute checkpoint path. The committed
+`model-families/laguna/reference_tokens.json` is derived from it by
+`tools/laguna_reference_fixture.py`, which drops the per-run fields, rounds
+the f32 top-2 logits to 4 places, decodes the generated text and records the
+strict prefix of every prompt:
+
+```sh
+python3 tools/laguna_reference_fixture.py --raw out/reference.json \
+  --tokenizer /mnt/model-warm/laguna-s-2.1/tokenizer.json \
+  --checkpoint-label "poolside/Laguna-S-2.1 0f573140834b11cfac0c2af97a101a7a69a13e22 (bf16)" \
+  --tie-margin 0.1 --output model-families/laguna/reference_tokens.json
+```
+
+Engine comparison rule: `strict_steps` is the index of the first step whose
+f32 top-2 margin is below `tie_margin` (0.1). The engine must emit exactly
+the reference tokens before that step, must emit one of the two f32
+candidates at that step, and is not compared after it, because the
+continuation depends on the tie. capital_of_france and count_up both stop at
+step 13 (margins 0.006 and 0.058; at capital_of_france step 13 the bf16
+argmax 340 is not the f32 argmax 22345). python_is_prime has no near tie
+(smallest margin 0.73), so all 16 tokens are strict.
+
+Tests:
+- `tests/test_laguna_reference_fixture.py` (in `make test`, no torch) checks
+  the derivation, its refusals (foreign generator, token/step disagreement, a
+  token outside the f32 top-2, missing header fields) and that the committed
+  fixture matches `reference_prompts.json` by sha256 and ids, follows
+  `tie_margin`, and is byte-identical to the tool's encoding.
+- `tests/test_t1_reference_engines.py` (in `make test`) checks the numpy
+  engine's router bias on a single-file synthetic checkpoint: the bias is
+  read under `mlp.experts.` and `mlp.gate.` with identical fixtures, a +4
+  bias forces an expert into every route and a -4 bias excludes it, and a
+  checkpoint without the bias is refused with an error naming
+  `e_score_correction_bias`. The name lookup goes through
+  `Safetensors.has`, which reads the shard header, so it works with and
+  without `model.safetensors.index.json`.
+- `tests/test_laguna_reference_torch.py` needs torch and is run by hand on a
+  torch host. It checks that incremental decode equals full recompute
+  across the sliding window, pins the sliding mask against the publisher
+  rule (`key > query - window`: a query sees itself and the previous
+  window-1 keys), checks the correction bias under both names and the
+  refusal of a missing bias or attention sinks, and checks that the yarn
+  table equals the numpy engine's.
 
 Checkpoint staging note: the wave's fixture runs decoded from
 byte-identical node-local copies of the warm checkpoints

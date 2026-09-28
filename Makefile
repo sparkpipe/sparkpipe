@@ -414,6 +414,7 @@ PYTHON_TESTS := \
 	tests/test_ling_model_header.py \
 	tests/test_laguna_model_header.py \
 	tests/test_laguna_multidev_lane.py \
+	tests/test_laguna_reference_fixture.py \
 	tests/test_laguna_smoke_experts.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
