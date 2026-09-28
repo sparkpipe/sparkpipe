@@ -31,10 +31,11 @@ usage: $0 ACTION [ARG]
   build SHA               archive SHA to ${BUILD_HOST}:${BUILD_BASE}/src-SHA; host binaries, TP1 adapter, module archive, weightd tests
   publish SHA             copy that tree to ${NODE}; module GPU validation attached to ${WEIGHTD_SOCKET}; driver compile; install into ${ROOT}
   configs                 write ${ROOT}/config (deployments, adapter configs) and build/api.model_resident.json
-  launch nospec|dflash2   residentd in unit sp-qwen27b-residentd (control ${CONTROL_PORT}, transport ${TRANSPORT_PORT_BASE}, lane ${LANE})
+  launch nospec|mtp|dflash2 residentd in unit sp-qwen27b-residentd (control ${CONTROL_PORT}, transport ${TRANSPORT_PORT_BASE}, lane ${LANE})
   status | stop           unit state, ready line, memory | stop that unit
   bench nospec|dflash2    canonical 128-token prompt, 512 greedy tokens through sparkpipe_model_batch
-  refcheck FILE           greedy continuations for a reference prompt file, compared with its reference_token_ids
+  refcheck MODE FILE      greedy continuations for a reference prompt file (fresh residentd per prompt), compared with its reference_token_ids
+  fresh MODE              stop, then launch MODE (residentd serves one client connection; see lane notes)
   api-install SHA         build the x86 API + TP1 adapter on ${HUB}, stage ${API_CHANNEL}, write qwen27b-api.service (not started)
   api-start | api-stop | smoke
   compsec SHA RUN_ID      COMPSEC-17 (qwen template, thinking off, 512 tokens) from ${HUB} against :${API_PORT}
@@ -108,16 +109,19 @@ configs() {
 launch() {
 	local mode=${1:?nospec|dflash2} spec_env=""
 	case "$mode" in
-		nospec) ;;
+		nospec) spec_env="-E SPARK_QWEN38_27B_SPECULATORS=0" ;;
+		mtp) spec_env="-E SPARK_QWEN38_27B_SPECULATORS=0x1" ;;
 		dflash2) spec_env="-E SPARK_QWEN38_27B_SPECULATORS=0x4 -E SPARK_QWEN38_27B_DSPARK_PACK_PATH=${DRAFTER} -E SPARK_QWEN38_27B_DFLASH2_STATE_SELECT=1 -E SPARK_QWEN38_27B_DFLASH2_BONUS_FOLD=2 -E SPARK_QWEN38_27B_DFLASH2_BLOCK_KV=0 -E SPARK_QWEN38_27B_DFLASH2_WINDOW=2048 -E SPARK_QWEN38_27B_DFLASH2_CTX_CACHE=1" ;;
-		*) echo "mode must be nospec or dflash2" >&2; exit 2 ;;
+		*) echo "mode must be nospec, mtp or dflash2" >&2; exit 2 ;;
 	esac
+	local deployment=${mode}
+	[ "$mode" = mtp ] && deployment=nospec
 	on "$NODE" "set -e
 systemctl --user is-active --quiet sp-qwen27b-residentd && { echo 'sp-qwen27b-residentd already running'; exit 2; }
 test -S ${WEIGHTD_SOCKET} || { echo 'weightd socket missing'; exit 2; }
 free -g | head -2
-cd ${ROOT} && log=${ROOT}/logs/residentd-${mode}-\$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn \$log ${ROOT}/logs/current.log
-systemd-run --user --collect --unit=sp-qwen27b-residentd --same-dir -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${ROOT}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 ${spec_env} ${ROOT}/bin/sparkpipe_model_residentd --deployment ${ROOT}/config/model_resident.${mode}.json --rank-index 0
+cd ${ROOT} && log=${ROOT}/logs/residentd-${mode}-\$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn \$log ${ROOT}/logs/current.log && echo ${mode} > ${ROOT}/logs/current.mode
+systemd-run --user --collect --unit=sp-qwen27b-residentd --same-dir -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${ROOT}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 ${spec_env} ${ROOT}/bin/sparkpipe_model_residentd --deployment ${ROOT}/config/model_resident.${deployment}.json --rank-index 0
 for i in \$(seq 1 300); do grep -aq 'model_residentd ready' \$log && break; systemctl --user is-active --quiet sp-qwen27b-residentd || break; sleep 1; done
 grep -a -E 'ready|refused|failed|ERRSITE|capacity' \$log | tail -8
 free -g | head -2"
@@ -143,24 +147,33 @@ EOF
 grep -ac spec_diag ${ROOT}/logs/current.log || true"
 }
 
+fresh() {
+	stop > /dev/null
+	launch "${1:?mode}" | grep -a -E 'model_residentd ready|refused|failed|ERRSITE' | tail -3
+}
+
 refcheck() {
-	local file=${1:?reference prompts json}
+	local mode=${1:?nospec|mtp|dflash2} file=${2:?reference prompts json} name
 	scp -q "$file" "${NODE}:${ROOT}/logs/refprompts.json"
-	on "$NODE" "cd ${ROOT} && python3 - <<'EOF'
-import json, subprocess, os
-d = json.load(open('logs/refprompts.json'))
+	for name in $(python3 -c "import json,sys; print(' '.join(p['name'] for p in json.load(open(sys.argv[1]))['prompts']))" "$file"); do
+		fresh "$mode" > /dev/null
+		on "$NODE" "cd ${ROOT} && python3 - ${name} ${mode} <<'EOF'
+import json, subprocess, os, sys
+name, mode = sys.argv[1], sys.argv[2]
+p = [q for q in json.load(open('logs/refprompts.json'))['prompts'] if q['name'] == name][0]
 env = dict(os.environ, LD_LIBRARY_PATH='${ROOT}/lib')
-for i, p in enumerate(d['prompts']):
-    batch = {'schema_version': 1, 'connect_timeout_ms': 30000, 'request_capacity': 2, 'max_context_tokens': 4096, 'max_prefill_rows_per_submission': 8, 'maximum_messages_per_rank_per_progress': 8, 'maximum_new_submissions_per_progress': 2, 'stop_token_ids': [], 'requests': [{'request_id': 900 + i, 'sequence_id': 900 + i, 'priority': 0, 'output_token_budget': p['new_tokens'], 'prompt_token_ids': p['prompt_token_ids']}]}
-    json.dump(batch, open('logs/ref-%s.json' % p['name'], 'w'))
-    out = subprocess.run(['bin/sparkpipe_model_batch', '--deployment', 'config/model_resident.nospec.json', '--runtime-root', '${ROOT}', '--batch', 'logs/ref-%s.json' % p['name']], capture_output=True, text=True, env=env).stdout
-    got = [json.loads(l)['token_id'] for l in out.splitlines() if l.startswith('{') and json.loads(l).get('event') == 'token']
-    want = p.get('reference_token_ids', [])
-    same = 0
-    while same < min(len(got), len(want)) and got[same] == want[same]:
-        same += 1
-    print(json.dumps({'prompt': p['name'], 'engine': got, 'reference': want, 'matching_prefix': same}))
+batch = {'schema_version': 1, 'connect_timeout_ms': 30000, 'request_capacity': 2, 'max_context_tokens': 4096, 'max_prefill_rows_per_submission': 8, 'maximum_messages_per_rank_per_progress': 8, 'maximum_new_submissions_per_progress': 2, 'stop_token_ids': [], 'requests': [{'request_id': 900, 'sequence_id': 900, 'priority': 0, 'output_token_budget': p['new_tokens'], 'prompt_token_ids': p['prompt_token_ids']}]}
+json.dump(batch, open('logs/ref-%s.json' % name, 'w'))
+deployment = 'dflash2' if mode == 'dflash2' else 'nospec'
+run = subprocess.run(['bin/sparkpipe_model_batch', '--deployment', 'config/model_resident.%s.json' % deployment, '--runtime-root', '${ROOT}', '--batch', 'logs/ref-%s.json' % name], capture_output=True, text=True, env=env)
+got = [json.loads(l)['token_id'] for l in run.stdout.splitlines() if l.startswith('{') and json.loads(l).get('event') == 'token']
+want = p.get('reference_token_ids', [])
+same = 0
+while same < min(len(got), len(want)) and got[same] == want[same]:
+    same += 1
+print(json.dumps({'mode': mode, 'prompt': name, 'engine': got, 'reference': want, 'matching_prefix': same, 'exact': got == want, 'batch_rc': run.returncode, 'stderr_tail': run.stderr.strip().splitlines()[-1:]}))
 EOF"
+	done
 }
 
 api_install() {
@@ -199,7 +212,8 @@ case "$ACTION" in
 	status) status ;;
 	stop) stop ;;
 	bench) bench "${2:-}" ;;
-	refcheck) refcheck "${2:-}" ;;
+	refcheck) refcheck "${2:-}" "${3:-}" ;;
+	fresh) fresh "${2:-}" ;;
 	api-install) api_install "${2:-}" ;;
 	api-start) on "$HUB" "systemctl --user daemon-reload && systemctl --user start qwen27b-api && sleep 2 && systemctl --user is-active qwen27b-api && curl -s --max-time 5 http://127.0.0.1:${API_PORT}/health; echo" ;;
 	api-stop) on "$HUB" "systemctl --user stop qwen27b-api; systemctl --user is-active qwen27b-api || true" ;;

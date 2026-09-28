@@ -8,9 +8,10 @@ Emits into --output:
   stage.dflash2.json           adapter config with speculative_draft_count (DFlash2 block)
   api.model_resident.json      API copy: the nospec deployment plus eos_token_ids and tokenizer
 
-Every value is a required argument; nothing is defaulted. The residentd
-deployments carry no eos_token_ids so fixed-length benchmarks run to their
-budget; the API copy stops on the chat end tokens.
+Every value is a required argument; nothing is defaulted. Every deployment
+carries the model's eos_token_ids (invariant I49: common generation refuses a
+deployment without EOS), so fixed-budget benchmarks report the tokens produced
+before a generated EOS. The API copy also carries the tokenizer.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ KV_BLOCK_TOKENS = 64
 def deployment(args, adapter_config: str) -> dict:
     return {
         "schema_version": 2,
+        "eos_token_ids": [int(t) for t in args.eos_token_ids.split(",")],
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {"shared_object_path": "stages/stage_000/model_driver.so",
@@ -78,7 +80,7 @@ def main() -> int:
     ap.add_argument("--kv-logical-pages", type=int, required=True)
     ap.add_argument("--kv-physical-pages", type=int, required=True)
     ap.add_argument("--draft-count", type=int, required=True)
-    ap.add_argument("--eos-token-ids", required=True, help="comma list for the API copy")
+    ap.add_argument("--eos-token-ids", required=True, help="comma list of model EOS token ids")
     ap.add_argument("--tokenizer", required=True, help="tokenizer.json staged under the API runtime root")
     ap.add_argument("--tokenizer-vocabulary-size", type=int, required=True)
     ap.add_argument("--output", required=True)
@@ -100,7 +102,6 @@ def main() -> int:
         "stage.dflash2.json": stage(args, args.draft_count),
     }
     api = deployment(args, "config/stage.json")
-    api["eos_token_ids"] = [int(t) for t in args.eos_token_ids.split(",")]
     api["tokenizer"] = {"path": "tokenizer/tokenizer.json",
                         "sha256": hashlib.sha256(Path(args.tokenizer).read_bytes()).hexdigest(),
                         "vocabulary_size": args.tokenizer_vocabulary_size}
