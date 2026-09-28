@@ -1590,8 +1590,14 @@ static SparkStatus SparkLingExecuteBatch(
 	}
 	SparkLingPrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
-	status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_access_reset");
+	status = SPARK_STATUS_OK;
+	if ( state->tp_degree > 1u && state->tp_collective_disabled == 0u && state->tp_device_collective_initialized != 0u )
+		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
+		status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_access_reset");
+	}
 	wave_rows = status == SPARK_STATUS_OK ? SparkLingRoundMajorWaveRows(batch,0u) : 0u;
 	if ( status == SPARK_STATUS_OK && wave_rows == 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;

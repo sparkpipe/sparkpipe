@@ -230,8 +230,8 @@ static int32_t LingLayerAttention(
         buffers->dense_tile_prefix,
         rows,
         LING_HIDDEN,
-        LING_QUERY_DIM,
-        LING_QUERY_DIM,
+        buffers->q_b_rows,
+        buffers->q_b_rows,
         0u,
         multiprocessors,
         stream);
