@@ -1,6 +1,50 @@
 # GLM 5.3 Flash TP16 B1 roofline
 
 The target is 80% of the memory roofline for one decode token per rank.
+Output quality and acceptance gates are in
+[GLM_PERFORMANCE_GATES.md](GLM_PERFORMANCE_GATES.md). Expert residency is in
+[GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md).
+
+## Where it stands (2026-09-28)
+
+| Item | Value | Source |
+| --- | ---: | --- |
+| B1 decode, TP16 fleet, no speculation | 36 tok/s | lead-dev fleet measurement, 2026-09-28 |
+| Time per token inside an 8-step graph chain | 23-24.5 ms | same measurement |
+| 16-rank 8 KiB all-reduce p50 | 167 µs | "Measured after PR #1208" below |
+| Memory floor | 7.99 ms (125 tok/s) | "Bytes per rank per token" below |
+| 80% target | 10.0 ms (100 tok/s) | same |
+| Best public 4-Spark GLM B1 result, no speculation | 23.2 tok/s | lead dev, 2026-09-28 |
+| TP16 goal, 3-3.5x that result | 70-81 tok/s, 12.3-14.4 ms | arithmetic |
+| COMPSEC-17, thinking off | 14/17 | [GLM_PERFORMANCE_GATES.md](GLM_PERFORMANCE_GATES.md) |
+
+The measured engines were built from `dd3526b`, the head of PR #1243. The
+x86 API on the rtx5090 was built from the same commit. The COMPSEC receipt
+(`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
+lists the binary hashes. Main has moved past that build (`git log dd3526b..origin/main`
+includes the i21-i33 driver fixes, #1255 and #1259), and nothing after
+`dd3526b` has a fleet measurement yet. Quote a build identity with every
+number.
+
+The 36 tok/s was measured with this serving environment, which the
+fleet-agent drop-in `20-serving.conf` sets on every Spark:
+
+| Setting | Effect |
+| --- | --- |
+| `G5_GRAPH_PATH=1` | The agent passes it as `SPARK_GLM5_NEXT_GRAPH_PATH`, which is mandatory. The module fails with `INVALID_ARGUMENT` unless it is `0` or `1`, so deleting the drop-in stops the engines. Use `G5_GRAPH_PATH=0` for eager runs. |
+| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS`. Pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
+| `SPARK_TP_WAIT_MODE=hardware` | The collectives use hardware waits and chunked direct rounds. Unset or `spin` makes the GPU poll peer tails itself. |
+| `G5_API_DISABLED=1` | Rank 0 does not start an API; the API is `g53-api` on the rtx5090, port 8433. |
+| `G5_WARMUP=0` | The agent's warmup hook does not run. |
+
+Full pinning contradicts bounded residency (I29). See
+[GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md) for the cost
+and the redesign.
+
+Collective latency is the dominant remaining cost (lead dev, 2026-09-28). A
+chain step at 23-24.5 ms is 13-14.5 ms over the 10.0 ms target (arithmetic).
+About 91 collective rounds per token (see "Linear eager chains") at the
+167 µs p50 come to about 15.2 ms (arithmetic, assuming no overlap).
 
 ## Bytes per rank per token
 
@@ -489,8 +533,12 @@ The fixes:
 
 - In hardware-wait mode every collective now runs as direct all-to-all rounds.
   A payload larger than one slot is split into slot-sized chunks, one relay
-  round each. The binomial tree is no longer used in hardware mode, and spin
-  mode is unchanged.
+  round each. The binomial tree is no longer used in hardware mode. In spin
+  mode, a single-sequence wave larger than one slot still took the host round
+  and failed with `CAPACITY_EXCEEDED`. #1255 (`cf64e90`) sends such waves
+  through chunked device rounds (`SparkTpDeviceCollectiveHostRound`). The
+  deployed `dd3526b` engines predate #1255, so the 2026-09-28 API ran with
+  `SPARK_MODEL_API_MAX_PREFILL_ROWS=8` (COMPSEC receipt).
 - The slot gains a 64-byte trailer margin, so eight 16384-wide BF16 rows fit
   one slot exactly.
 
@@ -568,9 +616,27 @@ Per rank, with TP16, the caches are split as follows (`layer.cuh`,
 
 | State | Layout per rank | Bytes |
 | --- | --- | ---: |
-| KDA recurrent state + conv windows (34 layers) | head-sharded, 4 of 64 heads | about 8.5 MiB per sequence |
+| KDA recurrent state + conv windows (34 layers) | head-sharded, 4 of 64 heads | 8.9 MiB per sequence |
 | DSA latent KV (11 layers) | replicated, every token on every rank | 1024 B per token per layer |
 | DSA indexer keys (11 layers) | replicated, every token on every rank | 514 B per token per layer |
+
+The KDA figure is arithmetic from `spark_glm5_next_model.h`. Per layer, the
+state is 64 heads × 128 × 128 × 4 B = 4 MiB, and the Q, K and V convolution
+windows are 3 × 64 heads × 128 × 4 history entries × 2 B = 192 KiB. The
+module allocates both per rank divided by the TP degree
+(`kda_state_layer_stride_bytes`, `kda_window_layer_stride_bytes`). Per
+sequence, over 34 layers:
+
+| Topology | State | Windows | Total |
+| --- | ---: | ---: | ---: |
+| TP1 | 136 MiB | 6.375 MiB | 142.375 MiB |
+| TP4 | 34 MiB | 1.59375 MiB | 35.59375 MiB |
+| TP16 | 8.5 MiB | 0.3984375 MiB | 8.8984375 MiB |
+
+This is also what a KDA checkpoint must carry per sequence. The
+`check_rank_state` case in `tests/test_glm5_next_stage_context.py` runs the
+real allocator at TP1, TP4 and TP16 and checks the strides, pool sizes and
+checkpoint page bytes.
 
 Only the KDA state is 1/16 per rank. The DSA path stores the full latent
 (`LmKvStoreKernel`) and the full indexer key on every rank. The attention
@@ -1220,14 +1286,26 @@ git checkout <branch> && make kernel-codegen-diff BASE_CUBIN=/tmp/base.cubin ALL
 On the first revision it reports the nine `LmGemmKernel` instances as
 unexpected. On the second it reports only skinny kernels.
 
-## Next steps, ordered by expected gain
+## Next steps
 
-1. Remeasure the ladder tail with the lock-free wiring scan, and measure
-   batched decode at 1, 2, 4 and 8 concurrent streams.
-2. Remove the CPU relay from the critical path: GPU-initiated RDMA
-   (IBGDA-style), with the GPU writing work requests and ringing the NIC
-   doorbell. A 16-rank 8 KiB all-reduce should then cost tens of
-   microseconds.
-3. Pair-link hierarchical all-reduce for prefill and B >= 16.
+Collective latency sets most of the B1 gap (see "Where it stands").
+
+1. Measure main on the fleet. Deploy a merged-main build, record its
+   identity, and rerun B1, the 8-stream load and COMPSEC-17. Later changes
+   should be measured against current code, not against `dd3526b`.
+2. Remove the CPU relay from the critical path with GPU-initiated RDMA
+   (IBGDA-style): the GPU writes the work requests and rings the NIC doorbell.
+   The expectation, not yet measured, is a 16-rank 8 KiB all-reduce in tens
+   of microseconds.
+3. Take the host out of decode chains. Feed each step's tokens on the device,
+   and stop waiting for every graph replay on residentd's thread (TECHDEBT;
+   see "Resident decode chains").
 4. Fuse RMSNorm into the consuming GEMV and batch GEMVs that share an input,
-   to cut the 1950 launches per token.
+   to cut the launches per token (1950 at the #1208 measurement).
+5. Restore bounded expert residency without losing graph speed
+   ([GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md)).
+6. Choose the topology by measurement. Qualify TP16, TP4xPP4 and PP16 each on
+   its own (I38). Measure aggregate tok/s and per-stream latency from B1 up to
+   the largest batch that fits, and serve with whichever measures best. The
+   pair-link hierarchical all-reduce for prefill and B >= 16 belongs to this
+   step.

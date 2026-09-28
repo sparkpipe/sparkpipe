@@ -1,5 +1,20 @@
 # ALLREDUCE HILLCLIMB — 2026-09-20
 
+> **Historical, archived 2026-09-28: a session log from 2026-09-20 to
+> 2026-09-24. Do not follow its "Wedge playbook" or "Fleet/deploy facts".**
+>
+> - weightd and residentd run in the `fleet-agent` unit's cgroup
+>   (`tools/fleet-agent.service` sets no `KillMode`), so restarting the agent
+>   also kills weightd and forces a cold expert reload.
+> - The agent starts weightd without `--mesh-dir` and reads
+>   `/tmp/weightd-mesh` (`tools/fleet_node_agent.sh`, `node/weightd_mesh.c`).
+>   A weightd moved to `/tmp/weightd-mesh-fleet` publishes records the agent
+>   never ships.
+> - weightd is deployed through the `core/WEIGHTSD_BIN` announce, not by scp;
+>   the sparkf build tree is `~/g5n-rd-build`. See
+>   [FLEET_RELEASE_RUNBOOK.md](../FLEET_RELEASE_RUNBOOK.md).
+> - `SPARK_GLM5_NEXT_GRAPH_PATH` has no default; it must be `0` or `1`.
+
 ## GOAL (set 09-20, operator)
 **Allreduce ≤ 100µs/round MEASURED on the 16-spark fleet** (91-round chain, status=0, checksums green), starting from 1.79ms/round (the healed fleet's cold-class eager number). Every intermediate number graded MEASURED (wire-math floor check before grading); every step committed + PR'd.
 
