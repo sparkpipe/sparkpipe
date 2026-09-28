@@ -529,61 +529,9 @@ static SparkStatus SparkGlm52ManifestPlane(const SparkWeightdManifest *manifest,
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm52ManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
-{
-	const SparkGlm52ManifestContext *context = (const SparkGlm52ManifestContext *)opaque;
-	const SparkGlm52StagePackEntry *entry;
-	SparkStatus status;
-	uint64_t expected = 0u;
-	uint32_t index,plane;
-	for (index=0u; index<context->count; index++)
-	{
-		entry = &context->entries[index];
-		if ( entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
-			continue;
-		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		for (plane=0u; plane<2u; plane++)
-		{
-			status = SparkGlm52ManifestPlane(manifest,entry,plane);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-			expected += entry->group_count;
-		}
-	}
-	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_manifest_check_fp8.h"
 
-static SparkStatus SparkGlm52LazyOpen(SparkGlm52ModuleState *state,const char *path,uint64_t bytes,const SparkGlm52StagePackEntry *entries,uint32_t count)
-{
-	SparkWeightdLazyAttachRequest request;
-	SparkGlm52ManifestContext context = {entries,count};
-	SparkStatus status;
-	const char *digest;
-	uint64_t spine_budget;
-	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memset(&request,0,sizeof(request));
-	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	memcpy(request.identity.pack_sha256,digest,65u);
-	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_GLM52_MODULE_TAG);
-	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = bytes;
-	request.identity.topology = state->tp_degree;
-	memcpy(request.pack_path,path,strlen(path) + 1u);
-	status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_GLM52_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkGlm52ManifestCheck,&context,&state->lazy_pack);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_lazy_open.h"
 
 static SparkStatus SparkGlm52PackLoadEntry(
 	SparkGlm52ModuleState *state,
@@ -666,32 +614,7 @@ static SparkStatus SparkGlm52PackLoad(
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm52AllocateSlotHost(SparkGlm52ExecutionSlot *slot)
-{
-	uint32_t *cursor;
-	uint64_t rows,words,bytes;
-	cudaError_t error;
-	if ( slot == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	words = (rows * 4u) + SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT;
-	bytes = words * sizeof(uint32_t);
-	error = cudaHostAlloc(&slot->host_staging,bytes,cudaHostAllocPortable);
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"host_staging"));
-	memset(slot->host_staging,0,bytes);
-	cursor = (uint32_t *)slot->host_staging;
-	slot->host_token_ids = cursor;
-	cursor += rows;
-	slot->host_resident_slots = cursor;
-	cursor += rows;
-	slot->host_positions = cursor;
-	cursor += rows;
-	slot->host_output_token_ids = cursor;
-	cursor += rows;
-	slot->host_kv_access_error = cursor;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_allocate_slot_host_staging.h"
 
 static void SparkGlm52ReleaseSlotHost(SparkGlm52ModuleState *state)
 {
@@ -824,26 +747,7 @@ static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm52PageCopy(
-	void *context,
-	uint32_t direction,
-	uintptr_t device_address,
-	void *host_address,
-	uint64_t bytes)
-{
-	SparkGlm52ModuleState *state;
-	cudaError_t error;
-	state = (SparkGlm52ModuleState *)context;
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_page_copy"));
-}
+#include "sparkpipe/family/module/spark_module_page_copy.h"
 
 static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 {

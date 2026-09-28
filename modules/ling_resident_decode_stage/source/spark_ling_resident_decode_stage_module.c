@@ -459,32 +459,7 @@ static SparkStatus SparkLingAllocateBytes(
 	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
 }
 
-static SparkStatus SparkLingAllocateSlotHost(SparkLingExecutionSlot *slot)
-{
-	uint32_t *cursor;
-	uint64_t rows,words,bytes;
-	cudaError_t error;
-	if ( slot == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	rows = SPARK_LING_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
-	words = (rows * 4u) + SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT;
-	bytes = words * sizeof(uint32_t);
-	error = cudaHostAlloc(&slot->host_staging,bytes,cudaHostAllocPortable);
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"host_staging"));
-	memset(slot->host_staging,0,bytes);
-	cursor = (uint32_t *)slot->host_staging;
-	slot->host_token_ids = cursor;
-	cursor += rows;
-	slot->host_resident_slots = cursor;
-	cursor += rows;
-	slot->host_positions = cursor;
-	cursor += rows;
-	slot->host_output_token_ids = cursor;
-	cursor += rows;
-	slot->host_kv_access_error = cursor;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_allocate_slot_host_staging.h"
 
 static void SparkLingReleaseSlotHost(SparkLingModuleState *state)
 {
@@ -625,26 +600,7 @@ static SparkStatus SparkLingBuildPageTable(SparkLingModuleState *state)
 	return(status);
 }
 
-static SparkStatus SparkLingPageCopy(
-	void *context,
-	uint32_t direction,
-	uintptr_t device_address,
-	void *host_address,
-	uint64_t bytes)
-{
-	SparkLingModuleState *state;
-	cudaError_t error;
-	state = (SparkLingModuleState *)context;
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_page_copy"));
-}
+#include "sparkpipe/family/module/spark_module_page_copy.h"
 
 static SparkStatus SparkLingKvAllocateArrays(SparkLingModuleState *state,uint64_t block_bytes)
 {
@@ -1733,27 +1689,7 @@ static SparkStatus SparkLingExecuteBatch(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkLingResidentDecodeStageExecute(
-	void *module_state,
-	SparkModelDriverFrame *frame)
-{
-	SparkLingModuleState *state;
-	const SparkLingResidentDecodeStageFrameContext *context;
-	SparkStatus status;
-	state = (SparkLingModuleState *)module_state;
-	context = 0;
-	status = SparkLingValidateFrame(state,frame,&context);
-	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state != 0 )
-			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(status);
-	}
-	status = SparkLingExecuteBatch(state,frame,context);
-	if ( status != SPARK_STATUS_OK )
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
 
 SparkStatus SparkLingResidentDecodeStageAdmit(
 	void *module_state,
@@ -1788,28 +1724,7 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	return(status);
 }
 
-SparkStatus SparkLingResidentDecodeStageSnapshot(
-	void *module_state,
-	uint32_t program_id,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkLingModuleState *state;
-	uint32_t index,resident_count;
-	state = (SparkLingModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
-	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
-	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);
-	snapshot->rejected_count = atomic_load_explicit(&state->rejected_count,memory_order_relaxed);
-	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-	resident_count = 0u;
-	for (index=0u; index<state->resident_sequence_capacity; index++)
-		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
-	snapshot->resident_sequence_count = resident_count;
-	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
 
 void SparkLingResidentDecodeStageDestroy(void *module_state)
 {

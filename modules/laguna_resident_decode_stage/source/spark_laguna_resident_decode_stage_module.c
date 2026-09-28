@@ -310,36 +310,7 @@ static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest
 	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 }
 
-static SparkStatus SparkLagunaLazyOpen(SparkLagunaModuleState *state,const char *path,uint64_t bytes,const SparkLagunaStagePackEntry *entries,uint32_t count)
-{
-	SparkWeightdLazyAttachRequest request;
-	SparkLagunaManifestContext context = {entries,count};
-	SparkStatus status;
-	const char *digest;
-	uint64_t spine_budget;
-	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	memset(&request,0,sizeof(request));
-	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	memcpy(request.identity.pack_sha256,digest,65u);
-	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",SPARK_LAGUNA_MODULE_TAG);
-	(void)snprintf(request.identity.revision,sizeof(request.identity.revision),"%s",state->model_revision);
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = bytes;
-	request.identity.topology = state->tp_degree;
-	memcpy(request.pack_path,path,strlen(path) + 1u);
-	status = SparkStageModuleEnvironmentUnsigned64(SPARK_LAGUNA_MODULE_TAG,"SPARK_WEIGHTD_EXPERT_POOL_BYTES",1u,UINT64_MAX,&request.expert_pool_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_LAGUNA_MODULE_TAG,"SPARK_WEIGHTD_SPINE_BUDGET_BYTES",1u,UINT64_MAX,&spine_budget);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkWeightdLazyPackCreateChecked(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,spine_budget,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,SparkLagunaManifestCheck,&context,&state->lazy_pack);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_lazy_open.h"
 
 static void SparkLagunaModulePackExpectGeometry(
 	const SparkLagunaModuleState *state,
@@ -1687,27 +1658,7 @@ static SparkStatus SparkLagunaExecuteBatch(SparkLagunaModuleState *state,SparkMo
 	return(status);
 }
 
-SparkStatus SparkLagunaResidentDecodeStageExecute(
-	void *module_state,
-	SparkModelDriverFrame *frame)
-{
-	SparkLagunaModuleState *state;
-	const SparkLagunaResidentDecodeStageFrameContext *context;
-	SparkStatus status;
-	state = (SparkLagunaModuleState *)module_state;
-	context = 0;
-	status = SparkLagunaValidateFrame(state,frame,&context);
-	if ( status != SPARK_STATUS_OK )
-	{
-		if ( state != 0 )
-			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-		return(status);
-	}
-	status = SparkLagunaExecuteBatch(state,frame,context);
-	if ( status != SPARK_STATUS_OK )
-		atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
-	return(status);
-}
+#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
 
 static SparkStatus SparkLagunaResetExecutionState(SparkLagunaModuleState *state)
 {
@@ -1832,28 +1783,7 @@ SparkStatus SparkLagunaResidentDecodeStageAdmit(
 	return(status);
 }
 
-SparkStatus SparkLagunaResidentDecodeStageSnapshot(
-	void *module_state,
-	uint32_t program_id,
-	SparkModelDriverRuntimeSnapshot *snapshot)
-{
-	SparkLagunaModuleState *state;
-	uint32_t index,resident_count;
-	state = (SparkLagunaModuleState *)module_state;
-	if ( state == 0 || snapshot == 0 || program_id == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkStageModuleRuntimeSnapshotInitialize(snapshot,program_id,state->slot_states,state->pipeline_slot_count);
-	snapshot->submitted_count = atomic_load_explicit(&state->submitted_count,memory_order_relaxed);
-	snapshot->completed_count = atomic_load_explicit(&state->completed_count,memory_order_relaxed);
-	snapshot->rejected_count = atomic_load_explicit(&state->rejected_count,memory_order_relaxed);
-	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-	resident_count = 0u;
-	for (index=0u; index<state->resident_sequence_capacity; index++)
-		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
-	snapshot->resident_sequence_count = resident_count;
-	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
 
 static void SparkLagunaReleaseCaches(SparkLagunaModuleState *state)
 {

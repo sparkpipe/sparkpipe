@@ -585,30 +585,7 @@ static SparkStatus SparkGlm5NextAllocateBytes(
 
 #include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
 
-static SparkStatus SparkGlm5NextManifestCheck(const SparkWeightdManifest *manifest,void *opaque)
-{
-	const SparkGlm5NextManifestContext *context = (const SparkGlm5NextManifestContext *)opaque;
-	const SparkGlm5NextStagePackEntry *entry;
-	SparkStatus status;
-	uint64_t expected = 0u;
-	uint32_t index,plane;
-	for (index=0u; index<context->count; index++)
-	{
-		entry = &context->entries[index];
-		if ( entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
-			continue;
-		if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		for (plane=0u; plane<2u; plane++)
-		{
-			status = SparkGlm5NextManifestPlane(manifest,entry,plane);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-			expected += entry->group_count;
-		}
-	}
-	return(expected == manifest->range_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
-}
+#include "sparkpipe/family/module/spark_module_manifest_check_fp8.h"
 
 static SparkStatus SparkGlm5NextPinAllExperts(SparkGlm5NextModuleState *state);
 
