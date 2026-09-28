@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu"
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h"
+#include "inference/kernels/row_hash.cuh"
 
 #define ROOF_TP 16u
 #define ROOF_LAYERS SPARK_GLM5_NEXT_MODEL_LAYER_COUNT
@@ -18,6 +19,8 @@
 #define ROOF_EXPERT_INTERMEDIATE (SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / ROOF_TP)
 #define ROOF_EXPERT_W1_ROWS (2u * ROOF_EXPERT_INTERMEDIATE)
 #define ROOF_CUDA(call) do { cudaError_t roof_error = (call); if ( roof_error != cudaSuccess ) { fprintf(stderr,"ROOFLINE-FAIL line=%d cuda=%s call=%s\n",__LINE__,cudaGetErrorString(roof_error),#call); exit(1); } } while (0)
+#define ROOF_HASH_ENTRIES (ROOF_LAYERS * 12u + 2u)
+#define ROOF_HASH_BF16(trace,layer,site,data,width,stream) RoofHash((trace),(layer),(site),(data),(uint64_t)(width) * 2u,(width),(stream))
 #define ROOF_LAUNCH(call) do { int32_t roof_status = (call); if ( roof_status != LM_LAUNCH_OK ) { fprintf(stderr,"ROOFLINE-FAIL line=%d launch=%d call=%s\n",__LINE__,(int)roof_status,#call); exit(1); } } while (0)
 
 typedef struct RoofConfig
@@ -25,8 +28,32 @@ typedef struct RoofConfig
 	uint32_t batches[ROOF_MAX_BATCHES];
 	uint32_t batch_count,context,iterations,copies,max_batch,index_cp;
 	double round_us,nic_gbps,memory_gbps;
+	const char *row_hash_directory;
 }
 RoofConfig;
+
+enum
+{
+	ROOF_SITE_Q_A,ROOF_SITE_Q_B,ROOF_SITE_KV_A,ROOF_SITE_INDEX_Q,ROOF_SITE_INDEX_K,ROOF_SITE_INDEX_HEAD,ROOF_SITE_ATTN_LATENT,
+	ROOF_SITE_KDA_QKVB,ROOF_SITE_KDA_DECAY_GATE,ROOF_SITE_KDA_STATE,ROOF_SITE_ATTN_OUT,ROOF_SITE_HIDDEN_ATTN,ROOF_SITE_ROUTER,
+	ROOF_SITE_ROUTE_EXPERT,ROOF_SITE_ROUTE_WEIGHT,ROOF_SITE_SHARED_OUT,ROOF_SITE_MLP_OUT,ROOF_SITE_HIDDEN_MLP,ROOF_SITE_HEAD_TOKEN,ROOF_SITE_HEAD_SCORE,ROOF_SITES
+};
+
+static const char *const roof_site_names[ROOF_SITES] =
+{
+	"q_a","q_b","kv_a","index_q","index_k","index_head","attn_latent","kda_qkvb","kda_decay_gate","kda_state","attn_out",
+	"hidden_attn","router","route_expert","route_weight","shared_out","mlp_out","hidden_mlp","head_token","head_score"
+};
+
+typedef struct RoofHashTrace
+{
+	FILE *file;
+	char wave[32];
+	uint64_t *device,*host;
+	uint32_t layer[ROOF_HASH_ENTRIES],site[ROOF_HASH_ENTRIES];
+	uint32_t entries,rows,first_sequence,position,max_batch;
+}
+RoofHashTrace;
 
 typedef struct RoofBytes
 {
@@ -53,6 +80,7 @@ typedef struct RoofState
 	void *hidden_input;
 	uint32_t *page_table;
 	uint32_t pages_per_sequence,max_positions;
+	void *kda_snapshot;
 }
 RoofState;
 
@@ -674,6 +702,175 @@ static double RoofMeasure(RoofState *state,const RoofConfig *config,uint32_t row
 	return((double)elapsed / config->iterations);
 }
 
+static void RoofHash(RoofHashTrace *trace,uint32_t layer,uint32_t site,const void *data,uint64_t stride,uint32_t words,cudaStream_t stream)
+{
+	if ( trace->entries >= ROOF_HASH_ENTRIES )
+	{
+		fprintf(stderr,"ROOFLINE-FAIL row hash entries exceed %u\n",ROOF_HASH_ENTRIES);
+		exit(1);
+	}
+	ROOF_LAUNCH(LmRowHashLaunch(data,stride,words,trace->rows,site,trace->device + (uint64_t)trace->entries * trace->max_batch,stream));
+	trace->layer[trace->entries] = layer;
+	trace->site[trace->entries] = site;
+	trace->entries++;
+}
+
+static void RoofHashAttention(const RoofState *state,RoofHashTrace *trace,uint32_t layer,cudaStream_t stream)
+{
+	Glm5NextLayerBuffers buffers;
+	uint32_t rank_qk,rank_v;
+	SparkGlm5NextBindLayer(&state->wave,layer,&buffers);
+	rank_qk = buffers.kda_heads * GLM5_NEXT_KDA_KEY_DIM;
+	rank_v = buffers.kda_heads * GLM5_NEXT_KDA_VALUE_DIM;
+	if ( SPARK_GLM5_NEXT_MODEL_LAYER_IS_KDA(layer) )
+	{
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_KDA_QKVB,buffers.fused_qkvb_bf16,rank_qk * 2u + rank_v + buffers.kda_heads,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_KDA_DECAY_GATE,buffers.fused_decay_gate_bf16,2u * GLM5_NEXT_KDA_LOW_RANK,stream);
+		RoofHash(trace,layer,ROOF_SITE_KDA_STATE,buffers.kda_state_pool + (uint64_t)trace->first_sequence * buffers.kda_state_slot_bytes,buffers.kda_state_slot_bytes,buffers.kda_state_slot_bytes / 2u,stream);
+	}
+	else
+	{
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_Q_A,buffers.q_compressed_bf16,GLM5_NEXT_QUERY_A_DIM,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_Q_B,buffers.q_bf16,buffers.q_b_rows,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_KV_A,buffers.kv_slot_bf16,GLM5_NEXT_LATENT_ROW,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_INDEX_Q,buffers.index_query_bf16,GLM5_NEXT_DSA_QUERY_DIM,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_INDEX_K,buffers.index_key_bf16,GLM5_NEXT_DSA_INDEX_DIM,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_INDEX_HEAD,buffers.index_head_weight_bf16,GLM5_NEXT_DSA_INDEX_HEADS,stream);
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_ATTN_LATENT,buffers.attention_latent_bf16,buffers.attn_heads * GLM5_NEXT_LATENT,stream);
+	}
+	ROOF_HASH_BF16(trace,layer,ROOF_SITE_ATTN_OUT,buffers.attention_out_bf16,GLM5_NEXT_HIDDEN,stream);
+}
+
+static void RoofHashMlp(const RoofState *state,RoofHashTrace *trace,uint32_t layer,uint32_t experts,cudaStream_t stream)
+{
+	Glm5NextLayerBuffers buffers;
+	SparkGlm5NextBindLayer(&state->wave,layer,&buffers);
+	if ( layer < GLM5_NEXT_FIRST_ROUTED_LAYER )
+	{
+		if ( experts == 0u )
+			ROOF_HASH_BF16(trace,layer,ROOF_SITE_MLP_OUT,buffers.attention_out_bf16,GLM5_NEXT_HIDDEN,stream);
+		return;
+	}
+	if ( experts == 0u )
+	{
+		RoofHash(trace,layer,ROOF_SITE_ROUTER,buffers.router_logits,(uint64_t)GLM5_NEXT_EXPERTS * 4u,GLM5_NEXT_EXPERTS * 2u,stream);
+		RoofHash(trace,layer,ROOF_SITE_ROUTE_EXPERT,buffers.route_expert,(uint64_t)GLM5_NEXT_TOP_K * 4u,GLM5_NEXT_TOP_K * 2u,stream);
+		RoofHash(trace,layer,ROOF_SITE_ROUTE_WEIGHT,buffers.route_weight,(uint64_t)GLM5_NEXT_TOP_K * 4u,GLM5_NEXT_TOP_K * 2u,stream);
+		return;
+	}
+	ROOF_HASH_BF16(trace,layer,ROOF_SITE_SHARED_OUT,buffers.shared_out_bf16,GLM5_NEXT_HIDDEN,stream);
+	ROOF_HASH_BF16(trace,layer,ROOF_SITE_MLP_OUT,buffers.attention_out_bf16,GLM5_NEXT_HIDDEN,stream);
+}
+
+static void RoofHashWrite(const RoofHashTrace *trace,cudaStream_t stream)
+{
+	uint32_t entry,row;
+	ROOF_CUDA(cudaStreamSynchronize(stream));
+	ROOF_CUDA(cudaMemcpy(trace->host,trace->device,(uint64_t)trace->entries * trace->max_batch * sizeof(uint64_t),cudaMemcpyDeviceToHost));
+	for (entry=0u; entry<trace->entries; entry++)
+		for (row=0u; row<trace->rows; row++)
+			fprintf(trace->file,"%s\t0\t%u\t%s\t%u\t%u\t%u\t%016llx\n",trace->wave,trace->layer[entry],roof_site_names[trace->site[entry]],row,trace->first_sequence + row,trace->position,(unsigned long long)trace->host[(uint64_t)entry * trace->max_batch + row]);
+}
+
+static void RoofHashStep(const RoofState *state,RoofHashTrace *trace,cudaStream_t stream)
+{
+	const SparkGlm5NextCudaWave *wave;
+	uint32_t layer;
+	wave = &state->wave;
+	trace->entries = 0u;
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveBegin(wave));
+	for (layer=0u; layer<ROOF_LAYERS; layer++)
+	{
+		RoofAttention(state,layer);
+		RoofHashAttention(state,trace,layer,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_HIDDEN_ATTN,state->slot.hidden_bf16,GLM5_NEXT_HC * GLM5_NEXT_HIDDEN,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
+		RoofHashMlp(state,trace,layer,0u,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer));
+		RoofHashMlp(state,trace,layer,1u,stream);
+		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer));
+		ROOF_HASH_BF16(trace,layer,ROOF_SITE_HIDDEN_MLP,state->slot.hidden_bf16,GLM5_NEXT_HC * GLM5_NEXT_HIDDEN,stream);
+	}
+	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveHead(wave));
+	RoofHash(trace,ROOF_LAYERS,ROOF_SITE_HEAD_TOKEN,state->slot.output_token,sizeof(uint32_t),2u,stream);
+	RoofHash(trace,ROOF_LAYERS,ROOF_SITE_HEAD_SCORE,state->slot.output_score,sizeof(float),2u,stream);
+	RoofHashWrite(trace,stream);
+}
+
+static void RoofHashState(RoofState *state,uint32_t save)
+{
+	const SparkGlm5NextCudaWave *wave;
+	uint64_t pools,windows;
+	wave = &state->wave;
+	pools = wave->kda_state_layer_stride_bytes * wave->kda_layer_count;
+	windows = wave->kda_window_layer_stride_bytes * wave->kda_layer_count * 3u;
+	if ( state->kda_snapshot == 0 )
+		state->kda_snapshot = RoofAllocate(pools + windows);
+	ROOF_CUDA(cudaMemcpy(save != 0u ? state->kda_snapshot : (void *)wave->kda_state_pools,save != 0u ? (const void *)wave->kda_state_pools : state->kda_snapshot,pools,cudaMemcpyDeviceToDevice));
+	ROOF_CUDA(cudaMemcpy(save != 0u ? (uint8_t *)state->kda_snapshot + pools : (void *)wave->kda_q_window_pool,save != 0u ? (const void *)wave->kda_q_window_pool : (const uint8_t *)state->kda_snapshot + pools,windows,cudaMemcpyDeviceToDevice));
+}
+
+static FILE *RoofHashOpen(const RoofConfig *config,uint32_t rows,const char *kind)
+{
+	char path[4096];
+	FILE *file;
+	snprintf(path,sizeof(path),"%s/rows%u_%s.tsv",config->row_hash_directory,rows,kind);
+	file = fopen(path,"w");
+	if ( file == 0 )
+	{
+		fprintf(stderr,"ROOFLINE-FAIL cannot write %s\n",path);
+		exit(1);
+	}
+	fprintf(file,"wave\tstep\tlayer\tsite\trow\tsequence\tposition\thash\n");
+	printf("ROWHASH-TRACE rows=%u kind=%s path=%s\n",rows,kind,path);
+	return(file);
+}
+
+static void RoofHashSerial(RoofState *state,const RoofConfig *config,RoofHashTrace *trace,uint32_t rows,cudaStream_t stream)
+{
+	const void *hidden;
+	uint32_t sequence;
+	hidden = state->wave.hidden_input_bf16;
+	trace->file = RoofHashOpen(config,rows,"serial");
+	snprintf(trace->wave,sizeof(trace->wave),"serial1");
+	trace->rows = 1u;
+	RoofSetRows(state,1u,config->context);
+	for (sequence=0u; sequence<rows; sequence++)
+	{
+		RoofHashState(state,0u);
+		state->host_slots[0] = state->host_run_state[0] = sequence;
+		state->wave.hidden_input_bf16 = (const uint8_t *)hidden + (uint64_t)sequence * GLM5_NEXT_HC * GLM5_NEXT_HIDDEN * 2u;
+		trace->first_sequence = sequence;
+		RoofHashStep(state,trace,stream);
+	}
+	state->host_slots[0] = state->host_run_state[0] = 0u;
+	state->wave.hidden_input_bf16 = hidden;
+	fclose(trace->file);
+}
+
+static void RoofRowHash(RoofState *state,const RoofConfig *config,uint32_t rows,cudaStream_t stream)
+{
+	static RoofHashTrace trace;
+	if ( trace.device == 0 )
+	{
+		trace.max_batch = config->max_batch;
+		trace.device = (uint64_t *)RoofAllocate((uint64_t)ROOF_HASH_ENTRIES * config->max_batch * sizeof(uint64_t));
+		ROOF_CUDA(cudaMallocHost((void **)&trace.host,(uint64_t)ROOF_HASH_ENTRIES * config->max_batch * sizeof(uint64_t)));
+		RoofHashState(state,1u);
+	}
+	trace.position = config->context - 1u;
+	trace.file = RoofHashOpen(config,rows,"batched");
+	snprintf(trace.wave,sizeof(trace.wave),"b%u",rows);
+	trace.rows = rows;
+	trace.first_sequence = 0u;
+	RoofHashState(state,0u);
+	RoofSetRows(state,rows,config->context);
+	RoofHashStep(state,&trace,stream);
+	fclose(trace.file);
+	RoofHashSerial(state,config,&trace,rows,stream);
+}
+
 static uint32_t RoofParseList(const char *text,uint32_t *values,uint32_t capacity)
 {
 	uint32_t count;
@@ -717,6 +914,8 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 			config->round_us = strtod(argv[index + 1],0);
 		else if ( strcmp(argv[index],"--nic-gbps") == 0 )
 			config->nic_gbps = strtod(argv[index + 1],0);
+		else if ( strcmp(argv[index],"--row-hash") == 0 )
+			config->row_hash_directory = argv[index + 1];
 		else
 			return(-1);
 	}
@@ -735,7 +934,7 @@ int main(int argc,char **argv)
 	uint32_t batch;
 	if ( RoofParse(argc,argv,&config) != 0 )
 	{
-		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5]\n");
+		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5] [--row-hash DIRECTORY]\n");
 		return(2);
 	}
 	setvbuf(stdout,0,_IOLBF,0);
@@ -747,7 +946,9 @@ int main(int argc,char **argv)
 	RoofBuildState(&state,&model,&config,stream);
 	ROOF_CUDA(cudaDeviceSynchronize());
 	printf("ROOFLINE-MODEL fixed_mb_kda_dense=%.1f fixed_mb_kda_moe=%.1f fixed_mb_dsa_moe=%.1f expert_mb=%.3f head_mb=%.1f\n",model.bytes[0].fixed / 1e6,model.bytes[1].fixed / 1e6,model.bytes[2].fixed / 1e6,model.bytes[1].expert / 1e6,model.head_bytes / 1e6);
-	for (batch=0u; batch<config.batch_count; batch++)
+	for (batch=0u; batch<config.batch_count && config.row_hash_directory != 0; batch++)
+		RoofRowHash(&state,&config,config.batches[batch],stream);
+	for (batch=0u; batch<config.batch_count && config.row_hash_directory == 0; batch++)
 	{
 		RoofReport(&model,&state,&config,config.batches[batch],RoofMeasure(&state,&config,config.batches[batch],stream));
 		RoofProfile(&state,config.batches[batch],stream);

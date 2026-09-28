@@ -180,9 +180,31 @@ save about 0.8 ms per step; 64-row waves at 2,048 tokens pay up to about 2 ms.
 The next lever for large waves is occupancy: the four-head block uses 207
 registers, so one block per SM.
 
+## Full layer stack
+
+`make test-glm5-next-row-invariance-stack` runs the 45-layer glm5_next stack
+of `bench-glm5-next-batch` (TP16 rank geometry, synthetic weights, KV, index
+and KDA state) with `--row-hash DIRECTORY`. The tool runs the wave once, then
+runs every row alone with the KDA state restored. At 20 sites per layer it
+writes a per-row 64-bit hash (`LmRowHashKernel`,
+`inference/kernels/row_hash.cuh`: an order-free sum of SplitMix64 over
+(site, word index, 16-bit word)). The sites are the q_a, q_b, kv_a, index
+q/k/head and attention latent outputs; the KDA fused projections and state;
+attention out; the HC hidden after attention and after the MLP; the router
+logits, route and weights; shared and MLP out; and the head token and score.
+`tools/row_hash_compare.py` joins the two traces on (step, layer, site,
+sequence, position) and names the first divergence.
+
+Results on sparkf with the whole stack of fixes: every entry is equal for 2,
+8, 17 and 64 rows at 1,024 tokens (33,856 entries at 64 rows) and for 2 and 9
+rows at 2,100 tokens (selected-list attention and the indexer). With the
+attention fix removed, it reports `layer=3 site=attn_out` at 2 rows, and at
+17 rows the divergence reaches every KDA and MLP site. So the stack harness
+catches the breaks the kernel harness found.
+
 ## Not yet covered
 
-KDA, the DSA indexer (pool scores and top-k), the HC site and post kernels,
-MTP drafting, the layer stack end to end (hash every layer boundary in
-`bench-glm5-next-batch`), graph against eager replay, and the TP16
-collectives. Add a family when a fix touches one of them.
+MTP drafting and verify through the stage, rows at different positions in one
+stack wave, sampled rows in the stack, graph against eager replay, and the TP16
+collectives (the spin mode is not row-invariant; the hardware wait is). The
+TP16 check is COMPSEC-17 sequential against 17 concurrent on the fleet.
