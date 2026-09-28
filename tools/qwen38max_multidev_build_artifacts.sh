@@ -137,7 +137,7 @@ ADAPTER="$CHECKOUT/build/modules/qwen38_max_resident_decode_stage/$EXPERT_CODEC/
 # socket + attach switch + the pack's sidecar digest, with the pool and
 # spine budgets from this rank's chunk-basis numbers (the arena rides the
 # daemon's tracked 29,184 MiB, not this unit's device carve-out).
-WEIGHTD_SOCKET="${QMAX_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+WEIGHTD_SOCKET="${QMAX_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 [ -S "$WEIGHTD_SOCKET" ] || fail "shared weightd socket not live: $WEIGHTD_SOCKET"
 # The placed set carries .experts + .receipt.json sidecars (no .sha256
 # files); the receipt's output_sha256 is the pack digest (the attach

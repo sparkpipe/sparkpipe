@@ -12,6 +12,22 @@ HARNESS = r'''
 #define main SparkUnusedKvTestMain
 #include "tests/test_kv_cache.c"
 #undef main
+cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count)
+{
+	(void)stream;
+	(void)destination;
+	(void)b;
+	(void)element_count;
+	return(cudaErrorUnknown);
+}
+cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+{
+	(void)stream;
+	(void)destination;
+	(void)source;
+	(void)element_count;
+	return(cudaErrorUnknown);
+}
 static SparkLingModuleState state;
 static SparkTestKvPageFixture pages;
 static SparkModelDriverCacheLane remembered[4];
