@@ -1249,6 +1249,41 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkGemma4ModuleChained(const SparkGemma4ModuleState *state)
+{
+	return(state->tp_degree > 1u && state->tp_standalone == 0u && state->tp_collective_initialized != 0u ? 1u : 0u);
+}
+
+static SparkStatus SparkGemma4ModuleChainBegin(SparkGemma4ModuleState *state, const SparkModelDriverFrame *frame)
+{
+	SparkStatus status;
+	if ( SparkGemma4ModuleChained(state) == 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_chain_key_failed status=%d request=%llu\n",SPARK_GEMMA4_MODULE_TAG,(int)status,(unsigned long long)frame->request_id);
+	return(status);
+}
+
+static SparkStatus SparkGemma4ModuleChainEnd(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkStatus frame_status)
+{
+	SparkStatus status;
+	if ( SparkGemma4ModuleChained(state) == 0u )
+		return(frame_status);
+	if ( frame_status == SPARK_STATUS_OK )
+	{
+		cudaError_t drain = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( drain != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,drain,"tp_chain_drain"));
+	}
+	status = SparkTpDeviceCollectiveEndChain(&state->tp_device_collective,slot->cuda_stream);
+	if ( frame_status != SPARK_STATUS_OK )
+		return(frame_status);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_chain_end_failed status=%d\n",SPARK_GEMMA4_MODULE_TAG,(int)status);
+	return(status);
+}
+
 static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelDriverFrame *frame)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
@@ -1276,7 +1311,10 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 				return(prefill_status);
 		}
 		atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-		prefill_status = SparkGemma4ModuleRunPrefill(state,slot,frame,context);
+		prefill_status = SparkGemma4ModuleChainBegin(state,frame);
+		if ( prefill_status == SPARK_STATUS_OK )
+			prefill_status = SparkGemma4ModuleRunPrefill(state,slot,frame,context);
+		prefill_status = SparkGemma4ModuleChainEnd(state,slot,prefill_status);
 		if ( prefill_status != SPARK_STATUS_OK )
 		{
 			atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
@@ -1314,7 +1352,10 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 			return(status);
 	}
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkGemma4ModuleRunDecode(state,slot,frame,context,rows);
+	status = SparkGemma4ModuleChainBegin(state,frame);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGemma4ModuleRunDecode(state,slot,frame,context,rows);
+	status = SparkGemma4ModuleChainEnd(state,slot,status);
 	if ( status != SPARK_STATUS_OK )
 	{
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
