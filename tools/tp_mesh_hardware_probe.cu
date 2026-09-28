@@ -391,6 +391,13 @@ int main(int argc,char **argv)
     CUmoduleLoadingMode loading;REQUIRE(cuModuleGetLoadingMode(&loading)==CUDA_SUCCESS);
     std::printf("ENV CUDA_MODULE_LOADING=%s CUDA_MODULE_DATA_LOADING=%s CUDA_DEVICE_MAX_CONNECTIONS=%s\n",loading==CU_MODULE_LAZY_LOADING ? "LAZY" : "EAGER",
         std::getenv("CUDA_MODULE_DATA_LOADING") ? std::getenv("CUDA_MODULE_DATA_LOADING") : "unset",std::getenv("CUDA_DEVICE_MAX_CONNECTIONS") ? std::getenv("CUDA_DEVICE_MAX_CONNECTIONS") : "unset");
+    const char *connections=std::getenv("CUDA_DEVICE_MAX_CONNECTIONS");
+    if (connections==nullptr || std::strtoul(connections,nullptr,10)<SPARK_WEIGHTD_MESH_RANKS_PER_BAND)
+    {
+        std::fprintf(stderr,"FAIL environment CUDA_DEVICE_MAX_CONNECTIONS=%s: %u logical ranks share one GPU and each rank stream needs its own hardware queue\n",
+            connections ? connections : "unset",static_cast<unsigned>(SPARK_WEIGHTD_MESH_RANKS_PER_BAND));
+        return 2;
+    }
     Probe probe;
     if (std::strcmp(argv[1],"--all-to-all")==0)
     {

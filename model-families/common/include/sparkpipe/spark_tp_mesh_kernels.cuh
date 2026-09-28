@@ -1171,7 +1171,9 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
         (const void *)SparkTpMeshHardwareDirectKernel,
         (const void *)SparkTpMeshHardwareSeedKernel,
         (const void *)SparkTpMeshHardwareFoldKernel,
-        (const void *)SparkTpMeshHardwareFinishKernel
+        (const void *)SparkTpMeshHardwareFinishKernel,
+        (const void *)SparkTpMeshAllToAllPackKernel,
+        (const void *)SparkTpMeshHardwareAllToAllKernel
     };
     cudaFuncAttributes attributes;
     for ( uint32_t i = 0u; i < sizeof(kernels) / sizeof(kernels[0]); i++ )
