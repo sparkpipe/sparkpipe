@@ -1,5 +1,13 @@
 # The NCCL collective plane — design (coordinator, 2026-08-31)
 
+> Archived 2026-09-28. Never shipped. b31761e (2026-09-10) deleted the NCCL
+> backend source, and `SparkTpDeviceCollectiveCreate` rejects every backend
+> other than `hidden_transport` (`ring/transport/tp_device_collective.c`).
+> `ENGAGEMENT_HANDOFF.md` no longer exists. The exactness policy below
+> conflicts with I40 (pinned references). Current collective docs: the mesh
+> sections of [`WEIGHTD_DESIGN.md`](../WEIGHTD_DESIGN.md) and
+> [`TP_STREAM_MEMOP_QUALIFICATION.md`](../TP_STREAM_MEMOP_QUALIFICATION.md).
+
 Measured facts this design stands on (16 ranks, verified, receipts in
 NCCL_16WIDE_RECEIPTS.md + this doc's table):
 

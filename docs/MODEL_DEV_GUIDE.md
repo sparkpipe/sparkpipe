@@ -7,7 +7,8 @@ contract for getting your work done without stepping on anyone.
 ## What you can assume
 
 - **Stagepacks are there.** Your model's packs are built, validated,
-  and placed on the sparks (see docs/ROADMAP_TP16_FLEET.md state; if
+  and placed on the sparks (confirm with a read-only listing on the
+  nodes or your family verifier; no maintained placement doc exists; if
   your model's set is missing/stale, file it with the coordinator —
   do NOT rebuild fleet packs yourself).
 - **The spark task queue is debugged and is the ONLY GPU path.**
@@ -72,8 +73,9 @@ the dashboard line is the standard proof pair.
 - The universal packer (docs/UNIVERSAL_PACKER.md) consolidates the
   per-family tools as codecs land in the core — build against the
   current family tool until its emitter ships, then switch.
-- Coordinator-owned (do not duplicate): qwen-max nvfp4 (in flight),
-  anything marked done in docs/ROADMAP_TP16_FLEET.md.
+- Coordinator-owned (do not duplicate): qwen-max nvfp4 (in flight).
+  The 2026-08-30 fleet roadmap is archived and its placement lists are
+  stale: never retire or rebuild a pack from them.
 
 ## PRs — the only way code lands
 
@@ -118,7 +120,7 @@ the dashboard line is the standard proof pair.
 ## Where things are
 
 - Your model's geometry/truth: `model_contracts/<model>_authoritative.json`
-- The fleet plan: `docs/ROADMAP_TP16_FLEET.md` · packer design:
+- The work order: `docs/ROADMAP.md` · packer design:
   `docs/UNIVERSAL_PACKER.md` · weightd (weights stay resident between
   tests — use it): `docs/WEIGHTD_DESIGN.md`
 - Known-good runbook shape: the q27b serve task (cache-drop in-cmd,

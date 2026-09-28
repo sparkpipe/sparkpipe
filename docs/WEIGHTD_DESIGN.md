@@ -111,6 +111,42 @@ W3 fleet integration: the registrar's GO gains weightd-healthy;
   re-run on attached-arena serving (determinism must be identical).
 W4 multi-family + the multi-topology operational win.
 
+## Mesh substrate and rendezvous
+
+Each weightd owns one all-to-all RoCE mesh (`node/weightd_mesh.c`). It opens
+the device named by `--mesh-interface`; the fleet agent passes `rocep1s0f1`
+with `--mesh-sgid-index 3` (`tools/fleet_node_agent.sh`). It creates one RC
+send QP and one RC receive QP per peer, 30 QPs for 15 peers, and moves payloads
+and tails with plain `IBV_WR_RDMA_WRITE` into the peer's registered receive
+region. There are no posted receives and no immediate data. Every topology is a
+routing choice over these QPs: lane profiles (next section) map logical ranks
+to physical peers, and I36 fixes the algorithm (B1 contribution broadcast with
+local reduction, B2+ tree reduction).
+
+The region layout is in `include/sparkpipe/spark_weightd.h`. It has 16 lanes
+(`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-15) with two bands each (GLM uses one for its
+main and one for its HC collective), 16 ranks per band and two slots per rank.
+A slot holds 8 rows of 32 KiB plus a 64-byte trailer, 262,208 bytes, and its
+last 8 bytes are the tail tag the receiver matches. The slot for band `b`, peer
+`p` and ring `r = (tag - 1) mod 2` is `b*32 + p*2 + r`. The slot area is
+32 bands x 32 slots x 262,208 bytes = 268,500,992 bytes (arithmetic, about
+256 MiB). A 128 KiB area follows it with the doorbells, shipped cells and one
+128-byte hardware wait request per rank and band.
+
+Rendezvous goes through files. weightd writes its record `mesh-<rank hex>.rec`
+(per-peer send and receive QPNs, rkey, receive address, GID, rank mask, boot
+time) into `--mesh-dir` (env `SPARK_WEIGHTD_MESH_DIR`, default
+`/tmp/weightd-mesh`) and reads peer records from the same directory. weightd
+has no network client for records. On the fleet, `sync_rendezvous` in the agent
+copies the node's own record to the hub's `release/qpn/<host>/mesh/` over scp
+and fetches each peer's record from the hub's release HTTP server. Until every
+peer in its rank mask is wired, weightd retries on every poll. After that it
+rechecks records once per second, rewires a peer whose record boot time
+changed, and re-transitions a QP that left RTS (`WD-QP-REPAIR`). When every peer
+is wired it creates `<mesh-dir>/.ready`, and the agent starts a multi-rank
+residentd only after that file exists. `WD-MESH-STATS` logs the wiring, rewire
+and repair counters every 10 seconds.
+
 ## Shared mesh topology profiles
 
 Weightd IPC ABI 8 carries the logical-to-physical rank map with the existing

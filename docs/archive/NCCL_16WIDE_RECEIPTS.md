@@ -1,5 +1,11 @@
 # NCCL 16-wide on the sparks — WORKING (2026-08-31 ~17:45 KRT)
 
+> Archived 2026-09-28. Historical receipt. The NCCL backend was deleted in
+> b31761e (2026-09-10). The rank map and serving arithmetic below no longer
+> apply: fleet rank is the host's index in `FLEET_HOSTS` (spark0 = rank 0,
+> `tools/fleet_node_agent.sh`). The ~103 µs 16-rank allreduce at 14 KB remains
+> an external baseline.
+
 ## The working recipe (after 6 failure layers peeled):
 1. NCCL_SOCKET_IFNAME=enp1s0f1np1 + NCCL_IB_HCA=rocep1s0f1 + NCCL_IB_GID_INDEX=3
    (the flash dev's pins — NCCL unpinned picks the wrong RoCE port 10.10.200.x
