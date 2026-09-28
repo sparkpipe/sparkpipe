@@ -1,8 +1,26 @@
 # CONSULT: multi-row DSA attention waves — nondeterministic KV-cache writes (2026-09-01)
 
+> **Archived 2026-09-28. Resolved 2026-09-01. History, not authority.**
+>
+> - **Cause.** Commit 0a454a3 fixed two defects:
+>   - The validator fixture's host staging arrays were sized `[1]`, but the
+>     multi-row wave builder wrote up to 7 entries. That overflow produced
+>     the "moving band".
+>   - `WaveMetadataKernel` had a multi-writer race on `context_lengths`.
+>     One thread now writes the maximum
+>     (`include/sparkpipe/family/glm/spark_glm_wave_metadata_serial.cuh`).
+> - **Serving divergence.** The divergence that followed was traced to that
+>   era's transport (3faedb0).
+> - **Current state.** Multi-row prefill waves of 8 and 64 rows now run in
+>   serving (`docs/GLM5_NEXT_ROOFLINE.md`, #1210).
+> - **Repro removed.** The repro section named a lane branch, validator
+>   tier functions that do not exist on main, and `/tmp` scripts on spark0,
+>   which is rank 0 of the serving fleet. It was removed on archiving; git
+>   history keeps it.
+
 Asking for help debugging a GPU nondeterminism. Everything below is
 measured on hardware (spark0, GB10, sm_121a) unless marked "by source
-read". Repro commands at the bottom.
+read".
 
 ## What we are building
 
@@ -172,19 +190,3 @@ stable?** Please rank the candidate sites in our kernel sequence and
 name the next single instrument that splits the remaining hypothesis
 space most sharply. We can run arbitrary validator-tier experiments on
 the GPU within minutes.
-
-## Repro
-
-- Branch: `lane/glm5next-mtp-accept` (latest tip; all tier code is in
-  `modules/glm5_next_resident_decode_stage/validation/
-  spark_glm5_next_resident_decode_stage_cuda_validation.cu`, functions
-  `SparkGlm5NextValBuildRunWave` / `SparkGlm5NextValRunTierRun`).
-- The failing gate: "tier4b dsa run-of-2 (attention)" —
-  run_equivalence_kvcache / RUN WAVE NONDETERMINISTIC.
-- Run (on a spark node with the repo + the synthesized pack at
-  /tmp/g5n_synth_mtp_tp16.g5nsp):
-  see the publish command in
-  /tmp/sparkqueue-g5n-tier34*.sh on spark0 (module_publish with the
-  validator script; the tier prints land in its stderr).
-- Hardware: GB10 (sm_121a), CUDA 13.0, one GPU, validator runs TP1
-  single-process with real pack-derived weights at full model geometry.

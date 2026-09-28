@@ -1,5 +1,21 @@
 # Hardware independence — measured status (2026-08-27)
 
+> **Archived 2026-09-28. History, not authority.** This is a snapshot from
+> 2026-08-27, and its measurements no longer hold:
+>
+> - `tests/host_cuda/lm_host_cuda.cuh` is now 174 lines and `cuda_runtime.h`
+>   is 2, and a threaded shim `lm_host_threads.cuh` has been added.
+> - The shared layer now touches CUDA in more places than the two files
+>   named below, including `runtime/spark_weightd*.c`,
+>   `runtime/memory_buffer.c`, `node/weightd_mesh.c` and
+>   `ring/transport/tp_device_collective.c`.
+> - The device layer has started, as `SparkMemoryBuffer`
+>   (`include/sparkpipe/spark_memory_buffer.h`).
+> - `AGENT_LANE_BRIEFS/` was deleted in 27a2620.
+>
+> Current status is in README §Hardware independence and TECHDEBT
+> §Hardware independence. The design is `docs/INFERENCE_OS_DESIGN.md`.
+
 Extended by docs/INFERENCE_OS_DESIGN.md, which adds the memory-space
 model (the deep coupling: unified vs split address spaces, DMA, file
 mapping, residency) and revises the Phase 1B order to memory-first.

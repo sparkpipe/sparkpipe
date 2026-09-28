@@ -1,5 +1,20 @@
 # SparkPipe Constant Audit — 2026-09-13
 
+> **Archived 2026-09-28. History, not authority.**
+>
+> - **The violations are fixed.** Commit c3cc5d1 fixed all eight listed
+>   violations; it is the same commit that added this file. For example, the
+>   glm5_next module no longer has 2400/1888 literals,
+>   `SPARK_WEIGHTD_MESH_PEERS` derives from `RANKS_PER_BAND - 1`, and
+>   `SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE` is checked against the expert
+>   count at compile time.
+> - **The single-source rule changed.** The source is now the family
+>   `llm_defines.h`, not `spark_<model>_model.h` (`tests/test_driver_defines.py`).
+> - **Where the law lives now.** The derivation law, and the list of family
+>   headers that still restate geometry, are in
+>   `docs/COMMON_MODULE_ARCHITECTURE.md` §4. Remaining `#ifndef` defaults are
+>   tracked in `TECHDEBT.md`.
+
 Full-codebase sweep for hardcoded constants that are (a) derived values
 restated as literals, or (b) shared values stated independently in more
 than one place. Law (operator, 2026-09-12): every derived constant

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Source contract: corruption fails the frame, never the context (K1/K2/K4).
 
-The fail-frame discipline (docs/BUG_LEDGER.md, kernel-crew lane): kernels
+The fail-frame discipline (docs/archive/BUG_LEDGER.md): kernels
 respond to corrupt inputs by recording into the per-frame error record
 (inference/kernels/frame_error.cuh) and returning a bounded result. Device
 `trap` terminates the whole CUDA context, so it is banned as a data-corruption
