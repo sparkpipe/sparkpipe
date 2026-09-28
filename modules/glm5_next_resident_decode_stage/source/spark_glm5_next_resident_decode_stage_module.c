@@ -342,6 +342,7 @@ struct SparkGlm5NextModuleState
 	uint32_t *verify_reference_tokens;
 	uint64_t verify_frames;
 	uint64_t verify_plain_frames;
+	uint64_t verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT];
 	uint64_t verify_rounds;
 	uint64_t verify_proposed;
 	uint64_t verify_accepted;
@@ -2385,6 +2386,17 @@ static uint32_t SparkGlm5NextVerifyPlanRound(SparkGlm5NextTpChain *chain,uint32_
 	return(1u);
 }
 
+static void SparkGlm5NextVerifyNotePlain(SparkGlm5NextModuleState *state,uint32_t frame_class)
+{
+	uint64_t count;
+	state->verify_plain_frames++;
+	count = ++state->verify_frame_class[frame_class];
+	if ( (count & (count - 1u)) == 0u )
+		fprintf(stderr,"VERIFY-PLAIN-FRAME class=%u count=%llu | shape=%llu sampled=%llu cold=%llu no_draft=%llu\n",frame_class,(unsigned long long)count,
+			(unsigned long long)state->verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE],(unsigned long long)state->verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED],
+			(unsigned long long)state->verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD],(unsigned long long)state->verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_NO_DRAFT]);
+}
+
 static SparkStatus SparkGlm5NextVerifyDriveDraft(
 	SparkGlm5NextModuleState *state,
 	SparkModelDriverFrame *frame,
@@ -2393,16 +2405,27 @@ static SparkStatus SparkGlm5NextVerifyDriveDraft(
 	SparkGlm5NextTpChain *chain)
 {
 	SparkStatus status;
+	uint32_t shape,frame_class;
 	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE )
 		return(SPARK_STATUS_OK);
 	status = SparkGlm5NextVerifyObserveRows(state,batch);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( SparkGlm5NextFrameSteps(frame) < 2u || (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ||
-		batch->row_count != 1u || batch->active_sequence_count != 1u || batch->token_ids == 0 ||
-		batch->row_sampling[0].inverse_temperature != 0.0f || chain->spec_verify != 0u ||
-		state->graph_path_enabled == 0u || state->experts_warm == 0u || slot->verify_captured == 0u )
+	shape = SparkGlm5NextFrameSteps(frame) >= 2u && (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u &&
+		batch->row_count == 1u && batch->active_sequence_count == 1u && batch->token_ids != 0 && chain->spec_verify == 0u ? 1u : 0u;
+	frame_class = SparkGlm5NextVerifyFrameClass(shape,shape != 0u && batch->row_sampling[0].inverse_temperature != 0.0f ? 1u : 0u,
+		state->experts_warm,state->graph_path_enabled,slot->graph_disabled,(uint32_t)(slot->graph_failed_rows & UINT64_C(1)),slot->verify_captured);
+	if ( frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL )
+	{
+		fprintf(stderr,"VERIFY-RANK-LOCAL-INELIGIBLE request=%llu graph_path=%u graph_disabled=%u b1_capture_failed=%u; every rank must take the same verify or plain frame\n",
+			(unsigned long long)frame->request_id,state->graph_path_enabled,slot->graph_disabled,(uint32_t)(slot->graph_failed_rows & UINT64_C(1)));
+		return(SparkGlm5NextTerminalFailure(state,SPARK_STATUS_UNSUPPORTED,"verify-rank-local-graph"));
+	}
+	if ( frame_class != SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE )
+	{
+		SparkGlm5NextVerifyNotePlain(state,frame_class);
 		return(SPARK_STATUS_OK);
+	}
 	chain->verify_budget = SparkGlm5NextFrameSteps(frame);
 	chain->verify_produced = 0u;
 	chain->verify_lane = batch->row_resident_slots[0];
@@ -2411,7 +2434,8 @@ static SparkStatus SparkGlm5NextVerifyDriveDraft(
 	if ( SparkGlm5NextVerifyPlanRound(chain,batch->token_ids[0],&status) == 0u )
 	{
 		chain->verify_budget = 0u;
-		state->verify_plain_frames++;
+		if ( status == SPARK_STATUS_OK )
+			SparkGlm5NextVerifyNotePlain(state,SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_NO_DRAFT);
 		SPARK_RETURN(status);
 	}
 	chain->steps = 1u;
