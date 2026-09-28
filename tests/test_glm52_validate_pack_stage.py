@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """glm52_validate_pack --stage: per-stage verification keyed on the header.
 
 The full 78-layer inventory mode fails a per-stage tp4pp4 rank pack by
@@ -6,7 +7,7 @@ first_layer/layer_count from the stage header and inventories only that
 span, checks the extent, and exits nonzero on any error.
 """
 
-import os
+import importlib.util
 import struct
 import subprocess
 import sys
@@ -14,10 +15,6 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools"))
-
-sys.path.insert(0, str(ROOT / "tools"))
-import importlib.util
 
 _spec = importlib.util.spec_from_file_location(
     "glm52_validate_pack", str(ROOT / "tools" / "glm52_validate_pack.py"))
@@ -124,6 +121,7 @@ def test_corrupt_entry_fails_stage_mode():
         build_stage_pack(pack, corrupt=True)
         code, output = run_tool(pack, "--stage")
         assert code == 1, output
+        assert "entry 0: payload_bytes 7 != expected" in output and "errors: 1" in output, output
 
 
 def test_out_of_span_layer_fails_stage_mode():
@@ -132,11 +130,12 @@ def test_out_of_span_layer_fails_stage_mode():
         build_stage_pack(pack)
         code, output = run_tool(pack, "--stage")
         assert code == 0
-        raw = bytearray(pack.read_bytes())
-        struct.pack_into("<I", raw, 512 + 4, 5)
-        pack.write_bytes(bytes(raw))
+        with pack.open("r+b") as handle:
+            handle.seek(512 + 3 * ENTRY_BYTES + 4)
+            handle.write(struct.pack("<I", 5))
         code, output = run_tool(pack, "--stage")
         assert code == 1, output
+        assert "entry 3 kind ATTN_NORM layer 5: outside the stage span [40,59)" in output, output
 
 
 if __name__ == "__main__":

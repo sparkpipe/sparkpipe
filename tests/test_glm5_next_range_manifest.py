@@ -21,6 +21,12 @@ def fixture(codec=5):
     return data
 
 
+def rejected(binary, path, error):
+    result = subprocess.run([str(binary), str(path)], capture_output=True)
+    assert result.returncode == 1, (error, result.returncode, result.stderr)
+    assert result.stderr.startswith(b"expert manifest failed: error=%d " % error), (error, result.stderr)
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -41,23 +47,23 @@ def main():
             ranges = {r[2]: (r[4], r[5]) for r in records if r[1] == expert}
             assert ranges == {44: (768 + expert * 32, 32), 45: (832 + expert * 8, 8),
                               46: (1024 + expert * 32, 32), 47: (1088 + expert * 8, 8)}
-        assert subprocess.run([str(binary), str(path)], capture_output=True).returncode != 0
+        rejected(binary, path, -22)
         assert output.read_bytes() == original
         output.unlink()
-        malformed = [fixture()[:-1], fixture(codec=6)]
+        malformed = [(fixture()[:-1], -13), (fixture(codec=6), -4)]
         missing_down = fixture()
         struct.pack_into("<I", missing_down, 576, 24)
-        malformed.append(missing_down)
+        malformed.append((missing_down, -10))
         missing_layer = fixture()
         struct.pack_into("<I", missing_layer, 40, 2)
-        malformed.append(missing_layer)
+        malformed.append((missing_layer, -10))
         wrong_scale_encoding = fixture()
         struct.pack_into("<I", wrong_scale_encoding, 512 + 16, 4)
-        malformed.append(wrong_scale_encoding)
-        malformed.append(fixture(codec=1))  # BF16 must not carry FP8 scales.
-        for data in malformed:
+        malformed.append((wrong_scale_encoding, -25))
+        malformed.append((fixture(codec=1), -24))
+        for data, error in malformed:
             path.write_bytes(data)
-            assert subprocess.run([str(binary), str(path)], capture_output=True).returncode != 0
+            rejected(binary, path, error)
             assert not output.exists() and not list(root.glob("*.partial.*"))
         print("PASS GLM v2 manifest: both weights/scales, malformed rejection, existing-output preservation")
 

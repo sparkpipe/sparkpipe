@@ -10,6 +10,7 @@ loop end to end: generate the deployment set, compile the REAL adapter
 SparkGlm5NextServingLoadConfiguration on the generated stage config, and
 require rc=0.
 """
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -17,6 +18,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+CONTRACT = ROOT / "model_contracts/glm53_flash_authoritative.json"
 
 HARNESS = r"""
 #include <stdio.h>
@@ -406,6 +408,7 @@ int main(int argc, char **argv)
         argv[1], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr);
     printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u\n",
         (int)rc, msp, erc, dsct, tpd, tpr);
+    printf("artifact=%s revision=%s\n", SparkGlm5NextServingDescriptor.artifact_sha256, SparkGlm5NextServingDescriptor.model_revision);
     if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
     return rc == 0 ? 0 : 1;
@@ -427,15 +430,14 @@ def main() -> int:
         config = tmpdir / "deploy/config/stage_00.json"
         subprocess.run([sys.executable, str(ROOT / "tools/glm5_next_gen_tp4pp4_deployment.py"),
                         "--output", str(tmpdir / "tp4pp4")], check=True, capture_output=True)
-        contract = json.load(
-            open(ROOT / "model_contracts/glm53_flash_authoritative.json")) \
-            if (ROOT / "model_contracts/glm53_flash_authoritative.json").exists() \
-            else None
         revision = json.load(open(config))["model_revision"]
-        firmware = ROOT / ("examples/model_descriptions/"
-                           "glm5_next_resident_decode_stage_fp8_firmware.json")
-        import hashlib
-        fw_sha = hashlib.sha256(firmware.read_bytes()).hexdigest()
+        contract_sha = hashlib.sha256(CONTRACT.read_bytes()).hexdigest()
+        archives = [ROOT / "build" / name for name in
+                    ("libsparkpipe_runtime.a", "libsparkpipe_model_common.a", "libsparkpipe_core.a")]
+        missing = [str(path.relative_to(ROOT)) for path in archives if not path.is_file()]
+        if missing:
+            print("FAIL the adapter harness links " + ", ".join(missing) + "; run make all first")
+            return 1
         harness = tmpdir / "harness.c"
         harness.write_text(HARNESS)
         binary = tmpdir / "harness"
@@ -450,11 +452,9 @@ def main() -> int:
                "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"",
                "-DGLM5_NEXT_MODEL_REVISION=\"" + revision + "\"",
-               "-DGLM5_NEXT_CONTRACT_SHA256=\"" + fw_sha + "\"",
+               "-DGLM5_NEXT_CONTRACT_SHA256=\"" + contract_sha + "\"",
                str(harness),
-               str(ROOT / "build/libsparkpipe_runtime.a"),
-               str(ROOT / "build/libsparkpipe_model_common.a"),
-               str(ROOT / "build/libsparkpipe_core.a"),
+               *[str(path) for path in archives],
                "-o", str(binary), "-ldl", "-lpthread"]
         build = subprocess.run(cmd, capture_output=True, text=True)
         if build.returncode != 0:
@@ -471,6 +471,9 @@ def main() -> int:
             print("FAIL the adapter rejects the generator's stage config - "
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
+            return 1
+        if f"artifact={contract_sha} revision={revision}\n" not in run.stdout:
+            print("FAIL the adapter does not report the contract digest and model revision it was built with")
             return 1
         print("PASS actual GLM B3 admission, deferred lifetime, release, K-token chains and concurrent reservation; "
               "adapter loads the generator's deployment config")
