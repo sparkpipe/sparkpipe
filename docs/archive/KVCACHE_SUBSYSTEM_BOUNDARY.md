@@ -2,7 +2,7 @@
 
 ABI 21 update: JIT cache preparation, resolution and lifecycle are mandatory;
 the historical capability bits inventoried below have been retired. Use
-[driver acceptance](DRIVER_ACCEPTANCE.md) and the current public headers for
+[driver acceptance](../DRIVER_ACCEPTANCE.md) and the current public headers for
 the enforced contract. This older inventory is not a capability opt-out.
 
 Subsystem agent deliverable. This document inventories every KV mechanism on the
