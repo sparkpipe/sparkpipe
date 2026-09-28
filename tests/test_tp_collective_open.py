@@ -132,32 +132,32 @@ HARNESS = r'''
 #include "sparkpipe/spark_tp_mesh_register.h"
 static uint32_t TpOpenCreates,TpOpenAttaches,TpOpenRegions;
 static cudaError_t TpOpenLaunchError;
-cudaError_t SparkGlm5NextLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count)
+cudaError_t SparkTpLaunchSumRanksF32(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)sources;(void)source_count;(void)element_count;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkGlm5NextLaunchSeedF32(cudaStream_t stream,float *destination,const void *a,const void *b,uint32_t element_count)
+cudaError_t SparkTpLaunchSeedF32(cudaStream_t stream,float *destination,const void *a,const void *b,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)a;(void)b;(void)element_count;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkGlm5NextLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count)
+cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)b;(void)element_count;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkGlm5NextLaunchRoundF32(cudaStream_t stream,void *destination,const float *source,uint32_t element_count)
+cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination,const float *source,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)source;(void)element_count;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkGlm5NextLaunchAccumAdd(cudaStream_t stream,void *destination,const void *source,uint32_t row_count,uint32_t width)
+cudaError_t SparkTpLaunchAccumAdd(cudaStream_t stream,void *destination,const void *source,uint32_t row_count,uint32_t width)
 {
 	(void)stream;(void)destination;(void)source;(void)row_count;(void)width;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkGlm5NextLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
+cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count)
 {
 	(void)stream;(void)destination;(void)source;(void)element_count;
 	return(TpOpenLaunchError);

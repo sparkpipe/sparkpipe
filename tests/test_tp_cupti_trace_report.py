@@ -10,7 +10,7 @@ REPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPORT)
 TRACE = '''TRACE_ANCHOR pid=123 cupti_ns=100 monotonic_ns=1100 realtime_ns=2100 flush_period_ms=1000
 CONCURRENT_KERNEL [ 10, 50 ] duration 40, "matrix_product", correlationId 1
-CONCURRENT_KERNEL [ 20, 30 ] duration 10, "SparkGlm5NextMeshHardwarePublishKernel", correlationId 2
+CONCURRENT_KERNEL [ 20, 30 ] duration 10, "SparkTpMeshHardwarePublishKernel", correlationId 2
 MEMCPY "HtoD" [ 40, 60 ] duration 20, size 1024, correlationId 3
 MEMSET [ 80, 90 ] duration 10, value 0, size 1024, correlationId 4
 RUNTIME [ 1, 1000 ] duration 999, ignored_host_call

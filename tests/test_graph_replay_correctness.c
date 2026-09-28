@@ -22,13 +22,13 @@
 #define TEST_CHAIN_KEY 1000001ull
 #define TEST_STEP_F 0.125f
 
-extern int SparkGlm5NextLaunchSeedF32(void *stream,float *destination,
+extern int SparkTpLaunchSeedF32(void *stream,float *destination,
     const void *a,const void *b,uint32_t element_count);
-extern int SparkGlm5NextLaunchAddF32(void *stream,float *destination,
+extern int SparkTpLaunchAddF32(void *stream,float *destination,
     const void *b,uint32_t element_count);
-extern int SparkGlm5NextLaunchRoundF32(void *stream,void *destination,
+extern int SparkTpLaunchRoundF32(void *stream,void *destination,
     const float *source,uint32_t element_count);
-extern int SparkGlm5NextLaunchSumRanksF32(void *stream,void *destination,
+extern int SparkTpLaunchSumRanksF32(void *stream,void *destination,
     const void *const *sources,uint32_t source_count,
     uint32_t element_count);
 
@@ -65,7 +65,7 @@ static SparkStatus CombineBf16(void *context,void *destination,
     uint32_t hidden_dimension,void *stream)
 {
     (void)context;
-    return SparkGlm5NextLaunchSumRanksF32(stream,destination,&source,1u,
+    return SparkTpLaunchSumRanksF32(stream,destination,&source,1u,
         active_sequence_count * hidden_dimension) == cudaSuccess ?
         SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
@@ -74,7 +74,7 @@ static SparkStatus CombineSeed(void *context,void *destination,
     const void *a,const void *b,uint32_t element_count,void *stream)
 {
     (void)context;
-    return SparkGlm5NextLaunchSeedF32(stream,(float *)destination,a,b,
+    return SparkTpLaunchSeedF32(stream,(float *)destination,a,b,
         element_count) == cudaSuccess ? SPARK_STATUS_OK :
         SPARK_STATUS_IO_ERROR;
 }
@@ -83,7 +83,7 @@ static SparkStatus CombineAdd(void *context,void *destination,
     const void *source,uint32_t element_count,void *stream)
 {
     (void)context;
-    return SparkGlm5NextLaunchAddF32(stream,(float *)destination,source,
+    return SparkTpLaunchAddF32(stream,(float *)destination,source,
         element_count) == cudaSuccess ? SPARK_STATUS_OK :
         SPARK_STATUS_IO_ERROR;
 }
@@ -92,7 +92,7 @@ static SparkStatus CombineRound(void *context,void *destination,
     const void *source,uint32_t element_count,void *stream)
 {
     (void)context;
-    return SparkGlm5NextLaunchRoundF32(stream,destination,
+    return SparkTpLaunchRoundF32(stream,destination,
         (const float *)source,element_count) == cudaSuccess ?
         SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }

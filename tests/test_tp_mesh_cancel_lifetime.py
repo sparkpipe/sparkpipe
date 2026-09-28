@@ -19,13 +19,13 @@ static struct { unsigned x; } threadIdx={0},blockIdx={0};
 static volatile uint64_t cancel_cell;
 static volatile unsigned gate,parked;
 static unsigned cancel_reads;
-static unsigned long long SparkGlm5NextGlobalTimerNs(void)
+static unsigned long long SparkTpGlobalTimerNs(void)
 {
     struct timespec time;
     clock_gettime(CLOCK_MONOTONIC,&time);
     return (unsigned long long)time.tv_sec * 1000000000ull + time.tv_nsec;
 }
-static unsigned long long SparkGlm5NextLdcvU64(const volatile void *address)
+static unsigned long long SparkTpLdcvU64(const volatile void *address)
 {
     if ( address == &cancel_cell && ++cancel_reads >= 2u &&
          __atomic_load_n(&gate,__ATOMIC_ACQUIRE) != 0u )
@@ -44,7 +44,7 @@ static uint64_t band[32];
 static unsigned long long tag=0x100000001ull,error_word,diag_word,expected;
 static void *WaitMain(void *)
 {
-    SparkGlm5NextMeshWaitKernel(band,64u,&tag,2u,0u,2u,&error_word,
+    SparkTpMeshWaitKernel(band,64u,&tag,2u,0u,2u,&error_word,
         100000000ull,&diag_word,&cancel_cell,&expected,0);
     return 0;
 }
@@ -53,10 +53,10 @@ int main(void)
     pthread_t thread;
     gate = 1u;
     if ( pthread_create(&thread,0,WaitMain,0) != 0 ) return 2;
-    uint64_t stop = SparkGlm5NextGlobalTimerNs() + 1000000000ull;
+    uint64_t stop = SparkTpGlobalTimerNs() + 1000000000ull;
     while ( __atomic_load_n(&parked,__ATOMIC_ACQUIRE) == 0u )
     {
-        if ( SparkGlm5NextGlobalTimerNs() >= stop ) return 3;
+        if ( SparkTpGlobalTimerNs() >= stop ) return 3;
         sched_yield();
     }
     cancel_cell = 1u;
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix="tp-mesh-cancel-") as directory:
     subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
                     str(fixture), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=5)
-    mutation = body.replace("     expected_cancel )", "     SparkGlm5NextLdcvU64(cancel_expected) )")
+    mutation = body.replace("     expected_cancel )", "     SparkTpLdcvU64(cancel_expected) )")
     assert mutation != body
     fixture.write_text(prelude + mutation + probe)
     subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",

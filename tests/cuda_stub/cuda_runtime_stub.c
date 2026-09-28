@@ -1229,7 +1229,7 @@ uint32_t cuda_stub_mesh_publish_null_epoch_cell = 0u;
 
 static uint64_t cuda_stub_roundloop_now_ns(void);
 
-cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshGuard(cudaStream_t stream,
     volatile void *error_word,void *output)
 {
     (void)stream;
@@ -1240,7 +1240,7 @@ cudaError_t SparkGlm5NextLaunchMeshGuard(cudaStream_t stream,
     return cudaSuccess;
 }
 
-cudaError_t SparkGlm5NextLaunchMeshCopyDown(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshCopyDown(cudaStream_t stream,
     volatile void *destination,const void *source,uint64_t bytes,
     const volatile void *shipped_cell,void *round_control,
     const volatile void *cancel_cell,uint64_t timeout_ns)
@@ -1276,7 +1276,7 @@ cudaError_t SparkGlm5NextLaunchMeshCopyDown(cudaStream_t stream,
     return cudaSuccess;
 }
 
-cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshPublish(cudaStream_t stream,
     volatile void *entry,void *seq_cell,const void *epoch_cell,
     void *round_seq,uint64_t bytes,
     uint64_t slot_index,uint64_t slots_per_rank,volatile void *slot_tail,
@@ -1310,7 +1310,7 @@ cudaError_t SparkGlm5NextLaunchMeshPublish(cudaStream_t stream,
 
 uint32_t cuda_stub_mesh_seq_pad_calls = 0u;
 
-cudaError_t SparkGlm5NextLaunchMeshSeqPad(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshSeqPad(cudaStream_t stream,
     void *seq_cell)
 {
     (void)stream;
@@ -1320,7 +1320,7 @@ cudaError_t SparkGlm5NextLaunchMeshSeqPad(cudaStream_t stream,
     return cudaSuccess;
 }
 
-cudaError_t SparkGlm5NextLaunchMeshWait(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshWait(cudaStream_t stream,
     volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
     uint64_t slots_per_rank,uint32_t rank,uint32_t degree,void *error_word,
     unsigned long long deadline_ns,void *diag_word,volatile void *cancel_cell,
@@ -1389,7 +1389,7 @@ static int cuda_stub_tree_wait(const volatile uint64_t *cell,uint64_t tag,
     }
 }
 
-cudaError_t SparkGlm5NextLaunchMeshTree(cudaStream_t stream,void *band_base,
+cudaError_t SparkTpLaunchMeshTree(cudaStream_t stream,void *band_base,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry_address,
     const volatile void *shipped_address,const volatile void *cancel_address,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
@@ -1524,7 +1524,7 @@ static float cuda_stub_roundloop_bf16_load(uint32_t packed, uint32_t high)
     return out;
 }
 
-cudaError_t SparkGlm5NextLaunchMeshRoundLoop(cudaStream_t stream,
+cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
     volatile void *band_base,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile void *entry,void *shipped_cell,volatile void *cancel_cell,
     void *round_control,uint32_t rank,uint32_t degree,
@@ -1672,7 +1672,7 @@ uint32_t cuda_stub_mesh_hardware_operation;
 uint32_t cuda_stub_mesh_hardware_logical_rows;
 uint32_t cuda_stub_mesh_hardware_slice_routes;
 
-cudaError_t SparkGlm5NextMeshHardwarePrepare(void *host,void **device)
+cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device)
 {
     if ( cuda_stub_mesh_hardware_prepare_result != 0 )
         return cuda_stub_mesh_hardware_prepare_result;
@@ -1680,7 +1680,7 @@ cudaError_t SparkGlm5NextMeshHardwarePrepare(void *host,void **device)
     return cudaSuccess;
 }
 
-cudaError_t SparkGlm5NextLaunchMeshHardware(cudaStream_t stream,void *band,
+cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,

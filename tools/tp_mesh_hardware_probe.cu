@@ -64,7 +64,7 @@ struct Probe
         host=static_cast<uint8_t *>(mmap(nullptr,SPARK_WEIGHTD_MESH_REGION_BYTES,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));
         REQUIRE(host != MAP_FAILED && close(fd)==0);
         CUDA(cudaHostRegister(host,SPARK_WEIGHTD_MESH_REGION_BYTES,cudaHostRegisterPortable|cudaHostRegisterMapped));
-        CUDA(SparkGlm5NextMeshHardwarePrepare(host,reinterpret_cast<void **>(&device)));
+        CUDA(SparkTpMeshHardwarePrepare(host,reinterpret_cast<void **>(&device)));
         for (Rank &rank:ranks)
         {
             CUDA(cudaStreamCreateWithFlags(&rank.stream,cudaStreamNonBlocking));
@@ -199,7 +199,7 @@ struct Probe
     }
     void Enqueue(uint32_t rank)
     {
-        CUDA(SparkGlm5NextLaunchMeshHardware(ranks[rank].stream,device+rank*band_bytes,
+        CUDA(SparkTpLaunchMeshHardware(ranks[rank].stream,device+rank*band_bytes,
             SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),
             ranks[rank].control,rank,degree,ranks[rank].input,ranks[rank].output,ranks[rank].scratch,

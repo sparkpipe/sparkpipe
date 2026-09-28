@@ -338,6 +338,14 @@ progress diary.
 
 ## Driver consolidation
 
+- Move the model-lineage code still filed under shared paths into its family
+  and rename driver-named family templates after what they do. The files are
+  the `PENDING` list in `tests/test_dry_law.py`: `common/common_glm_cuda_tree`,
+  `common/common_glm_stage_module`, `common/common_kv_geometry.h`,
+  `common/glm_resident_stage_wrapper.mk`, and the dspark drafter and qwen38
+  serving-adapter headers in `model-families/common`. Family templates under
+  `include/sparkpipe/family/` named after drivers (for example
+  `spark_module_glm5_next_laguna.h`) take the name of their behaviour.
 - Adopt the common parameterized modules in
   `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
   replace (measured at about 26,000 lines across the families), each
@@ -494,6 +502,11 @@ progress diary.
 
 ## Serving API
 
+- The API applies the GLM chat template in shared code (`node/model_api.c`:
+  `[gMASK]<sop>` and GLM role markers for every model). The chat template
+  belongs to the model: carry it in the deployment's tokenizer or model
+  description and let the API render whatever the model declares, then drop
+  `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head

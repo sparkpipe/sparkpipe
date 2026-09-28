@@ -68,7 +68,7 @@ deleted in the same commit that flips the include.
    MTP, KDA recurrent, page copy, worker completion).
 6. M-0: glm5_next already runs these kernels and takes its combine
    wrappers from `family/module/spark_module_combine.h`; delete the private
-   `SparkGlm5NextLaunchAccumAdd`/`AccumU64Max` copies from its cuda.cu. The
+   `SparkTpLaunchAccumAdd`/`AccumU64Max` copies from its cuda.cu. The
    numerics win (FP32 accumulate, one rounding step) is coredev's fleet
    receipt; the win here is deletion.
 7. Makefile: set `GLM_FAMILY`, `GLM_EXPERT_CODECS` (no bf16),

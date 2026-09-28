@@ -397,8 +397,7 @@ static SparkStatus SparkModelResidentdTransportContract(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( strcmp(mode,"host-rdma") == 0 )
 	{
-		/* required means REQUIRED (manager ruling, laguna's measured
-		 * diagnosis): the RECOMMENDED superset here demanded doorbells,
+		/* required means REQUIRED: the RECOMMENDED superset here demanded doorbells,
 		 * multi-lane and poll descriptors no honest host-rdma backend
 		 * implements, failing every module at load. */
 		*capabilities = SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
