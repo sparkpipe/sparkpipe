@@ -143,19 +143,20 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	}
 }
 
-template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
+template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float, uint32_t COLUMNS = VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
 {
+	static_assert(COLUMNS != 0u && (VALUE_DIM % COLUMNS) == 0u, "value columns split into equal slices");
 	extern __shared__ float state_s[];
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_query[KEY_DIM];
 	__shared__ float norm_reduction[2u * (THREADS / LM_WARP_LANES)];
-	__shared__ float shared_predicted[VALUE_DIM];
-	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat,ordinal;
+	__shared__ float shared_predicted[COLUMNS];
+	uint32_t sequence = blockIdx.x,head = blockIdx.y,column = blockIdx.z * COLUMNS,index,element,row,begin,end,flat,ordinal;
 	State *state;
 	float beta,key_inverse,query_inverse;
-	if ( sequence >= sequences || head >= key_heads )
+	if ( sequence >= sequences || head >= key_heads || column >= VALUE_DIM )
 		return;
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
@@ -164,8 +165,8 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	state = (State *)(state_pool
 		+ ((uint64_t)state_index[sequence] * slot_bytes)
 		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
-	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
-		state_s[flat] = LmScalarToFloat(state[flat]);
+	for (flat = threadIdx.x; flat < KEY_DIM * COLUMNS; flat += THREADS)
+		state_s[flat] = LmScalarToFloat(state[(flat / COLUMNS) * VALUE_DIM + column + flat % COLUMNS]);
 	for (ordinal = begin; ordinal < end; ++ordinal)
 	{
 		row = sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal;
@@ -176,7 +177,7 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 			shared_key[index] = LmBf16ToFloat(key_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
 			shared_query[index] = LmBf16ToFloat(query_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
 		}
-		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
+		for (index = threadIdx.x; index < COLUMNS; index += THREADS)
 			shared_predicted[index] = 0.0f;
 		__syncthreads();
 		{
@@ -196,11 +197,11 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 			shared_query[index] *= query_inverse * rsqrtf((float)KEY_DIM);
 		}
 		__syncthreads();
-		for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
+		for (element = threadIdx.x; element < COLUMNS; element += THREADS)
 		{
 			float total = 0.0f;
 			for (index = 0u; index < KEY_DIM; ++index)
-				total += state_s[(index * VALUE_DIM) + element]
+				total += state_s[(index * COLUMNS) + element]
 					* shared_key[index] * forget[index];
 			shared_predicted[element] = total;
 		}
@@ -208,10 +209,10 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		{
 			uint32_t value_head = head * value_heads_per_key;
 			uint64_t value_base =
-				(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM;
-			for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+				(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM + column;
+			for (flat = threadIdx.x; flat < KEY_DIM * COLUMNS; flat += THREADS)
 			{
-				uint32_t channel = flat / VALUE_DIM,element_index = flat % VALUE_DIM;
+				uint32_t channel = flat / COLUMNS,element_index = flat % COLUMNS;
 				float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
 				float previous = state_s[flat];
 				state_s[flat] =
@@ -220,21 +221,21 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 			}
 		}
 		__syncthreads();
-		for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
+		for (element = threadIdx.x; element < COLUMNS; element += THREADS)
 		{
 			float total = 0.0f;
 			for (index = 0u; index < KEY_DIM; ++index)
-				total += state_s[(index * VALUE_DIM) + element]
+				total += state_s[(index * COLUMNS) + element]
 					* shared_query[index];
-			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + element] =
+			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + column + element] =
 				LmFloatToBf16(total);
 		}
 		__syncthreads();
 	}
 	if ( commit == 0u )
 		return;
-	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
-		LmStoreState(&state[flat],state_s[flat]);
+	for (flat = threadIdx.x; flat < KEY_DIM * COLUMNS; flat += THREADS)
+		LmStoreState(&state[(flat / COLUMNS) * VALUE_DIM + column + flat % COLUMNS],state_s[flat]);
 }
 
 enum LmConvActivation
