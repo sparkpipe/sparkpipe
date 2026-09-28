@@ -898,6 +898,15 @@ static SparkStatus SparkGlm5NextAllocateSlotMetadata(
 	SPARK_RETURN(status);
 }
 
+static uint64_t SparkGlm5NextKdaScratchWidth(const SparkGlm5NextModuleState *state,uint64_t width)
+{
+	uint64_t kda;
+	kda = (uint64_t)(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / state->tp_degree) *
+		(SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION > SPARK_GLM5_NEXT_MODEL_KDA_HEAD_VALUE_DIMENSION ?
+			SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION : SPARK_GLM5_NEXT_MODEL_KDA_HEAD_VALUE_DIMENSION);
+	return(width > kda ? width : kda);
+}
+
 static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	SparkGlm5NextModuleState *state,
 	SparkGlm5NextExecutionSlot *slot)
@@ -935,10 +944,10 @@ static SparkStatus SparkGlm5NextAllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->kda_output_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,sizeof(float),(void **)&slot->kda_retention);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,sizeof(float),(void **)&slot->kda_write_gate);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS,(void **)&slot->kv_slot_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SparkGlm5NextKdaScratchWidth(state,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS),(void **)&slot->kv_slot_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SparkGlm5NextKdaScratchWidth(state,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION),(void **)&slot->attention_out_bf16);
 	SPARK_RETURN(status);
 }
 
@@ -950,7 +959,7 @@ static SparkStatus SparkGlm5NextAllocateSlotMlp(
 	SparkStatus status;
 	rows = state->execution_row_capacity;
 	packed_rows = rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K;
-	status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_MOE_ROUTED_GATE_UP_DIMENSION,(void **)&slot->gate_up_bf16);
+	status = SparkGlm5NextAllocateRows(state,rows,SparkGlm5NextKdaScratchWidth(state,SPARK_GLM5_NEXT_MODEL_MOE_ROUTED_GATE_UP_DIMENSION),(void **)&slot->gate_up_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_MOE_TOP_K * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION,(void **)&slot->intermediate_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,packed_rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->expert_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateRows(state,rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,(void **)&slot->shared_out_bf16);
