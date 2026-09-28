@@ -252,6 +252,11 @@ progress diary.
   and batched-decode logits are not bitwise equal to B1. Extend the
   row-blocked kernels that keep the skinny order wherever they match the
   tensor-core throughput.
+- `make test-glm5-next-row-invariance` (docs/ROW_INVARIANCE.md) compares
+  each row of waves of 2, 8, 17 and 64 with the row run alone, for the dense,
+  MoE, attention and head entries of glm5_next on a GB10. Its
+  `roweq_known_breaks` list is the open part of this section and may only
+  shrink.
 - Provider-network replay verification needs batched rows to be bitwise
   equal to B1: a verifier replays a request alone and must reproduce what a
   provider served at B8 or B256. TensorFold (MIT, `ashhart/TensorFold`) shows

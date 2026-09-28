@@ -762,6 +762,16 @@ build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inferenc
 test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
 	./build/test_glm5_next_rows_kernels --run
 
+build/test_glm5_next_row_invariance: tests/test_glm5_next_row_invariance.cu inference/kernels/skinny.cuh inference/kernels/head.cuh inference/kernels/attn.cuh include/sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-glm5-next-row-invariance report-glm5-next-row-invariance
+test-glm5-next-row-invariance: build/test_glm5_next_row_invariance
+	./build/test_glm5_next_row_invariance --run
+
+report-glm5-next-row-invariance: build/test_glm5_next_row_invariance
+	./build/test_glm5_next_row_invariance --report
+
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
