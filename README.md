@@ -449,11 +449,12 @@ Drivers exist in `modules/` for these families:
 - Hunyuan HY4;
 - Muse Glimmer.
 
-MiMo 2.6 Flash and Pro have contracts and a stage-pack format, but no decode
-driver yet. A driver in the tree is not a readiness claim. Each exact checkpoint needs
-its own contract, pack, numerical result, transport profile and service
-receipt. Status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
-and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+MiMo 2.6 Flash and Pro have contracts and a stage-pack format, but no
+decode driver yet. A driver in the tree is not a readiness claim. Each exact
+checkpoint needs its own contract, pack, numerical result, transport profile
+and service receipt. Status is in
+[`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and
+[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
 ## Serving API
 
@@ -618,9 +619,9 @@ sh tools/gates.sh
 
 `make test` runs without a GPU. On a host with a CUDA toolkit it does not
 pass yet: one serving adapter links the TP transport without the mesh
-launchers it calls (see [`TECHDEBT.md`](TECHDEBT.md), Production
-qualification). GPU tests and harnesses have their own
-targets, for example `make test-glm5-next-rows-kernels` and
-`make bench-glm5-next-batch`. Hardware qualification requires CUDA,
-transport, numerical and service receipts from an exact committed revision.
-Host or simulator results cannot stand in for them.
+launchers it calls ([`TECHDEBT.md`](TECHDEBT.md), Production
+qualification). GPU tests and harnesses have their own targets, for example
+`make test-glm5-next-rows-kernels` and `make bench-glm5-next-batch`.
+Hardware qualification requires CUDA, transport, numerical and service
+receipts from an exact committed revision. Host or simulator results cannot
+stand in for them.
