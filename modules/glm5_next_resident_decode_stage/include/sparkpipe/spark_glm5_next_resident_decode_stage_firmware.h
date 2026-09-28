@@ -229,6 +229,11 @@ static inline SparkGlm5NextKdaReplayLayout SparkGlm5NextKdaReplayLayoutFor(
 #define SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES 32u
 #define SPARK_GLM5_NEXT_REPLAY_ROWS_MAX 8u
 
+static inline uint64_t SparkGlm5NextReplayStepsIndex(uint32_t ordinal,uint32_t rows)
+{
+	return(((uint64_t)ordinal * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX + rows - 1u) * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX);
+}
+
 static inline uint32_t SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa(uint32_t source_stage_index)
 {
 	// Every complete DSA layer executes its own indexer; no cross-layer index state.

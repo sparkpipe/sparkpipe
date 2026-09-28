@@ -190,6 +190,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *mtp_replay_steps;
 	uint16_t *mtp_conv_scratch;
 	uint8_t *kda_replay_pool;
+	uint32_t *replay_committed_host;
+	void *replay_fold_exec[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
 } SparkGlm5NextExecutionSlot;
 
 typedef struct SparkGlm5NextCudaWave

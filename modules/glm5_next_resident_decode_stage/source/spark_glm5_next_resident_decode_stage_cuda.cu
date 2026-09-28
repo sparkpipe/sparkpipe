@@ -752,36 +752,50 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	}
 	return(LM_LAUNCH_OK);
 }
-extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
-	const SparkGlm5NextCudaWave *wave,
-	uint32_t committed_steps)
+static cudaError_t SparkGlm5NextReplayStepsUpload(const SparkGlm5NextCudaWave *wave,uint32_t rows)
 {
-	SparkGlm5NextExecutionSlot *slot;
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
 	SparkGlm5NextKdaReplayLayout layout;
 	LmReplayStep host_steps[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
-	const SparkGlm5NextLayerWeights *weight;
-	LmReplayStep *device_steps;
-	cudaStream_t stream;
-	cudaError_t error;
-	uint8_t *record;
-	uint32_t local,ordinal,rank_heads,rank_qk,rank_v,steps_capacity,step;
-	static_assert(sizeof(LmReplayStep) == SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES,"replay step record size changed; re-price the staging buffer");
-	static_assert(SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX && SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u,"the replay fold must cover every verify wave");
-	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->mtp_verify == 0u ||
-		committed_steps == 0u || committed_steps > wave->row_count ||
-		wave->row_count > SPARK_GLM5_NEXT_REPLAY_ROWS_MAX )
-		return(LM_LAUNCH_ERR_SHAPE);
-	slot = wave->slot;
-	if ( slot->kda_replay_pool == 0 || slot->mtp_replay_steps == 0 || slot->mtp_committed == 0 ||
-		slot->mtp_conv_scratch == 0 || slot->resident_slots == 0 || slot->run_begin == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
-	stream = (cudaStream_t)slot->stream;
+	const uint8_t *record;
+	uint32_t local,ordinal,step,rank_heads,rank_qk,rank_v;
+	cudaError_t error = cudaSuccess;
 	rank_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree;
 	rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
 	rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
-	steps_capacity = wave->row_count;
-	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,steps_capacity);
-	error = cudaMemcpyAsync(slot->mtp_committed,&committed_steps,sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,rows);
+	for ( local = 0u; error == cudaSuccess && local < wave->layer_count; ++local )
+	{
+		ordinal = wave->kda_ordinal_by_local_layer[local];
+		if ( ordinal == UINT32_MAX )
+			continue;
+		record = slot->kda_replay_pool + (uint64_t)ordinal * wave->kda_replay_layer_bytes;
+		for ( step = 0u; step < rows; ++step )
+		{
+			host_steps[step].key_bf16 = (const uint16_t *)(record + layout.key_offset) + (uint64_t)step * rank_qk;
+			host_steps[step].value_bf16 = (const uint16_t *)(record + layout.value_offset) + (uint64_t)step * rank_v;
+			host_steps[step].retention = (const float *)(record + layout.retention_offset) + (uint64_t)step * rank_qk;
+			host_steps[step].write_gate = (const float *)(record + layout.write_gate_offset) + (uint64_t)step * rank_heads;
+		}
+		error = cudaMemcpy((LmReplayStep *)slot->mtp_replay_steps + SparkGlm5NextReplayStepsIndex(ordinal,rows),host_steps,(uint64_t)rows * sizeof(LmReplayStep),cudaMemcpyHostToDevice);
+	}
+	return(error);
+}
+
+static int32_t SparkGlm5NextReplayFoldRecord(const SparkGlm5NextCudaWave *wave,uint32_t rows,cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
+	SparkGlm5NextKdaReplayLayout layout;
+	const SparkGlm5NextLayerWeights *weight;
+	const LmReplayStep *device_steps;
+	const uint8_t *record;
+	uint32_t local,ordinal,rank_heads,rank_qk,rank_v;
+	cudaError_t error;
+	rank_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree;
+	rank_qk = rank_heads * GLM5_NEXT_KDA_KEY_DIM;
+	rank_v = rank_heads * GLM5_NEXT_KDA_VALUE_DIM;
+	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,rows);
+	error = cudaMemcpyAsync(slot->mtp_committed,slot->replay_committed_host,sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	for ( local = 0u; error == cudaSuccess && local < wave->layer_count; ++local )
 	{
 		ordinal = wave->kda_ordinal_by_local_layer[local];
@@ -789,17 +803,7 @@ extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
 			continue;
 		weight = &wave->layers[local];
 		record = slot->kda_replay_pool + (uint64_t)ordinal * wave->kda_replay_layer_bytes;
-		for ( step = 0u; step < steps_capacity; ++step )
-		{
-			host_steps[step].key_bf16 = (const uint16_t *)(record + layout.key_offset) + (uint64_t)step * rank_qk;
-			host_steps[step].value_bf16 = (const uint16_t *)(record + layout.value_offset) + (uint64_t)step * rank_v;
-			host_steps[step].retention = (const float *)(record + layout.retention_offset) + (uint64_t)step * rank_qk;
-			host_steps[step].write_gate = (const float *)(record + layout.write_gate_offset) + (uint64_t)step * rank_heads;
-		}
-		device_steps = (LmReplayStep *)slot->mtp_replay_steps + (uint64_t)ordinal * steps_capacity;
-		error = cudaMemcpyAsync(device_steps,host_steps,(uint64_t)steps_capacity * sizeof(LmReplayStep),cudaMemcpyHostToDevice,stream);
-		if ( error != cudaSuccess )
-			break;
+		device_steps = (const LmReplayStep *)slot->mtp_replay_steps + SparkGlm5NextReplayStepsIndex(ordinal,rows);
 		LM_LAUNCH(
 			(LmReplayFoldKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float>),
 			dim3(1u,rank_heads),GLM5_NEXT_LAYER_THREADS,0,stream,
@@ -833,6 +837,67 @@ extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm5NextCudaStatus(error));
+}
+
+static int32_t SparkGlm5NextReplayFoldCapture(const SparkGlm5NextCudaWave *wave,uint32_t rows,cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
+	cudaGraph_t graph = 0;
+	cudaGraphExec_t exec = 0;
+	cudaError_t error;
+	int32_t status;
+	error = SparkGlm5NextReplayStepsUpload(wave,rows);
+	if ( error == cudaSuccess )
+		error = cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal);
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
+	status = SparkGlm5NextReplayFoldRecord(wave,rows,stream);
+	error = cudaStreamEndCapture(stream,&graph);
+	if ( status == LM_LAUNCH_OK && error == cudaSuccess && graph != 0 )
+		error = cudaGraphInstantiate(&exec,graph,0);
+	if ( graph != 0 )
+		(void)cudaGraphDestroy(graph);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	if ( error != cudaSuccess || exec == 0 )
+		return(SparkGlm5NextCudaStatus(error != cudaSuccess ? error : cudaErrorUnknown));
+	slot->replay_fold_exec[rows - 1u] = (void *)exec;
+	return(LM_LAUNCH_OK);
+}
+
+extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
+	const SparkGlm5NextCudaWave *wave,
+	uint32_t committed_steps)
+{
+	SparkGlm5NextExecutionSlot *slot;
+	cudaStream_t stream;
+	cudaError_t error;
+	int32_t status;
+	static_assert(sizeof(LmReplayStep) == SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES,"replay step record size changed; re-price the staging buffer");
+	static_assert(SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX && SPARK_GLM5_NEXT_REPLAY_ROWS_MAX >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u,"the replay fold must cover every verify wave");
+	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->mtp_verify == 0u ||
+		committed_steps == 0u || committed_steps > wave->row_count ||
+		wave->row_count > SPARK_GLM5_NEXT_REPLAY_ROWS_MAX )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	if ( slot->kda_replay_pool == 0 || slot->mtp_replay_steps == 0 || slot->mtp_committed == 0 ||
+		slot->mtp_conv_scratch == 0 || slot->resident_slots == 0 || slot->run_begin == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	stream = (cudaStream_t)slot->stream;
+	if ( slot->replay_committed_host == 0 )
+	{
+		error = cudaHostAlloc((void **)&slot->replay_committed_host,sizeof(uint32_t),cudaHostAllocDefault);
+		if ( error != cudaSuccess )
+			return(SparkGlm5NextCudaStatus(error));
+	}
+	*slot->replay_committed_host = committed_steps;
+	if ( slot->replay_fold_exec[wave->row_count - 1u] == 0 )
+	{
+		status = SparkGlm5NextReplayFoldCapture(wave,wave->row_count,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(SparkGlm5NextCudaStatus(cudaGraphLaunch((cudaGraphExec_t)slot->replay_fold_exec[wave->row_count - 1u],stream)));
 }
 
 #include "sparkpipe/family/glm/spark_glm_layer_mlp.cuh"
