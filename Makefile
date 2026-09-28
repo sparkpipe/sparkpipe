@@ -181,7 +181,7 @@ QWEN38_27B_SERVING_ADAPTER_FLAGS := -D_POSIX_C_SOURCE=200809L -DQWEN38_27B_MODEL
 # Topology/lane specialization for the shared adapter source (TP1 whole-stack
 # deployments pass -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u and the module's
 # lane count), mirroring the DSV4_TP4_SERVING_TOPOLOGY_FLAGS pattern.
-QWEN38_27B_SERVING_TOPOLOGY_FLAGS ?=
+QWEN38_27B_SERVING_TOPOLOGY_FLAGS ?= -DSPARK_QWEN38_27B_SERVING_TP_DEGREE=4u
 MUSE_GLIMMER_SERVING_ADAPTER := build/libmuse_glimmer_serving_adapter.$(SHARED_LIBRARY_EXT)
 
 LING_SERVING_ADAPTER := build/libling_serving_adapter.$(SHARED_LIBRARY_EXT)
@@ -603,6 +603,7 @@ PYTHON_TESTS := \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
 	tests/test_validation_batch_bucket.py \
+	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \

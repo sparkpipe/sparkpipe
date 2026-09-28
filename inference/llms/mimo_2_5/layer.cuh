@@ -15,7 +15,7 @@ using Mimo25FullKv = LmKvGeometry<(MIMO25_FULL_KV_HEADS * (MIMO25_HEAD_DIM + MIM
 using Mimo25SwaKv  = LmKvGeometry<(MIMO25_SWA_KV_HEADS * (MIMO25_HEAD_DIM + MIMO25_VALUE_DIM) * MIMO25_KV_BITS) / 8u, MIMO25_KV_PAGE_SLOTS, true>;
 
 #ifndef MIMO25_LAYER_THREADS
-#define MIMO25_LAYER_THREADS 256u
+#error "MIMO25_LAYER_THREADS must name the layer CTA width: 256 in the device translation units, 1 in the host-CUDA layer tests"
 #endif
 #define MIMO25_LAYER_TILE_N 128u
 #define MIMO25_LAYER_STAGES 2u

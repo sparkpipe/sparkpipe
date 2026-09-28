@@ -43,7 +43,7 @@ static double clock_gettime_mono_ns(void)
 #endif
 
 #ifndef SPARK_QWEN38_27B_SERVING_TP_DEGREE
-#define SPARK_QWEN38_27B_SERVING_TP_DEGREE 4u
+#error "SPARK_QWEN38_27B_SERVING_TP_DEGREE must name the serving topology: 4 for the TP4 whole-stack build, 1 for TP1"
 #endif
 #define SPARK_QWEN38_27B_SERVING_TP (SPARK_QWEN38_27B_SERVING_TP_DEGREE >= 1u)
 #if SPARK_QWEN38_27B_SERVING_TP_DEGREE == 1u

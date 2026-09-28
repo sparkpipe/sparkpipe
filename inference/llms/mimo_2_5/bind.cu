@@ -1,3 +1,4 @@
+#define MIMO25_LAYER_THREADS 256u
 
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/llms/mimo_2_5/layer.cuh"

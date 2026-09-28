@@ -737,10 +737,10 @@ def emit_adapter_constants(family: str, contract: dict) -> str:
 #ifndef SPARKPIPE_SPARK_QWEN38_27B_SERVING_CONSTANTS_H
 #define SPARKPIPE_SPARK_QWEN38_27B_SERVING_CONSTANTS_H
 
-/* Serving topology build knob, overridable on the compile line:
- *   4 (default) = shipped TP4 whole-stack build; 1 = TP1 full-width. */
+/* Serving topology, named on every compile line:
+ *   4 = shipped TP4 whole-stack build; 1 = TP1 full-width. */
 #ifndef SPARK_QWEN38_27B_SERVING_TP_DEGREE
-#define SPARK_QWEN38_27B_SERVING_TP_DEGREE 4u
+#error "SPARK_QWEN38_27B_SERVING_TP_DEGREE must name the serving topology: 4 for the TP4 whole-stack build, 1 for TP1"
 #endif
 #define SPARK_QWEN38_27B_SERVING_TP (SPARK_QWEN38_27B_SERVING_TP_DEGREE >= 1u)
 

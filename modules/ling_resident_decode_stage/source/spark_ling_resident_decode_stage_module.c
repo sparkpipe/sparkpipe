@@ -295,7 +295,7 @@ static SparkStatus SparkLingPackValidateRanges(
 #define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen
 #define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen
 #define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
-#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#define SPARK_PACK_LOAD_LINEAR_VIEW 0
 
 #include "sparkpipe/spark_pack_load_common.h"
 

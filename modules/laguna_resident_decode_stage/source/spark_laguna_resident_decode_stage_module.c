@@ -519,12 +519,15 @@ static uint64_t SparkLagunaModuleExpectedLayerBits(
 #define SPARK_PACK_LOAD_TYPE(name) SparkLaguna##name
 #define SPARK_PACK_LOAD_CONST(name) SPARK_LAGUNA_##name
 #define SPARK_PACK_LOAD_NO_BUILD_ORDINALS
-#define SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#define SPARK_PACK_LOAD_LINEAR_VIEW 0
 #define SPARK_PACK_LOAD_LAYER_IS_GDN(layer) (SPARK_LAGUNA_MODEL_LAYER_IS_SLIDING(layer))
 #define SPARK_PACK_LOAD_SEEN_TYPE uint64_t
 #define SPARK_PACK_LOAD_SEEN_ONE UINT64_C(1)
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) ((entry)->payload_bytes != 0u)
 #define SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY(entry) ((entry)->tensor_kind >= SPARK_LAGUNA_STAGEPACK_TENSOR_KIND_COUNT)
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkLagunaModulePackExpectGeometry((state),(expected))

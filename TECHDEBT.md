@@ -405,31 +405,21 @@ progress diary.
     Before, they compiled at the header default of 1024, so
     `publish_variants` validated every tighter variant with a b1024
     validator.
-- Some production headers still default a build setting with `#ifndef`, so
-  a build that forgets the flag silently gets the default:
-  - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
-    module") in the glm5_next, ling, laguna, k3 and common GLM batch-tuning
-    headers and dsv41_flash's module source. dsv4 already requires it.
-    Requiring it everywhere first needs the flag in the GLM GPU validators'
-    nvcc arguments, the laguna adapter test and nine Python tests (two of
-    them the glm52 and glm5_next validator oracle self-tests), which all
-    compile these headers without it today;
-  - `SPARK_QWEN38_27B_SERVING_TP_DEGREE` (4) in both the qwen38_27b adapter
-    and `spark_qwen38_27b_serving_constants.h`; TP1 deployments pass 1;
-  - the `spark_pack_synthesize_common.h` value hooks
-    (`SPARK_SYNTH_EMIT_MTP_TAIL`, `SPARK_SYNTH_HEAD_GLOBAL_KINDS`); its
-    context type and `spark_pack_load_common.h`'s field names fail to
-    compile when wrong, so they are not silent;
-  - `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests
-    and tools get the default);
-  - `QWEN38_27B_LAYER_THREADS` and `MIMO25_LAYER_THREADS`, which the
-    host-CUDA layer tests set to 1 before including `layer.cuh`.
-
-  Pass each from every build that includes the header, and delete the
-  default. The `llm_defines.h` defaults, `SPARK_LLM_FIRST_ROUTED_LAYER`'s
-  and the serving adapters' description-hash default are already gone.
-  Test-harness paths (`TEST_*_PATH`) and platform shims (`_POSIX_C_SOURCE`,
-  `MSG_NOSIGNAL` and the like) are not build settings.
+- `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` is the last build setting a production
+  header still defaults with `#ifndef` (7, from the dsv4 contract). The dsv4
+  module Makefile passes it only for a k-sweep build (`DSPARK_SPEC_STEP`),
+  and nothing passes it to the dsv4 adapters, tests or tools, so
+  `tools/devcycle/build_remote.sh` compiles a k-sweep module at the
+  requested step and its adapter at 7. Pass the step from every dsv4 build
+  and delete the default. `tests/test_no_build_defaults.py` lists it as the
+  one pending exception. Every other build setting is now named by the
+  build that compiles it: the batch bucket (each family Makefile names 1024
+  for the default archive, and the GPU validators compile at the bucket of
+  the archive they link), qwen38_27b's serving TP degree, the
+  pack-synthesizer and pack-load template hooks, the legacy
+  `inference/llms` layer thread counts and the dsv41_flash attach probe's
+  TP degree. Platform shims (`_POSIX_C_SOURCE`, `MSG_NOSIGNAL` and the like)
+  and test-harness paths are not build settings.
 - `tools/module_build_release.sh` runs `make archive adapter` in the
   module directory and compiles
   `examples/model_descriptions/<module>_<codec>_firmware.json` unless

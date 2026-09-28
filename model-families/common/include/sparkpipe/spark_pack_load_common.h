@@ -45,15 +45,18 @@
 #error "SPARK_PACK_LOAD_PREFLIGHT must state the family pre-directory policy (empty where none)"
 #endif
 #ifndef SPARK_PACK_LOAD_SEEN_MTP_FIELD
-#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#error "SPARK_PACK_LOAD_SEEN_MTP_FIELD must name the state's MTP coverage word"
 #endif
 #ifndef SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD
-#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#error "SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD must name the state's global coverage word"
 #endif
 #ifndef SPARK_PACK_LOAD_SEEN_LAYER_FIELD
-#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
+#error "SPARK_PACK_LOAD_SEEN_LAYER_FIELD must name the layer's coverage word"
 #endif
-#ifndef SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#ifndef SPARK_PACK_LOAD_LINEAR_VIEW
+#error "SPARK_PACK_LOAD_LINEAR_VIEW must say whether the family binds linear views (1) or not (0)"
+#endif
+#if SPARK_PACK_LOAD_LINEAR_VIEW
 static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) *view, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, void *payload, void *scale);
 #endif
 
@@ -116,7 +119,7 @@ static void SPARK_PACK_LOAD_FN(BuildOrdinals)(SPARK_PACK_LOAD_TYPE(ModuleState) 
 }
 #endif
 
-#ifndef SPARK_PACK_LOAD_NO_LINEAR_VIEW
+#if SPARK_PACK_LOAD_LINEAR_VIEW
 static void SPARK_PACK_LOAD_FN(FillLinearView)(SPARK_PACK_LOAD_TYPE(LinearView) *view, const SPARK_PACK_LOAD_TYPE(StagePackEntry) *entry, void *payload, void *scale)
 {
 	view->abi_version = SPARK_PACK_LOAD_CONST(RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION);

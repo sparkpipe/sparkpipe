@@ -318,6 +318,10 @@ typedef SparkStagePackHeaderCommon SparkQwen4FlashStagePackHeader;
 #define SPARK_PACK_LOAD_SEEN_ONE 1ull
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%016llx"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) ((unsigned long long)(value))
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
+#define SPARK_PACK_LOAD_LINEAR_VIEW 1
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
 	((entry)->payload_bytes == SparkStagePackFamilyPayloadBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkStagePackFamilyScaleBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns))
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,(expected),(state)->first_layer_index,(state)->layer_count,(state)->allow_missing_ple == 0u ? 1u : 0u)

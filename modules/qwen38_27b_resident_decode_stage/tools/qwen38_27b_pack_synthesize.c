@@ -5,6 +5,8 @@
 
 
 #define SPARK_SYNTH_QWEN_TEMPLATE 1
+#define SPARK_SYNTH_CONTEXT_T SparkSynthContext
+#define SPARK_SYNTH_EMIT_MTP_TAIL 1
 #define SPARK_SYNTH_TOOL_NAME "qwen38_27b_pack_synthesize"
 #define SPARK_SYNTH_MAX_TENSORS 1024u
 #define SPARK_SYNTH_CHUNK_BYTES (8u * 1024u * 1024u)

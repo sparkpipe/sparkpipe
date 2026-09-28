@@ -304,6 +304,10 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 #define SPARK_PACK_LOAD_SEEN_ONE 1u
 #define SPARK_PACK_LOAD_SEEN_FORMAT "%08x"
 #define SPARK_PACK_LOAD_SEEN_ARG(value) (value)
+#define SPARK_PACK_LOAD_SEEN_MTP_FIELD mtp_seen_bits
+#define SPARK_PACK_LOAD_SEEN_GLOBAL_FIELD global_seen_bits
+#define SPARK_PACK_LOAD_SEEN_LAYER_FIELD layer_seen_bits
+#define SPARK_PACK_LOAD_LINEAR_VIEW 1
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
 	((entry)->payload_bytes == SparkQwen38MaxStagePackPayloadBytes((entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkQwen38MaxStagePackScaleBytesFor((entry)->tensor_kind,(entry)->weight_format,(entry)->rows,(entry)->columns))
 #define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkQwen38MaxStagePackExpectedGeometryWire((expected),(state)->first_layer_index,(state)->layer_count)
