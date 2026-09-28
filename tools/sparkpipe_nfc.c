@@ -21,14 +21,14 @@ int main(void)
         length += chunk;
         if (length == capacity)
         {
-            char *grown = (char *)realloc(text, capacity * 2u);
+            char *grown = (char *)realloc(text, capacity + capacity);
             if (grown == 0)
             {
                 free(text);
                 return 1;
             }
             text = grown;
-            capacity *= 2u;
+            capacity += capacity;
         }
     }
     if (length > UINT32_MAX || SparkTokenizerNormalizeNfcUtf8(text, (uint32_t)length, &normalized, &normalized_bytes) != SPARK_STATUS_OK)

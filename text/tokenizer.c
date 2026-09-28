@@ -1580,14 +1580,14 @@ SparkStatus SparkTokenizerNormalizeNfcUtf8(
     uint32_t written = 0u;
     char *output;
     if ((text == 0 && text_bytes != 0u) || normalized_out == 0 || normalized_bytes_out == 0 ||
-        text_bytes > UINT32_MAX / (4u * SPARK_UNICODE_NFC_MAX_DECOMPOSITION))
+        text_bytes > UINT32_MAX / (SPARK_UNICODE_NFC_UTF8_MAX_BYTES * SPARK_UNICODE_NFC_MAX_DECOMPOSITION))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *normalized_out = 0;
     *normalized_bytes_out = 0u;
     values = (uint32_t *)malloc(((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_DECOMPOSITION + 1u) * sizeof(uint32_t));
-    output = (char *)malloc((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_DECOMPOSITION * 4u + 1u);
+    output = (char *)malloc((size_t)text_bytes * SPARK_UNICODE_NFC_MAX_DECOMPOSITION * SPARK_UNICODE_NFC_UTF8_MAX_BYTES + 1u);
     if (values == 0 || output == 0)
     {
         free(values);
