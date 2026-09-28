@@ -96,6 +96,33 @@ No-op callbacks that return success are not implementations. Diagnostic
 behavior clamps require #ifdef DEBUG and a visible diagnostic; DEBUG does not
 waive mandatory operations.
 
+## Page and position budgets
+
+The runtime owns the KV page and position budgets. A driver maps each page
+into its model's byte layout; it does not set or enforce the budgets.
+
+- `runtime_limits.kv_logical_page_capacity` and `kv_physical_page_capacity`
+  are required deployment members (`runtime/model_resident_deployment.c`).
+  Adapter validation rejects physical capacity below the active-sequence
+  count, logical capacity below the resident-sequence capacity, and physical
+  above logical (`runtime/model_serving_adapter.c`). The batch engine admits
+  and dispatches within the physical page budget, net of in-flight demand
+  (`SparkModelBatchMaximumLaneCount` in `runtime/model_batch_engine.c`).
+- `runtime_limits.max_sequence_positions` is optional and must equal the
+  stage configs' `max_sequence_positions`. The engine caps its context at it
+  (`SparkModelBatchContextLimit`). The API answers a prompt that fills it with
+  400 `context_length_exceeded` and clamps `max_tokens` to the positions left
+  (`api_fit_context` in `node/model_api.c`). Without the member, a request
+  that outgrows the stage configs' positions fails mid-decode in the adapter's
+  row-order check (`ROW-ORDER-POSITION`). Nothing compares the two values at
+  runtime yet ([`TECHDEBT.md`](../TECHDEBT.md), Serving API).
+- Prefix reuse goes through `cache/prefix_cache.c`: the batch engine calls
+  `SparkPrefixCacheLookupPrompt` and `SparkPrefixCacheCommitPrompt`.
+- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
+  `scheduler/topology_switch.c` uses it only through the tier's public calls
+  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
+  `OffsetOf`, `PlanLookahead`).
+
 ## Driver identity
 
 A serving adapter loads a driver only when five descriptor fields equal the
