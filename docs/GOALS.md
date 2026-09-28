@@ -1,18 +1,37 @@
-# SparkPipe goals (operator-ratified 2026-08-29)
+# SparkPipe goals
 
-Scope source: the platform plan (Phase 0-5) + docs/MODEL_SUPPORT.md.
-This file is the durable statement agents inherit; the scoreboard and
-lane rules carry the tactics.
+This file holds the operator directives that agents inherit. It was last
+revised on 2026-09-28. The order of work is in [`ROADMAP.md`](ROADMAP.md),
+unfinished work in [`../TECHDEBT.md`](../TECHDEBT.md), measurements in
+[`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md), and the model catalog
+in [`MODEL_SUPPORT.md`](MODEL_SUPPORT.md).
 
-## Active GLM 5.3 Flash goal (operator directive, 2026-09-08)
+## Active GLM 5.3 Flash goal (operator, 2026-09-08, revised 2026-09-28)
 
-Deliver correct, fully functional, non-speculative serving on the 16 Sparks.
-TP4xPP4 is the default topology; TP16 is the speed topology. Target TP16
-throughput of 3.5 times a qualified TP4 baseline at matched precision,
-context, batch occupancy and timing boundaries. Establish the TP4 memory
-roofline using measured sustainable bandwidth and actual weight/cache bytes,
-then close the measured gap. Speculative or differently quantized public
-results are separately identified comparisons, not the baseline.
+Deliver correct, fully functional serving on the 16 Sparks. Users get tokens
+per second and latency, so no topology is fixed in advance. Splitting each
+model to 1/16 of its size per Spark is what makes frontier models fit. Which
+layout serves them best is a measurement: hill-climb TP16, PP16 and TP4 x PP4
+on measured tok/s and latency for each batch range, and keep the winner for
+each range.
+
+Today GLM 5.3 Flash runs only at TP16. The serving adapter rejects every
+other TP degree (`SPARK_GLM5_NEXT_SERVING_TP_DEGREE 16u`,
+`spark_glm5_next_serving_adapter.c:37` and `:669`). GLM TP4 x PP4 is ROADMAP
+M5.
+
+- **B1 without speculation.** The target is 3 to 3.5 times the best public
+  4-Spark B1 result for the same model without speculation, at stated
+  precision. For GLM 5.3 Flash FP8 that public result is 23.2 tok/s, so the
+  target is 70-81 tok/s at TP16 (arithmetic). The fleet measured 36 tok/s on
+  2026-09-28. The roofline floor is 8.0 ms per token, a 125 tok/s ceiling
+  ([`GLM5_NEXT_ROOFLINE.md`](GLM5_NEXT_ROOFLINE.md)).
+- **Aggregate throughput.** The operator reads the earlier PP results as
+  output that kept scaling up to B1024. TP16 has not been measured at that
+  batch. Measure PP16 for the most aggregate throughput. An earlier analysis
+  put TP4 x PP4 almost level with PP16, but it came before the current
+  measurements. If TP16 turns compute-bound at B128, that bound sets the
+  largest batch TP16 serves.
 
 Report two acceptance results for each driver: functional qualification and
 hardware-normalized SOTA performance qualification. Passing the former while
@@ -76,10 +95,39 @@ SHA/command/hardware receipts. A component pass or merged incremental PR is
 not completion. Continue until functional acceptance and performance targets
 are demonstrated; any remaining physical limit requires measured evidence.
 
-Keep strict lazy expert loading and assigned-node queue/rsync workflows
-reliable for parallel driver debugging. Missing or corrupt .experts data is
-an error, never an eager-load fallback. Give pending driver PRs actionable
+Production GLM graph decode runs in a deliberately pinned resident mode. The
+serving drop-in sets `G5_PIN_EXPERTS=1`, and the module then leases every
+routed expert (`SparkGlm5NextPinAllExperts`).
+`SparkGlm5NextGraphClaimExperts` refuses the whole-chain graph unless all of
+them are held (commit `78c2c21`). Pinning still acquires experts through the
+lazy weightd map, so missing or corrupt `.experts` data is still an error and
+never falls back to an eager load (I28).
+
+Pinning does give up bounded residency (I29). That lasts until relocatable
+expert graphs land: capture once, record which kernel arguments are expert
+pointers, and patch them on load. The messages of `8adebc6`, `360c0ee` and
+`1a674be` describe that design, but nothing implements it yet (ROADMAP M6).
+Do not turn pinning off to satisfy I29. Without it, chains run through the
+state machine instead of the graph path (`GLM5_NEXT_ROOFLINE.md`).
+
+Keep strict lazy expert loading and the assigned-node queue/rsync workflows
+reliable for parallel driver debugging. Give pending driver PRs actionable
 feedback naming the common primitives to use and the required tests to pass.
+
+## MODEL DIRECTION (operator, 2026-09-28)
+
+- MiMo 2.6 is a target. Contracts `mimo26_flash` and `mimo26_pro` exist. The
+  `mimo26` module is so far a 137-line stage-pack header.
+- DeepSeek: DSV4.1 Flash outranks DSV4 Pro 0813. DSV4 Pro 0813 is the last
+  driver in the order. DSV4.1 Pro will be supported when it is released.
+  How much it will differ is unknown, which is why 0813 Pro goes last.
+- Kimi K3 moves up into the slot DSV4 Pro 0813 held.
+- Ling: Ling 3.0 and its finance fine-tune (contracts `ling` and `lingfin`).
+  Ling 2.x is dropped.
+- GLM: GLM 5.2 weights are not used for anything (see below).
+- Licensing: revenue will not come near $20M, so only the Qwen license is an
+  issue. Qwen models stay off the external API service. Internal use is fine,
+  and Qwen 3.8 27B is a good internal model.
 
 ## HARD CONSTRAINT: quantization policy (operator directive)
 
@@ -101,9 +149,9 @@ and re qualifying.
 
 Solve corners and edges first — the well-defined, independently
 completable pieces (front-door integrations, staging/manifests,
-quality gates, scoreboard, infra rules) — each completion gives the
-internal work a solid reference and removes a worry. Prioritize
-completions over open-ended explorations when choosing next work.
+quality gates, infra rules) — each completion gives the internal work
+a solid reference and removes a worry. Prioritize completions over
+open-ended explorations when choosing next work.
 
 ## SLOP GATES (operator directive)
 
@@ -117,21 +165,23 @@ debt and the DRY template is its fix; new pasted-lifecycle code is
 refused at review. AI slop (plausible filler, unjustified
 abstraction, silent fallbacks) gets rejected at merge, not admired.
 
-## Near-term (days)
+## QUALITY GATE: COMPSEC-17 before "usable"
 
-1. glm5.3 Flash first tokens -> M5 exact-32K B1 + COMPSEC-17.
-2. Qwen Flash live 4-node cell + COMPSEC-17 — under the quantization
-   policy: serve the bf16 source (84G/rank) unless a vetted community
-   quant is verified; NO self-made MX-FP8.
-3. K3 first fleet number; P1a retest verdict.
-4. Staging complete + tools/staging_manifest.py in the test gate.
-5. Every first cell quality-gated (COMPSEC-17 before "usable", full
-   92x before "not horrible").
-6. liteLLM front door live (controller-side proxy routing every
-   deployment; one OpenAI-compatible endpoint for clients).
-7. Qwen Flash planned as TP4xPP4 16-rank bf16 (~21G/rank) per the
-   multi-topology fleet layout; internal NVMe kept clear of
-   non-essentials so topology variants coexist.
+Every first cell is quality-gated: COMPSEC-17 before it is called usable,
+and the full ds4_eval 92x suite before it is called "not horrible". For GLM
+5.3 Flash the gate is `tools/glm5_next_compsec17.py --thinking off`. It uses
+the GLM chat template, temperature 0, at most 512 tokens and one request at a
+time. `qualification/ds4_eval/compare_runs.py` grades it by the last
+`Answer:` line, and a run passes at 14 of 17. GLM 5.3 Flash at TP16 passed
+14/17 on 2026-09-28
+([run report](../qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md)).
+
+The harness before #1256 sent no chat template and graded the first line.
+That scored 0/17 on a coherent model, so its earlier results cannot tell a
+broken model from a working one.
+
+Run the gate sequentially. Concurrent runs are not batch-invariant yet: two
+of the 17 completions change with batch composition.
 
 ## SPECULATION: all providers, one contract (operator directive)
 
@@ -142,10 +192,19 @@ today's best. Design + sequencing: docs/SPECULATION_PROVIDER_DESIGN.md
 abstracted, inner loops stay provider-owned for zero hot-path cost;
 DSpark2 = a new provider module, not five family edits).
 
+Direction (operator, 2026-09-28): the fleet has more compute than bandwidth
+below the batch size where decode turns compute-bound. Speculation can spend
+that compute on a tree fed by several drafters, cutting branches short or
+extending them conditionally. The condition itself is still open. The
+operator notes that TensorFold appears to reach nearly 4x. The aim is a gain
+of that order at B8, and if possible at B64, not only at B1. Today glm5_next
+has no DFlash2 source, and its MTP drafts skip multi-step decode chains
+(TECHDEBT.md, Speculation).
+
 ## Medium-term (weeks)
 
-1. All product-set models serving honest perf+quality cells; the
-   scoreboard gaps closed (Flash x2, Pro, then Max).
+1. All product-set models serving honest perf+quality cells, each
+   recorded in PERFORMANCE_STATUS.md (Flash x2, Pro, then Max).
 2. Qwen Max served from the official FP8 or vetted MXFP4 source.
 3. Phase-1 PLATFORM work resumed as first-class lanes, not backlog:
    DRY adapter template (one lifecycle, not seven), the device API
@@ -165,7 +224,7 @@ DSpark2 = a new provider module, not five family edits).
 normalize to SPARK-EQUIVALENT throughput: single-spark cells are the
 head-to-head SOTA++ baseline FIRST; topology stacking (TP/PP/EP) is a
 SEPARATE, second-axis gain reported alongside, never blended into the
-per-spark number. The scoreboard carries both axes explicitly.
+per-spark number. PERFORMANCE_STATUS.md reports both axes explicitly.
 
 ## QUALITY STUDY (queued, AFTER the basics work)
 
@@ -198,6 +257,13 @@ DEPRECATED-NOT-DELETED pending 5.3-full validation; they are removed
 from the support catalog (MODEL_SUPPORT.md) and are not a serving
 target. No new work builds against 5.2 sources.
 
+The operator confirmed this on 2026-09-28: GLM 5.2 weights are not
+considered for anything. Five of the glm52 firmware descriptions (fp8,
+int6, int7, int8, mxfp4) name GLM 5.3 revision `935644c0`. The generators
+and packer still pass GLM 5.2 revision `b4734de4`
+(`tools/glm52_gen_deployment.py`, `tools/glm53full_gen_deployment.py`,
+`tools/glm52_resident_stagepack.py`), and they have to move to GLM 5.3.
+
 ## SPECULATOR PORTFOLIO (operator)
 
 A dozen speculators incoming for head-to-head testing. The provider
@@ -205,20 +271,10 @@ abstraction (SPECULATION_PROVIDER_DESIGN.md) is the harness for it.
 The operator's multi-speculator-live idea is assessed as the
 TOURNAMENT PROVIDER: see the design doc's addendum.
 
-## MARKETPLACE TRACK (docs/MARKETPLACE_PLAN.md — the commercial frame)
+## MARKETPLACE TRACK
 
-The long-term platform goal has a business model: a two-sided compute
-marketplace (SparkPipe-required supply, liteLLM demand door, 10%-
-in-compute take, anti-cheating via off-node replay of real traffic).
-BUILD HOOKS in priority order (§7): (1) liteLLM door DONE; (2)
-REQUEST-LOGGING PIPELINE keyed (driver hash, contract hash, request) —
-the audit substrate, first real build item; (3) audit service; (4)
-provider onboarding; (5) fee metering. TECHNICAL GATES from the
-determinism appendix: API logprob RETURN support (the temp-independent
-audit signal — today the API returns tokens only); seed field passthru
-+ logging when sampling lands (counter-based RNG, no runtime-varying
-state); receipts language notes greedy-only (temp=0 proofs). Provider
-contract: no forcing temp>0, no refusing seed logs.
+The commercial frame is [`MARKETPLACE_PLAN.md`](MARKETPLACE_PLAN.md): the
+fee, the build hooks and the determinism gates. ROADMAP M9 orders the work.
 
 ## The island-catalog manifest (operator-ratified abstraction)
 
@@ -237,7 +293,7 @@ edge (today's token-ID contract works via LiteLLM's /vllm/ passthrough
 
 ## Long-term
 
-The platform plan's end state, restated: SparkPipe as the inference
+The end state: SparkPipe as the inference
 OS for this fleet — every product-set model (MODEL_SUPPORT.md catalog,
 open to new ones via the same contract) quality-gated and beating
 110% of the best public comparable per recorded cell; multiple models
@@ -246,24 +302,20 @@ module boundary: cuda (production), host oracle (CI), Metal (the
 controller Mac), ROCm (rented, budget-approved) — one memory model,
 one comms model, recipes not hand-built drivers.
 
-## AGENT FLEET POLICY (operator, 2026-08-30)
+## HOW WORK IS RUN (2026-09-28)
 
-CAP 5 — with the standing expectation they are ALWAYS productive and
-on the critical path. The 15-min cycle's duty 3 enforces this: count,
-think, spawn to cap, never make-work. TEMPORARY SPRINTS: when a phase
-warrants more (e.g. a change applied to all 8 models at once, plus
-the normal working lanes), the coordinator PROPOSES the boost with a
-reason and an end condition; the operator approves. Budget reality:
-TEAM ACCOUNT live — 2 independent 5h windows now (~2.5h combined
-drain), a THIRD when the weekly renews in a few days. Bursts to 8-10
-become cheap; the cap stays 5 between bursts.
+Claude is lead dev and the operator merges PRs by hand; PRs may stack.
+Drivers are developed in parallel while common code improves, and the
+operator sets how many agents run. The coordinator regime of 2026-08-30 no
+longer applies: the agent cap, the 15-minute cycle and burst approval.
 
-## STRATEGIC PIVOT: SERVE OURSELVES (operator, 2026-08-30)
+## SERVE OURSELVES (operator, 2026-08-30)
 
-The moment glm-5.3 (full) + glm-5.3-flash serve on the sparks, the
-DEV FLEET runs ON THEM — agents' own inference (drafting, analysis,
-doc summarization) stops burning API credits and starts burning
-sparks we already own. Priority ordering implications: the glm5_next
-closeout chain and the glm53full 3-res packs are not just scoreboard
-items; they are the API-cost-elimination path. The liteLLM front
-door is the seam: agents point at it, the fleet serves.
+GLM 5.3 Flash now serves on the Sparks. Agents' own inference (drafting,
+analysis, doc summarization) should run on the fleet rather than on paid
+APIs. The live GLM API is the `g53-api` user unit on the rtx5090 hub, port
+8433. It is an x86 build of the engines' source commit, and every Spark runs
+with `G5_API_DISABLED=1` (`tools/fleet_node_agent.sh`, `ensure_api`). The
+LiteLLM front door is the seam. [`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md)
+still routes `glm-5.3-flash` to spark0:8433 and has to be repointed. The
+pivot also covers GLM 5.3 Full (the glm52 module) once it serves.
