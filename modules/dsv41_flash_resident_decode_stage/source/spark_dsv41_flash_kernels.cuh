@@ -128,3 +128,123 @@ static inline cudaError_t SparkDsv41FlashLaunchEngramGate(
 		streams_bf16,kv_bf16,q_weight_bf16,k_weight_bf16,hc,dimension,epsilon);
 	return(cudaGetLastError());
 }
+
+#define SPARK_DSV41_FLASH_CANDIDATE_THREADS 256u
+
+static __device__ __forceinline__ uint32_t SparkDsv41FlashOrderedKey(float value)
+{
+	uint32_t bits = __float_as_uint(value);
+	return((bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u);
+}
+
+static __device__ __forceinline__ uint32_t SparkDsv41FlashBlockCount(uint32_t value, uint32_t *scratch)
+{
+	uint32_t lane = threadIdx.x % 32u,warp = threadIdx.x / 32u,offset;
+	for (offset = 16u; offset != 0u; offset >>= 1u)
+		value += __shfl_down_sync(0xffffffffu,value,offset);
+	__syncthreads();
+	if ( lane == 0u )
+		scratch[warp] = value;
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		value = 0u;
+		for (offset = 0u; offset < blockDim.x / 32u; offset++)
+			value += scratch[offset];
+		scratch[0] = value;
+	}
+	__syncthreads();
+	value = scratch[0];
+	__syncthreads();
+	return(value);
+}
+
+static __global__ void SparkDsv41FlashCandidateMaskKernel(
+	float *scores_f32,
+	const uint32_t *widths,
+	uint64_t row_stride,
+	float *block_scores_f32,
+	uint64_t block_stride,
+	uint32_t block_size,
+	uint32_t topk_blocks)
+{
+	__shared__ uint32_t counts[SPARK_DSV41_FLASH_CANDIDATE_THREADS / 32u];
+	__shared__ uint32_t threshold_shared;
+	uint32_t row = blockIdx.x,width = widths[row],block_count,block,element,bit,candidate,prefix = 0u,greater,need,taken;
+	float *scores = scores_f32 + (uint64_t)row * row_stride;
+	float *blocks = block_scores_f32 + (uint64_t)row * block_stride;
+	float best;
+	if ( width == 0u )
+		return;
+	block_count = (width + block_size - 1u) / block_size;
+	for (block = threadIdx.x; block < block_count; block += blockDim.x)
+	{
+		best = -INFINITY;
+		for (element = block * block_size; element < width && element < (block + 1u) * block_size; element++)
+			best = fmaxf(best,scores[element]);
+		blocks[block] = block == (width - 1u) / block_size ? INFINITY : best;
+	}
+	__syncthreads();
+	if ( block_count > topk_blocks )
+	{
+		for (bit = 32u; bit-- > 0u;)
+		{
+			candidate = prefix | (1u << bit);
+			greater = 0u;
+			for (block = threadIdx.x; block < block_count; block += blockDim.x)
+				greater += SparkDsv41FlashOrderedKey(blocks[block]) >= candidate ? 1u : 0u;
+			if ( SparkDsv41FlashBlockCount(greater,counts) >= topk_blocks )
+				prefix = candidate;
+		}
+		if ( threadIdx.x == 0u )
+			threshold_shared = prefix;
+		__syncthreads();
+		greater = 0u;
+		for (block = threadIdx.x; block < block_count; block += blockDim.x)
+			greater += SparkDsv41FlashOrderedKey(blocks[block]) > threshold_shared ? 1u : 0u;
+		greater = SparkDsv41FlashBlockCount(greater,counts);
+		if ( threadIdx.x == 0u )
+		{
+			need = topk_blocks - greater;
+			taken = 0u;
+			for (block = 0u; block < block_count; block++)
+			{
+				if ( SparkDsv41FlashOrderedKey(blocks[block]) == threshold_shared )
+				{
+					if ( taken < need && blocks[block] > -INFINITY )
+					{
+						taken++;
+						blocks[block] = INFINITY;
+					}
+					else
+						blocks[block] = -INFINITY;
+				}
+				else if ( SparkDsv41FlashOrderedKey(blocks[block]) < threshold_shared )
+					blocks[block] = -INFINITY;
+			}
+		}
+		__syncthreads();
+	}
+	for (element = threadIdx.x; element < width; element += blockDim.x)
+		if ( !(blocks[element / block_size] > -INFINITY) )
+			scores[element] = -INFINITY;
+}
+
+static inline cudaError_t SparkDsv41FlashLaunchCandidateMask(
+	cudaStream_t stream,
+	float *scores_f32,
+	const uint32_t *widths,
+	uint64_t row_stride,
+	float *block_scores_f32,
+	uint64_t block_stride,
+	uint32_t row_count,
+	uint32_t block_size,
+	uint32_t topk_blocks)
+{
+	if ( scores_f32 == 0 || widths == 0 || block_scores_f32 == 0 || row_count == 0u ||
+		block_size == 0u || topk_blocks == 0u || block_stride * block_size < row_stride )
+		return(cudaErrorInvalidValue);
+	SparkDsv41FlashCandidateMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+		scores_f32,widths,row_stride,block_scores_f32,block_stride,block_size,topk_blocks);
+	return(cudaGetLastError());
+}

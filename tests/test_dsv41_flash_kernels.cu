@@ -92,12 +92,55 @@ static int RunEngram(char **argv)
     return 0;
 }
 
+static int RunCandidates(char **argv)
+{
+    uint32_t rows = (uint32_t)strtoul(argv[4], 0, 10);
+    uint32_t stride = (uint32_t)strtoul(argv[5], 0, 10);
+    uint32_t block_size = (uint32_t)strtoul(argv[6], 0, 10);
+    uint32_t topk_blocks = (uint32_t)strtoul(argv[7], 0, 10);
+    uint32_t block_stride = (stride + block_size - 1u) / block_size;
+    std::vector<float> scores((size_t)rows * stride);
+    std::vector<uint32_t> widths(rows);
+    FILE *file = fopen(argv[2], "rb");
+    if (file == 0 || fread(widths.data(), sizeof(uint32_t), rows, file) != rows ||
+        fread(scores.data(), sizeof(float), scores.size(), file) != scores.size())
+    {
+        fprintf(stderr, "FAIL cannot read %s\n", argv[2]);
+        return 1;
+    }
+    fclose(file);
+    float *scores_device = 0;
+    float *blocks_device = 0;
+    uint32_t *widths_device = 0;
+    CUDA(cudaMalloc(&scores_device, scores.size() * sizeof(float)));
+    CUDA(cudaMalloc(&blocks_device, (size_t)rows * block_stride * sizeof(float)));
+    CUDA(cudaMalloc(&widths_device, rows * sizeof(uint32_t)));
+    CUDA(cudaMemcpy(scores_device, scores.data(), scores.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(widths_device, widths.data(), rows * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    CUDA(SparkDsv41FlashLaunchCandidateMask(0, scores_device, widths_device, stride, blocks_device, block_stride, rows, block_size, topk_blocks));
+    CUDA(cudaDeviceSynchronize());
+    CUDA(cudaMemcpy(scores.data(), scores_device, scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    file = fopen(argv[3], "wb");
+    if (file == 0 || fwrite(scores.data(), sizeof(float), scores.size(), file) != scores.size())
+    {
+        fprintf(stderr, "FAIL cannot write %s\n", argv[3]);
+        return 1;
+    }
+    fclose(file);
+    CUDA(cudaFree(scores_device));
+    CUDA(cudaFree(blocks_device));
+    CUDA(cudaFree(widths_device));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 8 && strcmp(argv[1], "candidates") == 0)
+        return RunCandidates(argv);
     if (argc == 6 && strcmp(argv[1], "kv-fp4") == 0)
         return RunKvFp4(argv);
     if (argc == 11 && strcmp(argv[1], "engram") == 0)
         return RunEngram(argv);
-    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS\n", argv[0]);
+    fprintf(stderr, "usage: %s kv-fp4 IN OUT ROWS WIDTH | engram STREAMS KV QW KW OUT ROWS HC DIM EPS | candidates IN OUT ROWS STRIDE BLOCK TOPK\n", argv[0]);
     return 2;
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import shutil
 import subprocess
+import types
 import sys
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from t1_reference_common import bf16_to_f32, f32_to_bf16_u16  # noqa: E402
-from t1_reference_dsv41 import _fp4_qdq_e4m3_16, engram_gate  # noqa: E402
+from t1_reference_dsv41 import Dsv41FlashEngine, _fp4_qdq_e4m3_16, engram_gate  # noqa: E402
 
 BINARY = ROOT / "build/test_dsv41_flash_kernels"
 HIDDEN = 5120
@@ -90,6 +91,33 @@ def check_engram(workspace, rng):
     return got.size, exact
 
 
+def check_candidates(workspace, rng):
+    block_size, topk_blocks, stride = 8, 2048, 20000
+    widths = np.array([20000, 16383, 5, 19997, 20000], dtype=np.uint32)
+    scores = rng.standard_normal((widths.size, stride)).astype(np.float32)
+    scores[1, 100:] = np.float32(0.5)
+    scores[3, :8000] = -np.inf
+    scores[4] = np.round(scores[4] * 4.0) / np.float32(4.0)
+    for row, width in enumerate(widths):
+        scores[row, width:] = np.float32(7.0)
+    source, output = workspace / "candidates_in.bin", workspace / "candidates_out.bin"
+    with open(source, "wb") as handle:
+        handle.write(widths.tobytes())
+        handle.write(scores.tobytes())
+    run("candidates", source, output, widths.size, stride, block_size, topk_blocks)
+    got = np.fromfile(output, dtype=np.float32).reshape(widths.size, stride)
+    engine = types.SimpleNamespace(candidate_block=block_size, candidate_blocks=topk_blocks)
+    for row, width in enumerate(widths):
+        mask = Dsv41FlashEngine._select_candidate_blocks(engine, scores[row, :width].copy(), int(width))
+        expected = np.where(mask, scores[row, :width], -np.inf).astype(np.float32)
+        if not np.array_equal(got[row, :width], expected):
+            differ = int((got[row, :width] != expected).sum())
+            raise AssertionError(f"candidate blocks row {row} (width {width}): {differ} positions differ from the reference")
+        if not np.array_equal(got[row, width:], scores[row, width:]):
+            raise AssertionError(f"candidate blocks row {row}: positions beyond the width were written")
+    return int(widths.sum())
+
+
 def main():
     built = subprocess.run(["make", "-s", str(BINARY.relative_to(ROOT))], cwd=ROOT, capture_output=True, text=True)
     if built.returncode != 0:
@@ -106,10 +134,12 @@ def main():
     try:
         fp4_values = check_kv_fp4(workspace, rng)
         engram_values, engram_exact = check_engram(workspace, rng)
+        candidate_values = check_candidates(workspace, rng)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
     print(f"PASS dsv41 kernels: kv fp4 e4m3/16 qdq bit-equal to the reference on {fp4_values} values; "
-          f"engram gate {engram_exact}/{engram_values} bit-equal, rest within 1 bf16 ulp")
+          f"engram gate {engram_exact}/{engram_values} bit-equal, rest within 1 bf16 ulp; "
+          f"candidate-block mask equal on {candidate_values} positions (top 2048 of 8-blocks, ties, -inf, pinned block)")
     return 0
 
 
