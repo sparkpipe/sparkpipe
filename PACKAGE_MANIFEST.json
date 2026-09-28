@@ -5833,8 +5833,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/Makefile",
-      "sha256": "e6569699c2a07b42a603ba194c399b948ca8b6a877e4462d9eabc5dccae1243f",
-      "size_bytes": 3243
+      "sha256": "10ca6680a62d840bee80fff16b4ce6ff0c8c39bf4d8aa75db21e8310ca586aa6",
+      "size_bytes": 3191
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h",
@@ -15280,5 +15280,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73954862
+  "total_bytes": 73954810
 }
