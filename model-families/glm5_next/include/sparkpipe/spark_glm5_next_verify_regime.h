@@ -19,6 +19,13 @@
 #define SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX "adversary:"
 #define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH 3u
 #define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH 8u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE 0u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE 1u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED 2u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD 3u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_NO_DRAFT 4u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL 5u
+#define SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT 6u
 
 static inline SparkStatus SparkGlm5NextVerifyRowsParse(const char *text,uint32_t *rows_out)
 {
@@ -61,6 +68,21 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 		return(SPARK_STATUS_OK);
 	}
 	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static inline uint32_t SparkGlm5NextVerifyFrameClass(uint32_t decode_single_greedy_shape,uint32_t sampled,uint32_t experts_warm,uint32_t graph_path_enabled,uint32_t graph_disabled,uint32_t b1_capture_failed,uint32_t verify_captured)
+{
+	if ( decode_single_greedy_shape == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE);
+	if ( sampled != 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED);
+	if ( experts_warm == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD);
+	if ( graph_path_enabled == 0u || graph_disabled != 0u || b1_capture_failed != 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL);
+	if ( verify_captured == 0u )
+		return(SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD);
+	return(SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE);
 }
 
 static inline uint32_t SparkGlm5NextVerifyTableIndex(uint32_t rows)

@@ -151,6 +151,32 @@ static void check_table(uint32_t rows_max,uint32_t threshold,uint32_t max_positi
 	require(admitted != 0u,"some verify waves are admitted",rows_max,threshold,max_positions);
 }
 
+static void check_frame_class(void)
+{
+	uint32_t bits,shape,sampled,warm,graph,disabled,failed,captured,frame_class,rank_local;
+	for (bits=0u; bits<128u; bits++)
+	{
+		shape = bits & 1u;
+		sampled = (bits >> 1) & 1u;
+		warm = (bits >> 2) & 1u;
+		graph = (bits >> 3) & 1u;
+		disabled = (bits >> 4) & 1u;
+		failed = (bits >> 5) & 1u;
+		captured = (bits >> 6) & 1u;
+		frame_class = SparkGlm5NextVerifyFrameClass(shape,sampled,warm,graph,disabled,failed,captured);
+		rank_local = graph == 0u || disabled != 0u || failed != 0u;
+		require(frame_class < SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT && frame_class != SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_NO_DRAFT,"frame class is a pre-draft class",bits,frame_class,0u);
+		require((frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_ELIGIBLE) == (shape != 0u && sampled == 0u && warm != 0u && !rank_local && captured != 0u),"only a warm captured greedy B1 decode frame on the graph path is eligible",bits,frame_class,0u);
+		require((frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_RANK_LOCAL) == (shape != 0u && sampled == 0u && warm != 0u && rank_local),"rank-local graph state is its own class once the frame would otherwise verify",bits,frame_class,0u);
+		if ( shape == 0u )
+			require(frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SHAPE,"shape comes first",bits,frame_class,0u);
+		else if ( sampled != 0u )
+			require(frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED,"sampling comes next",bits,frame_class,0u);
+		else if ( warm == 0u || (!rank_local && captured == 0u) )
+			require(frame_class == SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD,"cold frames stay plain",bits,frame_class,0u);
+	}
+}
+
 int main(void)
 {
 	static const uint32_t thresholds[] = {0u,1u,2u,9u,64u,1000u,2048u,2049u,4096u};
@@ -160,6 +186,7 @@ int main(void)
 	check_drafter();
 	check_depth();
 	check_shape();
+	check_frame_class();
 	for (m=0u; m<2u; m++)
 		for (t=0u; t<sizeof(thresholds)/sizeof(thresholds[0]); t++)
 			for (rows_max=SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; rows_max<=SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows_max+=3u)

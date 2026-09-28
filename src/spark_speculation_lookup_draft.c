@@ -75,7 +75,7 @@ SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *d
 	match_out->source_end = 0u;
 	history = draft->tokens + (uint64_t)lane * draft->lane_capacity;
 	if ( anchor_position >= draft->lengths[lane] || history[anchor_position] == SPARK_SPECULATION_LOOKUP_UNKNOWN_TOKEN )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+		return(SPARK_STATUS_NOT_FOUND);
 	anchor = (uint32_t)anchor_position;
 	best_length = 0u;
 	best_end = 0u;
@@ -110,8 +110,10 @@ SparkStatus SparkSpeculationLookupDraftTokens(void *context,const SparkSpeculati
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	result->token_count = 0u;
 	if ( draft->sequence_ids[request->active_sequence_index] != request->sequence_id )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+		return(SPARK_STATUS_NOT_FOUND);
 	status = SparkSpeculationLookupDraftFind(draft,request->active_sequence_index,request->sequence_position,&match);
+	if ( status == SPARK_STATUS_NOT_FOUND )
+		return(status);
 	if ( status != SPARK_STATUS_OK || match.match_length == 0u )
 		SPARK_RETURN(status);
 	history = draft->tokens + (uint64_t)request->active_sequence_index * draft->lane_capacity;

@@ -651,6 +651,123 @@ static void verify_plain_graph(void)
 	slot->host_output_token_ids[0] = VERIFY_EXPECTED[slot->host_positions[0] + 1u];
 }
 
+static SparkGlm5NextModuleState RANK_STATE[2];
+
+static SparkStatus verify_rank_drive(uint32_t rank,float inverse_temperature,SparkGlm5NextTpChain *chain)
+{
+	static const uint32_t reference[16] = {5u,6u,7u,8u,9u,10u,11u,12u,13u,14u,15u,16u,17u,18u,19u,20u};
+	static uint32_t host_tokens[2][8],host_positions[2][8],host_slots[2][8];
+	static uint32_t token = 5u,row_slot = 0u;
+	static uint64_t row_position = 0u,row_sequence = 3u;
+	static SparkModelDriverFrame frame;
+	static SparkGlm5NextResidentDecodeStageBatchView batch;
+	static SparkRowSampling sampling;
+	SparkGlm5NextModuleState *rank_state = &RANK_STATE[rank];
+	memset(&frame,0,sizeof(frame));
+	memset(&batch,0,sizeof(batch));
+	memset(&sampling,0,sizeof(sampling));
+	sampling.inverse_temperature = inverse_temperature;
+	frame.tokens_per_sequence = 8u;
+	frame.request_id = 77u;
+	batch.row_count = 1u;
+	batch.active_sequence_count = 1u;
+	batch.token_ids = &token;
+	batch.row_resident_slots = &row_slot;
+	batch.row_positions = &row_position;
+	batch.row_sequence_ids = &row_sequence;
+	batch.row_sampling = &sampling;
+	if ( rank_state->verify_draft_function == 0 )
+	{
+		rank_state->verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE;
+		assert(SparkSpeculationReferenceDraftInitialize(&rank_state->verify_reference,SPARK_SPECULATION_REFERENCE_ORACLE,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,reference,16u) == SPARK_STATUS_OK);
+		rank_state->verify_draft_function = SparkSpeculationReferenceDraftTokens;
+		rank_state->verify_draft_context = &rank_state->verify_reference;
+		rank_state->verify_depth_cap = calloc(1u,sizeof(uint32_t));
+		rank_state->verify_depth_sequence = calloc(1u,sizeof(uint64_t));
+		assert(rank_state->verify_depth_cap != 0 && rank_state->verify_depth_sequence != 0);
+	}
+	rank_state->verify_rows_max = 8u;
+	rank_state->max_sequence_positions = 4096u;
+	rank_state->decode_split_context_threshold = 64u;
+	rank_state->slots[0].host_token_ids = host_tokens[rank];
+	rank_state->slots[0].host_positions = host_positions[rank];
+	rank_state->slots[0].host_resident_slots = host_slots[rank];
+	memset(chain,0,sizeof(*chain));
+	chain->state = rank_state;
+	chain->slot = &rank_state->slots[0];
+	chain->frame = &frame;
+	chain->batch = &batch;
+	chain->wave_rows = 1u;
+	chain->steps = 8u;
+	rank_state->completions[0].steps = 8u;
+	return(SparkGlm5NextVerifyDriveDraft(rank_state,&frame,&batch,&rank_state->slots[0],chain));
+}
+
+static void check_verify_rank_local(void)
+{
+	SparkGlm5NextTpChain *chains = calloc(2u,sizeof(*chains));
+	uint32_t fault,rank;
+	assert(chains != 0);
+	for (fault=0u; fault<4u; fault++)
+	{
+		memset(RANK_STATE,0,sizeof(RANK_STATE));
+		for (rank=0u; rank<2u; rank++)
+		{
+			RANK_STATE[rank].graph_path_enabled = 1u;
+			RANK_STATE[rank].experts_warm = 1u;
+			RANK_STATE[rank].slots[0].verify_captured = 1u;
+			atomic_store(&RANK_STATE[rank].terminal_status,SPARK_STATUS_OK);
+		}
+		if ( fault == 1u )
+			RANK_STATE[1].slots[0].graph_failed_rows = UINT64_C(1);
+		if ( fault == 2u )
+			RANK_STATE[1].slots[0].graph_disabled = 1u;
+		if ( fault == 3u )
+			RANK_STATE[1].graph_path_enabled = 0u;
+		assert(verify_rank_drive(0u,0.0f,&chains[0]) == SPARK_STATUS_OK);
+		assert(chains[0].spec_verify == 1u && chains[0].verify_budget == 8u && chains[0].wave_rows == 8u && chains[0].steps == 1u);
+		assert(RANK_STATE[0].verify_frames == 1u && RANK_STATE[0].verify_plain_frames == 0u);
+		if ( fault == 0u )
+		{
+			assert(verify_rank_drive(1u,0.0f,&chains[1]) == SPARK_STATUS_OK);
+			assert(chains[1].spec_verify == chains[0].spec_verify && chains[1].wave_rows == chains[0].wave_rows && chains[1].steps == chains[0].steps);
+			assert(memcmp(chains[1].verify_draft,chains[0].verify_draft,sizeof(chains[0].verify_draft)) == 0);
+			assert(atomic_load(&RANK_STATE[1].terminal_status) == SPARK_STATUS_OK);
+		}
+		else
+		{
+			assert(verify_rank_drive(1u,0.0f,&chains[1]) == SPARK_STATUS_UNSUPPORTED);
+			assert(chains[1].spec_verify == 0u && chains[1].verify_budget == 0u && RANK_STATE[1].verify_frames == 0u && RANK_STATE[1].verify_plain_frames == 0u);
+			assert(atomic_load(&RANK_STATE[1].terminal_status) == SPARK_STATUS_UNSUPPORTED);
+		}
+		for (rank=0u; rank<2u; rank++)
+		{
+			SparkGlm5NextReleaseDrafter(&RANK_STATE[rank]);
+			RANK_STATE[rank].verify_draft_function = 0;
+		}
+	}
+	memset(RANK_STATE,0,sizeof(RANK_STATE));
+	for (rank=0u; rank<2u; rank++)
+	{
+		RANK_STATE[rank].graph_path_enabled = 1u;
+		RANK_STATE[rank].experts_warm = 1u;
+		RANK_STATE[rank].slots[0].verify_captured = 1u;
+		assert(verify_rank_drive(rank,1.0f,&chains[rank]) == SPARK_STATUS_OK);
+		assert(chains[rank].spec_verify == 0u && chains[rank].steps == 8u && RANK_STATE[rank].verify_plain_frames == 1u);
+		assert(RANK_STATE[rank].verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_SAMPLED] == 1u);
+		RANK_STATE[rank].slots[0].verify_captured = 0u;
+		assert(verify_rank_drive(rank,0.0f,&chains[rank]) == SPARK_STATUS_OK && chains[rank].spec_verify == 0u && chains[rank].steps == 8u);
+		RANK_STATE[rank].experts_warm = 0u;
+		RANK_STATE[rank].graph_path_enabled = rank;
+		assert(verify_rank_drive(rank,0.0f,&chains[rank]) == SPARK_STATUS_OK && chains[rank].spec_verify == 0u && chains[rank].steps == 8u);
+		assert(RANK_STATE[rank].verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_PLAIN_COLD] == 2u && RANK_STATE[rank].verify_plain_frames == 3u);
+		assert(atomic_load(&RANK_STATE[rank].terminal_status) == SPARK_STATUS_OK);
+		SparkGlm5NextReleaseDrafter(&RANK_STATE[rank]);
+		RANK_STATE[rank].verify_draft_function = 0;
+	}
+	free(chains);
+}
+
 static void check_verify_rounds(uint32_t drafter)
 {
 	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
@@ -664,6 +781,8 @@ static void check_verify_rounds(uint32_t drafter)
 	SparkGlm5NextTpChain *chain;
 	SparkGlm5NextAsyncCompletion *async;
 	SparkStatus status;
+	uint32_t match,fault_frame;
+	uint64_t accepted_before;
 	memset(&state,0,sizeof(state));
 	memset(&sampling,0,sizeof(sampling));
 	memset(&context,0,sizeof(context));
@@ -781,6 +900,8 @@ static void check_verify_rounds(uint32_t drafter)
 		else
 		{
 			assert(chain->steps == 1u && async->steps == 1u && chain->spec_verify == 1u);
+			fault_frame = drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY && length + 8u >= VERIFY_PROMPT + VERIFY_GENERATE ? 1u : 0u;
+			state.slots[0].graph_disabled = fault_frame;
 			do
 			{
 				assert(chain->wave_rows >= 2u && chain->wave_rows <= 8u && host_positions[0] == chain->verify_position && host_slots[0] == row_slot);
@@ -793,12 +914,26 @@ static void check_verify_rounds(uint32_t drafter)
 					host_output[index] = VerifyTarget(history,fed + 1u);
 				}
 				memcpy(history,expected,sizeof(history));
+				match = 0u;
+				while ( match + 1u < chain->wave_rows && chain->verify_draft[match] == host_output[match] )
+					match++;
+				accepted_before = state.verify_accepted;
 				FOLD_LAST = 0u;
 				status = SparkGlm5NextVerifyCommit(chain,&more);
-				assert(status == SPARK_STATUS_OK && FOLD_LAST >= 1u && FOLD_LAST <= 8u);
+				assert(status == SPARK_STATUS_OK && FOLD_LAST == match + 1u && state.verify_accepted - accepted_before == match);
 				rounds++;
-				assert(SparkGlm5NextVerifyContinue(chain,&more) == SPARK_STATUS_OK);
-			} while ( more != 0u );
+				status = SparkGlm5NextVerifyContinue(chain,&more);
+				assert(status == SPARK_STATUS_OK || fault_frame != 0u);
+			} while ( status == SPARK_STATUS_OK && more != 0u );
+			if ( fault_frame != 0u )
+			{
+				assert(status == SPARK_STATUS_BUSY && atomic_load(&state.terminal_status) == SPARK_STATUS_BUSY && chain->verify_produced == 7u && chain->verify_plain == 0u);
+				state.slots[0].graph_disabled = 0u;
+				atomic_store(&state.terminal_status,SPARK_STATUS_OK);
+				frames++;
+				free(chain);
+				break;
+			}
 			assert(SparkGlm5NextVerifyFinish(chain) == SPARK_STATUS_OK);
 			produced = chain->verify_produced;
 			assert(produced == 8u && async->burst_token_count == produced && async->cache_extra_tokens == produced - 1u);
@@ -2671,6 +2806,7 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
+	check_verify_rank_local();
 	check_callback_retirement();
 	check_stream_receipt();
 	check_chain_ownership();
