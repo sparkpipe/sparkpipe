@@ -13,7 +13,7 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
 PACK_DIR=sparkdata/k3.mxfp4.tp4pp4/packs
 host_of() { echo "spark${HEX:$1:1}"; }
-root_of() { echo "/home/$1/k3-lane$K3_LANE/root"; }
+root_of() { echo "/dev/shm/k3-lane$K3_LANE-$1/root"; }
 pack_of() { echo "/home/$(host_of "$1")/$PACK_DIR/k3.stage$(($1 / 4)).rank0$(($1 % 4)).pack"; }
 PIDS=()
 
@@ -47,7 +47,7 @@ PY
 
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
-    --runtime-root "/home/{host}/k3-lane$K3_LANE/root" \
+    --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
@@ -118,6 +118,16 @@ reclaim() {
   join_ranks reclaim
 }
 
+clean() {
+  local rank host
+  for rank in $(seq 0 15); do
+    host="$(host_of "$rank")"
+    $SSH "$host" "systemctl --user is-active -q $UNIT && { echo $host: $UNIT still active; exit 1; }; rm -rf /dev/shm/k3-lane$K3_LANE-$host" &
+    PIDS[$rank]=$!
+  done
+  join_ranks clean
+}
+
 batch() {
   local host root
   host="$(host_of 0)"
@@ -134,6 +144,7 @@ case "${1:-}" in
   status) status ;;
   stop) stop ;;
   reclaim) reclaim ;;
+  clean) clean ;;
   batch) batch "${2:?batch BATCH_JSON}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|batch FILE" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|clean|batch FILE" >&2; exit 2 ;;
 esac
