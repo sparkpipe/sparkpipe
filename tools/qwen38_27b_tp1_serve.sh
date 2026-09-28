@@ -39,6 +39,7 @@ usage: $0 ACTION [ARG]
   fresh MODE              stop, then launch MODE (residentd serves one client connection; see lane notes)
   api-install SHA         build the x86 API + TP1 adapter on ${HUB}, stage ${API_CHANNEL}, write qwen27b-api.service (not started)
   api-start | api-stop | smoke
+  api-perf OUT MODE       through the API: 427-token TTFT (max_tokens 1) x3, prose and code 256-token end to end
   compsec SHA RUN_ID      COMPSEC-17 (qwen template, thinking off, 512 tokens) from ${HUB} against :${API_PORT}
 USAGE
 	exit 2
@@ -197,6 +198,24 @@ print(json.dumps(r))
 	stop > /dev/null 2>&1
 }
 
+api_perf() {
+	local out=${1:?local jsonl} mode=${2:?serving mode label}
+	scp -q "$HERE/qualification/qwen38_27b/bench_prompts_tp1.json" "${HUB}:${API_CHANNEL}/bench_prompts_tp1.json"
+	on "$HUB" "cd ${API_CHANNEL} && python3 - ${mode} <<'EOF'
+import json, sys, time, urllib.request
+prompts = json.load(open('bench_prompts_tp1.json'))
+def call(ids, max_tokens):
+    body = json.dumps({'prompt_token_ids': ids, 'max_tokens': max_tokens, 'temperature': 0}).encode()
+    req = urllib.request.Request('http://127.0.0.1:${API_PORT}/v1/completions', data=body, headers={'Content-Type': 'application/json'})
+    t0 = time.monotonic()
+    r = json.loads(urllib.request.urlopen(req, timeout=900).read())
+    return time.monotonic() - t0, r
+for case, key, budget in (('api_ttft427', 'ttft350', 1), ('api_ttft427', 'ttft350', 1), ('api_ttft427', 'ttft350', 1), ('api_prose256', 'prose', 256), ('api_code256', 'code', 256)):
+    wall, r = call(prompts[key], budget)
+    print(json.dumps({'case': case, 'mode': sys.argv[1], 'prompt_tokens': r['usage']['prompt_tokens'], 'completion_tokens': r['usage']['completion_tokens'], 'wall_s': round(wall, 3), 'e2e_tok_s': round(r['usage']['completion_tokens'] / wall, 2), 'finish_reason': r['choices'][0]['finish_reason']}))
+EOF" | tee -a "$out"
+}
+
 api_install() {
 	local sha=${1:?SHA} tmp
 	test -f "$HERE/build/api.model_resident.json" || { echo "run configs first" >&2; exit 2; }
@@ -235,6 +254,7 @@ case "$ACTION" in
 	bench) bench "${2:-}" ;;
 	refcheck) refcheck "${2:-}" "${3:-}" ;;
 	fresh) fresh "${2:-}" ;;
+	api-perf) api_perf "${2:-}" "${3:-}" ;;
 	perf) perf "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-128}" ;;
 	api-install) api_install "${2:-}" ;;
 	api-start) on "$HUB" "systemctl --user daemon-reload && systemctl --user start qwen27b-api && sleep 2 && systemctl --user is-active qwen27b-api && curl -s --max-time 5 http://127.0.0.1:${API_PORT}/health; echo" ;;
