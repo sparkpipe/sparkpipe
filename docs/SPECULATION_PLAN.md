@@ -349,6 +349,13 @@ Aggregate gain at batch B with k drafts per sequence is
      rejected rows' KV and index slots are overwritten by the next round;
   4. the drafter observes the committed tokens and the next round starts
      from the new anchor.
+  The depth of each round is also capped per lane by
+  `SparkSpeculationDepthCapNext`: a round whose drafts are all accepted
+  doubles the cap (up to rows - 1), a rejection sets it to the accepted
+  length plus one, and a new sequence on the lane starts at rows - 1. A
+  drafter that keeps missing therefore costs 2-row waves, not 8-row ones,
+  until it hits again. The cap only reads committed counts, so it is
+  identical on every rank. The goodput controller of S4 replaces it.
   The completion carries 1..S tokens like a chain frame. Every frame prints
   `VERIFY-FRAME slot position budget produced rounds accepted | cumulative`.
 - Rank agreement: every input to the round decision (frame, drafter history

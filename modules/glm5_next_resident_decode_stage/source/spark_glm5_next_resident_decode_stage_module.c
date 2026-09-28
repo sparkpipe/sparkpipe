@@ -21,6 +21,7 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_speculation_reference_draft.h"
+#include "sparkpipe/spark_speculation_depth.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -347,6 +348,8 @@ struct SparkGlm5NextModuleState
 	uint64_t verify_accepted;
 	uint64_t verify_tokens;
 	uint64_t verify_accept_depth[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	uint32_t *verify_depth_cap;
+	uint64_t *verify_depth_sequence;
 	uint32_t chain_profile_stage;
 	uint32_t rs_taken;
 	uint32_t rs_hit;
@@ -2349,6 +2352,13 @@ static uint32_t SparkGlm5NextVerifyPlanRound(SparkGlm5NextTpChain *chain,uint32_
 	depth = SparkGlm5NextVerifyDepth(chain->verify_budget,chain->verify_produced,state->verify_rows_max,(uint32_t)chain->verify_position,state->decode_split_context_threshold,state->max_sequence_positions);
 	if ( depth == 0u )
 		return(0u);
+	if ( state->verify_depth_sequence[chain->verify_lane] != chain->verify_sequence_id )
+	{
+		state->verify_depth_sequence[chain->verify_lane] = chain->verify_sequence_id;
+		state->verify_depth_cap[chain->verify_lane] = state->verify_rows_max - 1u;
+	}
+	if ( depth > state->verify_depth_cap[chain->verify_lane] )
+		depth = state->verify_depth_cap[chain->verify_lane];
 	memset(&request,0,sizeof(request));
 	memset(&result,0,sizeof(result));
 	request.abi_version = SPARK_SPECULATION_ABI_VERSION;
@@ -3549,6 +3559,7 @@ static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain,uint32_
 	state->verify_proposed += chain->verify_draft_count;
 	state->verify_accepted += result.accepted_draft_token_count;
 	state->verify_accept_depth[result.accepted_draft_token_count]++;
+	state->verify_depth_cap[chain->verify_lane] = SparkSpeculationDepthCapNext(state->verify_depth_cap[chain->verify_lane],chain->verify_draft_count,result.accepted_draft_token_count,state->verify_rows_max - 1u);
 	chain->verify_rounds++;
 	chain->verify_accepted += result.accepted_draft_token_count;
 	chain->verify_produced += committed;
@@ -5286,6 +5297,12 @@ static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t count;
+	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE )
+		return(SPARK_STATUS_OK);
+	state->verify_depth_cap = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(uint32_t));
+	state->verify_depth_sequence = (uint64_t *)calloc(state->resident_sequence_capacity,sizeof(uint64_t));
+	if ( state->verify_depth_cap == 0 || state->verify_depth_sequence == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
 	{
 		status = SparkSpeculationLookupDraftInitialize(&state->verify_lookup,state->resident_sequence_capacity,state->max_sequence_positions,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH);
@@ -5311,7 +5328,11 @@ static void SparkGlm5NextReleaseDrafter(SparkGlm5NextModuleState *state)
 {
 	SparkSpeculationLookupDraftDestroy(&state->verify_lookup);
 	free(state->verify_reference_tokens);
+	free(state->verify_depth_cap);
+	free(state->verify_depth_sequence);
 	state->verify_reference_tokens = 0;
+	state->verify_depth_cap = 0;
+	state->verify_depth_sequence = 0;
 }
 
 static SparkStatus SparkGlm5NextValidateSpeculation(const SparkGlm5NextModuleState *state)

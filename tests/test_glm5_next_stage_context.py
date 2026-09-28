@@ -680,6 +680,9 @@ static void check_verify_rounds(uint32_t drafter)
 		history[length] = VerifyTarget(history,length);
 	memcpy(expected,history,sizeof(history));
 	state.verify_drafter = drafter;
+	state.verify_depth_cap = calloc(2u,sizeof(uint32_t));
+	state.verify_depth_sequence = calloc(2u,sizeof(uint64_t));
+	assert(state.verify_depth_cap != 0 && state.verify_depth_sequence != 0);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
 	{
 		assert(SparkSpeculationLookupDraftInitialize(&state.verify_lookup,2u,VERIFY_CAPACITY,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH) == SPARK_STATUS_OK);
@@ -784,7 +787,9 @@ static void check_verify_rounds(uint32_t drafter)
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP )
 		assert(state.verify_frames != 0u && state.verify_accepted != 0u && state.verify_lookup.lengths[row_slot] == length);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
-		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds);
+		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds && state.verify_proposed == 7u + rounds - 1u && state.verify_depth_cap[row_slot] == 1u);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
+		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
 	FOLD_ANY = 0u;
 	SparkGlm5NextReleaseDrafter(&state);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
