@@ -1,5 +1,5 @@
 {
-  "file_count": 3088,
+  "file_count": 3089,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "b959ec62ac0b765b51f47b58eacd6353ead2544babb54e97496ec06cea5154fd",
-      "size_bytes": 135201
+      "sha256": "c81f8de46204a736ab4ff885a24ef3dbdc211de2d507ea899212b64320fbd061",
+      "size_bytes": 135238
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -8013,8 +8013,8 @@
     },
     {
       "path": "ring/transport/tp_device_collective.c",
-      "sha256": "669d70fc7544dc4e75141774f14a695ce2c51fb2c9f2fc84ceab80bcce2cf2b1",
-      "size_bytes": 120933
+      "sha256": "665e03f6bc4a8a01509d5a7133682b22248e58bdad74b4222c3d018452117212",
+      "size_bytes": 120935
     },
     {
       "path": "runtime/README",
@@ -8368,8 +8368,8 @@
     },
     {
       "path": "tests/cuda_stub/cuda_runtime_stub.c",
-      "sha256": "a52ccb249bc6ee37c9ca77e59d8e40905df3119602cbe891bab4b14177b72f0d",
-      "size_bytes": 53643
+      "sha256": "cdba92ab89e6c42894c379be1ad157bf7fe6c3cefdd2b1a93086c67cf2954b2a",
+      "size_bytes": 53797
     },
     {
       "path": "tests/fake_model_kernel_probe_module.c",
@@ -9465,6 +9465,11 @@
       "path": "tests/test_glm5_next_bench_wrap.py",
       "sha256": "9365b1f316397796da790cfc56442505c9743d3f552ee3dad4f5dcf7716893c3",
       "size_bytes": 4642
+    },
+    {
+      "path": "tests/test_glm5_next_compsec17.py",
+      "sha256": "3c48ae50e7ec5297134a15f5b30e82fa89698999a742d71001d2226e1833bcce",
+      "size_bytes": 2478
     },
     {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
@@ -10768,8 +10773,8 @@
     },
     {
       "path": "tests/test_tp_allreduce_fuzz.c",
-      "sha256": "7cbe8d7e47f31b6761ab2cca46b802722c0d66138146d20c465a2f11dcac172e",
-      "size_bytes": 96803
+      "sha256": "bbce9e4496c9adea4f263e39850af403cd7f35bcddfa121436000a8137c5711e",
+      "size_bytes": 97078
     },
     {
       "path": "tests/test_tp_collective.c",
@@ -10788,8 +10793,8 @@
     },
     {
       "path": "tests/test_tp_device_collective_mock.c",
-      "sha256": "22f655807d5ba49356b615d9c8f2c06927f52dbf4269275b3528d6078cb4b24a",
-      "size_bytes": 41803
+      "sha256": "2fbd1151f6dbe2fb1db78487e5f83213359c2b8546abb9ed98f5648b02cc5f71",
+      "size_bytes": 44156
     },
     {
       "path": "tests/test_tp_f32_tree_host.py",
@@ -12083,8 +12088,8 @@
     },
     {
       "path": "tools/glm5_next_compsec17.py",
-      "sha256": "de235e8e549f71835d63c1b33a033f016ad4faf6e7f0ff159a005bcd6bba10aa",
-      "size_bytes": 7859
+      "sha256": "9227731566ccddedeb7726c36282392556664b19e02a61608209383c21a8a460",
+      "size_bytes": 9629
     },
     {
       "path": "tools/glm5_next_driver_compare.py",
@@ -15445,5 +15450,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74090481
+  "total_bytes": 74097550
 }

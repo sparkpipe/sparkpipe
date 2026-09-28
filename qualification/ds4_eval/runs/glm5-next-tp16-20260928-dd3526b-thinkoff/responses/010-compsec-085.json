@@ -1,0 +1,47 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:8433/v1/completions",
+  "fixture_prompt_token_count": 213,
+  "prompt_sha256": "297df3c5c0bd91c300f562f2cf30de8f86c84954f96dec74895318646d8b20c3",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 5",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 222,
+   "completion_tokens": 5,
+   "total_tokens": 227
+  },
+  "tokens": [
+   16127,
+   25,
+   220,
+   20,
+   154827
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 502.0,
+  "generated_token_count": 5,
+  "status": 0
+ }
+}

@@ -1,0 +1,51 @@
+{
+ "id": "compsec-079",
+ "request": {
+  "endpoint": "http://127.0.0.1:8433/v1/completions",
+  "fixture_prompt_token_count": 348,
+  "prompt_sha256": "cc51da1756ce6951569a52ca72c220e36bbb51fdb3c669f58dfa464839fcb058",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 9,11,13",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 357,
+   "completion_tokens": 9,
+   "total_tokens": 366
+  },
+  "tokens": [
+   16127,
+   25,
+   220,
+   24,
+   11,
+   98965,
+   11,
+   99366,
+   154827
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 9,11,13",
+ "grade": {
+  "index": 4,
+  "id": "compsec-079",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "18-19",
+  "extracted": "9,11,13",
+  "passed": false,
+  "elapsed_ms": 582.7,
+  "generated_token_count": 9,
+  "status": 0
+ }
+}
