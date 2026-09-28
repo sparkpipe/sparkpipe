@@ -570,6 +570,7 @@ PYTHON_TESTS := \
 	tests/test_ds4_spark_brickproof.py \
 	tests/test_dsv41_flash_geometry.py \
 	tests/test_dsv41_flash_kernels.py \
+	tests/test_dsv41_official_harness.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
 	tests/test_dsv41_flash_pack_contract.py \
 	tests/test_dsv41_flash_shared_lane.py \
