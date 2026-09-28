@@ -175,6 +175,23 @@ chain code on the host harness:
 - `check_ws_snapshot_layout`: spans from the real TP16 KDA pools and strides
   of `AllocateCaches`, their snapshot offsets, and the allocation size.
 
+`make test-glm5-next-rows-kernels` (sparkf, sm_121a) runs the module's own
+recovery launchers on the GPU with the TP16 KDA layout (state rows of
+`KDA_STATE_BYTES_PER_LAYER / 16`, conv-window rows of
+`KDA_CONV_WINDOW_BYTES_PER_LAYER / 48`, Q/K/V pools back to back):
+- `SparkGlm5NextLaunchStateSnapshot` saves the wave rows (state_index {3,1}),
+  the pools are overwritten, and restore brings those rows back bitwise while
+  every other row keeps the overwrite;
+- `SparkGlm5NextLaunchHeadMissPoison` + `LaunchHeadMaxlocUnpack` give
+  `SPARK_STEP_POISON_TOKEN` on every row when the miss flag is set and the
+  real token when it is clear.
+
+It also times the snapshot save for all 34 KDA layers of a TP16 rank (no
+speculation; sparkf, 3 runs, another tenant's harness was using the GPU):
+1 row (9.3 MB) 38.6-41.2 us, 8 rows (74.6 MB) 705-783 us. At B1 the rows
+stay in L2 across repeats, so the fleet cost per step can be higher; at 8
+rows the copy is DRAM-bound (about 200 GB/s of read plus write).
+
 Each of the following mutations makes the harness fail: removing the ring
 reset, the snapshot save or the head poison; making `WsRetry` fail the chain;
 skipping the final-step settle; dropping the per-step replay reset; dropping
