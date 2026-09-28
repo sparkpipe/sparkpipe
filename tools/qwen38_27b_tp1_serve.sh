@@ -48,7 +48,7 @@ on() { ssh -o BatchMode=yes "$@"; }
 build() {
 	local sha=${1:?SHA}
 	git -C "$HERE" archive --format=tar --prefix="src-${sha}/" "$sha" | on "$BUILD_HOST" "mkdir -p ${BUILD_BASE} && tar -xf - -C ${BUILD_BASE}"
-	on "$BUILD_HOST" "cd ${BUILD_BASE}/src-${sha} && systemd-run --user --wait --collect --unit=sp-qwen27b-build-${sha} --same-dir bash -c '
+	on "$BUILD_HOST" "cd ${BUILD_BASE}/src-${sha} && systemd-run --user --wait --collect --unit=sp-qwen27b-build-${sha} --same-dir -p StandardOutput=file:${BUILD_BASE}/src-${sha}/build-qwen27b.log -p StandardError=file:${BUILD_BASE}/src-${sha}/build-qwen27b.log bash -c '
 export PATH=/usr/local/cuda/bin:\$PATH
 set -e
 make -j8 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a build/sparkpipe_weightd build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_model_batch build/sparkpipe_model_compile build/sparkpipe_module_publish build/sparkpipe_driver_inspect hidden_transport_spark_host_rdma_verbs
@@ -56,7 +56,7 @@ make -j8 build/test_stage_module_weightd build/test_weightd_attach build/test_we
 ./build/test_stage_module_weightd && ./build/test_weightd_attach && ./build/test_weightd_map
 make -j8 QWEN38_27B_SERVING_TOPOLOGY_FLAGS=-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=1u build/libqwen38_27b_serving_adapter.so
 make -j8 -C modules/qwen38_27b_resident_decode_stage CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a archive
-' > build-qwen27b.log 2>&1; echo build_rc=\$?; tail -3 build-qwen27b.log"
+' > build-unit.log 2>&1; echo build_rc=\$?; grep -a -E 'ALL PASS|green|Error' build-qwen27b.log | tail -4"
 }
 
 publish_env() {
@@ -65,9 +65,10 @@ publish_env() {
 
 publish() {
 	local sha=${1:?SHA} src=${NODE_BUILD_BASE}/src-${1}
+	on "$NODE" "mkdir -p ${NODE_BUILD_BASE}"
 	on "$BUILD_HOST" "rsync -a ${BUILD_BASE}/src-${sha} ${NODE}:${NODE_BUILD_BASE}/"
 	on "$NODE" "test -S ${WEIGHTD_SOCKET} || { echo 'weightd socket ${WEIGHTD_SOCKET} missing on ${NODE}'; exit 2; }
-cd ${src} && digest=\$(cut -d' ' -f1 ${ROOT}/${PACK_REL}.sha256) && systemd-run --user --wait --collect --unit=sp-qwen27b-publish --same-dir -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=${WEIGHTD_SOCKET} -E SPARK_WEIGHTD_PACK_SHA256=\$digest -E SPARK_WEIGHTD_LANE=${LANE} bash -c '
+cd ${src} && digest=\$(cut -d' ' -f1 ${ROOT}/${PACK_REL}.sha256) && systemd-run --user --wait --collect --unit=sp-qwen27b-publish --same-dir -p StandardOutput=file:${src}/publish-unit.log -p StandardError=file:${src}/publish-unit.log -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=${WEIGHTD_SOCKET} -E SPARK_WEIGHTD_PACK_SHA256=\$digest -E SPARK_WEIGHTD_LANE=${LANE} bash -c '
 export PATH=/usr/local/cuda/bin:\$PATH
 set -e
 make -C modules/qwen38_27b_resident_decode_stage CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a $(publish_env) publish > publish.log 2>&1
