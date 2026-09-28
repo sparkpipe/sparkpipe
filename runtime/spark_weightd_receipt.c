@@ -86,7 +86,7 @@ static SparkStatus receipt_state_dir(char *out,size_t bytes)
 SparkStatus SparkWeightdPackDigestRead(const char *pack_path,char hex[65])
 {
 	char path[SPARK_WEIGHTD_RECEIPT_PATH_BYTES];
-	char text[80];
+	char text[SPARK_SHA256_HEX_BYTES];
 	size_t count;
 	FILE *file;
 	int written;
@@ -98,14 +98,14 @@ SparkStatus SparkWeightdPackDigestRead(const char *pack_path,char hex[65])
 	file = fopen(path,"rb");
 	if ( file == 0 )
 		return(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
-	count = fread(text,1u,65u,file);
+	count = fread(text,1u,sizeof(text),file);
 	(void)fclose(file);
-	if ( count < 64u || (count == 65u && text[64] != ' ' && text[64] != '\t' && text[64] != '\n') )
+	if ( count < sizeof(text) - 1u || (count == sizeof(text) && text[64] != ' ' && text[64] != '\t' && text[64] != '\n') )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	text[64] = 0;
 	if ( receipt_hex_valid(text,64u) == 0 )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	memcpy(hex,text,65u);
+	memcpy(hex,text,sizeof(text));
 	return(SPARK_STATUS_OK);
 }
 
@@ -170,9 +170,9 @@ static SparkStatus receipt_parse(const char *text,size_t bytes,SparkWeightdRecei
 	out->ctime_ns = ctime_ns;
 	out->verified_unix_ns = verified;
 	if ( sha[0] != '-' )
-		memcpy(out->sha256,sha,65u);
+		memcpy(out->sha256,sha,sizeof(out->sha256));
 	if ( ck[0] != '-' )
-		memcpy(out->ck128,ck,33u);
+		memcpy(out->ck128,ck,sizeof(out->ck128));
 	if ( receipt_render(out,canonical,sizeof(canonical),&rendered) != SPARK_STATUS_OK || rendered != bytes || memcmp(canonical,text,bytes) != 0 )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	return(SPARK_STATUS_OK);
@@ -344,7 +344,7 @@ static void receipt_verifier(char *out,const char *role)
 	char host[64];
 	size_t i;
 	if ( gethostname(host,sizeof(host)) != 0 )
-		memcpy(host,"unknown",8u);
+		(void)snprintf(host,sizeof(host),"unknown");
 	host[sizeof(host) - 1u] = 0;
 	(void)snprintf(out,SPARK_WEIGHTD_RECEIPT_VERIFIER_BYTES,"%s host=%s pid=%ld",role,host,(long)getpid());
 	for (i=0u; out[i] != 0; i++)
@@ -378,9 +378,9 @@ SparkStatus SparkWeightdReceiptRecord(const char *pack_path,int32_t fd,const str
 	receipt.ctime_ns = SparkWeightdPackCtimeNs(&current);
 	receipt.verified_unix_ns = now;
 	if ( sha256_hex != 0 )
-		memcpy(receipt.sha256,sha256_hex,65u);
+		memcpy(receipt.sha256,sha256_hex,sizeof(receipt.sha256));
 	if ( ck128_hex != 0 )
-		memcpy(receipt.ck128,ck128_hex,33u);
+		memcpy(receipt.ck128,ck128_hex,sizeof(receipt.ck128));
 	receipt_verifier(receipt.verifier,role);
 	status = receipt_render(&receipt,text,sizeof(text),&bytes);
 	if ( status != SPARK_STATUS_OK )

@@ -51,7 +51,7 @@ static int tool_digest(const char *pack,const char *given,char hex[65])
 			fprintf(stderr,"weightd_receipt: %s is not a lowercase sha256 hex digest\n",given);
 			return(2);
 		}
-		memcpy(hex,given,65u);
+		memcpy(hex,given,SPARK_SHA256_HEX_BYTES);
 		return(0);
 	}
 	status = SparkWeightdPackDigestRead(pack,hex);
@@ -182,10 +182,10 @@ static int tool_legacy_match(const char *directory,const char *name,const struct
 		record.mtime_ns != SparkWeightdPackMtimeNs(pack) || record.ctime_ns != SparkWeightdPackCtimeNs(pack) )
 		return(-1);
 	SparkSha256DigestToHex(record.sha,sha_hex);
-	if ( SparkSha256Bytes(sha_hex,64u,key) != SPARK_STATUS_OK || memcmp(key,name,64u) != 0 )
+	if ( SparkSha256Bytes(sha_hex,64u,key) != SPARK_STATUS_OK || memcmp(key,name,SPARK_SHA256_HEX_BYTES - 1u) != 0 )
 		return(-1);
 	ck_hex[0] = 0;
-	if ( record.proof == 0u && memcmp(record.ck,zero,16u) != 0 )
+	if ( record.proof == 0u && memcmp(record.ck,zero,sizeof(zero)) != 0 )
 		SparkCk128DigestToHex(record.ck,ck_hex);
 	*proof = record.proof;
 	return(0);
