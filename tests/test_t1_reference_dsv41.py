@@ -23,8 +23,8 @@ HIDDEN = 32
 HEAD_DIM = 32
 ROPE_DIM = 8
 HEADS = 2
-Q_LORA = 8
-O_LORA = 6
+Q_LORA = 32
+O_LORA = 16
 O_GROUPS = 2
 INDEX_HEADS = 2
 INDEX_DIM = 32
@@ -393,7 +393,7 @@ def main():
                f"identical fixtures must PASS: {identical.stdout}")
         mutated = os.path.join(workspace, "checkpoint_mutated")
         write_checkpoint(mutated, mutate=(
-            "layers.3.ffn.experts.2.w1.weight", 0, 0x25))
+            "layers.3.ffn.shared_experts.w2.scale", 0, 147))
         out_c = os.path.join(workspace, "run_c")
         result_c = run_generator(mutated, header, prompts, out_c)
         expect(result_c.returncode == 0,

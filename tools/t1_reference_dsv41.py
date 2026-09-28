@@ -625,6 +625,8 @@ class Dsv41FlashEngine:
         if entry["dtype"] not in ("BF16", "U8", "F8_E4M3"):
             raise Dsv41ConfigError(
                 f"unsupported weight dtype for {name}: {entry['dtype']}")
+        if entry["dtype"] != "BF16":
+            x = _fp8_qdq_rows(x.reshape(1, -1))[0]
         return bf16_round_f32(self._matvec_chunked(x, name, rows, in_dim,
                                                    entry["dtype"]))
 
@@ -683,7 +685,8 @@ class Dsv41FlashEngine:
             raise Dsv41ConfigError(
                 f"unsupported expert weight dtype for {name}: "
                 f"{entry['dtype']}")
-        return bf16_round_f32(self._mxfp4_matvec(x, name))
+        return bf16_round_f32(self._mxfp4_matvec(
+            _fp8_qdq_rows(x.reshape(1, -1))[0], name))
 
     def _hc_mixes(self, layer, streams, kind):
         p = f"{PREFIX}{layer}.hc_{kind}_"
@@ -957,8 +960,8 @@ class Dsv41FlashEngine:
                 x, expert_prefix + "w1.weight")), self.limit)
             up = np.clip(bf16_round_f32(self._expert_linear(
                 x, expert_prefix + "w3.weight")), -self.limit, self.limit)
-            activated = bf16_round_f32(_silu(gate) * up)
-            y += weights[i] * bf16_round_f32(self._expert_linear(
+            activated = bf16_round_f32(_silu(gate) * up * weights[i])
+            y += bf16_round_f32(self._expert_linear(
                 activated, expert_prefix + "w2.weight"))
         y += self._shared_expert(layer, x)
         if _DEBUG:
