@@ -1,5 +1,10 @@
 # Weightd-owned mesh: the deploy cycle floor
 
+> Archived 2026-09-28. A pre-implementation plan. The shipped mesh is a full
+> 15-peer mesh with one send and one receive QP per peer, records exchanged
+> as files under `--mesh-dir` (`node/weightd_mesh.c`, `tools/fleet_node_agent.sh`).
+> Current authority: [WEIGHTD_DESIGN.md](../WEIGHTD_DESIGN.md).
+
 ## The reframe
 
 RDMA queue pairs are kernel objects that die with their process. Putting them

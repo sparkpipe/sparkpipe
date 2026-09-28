@@ -242,7 +242,7 @@ partial campaign. The corrected fresh run used an explicit 32 GiB host budget.
 The queue regression also reproduces fetched-only commits in a real shallow
 Git repository and proves sync preserves the requested source.
 
-See [parallel resident qualification](PARALLEL_RESIDENT_QUALIFICATION.md) for
+See [parallel resident qualification](archive/PARALLEL_RESIDENT_QUALIFICATION.md) for
 actual four/eight-instance GLM fleet results and the separate mixed-topology
 initialization failure. These host and device receipts retain different scopes.
 

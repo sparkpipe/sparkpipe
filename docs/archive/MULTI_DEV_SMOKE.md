@@ -1,5 +1,12 @@
 # Multi-dev parallel smoke — protocol, results, and the CUDA co-residency answer
 
+> Archived 2026-09-28. Record of a 2026-09-15 branch experiment. SMOKE-F1 was
+> fixed on main in 4ed8ec3. The `runs/` receipts were never committed
+> (`runs/` is gitignored). The MESH_LEASE one-mesh rule is obsolete: weightd
+> has 16 lanes. Its reproduce steps start private daemons, which stops the
+> fleet agent from managing that node. Current guide:
+> [MULTIDEV_QUICKSTART.md](../MULTIDEV_QUICKSTART.md).
+
 SMOKE-MD dispatch, 2026-09-15 (node time KST). Branch `lane/multi-dev-smoke`,
 based on `lane/mesh-lanes-multi-driver` (c59954b, PR #1013 lane work).
 Raw receipts: `runs/multi-dev-smoke-receipts/` on the branch.

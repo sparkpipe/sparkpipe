@@ -1,5 +1,10 @@
 # Weightd mesh implementation plan (Phase 1: daemon-start wiring)
 
+> Archived 2026-09-28. Phase-1 plan for [WEIGHTD_MESH.md](WEIGHTD_MESH.md). Only
+> the `mesh_ready` attach-result field landed as written; tree routes, four QPs
+> per route and the hub HTTP exchange did not. Current authority:
+> [WEIGHTD_DESIGN.md](../WEIGHTD_DESIGN.md).
+
 ## What weightd does at startup (once per node boot, 15s budget)
 
 ```

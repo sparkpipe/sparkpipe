@@ -1,5 +1,10 @@
 # Parallel resident qualification
 
+> Archived 2026-09-28. A record of the PR #1082 / shared-serving-20260922
+> campaigns. Since then weightd has 16 lanes, not 8, and the fleet agent again
+> owns weightd and residentd on every Spark. Current guide:
+> [MULTIDEV_QUICKSTART.md](../MULTIDEV_QUICKSTART.md).
+
 The release gate is concurrent inference with correct tokens and bounded shared
 residency, followed by verified cleanup. Starting processes or printing readiness
 is insufficient. Different model families also need their own execution evidence;
@@ -97,7 +102,7 @@ Measured device usage was 47.2 GiB per Spark. Reclaimable pack page cache filled
 one host cgroup during startup without an OOM; these are declared reservations
 plus observed allocations, not a hard CUDA allocator limit.
 
-The corresponding [compact receipt](receipts/parallel-residents-44fe4af7.json)
+The corresponding [compact receipt](../receipts/parallel-residents-44fe4af7.json)
 contains every rank receipt hash and timing boundary. Raw receipts remain under
 `/private/tmp/sparkpipe-pr1082-receipts/shared-44fe4af7/` on the review workstation.
 Eight is the current explicit lane capacity. These are eight independent GLM
@@ -111,7 +116,7 @@ file offset zero into it. Nine focused offset/failure/schema cases pass; the old
 implementation fails the forced-misalignment byte oracle. The mixed-topology
 hardware result remains a failure until rerun.
 All sixteen queue control groups stopped. The failed attempt is
-`76dbd15ed4154c38a49cef183513a116`; its [failure receipt](receipts/mixed-mesh-44fe4af7-failure.json)
+`76dbd15ed4154c38a49cef183513a116`; its [failure receipt](../receipts/mixed-mesh-44fe4af7-failure.json)
 retains the exact initialization error and qualification boundary.
 
 ## Aligned-mapping repeat
@@ -122,7 +127,7 @@ exited zero; 256 output tokens matched and all 144 owned processes were absent.
 Aggregate decode was **13.010 tok/s**, per resident **1.623–1.669 tok/s**, with
 **48,346 MiB** device memory on every Spark. The common window contained 236 tokens
 over 18.140 seconds. Budgets and model geometry were unchanged.
-The [repeat receipt](receipts/parallel-residents-852e01a2.json) pins every rank.
+The [repeat receipt](../receipts/parallel-residents-852e01a2.json) pins every rank.
 
 The separate mixed-layout probe registered all 55 children and performed numerical
 work, then failed at an eager gather capability check before full qualification.
@@ -135,7 +140,7 @@ receipt remains partial evidence; see the release archive for subsequent reruns.
 
 ## Evidence
 
-The compact [fleet receipt](receipts/parallel-residents-2b24873d.json) pins source,
+The compact [fleet receipt](../receipts/parallel-residents-2b24873d.json) pins source,
 bundle, attempts, output counts, timing boundaries and per-rank receipt hashes.
 Full evidence is retained at
 `/private/tmp/sparkpipe-pr1082-receipts/shared-2b24873d/` on the review workstation.

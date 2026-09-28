@@ -1,5 +1,13 @@
 # weightd module-execute stability — diagnosis and fix (2026-09-13, D-1 lane)
 
+> Archived 2026-09-28. The map-teardown fix landed on main in 4ed8ec3
+> (`map_free_initial` in `runtime/spark_weightd_map.c`). The kill waves were later
+> traced to the out-of-band `tools_local/{p,b}` scripts on sparkf
+> (DEPLOY_MULTI_DEV_PROPOSAL.md, section 0.1). `install_core` no longer kills
+> weightd, and the mgr2 ownership is obsolete. The rig below starts a private
+> `sparkpipe_weightd`; do not run it on a Spark managed by the fleet agent
+> ([WEIGHTD_DESIGN.md](../WEIGHTD_DESIGN.md#production-ownership)).
+
 FAILURE CLASS ON RECORD (mgr2 dispatch): the 00:26 09-12 weightd deploy was
 unstable under module-execute; spark3 showed lease/map IO_ERROR during module
 execute; spark2 double-restarted; the phase-2 fixed-slot ring wedge was open.
