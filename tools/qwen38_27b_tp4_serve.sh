@@ -6,8 +6,9 @@ MESH_RANKS=0,1,2,5
 LANE=3
 PACK_NAME=qwen27b.mx2.tp4
 ROOT_TEMPLATE='/home/{host}/sparkdata/qwen27b.mx2.tp4'
-STAGE_HOST=spark8
-STAGE_PACKS=/home/${STAGE_HOST}/sparkdata/qwen27b.mx2.tp4/packs
+PACK_HOST=spark8
+STAGE_PACKS=/home/${PACK_HOST}/sparkdata/qwen27b.mx2.tp4/packs
+STAGE_HOST=spark9
 STAGE_TP1_ROOT=/home/${STAGE_HOST}/sparkdata/qwen27b.fp8.tp1
 BUILD_BASE=/home/${STAGE_HOST}/build-qwen27b
 WEIGHTD_SOCKET=/tmp/spark_weightd.sock
@@ -35,7 +36,7 @@ usage() {
 usage: $0 ACTION [ARG]
   build SHA               archive SHA to ${STAGE_HOST}:${BUILD_BASE}/src-SHA; host binaries, TP4 adapter, module archive, weightd tests
   publish SHA             module GPU validation on ${STAGE_HOST} (TP1 pack, lane ${LANE}, arena reclaimed after) and driver compile
-  install SHA             ${HOSTS[*]}: rank pack from ${STAGE_HOST}, binaries/driver/TP4 adapter from src-SHA, drafter from the TP1 root
+  install SHA             ${HOSTS[*]}: rank pack from ${PACK_HOST}, binaries/driver/TP4 adapter from src-SHA, drafter from the TP1 root
   configs                 write the TP4 deployment and per-rank adapter configs to every node and build/api.tp4.model_resident.json
   launch nospec|dflash2   residentd rank R on HOSTS[R] in unit ${UNIT} (lane ${LANE}, mesh ${MESH_RANKS}); refuses unless ${GATE_FILE} says DEPLOYED
   status | stop | fresh MODE | reclaim
@@ -97,7 +98,8 @@ install() {
 		host=${HOSTS[$rank]}
 		root=$(root_of "$host")
 		on "$host" "mkdir -p ${root}/packs ${root}/bin ${root}/lib ${root}/stages ${root}/drafter ${root}/config ${root}/logs && find ${root}/packs -name '*.sha256' ! -name '${PACK_NAME}.rank${rank}.qwen36sp.sha256' -delete"
-		on "$STAGE_HOST" "rsync -a ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp.sha256 ${host}:${root}/packs/ && rsync -a ${BUILD_BASE}/src-${src}/build/sparkpipe_model_residentd ${BUILD_BASE}/src-${src}/build/sparkpipe_model_batch ${host}:${root}/bin/ && rsync -a --delete ${BUILD_BASE}/src-${src}/build/tp-driver/stages/ ${host}:${root}/stages/ && rsync -a ${STAGE_TP1_ROOT}/drafter/ ${host}:${root}/drafter/ && rsync -a ${BUILD_BASE}/src-${src}/build/libhidden_transport_spark_host_rdma_verbs.so ${host}:${root}/lib/hidden_transport.so && rsync -a ${BUILD_BASE}/src-${src}/build/libqwen38_27b_serving_adapter.so ${host}:${root}/lib/model_serving_adapter.so" &
+		on "$PACK_HOST" "rsync -a ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp.sha256 ${host}:${root}/packs/" &
+		on "$STAGE_HOST" "rsync -a ${BUILD_BASE}/src-${src}/build/sparkpipe_model_residentd ${BUILD_BASE}/src-${src}/build/sparkpipe_model_batch ${host}:${root}/bin/ && rsync -a --delete ${BUILD_BASE}/src-${src}/build/tp-driver/stages/ ${host}:${root}/stages/ && rsync -a ${STAGE_TP1_ROOT}/drafter/ ${host}:${root}/drafter/ && rsync -a ${BUILD_BASE}/src-${src}/build/libhidden_transport_spark_host_rdma_verbs.so ${host}:${root}/lib/hidden_transport.so && rsync -a ${BUILD_BASE}/src-${src}/build/libqwen38_27b_serving_adapter.so ${host}:${root}/lib/model_serving_adapter.so" &
 	done
 	wait
 	for rank in "${!HOSTS[@]}"; do
