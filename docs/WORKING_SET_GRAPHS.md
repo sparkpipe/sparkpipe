@@ -102,6 +102,11 @@ flow or collective ordinals, so hardware-wait collectives cannot deadlock.
 
 **Leases.** Keys are leased through weightd in groups of at most 512
 (`SparkWeightdMapAcquire` + `BeginUse`, sharing the pinned-lease table of 32).
+If any group of one grow fails (acquire, begin, or a lease base that differs
+from the one the graphs were built on), every lease taken by that grow is
+released again (`RecordCompletion` for begun leases, then `Release`), so the
+table never keeps leases for keys the cover does not mark. A failed unwind is
+returned instead of the grow status and fails the chain.
 Attach prints
 `EXPERT-RESIDENCY mode=working-set wset= keys= of N leases= rows_max=8 replays=2`.
 
@@ -125,8 +130,10 @@ following:
    and leaves the result correct.
 4. Replays the same step. `FeedStep` does not run.
 
-After 2 replays the step runs eager (`ws_force_eager`, cleared when the step
-commits). Every input to the replay/eager decision is the agreed verdict
+The replay budget is per step. After 2 replays the step runs eager
+(`ws_force_eager`). When a step commits, `FeedStep` clears `ws_force_eager`
+and resets the replay attempts (`SparkStepReplayNext` with a commit verdict),
+so an earlier step's replays never shorten a later step's budget. Every input to the replay/eager decision is the agreed verdict
 history, so all ranks decide the same way; a ring overflow does not change the
 decision. `GRAPH-WS-RECOVER` logs each recovery with running local, remote,
 replay and eager counts.
@@ -137,8 +144,41 @@ replay and eager counts.
 - There is no degrade gate: a lane that keeps thrashing pays two replays plus
   an eager step on every miss.
 - Keys seen on eager steps are not fed back into growth.
-- A corrupt ring on one rank fails that rank's chain, and the other ranks find
-  out through the collective timeout. There is no cancel broadcast yet.
+- A rank-local recovery error (a corrupt ring, a failed restore or sync, a
+  failed unwind) fails that rank's chain through `TpChainFail`, which
+  broadcasts a cancel on both collectives, so the other ranks see the cancel
+  instead of waiting for the collective timeout.
+- When ranks' covers differ, a remote-induced divergence can make other ranks
+  record local misses at later layers; they then report rollback-local and
+  harvest keys from their own first layer. Carrying the global first-miss
+  layer in the poison value is a follow-up; until then the local/remote
+  counts are diagnostics, not a proof of which rank missed.
+
+**Tests.** `tests/test_glm5_next_stage_context.py` drives the module's own
+chain code on the host harness:
+- `check_ws_open`: `.wset` load, digest check, exclusivity with pinned
+  experts, single-stage requirement, out-of-range keys and missing anchors.
+- `check_ws_acquire_unwind`: partial failures in a two-group grow release
+  every new lease and keep the existing ones.
+- `check_ws_chain_rollback`: a 2-step chain through `TpChainAdvance` and the
+  linear chain. The walk order is checked
+  (`z` ring reset, `B` WaveBegin, `s` snapshot, ..., `H` head, `p` poison,
+  `x` head reduce, `U` unpack, `L` restore). A local miss rolls back, grows
+  the set by the missed key and replays; a remote miss on the final step is
+  settled in `FinishChain` and replayed; a corrupt ring fails the chain with
+  both broadcasts cancelled and positions untouched.
+- `check_ws_replay_budget`: a 3-step chain where step 0 needs one replay and
+  step 1 misses three times gets two replays on step 1, then runs it eager
+  (no ring reset, snapshot or poison).
+- `check_ws_graph_result_replays`: a rollback verdict from the graph path
+  restarts the step through `WsRetry`.
+- `check_ws_snapshot_layout`: spans from the real TP16 KDA pools and strides
+  of `AllocateCaches`, their snapshot offsets, and the allocation size.
+
+Each of the following mutations makes the harness fail: removing the ring
+reset, the snapshot save or the head poison; making `WsRetry` fail the chain;
+skipping the final-step settle; dropping the per-step replay reset; dropping
+the lease unwind.
 
 The fleet proof is not done yet. It needs a dev weightd lane (lane 5) running
 this build with a trace-built `.wset`, compared against the same build in FULL

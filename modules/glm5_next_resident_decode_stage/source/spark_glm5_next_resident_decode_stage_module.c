@@ -2341,6 +2341,7 @@ static void SparkGlm5NextFeedStep(SparkGlm5NextTpChain *chain)
 		slot->host_token_ids[index] = slot->host_output_token_ids[index];
 	}
 	chain->ws_force_eager = 0u;
+	(void)SparkStepReplayNext(&chain->ws_replay,SPARK_STEP_VERDICT_COMMIT);
 }
 
 static uint32_t SparkGlm5NextWsRetry(SparkGlm5NextTpChain *chain);
@@ -2595,9 +2596,9 @@ static SparkStatus SparkGlm5NextPinAllExperts(SparkGlm5NextModuleState *state)
 	return(status);
 }
 
-static SparkStatus SparkGlm5NextReleasePinnedExperts(SparkGlm5NextModuleState *state)
+static SparkStatus SparkGlm5NextReleasePinnedAbove(SparkGlm5NextModuleState *state,uint32_t floor)
 {
-	while ( state->expert_pin_lease_count != 0u )
+	while ( state->expert_pin_lease_count > floor )
 	{
 		uint32_t index = state->expert_pin_lease_count - 1u;
 		SparkStatus status;
@@ -2613,6 +2614,14 @@ static SparkStatus SparkGlm5NextReleasePinnedExperts(SparkGlm5NextModuleState *s
 		state->expert_pin_leases[index] = 0u;
 		state->expert_pin_lease_count--;
 	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextReleasePinnedExperts(SparkGlm5NextModuleState *state)
+{
+	SparkStatus status = SparkGlm5NextReleasePinnedAbove(state,0u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	state->expert_pin_key_count = 0u;
 	return(SPARK_STATUS_OK);
 }
@@ -2641,8 +2650,8 @@ static SparkStatus SparkGlm5NextWsAcquire(void *context,const uint32_t *keys,uin
 {
 	SparkGlm5NextModuleState *state = (SparkGlm5NextModuleState *)context;
 	SparkWeightdExpertKey group[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
-	uint32_t index = 0u,take,item,slot,capacity = (uint32_t)(sizeof(state->expert_pin_leases) / sizeof(state->expert_pin_leases[0]));
-	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index = 0u,take,item,slot,capacity = (uint32_t)(sizeof(state->expert_pin_leases) / sizeof(state->expert_pin_leases[0])),floor = state->expert_pin_lease_count,taken;
+	SparkStatus status = SPARK_STATUS_OK,unwind;
 	if ( state->expert_pin_lease_count + SparkCeilDivU32(count,SPARK_WEIGHTD_LEASE_GROUPS_MAX) > capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	while ( index < count && status == SPARK_STATUS_OK )
@@ -2662,16 +2671,22 @@ static SparkStatus SparkGlm5NextWsAcquire(void *context,const uint32_t *keys,uin
 		}
 		if ( status == SPARK_STATUS_OK )
 			status = lease != 0u ? SparkWeightdMapBeginUse(state->lazy_pack->map,lease,&base) : SPARK_STATUS_VALIDATION_FAILED;
+		if ( status == SPARK_STATUS_OK )
+			state->expert_pin_phases[slot] = 1u;
 		if ( status == SPARK_STATUS_OK && (base == 0 || (state->decode_lease_base_saved != 0 && state->decode_lease_base_saved != base)) )
 			status = SPARK_STATUS_VALIDATION_FAILED;
 		if ( status == SPARK_STATUS_OK )
 		{
-			state->expert_pin_phases[slot] = 1u;
 			state->decode_lease_base_saved = base;
 			index += take;
 		}
 	}
-	SPARK_RETURN(status);
+	if ( status == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	taken = state->expert_pin_lease_count - floor;
+	unwind = SparkGlm5NextReleasePinnedAbove(state,floor);
+	fprintf(stderr,"EXPERT-WSET acquire failed status=%d keys=%u new_leases=%u unwind_status=%d\n",(int)status,count,taken,(int)unwind);
+	SPARK_RETURN(unwind != SPARK_STATUS_OK ? unwind : status);
 }
 
 static SparkStatus SparkGlm5NextWsLoad(const char *path,const char *digest,uint32_t **keys_out,uint32_t *count_out)
