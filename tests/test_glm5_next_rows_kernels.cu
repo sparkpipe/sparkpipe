@@ -378,6 +378,75 @@ static void AttentionCaseRun(uint32_t rows,uint32_t heads,uint32_t maximum_conte
     printf("PASS all-heads latent attention rows=%u heads=%u context=%u selected=%u multiprocessors=%u worst_abs=%.6f old_kernel_worst_abs=%.6f reference=f64\n",rows,heads,maximum_context,selected,multiprocessors,worst,worst_old);
 }
 
+static void SampledHeadLaunch(const uint16_t *normed,const uint16_t *weight,uint32_t rows,uint32_t vocabulary,SparkRowSampling *device_rules,uint32_t *device_positions,const SparkRowSampling *host_rules,const uint32_t *host_positions,float *candidate_score,uint32_t *candidate_token,uint32_t *token,float *score,cudaStream_t stream)
+{
+    const uint32_t tiles=(vocabulary+GLM5_NEXT_HEAD_TILE-1u)/GLM5_NEXT_HEAD_TILE;
+    const LmHeadSampling sampling={device_rules,device_positions,rows,0u};
+    CUDA(cudaMemcpyAsync(device_rules,host_rules,(uint64_t)rows*sizeof(SparkRowSampling),cudaMemcpyHostToDevice,stream));
+    CUDA(cudaMemcpyAsync(device_positions,host_positions,(uint64_t)rows*sizeof(uint32_t),cudaMemcpyHostToDevice,stream));
+    if (rows > 1u)
+        LmHeadSampledCandidateRowsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE,GLM5_NEXT_HEAD_ROWS><<<dim3(tiles,(rows+GLM5_NEXT_HEAD_ROWS-1u)/GLM5_NEXT_HEAD_ROWS),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,candidate_score,candidate_token,rows,GLM5_NEXT_HIDDEN,vocabulary,sampling);
+    else
+        LmHeadSampledCandidateKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE><<<dim3(tiles,rows),GLM5_NEXT_LAYER_THREADS,0,stream>>>(normed,weight,candidate_score,candidate_token,GLM5_NEXT_HIDDEN,vocabulary,sampling);
+    CUDA(cudaPeekAtLastError());
+    LmHeadCommitKernel<GLM5_NEXT_LAYER_THREADS><<<rows,GLM5_NEXT_LAYER_THREADS,0,stream>>>(candidate_score,candidate_token,tiles,token,score,rows);
+    CUDA(cudaPeekAtLastError());
+}
+
+static void SampledHeadGraphCase(uint32_t rows,uint32_t vocabulary,cudaStream_t stream)
+{
+    const uint32_t tiles=(vocabulary+GLM5_NEXT_HEAD_TILE-1u)/GLM5_NEXT_HEAD_TILE;
+    std::vector<uint16_t> normed((uint64_t)rows*GLM5_NEXT_HIDDEN),weight((uint64_t)vocabulary*GLM5_NEXT_HIDDEN);
+    SparkRowSampling *host_rules,*device_rules;
+    uint32_t *host_positions,*device_positions,*candidate_token,*token_graph,*token_eager,step,row,moved=0u,seen_greedy=0u;
+    float *candidate_score,*score_graph,*score_eager;
+    cudaGraph_t graph;
+    cudaGraphExec_t exec;
+    std::vector<uint32_t> first;
+    for (auto &value : normed) value=Bf16(Signed());
+    for (auto &value : weight) value=Bf16(Signed()*0.05f);
+    uint16_t *device_normed=Upload(normed),*device_weight=Upload(weight);
+    CUDA(cudaHostAlloc((void **)&host_rules,(uint64_t)rows*sizeof(SparkRowSampling),cudaHostAllocPortable));
+    CUDA(cudaHostAlloc((void **)&host_positions,(uint64_t)rows*sizeof(uint32_t),cudaHostAllocPortable));
+    CUDA(cudaMalloc(&device_rules,(uint64_t)rows*sizeof(SparkRowSampling))); CUDA(cudaMalloc(&device_positions,(uint64_t)rows*4u));
+    CUDA(cudaMalloc(&candidate_score,(uint64_t)rows*tiles*4u)); CUDA(cudaMalloc(&candidate_token,(uint64_t)rows*tiles*4u));
+    CUDA(cudaMalloc(&token_graph,rows*4u)); CUDA(cudaMalloc(&token_eager,rows*4u)); CUDA(cudaMalloc(&score_graph,rows*4u)); CUDA(cudaMalloc(&score_eager,rows*4u));
+    for (row=0u; row<rows; row++) { host_rules[row]=SparkSamplingRule(0.8f,5u+row); host_positions[row]=10u+row; }
+    CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+    SampledHeadLaunch(device_normed,device_weight,rows,vocabulary,device_rules,device_positions,host_rules,host_positions,candidate_score,candidate_token,token_graph,score_graph,stream);
+    CUDA(cudaStreamEndCapture(stream,&graph));
+    CUDA(cudaGraphInstantiate(&exec,graph,0));
+    for (step=0u; step<24u; step++)
+    {
+        for (row=0u; row<rows; row++)
+        {
+            host_rules[row]=SparkSamplingRule((row+step)%4u == 0u ? 0.0f : 0.5f+0.25f*(float)((row+step)%5u),1000u+step*31u+row);
+            host_positions[row]=200u+step+row*3u;
+            seen_greedy|=host_rules[row].inverse_temperature == 0.0f ? 1u : 0u;
+        }
+        CUDA(cudaGraphLaunch(exec,stream));
+        CUDA(cudaStreamSynchronize(stream));
+        SampledHeadLaunch(device_normed,device_weight,rows,vocabulary,device_rules,device_positions,host_rules,host_positions,candidate_score,candidate_token,token_eager,score_eager,stream);
+        CUDA(cudaStreamSynchronize(stream));
+        std::vector<uint32_t> tg=Download(token_graph,rows),te=Download(token_eager,rows);
+        std::vector<float> sg=Download(score_graph,rows),se=Download(score_eager,rows);
+        for (row=0u; row<rows; row++)
+            if (tg[row] != te[row] || memcmp(&sg[row],&se[row],4u) != 0)
+            {
+                fprintf(stderr,"SAMPLED-GRAPH-MISMATCH rows=%u step=%u row=%u graph=%u eager=%u\n",rows,step,row,tg[row],te[row]);
+                exit(1);
+            }
+        if (step == 0u) first=tg;
+        else for (row=0u; row<rows; row++) moved+=tg[row] != first[row] ? 1u : 0u;
+    }
+    REQUIRE(moved != 0u && seen_greedy != 0u);
+    printf("PASS sampled head graph replay rows=%u steps=24 tokens_and_scores_equal_eager=yes per_step_seed_changes_moved=%u\n",rows,moved);
+    CUDA(cudaGraphExecDestroy(exec)); CUDA(cudaGraphDestroy(graph));
+    CUDA(cudaFreeHost(host_rules)); CUDA(cudaFreeHost(host_positions));
+    CUDA(cudaFree(device_normed)); CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_rules)); CUDA(cudaFree(device_positions));
+    CUDA(cudaFree(candidate_score)); CUDA(cudaFree(candidate_token)); CUDA(cudaFree(token_graph)); CUDA(cudaFree(token_eager)); CUDA(cudaFree(score_graph)); CUDA(cudaFree(score_eager));
+}
+
 int main(int argc,char **argv)
 {
     cudaStream_t stream;
@@ -398,6 +467,8 @@ int main(int argc,char **argv)
     HeadCase(8u,9680u,true,stream);
     for (uint32_t rows : {1u,3u,17u,256u})
         SampledHeadCase(rows,9680u,stream);
+    for (uint32_t rows : {1u,3u,17u})
+        SampledHeadGraphCase(rows,9680u,stream);
     for (uint32_t rows : {1u,4u,5u,8u,17u,256u})
     {
         ProjectCase<GLM5_NEXT_QK_NOPE_DIM,GLM5_NEXT_LATENT,GLM5_NEXT_QK_NOPE_DIM+GLM5_NEXT_ROPE_DIM>(rows,"query_absorb",stream);
