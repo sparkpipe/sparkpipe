@@ -82,6 +82,7 @@ static inline unsigned __float_as_uint(float value)
 	unsigned bits; memcpy(&bits, &value, sizeof(bits)); return bits;
 }
 static inline int __float2int_rn(float value) { return (int)nearbyintf(value); }
+static inline int __ffs(int value) { return __builtin_ffs(value); }
 struct float2 { float x, y; };
 struct float4 { float x, y, z, w; };
 struct uint2 { unsigned x, y; };
