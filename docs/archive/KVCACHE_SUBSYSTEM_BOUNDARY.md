@@ -160,6 +160,33 @@ The prompt-prefix reuse index, owned by the runtime batch engine (see 2.3).
 - Lookahead protection (SparkPrefixCacheProtectPromptLookahead) and reuse-scored
   resident eviction (SparkPrefixCacheTrimResidentBlocksByReuseScore) -
   spark_prefix_cache.h:249-262.
+- Tombstones (SparkPrefixCacheTombstonePrompt): the engine index is a hint,
+  and the ranks own the state. When the ranks reject a prefill wave at
+  prepare with NOT_FOUND and exactly one lane of that wave carried a cached
+  prefix, the engine releases that lane's bindings and tombstones the deepest
+  entry of its prefix. The entry loses REUSABLE and gains STALE, so no lookup
+  finds it again. It is freed at once when unreferenced, otherwise when its
+  last binding is released; a sequence already bound to it may still extend
+  it. The lane restarts from position zero, and every other lane of the wave
+  is requeued unchanged with no backoff. Each retry drops one reachable
+  entry, so a prompt recomputes at most once per cached block.
+- A NOT_FOUND wave with two or more prefix lanes does not say which prefix
+  is stale, so nothing is tombstoned. Each prefix lane is marked isolated and
+  requeued; an isolated prefix lane is dispatched alone in its own prefill
+  wave until one is admitted. A NOT_FOUND on that single-lane wave tombstones
+  exactly its prefix, and valid prefixes are never destroyed alongside it.
+  `stale_prefix_isolation_count` counts these waves.
+- VALIDATION_FAILED is never a stale-prefix signal. It is the status for
+  protocol and ownership violations, so it takes the ordinary rejection path
+  and fails its requests loudly. A rank that finds a corrupt or truncated
+  snapshot file discards it and answers NOT_FOUND after logging the checksum
+  failure. Waves that failed after admission keep failing their requests, and
+  BUSY keeps its backoff. `stale_prefix_recompute_count` in the engine view
+  counts the recomputes (I23).
+- Prefix hits and misses are counted when the prefill wave is admitted, not
+  when it is dispatched, so a stale hint that is rejected and recomputed
+  counts one miss and no hit. `first_dispatch_ns` is the dispatch time of the
+  first admitted wave, so BUSY and PENDING retry time is queue time.
 
 Consumers: runtime/model_batch_engine.c, tests/test_kv_cache.c.
 
