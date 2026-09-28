@@ -507,6 +507,22 @@ progress diary.
   belongs to the model: carry it in the deployment's tokenizer or model
   description and let the API render whatever the model declares, then drop
   `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
+- `text/tokenizer.c` knows split regexes only by exact string. It knows
+  the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
+  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
+  possessive quantifiers). Every other `Split` is skipped without an
+  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
+  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
+  - laguna, whose newline split precedes the letter pattern;
+  - dsv4 and dsv4.1, with three splits;
+  - muse-glimmer's case-aware letters;
+  - gemma4's `Replace` plus `Split " "`.
+
+  Implement them, then make an unknown `Split` a load error.
+- The tokenizer ignores the `NFC` normalizer that Ling, Qwen3.8 and MiMo
+  declare. Composed input is unaffected. Decomposed input tokenizes
+  differently: 2 of 304 corpus texts for Ling, "cafe" plus U+0301 and the
+  angstrom sign U+212B.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head

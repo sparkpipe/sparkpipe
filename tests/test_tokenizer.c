@@ -690,7 +690,7 @@ static const char *SparkTestQwenTokenizerJsonPath(void)
     return "build/test_tokenizer_qwen_byte_bpe.json";
 }
 
-static void SparkTestQwenTokenizerWriteFixtureJson(void)
+static void SparkTestQwenTokenizerWriteFixtureJson(const char *split_pattern_json)
 {
     FILE *file;
 
@@ -725,7 +725,7 @@ static void SparkTestQwenTokenizerWriteFixtureJson(void)
         "  \"pre_tokenizer\": {\n"
         "    \"type\": \"Sequence\",\n"
         "    \"pretokenizers\": [\n"
-        "      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
+        "      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"%s\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
         "      {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"trim_offsets\": false, \"use_regex\": false}\n"
         "    ]\n"
         "  },\n"
@@ -742,18 +742,26 @@ static void SparkTestQwenTokenizerWriteFixtureJson(void)
         SPARK_TEST_QWEN_TOKEN_A,
         SPARK_TEST_QWEN_TOKEN_B,
         SPARK_TEST_QWEN_TOKEN_AB,
-        SPARK_TEST_QWEN_TOKEN_LBRACKET_AB);
+        SPARK_TEST_QWEN_TOKEN_LBRACKET_AB,
+        split_pattern_json);
     assert(fclose(file) == 0);
 }
 
-static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(void)
+static const char *const g_spark_test_letter_split_patterns[] =
+{
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{L}\\\\p{M}]+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+",
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+",
+    "'(?i:[sdmt]|ll|ve|re)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?+\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]++[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]|\\\\s+(?!\\\\S)|\\\\s+"
+};
+
+static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(const char *split_pattern_json)
 {
     SparkTokenizer tokenizer;
     SparkTokenizerEncoding encoding;
     SparkTokenizerHuggingFaceJsonConfiguration configuration;
     uint32_t token_ids[16u];
 
-    SparkTestQwenTokenizerWriteFixtureJson();
+    SparkTestQwenTokenizerWriteFixtureJson(split_pattern_json);
     SparkTokenizerReset(&tokenizer);
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
@@ -795,6 +803,9 @@ int main(void)
     SparkTestTokenizerLoadsLegacyCompiledFile();
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
-    SparkTestQwenTokenizerPretokenizesWithQwenSemantics();
+    for (uint32_t pattern_index = 0u; pattern_index < sizeof(g_spark_test_letter_split_patterns) / sizeof(g_spark_test_letter_split_patterns[0]); ++pattern_index)
+    {
+        SparkTestQwenTokenizerPretokenizesWithQwenSemantics(g_spark_test_letter_split_patterns[pattern_index]);
+    }
     return 0;
 }

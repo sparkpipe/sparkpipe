@@ -1344,6 +1344,12 @@ static const char SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN[] =
 static const char SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN_DIGIT_RUNS[] =
     "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
+static const char SPARK_TOKENIZER_LETTER_SPLIT_PATTERN[] =
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+static const char SPARK_TOKENIZER_LETTER_SPLIT_PATTERN_POSSESSIVE[] =
+    "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+";
+
 #define SPARK_TOKENIZER_SPLIT_VARIANT_NONE 0u
 #define SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED 1u
 #define SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED_DIGIT_RUNS 2u
@@ -1374,7 +1380,9 @@ static uint32_t SparkTokenizerJsonSplitElementVariant(
         pattern_token_index = SparkJsonFindObjectMember(document,pattern_token_index,"Regex");
     }
     if (pattern_token_index >= 0 &&
-        SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN))
+        (SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_EXTENDED_SPLIT_PATTERN) ||
+         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN) ||
+         SparkJsonStringEquals(document,pattern_token_index,SPARK_TOKENIZER_LETTER_SPLIT_PATTERN_POSSESSIVE)))
     {
         return SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED;
     }
