@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "76fbd4c7e8f29620322bead9217af7b47f14e5ea6a2928e4588bd75c6e33fc72",
-      "size_bytes": 139992
+      "sha256": "ab114492bb77dd39fe1fbc67ba4f491e17b63de9c4da0ac137ac1e0c44cece83",
+      "size_bytes": 134996
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -8998,8 +8998,8 @@
     },
     {
       "path": "tests/test_dsv4_driver_source_contracts.py",
-      "sha256": "c7499be4a0806dda420eae22375cea1957b22afc3431a59e4d155688c056ab00",
-      "size_bytes": 35182
+      "sha256": "746eb2d850b1a5b920b81d41d0f56b6d34482ecdd9a8a5853d845ab413e67446",
+      "size_bytes": 35812
     },
     {
       "path": "tests/test_dsv4_ga_reference_fixture.py",
@@ -15280,5 +15280,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73954810
+  "total_bytes": 73950444
 }
