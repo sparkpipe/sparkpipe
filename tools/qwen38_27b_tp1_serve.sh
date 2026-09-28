@@ -121,7 +121,7 @@ systemctl --user is-active --quiet sp-qwen27b-residentd && { echo 'sp-qwen27b-re
 test -S ${WEIGHTD_SOCKET} || { echo 'weightd socket missing'; exit 2; }
 free -g | head -2
 cd ${ROOT} && log=${ROOT}/logs/residentd-${mode}-\$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn \$log ${ROOT}/logs/current.log && echo ${mode} > ${ROOT}/logs/current.mode
-systemd-run --user --collect --unit=sp-qwen27b-residentd --same-dir -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${ROOT}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 ${spec_env} ${ROOT}/bin/sparkpipe_model_residentd --deployment ${ROOT}/config/model_resident.${deployment}.json --rank-index 0
+systemd-run --user --collect --unit=sp-qwen27b-residentd --same-dir -p StandardOutput=file:\$log -p StandardError=file:\$log -E LD_LIBRARY_PATH=${ROOT}/lib -E SPARK_WEIGHTD_LANE=${LANE} -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 ${spec_env} ${QWEN27B_DIAG_ENV:-} ${ROOT}/bin/sparkpipe_model_residentd --deployment ${ROOT}/config/model_resident.${deployment}.json --rank-index 0
 for i in \$(seq 1 300); do grep -aq 'model_residentd ready' \$log && break; systemctl --user is-active --quiet sp-qwen27b-residentd || break; sleep 1; done
 grep -a -E 'ready|refused|failed|ERRSITE|capacity' \$log | tail -8
 free -g | head -2"

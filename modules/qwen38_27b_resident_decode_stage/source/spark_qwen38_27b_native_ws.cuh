@@ -157,23 +157,24 @@ void SparkQwen38_27bWarpSpecializedKernel(
 			if ( PLAIN_B )
 				__threadfence_block();
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
-			{
-				uint8_t *dst = a_e4m3 + step * 16u * 32u + warp * 32u;
-				if ( row_base + warp < row_count )
+				for ( uint32_t tile_row = warp; tile_row < 16u; tile_row += 8u )
 				{
-					const __nv_bfloat16 *src = (const __nv_bfloat16 *)
-						((const uint8_t *)input_bf16 + (uint64_t)(row_base + warp) * input_row_stride * 2u +
-						(uint64_t)chunk * ST_CHUNK_K * 2u + step * 32u * 2u);
-					float value = __bfloat162float(src[lane]);
-					float amax = LmActivationWarpMax(fabsf(value));
-					amax = __shfl_sync(0xffffffffu, amax, 0u);
-					uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
-					float scale = SparkLmSm121E8m0ScaleValue(scale_code);
-					dst[lane] = LmFloatToE4m3(value / scale);
-					if ( lane == 0u )
-						a_scale[step * 16u + warp] = scale_code;
+					uint8_t *dst = a_e4m3 + step * 16u * 32u + tile_row * 32u;
+					if ( row_base + tile_row < row_count )
+					{
+						const __nv_bfloat16 *src = (const __nv_bfloat16 *)
+							((const uint8_t *)input_bf16 + (uint64_t)(row_base + tile_row) * input_row_stride * 2u +
+							(uint64_t)chunk * ST_CHUNK_K * 2u + step * 32u * 2u);
+						float value = __bfloat162float(src[lane]);
+						float amax = LmActivationWarpMax(fabsf(value));
+						amax = __shfl_sync(0xffffffffu, amax, 0u);
+						uint8_t scale_code = SparkLmSm121E8m0ScaleCode(amax);
+						float scale = SparkLmSm121E8m0ScaleValue(scale_code);
+						dst[lane] = LmFloatToE4m3(value / scale);
+						if ( lane == 0u )
+							a_scale[step * 16u + tile_row] = scale_code;
+					}
 				}
-			}
 			asm volatile("bar.sync 1, 256;");
 			for ( step = 0u; step < ST_CHUNK_K / 32u; ++step )
 			{
