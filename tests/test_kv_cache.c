@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_kv_cache.h"
@@ -21,6 +22,7 @@
 #define SPARK_TEST_RESIDENT_SLOT_COUNT 2u
 #define SPARK_TEST_BLOCK_TOKENS 4u
 #define SPARK_TEST_BLOCK_BYTES 32u
+#define SPARK_TEST_BUSY_LIMIT_NANOSECONDS UINT64_C(10000000000)
 
 typedef struct SparkTestKvFixture
 {
@@ -34,6 +36,26 @@ typedef struct SparkTestKvFixture
 	uint32_t evicted_logical_block;
 }
 SparkTestKvFixture;
+
+static uint64_t spark_test_busy_deadline;
+
+static uint64_t SparkTestNowNanoseconds(void)
+{
+	struct timespec now;
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
+}
+
+static void SparkTestBusyStart(void)
+{
+	spark_test_busy_deadline = SparkTestNowNanoseconds() + SPARK_TEST_BUSY_LIMIT_NANOSECONDS;
+}
+
+static void SparkTestYieldBusy(void)
+{
+	assert(SparkTestNowNanoseconds() < spark_test_busy_deadline);
+	(void)sched_yield();
+}
 
 static SparkStatus SparkTestKvEvict(
 	void *context,
@@ -268,9 +290,10 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 		SPARK_STATUS_OK);
 	block2 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -279,17 +302,19 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 		SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u);
 	block3 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3);
 	}
 	assert(status == SPARK_STATUS_OK);
 	block4 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block4);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block4);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -722,9 +747,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 		SPARK_STATUS_OK);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	assert(status == SPARK_STATUS_BUSY);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -734,9 +760,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 	assert(store.write_count == 1u);
 	status = SparkKvPageStorePrefetch(&store,&fixture.arena,block0);
 	assert(status == SPARK_STATUS_BUSY);
+	SparkTestBusyStart();
 	for (;;)
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreProgress(&store,&fixture.arena,1u);
 		assert(status == SPARK_STATUS_OK);
 		status = SparkKvPageStorePrefetch(&store,&fixture.arena,block0);
@@ -769,9 +796,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 		fixture.blocks[block2].generation,
 		fixture.blocks[block2].key_device_address,SPARK_TEST_BLOCK_BYTES,
 		0u,0u);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreWriteback(&store,block2,
 			fixture.blocks[block2].resident_slot_index,
 			fixture.blocks[block2].generation,
@@ -875,9 +903,10 @@ static void SparkTestKvPageStoreInvalidationWaitsForTransfer(void)
 	assert(pthread_cond_broadcast(&copy.condition) == 0);
 	assert(pthread_mutex_unlock(&copy.mutex) == 0);
 	status = SPARK_STATUS_BUSY;
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreWriteback(&store,block,
 			fixture.blocks[block].resident_slot_index,
 			fixture.blocks[block].generation,
@@ -976,9 +1005,10 @@ static void SparkTestKvPageStoreFailedPrefetchCancelsReservation(void)
 	assert(SparkKvCacheArenaMarkBlockDirty(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
 	status = SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0);
 	}
 	assert(status == SPARK_STATUS_OK);

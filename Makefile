@@ -338,6 +338,9 @@ TEST_NAMES := \
     test_serial_tp_replay \
     test_speculation_policy_pin \
     test_speculation_tree_pin \
+    test_speculation_tree_resolve \
+    test_speculation_headers_coexist_provider_first \
+    test_speculation_headers_coexist_policy_first \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -374,6 +377,9 @@ TEST_NAMES := \
     test_dsv4_stage_runner \
     test_dsv4_committed_configs \
     test_tensor_map_geometry \
+    test_tensor_map_encode \
+    test_kv_geometry \
+    test_mma_fragment_mapping \
     test_weight_codec \
     test_topology_switch \
     test_qwen38_math_kernels \
@@ -383,7 +389,8 @@ TEST_NAMES := \
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
-	tests/fuzz_system_loopback.sh
+	tests/fuzz_system_loopback.sh \
+	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_weightd_supervised.py \
@@ -520,7 +527,9 @@ PYTHON_TESTS := \
 	tests/test_router_precision_contract.py \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
+	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
+	tests/test_stagepack_mtp_strip_qwen36sp.py \
 	tests/test_template_adoption.py \
 	tests/test_driver_defines.py \
 	tests/test_hy4_llm_defines.py \
@@ -1282,6 +1291,16 @@ build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cud
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
 	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_tensor_map_encode: tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c runtime/tensor_map.h inference/kernels/tensor_map.cuh | build
+	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_tensor_map_encode_stub.o
+	$(CXX) -x c++ -D__host__= -D__device__= -D__forceinline__=inline $(CORE_INCLUDE_FLAGS) -Itests/cuda_driver_stub $(CXXFLAGS) -Wno-unused-function tests/test_tensor_map_encode.c -x none build/test_tensor_map_encode_stub.o $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_geometry: tests/test_kv_geometry.cc inference/kernels/kv.cuh common/common_glm_cuda_tree/spark_glm_cuda_config.h model-families/glm52/include/sparkpipe/llm_defines.h | build
+	$(CXX) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm52/include $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_mma_fragment_mapping: tests/test_mma_fragment_mapping.c tests/host_cuda/lm_host_cuda.cuh inference/kernels/mma.cuh inference/kernels/layout.cuh inference/kernels/dtype.cuh | build
+	$(HOST_CUDA_CXX) -std=c++17 -O2 -Wall -Wextra -Werror -Wno-unused-function -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
+
 build/test_launch: tests/test_launch.c runtime/launch.h inference/kernels/layout.cuh | build
 	$(CXX) -x c++ -D__host__= -D__device__= $(CPPFLAGS) $(CXXFLAGS) -Wno-unused-function $< $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1449,6 +1468,15 @@ build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_repla
 
 build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_headers_coexist_provider_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_headers_coexist_policy_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_COEXIST_POLICY_FIRST $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

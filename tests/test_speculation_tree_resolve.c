@@ -1,6 +1,3 @@
-/* Unit test for the tree-capable acceptance resolution in the neutral
- * speculation-policy core: root reject, accept-to-depth, branch selection,
- * duplicate-sibling rejection, and chain-as-degenerate-tree parity. */
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -60,10 +57,7 @@ static void SparkTestTreeResolveAcceptToDepth(void)
 
 static void SparkTestTreeResolveBranchSelection(void)
 {
-    /* nodes 0,1 are root children; node 2 hangs off node 1. The verifier
-     * picks node 1's token at the root row, so the accepted path runs
-     * through the second branch. */
-    const uint32_t draft_tokens[3] = { 10u, 20u, 21u };
+        const uint32_t draft_tokens[3] = { 10u, 20u, 21u };
     const uint32_t parents[3] = {
         SPARK_SPECULATION_PARENT_INDEX_ROOT,
         SPARK_SPECULATION_PARENT_INDEX_ROOT,
@@ -163,8 +157,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
     SparkSpeculationPolicyVerifyResult result;
     const uint32_t *null_parents = 0;
 
-    /* duplicate sibling tokens under one parent */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         duplicate_root_tokens,
         duplicate_sibling_parents,
         3u,
@@ -172,8 +165,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-    /* a node that is its own parent */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         self_parent,
         3u,
@@ -181,8 +173,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-    /* a parent that does not precede its child */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         forward_parent,
         3u,
@@ -190,8 +181,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-    /* an explicit tree must supply the bonus row (count + 1 rows) */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         draft_tokens,
         duplicate_root_siblings,
         3u,
@@ -199,8 +189,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         3u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-    /* draft token at the vocab bound fails loudly */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         out_of_vocab_draft,
         null_parents,
         3u,
@@ -208,8 +197,7 @@ static void SparkTestTreeResolveRejectsMalformedTrees(void)
         4u,
         SPARK_TEST_TREE_VOCAB_SIZE,
         &result) == SPARK_STATUS_INVALID_ARGUMENT);
-    /* null arrays and zero counts fail loudly */
-    assert(SparkSpeculationPolicyResolveVerifierTree(
+        assert(SparkSpeculationPolicyResolveVerifierTree(
         0,
         null_parents,
         3u,
