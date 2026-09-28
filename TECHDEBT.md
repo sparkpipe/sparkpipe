@@ -433,15 +433,20 @@ progress diary.
   `examples/model_descriptions/<module>_<codec>_firmware.json` unless
   `FIRMWARE_JSON` names another description:
   - such a description exists only for gemma4 31B (bf16), glm52 (seven
-    codecs), glm5_next (fp8) and minimax (bf16); laguna, ling, qwen38_max,
-    qwen4_flash and glm5_next's other codecs need `FIRMWARE_JSON`;
+    codecs), glm5_next (fp8), laguna (bf16) and minimax (bf16); ling,
+    qwen38_max, qwen4_flash and glm5_next's other codecs need
+    `FIRMWARE_JSON`. laguna's module Makefile refuses `make adapter` for a
+    codec without a description. Its fp8 and nvfp4 descriptions wait for
+    per-layer expert codecs: poolside's FP8 and NVFP4 releases keep the
+    routed experts of layers 44-47 and 40-47 in BF16, and the module
+    takes one expert codec for every layer;
   - dsv4, muse_glimmer and qwen38_27b build their adapters in the root
     Makefile or a family release script, and dsv41_flash and hy4 have no
     serving adapter. None of their module Makefiles names an
     `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
     `make adapter` refuses and the script cannot release them.
-- glm5_next, laguna and ling compare four driver descriptor fields in their
-  own load functions and skip `model_description_sha256`, which
+- glm5_next and ling compare four driver descriptor fields in their own
+  load functions and skip `model_description_sha256`, which
   `serving_adapter_template.c` checks for the other adapters. Moving them
   onto the template needs each build to pass its description hash; the
   tree holds a glm5_next description for fp8 only.

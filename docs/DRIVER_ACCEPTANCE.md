@@ -119,9 +119,11 @@ glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b, qwen38_max and
 qwen4_flash. It checks what each sends against its description, and the
 description's target and module against the module Makefile. Where the
 build invocation supplies the revision (glm52, glm5_next, qwen38_max), the
-test cannot check it. glm5_next, laguna and ling do not compare the
-description hash, and dsv4 leaves the target to the loader, which compares
-it with the node target.
+test cannot check it. glm5_next and ling do not compare the description
+hash, and dsv4 leaves the target to the loader, which compares it with the
+node target. laguna is checked twice: the root Makefile build, whose
+revision the test can check, and the module Makefile build that
+`tools/module_build_release.sh` runs.
 
 Module Makefiles build their adapter with the one `adapter` rule in
 `modules/resident_decode_stage_rules.mk`. A module names `ADAPTER_SOURCE`,
