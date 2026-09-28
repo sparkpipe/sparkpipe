@@ -381,16 +381,31 @@ progress diary.
     `INTERNAL_ERROR` or `CAPACITY_EXCEEDED` with a log line, as glm5_next
     does, instead of a silent `IO_ERROR` the engine treated as transport
     trouble.
-- Five `llm_defines.h` files default a build flag with `#ifndef`:
-  `SPARK_LLM_MTP_LAYER_COUNT` (qwen38_27b, qwen38_max, qwen4_flash, default
-  1), `SPARK_LLM_KV_BLOCK_TOKENS` (minimax, qwen38_27b, qwen38_max,
-  qwen4_flash) and `SPARK_GEMMA4_MODEL_MOE_BLOCK` (gemma4). A build that
-  forgets the flag silently gets the default: the qwen38_max GPU validator
-  and two T1 harnesses were built with MTP 1 against MTP-0 archives this way
-  until `bc63e11f`. Pass the flags in every build that includes these
-  headers and delete the defaults. `test_llm_module_contract`'s negative
-  control relies on the KV block default today; it can pass the constant to
-  both of its translation units instead.
+- Some production headers still default a build setting with `#ifndef`, so
+  a build that forgets the flag silently gets the default:
+  - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
+    module") in the glm5_next, ling, laguna, k3 and common GLM batch-tuning
+    headers and dsv41_flash's module source. dsv4 already requires it.
+    Requiring it everywhere first needs the flag in the GLM GPU validators'
+    nvcc arguments, the laguna adapter test and nine Python tests (two of
+    them the glm52 and glm5_next validator oracle self-tests), which all
+    compile these headers without it today;
+  - `SPARK_QWEN38_27B_SERVING_TP_DEGREE` (4) in both the qwen38_27b adapter
+    and `spark_qwen38_27b_serving_constants.h`; TP1 deployments pass 1;
+  - `SPARK_LLM_FIRST_ROUTED_LAYER` in `spark_driver_defines.h`, which
+    defaults to the layer count for families that do not define it;
+  - the `spark_pack_load_common.h` and `spark_pack_synthesize_common.h`
+    template hooks (three each);
+  - `SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256` and
+    `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests and
+    tools get the default);
+  - `QWEN38_27B_LAYER_THREADS` and `MIMO25_LAYER_THREADS`, which the
+    host-CUDA layer tests set to 1 before including `layer.cuh`.
+
+  Pass each from every build that includes the header, and delete the
+  default. The `llm_defines.h` defaults went in `f4056bf1`. Test-harness
+  paths (`TEST_*_PATH`) and platform shims (`_POSIX_C_SOURCE`,
+  `MSG_NOSIGNAL` and the like) are not build settings.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

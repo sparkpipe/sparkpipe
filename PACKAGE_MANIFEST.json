@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "16c79d01ecea281b3e6e8b177ebd77fd0fe18efaf302399f18f98beaca4a07b5",
-      "size_bytes": 37012
+      "sha256": "be7118e58b7257b6e42cdbc682aa3de488d5bcfe370c8dd21193a384dcf433dd",
+      "size_bytes": 37891
     },
     {
       "path": "cache/cache.h",
@@ -4963,8 +4963,8 @@
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_resident_decode_stage_module.c",
-      "sha256": "24ec5681192d7683910225d9ac200b9ae50a9cd04f5ad3ff13132e04282b662d",
-      "size_bytes": 19411
+      "sha256": "a6415ab61e29325ce67a37a2656d7e513fc7e5c73d8b6f32e8469d7f31aba948",
+      "size_bytes": 19293
     },
     {
       "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h",
@@ -5323,8 +5323,8 @@
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-      "sha256": "e41784cdce770e6cedc012ff228c7b393bd407502cfdaa00453ed8e8d08e1a27",
-      "size_bytes": 49363
+      "sha256": "479252034ef6cc990879ef3710334cca0c29834bc078169c62b6ed8b76749388",
+      "size_bytes": 49263
     },
     {
       "path": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h",
@@ -5598,8 +5598,8 @@
     },
     {
       "path": "modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h",
-      "sha256": "7247ac5aeb78045ba37025fa0c03c72071447f1139b02c4c0f766e369cfe94c4",
-      "size_bytes": 5187
+      "sha256": "494655402c7a7f8c6db7138c2bdd79584ac5b7e59b6b5c405f7e32a1558b32c9",
+      "size_bytes": 5058
     },
     {
       "path": "modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h",
@@ -5693,8 +5693,8 @@
     },
     {
       "path": "modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h",
-      "sha256": "cf72fe7c7398eb3b0ce27ce8c26e90a2b3a3e456205e9ba41698f04fe6cf88f3",
-      "size_bytes": 5152
+      "sha256": "b6a7f6205f34c7d38d14f7be92d273089c3f539e7e45e755662cf351ccfffad8",
+      "size_bytes": 5027
     },
     {
       "path": "modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_serving_adapter.h",
@@ -15275,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73940632
+  "total_bytes": 73941039
 }
