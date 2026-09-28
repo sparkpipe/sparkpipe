@@ -113,14 +113,19 @@ typedef struct SparkStagePackHeaderCommon
 } SparkStagePackHeaderCommon;
 
 #define SPARK_STAGEPACK_HEADER_BYTES 120u
+#ifdef __cplusplus
+#define SPARK_STAGEPACK_STATIC_ASSERT static_assert
+#else
+#define SPARK_STAGEPACK_STATIC_ASSERT _Static_assert
+#endif
 #define SPARK_STAGEPACK_HEADER_FIELD_PROOF(family_type, field) \
-	_Static_assert(offsetof(family_type,field) == \
+	SPARK_STAGEPACK_STATIC_ASSERT(offsetof(family_type,field) == \
 		offsetof(SparkStagePackHeaderCommon,field), \
 		"stage pack header layout drift: " #family_type "." #field);
 
 #define SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(family_type) \
 	struct SparkStagePackHeaderLayoutProof##family_type { \
-		_Static_assert(sizeof(family_type) == SPARK_STAGEPACK_HEADER_BYTES, \
+		SPARK_STAGEPACK_STATIC_ASSERT(sizeof(family_type) == SPARK_STAGEPACK_HEADER_BYTES, \
 			"stage pack header must be 120 wire bytes"); \
 		SPARK_STAGEPACK_HEADER_FIELD_PROOF(family_type, magic) \
 		SPARK_STAGEPACK_HEADER_FIELD_PROOF(family_type, format_version) \

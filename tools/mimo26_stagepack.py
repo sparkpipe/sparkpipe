@@ -444,24 +444,27 @@ class SourceReader:
             out.write(chunk)
             remaining -= step
 
+    def copy_window(self, file, base: int, row_bytes: int, row0: int, rows: int,
+                    left: int, width: int, label: str, out) -> None:
+        step_rows = max(1, CHUNK_BYTES // row_bytes)
+        row = 0
+        while row < rows:
+            block = min(step_rows, rows - row)
+            file.seek(base + (row0 + row) * row_bytes)
+            data = file.read(block * row_bytes)
+            if len(data) != block * row_bytes:
+                raise PackFailure(f"{label}: short window read")
+            view = memoryview(data)
+            for index in range(block):
+                start = index * row_bytes + left
+                out.write(view[start:start + width])
+            row += block
+
     def copy_rect(self, span: Span, out) -> None:
         file, base, _ = self._resolve_base(span.name)
         element = element_bytes(span.dtype)
-        row_bytes = span.full_columns * element
-        step_rows = max(1, CHUNK_BYTES // max(1, span.columns * element))
-        row = 0
-        while row < span.rows:
-            block = min(step_rows, span.rows - row)
-            file.seek(base + (span.row0 + row) * row_bytes + span.col_base * element)
-            remaining = block * span.columns * element
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                chunk = file.read(step)
-                if len(chunk) != step:
-                    raise PackFailure(f"{span.name}: short rect read")
-                out.write(chunk)
-                remaining -= step
-            row += block
+        self.copy_window(file, base, span.full_columns * element, span.row0, span.rows,
+                         span.col_base * element, span.columns * element, span.name, out)
 
     def copy_scale(self, span: Span, out) -> None:
         if span.scale_name not in self.source.weight_map:
@@ -470,22 +473,10 @@ class SourceReader:
         grid_columns = meta["shape"][1]
         columns = span.scale_columns or grid_columns
         element = element_bytes("F32")
-        row_bytes = grid_columns * element
-        step_rows = max(1, CHUNK_BYTES // max(1, columns * element))
-        row = 0
-        while row < span.scale_rows:
-            block = min(step_rows, span.scale_rows - row)
-            file.seek(base + (span.scale_row0 + row) * row_bytes
-                      + span.scale_col_base * element)
-            remaining = block * columns * element
-            while remaining > 0:
-                step = min(remaining, CHUNK_BYTES)
-                chunk = file.read(step)
-                if len(chunk) != step:
-                    raise PackFailure(f"{span.scale_name}: short scale read")
-                out.write(chunk)
-                remaining -= step
-            row += block
+        if span.scale_col_base + columns > grid_columns:
+            raise PackFailure(f"{span.scale_name}: scale window exceeds the grid")
+        self.copy_window(file, base, grid_columns * element, span.scale_row0, span.scale_rows,
+                         span.scale_col_base * element, columns * element, span.scale_name, out)
 
     def produce(self, span: Span, record: Record, out, payload: bool) -> None:
         if span.mode == SPAN_MX:
@@ -895,6 +886,64 @@ def do_verify(args) -> int:
         return 0
 
 
+def do_repair_windows(args) -> int:
+    source = SafetensorsSource(Path(args.checkpoint))
+    check_source(args.arm, source)
+    check_shapes(args.arm, source)
+    records = build_plan(args.arm, source.config, args.tp, args.rank)
+    reader = SourceReader(source)
+    pack_path = Path(args.out)
+    layout, file_bytes = plan_layout(records)
+    if pack_path.stat().st_size != file_bytes:
+        raise PackFailure(f"{pack_path} is {pack_path.stat().st_size} bytes, plan {file_bytes}")
+    repaired = 0
+    with open(pack_path, "r+b") as pack:
+        pack.seek(HEADER_BYTES)
+        entries = [ENTRY_STRUCT.unpack(pack.read(ENTRY_BYTES)) for _ in records]
+        for record, entry, (payload_offset, scale_offset) in zip(records, entries, layout):
+            if (entry[6], entry[8]) != (payload_offset, scale_offset):
+                raise PackFailure(f"{record.name}: directory offsets differ from the plan")
+            if not any(span.mode == SPAN_RECT for span in record.spans):
+                continue
+            pack.seek(payload_offset)
+            for span in record.spans:
+                reader.produce(span, record, pack, payload=True)
+            if pack.tell() != payload_offset + record.payload_bytes:
+                raise PackFailure(f"{record.name}: repaired payload length differs")
+            if record.scale_bytes:
+                pack.seek(scale_offset)
+                for span in record.spans:
+                    reader.produce(span, record, pack, payload=False)
+                if pack.tell() != scale_offset + record.scale_bytes:
+                    raise PackFailure(f"{record.name}: repaired scale length differs")
+            repaired += 1
+        pack.flush()
+        os.fsync(pack.fileno())
+        for record, (payload_offset, scale_offset) in zip(records, layout):
+            if not any(span.mode == SPAN_RECT for span in record.spans):
+                continue
+            pack.seek(payload_offset)
+            sink = _CompareSink(pack, f"{record.name} payload")
+            for span in record.spans:
+                reader.produce(span, record, sink, payload=True)
+            if record.scale_bytes:
+                pack.seek(scale_offset)
+                sink = _CompareSink(pack, f"{record.name} scale")
+                for span in record.spans:
+                    reader.produce(span, record, sink, payload=False)
+    digest = sha256_file(pack_path)
+    pack_path.with_name(pack_path.name + ".sha256").write_text(
+        f"{digest}  {pack_path.name}\n", encoding="utf-8")
+    receipt_path = pack_path.with_name(pack_path.name + ".receipt.json")
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text())
+        receipt["sha256"] = digest
+        receipt["repaired_window_records"] = repaired
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+    print(f"repair: {pack_path} rewrote {repaired} column-window records, sha256 {digest}")
+    return 0
+
+
 class _CompareSink:
     """Streaming verifier sink: every produced chunk is compared in place
     against the pack file's current position (no plane is ever buffered)."""
@@ -936,6 +985,8 @@ def main() -> int:
     sub.add_argument("--emit", action="store_true")
     sub.add_argument("--assemble", action="store_true")
     sub.add_argument("--verify", action="store_true")
+    sub.add_argument("--repair-windows", action="store_true",
+                     help="rewrite in place every record cut from a column window")
     args = ap.parse_args()
     if args.rank < 0 or args.rank >= args.tp:
         raise PackFailure(f"rank {args.rank} out of range for tp {args.tp}")
@@ -943,6 +994,8 @@ def main() -> int:
         return do_emit(args)
     if args.assemble:
         return do_assemble(args)
+    if args.repair_windows:
+        return do_repair_windows(args)
     return do_verify(args)
 
 

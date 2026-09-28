@@ -580,6 +580,8 @@ PYTHON_TESTS := \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
 	tests/test_mimo26_model_inputs.py \
+	tests/test_mimo26_rank_pack.py \
+	tests/test_mimo26_stagepack_windows.py \
 	tests/test_mimo26_stagepack.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \
@@ -1396,6 +1398,20 @@ build/mesh_lane_ladder: tools/mesh_lane_ladder.cu $(GLM5_NEXT_CUDA_SOURCE) $(MES
 		-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
 		-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\" \
 		-Xcompiler=-pthread $< $(GLM5_NEXT_CUDA_SOURCE) runtime/stage_module_common.c \
+		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
+		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
+		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+
+MIMO26_MODULE_DIRECTORY := modules/mimo26_resident_decode_stage
+MIMO26_RANK_PACK_HEADERS := $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_rank_pack.h $(MIMO26_MODULE_DIRECTORY)/source/spark_mimo26_stagepack_format.h model-families/mimo26/include/sparkpipe/spark_mimo26_model.h
+
+build/mimo26_rank_pack_tool: $(MIMO26_MODULE_DIRECTORY)/tools/mimo26_rank_pack_tool.c $(MIMO26_RANK_PACK_HEADERS) src/spark_status.c src/spark_ck128.c | build
+	$(CC) -std=c11 -O2 -Wall -Werror -Iinclude -Imodel-families/mimo26/include -I$(MIMO26_MODULE_DIRECTORY)/source $< src/spark_status.c src/spark_ck128.c -o $@
+
+build/mimo26_tp_decode: $(MIMO26_MODULE_DIRECTORY)/validation/mimo26_tp_decode.cu $(MIMO26_RANK_PACK_HEADERS) $(MESH_KERNELS_HEADER) include/sparkpipe/family/module/spark_module_combine.h runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -I. \
+		-Imodel-families/mimo26/include -I$(MIMO26_MODULE_DIRECTORY)/source \
+		-Xcompiler=-pthread $< runtime/stage_module_common.c \
 		$(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) \
 		$(LDFLAGS) $(filter-out -pthread,$(LDLIBS)) \
 		$(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@

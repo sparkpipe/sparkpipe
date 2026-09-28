@@ -84,8 +84,8 @@ typedef struct SparkMimo26StagePackEntry
 	uint64_t scale_bytes;
 } SparkMimo26StagePackEntry;
 
-_Static_assert(sizeof(SparkMimo26StagePackHeader) == SPARK_MIMO26_STAGEPACK_HEADER_BYTES,"mimo26 stage pack header must be 120 wire bytes");
-_Static_assert(sizeof(SparkMimo26StagePackEntry) == SPARK_MIMO26_STAGEPACK_ENTRY_BYTES,"mimo26 stage pack directory entry must be 56 wire bytes");
+SPARK_STAGEPACK_STATIC_ASSERT(sizeof(SparkMimo26StagePackHeader) == SPARK_MIMO26_STAGEPACK_HEADER_BYTES,"mimo26 stage pack header must be 120 wire bytes");
+SPARK_STAGEPACK_STATIC_ASSERT(sizeof(SparkMimo26StagePackEntry) == SPARK_MIMO26_STAGEPACK_ENTRY_BYTES,"mimo26 stage pack directory entry must be 56 wire bytes");
 SPARK_STAGEPACK_HEADER_LAYOUT_PROOF(SparkMimo26StagePackHeader);
 
 static inline uint32_t SparkMimo26StagePackIsGlobal(uint32_t tensor_kind)
