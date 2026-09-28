@@ -19,6 +19,15 @@
 #include <time.h>
 #include <unistd.h>
 
+extern "C" SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site);
+
+#define SPARK_FAMILY_CAMEL MeshLadder
+#define SPARK_FAMILY_UPPER MESH_LADDER
+#define SPARK_FAMILY_LOWER mesh_ladder
+#include "sparkpipe/family/spark_family.h"
+#define SPARK_MESH_LADDER_MODULE_TAG "mesh_lane_ladder"
+#include "sparkpipe/family/module/spark_module_combine.h"
+
 #define LADDER_HIDDEN 4096u
 #define LADDER_MAX_TIMED 8192u
 #define LADDER_SHM_BYTES SPARK_WEIGHTD_MESH_REGION_BYTES
@@ -272,7 +281,7 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     config.mesh_lane_client = owner;
     config.mesh_band_index = 0u;
     config.collective_identifier = 2u * (uint64_t)lane;
-    SparkTpMeshRegisterCommonCombines(&config);
+    SparkMeshLadderModuleRegisterCombines(&config);
     ladder_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
     ladder_status(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,
         attached.mesh_mapping,0u,0u,0u,0),"collective-prepare");

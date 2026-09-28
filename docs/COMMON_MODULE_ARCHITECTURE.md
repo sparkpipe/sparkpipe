@@ -85,7 +85,7 @@ identity gate for the first adoption.
 | 4 | `common_serving_frame` | the deployment-config handler skeleton | 12 | glm52 adapter | glm52, glm5_next, qwen38-27b (its 2,322-LOC third-generation frame server) |
 | 5 | `common_stagepack_format_ext.h` | stagepack structs + validator + per-family tensor-kind table (the 64-byte entry is already proven cross-family identical by DRY-1) | 25 | qwen4_flash format.h | all 13 families (the quintuplets: 1,879 LOC) |
 | 6 | `common_pack_load_bind` | pack load/bind over `spark_pack_load_common.h` | 12 (existing macro keys) | gemma4's adoption | ling, laguna, muse, k3, dsv5 |
-| 7 | `common_kv_frame` (`SparkModuleKvPrepareFrame` et al.) | KV prepare/frame plumbing | 10 | qwen38_max module.c | qwen38_max, qwen4_flash (249 lines BYTE-identical today) |
+| 7 | `common_kv_frame` (`LmKvFramePrepareFrame` et al.) | the JIT KV tier: frame preparation, eviction, restore batches | 10 | qwen38_max module.c | qwen38_max, qwen4_flash, muse_glimmer (all three use it) |
 | 8 | `common_kv_geometry.h` | capacity fillers + geometry asserts | 9+12 | glm52/glm5_next twin (differs by exactly 7 constants) | glm pair, k3 (kills its `abi_version` drift), ling |
 | 9 | `spark_hybrid_state.h` | KDA/GDN/sliding state: ordinal builder, slot-bytes algebra, pool sizing (kernels stay in inference/kernels) | 11 | k3 KDA | k3, ling, gemma4, laguna |
 | 10 | `spark_rope_plan.h` | rope table builder (theta/yarn/table) + upload; launches ride the shared LmRopePerHeadKernel | 8 | ling | ling, gemma4, qwen trio, glm pair |
@@ -216,8 +216,8 @@ cudaError_t SparkGlm5NextLaunchAddF32(stream, float *dest, const void *b, uint32
 cudaError_t SparkGlm5NextLaunchRoundF32(stream, void *dest, const float *src, uint32_t n);
 cudaError_t SparkGlm5NextLaunchAccumU64Max(stream, uint64_t *dest, const uint64_t *src, uint32_t n);
 cudaError_t SparkGlm5NextLaunchMeshPublish/Wait/Guard(stream, ...);  /* transport-internal */
-/* register.h (host C): ONE call fills the transport config */
-void SparkTpMeshRegisterCommonCombines(SparkTpDeviceCollectiveConfig *configuration);
+/* family/module/spark_module_combine.h: one call fills the transport config */
+static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveConfig *configuration);
 ```
 Params (llm_defines): none beyond `SPARK_LLM_TILE_THREADS`-class constants. Adoption:
 delete the private kernel copies in cuda.cu. Done for every TP driver except k3: the
@@ -225,13 +225,12 @@ private copies summed rank by rank in BF16, and the common combines sum all rank
 FP32 and round once.
 
 ### M-1 `common_gdn_stage_kernels.cu` — qwen decode kernel suite
-Entry points mirror the 22-kernel suite (AttnDecode/Prepare/ChunkStep/MoE gather/
-scatter/router); names normalize `Qwen38Max<X>` -> `SparkLlm<X>`. Interface:
-```c
-int SparkLlmStageKernelsRegister(SparkLlmKernelTable *table);  /* fills fn ptrs */
-```
-The module consumes `SPARK_LLM_MLA_*`, `SPARK_LLM_MOE_*`, `SPARK_LLM_TILE_*` keys.
-Seed: qwen38_max cuda.cu. Identity: renamed-symbol link-equal + one correctness vector.
+
+`common/common_gdn_stage_kernels.cu` holds the GDN, attention, MoE and head kernels with their `LmGdnStageLaunch*` launchers, declared in `common_gdn_stage_kernels.h`. qwen38_max and qwen4_flash include it into their CUDA unit, and each family's `llm_defines.h` supplies the `SPARK_LLM_*` geometry. qwen38_27b still carries its own copies.
+
+**Grouped expert views are rank-local.** `LmGdnStageLaunchGroupedExpertLinear` and `LmGdnStageLaunchGroupedExpertTileLinear` take the stage pack's view of this rank's expert shard. With `SPARK_LLM_ROUTED_EXPERT_COUNT` experts over `tp_degree` ranks, the view's `output_dimension` is `experts_per_rank × rows_per_expert`, and its payload and scales start at this rank's first expert. Only the route tables (`group_row_offset`, `group_tile_prefix`) are global, so the launchers offset them by `tp_rank × experts_per_rank`.
+
+The launchers validate `tp_degree` and `tp_rank` before dividing by the degree. An FP8 block-128 view needs `rows_per_expert` and `input_dimension` to be multiples of 128, because its scales are stored per 128×128 block. An NVFP4 view needs `input_dimension` to be a multiple of 16. `tests/test_gdn_stage_launch_checks.cu` checks these refusals; it needs nvcc but no GPU.
 
 ### M-2 `common_glm_cuda_tree` — GLM kernel tree
 `config.h` + `unity.cu` + `layer.cuh` with the family prefix parameterized by
@@ -270,10 +269,21 @@ SparkStatus SparkCommonPackLoadBind(const SparkLlmPackPlan *plan,   /* 12 macro 
 ```
 
 ### M-7 `common_kv_frame`
-```c
-SparkStatus SparkModuleKvPrepareFrame(SparkLlmKvFrameRequest *request,
-    SparkLlmKvFrame *out);   /* qwen38_max/qwen4_flash copies are BYTE-identical */
-```
+
+`common/common_kv_frame.h` runs the JIT KV tier for qwen38_max, qwen4_flash and muse_glimmer. Each module reaches it through `family/module/spark_module_open_kv_tier.h`, `spark_module_kv_frame_ops.h` and `spark_module_kv_prepare_frame.h`, and its `llm_defines.h` names the frame's constants (`SPARK_LLM_KV_BLOCK_TOKENS`, `SPARK_LLM_KV_STAGING_RECORDS` and the rest).
+
+`LmKvFramePrepareFrame` prepares one decode frame in six steps, each its own function:
+
+1. `LmKvFrameCheckTable` validates the block table and grows the logical-to-slot map.
+2. `LmKvFrameCollectLanes` lists the frame's lanes in the order their first row appears, each with the blocks its longest row needs.
+3. `LmKvFrameSetPins` pins the blocks that are already resident.
+4. `LmKvFrameRestoreMissing` claims a slot for each missing block (`LmKvFrameClaimSlot`, which evicts when the pool is full) and restores the blocks in batches of `SPARK_LLM_KV_STAGING_RECORDS` (`LmKvFrameFlushRestore`).
+5. `LmKvFrameUploadTables` and `LmKvFrameMapRows` upload the frame's block table and slot mapping.
+6. The pins are released. On failure, `LmKvFrameUnwind` also returns the slots claimed for blocks that were not restored.
+
+**Eviction.** A slot the frame claims stays pinned until the frame ends, so a later eviction in the same frame cannot take it back. A frame that needs more blocks than the pool holds fails with `SPARK_STATUS_CAPACITY_EXCEEDED` and returns every slot it claimed. The eviction cursor moves past each slot it evicts, so the pool evicts in slot order instead of evicting again the block the previous frame restored.
+
+`tests/test_llm_module_contract.c` covers restores that span several batches, lane order, write-back on eviction, two evictions in one frame, a frame larger than the pool, eviction order, and the unwind.
 
 ### M-8 `common_kv_geometry.h` — capacity fillers + asserts (glm twins differ by 7 keys).
 
@@ -315,13 +325,21 @@ uint64_t SparkHybridSlotBytes(const SparkLlmHybridPlan *plan);
 ## 13. Mesh-kernel adoption status (the pilot)
 
 M-0 is the pilot of this system: extracted from glm5_next (fused FP32 sum by-value
-16-source kernel, seed/add/round fallback, u64 max, mesh publish/wait/guard), one-call
-registration via `SparkTpMeshRegisterCommonCombines`, glm5_next converted (private
-copies deleted).
+16-source kernel, seed/add/round fallback, u64 max, mesh publish/wait/guard), with
+glm5_next converted (private copies deleted).
 
 Every module whose driver runs `tp_device_collective.c` compiles the header, because
-the collective calls its mesh launchers and a driver without them does not link. Every
-TP driver except glm5_next and k3 registers the combines through
-`SparkTpMeshRegisterCommonCombines`; glm5_next registers its own wrappers over the same
-kernels, and k3 still runs the hidden transport. `tests/test_tp_collective_open.py`
-checks the registration for every mesh driver.
+the collective calls its mesh launchers and a driver without them does not link.
+`spark_tp_mesh_register.h` declares the six launchers the combines call.
+
+**One set of combines.** `include/sparkpipe/family/module/spark_module_combine.h` holds
+the six combine wrappers (fused FP32 sum, FP32 seed, add and round, BF16 sum, u64 max)
+and `SPARK_FAMILY(ModuleRegisterCombines)`. Each wrapper reports a failed launch
+through `SparkStageModuleCudaStatus` with the family's module tag: it logs the site and
+returns `SPARK_STATUS_CAPACITY_EXCEEDED` for an out-of-memory error and
+`SPARK_STATUS_INTERNAL_ERROR` for any other. The TP-open templates register them for
+nine drivers, qwen38_27b's `spark_qwen38_27b_tp.c` for its own, and glm5_next assigns
+them itself because its HC collective takes five of the six. k3 still runs the hidden
+transport. `tests/test_tp_collective_open.py` checks, for every mesh driver, that each
+collective registers its family's combines and that they classify a failed launch that
+way.

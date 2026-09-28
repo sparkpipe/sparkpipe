@@ -365,9 +365,76 @@ progress diary.
     Record a precision receipt with each requalification.
   - qwen4_flash refused every prefill frame from 2026-09-19 to 2026-09-28:
     its KV frame wrapper demanded a decode batch before asking whether the
-    KV tier was on;
+    KV tier was on. The same check refused qwen38_max decode frames that
+    carry no frame context (single-stage runs, unqualified execution, the
+    T1 harness);
   - muse_glimmer's JIT KV tier (`SPARK_MUSE_GLIMMER_STAGE_KV_STORE`) now
-    runs the common KV frame.
+    runs the common KV frame;
+  - with the JIT KV tier on, qwen38_max, qwen4_flash and muse_glimmer could
+    restore two blocks into one slot in a frame that evicted twice. Claimed
+    slots are now pinned and the eviction cursor advances; exercise the
+    tier with a pool smaller than the working set;
+  - qwen38_max's FP8 grouped-expert launcher refuses views whose rows per
+    expert or input width are off the 128 block again;
+  - dsv4, gemma4, glm52, laguna, ling, minimax, muse_glimmer, qwen38_27b,
+    qwen38_max and qwen4_flash now report a failed TP combine launch as
+    `INTERNAL_ERROR` or `CAPACITY_EXCEEDED` with a log line, as glm5_next
+    does, instead of a silent `IO_ERROR` the engine treated as transport
+    trouble;
+  - qwen4_flash, muse_glimmer and the gemma4 26B could not load a driver
+    compiled from their firmware description: adapter initialize failed
+    with `TARGET_MISMATCH`. qwen4_flash's and muse_glimmer's adapters sent
+    the package contract hash as the description hash. qwen4_flash's
+    description named another model id and revision, and the 26B's
+    revision was a geometry string. muse_glimmer's description was an
+    unported copy of qwen38_max's: model, revision, target, module and
+    metadata. Its adapter also named a target no module builds, which
+    `tools/muse_gen_deployment.py` does not deploy. Each description now
+    carries what its adapter sends, and qwen4_flash's module Makefile builds
+    its adapter where `tools/module_build_release.sh` looks for it. The
+    muse description says `NOT_MEASURED` where the copy said
+    `GPU_VALIDATED`; record a GPU receipt before changing it back.
+- Some production headers still default a build setting with `#ifndef`, so
+  a build that forgets the flag silently gets the default:
+  - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024
+    module") in the glm5_next, ling, laguna, k3 and common GLM batch-tuning
+    headers and dsv41_flash's module source. dsv4 already requires it.
+    Requiring it everywhere first needs the flag in the GLM GPU validators'
+    nvcc arguments, the laguna adapter test and nine Python tests (two of
+    them the glm52 and glm5_next validator oracle self-tests), which all
+    compile these headers without it today;
+  - `SPARK_QWEN38_27B_SERVING_TP_DEGREE` (4) in both the qwen38_27b adapter
+    and `spark_qwen38_27b_serving_constants.h`; TP1 deployments pass 1;
+  - the `spark_pack_synthesize_common.h` value hooks
+    (`SPARK_SYNTH_EMIT_MTP_TAIL`, `SPARK_SYNTH_HEAD_GLOBAL_KINDS`); its
+    context type and `spark_pack_load_common.h`'s field names fail to
+    compile when wrong, so they are not silent;
+  - `SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` (the dsv4 module passes it; tests
+    and tools get the default);
+  - `QWEN38_27B_LAYER_THREADS` and `MIMO25_LAYER_THREADS`, which the
+    host-CUDA layer tests set to 1 before including `layer.cuh`.
+
+  Pass each from every build that includes the header, and delete the
+  default. The `llm_defines.h` defaults, `SPARK_LLM_FIRST_ROUTED_LAYER`'s
+  and the serving adapters' description-hash default are already gone.
+  Test-harness paths (`TEST_*_PATH`) and platform shims (`_POSIX_C_SOURCE`,
+  `MSG_NOSIGNAL` and the like) are not build settings.
+- `tools/module_build_release.sh` runs `make archive adapter` in the
+  module directory and compiles
+  `examples/model_descriptions/<module>_<codec>_firmware.json` unless
+  `FIRMWARE_JSON` names another description:
+  - such a description exists only for gemma4 31B (bf16), glm52 (seven
+    codecs), glm5_next (fp8) and minimax (bf16); laguna, ling, qwen38_max,
+    qwen4_flash and glm5_next's other codecs need `FIRMWARE_JSON`;
+  - dsv41_flash, dsv4, hy4, muse_glimmer and qwen38_27b have no module
+    `adapter` target (their adapters build in the root Makefile), and
+    neither does the gemma4 26B's `Makefile.moe`, so the script cannot
+    release them;
+  - the seven module `adapter` recipes (gemma4, glm5_next, laguna, ling,
+    minimax, qwen38_max, qwen4_flash) differ only in their source file,
+    compile flags, output path and CUDA link; one rule in
+    `modules/resident_decode_stage_rules.mk` could build them all, checked
+    by comparing each family's `make -n adapter` before and after.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in
@@ -406,8 +473,6 @@ progress diary.
   invalid_argument. Map those statuses in the adapter, to BUSY where the step
   can be retried without having advanced any recurrent state, otherwise to
   CAPACITY_EXCEEDED.
-- ROUTE-STUCK reports a route once per state. Repeat it on an interval with
-  the route's committed-FIFO position and slot claims.
 - Pipeline-parallel stages still wedge after a failure on another rank. When
   one rank fails a submission's COMMIT or frame, the next stage's route has
   already posted its hidden-transport receive and waits in WAIT_INPUT for data

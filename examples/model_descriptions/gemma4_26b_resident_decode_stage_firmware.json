@@ -2,7 +2,7 @@
     "schema_version": 1,
     "model": {
         "id": "gemma4.26b-a4b.resident-decode-stage-firmware",
-        "revision": "h2816-l30-swa1024-f1of6-e128k8-v262144-v1"
+        "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
     },
     "metadata": {
         "architecture": "gemma4_resident_decode_stage",

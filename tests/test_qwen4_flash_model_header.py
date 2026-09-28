@@ -28,7 +28,7 @@ BINDINGS = {
     ("model", "attention_head_count"): "SPARK_LLM_ATTN_HEAD_COUNT",
     ("model", "kv_head_count"): "SPARK_LLM_KV_HEAD_COUNT",
     ("model", "head_dimension"): "SPARK_LLM_HEAD_DIMENSION",
-    ("model", "mtp_layer_count"): "SPARK_LLM_MTP_LAYER_COUNT",
+    ("model", "mtp_layer_count"): "SPARK_LLM_MODEL_MTP_LAYER_COUNT",
     ("model", "maximum_context_tokens"): "SPARK_LLM_MAXIMUM_CONTEXT_TOKENS",
     ("hybrid_attention", "period"): "SPARK_LLM_ATTN_PERIOD",
     ("hybrid_attention", "full_phase"): "SPARK_LLM_FULL_ATTENTION_PHASE",

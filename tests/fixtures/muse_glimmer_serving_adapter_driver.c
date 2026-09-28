@@ -12,8 +12,8 @@
 #ifndef MUSE_MODEL_REVISION
 #error "MUSE_MODEL_REVISION must match the adapter build"
 #endif
-#ifndef MUSE_CONTRACT_SHA256
-#error "MUSE_CONTRACT_SHA256 must match the adapter build"
+#ifndef MUSE_MODEL_DESCRIPTION_SHA256
+#error "MUSE_MODEL_DESCRIPTION_SHA256 must match the adapter build"
 #endif
 
 #define TEST_MUSE_GLIMMER_DRIVER_STAGE_COUNT 1u
@@ -61,8 +61,8 @@ static const SparkModelDriverDescriptor TestMuseGlimmerServingDriverDescriptor =
 	.model_id = "muse_glimmer.30b.resident-decode-stage-firmware",
 	.model_revision = MUSE_MODEL_REVISION,
 	.stage_name = "muse_glimmer_resident_decode_stage",
-	.target = "cuda.sm121.muse_glimmer.resident_decode_stage.bf16",
-	.model_description_sha256 = MUSE_CONTRACT_SHA256,
+	.target = "cuda.sm121.muse.resident_decode_stage.bf16",
+	.model_description_sha256 = MUSE_MODEL_DESCRIPTION_SHA256,
 	.compiled_program_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	.program_count = 1u,
 	.module_instance_count = 1u,

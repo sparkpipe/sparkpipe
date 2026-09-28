@@ -1,6 +1,10 @@
 #ifndef SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
 #define SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
 
+#ifndef SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256
+#error "SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 must name the model-description hash the driver compile embeds"
+#endif
+
 #include "sparkpipe/spark_qwen38_serving_adapter_common.h"
 
 #define SPARK_QWEN38_SERVING_ADAPTER_STRINGIZE_TOKEN(token) #token
@@ -624,10 +628,6 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadDriver)(
 	request.contract.driver_model_revision = SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION;
 	request.contract.driver_stage_name = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_NAME);
 	request.contract.driver_target = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_TARGET);
-#ifndef SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 \
-	SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256
-#endif
 	request.contract.model_description_sha256 = SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256;
 	request.node_context = 0;
 	request.completion_context = state;

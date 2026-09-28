@@ -120,7 +120,7 @@ follow-up if a second family needs it.
 | router scale fold | `router.scale × H**-0.5` folded into `router.proj` columns at pack time (exact linear re-association; HF rounds after the multiply, we round after the GEMM — within tolerance, stated) | packer | pack-time |
 | per-expert scale | `per_expert_scale[e]` folded into expert `down_proj[e]` rows at pack time (scalar × output row); `route_weight` stays pure renormalised prob | packer | pack-time |
 | MoE dispatch/grouped GEMM/finalize | `LmRouteBuild` + grouped `LmGemmLaunch` (w1 gate_up fused, w2 down) + `LmMoeFinalizeKernel` (fp32 route_weight × bf16 expert out) | inference/kernels/route.cuh, norm.cuh:295; mimo_2_5/layer.cuh:163-217 idiom | exists |
-| tied-embed argmax head | `LmHeadCandidateKernel`/`LmHeadCommitKernel` over embed shard + common `SparkTpMeshCombineU64Max` combine (`spark_tp_mesh_register.h`) | inference/kernels/head.cuh | exists |
+| tied-embed argmax head | `LmHeadCandidateKernel`/`LmHeadCommitKernel` over embed shard + the family template's `SparkGemma4ModuleCombineU64Max` combine (`family/module/spark_module_combine.h`) | inference/kernels/head.cuh | exists |
 | embedding gather + scale | donor `SparkQwen4FlashEmbeddingGatherShardedKernel` + one scale multiply → **family-local `SparkGemma4EmbeddingGatherShardedScaledKernel`** | module cuda file | new, 2-line delta on donor kernel |
 | softcap 30 | **not implemented** — ÷30, tanh, ×30 is strictly monotone → greedy argmax invariant (operator ruling). Logits/probabilities deferred; contract records the deviation | — | ruled out of v1 |
 | `layer_scalar` | identity; packer asserts every buffer is exactly 1.0 and fails closed otherwise | packer | pack-time |
