@@ -12,12 +12,12 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h"
-#include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_muse_glimmer_work_control.h"
+#include "common/common_kv_frame.h"
 #include "spark_muse_glimmer_stagepack_format.h"
 #define SPARK_FAMILY_CAMEL MuseGlimmer
 #define SPARK_FAMILY_UPPER MUSE_GLIMMER
@@ -31,10 +31,7 @@
 #define SPARK_MUSE_GLIMMER_MODULE_TP_RANK_REPLICATED 0u
 #define SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT 120000u
 
-#define SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS 16u
-#define SPARK_MUSE_GLIMMER_MODULE_KV_POLL_BOUND 10000u
 #define SPARK_MUSE_GLIMMER_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES 4096u
-#define SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE 4096u
 #define SPARK_MUSE_GLIMMER_MODULE_HEAD_SCREEN_CAP 4096u
 #define SPARK_MUSE_GLIMMER_MODULE_HEAD_SHADOW_GROUP 32u
 
@@ -108,14 +105,12 @@ typedef struct SparkMuseGlimmerModuleState
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	atomic_uint slot_states[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	uint32_t kv_block_count;
 	uint32_t cache_layer_count;
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
 	atomic_ullong failed_count;
 	atomic_ullong tokens_emitted;
-	void *kv_cache_bf16;
 	uint64_t cache_layer_stride;
 	uint64_t cache_block_stride;
 	void *kv_access_error;
@@ -134,29 +129,13 @@ typedef struct SparkMuseGlimmerModuleState
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
-	SparkStageKvClient kv_client;
-	SparkMuseGlimmerWorkControlKvState kv_work;
-	SparkMuseGlimmerWorkControlKvPlanConfig kv_plan;
-	uint32_t kv_tier_active;
+	LmKvFrameState kv;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
 	uint64_t kv_backing_maximum_bytes;
-	uint32_t *kv_logical_to_slot;
-	uint64_t kv_logical_to_slot_capacity;
-	uint32_t kv_logical_stride;
-	uint32_t *kv_table_indices_device;
-	uint32_t *kv_table_counts_device;
-	uint32_t *kv_table_indices_host;
-	uint32_t *kv_slot_lane;
-	uint32_t *kv_slot_logical;
-	uint64_t *kv_slot_sequence;
-	uint8_t *kv_slot_dirty;
-	uint8_t *kv_slot_pinned;
-	uint32_t *kv_slot_free_stack;
-	uint32_t kv_slot_free_count;
-	uint32_t kv_evict_cursor;
-	void *kv_block_staging;
-	void *kv_gdn_staging;
+	uint32_t *identity_table_device;
+	uint32_t *identity_counts_device;
+	uint32_t *identity_table_host;
 } SparkMuseGlimmerModuleState;
 
 static SparkStatus SparkMuseGlimmerModuleConfigureTp(SparkMuseGlimmerModuleState *state)
@@ -193,7 +172,7 @@ static SparkStatus SparkMuseGlimmerModuleConfigure(SparkMuseGlimmerModuleState *
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_PIPELINE_SLOTS",1u,SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv_block_count);
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv.block_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_LAYER_COUNT )
@@ -386,410 +365,14 @@ static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleSta
 static SparkStatus SparkMuseGlimmerModuleAllocateSlot(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 static SparkStatus SparkMuseGlimmerModuleAllocateSlotHostMirrors(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot);
 
-static SparkStatus SparkMuseGlimmerModuleOpenKvTier(SparkMuseGlimmerModuleState *state, const SparkFirmwareModuleHostServices *host_services)
-{
-	SparkMuseGlimmerStagePackHeader geometry;
-	const char *provider = 0,*service = 0,*socket_path = 0;
-	uint64_t pool_bytes = 0u,model_fp,layout_fp,layout_bits[3],block_record_bytes,staging_bytes;
-	uint32_t workers = 0u,block_record_elements,index;
-	SparkStatus status;
-	static const char *none = "none";
-	state->kv_tier_active = 0u;
-	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
-	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
-	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
-	if ( host_services->kv_backing_directory == 0 && host_services->kv_backing_maximum_bytes != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	provider = getenv("SPARK_MUSE_GLIMMER_STAGE_KV_STORE");
-	if ( provider == 0 )
-		provider = none;
-	if ( strcmp(provider,"none") == 0 )
-		return(SparkStageKvClientOpen(&state->kv_client,SPARK_MUSE_GLIMMER_MODULE_TAG,provider,0u,0u,0u,0u,0u,0,0,0u,0u));
-	status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_SERVICE",&service);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentText(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_SOCKET",&socket_path);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned64(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_POOL_BYTES",1u,1ull << 40u,&pool_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleEnvironmentUnsigned(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_KV_WORKERS",1u,64u,&workers);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	SparkMuseGlimmerStagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
-	model_fp = SparkStageModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
-	
-	block_record_elements = (uint64_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * state->layer_count;	layout_bits[0] = block_record_elements;
-	layout_bits[1] = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-	layout_bits[2] = state->kv_block_count;
-	layout_fp = SparkStageModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
-	block_record_bytes = (uint64_t)block_record_elements * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES;
-	staging_bytes = block_record_bytes * SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS;
-	if ( state->kv_physical_page_capacity != 0u && state->kv_block_count > state->kv_physical_page_capacity )
-		state->kv_block_count = state->kv_physical_page_capacity;
-	if ( state->kv_block_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	state->kv_plan.model_fingerprint = model_fp;
-	state->kv_plan.cache_layout_fingerprint = layout_fp;
-	state->kv_plan.rank_index = state->stage_index;
-	state->kv_plan.block_record_bytes = (uint32_t)block_record_bytes;
-	state->kv_plan.gdn_record_bytes = SPARK_MUSE_GLIMMER_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES;
-	state->kv_plan.lookahead_packet_count = 3u;
-	state->kv_plan.physical_block_capacity = state->kv_block_count;
-	state->kv_plan.allocated_physical_block_count = 0u;
-	state->kv_plan.staging_block_capacity = SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS;
-	status = SparkStageKvClientOpen(&state->kv_client,SPARK_MUSE_GLIMMER_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	state->kv_slot_lane = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_slot_logical = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_slot_sequence = (uint64_t *)malloc((size_t)state->kv_block_count * sizeof(uint64_t));
-	state->kv_slot_dirty = (uint8_t *)calloc((size_t)state->kv_block_count,sizeof(uint8_t));
-	state->kv_slot_pinned = (uint8_t *)calloc((size_t)state->kv_block_count,sizeof(uint8_t));
-	state->kv_slot_free_stack = (uint32_t *)malloc((size_t)state->kv_block_count * sizeof(uint32_t));
-	state->kv_block_staging = malloc((size_t)staging_bytes);
-	state->kv_gdn_staging = malloc(SPARK_MUSE_GLIMMER_MODULE_KV_GDN_RECORD_PLACEHOLDER_BYTES);
-	if ( cudaMalloc((void **)&state->kv_table_indices_device,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t)) != cudaSuccess )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaMalloc((void **)&state->kv_table_counts_device,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t)) != cudaSuccess )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->kv_table_indices_host = (uint32_t *)malloc((size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
-	if ( state->kv_slot_lane == 0 || state->kv_slot_logical == 0 || state->kv_slot_sequence == 0 || state->kv_slot_dirty == 0 || state->kv_slot_pinned == 0 || state->kv_slot_free_stack == 0 || state->kv_block_staging == 0 || state->kv_gdn_staging == 0 || state->kv_table_indices_host == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index = 0u; index < state->kv_block_count; index++)
-		state->kv_slot_free_stack[index] = index;
-	state->kv_slot_free_count = state->kv_block_count;
-	state->kv_evict_cursor = 0u;
-	state->kv_tier_active = 1u;
-	fprintf(stderr,"%s kv_tier_open provider=%s window=%u logical=%u physical=%u backing_bytes=%llu\n",SPARK_MUSE_GLIMMER_MODULE_TAG,provider,state->kv_block_count,state->kv_logical_page_capacity,state->kv_physical_page_capacity,(unsigned long long)state->kv_backing_maximum_bytes);
-	return(SPARK_STATUS_OK);
-}
+#include "sparkpipe/family/module/spark_module_kv_frame_ops.h"
+#define SPARK_MUSE_GLIMMER_MODULE_KV_GEOMETRY SparkMuseGlimmerStagePackHeader
+#define SPARK_MUSE_GLIMMER_MODULE_KV_EXPECTED_GEOMETRY(geometry,state) SparkMuseGlimmerStagePackExpectedGeometry((geometry),(state)->first_layer_index,(state)->layer_count)
+#define SPARK_MUSE_GLIMMER_MODULE_KV_BLOCK_RECORD_ELEMENTS(state) ((uint64_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT((state)->tp_degree) * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION * (state)->layer_count)
+#include "sparkpipe/family/module/spark_module_open_kv_tier.h"
 
-static SparkStatus SparkMuseGlimmerModuleKvWaitBatch(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerWorkControlKvBatchState *batch)
-{
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t polls = 0u;
-	struct timespec pause;
-	pause.tv_sec = 0;
-	pause.tv_nsec = 500000;
-	while ( batch->state == SPARK_MUSE_GLIMMER_WORK_CONTROL_BATCH_SUBMITTED )
-	{
-		status = SparkMuseGlimmerWorkControlProgress(&state->kv_client,&state->kv_work);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		if ( batch->state == SPARK_MUSE_GLIMMER_WORK_CONTROL_BATCH_READY )
-			break;
-		if ( ++polls >= SPARK_MUSE_GLIMMER_MODULE_KV_POLL_BOUND )
-		{
-			fprintf(stderr,"%s kv_store_stall\n",SPARK_MUSE_GLIMMER_MODULE_TAG);
-			return(SPARK_STATUS_IO_ERROR);
-		}
-		nanosleep(&pause,0);
-	}
-	if ( batch->state != SPARK_MUSE_GLIMMER_WORK_CONTROL_BATCH_READY || batch->status != SPARK_STATUS_OK )
-		return(SPARK_STATUS_IO_ERROR);
-	return(SparkMuseGlimmerWorkControlAcknowledge(batch));
-}
-
-static SparkStatus SparkMuseGlimmerModuleKvEvictSlot(SparkMuseGlimmerModuleState *state, uint32_t slot)
-{
-	SparkMuseGlimmerWorkControlKvBatchState *batch = &state->kv_work.evict;
-	SparkKvStoreBlock blocks[1];
-	uint32_t block_count = 0u,logical;
-	uint64_t sequence_id;
-	cudaError_t error;
-	SparkStatus status;
-	if ( state->kv_slot_dirty[slot] != 0u )
-	{
-		error = cudaMemcpy(state->kv_block_staging,(const uint8_t *)state->kv_cache_bf16 + (uint64_t)slot * state->kv_plan.block_record_bytes,(size_t)state->kv_plan.block_record_bytes,cudaMemcpyDeviceToHost);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_evict_copy"));
-		logical = state->kv_slot_logical[slot];
-		sequence_id = state->kv_slot_sequence[slot];
-		status = SparkMuseGlimmerWorkControlBuildEvictBatch(&state->kv_plan,sequence_id,&logical,1u,0u,state->kv_block_staging,state->kv_gdn_staging,blocks,1u,&block_count);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkMuseGlimmerWorkControlSubmit(&state->kv_client,batch,SPARK_KV_STORE_OPERATION_PUT,blocks,block_count,SPARK_MUSE_GLIMMER_WORK_CONTROL_RESTORE_PRIORITY_SPECULATIVE);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkMuseGlimmerModuleKvWaitBatch(state,batch);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-	}
-	if ( state->kv_logical_to_slot != 0 && state->kv_slot_lane[slot] != UINT32_MAX &&
-		state->kv_slot_logical[slot] != UINT32_MAX && state->kv_logical_stride != 0u )
-	{
-		uint64_t evict_index = (uint64_t)state->kv_slot_lane[slot] * state->kv_logical_stride + state->kv_slot_logical[slot];
-		if ( evict_index < state->kv_logical_to_slot_capacity &&
-			state->kv_logical_to_slot[evict_index] == slot + 1u )
-			state->kv_logical_to_slot[evict_index] = 0u;
-	}
-	state->kv_slot_dirty[slot] = 0u;
-	state->kv_slot_pinned[slot] = 0u;
-	state->kv_slot_lane[slot] = UINT32_MAX;
-	state->kv_slot_logical[slot] = UINT32_MAX;
-	state->kv_slot_sequence[slot] = 0u;
-	state->kv_slot_free_stack[state->kv_slot_free_count++] = slot;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkMuseGlimmerModuleKvPrepareFrame(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, SparkMuseGlimmerResidentDecodeStageFrameContext *context, SparkMuseGlimmerKvBlockTableView *table, uint32_t rows)
-{
-	SparkMuseGlimmerWorkControlKvBatchState *restore_batch = &state->kv_work.restore;
-	SparkKvStoreBlock blocks[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-	uint32_t packet_lane_counts[1],block_count,lanes_built;
-	uint32_t lane_required[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint64_t lane_sequence[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_list[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint32_t lane_count = 0u,row,lane_index,logical,slot_index;
-	uint64_t logical_capacity;
-	SparkStatus status;
-	cudaError_t error;
-	uint32_t uncommitted[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-	uint32_t uncommitted_count = 0u;
-	uint32_t unwind_index;
-	SparkStatus fail_status;
-	if ( state->kv_tier_active == 0u )
-		return(SPARK_STATUS_OK);
-	if ( context == 0 || context->decode_batch == 0 || context->decode_batch->row_sequence_ids == 0 || table == 0 || table->host_physical_block_indices == 0 || table->host_lane_physical_block_counts == 0 || table->physical_block_indices == 0 || table->lane_physical_block_counts == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	logical_capacity = (uint64_t)table->lane_count * table->lane_stride;
-	if ( logical_capacity == 0u || table->lane_count > SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || table->lane_stride > SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( logical_capacity > state->kv_logical_to_slot_capacity )
-	{
-		uint32_t *grown = (uint32_t *)realloc(state->kv_logical_to_slot,(size_t)logical_capacity * sizeof(uint32_t));
-		if ( grown == 0 )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		memset(grown + state->kv_logical_to_slot_capacity,0,(size_t)(logical_capacity - state->kv_logical_to_slot_capacity) * sizeof(uint32_t));
-		state->kv_logical_to_slot = grown;
-		state->kv_logical_to_slot_capacity = logical_capacity;
-		state->kv_logical_stride = table->lane_stride;
-	}
-	state->kv_logical_stride = table->lane_stride;
-	for (row = 0u; row < rows; row++)
-	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint32_t required_for_row = (slot->host_context_lengths[row] + SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS - 1u) / SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-		uint64_t sequence_id = context->decode_batch->row_sequence_ids[row];
-		if ( lane >= table->lane_count || required_for_row > table->lane_stride || sequence_id == 0u )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
-			if ( lane_list[lane_index] == lane )
-				break;
-		if ( lane_index == lane_count )
-		{
-			lane_list[lane_count] = lane;
-			lane_required[lane_count] = 0u;
-			lane_sequence[lane_count] = sequence_id;
-			lane_count++;
-		}
-		if ( required_for_row > lane_required[lane_index] )
-			lane_required[lane_index] = required_for_row;
-	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 1u;
-		}
-	}
-	{
-		SparkMuseGlimmerWorkControlPendingLane pending_lanes[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-		uint32_t pending_slots[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-		uint32_t pending_logical[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-		uint64_t pending_lane_index[SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS];
-		uint32_t batch_block_count = 0u,batch_index;
-		memset(pending_lanes,0,sizeof(pending_lanes));
-		for (lane_index = 0u; lane_index < lane_count; lane_index++)
-		{
-			uint32_t lane = lane_list[lane_index];
-			for (logical = 0u; logical < lane_required[lane_index]; logical++)
-			{
-				uint32_t *residency = &state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-				if ( *residency != 0u )
-					continue;
-				if ( state->kv_slot_free_count == 0u )
-				{
-					uint32_t scans = 0u;
-					while ( state->kv_slot_pinned[state->kv_evict_cursor] != 0u )
-					{
-						state->kv_evict_cursor = (state->kv_evict_cursor + 1u) % state->kv_block_count;
-						if ( ++scans > state->kv_block_count )
-							{
-								fail_status = SPARK_STATUS_CAPACITY_EXCEEDED;
-								goto fail;
-							}
-					}
-					status = SparkMuseGlimmerModuleKvEvictSlot(state,state->kv_evict_cursor);
-					if ( status != SPARK_STATUS_OK )
-						{
-							fail_status = status;
-							goto fail;
-						}
-				}
-			slot_index = state->kv_slot_free_stack[--state->kv_slot_free_count];
-			uncommitted[uncommitted_count++] = slot_index;
-			pending_lanes[batch_block_count].sequence_id = lane_sequence[lane_index];
-			pending_lanes[batch_block_count].nonresident_blocks = &pending_logical[batch_block_count];
-			pending_lanes[batch_block_count].nonresident_block_count = 1u;
-			pending_lanes[batch_block_count].gdn_nonresident = 0u;
-			pending_logical[batch_block_count] = logical;
-			pending_slots[batch_block_count] = slot_index;
-			pending_lane_index[batch_block_count] = (uint64_t)lane_index;
-			batch_block_count++;
-			if ( batch_block_count == SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS )
-			{
-				packet_lane_counts[0] = batch_block_count;
-				block_count = 0u;
-				lanes_built = 0u;
-				status = SparkMuseGlimmerWorkControlBuildRestoreBatch(&state->kv_plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->kv_block_staging,SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS,state->kv_gdn_staging,1u,blocks,SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS,&block_count,&lanes_built);
-				if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-					status = SPARK_STATUS_CAPACITY_EXCEEDED;
-				if ( status == SPARK_STATUS_OK )
-					status = SparkMuseGlimmerWorkControlSubmit(&state->kv_client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_MUSE_GLIMMER_WORK_CONTROL_RESTORE_PRIORITY_IMMEDIATE);
-				if ( status == SPARK_STATUS_OK )
-					status = SparkMuseGlimmerModuleKvWaitBatch(state,restore_batch);
-				if ( status != SPARK_STATUS_OK )
-					{
-						fail_status = status;
-						goto fail;
-					}
-				for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-				{
-					error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-					if ( error != cudaSuccess )
-						{
-							fail_status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_restore_copy");
-							goto fail;
-						}
-					state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-					state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-					state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-					state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
-					state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-					for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-						if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-						{
-							uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-							break;
-						}
-				}
-				batch_block_count = 0u;
-			}
-		}
-	}
-	if ( batch_block_count != 0u )
-	{
-			packet_lane_counts[0] = batch_block_count;
-			block_count = 0u;
-			lanes_built = 0u;
-			status = SparkMuseGlimmerWorkControlBuildRestoreBatch(&state->kv_plan,pending_lanes,batch_block_count,packet_lane_counts,1u,state->kv_block_staging,SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS,state->kv_gdn_staging,1u,blocks,SPARK_MUSE_GLIMMER_MODULE_KV_STAGING_RECORDS,&block_count,&lanes_built);
-			if ( status == SPARK_STATUS_OK && lanes_built != batch_block_count )
-				status = SPARK_STATUS_CAPACITY_EXCEEDED;
-			if ( status == SPARK_STATUS_OK )
-				status = SparkMuseGlimmerWorkControlSubmit(&state->kv_client,restore_batch,SPARK_KV_STORE_OPERATION_GET,blocks,block_count,SPARK_MUSE_GLIMMER_WORK_CONTROL_RESTORE_PRIORITY_IMMEDIATE);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkMuseGlimmerModuleKvWaitBatch(state,restore_batch);
-			if ( status != SPARK_STATUS_OK )
-				{
-					fail_status = status;
-					goto fail;
-				}
-			for (batch_index = 0u; batch_index < batch_block_count; batch_index++)
-			{
-				error = cudaMemcpyAsync((uint8_t *)state->kv_cache_bf16 + (uint64_t)pending_slots[batch_index] * state->kv_plan.block_record_bytes,(const uint8_t *)state->kv_block_staging + ((uint64_t)batch_index * state->kv_plan.block_record_bytes),(size_t)state->kv_plan.block_record_bytes,cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-				if ( error != cudaSuccess )
-					{
-						fail_status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_restore_copy");
-						goto fail;
-					}
-				state->kv_slot_lane[pending_slots[batch_index]] = lane_list[pending_lane_index[batch_index]];
-				state->kv_slot_logical[pending_slots[batch_index]] = pending_logical[batch_index];
-				state->kv_slot_sequence[pending_slots[batch_index]] = pending_lanes[batch_index].sequence_id;
-				state->kv_slot_dirty[pending_slots[batch_index]] = 0u;
-				for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-					if ( uncommitted[unwind_index] == pending_slots[batch_index] )
-					{
-						uncommitted[unwind_index] = uncommitted[--uncommitted_count];
-						break;
-					}
-				state->kv_logical_to_slot[((uint64_t)lane_list[pending_lane_index[batch_index]] * table->lane_stride) + pending_logical[batch_index]] = pending_slots[batch_index] + 1u;
-			}
-		}
-	}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		uint64_t lane_slice = (uint64_t)lane * table->lane_stride;
-		memcpy(state->kv_table_indices_host + lane_slice,table->host_physical_block_indices + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t));
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-			state->kv_table_indices_host[lane_slice + logical] = state->kv_logical_to_slot[lane_slice + logical] - 1u;
-		error = cudaMemcpyAsync((uint8_t *)state->kv_table_indices_device + (lane_slice * sizeof(uint32_t)),state->kv_table_indices_host + lane_slice,(size_t)table->lane_stride * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-		if ( error != cudaSuccess )
-			{
-				fail_status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_table_upload");
-				goto fail;
-			}
-	}
-	table->physical_block_indices = state->kv_table_indices_device;
-	table->lane_physical_block_counts = state->kv_table_counts_device;
-	error = cudaMemcpyAsync((void *)state->kv_table_counts_device,(const void *)table->host_lane_physical_block_counts,(size_t)table->lane_count * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->cuda_stream);
-	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_table_upload");
-			goto fail;
-		}
-	for (row = 0u; row < rows; row++)
-	{
-		uint32_t lane = slot->host_row_lane_indices[row];
-		uint64_t position = slot->host_row_positions[row];
-		slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + (uint32_t)(position / SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS)] - 1u;
-		slot->host_slot_mapping[row] = slot_index * SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS + (uint32_t)(position % SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
-	}
-	if ( error != cudaSuccess )
-		{
-			fail_status = SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_slot_upload");
-			goto fail;
-		}
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 0u;
-		}
-	}
-	return(SPARK_STATUS_OK);
-fail:
-	for (unwind_index = 0u; unwind_index < uncommitted_count; unwind_index++)
-		state->kv_slot_free_stack[state->kv_slot_free_count++] = uncommitted[unwind_index];
-	for (lane_index = 0u; lane_index < lane_count; lane_index++)
-	{
-		uint32_t fail_lane = lane_list[lane_index];
-		for (logical = 0u; logical < lane_required[lane_index]; logical++)
-		{
-			slot_index = state->kv_logical_to_slot[((uint64_t)fail_lane * table->lane_stride) + logical];
-			if ( slot_index != 0u )
-				state->kv_slot_pinned[slot_index - 1u] = 0u;
-		}
-	}
-	return(fail_status);
-}
-
-static void SparkMuseGlimmerModuleKvMarkWritten(SparkMuseGlimmerModuleState *state, SparkMuseGlimmerModuleSlot *slot, uint32_t rows)
-{
-	uint32_t row,slot_index;
-	if ( state->kv_tier_active == 0u )
-		return;
-	for (row = 0u; row < rows; row++)
-	{
-		slot_index = slot->host_slot_mapping[row] / SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
-		if ( slot_index < state->kv_block_count )
-			state->kv_slot_dirty[slot_index] = 1u;
-	}
-}
+#define SPARK_MUSE_GLIMMER_MODULE_KV_DEVICE_SLOT_MAPPING(slot) ((uint32_t *)0)
+#include "sparkpipe/family/module/spark_module_kv_prepare_frame.h"
 
 extern cudaError_t SparkMuseGlimmerLaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count);
 extern cudaError_t SparkMuseGlimmerLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
@@ -950,21 +533,8 @@ static SparkStatus SparkMuseGlimmerModuleStateTeardown(void *module_state)
 			return(SPARK_STATUS_BUSY);
 		state->tp_collective_initialized = 0u;
 	}
-	SparkStageKvClientClose(&state->kv_client);
-	free(state->kv_logical_to_slot);
-	free(state->kv_slot_lane);
-	free(state->kv_slot_logical);
-	free(state->kv_slot_sequence);
-	free(state->kv_slot_dirty);
-	free(state->kv_slot_pinned);
-	free(state->kv_slot_free_stack);
-	free(state->kv_block_staging);
-	free(state->kv_gdn_staging);
-	free(state->kv_table_indices_host);
-	if ( state->kv_table_indices_device != 0 )
-		cudaFree(state->kv_table_indices_device);
-	if ( state->kv_table_counts_device != 0 )
-		cudaFree(state->kv_table_counts_device);
+	LmKvFrameRelease(&state->kv);
+	free(state->identity_table_host);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1113,20 +683,20 @@ static SparkStatus SparkMuseGlimmerModuleAllocatePools(SparkMuseGlimmerModuleSta
 	local_cache_token_elements = 2ull * SPARK_MUSE_GLIMMER_MODEL_ATTN_LOCAL_KV_HEAD_COUNT(state->tp_degree) * SPARK_MUSE_GLIMMER_MODEL_ATTN_HEAD_DIMENSION;
 	state->cache_layer_stride = (uint64_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS * local_cache_token_elements;
 	state->cache_block_stride = state->cache_layer_stride * state->cache_layer_count;
-	cache_elements = state->cache_block_stride * state->kv_block_count;
-	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES,&state->kv_cache_bf16);
+	cache_elements = state->cache_block_stride * state->kv.block_count;
+	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,cache_elements * SPARK_MUSE_GLIMMER_MODEL_BF16_ELEMENT_BYTES,&state->kv.cache_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,sizeof(SparkMuseGlimmerKvViewShim),(void **)&state->kv_access_error);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,2u * sizeof(uint32_t),(void **)&state->gemm_row_offset_device);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t),(void **)&state->kv_table_indices_device);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t),(void **)&state->identity_table_device);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t),(void **)&state->kv_table_counts_device);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * sizeof(uint32_t),(void **)&state->identity_counts_device);
 	if ( status == SPARK_STATUS_OK )
 	{
-		state->kv_table_indices_host = (uint32_t *)malloc((size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MUSE_GLIMMER_MODULE_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
-		if ( state->kv_table_indices_host == 0 )
+		state->identity_table_host = (uint32_t *)malloc((size_t)SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_LLM_KV_MAX_BLOCKS_PER_LANE * sizeof(uint32_t));
+		if ( state->identity_table_host == 0 )
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -1350,8 +920,8 @@ static SparkStatus SparkMuseGlimmerModuleRunDecode(SparkMuseGlimmerModuleState *
 	{
 		memset(&table,0,sizeof(table));
 		for (row = 0; row < state->max_active_sequence_count; row++)
-			state->kv_table_indices_host[row] = row;
-		error = cudaMemcpyAsync(state->kv_table_indices_device,state->kv_table_indices_host,(size_t)state->max_active_sequence_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+			state->identity_table_host[row] = row;
+		error = cudaMemcpyAsync(state->identity_table_device,state->identity_table_host,(size_t)state->max_active_sequence_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 		if ( error != cudaSuccess )
 			SPARK_FAIL(SparkStageModuleCudaStatus(SPARK_MUSE_GLIMMER_MODULE_TAG,error,"kv_identity_table"));
 		table.abi_version = SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION;
@@ -1360,9 +930,9 @@ static SparkStatus SparkMuseGlimmerModuleRunDecode(SparkMuseGlimmerModuleState *
 		table.lane_count = state->max_active_sequence_count;
 		table.lane_stride = 1u;
 		table.lane_capacity = state->max_active_sequence_count;
-		table.physical_block_indices = state->kv_table_indices_device;
-		table.lane_physical_block_counts = state->kv_table_counts_device;
-		table.host_physical_block_indices = state->kv_table_indices_host;
+		table.physical_block_indices = state->identity_table_device;
+		table.lane_physical_block_counts = state->identity_counts_device;
+		table.host_physical_block_indices = state->identity_table_host;
 		table.host_lane_physical_block_counts = 0;
 	}
 	if ( SparkMuseGlimmerKvViewBytes() != sizeof(SparkMuseGlimmerKvViewShim) )
@@ -1374,11 +944,11 @@ static SparkStatus SparkMuseGlimmerModuleRunDecode(SparkMuseGlimmerModuleState *
 		return(status);
 	for (layer = 0; layer < state->layer_count; layer++)
 	{
-		views[layer].pool = (uint8_t *)state->kv_cache_bf16 + ((uint64_t)(state->first_layer_index + layer) * state->cache_layer_stride);
+		views[layer].pool = (uint8_t *)state->kv.cache_bf16 + ((uint64_t)(state->first_layer_index + layer) * state->cache_layer_stride);
 		views[layer].page_table = table.physical_block_indices;
 		views[layer].page_table_stride = table.lane_stride;
 		views[layer].sequence_count = table.lane_count;
-		views[layer].pool_page_count = state->kv_block_count;
+		views[layer].pool_page_count = state->kv.block_count;
 		views[layer].access_error = state->kv_access_error;
 	}
 	error = cudaMemsetAsync(state->kv_access_error,0,sizeof(error_record),stream);

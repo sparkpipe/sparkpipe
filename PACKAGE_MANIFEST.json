@@ -4648,8 +4648,8 @@
     },
     {
       "path": "model-families/muse_glimmer/include/sparkpipe/llm_defines.h",
-      "sha256": "ec7be20ee8cda01edf60658ff46e9b9432575df9974a0d3425880198901c93f9",
-      "size_bytes": 3254
+      "sha256": "d62500c6758a72e129347e7a0a7cc30e5d71a3acacbc5f78b9a2720f7e2c0b7c",
+      "size_bytes": 3963
     },
     {
       "path": "model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h",
@@ -5853,8 +5853,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c",
-      "sha256": "3376d402d9d1abf23d04c09c30b829e4a98c68ba7e60376f5421fe1b14cdd94a",
-      "size_bytes": 83812
+      "sha256": "91ef09803b503a23a30c52e2fd91ed99c4afecb76688270fa235452c97a26a97",
+      "size_bytes": 60825
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
@@ -10448,7 +10448,7 @@
     },
     {
       "path": "tests/test_stage_module_teardown.py",
-      "sha256": "05117aebcc00efc1fe90c0fd510cb2d8f01d3816b3a6f0f9c3ea9f28784243ad",
+      "sha256": "9377b5cc1dd064161dedcf1f6f1406999bd2de8785009bd2b0997b2bb00a95fb",
       "size_bytes": 19400
     },
     {
@@ -15265,5 +15265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73942312
+  "total_bytes": 73920034
 }

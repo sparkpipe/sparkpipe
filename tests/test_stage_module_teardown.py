@@ -12,7 +12,7 @@ FAMILIES = (
     ('qwen4_flash', 'Qwen4Flash', 'tp_collective_initialized', 'ple_prev_context_u32', True),
     ('qwen38_max', 'Qwen38Max', 'tp_collective_initialized', 't1_stage_hidden', True),
     ('gemma4', 'Gemma4', 'tp_collective_initialized', 'slots[0].host_row_lane_indices', False),
-    ('muse_glimmer', 'MuseGlimmer', 'tp_collective_initialized', 'kv_logical_to_slot', False),
+    ('muse_glimmer', 'MuseGlimmer', 'tp_collective_initialized', 'kv.logical_to_slot', False),
 )
 HARNESS = r'''
 #include <assert.h>
