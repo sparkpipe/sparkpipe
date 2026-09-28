@@ -727,6 +727,14 @@ for seamless production multi-model.
 - Fleet tooling is single-model: the agent accepts multiple runtime roots
   but release sync, health, and measurement lanes are per-root; no
   multi-model deploy or update has been tested.
+- `tools/fleet_swap.sh` still drives the system unit
+  `sparkpipe_model_residentd` through sudo (`start_model`, `stop_model`),
+  not the `fleet-agent` user unit that serves. A fleet-scope swap would
+  start a second residentd beside the agent's on all 16 nodes, which the
+  agent's janitor does not reap because it only matches its own roots. The
+  registry it reads has no GLM 5.3 Flash entry and marks both DSV4 models
+  removed. Delete the script and the registry's start fields, or rebuild
+  model swaps on the agent's release roots.
 
 ## Topology-aware lane sub-allocation
 
