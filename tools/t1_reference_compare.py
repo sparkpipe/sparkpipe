@@ -96,6 +96,16 @@ def corrupt_fixture(source_path, target_path, array_name, offset=0):
 def verify_manifest(fixture_dir):
     manifest = json.load(open(os.path.join(fixture_dir, "MANIFEST.json")))
     failures = []
+    quarantine = manifest.get("quarantine")
+    if quarantine is not None:
+        listed = quarantine.get("fixtures") or []
+        if not quarantine.get("reason") or not listed:
+            failures.append("quarantine: needs a reason and a fixture list")
+        for name in listed:
+            if name not in manifest["fixtures"]:
+                failures.append(f"{name}: quarantined but not in the manifest")
+            else:
+                failures.append(f"{name}: quarantined: {quarantine.get('reason')}")
     for name, record in sorted(manifest["fixtures"].items()):
         path = os.path.join(fixture_dir, name)
         if not os.path.exists(path):

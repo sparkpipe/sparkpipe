@@ -38,8 +38,9 @@ only ever write `~/release` and `~/current` files there.
   residentd/driver/lib → restart root; api-only → drain api; stage configs →
   relink) → `sync_rendezvous` (mesh/QPN records via hub `qpn/<host>/`) →
   `ensure_root` (boot a down root: 15-min post-reboot autospawn guard,
-  `MemAvailable >= packs + 8 GB` gate, backoff) → `ensure_api` (rank 0 only,
-  once the hub view reports 16 ready) → `report` (heartbeat, local + hub).
+  `MemAvailable >= packs + 8 GB` gate, backoff) → `report` (heartbeat, local + hub).
+  The agent never starts an API: the API runs only on the rtx5090 hub
+  (`g53-api`).
 - **The MANIFEST is the version.** Each root dir has `MANIFEST` (sha256 per
   file). Agents fetch the diff vs `.applied_manifest` and verify every sha
   before applying. A binary's sha is its version; there is no "deployed

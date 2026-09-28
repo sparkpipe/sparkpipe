@@ -257,7 +257,7 @@ class SourceReader:
             vals[:, 0::2] = self._e2m1[packed & np.uint8(0x0F)]
             vals[:, 1::2] = self._e2m1[packed >> np.uint8(4)]
             vals *= (np.repeat(blocks, 16, axis=1)[:, :real_cols]
-                     * global_f32 * np.float32(0.5))
+                     * np.float32(global_f32))
             matrix = f32_to_bf16_u16(vals)
             del vals, blocks
         else:

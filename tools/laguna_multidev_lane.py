@@ -8,6 +8,10 @@ import json
 import os
 import struct
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_weightd import fleet_weightd_socket_error  # noqa: E402
 
 LANE_COUNT = 16
 WORLD = 16
@@ -313,6 +317,9 @@ def main() -> int:
         raise SystemExit("kv backing must be a finite positive cap")
     if arguments.kv_page_capacity <= 0:
         raise SystemExit("kv page capacity must be positive")
+    socket_error = fleet_weightd_socket_error(socket)
+    if socket_error:
+        raise SystemExit(socket_error)
     if arguments.collective_identifier <= 0:
         raise SystemExit("collective identifier must be positive")
 

@@ -37,6 +37,7 @@ case "$MODE" in
     [ "$ROOT" = "/tmp/sparkqueue-$ATTEMPT" ] || fail "unexpected job namespace: $ROOT"
     [ "${SPARK_QUEUE_SIZE:-}" = "$WORLD" ] ||
       fail "SPARK_QUEUE_SIZE must be $WORLD (got '${SPARK_QUEUE_SIZE:-}')"
+    RANK_SOURCE="SPARK_QUEUE_RANK"
     RANK="${SPARK_QUEUE_RANK:?SPARK_QUEUE_RANK is required}"
     COLLECTIVE_ID="$(python3 -c "print(int('$ATTEMPT'[:15], 16) + 1 + $LANE)")"
     ;;
@@ -44,6 +45,7 @@ case "$MODE" in
     ROOT="${LAGUNA_RUNTIME_ROOT:-}"
     [ "$ROOT" = "/tmp/sp-laguna-lane$LANE" ] ||
       fail "LAGUNA_RUNTIME_ROOT must be /tmp/sp-laguna-lane$LANE in direct mode (got '$ROOT')"
+    RANK_SOURCE="LAGUNA_RANK"
     RANK="${LAGUNA_RANK:?LAGUNA_RANK is required in direct mode}"
     COLLECTIVE_ID="${LAGUNA_COLLECTIVE_ID:-}"
     decimal "$COLLECTIVE_ID" && [ "$COLLECTIVE_ID" -gt 0 ] ||
@@ -53,7 +55,7 @@ case "$MODE" in
     fail "LAGUNA_MODE must be queue or direct (got '$MODE')"
     ;;
 esac
-decimal "$RANK" && [ "$RANK" -lt "$WORLD" ] || fail "rank must be 0..$((WORLD - 1))"
+decimal "$RANK" && [ "$RANK" -lt "$WORLD" ] || fail "$RANK_SOURCE must be 0..$((WORLD - 1))"
 
 reserved_ok() {
   local port="$1" entry first last
@@ -91,7 +93,7 @@ case "$SOCKET" in
   /*) ;;
   *) fail "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket by absolute path (got '$SOCKET')" ;;
 esac
-[ -S "$SOCKET" ] || fail "weightd socket $SOCKET is not a live socket; this wrapper never starts a weightd"
+[ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; this wrapper never starts a weightd"
 
 STAGE=$((RANK / 8))
 TP_RANK=$((RANK % 8))

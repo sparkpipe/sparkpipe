@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render and verify the RTX 5090 speculation-node infrastructure contract."""
+"""Render and verify the RTX 5090 fleet-hub node contract."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 
-FORMAT = "ds4-auxiliary-node-v1"
+FORMAT = "ds4-auxiliary-node-v2"
 SAFE_TOKEN = re.compile(r"[A-Za-z0-9_.:@%/-]+")
 
 
@@ -52,14 +52,23 @@ def _mapping(payload: dict[str,object],key: str) -> dict[str,object]:
     return(value)
 
 
+def _port(payload: dict[str,object],key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value,int) or isinstance(value,bool) or value < 1 or value > 65535:
+        raise SpecNodeError(f"{key} must be in 1..65535")
+    return(value)
+
+
 def validate_profile(profile: dict[str,object]) -> None:
-    if profile.get("role") != "speculation" or profile.get("spark_rank") is not None:
-        raise SpecNodeError("speculation node must not be assigned a Spark rank")
+    if profile.get("role") != "hub" or profile.get("spark_rank") is not None:
+        raise SpecNodeError("the hub node must not be assigned a Spark rank")
     operator = _mapping(profile,"operator")
     recovery = _mapping(profile,"recovery_ssh")
-    private_link = _mapping(profile,"private_link")
-    rtx = _mapping(private_link,"rtx5090")
-    sparkf = _mapping(private_link,"sparkf")
+    link = _mapping(profile,"fleet_link")
+    rtx = _mapping(link,"rtx5090")
+    sparkf = _mapping(link,"sparkf")
+    fabric = _mapping(link,"fabric")
+    hub = _mapping(profile,"hub")
     runtime = _mapping(profile,"runtime")
     management = _mapping(profile,"management")
     wired = _mapping(management,"wired")
@@ -69,7 +78,9 @@ def validate_profile(profile: dict[str,object]) -> None:
     values = (
         (profile,"hostname"),(operator,"user"),(operator,"management_host"),
         (operator,"tailscale_host"),(recovery,"user"),(rtx,"interface"),
-        (sparkf,"interface"),(sparkf,"ssh_target"),(sparkf,"ssh_bastion"),
+        (sparkf,"interface"),(sparkf,"connection"),(sparkf,"ssh_target"),(sparkf,"ssh_bastion"),
+        (fabric,"interface"),(fabric,"fabric_unit"),(fabric,"route_unit"),(fabric,"probe_ssh_target"),
+        (hub,"release_directory"),(hub,"release_probe_path"),(hub,"heartbeat_directory"),(hub,"api_unit"),
     )
     for payload,key in values:
         _string(payload,key)
@@ -78,18 +89,25 @@ def validate_profile(profile: dict[str,object]) -> None:
     rtx_interface = ipaddress.ip_interface(_string(rtx,"address"))
     sparkf_interface = ipaddress.ip_interface(_string(sparkf,"address"))
     if rtx_interface.network != sparkf_interface.network:
-        raise SpecNodeError("private-link addresses are not in the same network")
+        raise SpecNodeError("fleet-link addresses are not in the same network")
     if rtx_interface.network.prefixlen != 30 or rtx_interface.ip == sparkf_interface.ip:
-        raise SpecNodeError("private link must contain two distinct addresses in a /30")
-    if private_link.get("mtu") != 9000:
-        raise SpecNodeError("private link MTU must be 9000")
-    port = recovery.get("port")
-    if not isinstance(port,int) or isinstance(port,bool) or port < 1 or port > 65535:
-        raise SpecNodeError("recovery SSH port must be in 1..65535")
+        raise SpecNodeError("fleet link must contain two distinct addresses in a /30")
+    fabric_network = ipaddress.ip_network(_string(fabric,"network"))
+    if ipaddress.ip_address(_string(fabric,"sparkf_address")) not in fabric_network:
+        raise SpecNodeError("sparkf fabric address is outside the fabric network")
+    if fabric_network.overlaps(rtx_interface.network):
+        raise SpecNodeError("fabric network must not overlap the fleet link")
+    if link.get("mtu") != 9000:
+        raise SpecNodeError("fleet link MTU must be 9000")
+    if link.get("speed_mbps") != 10000:
+        raise SpecNodeError("fleet link must be 10 GbE")
+    _port(recovery,"port")
+    if len({_port(hub,"release_http_port"),_port(hub,"api_port"),recovery["port"]}) != 3:
+        raise SpecNodeError("hub release, API and recovery ports must differ")
     if runtime.get("state") != "infrastructure_only":
         raise SpecNodeError("profile must not claim an unverified speculation runtime")
     if runtime.get("transport") != "not_implemented":
-        raise SpecNodeError("profile must expose the missing remote transport")
+        raise SpecNodeError("profile must expose the missing remote draft transport")
     if wired.get("address_mode") != "dhcp" or wifi.get("address_mode") != "dhcp":
         raise SpecNodeError("management interfaces must use DHCP")
     if wired.get("route_metric") != 100 or wifi.get("route_metric") != 300:
@@ -101,28 +119,37 @@ def validate_profile(profile: dict[str,object]) -> None:
     if aliases.get("lan_address") != _string(operator,"management_host"):
         raise SpecNodeError("LAN hostname alias must match the management host")
     if aliases.get("sparkf_address") != str(rtx_interface.ip):
-        raise SpecNodeError("sparkf hostname alias must use the private link")
+        raise SpecNodeError("sparkf hostname alias must use the fleet link")
     nodes = aliases.get("spark_nodes")
-    if not isinstance(nodes,list) or len(nodes) != 16 or any(not isinstance(node,str) for node in nodes):
+    if not isinstance(nodes,list) or len(nodes) != 16 or len(set(nodes)) != 16 or any(not isinstance(node,str) or SAFE_TOKEN.fullmatch(node) is None for node in nodes):
         raise SpecNodeError("hostname alias inventory must cover spark0 through sparkf")
 
 
+def _link_addresses(profile: dict[str,object]) -> tuple[str,str]:
+    link = _mapping(profile,"fleet_link")
+    rtx = str(ipaddress.ip_interface(_string(_mapping(link,"rtx5090"),"address")).ip)
+    sparkf = str(ipaddress.ip_interface(_string(_mapping(link,"sparkf"),"address")).ip)
+    return(rtx,sparkf)
+
+
 def render_netplan(profile: dict[str,object]) -> str:
-    private_link = _mapping(profile,"private_link")
-    endpoint = _mapping(private_link,"rtx5090")
-    interface = _string(endpoint,"interface")
-    address = _string(endpoint,"address")
-    mtu = private_link["mtu"]
+    link = _mapping(profile,"fleet_link")
+    endpoint = _mapping(link,"rtx5090")
+    fabric = _mapping(link,"fabric")
+    _,sparkf_ip = _link_addresses(profile)
     return(
         "network:\n"
         "  version: 2\n"
         "  ethernets:\n"
-        f"    {interface}:\n"
+        f"    {_string(endpoint,'interface')}:\n"
         "      dhcp4: false\n"
         "      dhcp6: false\n"
         "      link-local: []\n"
-        f"      addresses: [{address}]\n"
-        f"      mtu: {mtu}\n"
+        f"      addresses: [{_string(endpoint,'address')}]\n"
+        f"      mtu: {link['mtu']}\n"
+        "      routes:\n"
+        f"        - to: {_string(fabric,'network')}\n"
+        f"          via: {sparkf_ip}\n"
         "      optional: true\n"
     )
 
@@ -165,16 +192,15 @@ def render_emergency_unit() -> str:
 
 
 def render_sparkf_nmcli(profile: dict[str,object]) -> list[str]:
-    private_link = _mapping(profile,"private_link")
-    endpoint = _mapping(private_link,"sparkf")
+    link = _mapping(profile,"fleet_link")
+    endpoint = _mapping(link,"sparkf")
     return([
-        "sudo","nmcli","connection","modify","ds4-uplink-wired",
-        "connection.id","ds4-speculation-link",
+        "sudo","nmcli","connection","modify",_string(endpoint,"connection"),
         "connection.interface-name",_string(endpoint,"interface"),
         "connection.autoconnect","yes",
         "connection.autoconnect-priority","300",
         "802-3-ethernet.auto-negotiate","yes",
-        "802-3-ethernet.mtu",str(private_link["mtu"]),
+        "802-3-ethernet.mtu",str(link["mtu"]),
         "ipv4.method","manual",
         "ipv4.addresses",_string(endpoint,"address"),
         "ipv4.gateway","",
@@ -184,6 +210,30 @@ def render_sparkf_nmcli(profile: dict[str,object]) -> list[str]:
         "ipv4.never-default","yes",
         "ipv6.method","disabled",
     ])
+
+
+def render_sparkf_forwarding() -> str:
+    return("net.ipv4.ip_forward = 1\n")
+
+
+def render_hub_route_unit(profile: dict[str,object]) -> str:
+    link = _mapping(profile,"fleet_link")
+    fabric = _mapping(link,"fabric")
+    network = str(ipaddress.ip_interface(_string(_mapping(link,"rtx5090"),"address")).network)
+    route = f"{network} via {_string(fabric,'sparkf_address')} dev {_string(fabric,'interface')}"
+    return(
+        "[Unit]\n"
+        f"Description=SparkPipe route to the rtx5090 hub ({network}) through sparkf on the switched fabric\n"
+        f"After={_string(fabric,'fabric_unit')} network-online.target\n"
+        "Wants=network-online.target\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "RemainAfterExit=yes\n"
+        f"ExecStart=/usr/sbin/ip route replace {route}\n"
+        f"ExecStop=/usr/sbin/ip route del {route}\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
 
 
 def _run(argv: list[str]) -> str:
@@ -217,9 +267,11 @@ def _require_contains(results: dict[str,str],key: str,values: tuple[str,...]) ->
 
 def verify_live(profile: dict[str,object]) -> dict[str,str]:
     operator = _mapping(profile,"operator")
-    private_link = _mapping(profile,"private_link")
-    rtx = _mapping(private_link,"rtx5090")
-    sparkf = _mapping(private_link,"sparkf")
+    link = _mapping(profile,"fleet_link")
+    rtx = _mapping(link,"rtx5090")
+    sparkf = _mapping(link,"sparkf")
+    fabric = _mapping(link,"fabric")
+    hub = _mapping(profile,"hub")
     recovery = _mapping(profile,"recovery_ssh")
     management = _mapping(profile,"management")
     wired = _mapping(management,"wired")
@@ -231,10 +283,11 @@ def verify_live(profile: dict[str,object]) -> dict[str,str]:
     target = f"{user}@{management_host}"
     rtx_if = _string(rtx,"interface")
     sparkf_if = _string(sparkf,"interface")
-    rtx_peer = str(ipaddress.ip_interface(_string(sparkf,"address")).ip)
-    sparkf_peer = str(ipaddress.ip_interface(_string(rtx,"address")).ip)
+    rtx_ip,sparkf_ip = _link_addresses(profile)
     sparkf_target = _string(sparkf,"ssh_target")
+    probe_target = _string(fabric,"probe_ssh_target")
     bastion = _string(sparkf,"ssh_bastion")
+    release_url = f"http://{rtx_ip}:{hub['release_http_port']}/{_string(hub,'release_probe_path')}"
     results = {
         "rtx_hostname": _ssh(target,"hostname"),
         "rtx_gpu": _ssh(target,"nvidia-smi --query-gpu=name,driver_version --format=csv,noheader"),
@@ -244,14 +297,20 @@ def verify_live(profile: dict[str,object]) -> dict[str,str]:
         "rtx_wifi": _ssh(target,f"iw dev {_string(wifi,'interface')} link; ip -4 -o address show dev {_string(wifi,'interface')}"),
         "rtx_storage": _ssh(target,f"findmnt -T {_string(storage,'drafters_path')} -n -o TARGET,FSTYPE; df -BG --output=avail {_string(storage,'drafters_path')} | tail -n 1; stat -c %U:%G {_string(storage,'drafters_path')}"),
         "rtx_link": _ssh(target,f"ip -4 -o address show dev {rtx_if}; cat /sys/class/net/{rtx_if}/speed"),
+        "rtx_fabric_route": _ssh(target,f"ip -4 route show {_string(fabric,'network')}"),
         "rtx_tailscale": _ssh(target,"systemctl is-enabled tailscaled; systemctl is-active tailscaled"),
+        "hub_api": _ssh(target,f"systemctl --user is-active {_string(hub,'api_unit')}"),
+        "hub_heartbeats": _ssh(target,f"ls {_string(hub,'heartbeat_directory')}"),
         "tailscale_ssh": _ssh(
             f"{user}@{_string(operator,'tailscale_host')}","hostname",
             host_key_alias=management_host,
         ),
-        "rtx_peer": _ssh(target,f"ping -c 2 -W 2 -M do -s 8972 {rtx_peer}"),
+        "rtx_peer": _ssh(target,f"ping -c 2 -W 2 -M do -s 8972 {sparkf_ip}"),
         "sparkf_link": _ssh(sparkf_target,f"ip -4 -o address show dev {sparkf_if}; cat /sys/class/net/{sparkf_if}/speed",bastion),
-        "sparkf_peer": _ssh(sparkf_target,f"ping -c 2 -W 2 -M do -s 8972 {sparkf_peer}",bastion),
+        "sparkf_peer": _ssh(sparkf_target,f"ping -c 2 -W 2 -M do -s 8972 {rtx_ip}",bastion),
+        "sparkf_forwarding": _ssh(sparkf_target,"sysctl -n net.ipv4.ip_forward",bastion),
+        "spark_hub_route": _ssh(probe_target,f"systemctl is-active {_string(fabric,'route_unit')}; ip -4 route get {rtx_ip}",bastion),
+        "spark_release": _ssh(probe_target,f"curl -sf --max-time 5 -o /dev/null -w '%{{http_code}}' {release_url}",bastion),
         "recovery_ssh": _run([
             "ssh","-o","BatchMode=yes","-o","ConnectTimeout=5",
             "-o",f"HostKeyAlias={management_host}",
@@ -273,8 +332,25 @@ def verify_live(profile: dict[str,object]) -> dict[str,str]:
     available = [line.strip() for line in results["rtx_storage"].splitlines() if line.strip().endswith("G")]
     if len(available) != 1 or int(available[0][:-1]) < storage["minimum_available_gib"]:
         raise SpecNodeError("drafter storage below the configured capacity gate")
-    _require_contains(results,"rtx_link",(_string(rtx,"address").split("/",1)[0],"10000"))
-    _require_contains(results,"sparkf_link",(_string(sparkf,"address").split("/",1)[0],"10000"))
+    speed = str(link["speed_mbps"])
+    if results["rtx_link"].splitlines()[-1:] != [speed]:
+        raise SpecNodeError(f"rtx_link speed is not {speed} Mb/s")
+    _require_contains(results,"rtx_link",(_string(rtx,"address"),))
+    _require_contains(results,"rtx_fabric_route",(f"via {sparkf_ip}",))
+    if results["sparkf_link"].splitlines()[-1:] != [speed]:
+        raise SpecNodeError(f"sparkf_link speed is not {speed} Mb/s")
+    _require_contains(results,"sparkf_link",(_string(sparkf,"address"),))
+    if results["sparkf_forwarding"] != "1":
+        raise SpecNodeError("sparkf does not forward IPv4 between the fabric and the fleet link")
+    _require_contains(results,"spark_hub_route",("active",f"via {_string(fabric,'sparkf_address')} dev {_string(fabric,'interface')}"))
+    if results["spark_release"] != "200":
+        raise SpecNodeError(f"hub release endpoint {release_url} answered {results['spark_release']!r} over the fabric route")
+    if results["hub_api"] != "active":
+        raise SpecNodeError(f"hub API unit {_string(hub,'api_unit')} is {results['hub_api']!r}")
+    beats = set(results["hub_heartbeats"].split())
+    missing = [node for node in _mapping(profile,"hostname_aliases")["spark_nodes"] if f"{node}.json" not in beats]
+    if missing:
+        raise SpecNodeError(f"hub heartbeats missing for {', '.join(missing)}")
     _require_contains(results,"rtx_tailscale",("enabled","active"))
     return(results)
 
@@ -300,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
                 "emergency_sshd": render_emergency_sshd(profile),
                 "emergency_unit": render_emergency_unit(),
                 "sparkf_nmcli": render_sparkf_nmcli(profile),
+                "sparkf_forwarding": render_sparkf_forwarding(),
+                "spark_hub_route_unit": render_hub_route_unit(profile),
             },indent=2,sort_keys=True))
         elif arguments.command == "render-netplan":
             print(render_netplan(profile),end="")

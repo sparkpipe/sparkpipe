@@ -5,7 +5,7 @@ byte-identical output across two temperature-0 calls (determinism
 receipt). Endpoints are internal fleet addresses by design; the URL
 must still be well-formed http(s) with an explicit host.
 
-  model_api_smoke --endpoint http://spark0:8433 [--endpoint ...] \
+  model_api_smoke --endpoint http://100.123.97.61:8433 [--endpoint ...] \
       [--prompt text] [--max-tokens 8] [--timeout 120] [--token bearer]
 
 Exit 0 only if every endpoint passes.

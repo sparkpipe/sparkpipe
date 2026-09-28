@@ -193,7 +193,7 @@ class Glm53FlashEngine:
                              f"{(rows, real_cols // 16)}")
         global_f32 = float(self.raw(global_name).reshape(()))
         values = nvfp4_to_f32(raw, scales, rows, real_cols)
-        return bf16_to_f32(f32_to_bf16_u16(values * global_f32 * 0.5))
+        return bf16_to_f32(f32_to_bf16_u16(values * global_f32))
 
     def tensor(self, name):
         raw = self.raw(name)
@@ -240,7 +240,7 @@ class Glm53FlashEngine:
             global_name = name + "_scale_2"
             global_f32 = float(self.raw(global_name).reshape(()))
             values = nvfp4_to_f32(raw, scales, rows, real_cols)
-            return values * global_f32 * 0.5
+            return values * global_f32
         raise ValueError(f"{name}: unsupported expert payload "
                          f"{entry['dtype']}")
 

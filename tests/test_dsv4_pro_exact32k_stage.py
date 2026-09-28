@@ -57,8 +57,16 @@ def main() -> int:
     tpc = tp16["tp_collective"]
     assert tpc["collective_identifier"] == 134217734
     assert tpc["collective_identifier"] != tp["collective_identifier"]
-    assert tpc["listen_port"] == 67620
-    assert tpc["peer_ports"] == list(range(67620, 67636))
+    ports = [tpc["listen_port"]] + tpc["peer_ports"]
+    assert all(isinstance(port, int) and 0 < port <= 65535 for port in ports)
+    assert tpc["peer_ports"] == list(range(tpc["peer_ports"][0],
+                                           tpc["peer_ports"][0] + 16))
+    assert not set(ports) & set([tp["listen_port"]] + tp["peer_ports"])
+    lanes = json.loads((ROOT / "tools" / "devcycle" / "lane_assignments.json")
+                       .read_text(encoding="utf-8"))["lanes"]
+    for lane in lanes:
+        for base in lane["ports"].values():
+            assert not set(ports) & set(range(base, base + 16)), lane["lane"]
     assert len(tpc["peer_hosts"]) == 16
     assert tpc["algorithms"] == tp["algorithms"]
     assert tpc["rail_peer_hosts"] == tp["rail_peer_hosts"]

@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import laguna_multidev_lane as lane  # noqa: E402
+from lane_wrapper_contract import (  # noqa: E402
+    FLEET_WEIGHTD_SOCKET, STALE_SHARED_UNIT_SOCKET, LaneWrapper, LiveSocket)
 
 LANE = 11
 PORTS = lane.lane_ports(LANE)
@@ -25,6 +27,9 @@ ALL_LANE_PORTS = (set(range(CONTROL_BASE, CONTROL_BASE + 16))
                   | set(range(SESSION_BASE, SESSION_BASE + 64)))
 HEX = lane.HEX
 GENERATOR = str(ROOT / "tools/laguna_multidev_lane.py")
+CONTRACT_EOS = json.loads(
+    (ROOT / "model_contracts/laguna_authoritative.json").read_text())[
+        "tokens"]["eos_token_ids"]
 
 ADAPTER_MEMBERS = {
     "schema_version", "model_revision", "expert_weight_codec",
@@ -45,11 +50,15 @@ def check(condition, failures, message):
         failures.append(message)
 
 
-def deployment_gates(deployment, runtime_root, socket, failures):
+def deployment_gates(deployment, runtime_root, socket, failures,
+                     per_host_ports):
     check(deployment["schema_version"] == 2, failures,
           "deployment schema_version must be 2")
+    check(deployment["eos_token_ids"] == CONTRACT_EOS, failures,
+          f"eos_token_ids {deployment.get('eos_token_ids')} must be the "
+          f"contract's {CONTRACT_EOS}")
     check(deployment["weightd"]["socket_path"] == socket, failures,
-          "weightd socket path must be the requested socket")
+          "weightd socket path must be the fleet weightd")
     check(deployment["driver"]["program_name"] == "resident_decode",
           failures, "driver program must be resident_decode")
     check(deployment["adapter"]["shared_object_path"]
@@ -82,6 +91,9 @@ def deployment_gates(deployment, runtime_root, socket, failures):
         check(endpoint["port"] == CONTROL_BASE + i, failures,
               f"node {i}: control port {endpoint['port']}")
         endpoints.add((endpoint["host"], endpoint["port"]))
+        per_host_ports.setdefault(host, []).append(endpoint["port"])
+        per_host_ports[host].append(
+            deployment["transport"]["control_port_base"] + i)
     check(len(endpoints) == 16, failures, "control endpoints must be unique")
     transport = deployment["transport"]
     check(TRANSPORT_BASE <= transport["control_port_base"]
@@ -132,8 +144,7 @@ def adapter_gates(config, rank, failures, per_host_ports):
           failures, f"{host}: rail_peer_hosts must be 2 rails x 8 peers")
     check(len(collective["step_rail_indices"]) == 8, failures,
           f"{host}: step_rail_indices must cover the 8 peers")
-    per_host_ports.setdefault(host, set()).add(collective["listen_port"])
-    per_host_ports[host].add(CONTROL_BASE + rank)
+    per_host_ports.setdefault(host, []).append(collective["listen_port"])
 
     for member in ("session_ports", "session_ports_hc"):
         table = collective[member]
@@ -154,112 +165,112 @@ def adapter_gates(config, rank, failures, per_host_ports):
                     check(value not in sessions, failures,
                           f"{host}: {member} value {value} used twice")
                     sessions.add(value)
-                    if a == tp:
-                        per_host_ports[host].add(value)
+                    if a == tp and member == "session_ports":
+                        per_host_ports[host].append(value)
+    check(collective["session_ports_hc"] == collective["session_ports"],
+          failures, f"{host}: session_ports_hc must mirror session_ports")
 
 
 def wrapper_contract_gates(failures):
-    script = ROOT / "tools/laguna_multidev_run_family.sh"
-    attempt = "a" * 32
-    common = {
+    wrapper = LaneWrapper(ROOT / "tools/laguna_multidev_run_family.sh",
+                          "LAGUNA_")
+    blocks = (f"{CONTROL_BASE}:{CONTROL_BASE + 15}",
+              f"{COLLECTIVE_BASE}:{COLLECTIVE_BASE + 15}",
+              f"{TRANSPORT_BASE}:{TRANSPORT_BASE + 15}",
+              f"{SESSION_BASE}:{SESSION_BASE + 63}")
+    reserved = ",".join(blocks)
+    lane_inputs = {
         "LAGUNA_LANE": str(LANE),
+        "LAGUNA_MODE": "queue",
         "LAGUNA_KV_BACKING_BYTES": str(2 << 30),
         "LAGUNA_KV_PAGE_CAPACITY": "2048",
-        "LAGUNA_WEIGHTD_SOCKET": "/nonexistent/weightd.sock",
         "HOME": "/nonexistent",
     }
-    base = dict(common, LAGUNA_MODE="queue", SPARK_QUEUE_ATTEMPT=attempt,
-                SPARK_QUEUE_RUNTIME_ROOT=f"/tmp/sparkqueue-{attempt}",
-                SPARK_QUEUE_RANK="0", SPARK_QUEUE_SIZE="16")
-    direct = dict(common, LAGUNA_MODE="direct",
-                  LAGUNA_RUNTIME_ROOT=f"/tmp/sp-laguna-lane{LANE}",
-                  LAGUNA_RANK="0", LAGUNA_COLLECTIVE_ID="4242")
-    lane_ranges = (f"{CONTROL_BASE}:{CONTROL_BASE + 15},"
-                   f"{COLLECTIVE_BASE}:{COLLECTIVE_BASE + 15},"
-                   f"{TRANSPORT_BASE}:{TRANSPORT_BASE + 15},"
-                   f"{SESSION_BASE}:{SESSION_BASE + 63}")
-
-    def run(env):
-        complete = {key: value for key, value in os.environ.items()
-                    if not (key.startswith("SPARK_QUEUE_")
-                            or key.startswith("LAGUNA_")
-                            or key.startswith("SPARK_WEIGHTD_"))}
-        complete.update(env)
-        return subprocess.run(["bash", str(script)], env=complete,
-                              capture_output=True, text=True)
 
     def without(env, key):
-        return {k: v for k, v in env.items() if k != key}
+        return {name: value for name, value in env.items() if name != key}
 
-    reserved = dict(base, SPARK_QUEUE_PORTS=lane_ranges)
-    cases = [
-        ("missing lane", without(reserved, "LAGUNA_LANE"), "LAGUNA_LANE is required"),
-        ("lane out of range", dict(reserved, LAGUNA_LANE="16"), "LAGUNA_LANE must be 0..15"),
-        ("missing mode", without(reserved, "LAGUNA_MODE"), "LAGUNA_MODE must be queue or direct"),
-        ("unknown mode", dict(reserved, LAGUNA_MODE="shared"), "LAGUNA_MODE must be queue or direct"),
-        ("missing attempt id", without(base, "SPARK_QUEUE_ATTEMPT"), "authoritative spark queue"),
-        ("malformed attempt id", dict(base, SPARK_QUEUE_ATTEMPT="z" * 32), "bad attempt id"),
-        ("short attempt id", dict(base, SPARK_QUEUE_ATTEMPT="abc"), "bad attempt id"),
-        ("job namespace mismatch", dict(base, SPARK_QUEUE_RUNTIME_ROOT="/tmp/elsewhere"),
-         "unexpected job namespace"),
-        ("queue size mismatch", dict(base, SPARK_QUEUE_SIZE="8"), "SPARK_QUEUE_SIZE must be 16"),
-        ("rank out of range", dict(base, SPARK_QUEUE_RANK="16"), "rank must be 0..15"),
-        ("no reserved ports", dict(base), "queue reserved no ports"),
-        ("ports outside the lane blocks", dict(base, SPARK_QUEUE_PORTS="7000:7001"),
-         "not inside a queue-reserved range"),
-        ("lane 8 ports reserved for lane 11",
-         dict(base, SPARK_QUEUE_PORTS="23128:23143,53128:53143,64128:64143,23680:23743"),
-         "not inside a queue-reserved range"),
-        ("session block unreserved",
-         dict(base, SPARK_QUEUE_PORTS=(
-             f"{CONTROL_BASE}:{CONTROL_BASE + 15},"
-             f"{COLLECTIVE_BASE}:{COLLECTIVE_BASE + 15},"
-             f"{TRANSPORT_BASE}:{TRANSPORT_BASE + 15}")),
-         "not inside a queue-reserved range"),
-        ("missing kv backing", without(reserved, "LAGUNA_KV_BACKING_BYTES"),
-         "LAGUNA_KV_BACKING_BYTES must be a positive decimal"),
-        ("missing kv pages", without(reserved, "LAGUNA_KV_PAGE_CAPACITY"),
-         "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
-        ("zero kv pages", dict(reserved, LAGUNA_KV_PAGE_CAPACITY="0"),
-         "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
-        ("bad pool override", dict(reserved, LAGUNA_EXPERT_POOL_BYTES="12k"),
-         "LAGUNA_EXPERT_POOL_BYTES must be a positive decimal"),
-        ("missing socket", without(reserved, "LAGUNA_WEIGHTD_SOCKET"),
-         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
-        ("inherited socket is not used",
-         dict(without(reserved, "LAGUNA_WEIGHTD_SOCKET"), SPARK_WEIGHTD_SOCKET="/tmp/spark_weightd.sock"),
-         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
-        ("relative socket", dict(reserved, LAGUNA_WEIGHTD_SOCKET="weightd.sock"),
-         "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
-        ("direct root elsewhere", dict(direct, LAGUNA_RUNTIME_ROOT="/tmp/elsewhere"),
-         f"LAGUNA_RUNTIME_ROOT must be /tmp/sp-laguna-lane{LANE}"),
-        ("direct missing rank", without(direct, "LAGUNA_RANK"), "LAGUNA_RANK is required"),
-        ("direct bad rank", dict(direct, LAGUNA_RANK="x"), "rank must be 0..15"),
-        ("direct missing collective id", without(direct, "LAGUNA_COLLECTIVE_ID"),
-         "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
-        ("direct zero collective id", dict(direct, LAGUNA_COLLECTIVE_ID="0"),
-         "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
-    ]
-    for name, env, expected in cases:
-        result = run(env)
-        check(result.returncode != 0, failures,
-              f"wrapper case '{name}' must fail closed")
-        check(expected in result.stderr, failures,
-              f"wrapper case '{name}': expected '{expected}' in stderr, "
-              f"got: {result.stderr.strip()[:200]}")
-
-    for name, env in (("queue", reserved), ("direct", direct)):
-        accepted = run(env)
-        check(accepted.returncode != 0, failures,
-              f"{name} wrapper must still fail without a live socket")
-        check("not a live socket" in accepted.stderr, failures,
-              f"{name} wrapper should reach the socket check, got: "
-              f"{accepted.stderr.strip()[:200]}")
+    with tempfile.TemporaryDirectory() as directory:
+        dead = Path(directory) / "absent.sock"
+        base = dict(wrapper.base(dead), **lane_inputs)
+        queued = dict(base, SPARK_QUEUE_PORTS=reserved)
+        direct = {key: value for key, value in queued.items()
+                  if not key.startswith("SPARK_QUEUE_")}
+        direct.update(LAGUNA_MODE="direct",
+                      LAGUNA_RUNTIME_ROOT=f"/tmp/sp-laguna-lane{LANE}",
+                      LAGUNA_RANK=base["SPARK_QUEUE_RANK"],
+                      LAGUNA_COLLECTIVE_ID="4242")
+        cases = wrapper.queue_cases(base, reserved)
+        for index, name in enumerate(("control", "collective", "transport",
+                                      "session")):
+            cases.append((f"{name} block unreserved",
+                          dict(base, SPARK_QUEUE_PORTS=",".join(
+                              block for position, block in enumerate(blocks)
+                              if position != index)),
+                          "not inside a queue-reserved range"))
+        cases += [
+            ("lane 8 ports reserved for lane 11",
+             dict(base, SPARK_QUEUE_PORTS="23128:23143,53128:53143,"
+                  "64128:64143,23680:23743"),
+             "not inside a queue-reserved range"),
+            ("missing lane", without(queued, "LAGUNA_LANE"),
+             "LAGUNA_LANE is required"),
+            ("lane out of range", dict(queued, LAGUNA_LANE="16"),
+             "LAGUNA_LANE must be 0..15"),
+            ("missing mode", without(queued, "LAGUNA_MODE"),
+             "LAGUNA_MODE must be queue or direct"),
+            ("unknown mode", dict(queued, LAGUNA_MODE="shared"),
+             "LAGUNA_MODE must be queue or direct"),
+            ("missing kv backing", without(queued, "LAGUNA_KV_BACKING_BYTES"),
+             "LAGUNA_KV_BACKING_BYTES must be a positive decimal"),
+            ("missing kv pages", without(queued, "LAGUNA_KV_PAGE_CAPACITY"),
+             "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
+            ("zero kv pages", dict(queued, LAGUNA_KV_PAGE_CAPACITY="0"),
+             "LAGUNA_KV_PAGE_CAPACITY must be a positive decimal"),
+            ("bad pool override", dict(queued, LAGUNA_EXPERT_POOL_BYTES="12k"),
+             "LAGUNA_EXPERT_POOL_BYTES must be a positive decimal"),
+            ("zero pool budget", dict(queued, LAGUNA_EXPERT_POOL_BYTES="0"),
+             "LAGUNA_EXPERT_POOL_BYTES must be a positive decimal"),
+            ("missing socket", without(queued, "LAGUNA_WEIGHTD_SOCKET"),
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("inherited fleet socket is not used",
+             dict(without(queued, "LAGUNA_WEIGHTD_SOCKET"),
+                  SPARK_WEIGHTD_SOCKET=FLEET_WEIGHTD_SOCKET),
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("relative socket", dict(queued, LAGUNA_WEIGHTD_SOCKET="weightd.sock"),
+             "LAGUNA_WEIGHTD_SOCKET must name the running weightd socket"),
+            ("direct root elsewhere",
+             dict(direct, LAGUNA_RUNTIME_ROOT="/tmp/elsewhere"),
+             f"LAGUNA_RUNTIME_ROOT must be /tmp/sp-laguna-lane{LANE}"),
+            ("direct missing rank", without(direct, "LAGUNA_RANK"),
+             "LAGUNA_RANK is required"),
+            ("direct bad rank", dict(direct, LAGUNA_RANK="x"),
+             "LAGUNA_RANK must be 0..15"),
+            ("direct rank out of range", dict(direct, LAGUNA_RANK="16"),
+             "LAGUNA_RANK must be 0..15"),
+            ("direct missing collective id",
+             without(direct, "LAGUNA_COLLECTIVE_ID"),
+             "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
+            ("direct zero collective id", dict(direct, LAGUNA_COLLECTIVE_ID="0"),
+             "LAGUNA_COLLECTIVE_ID must be a positive decimal"),
+            ("direct dead weightd socket", direct,
+             f"shared weightd socket {dead} is not a live socket"),
+        ]
+        with LiveSocket(directory) as live:
+            mismatch = ("node order mismatch: rank "
+                        f"{base['SPARK_QUEUE_RANK']} expects spark")
+            cases.append(("node order mismatch",
+                          dict(queued, LAGUNA_WEIGHTD_SOCKET=str(live)),
+                          mismatch))
+            cases.append(("direct node order mismatch",
+                          dict(direct, LAGUNA_WEIGHTD_SOCKET=str(live)),
+                          mismatch))
+            wrapper.check_cases(cases, failures)
 
 
 def synthetic_pack(path: Path, group_count: int, experts_per_layer: int):
     HEADER_BYTES, ENTRY_BYTES, ALIGN = 264, 64, 256
-    rows = {14: 4, 15: 2}           # w1 fused gate|up rows, w2 rows
+    rows = {14: 4, 15: 2}
     cols = {14: 6, 15: 3}
     entries = []
     entries.append([3, 0, 2, 0, 0, 1, 1, 1, 0, 4, 0, 0])
@@ -295,6 +306,7 @@ def synthetic_pack(path: Path, group_count: int, experts_per_layer: int):
 
 def manifest_gates(failures):
     if shutil.which("cc") is None:
+        failures.append("the .experts manifest generator needs cc on PATH")
         return
     with tempfile.TemporaryDirectory() as temporary:
         pack = Path(temporary) / "laguna_stage.tp8.pp2.stage0.rank0.lgsp"
@@ -305,7 +317,7 @@ def manifest_gates(failures):
             ["bash", str(ROOT / "tools/laguna_multidev_experts_manifest.sh"),
              str(pack)], capture_output=True, text=True)
         check(result.returncode == 0, failures,
-              f"manifest generator failed: {result.stderr.strip()[:300]}")
+              f"manifest generator failed: {result.stderr.strip()}")
         sidecar = Path(str(pack) + ".experts")
         check(sidecar.is_file(), failures, "generator wrote no sidecar")
         if not sidecar.is_file():
@@ -373,7 +385,7 @@ def generate(output, runtime_root, socket_path, identifier, *extra):
 
 def generator_refusal_gates(output, failures):
     good = ["--lane", str(LANE), "--runtime-root", f"/tmp/sp-laguna-lane{LANE}",
-            "--weightd-socket", "/tmp/spark_weightd.sock", "--output-dir", str(output),
+            "--weightd-socket", FLEET_WEIGHTD_SOCKET, "--output-dir", str(output),
             "--collective-identifier", "7", "--kv-backing-bytes", "1024",
             "--kv-page-capacity", "2048"]
 
@@ -434,29 +446,36 @@ def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as temporary:
         runtime_root = f"/tmp/sp-laguna-lane{LANE}"
-        socket_path = "/tmp/spark_weightd.sock"
+        socket_path = FLEET_WEIGHTD_SOCKET
         output = Path(temporary) / "generated"
         first = generate(output, runtime_root, socket_path, "12345678901")
         check(first.returncode == 0, failures,
               f"generator failed: {first.stderr.strip()[:300]}")
 
         deployment = json.loads((output / "deployment.json").read_text())
-        deployment_gates(deployment, runtime_root, socket_path, failures)
         for key in ("kv_logical_page_capacity", "kv_physical_page_capacity"):
             check(deployment["runtime_limits"][key] == 2048, failures,
                   f"{key} must be the requested 2048 pages")
         check(all(node["kv_backing_maximum_bytes"] == 2 << 30
                   for node in deployment["nodes"]), failures,
               "kv backing cap must be the requested bytes")
-
         per_host_ports = {}
+        deployment_gates(deployment, runtime_root, socket_path, failures,
+                         per_host_ports)
+
         for rank in range(16):
             config = json.loads(
                 (output / f"adapter.spark{HEX[rank]}.json").read_text())
             adapter_gates(config, rank, failures, per_host_ports)
 
+        check(len(per_host_ports) == 16, failures,
+              f"every host listens: {sorted(per_host_ports)}")
         for host, ports in per_host_ports.items():
-            outside = ports - ALL_LANE_PORTS
+            duplicates = sorted({port for port in ports
+                                 if ports.count(port) > 1})
+            check(not duplicates, failures,
+                  f"{host}: listens {duplicates} twice")
+            outside = set(ports) - ALL_LANE_PORTS
             check(not outside, failures,
                   f"{host}: ports outside lane {LANE} blocks: {sorted(outside)}")
 
@@ -466,6 +485,18 @@ def main() -> int:
         check_run = generate(output, runtime_root, socket_path, "12345678901", "--check")
         check(check_run.returncode == 0, failures,
               f"--check failed: {check_run.stderr.strip()}")
+
+        for refused in ("/tmp/other.sock", STALE_SHARED_UNIT_SOCKET):
+            refused_output = Path(temporary) / "refused"
+            refusal = generate(refused_output, runtime_root, refused,
+                               "12345678901")
+            reason = f"weightd socket {refused} is not the fleet weightd"
+            check(refusal.returncode != 0 and reason in refusal.stderr,
+                  failures, f"generator must refuse {refused}: "
+                  f"rc={refusal.returncode} {refusal.stderr.strip()}")
+            check(not refused_output.exists(), failures,
+                  f"refused socket {refused} still wrote output")
+
         drift = generate(output, runtime_root, socket_path, "999", "--check")
         check(drift.returncode != 0, failures,
               "--check must flag a drifted collective identifier")

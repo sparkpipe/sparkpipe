@@ -41,8 +41,8 @@
 #   LING_EXPERT_CODEC          placed arm: bf16 (default) | fp8
 #   LING_WEIGHTD_SOCKET        shared weightd socket path (supervised
 #                              daemon; this wrapper never starts one).
-#                              Defaults to the fleet shared unit:
-#                              /run/sparkpipe-weightd-shared/weightd.sock
+#                              Defaults to the fleet-agent weightd:
+#                              /tmp/spark_weightd.sock
 #   LING_PREBUILT_DIR          reuse built artifacts instead of compiling
 #                              (from a prior queue build job on this node)
 #   LING_KV_BACKING_BYTES      KV backing cap for the private root
@@ -133,7 +133,7 @@ done
 
 # shared-socket only: the ling lane charter runs smoke and small B* under
 # the shared lanes; a private daemon is never started by this wrapper.
-SOCKET="${LING_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}}"
+SOCKET="${LING_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}}"
 [ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; \
 the operator must establish the shared daemon (never start one by hand)"
 

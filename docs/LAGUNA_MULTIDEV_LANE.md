@@ -23,7 +23,7 @@ default. The wrapper refuses to start without:
 |---|---|
 | `LAGUNA_LANE` | weightd mesh lane and port lane, 0..15 |
 | `LAGUNA_MODE` | `queue` (inside a spark_queue job) or `direct` (dev run) |
-| `LAGUNA_WEIGHTD_SOCKET` | absolute path of the running weightd socket; `SPARK_WEIGHTD_SOCKET` from the environment is not used |
+| `LAGUNA_WEIGHTD_SOCKET` | absolute path of the running weightd socket; `SPARK_WEIGHTD_SOCKET` from the environment is not used. The generator accepts only the fleet weightd `/tmp/spark_weightd.sock` (`tools/fleet_weightd.py`) and refuses any other socket, including the retired `/run/sparkpipe-weightd-shared/weightd.sock` |
 | `LAGUNA_KV_BACKING_BYTES` | KV backing cap in bytes |
 | `LAGUNA_KV_PAGE_CAPACITY` | logical and physical KV page capacity |
 

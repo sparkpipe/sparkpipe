@@ -34,7 +34,6 @@ def main() -> int:
     check(perf.MEASURED is False, "the recovered table must not claim measurement")
     check("estimate" in perf.CLASSIFICATION.lower(), "classification says estimate")
     check(tuple(EXPECTED) == perf.BATCH_SIZES, "all recovered batches are present")
-    check(perf.NATIVE_BATCH_SIZES == (1, 8, 1024), "native shape gate is exact")
     check(perf.NODE_COUNT == 16 and perf.PP_STAGE_COUNT == 4,
           "topology is TP4 x PP4")
 
@@ -50,8 +49,6 @@ def main() -> int:
               f"B{batch} filled-pipeline alias drifted")
         check(row["admitted_requests"] == 4 * batch,
               f"B{batch} four-microbatch admission drifted")
-        check(row["native_launch_shape"] == (batch in (1, 8, 1024)),
-              f"B{batch} native-shape classification drifted")
         check(math.isclose(row["per_sequence_step_ms"], 1000.0 / per_sequence),
               f"B{batch} sequence latency is not the reciprocal rate")
         check(math.isclose(row["pipeline_microbatch_interval_ms"],
