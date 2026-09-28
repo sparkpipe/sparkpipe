@@ -72,15 +72,24 @@ or SHA fails with a usage error. The glm53flash wrapper is
 `tools/glm5_next_build_release.sh` (no arguments).
 
 ```sh
-ssh sparkf
-cd ~/g5n-rd-build
-git fetch -q origin
-git worktree add --detach ~/g5n-rd-build-<sha7> <MERGED_MAIN_SHA>
-# run inside the GPU-owned queue job, cwd = ~/g5n-rd-build-<sha7>:
-bash tools/glm5_next_build_release.sh
+SHA=<MERGED_MAIN_SHA>; S7=${SHA:0:7}
+python3 tools/spark_queue.py sync --id release-glm53-$S7 --nodes sparkf --ref $SHA
+python3 tools/spark_queue.py add --id release-glm53-$S7-build --nodes sparkf \
+    --resources gpu --memory-mib 32768 --ttl-min 15 --by lane-release \
+    --cwd /home/sparkf/srcdata/sparkqueue/release-glm53-$S7/$SHA \
+    --cmd 'bash tools/glm5_next_build_release.sh'
+python3 tools/spark_queue.py status --id release-glm53-$S7-build
 ```
 
-A fresh worktree per release gives the module publish an empty
+Run these from the workstation checkout (the controller's ledger is
+`~/.sparkpipe/queue`). `sync` gives a fresh checkout, which the build
+requires. On 2026-09-28 the job for `09fdad6` was admitted in under 10 s and
+finished in about 50 s with `BUILD-PASS`. The job log is
+`/tmp/sparkqueue-<attempt>.log` on sparkf. `build/glm53_release.tar.gz.sha256`
+names the tarball relative to the checkout root, so run `sha256sum -c` from
+there.
+
+A fresh queue-synced checkout per release gives the module publish an empty
 `build/module_library`, so `publish.log` must show `validation=executed` and
 `glm5_next component validator: PASS`. `validation=reused` means the checkout
 was not fresh; do not publish it. Always name the merged SHA explicitly: never
@@ -114,14 +123,10 @@ The `.wset` sidecars next to the channel-root packs must stay aside
 (`.wset.aside-20260928`): with a sidecar present the attach takes the
 full-tape batch path.
 
-Queue admission, observed 2026-09-28: the controller's persistent owners still
-name the retired `sparkpipe-glm-serving-dd3526b2.service` and
-`sparkpipe-weightd-shared.service` system units. The channel runs weightd and
-residentd inside the `fleet-agent` user unit, which has no `MemoryMax`. As a
-result `preflight` rejects every `gpu-shared` job on every Spark ("owner unit
-is not verifiably active"). The build job cannot be admitted until the queue's
-owners describe the channel units with finite budgets. Reconcile the owners
-before the next release; do not bypass the gate.
+Queue admission: the lead cleared the stale persistent owners on 2026-09-28
+at 10:35Z. The queue is retired for day-to-day work. It is used only for this
+build, because `module_build_release.sh` requires `SPARK_QUEUE_ID`. Do not set
+`SPARK_QUEUE_ID` by hand and do not edit the guard.
 
 ### 2.2 Core (weightd, agent) — "if needed"
 
