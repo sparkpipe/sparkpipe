@@ -39,6 +39,10 @@ typedef struct TestBatchState
 	uint32_t error_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
 	uint32_t cached_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t stale_recomputes[TEST_MAX_REQUESTS + 1u];
+	uint64_t accepted_ns[TEST_MAX_REQUESTS + 1u];
+	uint64_t first_dispatch_ns[TEST_MAX_REQUESTS + 1u];
+	uint64_t first_token_ns[TEST_MAX_REQUESTS + 1u];
 } TestBatchState;
 
 static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
@@ -47,11 +51,16 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 	uint64_t id = event->request_id;
 	if ( id > TEST_MAX_REQUESTS )
 		return;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
+		s->accepted_ns[id] = event->monotonic_ns;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
 	{
-		s->token_events[id]++;
+		if ( s->token_events[id]++ == 0u )
+			s->first_token_ns[id] = event->monotonic_ns;
 		s->cached_tokens[id] = event->cached_prompt_token_count;
+		s->first_dispatch_ns[id] = event->first_dispatch_ns;
 	}
+	s->stale_recomputes[id] = event->stale_prefix_recompute_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
 	{
 		s->completed_events[id]++;
@@ -651,6 +660,37 @@ static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioMeasurements(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,800u,1u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_miss_count == 1u && view.prefix_hit_count == 0u && view.first_token_count == 1u,"measure: a cold prompt counts one miss and one first token");
+	CHECK(view.ttft_ns_total != 0u && view.ttft_ns_total == view.ttft_ns_maximum && view.queue_ns_total + view.prefill_ns_total == view.ttft_ns_total,"measure: queue and prefill split the first-token latency");
+	CHECK(state.first_dispatch_ns[1] >= state.accepted_ns[1] && state.first_token_ns[1] >= state.first_dispatch_ns[1] && state.accepted_ns[1] != 0u,"measure: the token event carries the request's first dispatch time");
+	TestSubmitPrompt(engine,2u,801u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_hit_count == 1u && view.prefix_hit_token_count == 4u && view.prefix_miss_count == 1u && view.first_token_count == 2u,"measure: a shared prefix counts one hit with its cached tokens");
+	CHECK(view.rejected_lane_count == 0u && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] == 0u,"measure: an unrejected run counts no rejections");
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_BUSY);
+	TestSubmitPrompt(engine,3u,802u,1u,prompt,3u);
+	TestDrive(engine,20u);
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_OK);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] != 0u && view.rejected_lane_count == view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] && view.stale_prefix_recompute_count == 0u,"measure: a BUSY rank counts its rejected waves by status");
+	CHECK(state.completed_events[3] == 1u && view.prefix_miss_count == 2u && view.first_token_count == 3u,"measure: retried waves count the prefix outcome once");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRankKilledAndRevived(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -902,6 +942,7 @@ int main(void)
 		TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 		TestScenarioSamplingValidation(&deployment,runtime_root);
+		TestScenarioMeasurements(&deployment,runtime_root);
 		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 		TestScenarioDriverIoError(&deployment,runtime_root);
 		TestScenarioEosEarlyStop(&deployment,runtime_root);

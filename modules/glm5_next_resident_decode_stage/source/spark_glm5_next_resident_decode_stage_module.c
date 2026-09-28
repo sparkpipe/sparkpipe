@@ -325,6 +325,9 @@ struct SparkGlm5NextModuleState
 	uint64_t chain_stage_ns[8u];
 	uint64_t chain_profile_last_ns;
 	SparkGlm5NextWaveTiming wave_timing;
+	atomic_uint_fast64_t kda_restore[SPARK_GLM5_NEXT_KDA_FIELDS];
+	atomic_uint_fast64_t kda_capture[SPARK_GLM5_NEXT_KDA_FIELDS];
+	atomic_uint_fast64_t kda_window_ns;
 	uint64_t wave_attempt_request;
 	uint64_t wave_attempt_ns;
 	uint32_t wave_attempt_retries;
@@ -1159,6 +1162,14 @@ static inline SparkStatus SparkGlm5NextRecurrentCopy(SparkGlm5NextModuleState *s
 		offset += payloads[part];
 	}
 	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm5NextKdaCount(atomic_uint_fast64_t *counters,uint64_t bytes,uint64_t start_ns)
+{
+	uint64_t now_ns = SparkGlm5NextNowNs();
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_COUNT],1u,memory_order_relaxed);
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_BYTES],bytes,memory_order_relaxed);
+	atomic_fetch_add_explicit(&counters[SPARK_GLM5_NEXT_KDA_NS],now_ns >= start_ns ? now_ns - start_ns : 0u,memory_order_relaxed);
 }
 
 static SparkStatus SparkGlm5NextPageCopy(
@@ -3652,7 +3663,7 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 	SparkKvLaneTransaction *owner;
 	SparkKvPageCacheSequence *sequence;
 	uint32_t page;
-	uint64_t generation;
+	uint64_t generation,start_ns;
 	SparkStatus status;
 	if ( state->kda_layer_count == 0u )
 		return(SPARK_STATUS_OK);
@@ -3668,6 +3679,7 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 	if ( page >= state->page_count || state->kv_blocks[page].residency_reference_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	generation = state->kv_blocks[page].generation;
+	start_ns = SparkGlm5NextNowNs();
 	status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,state->recurrent_staging,state->recurrent_page_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -3679,6 +3691,8 @@ static SparkStatus SparkGlm5NextCaptureRecurrent(SparkGlm5NextModuleState *state
 			SPARK_RETURN(wait);
 		status = SparkKvPageStoreWriteback(&state->recurrent_store,page,resident,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes,0u,0u);
 	}
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextKdaCount(state->kda_capture,state->recurrent_page_bytes,start_ns);
 	SPARK_RETURN(status);
 }
 
@@ -3856,6 +3870,27 @@ static void SparkGlm5NextWaveTimingReport(SparkGlm5NextWaveTiming *timing,uint32
 	memset(timing,0,sizeof(*timing));
 	timing->delivered_ns = delivered_ns;
 	timing->window_ns = now_ns;
+}
+
+static void SparkGlm5NextKdaTimingReport(SparkGlm5NextModuleState *state,uint64_t now_ns)
+{
+	uint64_t window_ns = atomic_load_explicit(&state->kda_window_ns,memory_order_relaxed),restore[SPARK_GLM5_NEXT_KDA_FIELDS],capture[SPARK_GLM5_NEXT_KDA_FIELDS];
+	uint32_t field;
+	if ( window_ns == 0u || now_ns < window_ns || now_ns - window_ns < SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS )
+	{
+		if ( window_ns == 0u )
+			atomic_store_explicit(&state->kda_window_ns,now_ns,memory_order_relaxed);
+		return;
+	}
+	if ( !atomic_compare_exchange_strong_explicit(&state->kda_window_ns,&window_ns,now_ns,memory_order_relaxed,memory_order_relaxed) )
+		return;
+	for (field=0u; field<SPARK_GLM5_NEXT_KDA_FIELDS; field++)
+	{
+		restore[field] = atomic_exchange_explicit(&state->kda_restore[field],0u,memory_order_relaxed);
+		capture[field] = atomic_exchange_explicit(&state->kda_capture[field],0u,memory_order_relaxed);
+	}
+	if ( restore[SPARK_GLM5_NEXT_KDA_COUNT] != 0u || capture[SPARK_GLM5_NEXT_KDA_COUNT] != 0u )
+		fprintf(stderr,"G5N-KDA-TIMING rank=%u restores=%llu restore_bytes=%llu restore_us=%llu captures=%llu capture_bytes=%llu capture_us=%llu\n",state->tp_rank,(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)restore[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(restore[SPARK_GLM5_NEXT_KDA_NS] / 1000u),(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_COUNT],(unsigned long long)capture[SPARK_GLM5_NEXT_KDA_BYTES],(unsigned long long)(capture[SPARK_GLM5_NEXT_KDA_NS] / 1000u));
 }
 
 static void SparkGlm5NextWaveTimingWorst(SparkGlm5NextWaveTiming *timing,const SparkGlm5NextAsyncCompletion *async,const uint64_t *marks,uint64_t total_ns)
@@ -4061,6 +4096,7 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	complete = async->completion_function;
 	complete_context = async->completion_context;
 	SparkGlm5NextWaveTimingRecord(&state->wave_timing,async,&collective,state->tp_rank,SparkGlm5NextNowNs());
+	SparkGlm5NextKdaTimingReport(state,SparkGlm5NextNowNs());
 	SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count);
 	atomic_store_explicit(&state->tp_chain_active,0u,memory_order_release);
 	SparkStageModuleSlotRelease(state->slot_states,async->slot_index);
@@ -4131,7 +4167,7 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 	const SparkKvLaneTransaction *owner = &state->kv_lane_transactions[resident];
 	SparkKvPageCache *cache = state->kv_transactions.cache;
 	uint32_t entry,page;
-	uint64_t generation;
+	uint64_t generation,start_ns;
 	SparkStatus status;
 	if ( SparkGlm5NextPrefixRestorePending(owner) == 0u || state->kda_layer_count == 0u )
 		return(SPARK_STATUS_OK);
@@ -4150,6 +4186,7 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	generation = state->kv_blocks[page].generation;
+	start_ns = SparkGlm5NextNowNs();
 	status = SparkKvPageStoreReadback(&state->recurrent_store,page,generation,(uintptr_t)state->recurrent_staging,state->recurrent_page_bytes);
 	while ( status == SPARK_STATUS_BUSY )
 	{
@@ -4160,6 +4197,8 @@ static SparkStatus SparkGlm5NextRestoreRecurrent(SparkGlm5NextModuleState *state
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextRecurrentCopy(state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,resident,state->recurrent_staging,state->recurrent_page_bytes);
+	if ( status == SPARK_STATUS_OK )
+		SparkGlm5NextKdaCount(state->kda_restore,state->recurrent_page_bytes,start_ns);
 	SPARK_RETURN(status);
 }
 

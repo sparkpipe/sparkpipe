@@ -276,6 +276,32 @@ number of steps per decode wave, 1.0 on lines printed before resident decode
 chains. `linear_walk` is the host's share of `linear_run`; the difference is
 the GPU still running after the host finished enqueueing.
 
+### KDA state restore and capture
+
+A prefix hit restores the sequence's KDA recurrent state and convolution
+windows from the state store, and every publishing frame captures them.
+The completion worker prints one line per 10 s window in which either
+happened:
+
+```
+G5N-KDA-TIMING rank=R restores=N restore_bytes=B restore_us=T captures=N capture_bytes=B capture_us=T
+```
+
+`restore_us` spans the store read and the host-to-device copy of each
+restore. `capture_us` spans the device-to-host copy and the store write of
+each capture. Both are window totals on the host clock, and captures from
+zero-row publish frames are included. Compare `restore_us` per restore with
+the `key` and `setup` intervals of `G5N-WAVE-TIMING` to see what a hit adds
+to its first frame.
+
+The API prints one `engine_measurements` JSON line whenever a request ends
+or a wave is rejected. It carries the engine's cumulative first-token count,
+queue, prefill and TTFT totals, prefix hits and misses, stale-prefix
+recomputes and rejected waves by status. Each `request_measurements` line
+carries `first_dispatch_ns` and `stale_prefix_recomputes`, so a request's
+queue time is `first_dispatch_ns - accepted_ns` and its prefill time runs
+from `first_dispatch_ns` to its first token's timestamp.
+
 ### Iteration 15's `pre` held the GPU time
 
 Iteration 15 printed `pre` (first sight to "the last launch") and `gpu` (the
