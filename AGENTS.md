@@ -12,6 +12,15 @@
   `tests/test_dry_law.py` enforces this for the runtime, transport, cache,
   serving, kernel and common paths; its `PENDING` list may only shrink.
 
+## Source package manifests
+
+- `PACKAGE_MANIFEST.json` and `SHA256SUMS` at the repository root are
+  generated for a source package and never committed, so PRs do not
+  conflict on them. `tools/source_package_gate.sh [revision]` archives the
+  revision (default `HEAD`), generates both manifests inside the archive and
+  verifies them with the forbidden-path policy. The CUDA gate, `tools/gates.sh`
+  and `make offline-gates` run it.
+
 ## GitHub authentication
 
 - Never open a GitHub login flow, request a connector, call `gh auth login`, or

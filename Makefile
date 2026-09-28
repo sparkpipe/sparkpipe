@@ -1603,7 +1603,7 @@ test: all $(TEST_BINARIES) $(PYTHON_TEST_BINARIES)
 #                      binary that builds on this host + every registered
 #                      python gate: code-size ratchet, dry-law, staging
 #                      manifest, the memory-contract ratchet, ...)
-#   package-manifest   python3 tools/verify_package_manifest.py
+#   package-manifest   tools/source_package_gate.sh (manifests of a git archive of HEAD)
 #
 # Hardware-gated work is NOT part of an offline pass and must never be
 # claimed by one: nvcc/CUDA artifacts (the K3 serving adapter, the
@@ -1622,7 +1622,7 @@ offline-gates:
 		case $$gate in \
 			build-all) $(MAKE) -j1 all;; \
 			run-tests) $(MAKE) -j1 test;; \
-			package-manifest) python3 tools/verify_package_manifest.py;; \
+			package-manifest) tools/source_package_gate.sh;; \
 			*) echo "unknown offline gate: $$gate" >&2; exit 2;; \
 		esac; \
 	done; \
