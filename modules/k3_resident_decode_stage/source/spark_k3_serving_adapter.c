@@ -7,6 +7,7 @@
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_k3_llm_defines.h"
+#include "sparkpipe/spark_k3_model.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
 #include "sparkpipe/spark_memory_buffer.h"
@@ -22,7 +23,7 @@
 #define SPARK_K3_SEAM_DRAFT_MAX_NODE_COUNT 64u
 #define SPARK_K3_SEAM_CONNECT_TIMEOUT_MS 1000u
 #define SPARK_K3_SEAM_IO_TIMEOUT_MS 30000u
-#define SPARK_K3_SEAM_TARGET_MODEL "moonshotai/Kimi-K3-MXFP4"
+#define SPARK_K3_SEAM_TARGET_MODEL SPARK_K3_MODEL_SOURCE_ID
 
 typedef struct SparkK3SpeculationKnobs
 {
@@ -767,7 +768,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 {
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
 		"k3-tp4pp4",
-		"moonshotai/Kimi-K3-MXFP4",
+		SPARK_K3_MODEL_SOURCE_ID,
 		"k3-tp4pp4",
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
@@ -782,7 +783,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.boundary_element_count = SPARK_K3_MODEL_HIDDEN_DIMENSION,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = 16u,
