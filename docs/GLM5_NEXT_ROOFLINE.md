@@ -657,6 +657,11 @@ Output lines:
   `hidden_finite`.
 - `ROOFLINE-FLEET`: adds the modelled collective cost (`--round-us`,
   `--nic-gbps`) for direct, RS/AG and RS/AG overlapped with compute.
+- `ROOFLINE-GRAPH` (with `--graph 1`): the step is captured once as a CUDA
+  graph and replayed `--iterations` times, as the production graph path
+  runs it; prints the node count and the median, minimum, maximum and mean
+  replay time. `--route-readback 0` builds the step the way resident chains
+  do, without the host copy of the expert group offsets.
 
 `achieved_gbps` well below 273 at large B means the grouped expert kernels,
 not the memory, are the limit.
@@ -1223,6 +1228,56 @@ git checkout <branch> && make kernel-codegen-diff BASE_CUBIN=/tmp/base.cubin ALL
 
 On the first revision it reports the nine `LmGemmKernel` instances as
 unexpected. On the second it reports only skinny kernels.
+
+## Per-token budget of the released TP16 build (09fdad6, 2026-09-28)
+
+Source: the residentd logs of all 16 production ranks, aligned by chain
+epoch with `tools/tp_chain_budget.py`, and the single-GPU bench in CUDA
+graph mode (`bench-glm5-next-batch ROOFLINE_ARGS="--graph 1"`). Receipts:
+`qualification/glm5next/performance/glm_perf_20260928_09fdad6/`.
+
+B1 graph chains (472 chains that all 16 ranks ran, rank-mean replay wall
+below 32 ms per step), per decode step:
+
+| Part | ms | Note |
+| --- | ---: | --- |
+| GPU compute in the replay | 19.2-19.8 | replay wall minus device peer wait, copy and combine; spread across ranks 0.6 ms |
+| Collective latency floor | 3.7 | peer wait of the last-arriving rank: about 40 us for each of 92 rounds |
+| Rank skew | 1.0 | mean peer wait minus the floor |
+| Copy and combine | 0.85 | |
+| Host between replays | 1.4 | chain wall minus replay walls, per step |
+| Total | about 26-27 | engine B1 is 25.2 ms per token |
+
+Skew is not the main loss at B1: kernel time is. The same step on an idle
+GB10 in graph mode (sparke, context 1024) takes 15.4-15.7 ms, and nsys
+shows under 1 ms of launch gaps in the 1,462-node graph. The production
+replay spends about 4 ms more on compute than the bench; the bench has no
+collective kernels and uses `cudaMalloc` weights instead of the leased
+expert pool, so that difference needs a profile of a real rank.
+
+The last-arriving rank at B1 is rank 1 in 223 of 472 chains, then ranks 15,
+8 and 12. Those nodes ran other lanes' work at the time: a three-process
+CPU reference decoder on spark1, qwen27b on spark8, gemma4 on sparka to
+sparkd and dev tests on sparkf. The same bench binary took 17.8-85 ms per
+step on sparkf (median 23.9) against 15.3-18.0 ms on sparke. GPU or memory
+bandwidth work on any production node slows every token.
+
+At larger waves (replay wall 32-50 ms per step) the floor is 8.5 ms and skew
+5 ms per step, so skew matters more there.
+
+**Route readback removed from resident chains.** Every routed layer queued
+a device-to-host copy of the expert group offsets and an event record, which
+only the lazy expert path reads. Linear chains and graph captures require
+every expert to be leased and never read them, but the copy sat between the
+router and the expert GEMV in each of 42 layers. The walk now calls
+`SparkGlm5NextLaunchCudaLayerMlpRouteResident`, which launches the same
+kernels without the copy. The graph drops from 1,504 to 1,462 nodes. Six
+alternating rounds of 100 replays on sparke, medians of the round medians:
+B1 15.75 to 15.39 ms (-2.3%), B8 32.17 to 31.87 ms (-0.9%).
+
+Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
+time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
+latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
 
 ## Next steps, ordered by expected gain
 

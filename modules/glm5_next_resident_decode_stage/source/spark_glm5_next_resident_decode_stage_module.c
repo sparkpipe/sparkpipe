@@ -2781,7 +2781,7 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 		return(6u);
 	if ( (wave->first_layer_index + layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
 	{
-		if ( SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer) != 0 )
+		if ( SparkGlm5NextLaunchCudaLayerMlpRouteResident(wave,layer) != 0 )
 			return(7u);
 		if ( SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer) != 0 )
 			return(8u);
