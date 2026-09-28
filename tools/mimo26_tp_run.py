@@ -21,7 +21,7 @@ def rank_arguments(rank, args):
 def launch(host, rank, args):
     remote = (
         f"cd {args.root} && sha=$(cut -d' ' -f1 packs/rank{rank}.sp.sha256) && "
-        f"exec systemd-run --user --unit=sp-mimo-tp-r{rank} --collect --wait --pipe --quiet "
+        f"exec systemd-run --user --unit=sp-mimo-tp-r{rank} --collect --wait --pipe --quiet --working-directory={args.root} "
         f"-p MemoryMax={args.memory_max} -p MemorySwapMax=0 "
         f"-E SPARK_WEIGHTD_SOCKET={args.socket} -E SPARK_WEIGHTD_LANE={args.lane} "
         f"-E SPARK_TP_MESH_RANKS={args.mesh} -E SPARK_TP_WAIT_MODE=hardware "
@@ -52,7 +52,7 @@ def main():
     parser.add_argument('--spine-budget-bytes', type=int, default=2600000000)
     parser.add_argument('--ready-timeout', type=int, default=900)
     parser.add_argument('--dump', default='')
-    parser.add_argument('--mode', choices=('eager', 'graph'), default='eager')
+    parser.add_argument('--mode', choices=('eager', 'graph', 'eager-rows', 'graph-rows'), default='eager')
     parser.add_argument('--kv-lane', type=int, default=0)
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--binary', default='bin/mimo26_tp_decode')

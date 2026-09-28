@@ -35,16 +35,7 @@ extern "C" {
 #include "sparkpipe/family/abi/spark_abi_kv_block_table_view.h"
 #include "sparkpipe/family/abi/spark_abi_decode_batch_view.h"
 
-typedef struct SparkMimo26PrefillFrameView
-{
-	uint32_t abi_version;
-	uint32_t descriptor_bytes;
-	uint32_t lane_index;
-	uint32_t token_count;
-	uint64_t base_position;
-	uint64_t sequence_id;
-	const uint32_t *row_token_ids;
-} SparkMimo26PrefillFrameView;
+#include "sparkpipe/family/abi/spark_abi_prefill_frame_view.h"
 
 #include "sparkpipe/family/abi/spark_abi_frame_context.h"
 #undef SPARK_ABI_TYPE

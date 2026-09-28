@@ -132,10 +132,26 @@ int main(int argc, char **argv)
 		next = 0u;
 		for (position = 0u; stop == 0u && generated.size() < max_new; position++)
 		{
-			token = position < prompt.size() ? prompt[position] : next;
-			GenStatus(SparkMimo26RankEngineStep(engine,0u,token,position,&next,&score),"step");
 			if ( position + 1u < prompt.size() )
-				continue;
+			{
+				uint32_t lanes[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],positions[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],outputs[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],count,row;
+				count = (uint32_t)prompt.size() - position < SPARK_MIMO26_RANK_ENGINE_MAX_ROWS ? (uint32_t)prompt.size() - position : SPARK_MIMO26_RANK_ENGINE_MAX_ROWS;
+				for (row = 0u; row < count; row++)
+				{
+					lanes[row] = 0u;
+					positions[row] = position + row;
+				}
+				GenStatus(SparkMimo26RankEngineRows(engine,count,lanes,&prompt[position],positions,outputs,0),"prefill-rows");
+				position += count - 1u;
+				next = outputs[count - 1u];
+				if ( position + 1u < prompt.size() )
+					continue;
+			}
+			else
+			{
+				token = position < prompt.size() ? prompt[position] : next;
+				GenStatus(SparkMimo26RankEngineStep(engine,0u,token,position,&next,&score),"step");
+			}
 			generated.push_back(next);
 			if ( first_token_ns == 0u )
 			{

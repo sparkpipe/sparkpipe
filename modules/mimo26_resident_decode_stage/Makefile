@@ -44,6 +44,8 @@ RUNTIME_CONFIGURATION := \
 	SPARK_MIMO26_STAGE_MAX_POSITIONS=$(MAX_POSITIONS) \
 	SPARK_MIMO26_STAGE_GRAPH=$(GRAPH)
 
+GPU_VALIDATOR := validation/validate_mimo26_resident_decode_stage_archive.sh
+
 EXPERT_CODEC ?= mxfp4
 ifeq ($(filter $(EXPERT_CODEC),mxfp4),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': the mimo26 flash module builds the checkpoint's native mxfp4 experts only)

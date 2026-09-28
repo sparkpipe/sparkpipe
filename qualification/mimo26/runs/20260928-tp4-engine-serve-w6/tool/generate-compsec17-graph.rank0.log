@@ -1,0 +1,22 @@
+MESH-LANE rank=0 lane=9 band=18 ownership=owned
+MESH-TOPOLOGY rank=0 degree=4 physical=4 map=0000000000008764 peers=01c0
+MESH-WAIT-MODE rank=0 mode=hardware
+M26TP-READY rank=0 lane=9 mesh=4,6,7,8 requests=17
+M26GEN rank=0 request=compsec/compsec-076.prompt.i32 prompt=400 ttft_ms=16577.1 generated=93 stop=eos decode_ms_per_token=45.47
+M26GEN rank=0 request=compsec/compsec-077.prompt.i32 prompt=345 ttft_ms=14366.5 generated=58 stop=eos decode_ms_per_token=43.79
+M26GEN rank=0 request=compsec/compsec-078.prompt.i32 prompt=332 ttft_ms=13524.4 generated=80 stop=eos decode_ms_per_token=43.80
+M26GEN rank=0 request=compsec/compsec-079.prompt.i32 prompt=371 ttft_ms=15922.9 generated=57 stop=eos decode_ms_per_token=44.00
+M26GEN rank=0 request=compsec/compsec-080.prompt.i32 prompt=278 ttft_ms=11331.7 generated=114 stop=eos decode_ms_per_token=43.76
+M26GEN rank=0 request=compsec/compsec-081.prompt.i32 prompt=323 ttft_ms=13296.5 generated=112 stop=eos decode_ms_per_token=43.97
+M26GEN rank=0 request=compsec/compsec-082.prompt.i32 prompt=279 ttft_ms=11355.1 generated=103 stop=eos decode_ms_per_token=43.90
+M26GEN rank=0 request=compsec/compsec-083.prompt.i32 prompt=300 ttft_ms=12297.8 generated=78 stop=eos decode_ms_per_token=43.57
+M26GEN rank=0 request=compsec/compsec-084.prompt.i32 prompt=305 ttft_ms=12440.8 generated=103 stop=eos decode_ms_per_token=44.05
+M26GEN rank=0 request=compsec/compsec-085.prompt.i32 prompt=222 ttft_ms=8955.9 generated=188 stop=eos decode_ms_per_token=43.70
+M26GEN rank=0 request=compsec/compsec-086.prompt.i32 prompt=347 ttft_ms=14399.6 generated=117 stop=eos decode_ms_per_token=44.49
+M26GEN rank=0 request=compsec/compsec-087.prompt.i32 prompt=461 ttft_ms=19431.1 generated=274 stop=eos decode_ms_per_token=47.26
+M26GEN rank=0 request=compsec/compsec-088.prompt.i32 prompt=304 ttft_ms=12847.3 generated=135 stop=eos decode_ms_per_token=44.42
+M26GEN rank=0 request=compsec/compsec-089.prompt.i32 prompt=246 ttft_ms=9932.9 generated=69 stop=eos decode_ms_per_token=44.06
+M26GEN rank=0 request=compsec/compsec-090.prompt.i32 prompt=339 ttft_ms=13935.0 generated=106 stop=eos decode_ms_per_token=44.10
+M26GEN rank=0 request=compsec/compsec-091.prompt.i32 prompt=235 ttft_ms=9439.2 generated=85 stop=eos decode_ms_per_token=43.49
+M26GEN rank=0 request=compsec/compsec-092.prompt.i32 prompt=313 ttft_ms=12887.6 generated=151 stop=eos decode_ms_per_token=44.32
+M26GEN-SUMMARY rank=0 steps=7306 graph_steps=7305 kv_error=0 step_ms=42.13

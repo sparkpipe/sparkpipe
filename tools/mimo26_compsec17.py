@@ -7,6 +7,7 @@ import json
 import struct
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -85,6 +86,28 @@ def grade(args) -> int:
     return 0
 
 
+def serve(args) -> int:
+    prompts = Path(args.prompts)
+    out = Path(args.outputs)
+    out.mkdir(parents=True, exist_ok=True)
+    timings = []
+    for case in cases_of(Path(args.fixture)):
+        raw = (prompts / f"{case['id']}.prompt.i32").read_bytes()
+        ids = list(struct.unpack(f"<{len(raw) // 4}i", raw))
+        body = json.dumps({"prompt_token_ids": ids, "max_tokens": args.max_tokens, "temperature": 0}).encode()
+        request = urllib.request.Request(args.endpoint.rstrip("/") + "/v1/completions", data=body, headers={"Content-Type": "application/json"}, method="POST")
+        started = time.monotonic()
+        with urllib.request.urlopen(request, timeout=args.timeout) as response:
+            payload = json.loads(response.read())
+        elapsed = time.monotonic() - started
+        tokens = payload.get("tokens") or []
+        (out / f"{case['id']}.prompt.i32.out.i32").write_bytes(struct.pack(f"<{len(tokens)}i", *tokens))
+        timings.append({"id": case["id"], "prompt_tokens": len(ids), "generated": len(tokens), "elapsed_s": round(elapsed, 3), "status": payload.get("status")})
+        print(f"{case['id']} prompt={len(ids)} generated={len(tokens)} elapsed={elapsed:.2f}s status={payload.get('status')}", flush=True)
+    (out / "serve.json").write_text(json.dumps({"endpoint": args.endpoint, "results": timings}, indent=1))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -102,8 +125,15 @@ def main() -> int:
     g.add_argument("--thinking", choices=sorted(MIMO_THINKING), default="off")
     g.add_argument("--max-tokens", type=int, required=True)
     g.add_argument("--out", required=True)
+    v = sub.add_parser("serve")
+    v.add_argument("--fixture", required=True)
+    v.add_argument("--prompts", required=True)
+    v.add_argument("--endpoint", required=True)
+    v.add_argument("--max-tokens", type=int, required=True)
+    v.add_argument("--timeout", type=int, default=900)
+    v.add_argument("--outputs", required=True)
     args = parser.parse_args()
-    return prepare(args) if args.command == "prepare" else grade(args)
+    return {"prepare": prepare, "grade": grade, "serve": serve}[args.command](args)
 
 
 if __name__ == "__main__":

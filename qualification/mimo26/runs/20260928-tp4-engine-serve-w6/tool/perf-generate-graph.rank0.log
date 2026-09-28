@@ -1,0 +1,7 @@
+MESH-LANE rank=0 lane=9 band=18 ownership=owned
+MESH-TOPOLOGY rank=0 degree=4 physical=4 map=0000000000008764 peers=01c0
+MESH-WAIT-MODE rank=0 mode=hardware
+M26TP-READY rank=0 lane=9 mesh=4,6,7,8 requests=2
+M26GEN rank=0 request=perf/essay.prompt.i32 prompt=46 ttft_ms=1684.4 generated=512 stop=length decode_ms_per_token=43.07
+M26GEN rank=0 request=perf/ttft278.prompt.i32 prompt=278 ttft_ms=11331.2 generated=114 stop=eos decode_ms_per_token=44.04
+M26GEN-SUMMARY rank=0 steps=948 graph_steps=947 kv_error=0 step_ms=42.19

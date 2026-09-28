@@ -65,28 +65,29 @@ int main(int argc, char **argv)
 	SparkMimo26RankEngineConfig config;
 	SparkMimo26RankEngineStats stats;
 	SparkMimo26RankEngine *engine = 0;
-	uint32_t position, token, next, mismatches = 0u, total, lane, repeat, repeats;
+	uint32_t position, token, next, mismatches = 0u, total, lane, repeat, repeats, chunked;
 	uint64_t decode_started = 0u, decode_ns = 0u, prompt_started, prompt_ns = 0u;
 	float score;
 	if ( argc != 11 && argc != 12 )
 	{
-		fprintf(stderr,"usage: %s RANK PACK PACK_SHA256 PROMPT_I32 EXPECTED_I32 EXPERT_POOL_BYTES SPINE_BUDGET_BYTES eager|graph LANE REPEATS [DUMP_DIRECTORY]\n",argv[0]);
+		fprintf(stderr,"usage: %s RANK PACK PACK_SHA256 PROMPT_I32 EXPECTED_I32 EXPERT_POOL_BYTES SPINE_BUDGET_BYTES eager|graph|eager-rows|graph-rows LANE REPEATS [DUMP_DIRECTORY]\n",argv[0]);
 		return(2);
 	}
 	tp_rank = (uint32_t)strtoul(argv[1],0,10);
 	if ( getenv("SPARK_WEIGHTD_SOCKET") == 0 || getenv("SPARK_WEIGHTD_LANE") == 0 || getenv("SPARK_TP_MESH_RANKS") == 0 )
 		TpFail("environment","SPARK_WEIGHTD_SOCKET / SPARK_WEIGHTD_LANE / SPARK_TP_MESH_RANKS unset");
-	if ( strcmp(argv[8],"eager") != 0 && strcmp(argv[8],"graph") != 0 )
-		TpFail("mode","eager or graph");
+	if ( strcmp(argv[8],"eager") != 0 && strcmp(argv[8],"graph") != 0 && strcmp(argv[8],"eager-rows") != 0 && strcmp(argv[8],"graph-rows") != 0 )
+		TpFail("mode","eager, graph, eager-rows or graph-rows");
 	std::vector<uint32_t> prompt = TpReadTokens(argv[4]), expected = TpReadTokens(argv[5]), generated;
 	total = (uint32_t)(prompt.size() + expected.size());
 	lane = (uint32_t)strtoul(argv[9],0,10);
 	repeats = (uint32_t)strtoul(argv[10],0,10);
+	chunked = strstr(argv[8],"-rows") != 0 ? 1u : 0u;
 	memset(&config,0,sizeof(config));
 	config.rank = tp_rank;
 	config.lane_count = 2u;
 	config.max_positions = 1024u;
-	config.mode = strcmp(argv[8],"graph") == 0 ? SPARK_MIMO26_RANK_ENGINE_MODE_GRAPH : SPARK_MIMO26_RANK_ENGINE_MODE_EAGER;
+	config.mode = strncmp(argv[8],"graph",5u) == 0 ? SPARK_MIMO26_RANK_ENGINE_MODE_GRAPH : SPARK_MIMO26_RANK_ENGINE_MODE_EAGER;
 	config.expert_pool_bytes = strtoull(argv[6],0,10);
 	config.spine_budget_bytes = strtoull(argv[7],0,10);
 	config.wait_ns = TP_WAIT_NS;
@@ -108,13 +109,34 @@ int main(int argc, char **argv)
 		prompt_started = TpNow();
 		for (position = 0u; position + 1u < total; position++)
 		{
-			if ( position + 1u == prompt.size() )
+			if ( position + 1u < prompt.size() && chunked != 0u )
 			{
+				uint32_t lanes[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],positions[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],outputs[SPARK_MIMO26_RANK_ENGINE_MAX_ROWS],count,index;
+				count = (uint32_t)prompt.size() - position < SPARK_MIMO26_RANK_ENGINE_MAX_ROWS ? (uint32_t)prompt.size() - position : SPARK_MIMO26_RANK_ENGINE_MAX_ROWS;
+				for (index = 0u; index < count; index++)
+				{
+					lanes[index] = lane;
+					positions[index] = position + index;
+				}
+				TpStatus(SparkMimo26RankEngineRows(engine,count,lanes,&prompt[position],positions,outputs,0),"prefill-rows");
+				position += count - 1u;
+				if ( position + 1u < prompt.size() )
+					continue;
 				decode_started = TpNow();
 				prompt_ns = decode_started - prompt_started;
+				next = outputs[count - 1u];
+				score = 0.0f;
 			}
-			token = position < prompt.size() ? prompt[position] : generated[position - prompt.size()];
-			TpStatus(SparkMimo26RankEngineStep(engine,lane,token,position,&next,&score),"step");
+			else
+			{
+				if ( position + 1u == prompt.size() )
+				{
+					decode_started = TpNow();
+					prompt_ns = decode_started - prompt_started;
+				}
+				token = position < prompt.size() ? prompt[position] : generated[position - prompt.size()];
+				TpStatus(SparkMimo26RankEngineStep(engine,lane,token,position,&next,&score),"step");
+			}
 			if ( position + 1u >= prompt.size() )
 			{
 				generated.push_back(next);

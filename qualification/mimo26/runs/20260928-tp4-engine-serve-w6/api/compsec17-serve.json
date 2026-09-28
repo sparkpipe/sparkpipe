@@ -1,0 +1,124 @@
+{
+ "endpoint": "http://localhost:8439",
+ "results": [
+  {
+   "id": "compsec-076",
+   "prompt_tokens": 400,
+   "generated": 93,
+   "elapsed_s": 21.268,
+   "status": 0
+  },
+  {
+   "id": "compsec-077",
+   "prompt_tokens": 345,
+   "generated": 58,
+   "elapsed_s": 16.921,
+   "status": 0
+  },
+  {
+   "id": "compsec-078",
+   "prompt_tokens": 332,
+   "generated": 80,
+   "elapsed_s": 17.964,
+   "status": 0
+  },
+  {
+   "id": "compsec-079",
+   "prompt_tokens": 371,
+   "generated": 57,
+   "elapsed_s": 18.149,
+   "status": 0
+  },
+  {
+   "id": "compsec-080",
+   "prompt_tokens": 278,
+   "generated": 114,
+   "elapsed_s": 17.034,
+   "status": 0
+  },
+  {
+   "id": "compsec-081",
+   "prompt_tokens": 323,
+   "generated": 112,
+   "elapsed_s": 18.534,
+   "status": 0
+  },
+  {
+   "id": "compsec-082",
+   "prompt_tokens": 279,
+   "generated": 103,
+   "elapsed_s": 16.378,
+   "status": 0
+  },
+  {
+   "id": "compsec-083",
+   "prompt_tokens": 300,
+   "generated": 78,
+   "elapsed_s": 16.127,
+   "status": 0
+  },
+  {
+   "id": "compsec-084",
+   "prompt_tokens": 305,
+   "generated": 103,
+   "elapsed_s": 17.38,
+   "status": 0
+  },
+  {
+   "id": "compsec-085",
+   "prompt_tokens": 222,
+   "generated": 188,
+   "elapsed_s": 17.984,
+   "status": 0
+  },
+  {
+   "id": "compsec-086",
+   "prompt_tokens": 347,
+   "generated": 117,
+   "elapsed_s": 20.13,
+   "status": 0
+  },
+  {
+   "id": "compsec-087",
+   "prompt_tokens": 461,
+   "generated": 274,
+   "elapsed_s": 33.425,
+   "status": 0
+  },
+  {
+   "id": "compsec-088",
+   "prompt_tokens": 304,
+   "generated": 135,
+   "elapsed_s": 18.736,
+   "status": 0
+  },
+  {
+   "id": "compsec-089",
+   "prompt_tokens": 246,
+   "generated": 69,
+   "elapsed_s": 13.201,
+   "status": 0
+  },
+  {
+   "id": "compsec-090",
+   "prompt_tokens": 339,
+   "generated": 106,
+   "elapsed_s": 18.919,
+   "status": 0
+  },
+  {
+   "id": "compsec-091",
+   "prompt_tokens": 235,
+   "generated": 85,
+   "elapsed_s": 13.474,
+   "status": 0
+  },
+  {
+   "id": "compsec-092",
+   "prompt_tokens": 313,
+   "generated": 151,
+   "elapsed_s": 19.92,
+   "status": 0
+  }
+ ]
+}

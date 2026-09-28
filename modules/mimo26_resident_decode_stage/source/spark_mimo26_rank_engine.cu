@@ -56,8 +56,11 @@ extern "C" SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaEr
 #define RE_RANK_VOCAB (RE_VOCAB / RE_DEGREE)
 #define RE_RANK_EXPERTS (RE_EXPERTS / RE_DEGREE)
 #define RE_RANK_DENSE (RE_DENSE / RE_DEGREE)
-#define RE_EXPERT_ROWS (RE_RANK_DENSE > RE_TOP_K * RE_INTER ? RE_RANK_DENSE : RE_TOP_K * RE_INTER)
 #define RE_MAX_LEASES 16u
+#define RE_MAX_ROWS SPARK_MIMO26_RANK_ENGINE_MAX_ROWS
+#define RE_QKV_MAX (RE_RANK_HEADS * RE_HEAD_DIM + (RE_SWA_KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM))
+#define RE_PAIRS_MAX (RE_MAX_ROWS * RE_TOP_K)
+#define RE_EXPERT_BUFFER (RE_MAX_ROWS * RE_RANK_DENSE > RE_PAIRS_MAX * RE_INTER ? RE_MAX_ROWS * RE_RANK_DENSE : RE_PAIRS_MAX * RE_INTER)
 
 using ReFullKv = LmKvGeometry<(RE_FULL_KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM) * sizeof(uint16_t), RE_PAGE_SLOTS, true>;
 using ReSwaKv = LmKvGeometry<(RE_SWA_KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM) * sizeof(uint16_t), RE_PAGE_SLOTS, true>;
@@ -88,7 +91,7 @@ struct SparkMimo26RankEngine
 	uint32_t lease_count, pinned_experts;
 	const uint8_t *expert_base;
 	uint64_t ordinal, chain, collectives, steps, graph_steps, step_ns;
-	uint32_t pages_per_lane, dump_position, walking_dump;
+	uint32_t pages_per_lane, dump_position, walking_dump, rows;
 	ReLayer layers[RE_LAYERS];
 	uint16_t *stream_bf16, *normed, *fused, *query, *key, *value, *attended, *partial, *reduced, *gate, *up, *act, *down;
 	float *logits, *route_weight;
@@ -164,25 +167,47 @@ static SparkStatus ReRowScales(SparkMimo26RankEngine *engine, uint32_t layer, ui
 	return(SPARK_STATUS_OK);
 }
 
-__global__ void RePrepareKernel(const uint32_t *step_in, uint32_t *sequence, uint32_t *position, uint32_t *context)
+__global__ void RePrepareKernel(const uint32_t *step_in, uint32_t rows, uint32_t *sequence, uint32_t *position, uint32_t *context)
 {
-	if ( threadIdx.x == 0u )
+	uint32_t row = threadIdx.x;
+	if ( row < rows )
 	{
-		sequence[0] = step_in[2];
-		position[0] = step_in[1];
-		context[step_in[2]] = step_in[1] + 1u;
+		sequence[row] = step_in[2u * RE_MAX_ROWS + row];
+		position[row] = step_in[RE_MAX_ROWS + row];
+		context[sequence[row]] = 0u;
 	}
+	__syncthreads();
+	if ( row < rows )
+		atomicMax(&context[sequence[row]],position[row] + 1u);
+}
+
+static int32_t ReFp8Rows(const uint8_t *weight, const float *row_scale, const uint16_t *activation, uint16_t *output, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+{
+	LmSkinnyArguments args;
+	memset(&args,0,sizeof(args));
+	args.weight = weight;
+	args.activation = activation;
+	args.output_bf16 = output;
+	args.scale = LmScaleTensorBuild(row_scale,LM_SCALE_ENCODING_F32,1u,output_dimension,input_dimension,1u,RE_FP8_BLOCK);
+	args.rows = rows;
+	args.input_dimension = input_dimension;
+	args.output_dimension = output_dimension;
+	return(LmSkinnyLaunch<LmFp8>(&args,stream));
 }
 
 template<uint32_t HEADS, uint32_t KV, uint32_t QKV>
 __global__ void ReSplitQkvKernel(const uint16_t *fused, uint16_t *query, uint16_t *key, uint16_t *value, const uint32_t *position_of_row, float theta)
 {
 	const uint32_t q_local = HEADS * RE_HEAD_DIM, k_local = KV * RE_HEAD_DIM;
-	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x, local, dim, pair;
+	uint32_t row = blockIdx.x * blockDim.x + threadIdx.x, token = blockIdx.y, local, dim, pair;
 	float angle, first, second;
 	uint16_t *target;
 	if ( row >= QKV )
 		return;
+	fused += (size_t)token * RE_QKV_MAX;
+	query += (size_t)token * HEADS * RE_HEAD_DIM;
+	key += (size_t)token * KV * RE_HEAD_DIM;
+	value += (size_t)token * KV * RE_VALUE_DIM;
 	local = row;
 	if ( local >= q_local + k_local )
 	{
@@ -198,7 +223,7 @@ __global__ void ReSplitQkvKernel(const uint16_t *fused, uint16_t *query, uint16_
 		return;
 	}
 	pair = dim < RE_ROPE_DIM / 2u ? dim + RE_ROPE_DIM / 2u : dim - RE_ROPE_DIM / 2u;
-	angle = (float)position_of_row[0] * powf(theta,-(2.0f * (float)(dim % (RE_ROPE_DIM / 2u))) / (float)RE_ROPE_DIM);
+	angle = (float)position_of_row[token] * powf(theta,-(2.0f * (float)(dim % (RE_ROPE_DIM / 2u))) / (float)RE_ROPE_DIM);
 	first = LmBf16ToFloat(fused[row]);
 	second = LmBf16ToFloat(fused[row - dim + pair]);
 	target[local] = LmFloatToBf16(dim < RE_ROPE_DIM / 2u ? first * cosf(angle) - second * sinf(angle) : first * cosf(angle) + second * sinf(angle));
@@ -221,51 +246,55 @@ __global__ void ReSwigluKernel(const uint16_t *gate, const uint16_t *up, uint16_
 	out[index] = LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(g / (1.0f + __expf(-g)))) * LmBf16ToFloat(up[index]));
 }
 
-__global__ void ReLocalRouteKernel(const uint32_t *expert, uint32_t rank, uint32_t *group_offset, uint32_t *row_of_k)
+__global__ void ReLocalRouteKernel(const uint32_t *expert, uint32_t pairs, uint32_t rank, uint32_t *group_offset, uint32_t *source_token, uint32_t *row_of_pair)
 {
-	uint32_t group = threadIdx.x, k, e, below = 0u;
-	if ( group > RE_RANK_EXPERTS )
+	uint32_t count[RE_RANK_EXPERTS + 1u], p, e, g;
+	if ( threadIdx.x != 0u )
 		return;
-	for (k = 0u; k < RE_TOP_K; k++)
+	for (g = 0u; g <= RE_RANK_EXPERTS; g++)
+		count[g] = 0u;
+	for (p = 0u; p < pairs; p++)
+		if ( expert[p] / RE_RANK_EXPERTS == rank )
+			count[expert[p] % RE_RANK_EXPERTS + 1u]++;
+	for (g = 0u; g < RE_RANK_EXPERTS; g++)
+		count[g + 1u] += count[g];
+	for (g = 0u; g <= RE_RANK_EXPERTS; g++)
+		group_offset[g] = count[g];
+	for (p = 0u; p < pairs; p++)
 	{
-		e = expert[k];
-		if ( e / RE_RANK_EXPERTS == rank && e % RE_RANK_EXPERTS < group )
-			below++;
-	}
-	group_offset[group] = below;
-	if ( group < RE_TOP_K )
-	{
-		e = expert[group];
+		e = expert[p];
 		if ( e / RE_RANK_EXPERTS != rank )
-			row_of_k[group] = UINT32_MAX;
-		else
 		{
-			below = 0u;
-			for (k = 0u; k < RE_TOP_K; k++)
-				if ( expert[k] / RE_RANK_EXPERTS == rank && expert[k] % RE_RANK_EXPERTS < e % RE_RANK_EXPERTS )
-					below++;
-			row_of_k[group] = below;
+			row_of_pair[p] = UINT32_MAX;
+			continue;
 		}
+		g = count[e % RE_RANK_EXPERTS]++;
+		source_token[g] = p / RE_TOP_K;
+		row_of_pair[p] = g;
 	}
 }
 
-__global__ void ReCombineKernel(const uint16_t *down, const float *weights, const uint32_t *row_of_k, uint16_t *partial)
+__global__ void ReCombineKernel(const uint16_t *down, const float *weights, const uint32_t *row_of_pair, uint16_t *partial)
 {
-	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, k;
+	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, token = blockIdx.y, k, pair;
 	float total = 0.0f;
 	if ( index >= RE_HIDDEN )
 		return;
 	for (k = 0u; k < RE_TOP_K; k++)
-		if ( row_of_k[k] != UINT32_MAX )
-			total += weights[k] * LmBf16ToFloat(down[row_of_k[k] * RE_HIDDEN + index]);
-	partial[index] = LmFloatToBf16(total);
+	{
+		pair = token * RE_TOP_K + k;
+		if ( row_of_pair[pair] != UINT32_MAX )
+			total += weights[pair] * LmBf16ToFloat(down[(size_t)row_of_pair[pair] * RE_HIDDEN + index]);
+	}
+	partial[(size_t)token * RE_HIDDEN + index] = LmFloatToBf16(total);
 }
 
 __global__ void ReEmbedKernel(const uint16_t *embedding, const uint32_t *step_in, uint32_t first_row, uint16_t *out)
 {
-	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, token = step_in[0];
+	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x, token = step_in[blockIdx.y];
 	if ( index >= RE_HIDDEN )
 		return;
+	out += (size_t)blockIdx.y * RE_HIDDEN;
 	out[index] = token >= first_row && token < first_row + RE_RANK_VOCAB ? embedding[(size_t)(token - first_row) * RE_HIDDEN + index] : (uint16_t)0u;
 }
 
@@ -274,6 +303,8 @@ __global__ void ReHeadKeyKernel(const float *logits, uint32_t first_row, uint64_
 	__shared__ uint64_t best[1024];
 	uint32_t index, bits, ordered;
 	uint64_t mine = 0u, candidate;
+	logits += (size_t)blockIdx.x * RE_RANK_VOCAB;
+	key_out += blockIdx.x;
 	for (index = threadIdx.x; index < RE_RANK_VOCAB; index += blockDim.x)
 	{
 		bits = __float_as_uint(logits[index]);
@@ -293,15 +324,15 @@ __global__ void ReHeadKeyKernel(const float *logits, uint32_t first_row, uint64_
 		*key_out = best[0];
 }
 
-__global__ void ReResolveKernel(const uint64_t *best, uint32_t *step_out)
+__global__ void ReResolveKernel(const uint64_t *best, uint32_t rows, uint32_t *step_out)
 {
-	uint32_t ordered, bits;
-	if ( threadIdx.x != 0u )
+	uint32_t ordered, bits, row = threadIdx.x;
+	if ( row >= rows )
 		return;
-	ordered = (uint32_t)(best[0] >> 32);
+	ordered = (uint32_t)(best[row] >> 32);
 	bits = (ordered & 0x80000000u) != 0u ? ordered & 0x7FFFFFFFu : ~ordered;
-	step_out[0] = 0xFFFFFFFFu - (uint32_t)(best[0] & 0xFFFFFFFFu);
-	step_out[1] = bits;
+	step_out[2u * row] = 0xFFFFFFFFu - (uint32_t)(best[row] & 0xFFFFFFFFu);
+	step_out[2u * row + 1u] = bits;
 }
 
 static SparkStatus ReCollective(SparkMimo26RankEngine *engine, uint32_t operation, const void *local, void *full)
@@ -310,8 +341,8 @@ static SparkStatus ReCollective(SparkMimo26RankEngine *engine, uint32_t operatio
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
-	submission.active_sequence_count = 1u;
-	submission.logical_sequence_count = 1u;
+	submission.active_sequence_count = engine->rows;
+	submission.logical_sequence_count = engine->rows;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = engine->ordinal++;
 	submission.local_device = local;
@@ -324,7 +355,7 @@ static SparkStatus ReCollective(SparkMimo26RankEngine *engine, uint32_t operatio
 static SparkStatus ReReduceAdd(SparkMimo26RankEngine *engine)
 {
 	RE_TRY(ReCollective(engine,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,engine->partial,engine->reduced));
-	ReAddKernel<<<(RE_HIDDEN + 255u) / 256u,256u,0,engine->stream>>>(engine->reduced,engine->stream_bf16,RE_HIDDEN);
+	ReAddKernel<<<(engine->rows * RE_HIDDEN + 255u) / 256u,256u,0,engine->stream>>>(engine->reduced,engine->stream_bf16,engine->rows * RE_HIDDEN);
 	RE_KERNEL("reduce-add");
 	return(SPARK_STATUS_OK);
 }
@@ -348,30 +379,42 @@ static SparkStatus ReDump(SparkMimo26RankEngine *engine, const char *name, uint3
 template<uint32_t KV, class Geometry>
 static SparkStatus ReAttention(SparkMimo26RankEngine *engine, uint32_t index, ReLayer *layer, float theta)
 {
-	const uint32_t rank_kv = KV / RE_DEGREE, rows = RE_RANK_HEADS * RE_HEAD_DIM + rank_kv * (RE_HEAD_DIM + RE_VALUE_DIM);
+	const uint32_t rank_kv = KV / RE_DEGREE, rows = RE_RANK_HEADS * RE_HEAD_DIM + rank_kv * (RE_HEAD_DIM + RE_VALUE_DIM), tokens = engine->rows;
 	cudaStream_t s = engine->stream;
 	float scale = 1.0f / sqrtf((float)RE_HEAD_DIM);
 	if ( rows != layer->qkv_rows )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	LmBf16RmsNormKernel<RE_THREADS><<<1,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,layer->attn_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
+	LmBf16RmsNormKernel<RE_THREADS><<<tokens,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,layer->attn_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
 	RE_KERNEL("attn-norm");
-	RE_LAUNCH(LmSkinnyExperts<LmFp8>(layer->qkv,LmScaleTensorBuild(layer->qkv_scale,LM_SCALE_ENCODING_F32,1u,rows,RE_HIDDEN,1u,RE_FP8_BLOCK),engine->normed,engine->fused,engine->source_token,engine->source_token,1u,1u,0u,RE_HIDDEN,rows,s),"qkv",index);
-	ReSplitQkvKernel<RE_RANK_HEADS,KV / RE_DEGREE,RE_RANK_HEADS * RE_HEAD_DIM + (KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM)><<<(rows + 255u) / 256u,256u,0,s>>>(engine->fused,engine->query,engine->key,engine->value,engine->position,theta);
+	{
+		LmSkinnyArguments args;
+		memset(&args,0,sizeof(args));
+		args.weight = layer->qkv;
+		args.activation = engine->normed;
+		args.output_bf16 = engine->fused;
+		args.scale = LmScaleTensorBuild(layer->qkv_scale,LM_SCALE_ENCODING_F32,1u,rows,RE_HIDDEN,1u,RE_FP8_BLOCK);
+		args.rows = tokens;
+		args.input_dimension = RE_HIDDEN;
+		args.output_dimension = rows;
+		args.output_row_stride = RE_QKV_MAX;
+		RE_LAUNCH(LmSkinnyLaunch<LmFp8>(&args,s),"qkv",index);
+	}
+	ReSplitQkvKernel<RE_RANK_HEADS,KV / RE_DEGREE,RE_RANK_HEADS * RE_HEAD_DIM + (KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM)><<<dim3((rows + 255u) / 256u,tokens),256u,0,s>>>(engine->fused,engine->query,engine->key,engine->value,engine->position,theta);
 	RE_KERNEL("split-qkv");
-	LmGqaKvStoreKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<1,RE_THREADS,0,s>>>(layer->cache,engine->key,engine->value,engine->sequence,engine->position,1u);
+	LmGqaKvStoreKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<tokens,RE_THREADS,0,s>>>(layer->cache,engine->key,engine->value,engine->sequence,engine->position,tokens);
 	RE_KERNEL("kv-store");
 	if ( layer->swa != 0u )
 	{
-		LmBuildSlidingWindowPositionsKernel<128u><<<1,128u,0,s>>>(engine->sequence,engine->context,engine->position,1u,RE_WINDOW,engine->window);
+		LmBuildSlidingWindowPositionsKernel<128u><<<tokens,128u,0,s>>>(engine->sequence,engine->context,engine->position,tokens,RE_WINDOW,engine->window);
 		RE_KERNEL("window");
-		LmGqaSinkAttentionDecodeKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<dim3(1u,RE_RANK_HEADS),RE_THREADS,0,s>>>(engine->query,layer->cache,engine->sequence,engine->context,engine->window,RE_WINDOW,RE_RANK_HEADS,scale,engine->attended,engine->position,layer->sink);
+		LmGqaSinkAttentionDecodeKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<dim3(tokens,RE_RANK_HEADS),RE_THREADS,0,s>>>(engine->query,layer->cache,engine->sequence,engine->context,engine->window,RE_WINDOW,RE_RANK_HEADS,scale,engine->attended,engine->position,layer->sink);
 	}
 	else
-		LmGqaAttentionDecodeKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<dim3(1u,RE_RANK_HEADS),RE_THREADS,0,s>>>(engine->query,layer->cache,engine->sequence,engine->context,0,0u,RE_RANK_HEADS,scale,engine->attended,engine->position);
+		LmGqaAttentionDecodeKernel<Geometry,RE_THREADS,KV / RE_DEGREE,RE_HEAD_DIM,RE_VALUE_DIM><<<dim3(tokens,RE_RANK_HEADS),RE_THREADS,0,s>>>(engine->query,layer->cache,engine->sequence,engine->context,0,0u,RE_RANK_HEADS,scale,engine->attended,engine->position);
 	RE_KERNEL("attention");
-	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(layer->o_proj,engine->attended,engine->partial,0,1u,RE_RANK_O_INPUT,RE_HIDDEN,RE_HIDDEN,0u,s),"o_proj",index);
+	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(layer->o_proj,engine->attended,engine->partial,0,tokens,RE_RANK_O_INPUT,RE_HIDDEN,RE_HIDDEN,0u,s),"o_proj",index);
 	RE_TRY(ReReduceAdd(engine));
-	LmBf16RmsNormKernel<RE_THREADS><<<1,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,layer->mlp_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
+	LmBf16RmsNormKernel<RE_THREADS><<<tokens,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,layer->mlp_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
 	RE_KERNEL("mlp-norm");
 	return(SPARK_STATUS_OK);
 }
@@ -379,28 +422,30 @@ static SparkStatus ReAttention(SparkMimo26RankEngine *engine, uint32_t index, Re
 static SparkStatus ReDense(SparkMimo26RankEngine *engine, uint32_t index, ReLayer *layer)
 {
 	cudaStream_t s = engine->stream;
-	RE_LAUNCH(LmSkinnyExperts<LmFp8>(layer->dense[0],LmScaleTensorBuild(layer->dense_scale[0],LM_SCALE_ENCODING_F32,1u,RE_RANK_DENSE,RE_HIDDEN,1u,RE_FP8_BLOCK),engine->normed,engine->gate,engine->source_token,engine->source_token,1u,1u,0u,RE_HIDDEN,RE_RANK_DENSE,s),"dense-gate",index);
-	RE_LAUNCH(LmSkinnyExperts<LmFp8>(layer->dense[1],LmScaleTensorBuild(layer->dense_scale[1],LM_SCALE_ENCODING_F32,1u,RE_RANK_DENSE,RE_HIDDEN,1u,RE_FP8_BLOCK),engine->normed,engine->up,engine->source_token,engine->source_token,1u,1u,0u,RE_HIDDEN,RE_RANK_DENSE,s),"dense-up",index);
-	ReSwigluKernel<<<(RE_RANK_DENSE + 255u) / 256u,256u,0,s>>>(engine->gate,engine->up,engine->act,RE_RANK_DENSE);
+	uint32_t tokens = engine->rows;
+	RE_LAUNCH(ReFp8Rows(layer->dense[0],layer->dense_scale[0],engine->normed,engine->gate,tokens,RE_HIDDEN,RE_RANK_DENSE,s),"dense-gate",index);
+	RE_LAUNCH(ReFp8Rows(layer->dense[1],layer->dense_scale[1],engine->normed,engine->up,tokens,RE_HIDDEN,RE_RANK_DENSE,s),"dense-up",index);
+	ReSwigluKernel<<<(tokens * RE_RANK_DENSE + 255u) / 256u,256u,0,s>>>(engine->gate,engine->up,engine->act,tokens * RE_RANK_DENSE);
 	RE_KERNEL("dense-swiglu");
-	RE_LAUNCH(LmSkinnyExperts<LmFp8>(layer->dense[2],LmScaleTensorBuild(layer->dense_scale[2],LM_SCALE_ENCODING_F32,1u,RE_HIDDEN,RE_RANK_DENSE,1u,RE_FP8_BLOCK),engine->act,engine->partial,engine->source_token,engine->source_token,1u,1u,0u,RE_RANK_DENSE,RE_HIDDEN,s),"dense-down",index);
+	RE_LAUNCH(ReFp8Rows(layer->dense[2],layer->dense_scale[2],engine->act,engine->partial,tokens,RE_RANK_DENSE,RE_HIDDEN,s),"dense-down",index);
 	return(ReReduceAdd(engine));
 }
 
 static SparkStatus ReMoe(SparkMimo26RankEngine *engine, uint32_t index, ReLayer *layer)
 {
 	cudaStream_t s = engine->stream;
-	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(layer->router,engine->normed,0,engine->logits,1u,RE_HIDDEN,RE_EXPERTS,RE_EXPERTS,0u,s),"router",index);
-	LmTopkSmallKernel<RE_THREADS,RE_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<1,RE_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),s>>>(engine->logits,RE_EXPERTS,engine->route_expert,engine->route_weight,layer->router_bias,0,SPARK_MIMO26_MODEL_ROUTED_SCALING_FACTOR);
+	uint32_t tokens = engine->rows, pairs = engine->rows * RE_TOP_K;
+	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(layer->router,engine->normed,0,engine->logits,tokens,RE_HIDDEN,RE_EXPERTS,RE_EXPERTS,0u,s),"router",index);
+	LmTopkSmallKernel<RE_THREADS,RE_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID><<<tokens,RE_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),s>>>(engine->logits,RE_EXPERTS,engine->route_expert,engine->route_weight,layer->router_bias,0,SPARK_MIMO26_MODEL_ROUTED_SCALING_FACTOR);
 	RE_KERNEL("topk");
-	ReLocalRouteKernel<<<1,RE_RANK_EXPERTS + 1u,0,s>>>(engine->route_expert,engine->config.rank,engine->group_offset,engine->row_of_k);
+	ReLocalRouteKernel<<<1,32,0,s>>>(engine->route_expert,pairs,engine->config.rank,engine->group_offset,engine->source_token,engine->row_of_k);
 	RE_KERNEL("local-route");
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[0],LmScaleTensorBlockUe8m0(layer->expert_scale[0],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->gate,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,RE_TOP_K,0u,RE_HIDDEN,RE_INTER,s),"expert-gate",index);
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[1],LmScaleTensorBlockUe8m0(layer->expert_scale[1],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->up,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,RE_TOP_K,0u,RE_HIDDEN,RE_INTER,s),"expert-up",index);
-	ReSwigluKernel<<<(RE_TOP_K * RE_INTER + 255u) / 256u,256u,0,s>>>(engine->gate,engine->up,engine->act,RE_TOP_K * RE_INTER);
+	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[0],LmScaleTensorBlockUe8m0(layer->expert_scale[0],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->gate,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-gate",index);
+	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[1],LmScaleTensorBlockUe8m0(layer->expert_scale[1],RE_RANK_EXPERTS,RE_INTER,RE_HIDDEN,1u,32u),engine->normed,engine->up,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,0u,RE_HIDDEN,RE_INTER,s),"expert-up",index);
+	ReSwigluKernel<<<(pairs * RE_INTER + 255u) / 256u,256u,0,s>>>(engine->gate,engine->up,engine->act,pairs * RE_INTER);
 	RE_KERNEL("expert-swiglu");
-	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[2],LmScaleTensorBlockUe8m0(layer->expert_scale[2],RE_RANK_EXPERTS,RE_HIDDEN,RE_INTER,1u,32u),engine->act,engine->down,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,RE_TOP_K,1u,RE_INTER,RE_HIDDEN,s),"expert-down",index);
-	ReCombineKernel<<<(RE_HIDDEN + 255u) / 256u,256u,0,s>>>(engine->down,engine->route_weight,engine->row_of_k,engine->partial);
+	RE_LAUNCH(LmSkinnyGroupedExperts<LmMxfp4>(layer->expert[2],LmScaleTensorBlockUe8m0(layer->expert_scale[2],RE_RANK_EXPERTS,RE_HIDDEN,RE_INTER,1u,32u),engine->act,engine->down,engine->group_offset,engine->source_token,RE_RANK_EXPERTS,pairs,1u,RE_INTER,RE_HIDDEN,s),"expert-down",index);
+	ReCombineKernel<<<dim3((RE_HIDDEN + 255u) / 256u,tokens),256u,0,s>>>(engine->down,engine->route_weight,engine->row_of_k,engine->partial);
 	RE_KERNEL("combine");
 	return(ReReduceAdd(engine));
 }
@@ -409,12 +454,12 @@ static SparkStatus ReWalk(SparkMimo26RankEngine *engine)
 {
 	cudaStream_t s = engine->stream;
 	uint32_t layer;
-	RE_CUDA(cudaMemcpyAsync(engine->step_in,engine->host_in,3u * sizeof(uint32_t),cudaMemcpyHostToDevice,s),"step-in");
-	RePrepareKernel<<<1,32,0,s>>>(engine->step_in,engine->sequence,engine->position,engine->context);
+	RE_CUDA(cudaMemcpyAsync(engine->step_in,engine->host_in,3u * RE_MAX_ROWS * sizeof(uint32_t),cudaMemcpyHostToDevice,s),"step-in");
+	RePrepareKernel<<<1,32,0,s>>>(engine->step_in,engine->rows,engine->sequence,engine->position,engine->context);
 	RE_KERNEL("prepare");
-	ReEmbedKernel<<<(RE_HIDDEN + 255u) / 256u,256u,0,s>>>(engine->embedding,engine->step_in,engine->config.rank * RE_RANK_VOCAB,engine->partial);
+	ReEmbedKernel<<<dim3((RE_HIDDEN + 255u) / 256u,engine->rows),256u,0,s>>>(engine->embedding,engine->step_in,engine->config.rank * RE_RANK_VOCAB,engine->partial);
 	RE_KERNEL("embed");
-	RE_CUDA(cudaMemsetAsync(engine->stream_bf16,0,RE_HIDDEN * sizeof(uint16_t),s),"stream-clear");
+	RE_CUDA(cudaMemsetAsync(engine->stream_bf16,0,(size_t)engine->rows * RE_HIDDEN * sizeof(uint16_t),s),"stream-clear");
 	RE_TRY(ReReduceAdd(engine));
 	RE_TRY(ReDump(engine,"embed.bf16",0u,engine->stream_bf16,RE_HIDDEN * sizeof(uint16_t)));
 	for (layer = 0u; layer < RE_LAYERS; layer++)
@@ -432,15 +477,15 @@ static SparkStatus ReWalk(SparkMimo26RankEngine *engine)
 		if ( current->moe != 0u )
 			RE_TRY(ReDump(engine,"route_ids.i32",layer,engine->route_expert,RE_TOP_K * sizeof(uint32_t)));
 	}
-	LmBf16RmsNormKernel<RE_THREADS><<<1,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,engine->final_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
+	LmBf16RmsNormKernel<RE_THREADS><<<engine->rows,RE_THREADS,(RE_HIDDEN + 64u) * sizeof(float),s>>>(engine->stream_bf16,engine->final_norm,engine->normed,RE_HIDDEN,RE_HIDDEN,RE_EPS);
 	RE_KERNEL("final-norm");
-	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(engine->lm_head,engine->normed,0,engine->logits,1u,RE_HIDDEN,RE_RANK_VOCAB,RE_RANK_VOCAB,0u,s),"lm_head",RE_LAYERS);
-	ReHeadKeyKernel<<<1,1024,0,s>>>(engine->logits,engine->config.rank * RE_RANK_VOCAB,engine->head_key);
+	RE_LAUNCH(LmSkinnyDense<LmBf16Format>(engine->lm_head,engine->normed,0,engine->logits,engine->rows,RE_HIDDEN,RE_RANK_VOCAB,RE_RANK_VOCAB,0u,s),"lm_head",RE_LAYERS);
+	ReHeadKeyKernel<<<engine->rows,1024,0,s>>>(engine->logits,engine->config.rank * RE_RANK_VOCAB,engine->head_key);
 	RE_KERNEL("head-key");
 	RE_TRY(ReCollective(engine,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64,engine->head_key,engine->head_best));
-	ReResolveKernel<<<1,32,0,s>>>(engine->head_best,engine->step_out);
+	ReResolveKernel<<<1,32,0,s>>>(engine->head_best,engine->rows,engine->step_out);
 	RE_KERNEL("resolve");
-	RE_CUDA(cudaMemcpyAsync(engine->host_out,engine->step_out,2u * sizeof(uint32_t),cudaMemcpyDeviceToHost,s),"step-out");
+	RE_CUDA(cudaMemcpyAsync(engine->host_out,engine->step_out,2u * engine->rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,s),"step-out");
 	return(SPARK_STATUS_OK);
 }
 
@@ -602,37 +647,37 @@ static SparkStatus ReAllocate(SparkMimo26RankEngine *engine)
 	std::vector<uint32_t> pages;
 	uint32_t i;
 	engine->pages_per_lane = engine->config.max_positions / RE_PAGE_SLOTS;
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_HIDDEN,&engine->stream_bf16));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_HIDDEN,&engine->normed));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_RANK_HEADS * RE_HEAD_DIM + (RE_SWA_KV / RE_DEGREE) * (RE_HEAD_DIM + RE_VALUE_DIM),&engine->fused));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_RANK_HEADS * RE_HEAD_DIM,&engine->query));
-	RE_TRY(ReAlloc<uint16_t>(engine,(RE_SWA_KV / RE_DEGREE) * RE_HEAD_DIM,&engine->key));
-	RE_TRY(ReAlloc<uint16_t>(engine,(RE_SWA_KV / RE_DEGREE) * RE_VALUE_DIM,&engine->value));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_RANK_O_INPUT,&engine->attended));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_HIDDEN,&engine->partial));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_HIDDEN + 128u,&engine->reduced));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_ROWS,&engine->gate));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_ROWS,&engine->up));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_ROWS,&engine->act));
-	RE_TRY(ReAlloc<uint16_t>(engine,RE_TOP_K * RE_HIDDEN,&engine->down));
-	RE_TRY(ReAlloc<float>(engine,RE_RANK_VOCAB,&engine->logits));
-	RE_TRY(ReAlloc<float>(engine,RE_TOP_K,&engine->route_weight));
-	RE_TRY(ReAlloc<uint32_t>(engine,RE_TOP_K,&engine->route_expert));
-	RE_TRY(ReAlloc<uint32_t>(engine,RE_TOP_K,&engine->row_of_k));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_HIDDEN,&engine->stream_bf16));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_HIDDEN,&engine->normed));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_QKV_MAX,&engine->fused));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_RANK_HEADS * RE_HEAD_DIM,&engine->query));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * (RE_SWA_KV / RE_DEGREE) * RE_HEAD_DIM,&engine->key));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * (RE_SWA_KV / RE_DEGREE) * RE_VALUE_DIM,&engine->value));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_RANK_O_INPUT,&engine->attended));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_HIDDEN,&engine->partial));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_MAX_ROWS * RE_HIDDEN + 128u,&engine->reduced));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_BUFFER,&engine->gate));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_BUFFER,&engine->up));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_EXPERT_BUFFER,&engine->act));
+	RE_TRY(ReAlloc<uint16_t>(engine,RE_PAIRS_MAX * RE_HIDDEN,&engine->down));
+	RE_TRY(ReAlloc<float>(engine,RE_MAX_ROWS * RE_RANK_VOCAB,&engine->logits));
+	RE_TRY(ReAlloc<float>(engine,RE_PAIRS_MAX,&engine->route_weight));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_PAIRS_MAX,&engine->route_expert));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_PAIRS_MAX,&engine->row_of_k));
 	RE_TRY(ReAlloc<uint32_t>(engine,RE_RANK_EXPERTS + 1u,&engine->group_offset));
-	RE_TRY(ReAlloc<uint32_t>(engine,RE_TOP_K,&engine->source_token));
-	RE_TRY(ReAlloc<uint32_t>(engine,1u,&engine->sequence));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_PAIRS_MAX,&engine->source_token));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_MAX_ROWS,&engine->sequence));
 	RE_TRY(ReAlloc<uint32_t>(engine,engine->config.lane_count,&engine->context));
-	RE_TRY(ReAlloc<uint32_t>(engine,1u,&engine->position));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_MAX_ROWS,&engine->position));
 	RE_TRY(ReAlloc<uint32_t>(engine,(size_t)engine->pages_per_lane * engine->config.lane_count,&engine->page_table));
-	RE_TRY(ReAlloc<uint32_t>(engine,RE_WINDOW,&engine->window));
-	RE_TRY(ReAlloc<uint32_t>(engine,4u,&engine->step_in));
-	RE_TRY(ReAlloc<uint32_t>(engine,4u,&engine->step_out));
-	RE_TRY(ReAlloc<uint64_t>(engine,1u,&engine->head_key));
-	RE_TRY(ReAlloc<uint64_t>(engine,16u,&engine->head_best));
+	RE_TRY(ReAlloc<uint32_t>(engine,RE_MAX_ROWS * RE_WINDOW,&engine->window));
+	RE_TRY(ReAlloc<uint32_t>(engine,3u * RE_MAX_ROWS,&engine->step_in));
+	RE_TRY(ReAlloc<uint32_t>(engine,2u * RE_MAX_ROWS,&engine->step_out));
+	RE_TRY(ReAlloc<uint64_t>(engine,RE_MAX_ROWS,&engine->head_key));
+	RE_TRY(ReAlloc<uint64_t>(engine,RE_MAX_ROWS + 16u,&engine->head_best));
 	RE_TRY(ReAlloc<LmKvAccessError>(engine,1u,&engine->error));
-	RE_CUDA(cudaHostAlloc((void **)&engine->host_in,4u * sizeof(uint32_t),cudaHostAllocDefault),"host-in");
-	RE_CUDA(cudaHostAlloc((void **)&engine->host_out,4u * sizeof(uint32_t),cudaHostAllocDefault),"host-out");
+	RE_CUDA(cudaHostAlloc((void **)&engine->host_in,3u * RE_MAX_ROWS * sizeof(uint32_t),cudaHostAllocDefault),"host-in");
+	RE_CUDA(cudaHostAlloc((void **)&engine->host_out,2u * RE_MAX_ROWS * sizeof(uint32_t),cudaHostAllocDefault),"host-out");
 	pages.resize((size_t)engine->pages_per_lane * engine->config.lane_count);
 	for (i = 0u; i < pages.size(); i++)
 		pages[i] = i;
@@ -654,7 +699,7 @@ static SparkStatus ReOpenCollective(SparkMimo26RankEngine *engine)
 	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 	configuration.credit_count = 1u;
 	configuration.local_hidden_dimension = RE_HIDDEN;
-	configuration.max_active_sequence_count = 1u;
+	configuration.max_active_sequence_count = RE_MAX_ROWS;
 	configuration.connect_timeout_milli = (uint32_t)(engine->config.wait_ns / 1000000ull);
 	configuration.operation_timeout_milli = (uint32_t)(engine->config.wait_ns / 1000000ull);
 	configuration.registration_cuda_stream = engine->stream;
@@ -718,18 +763,24 @@ static SparkStatus ReCapture(SparkMimo26RankEngine *engine)
 	return(status);
 }
 
-extern "C" SparkStatus SparkMimo26RankEngineStep(SparkMimo26RankEngine *engine, uint32_t lane, uint32_t token, uint32_t position, uint32_t *next_token, float *score)
+extern "C" SparkStatus SparkMimo26RankEngineRows(SparkMimo26RankEngine *engine, uint32_t rows, const uint32_t *lanes, const uint32_t *tokens, const uint32_t *positions, uint32_t *next_tokens, float *scores)
 {
 	uint64_t started = ReNow();
-	uint32_t graph_step;
-	if ( engine == 0 || next_token == 0 || lane >= engine->config.lane_count || position >= engine->config.max_positions || token >= RE_VOCAB )
+	uint32_t graph_step, row;
+	if ( engine == 0 || rows == 0u || rows > RE_MAX_ROWS || lanes == 0 || tokens == 0 || positions == 0 || next_tokens == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	engine->host_in[0] = token;
-	engine->host_in[1] = position;
-	engine->host_in[2] = lane;
+	for (row = 0u; row < rows; row++)
+	{
+		if ( lanes[row] >= engine->config.lane_count || positions[row] >= engine->config.max_positions || tokens[row] >= RE_VOCAB )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		engine->host_in[row] = tokens[row];
+		engine->host_in[RE_MAX_ROWS + row] = positions[row];
+		engine->host_in[2u * RE_MAX_ROWS + row] = lanes[row];
+	}
+	engine->rows = rows;
 	engine->chain = engine->chain % SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK + 1u;
 	RE_TRY(SparkTpDeviceCollectiveChainKey(&engine->collective,engine->chain));
-	graph_step = engine->graph != 0 ? 1u : 0u;
+	graph_step = engine->graph != 0 && rows == 1u ? 1u : 0u;
 	if ( graph_step != 0u )
 	{
 		RE_TRY(SparkTpDeviceCollectiveGraphPreLaunch(&engine->collective,engine->stream));
@@ -738,8 +789,8 @@ extern "C" SparkStatus SparkMimo26RankEngineStep(SparkMimo26RankEngine *engine, 
 	}
 	else
 	{
-		engine->dump_position = position;
-		engine->walking_dump = engine->config.dump_directory != 0 && position < 2u ? 1u : 0u;
+		engine->dump_position = positions[0];
+		engine->walking_dump = engine->config.dump_directory != 0 && rows == 1u && positions[0] < 2u ? 1u : 0u;
 		RE_TRY(ReWalk(engine));
 		engine->walking_dump = 0u;
 	}
@@ -751,16 +802,24 @@ extern "C" SparkStatus SparkMimo26RankEngineStep(SparkMimo26RankEngine *engine, 
 	}
 	if ( graph_step == 0u )
 		RE_TRY(SparkTpDeviceCollectiveVerifyDeferred(&engine->collective,engine->stream));
-	*next_token = engine->host_out[0];
-	if ( score != 0 )
-		memcpy(score,&engine->host_out[1],sizeof(*score));
-	if ( graph_step == 0u && engine->config.mode == SPARK_MIMO26_RANK_ENGINE_MODE_GRAPH )
+	for (row = 0u; row < rows; row++)
+	{
+		next_tokens[row] = engine->host_out[2u * row];
+		if ( scores != 0 )
+			memcpy(&scores[row],&engine->host_out[2u * row + 1u],sizeof(float));
+	}
+	if ( graph_step == 0u && rows == 1u && engine->graph == 0 && engine->config.mode == SPARK_MIMO26_RANK_ENGINE_MODE_GRAPH )
 		RE_TRY(ReCapture(engine));
 	RE_TRY(SparkTpDeviceCollectiveEndChain(&engine->collective,engine->stream));
 	engine->steps++;
 	engine->graph_steps += graph_step;
 	engine->step_ns += ReNow() - started;
 	return(SPARK_STATUS_OK);
+}
+
+extern "C" SparkStatus SparkMimo26RankEngineStep(SparkMimo26RankEngine *engine, uint32_t lane, uint32_t token, uint32_t position, uint32_t *next_token, float *score)
+{
+	return(SparkMimo26RankEngineRows(engine,1u,&lane,&token,&position,next_token,score));
 }
 
 extern "C" SparkStatus SparkMimo26RankEngineReadStats(SparkMimo26RankEngine *engine, SparkMimo26RankEngineStats *stats)

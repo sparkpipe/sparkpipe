@@ -10,6 +10,7 @@ extern "C" {
 
 #define SPARK_MIMO26_RANK_ENGINE_MODE_EAGER 0u
 #define SPARK_MIMO26_RANK_ENGINE_MODE_GRAPH 1u
+#define SPARK_MIMO26_RANK_ENGINE_MAX_ROWS 8u
 
 typedef struct SparkMimo26RankEngineConfig
 {
@@ -40,6 +41,7 @@ typedef struct SparkMimo26RankEngineStats
 typedef struct SparkMimo26RankEngine SparkMimo26RankEngine;
 
 SparkStatus SparkMimo26RankEngineCreate(const SparkMimo26RankEngineConfig *config, SparkMimo26RankEngine **out);
+SparkStatus SparkMimo26RankEngineRows(SparkMimo26RankEngine *engine, uint32_t rows, const uint32_t *lanes, const uint32_t *tokens, const uint32_t *positions, uint32_t *next_tokens, float *scores);
 SparkStatus SparkMimo26RankEngineStep(SparkMimo26RankEngine *engine, uint32_t lane, uint32_t token, uint32_t position, uint32_t *next_token, float *score);
 SparkStatus SparkMimo26RankEngineReadStats(SparkMimo26RankEngine *engine, SparkMimo26RankEngineStats *stats);
 SparkStatus SparkMimo26RankEngineDestroy(SparkMimo26RankEngine *engine);

@@ -1,0 +1,171 @@
+{
+ "format": "ds4-eval-mimo26-compsec17-summary-v1",
+ "generated_at": "2026-09-28T16:08:59+0000",
+ "fixture": "quality-fixtures-glm5.3-flash.json",
+ "fixture_sha256": "a888fa6939cf2ce9b3d42f8f57926076edec701ef7628eb7902fe173fa433c1c",
+ "parameters": {
+  "chat_template": "mimo",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0,
+  "decoding": "greedy, TP4 generate tool, B1, no speculation"
+ },
+ "grading_rule": "qualification/ds4_eval/compare_runs.py: last Answer: line after </think>; PASS iff its line set is a non-empty subset of the expected lines",
+ "completed": 17,
+ "passed": 17,
+ "results": [
+  {
+   "index": 1,
+   "id": "compsec-076",
+   "expected": "17-20",
+   "extracted": "20",
+   "passed": true,
+   "generated_token_count": 93,
+   "output_sha256": "9899ccab939a66e81931774ee548f73cab5042bd4414de222f6f211ed8752abe"
+  },
+  {
+   "index": 2,
+   "id": "compsec-077",
+   "expected": "18-20",
+   "extracted": "18",
+   "passed": true,
+   "generated_token_count": 58,
+   "output_sha256": "b3defb21b27637cb67f4124f74cb0d6e94a5dc719ab8e95417752d6c9f637325"
+  },
+  {
+   "index": 3,
+   "id": "compsec-078",
+   "expected": "11",
+   "extracted": "11",
+   "passed": true,
+   "generated_token_count": 80,
+   "output_sha256": "134c3f0b78a730207e6f8f6fca8d8d93e4b9faeac08d60074a18a7eee29b3892"
+  },
+  {
+   "index": 4,
+   "id": "compsec-079",
+   "expected": "18-19",
+   "extracted": "18",
+   "passed": true,
+   "generated_token_count": 57,
+   "output_sha256": "52f381998387cbaa100a01ed87a5f8d3a875f9adc1df01632a6da13dbcfe5c2a"
+  },
+  {
+   "index": 5,
+   "id": "compsec-080",
+   "expected": "5-6",
+   "extracted": "5",
+   "passed": true,
+   "generated_token_count": 114,
+   "output_sha256": "915e9a8eb39b9901e6ce606505998b439ff6b90b305eeffb7f6bb055bf351e01"
+  },
+  {
+   "index": 6,
+   "id": "compsec-081",
+   "expected": "10-15",
+   "extracted": "14,15",
+   "passed": true,
+   "generated_token_count": 112,
+   "output_sha256": "1c04a402e3cd94c047b76c126b689ba53f94eb088e201389574540daff6ddd58"
+  },
+  {
+   "index": 7,
+   "id": "compsec-082",
+   "expected": "9-10",
+   "extracted": "9,10",
+   "passed": true,
+   "generated_token_count": 103,
+   "output_sha256": "81d08a0ff837c99615a2519a932b53585b2b89e1789cd17f7fd6851b4709f4c9"
+  },
+  {
+   "index": 8,
+   "id": "compsec-083",
+   "expected": "9-11",
+   "extracted": "9",
+   "passed": true,
+   "generated_token_count": 78,
+   "output_sha256": "5f524008aa478a49eca81783c95fb44e9d1bb7bc6e9cfdf64cd6cc2da77d9327"
+  },
+  {
+   "index": 9,
+   "id": "compsec-084",
+   "expected": "6-7",
+   "extracted": "7",
+   "passed": true,
+   "generated_token_count": 103,
+   "output_sha256": "24dddf7db5159dd03d512951a1034dc7c2aeb3e5a0ea231206fc17a5daf6cfea"
+  },
+  {
+   "index": 10,
+   "id": "compsec-085",
+   "expected": "5",
+   "extracted": "5",
+   "passed": true,
+   "generated_token_count": 188,
+   "output_sha256": "61a0411f12e19b3e22b072864a1fbdc54755392e72f61d70ab9b001606f4df14"
+  },
+  {
+   "index": 11,
+   "id": "compsec-086",
+   "expected": "3,13-15",
+   "extracted": "3",
+   "passed": true,
+   "generated_token_count": 117,
+   "output_sha256": "ee7dcce4c53e57fb46a2a859ae1242b8837dcf5743d29047608a6d01db66a726"
+  },
+  {
+   "index": 12,
+   "id": "compsec-087",
+   "expected": "8,20-22",
+   "extracted": "8",
+   "passed": true,
+   "generated_token_count": 274,
+   "output_sha256": "0c1c3212431a6d51c16910e9ded9692730cf176abf019d116d1e91a265b5b32f"
+  },
+  {
+   "index": 13,
+   "id": "compsec-088",
+   "expected": "11",
+   "extracted": "11",
+   "passed": true,
+   "generated_token_count": 135,
+   "output_sha256": "2d0cd969b359f68f1e87aaa1cf31e11a9475d69b4909de91d5010525f162bfdd"
+  },
+  {
+   "index": 14,
+   "id": "compsec-089",
+   "expected": "10",
+   "extracted": "10",
+   "passed": true,
+   "generated_token_count": 69,
+   "output_sha256": "01bc39ed3b62a51785206002b40a21bfbceceb40a3e9cd34237d2d81e9cafa35"
+  },
+  {
+   "index": 15,
+   "id": "compsec-090",
+   "expected": "12-13",
+   "extracted": "12",
+   "passed": true,
+   "generated_token_count": 106,
+   "output_sha256": "2247e3f0db979b808dd70e2ad62ebef121d36a99b74024c24f31539b1814a9ae"
+  },
+  {
+   "index": 16,
+   "id": "compsec-091",
+   "expected": "3",
+   "extracted": "3",
+   "passed": true,
+   "generated_token_count": 85,
+   "output_sha256": "38bd3e997cb037c8d5df344e0faad1253a5719f01bda591063eb33a8530da066"
+  },
+  {
+   "index": 17,
+   "id": "compsec-092",
+   "expected": "10-14",
+   "extracted": "11",
+   "passed": true,
+   "generated_token_count": 151,
+   "output_sha256": "6bcff92091b07ece89cdad0af7918657234030b2070e051a9356fbea21155b27"
+  }
+ ]
+}
