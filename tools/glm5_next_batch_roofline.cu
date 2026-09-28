@@ -292,10 +292,10 @@ static void RoofAllocateSlotHidden(SparkGlm5NextExecutionSlot *slot,uint32_t row
 	slot->kda_output_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
 	slot->kda_retention = (float *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,4u);
 	slot->kda_write_gate = (float *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,4u);
-	slot->kv_slot_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS,2u);
+	slot->kv_slot_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS > SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION ? SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS : SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,2u);
 	slot->attention_latent_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,2u);
 	slot->attention_value_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION,2u);
-	slot->attention_out_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
+	slot->attention_out_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION > SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION ? SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION : SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,2u);
 	slot->gate_up_bf16 = (uint16_t *)RoofRows(rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,SPARK_GLM5_NEXT_MODEL_MOE_ROUTED_GATE_UP_DIMENSION,2u);
 	slot->intermediate_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_MOE_TOP_K * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION,2u);
 	slot->expert_out_bf16 = (uint16_t *)RoofRows(rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
