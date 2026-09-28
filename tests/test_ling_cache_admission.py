@@ -127,7 +127,7 @@ def main():
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DLING_EXPERT_WEIGHT_CODEC=1u",
                         '-DLING_EXPERT_CODEC_NAME="bf16"', '-DLING_MODEL_REVISION="fixture"',
                         '-DLING_CONTRACT_SHA256="fixture"', str(source), "runtime/stage_module_common.c",
-                        "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_page_store.c",
+                        "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_page_store.c", "cache/kv_snapshot.c", "src/spark_sha256.c",
                         "tests/cuda_stub/cuda_runtime_stub.c", "-lpthread",
                         "-o", str(binary)], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)

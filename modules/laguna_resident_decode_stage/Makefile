@@ -61,6 +61,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \
+	../../cache/kv_snapshot.c \
 	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_laguna_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DLAGUNA_EXPERT_WEIGHT_CODEC=$(LAGUNA_EXPERT_CODEC_ID) -DLAGUNA_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DLAGUNA_MODEL_REVISION=\"$(MODEL_REVISION)\" -DLAGUNA_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"

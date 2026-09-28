@@ -2613,7 +2613,7 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), str(args.common_source.resolve()), "cache/kv_cache.c", "cache/kv_page_cache.c",
+                        str(source), str(args.common_source.resolve()), "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c", "src/spark_sha256.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership and terminal CUDA receipts")
