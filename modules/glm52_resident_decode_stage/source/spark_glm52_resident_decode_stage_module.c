@@ -1841,9 +1841,18 @@ static void SparkGlm52ChainSettle(void *context)
 	SparkStatus status;
 	SparkGlm52ChainCollectives(state,&collectives);
 	status = SparkStageModuleCudaWaitFor(&state->chain_wait,SPARK_GLM52_CHAIN_SETTLE_TIMEOUT_NS);
-	if ( status != SPARK_STATUS_OK )
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 	{
-		fprintf(stderr,"GLM52-CHAIN-STUCK mode=%s slot=%u status=%s; cancelling the collective\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index,SparkStatusToString(status));
+		fprintf(stderr,"GLM52-CHAIN-STREAM-FAIL mode=%s slot=%u status=%s\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index,SparkStatusToString(status));
+		SparkTpChainCancel(&collectives);
+		if ( chain->graph != 0u )
+			SparkTpChainDisarm(&collectives);
+		SparkGlm52ChainFinish(chain,status);
+		return;
+	}
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		fprintf(stderr,"GLM52-CHAIN-STUCK mode=%s slot=%u; cancelling the collective\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index);
 		SparkTpChainCancel(&collectives);
 		if ( SparkStageModuleCudaWaitFor(&state->chain_wait,SPARK_GLM52_CHAIN_SETTLE_TIMEOUT_NS) != SPARK_STATUS_OK )
 		{
