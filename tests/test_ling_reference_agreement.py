@@ -11,6 +11,8 @@ sys.path.insert(0, str(REPOSITORY / "tools"))
 from t1_reference_common import read_fixture
 
 RECEIPT = REPOSITORY / "qualification/ling_reference/ling_hf_reference.json"
+SERVING_RECEIPT = REPOSITORY / "qualification/ling_reference/ling_hf_reference_serving_limits.json"
+SWIGLU_LIMITED_LAYERS = list(range(34, 42))
 PROMPTS = REPOSITORY / "qualification/ling_reference/prompts.json"
 MODELING = REPOSITORY / "model_contracts/references/modeling_ling_bailing_moe_v3.py"
 T1_DIRECTORY = REPOSITORY / "qualification/t1_reference/ling"
@@ -73,6 +75,12 @@ def main():
     t1_manifest = json.loads((T1_DIRECTORY / "MANIFEST.json").read_text())
     t1_streams = {name: fixture_stream(name) for name in ("capital_of_france", "count_up")}
     failures = receipt_problems(receipt, prompts, modeling_sha256, t1_manifest, t1_streams)
+    if receipt.get("swiglu_limits", "modeling") != "modeling":
+        failures.append("the primary receipt must follow the publisher modeling (no SwiGLU clamp)")
+    serving = json.loads(SERVING_RECEIPT.read_text())
+    failures += [f"serving-limits receipt: {problem}" for problem in receipt_problems(serving, prompts, modeling_sha256, t1_manifest, t1_streams)]
+    if serving.get("swiglu_limits") != "serving" or serving.get("swiglu_limited_layers") != SWIGLU_LIMITED_LAYERS:
+        failures.append(f"serving-limits receipt clamps layers {serving.get('swiglu_limited_layers')}, expected {SWIGLU_LIMITED_LAYERS}")
     controls = {
         "token flip": lambda r: r["results"][0]["tokens"].__setitem__(2, r["results"][0]["tokens"][2] + 1),
         "short stream": lambda r: r["results"][1]["tokens"].pop(),
@@ -91,7 +99,7 @@ def main():
             print("FAIL", failure)
         return 1
     matched = sum(len(stream) for _, stream in t1_streams.values())
-    print(f"PASS ling publisher-code reference: {len(prompts)} prompts x {NEW_TOKENS} greedy tokens; T1 fixture streams agree on {matched} tokens; {len(controls)} negative controls convicted")
+    print(f"PASS ling publisher-code reference: {len(prompts)} prompts x {NEW_TOKENS} greedy tokens, with and without the serving SwiGLU clamp; T1 fixture streams agree on {matched} tokens; {len(controls)} negative controls convicted")
     return 0
 
 

@@ -98,23 +98,51 @@ class ShardReader:
         return torch.frombuffer(data, dtype=DTYPES[entry["dtype"]]).reshape(entry["shape"])
 
 
+SWIGLU_LIMIT_MODES = ("modeling", "serving")
+
+
+def swiglu(gate, up, limit):
+    activated = torch.nn.functional.silu(gate)
+    if limit is None:
+        return activated * up
+    return activated.clamp(max=limit) * up.clamp(min=-limit, max=limit)
+
+
+def layer_limit(limits, layer):
+    if limits is None or not 0 <= layer < len(limits) or not limits[layer]:
+        return None
+    return float(limits[layer])
+
+
 class LazyExpert(torch.nn.Module):
-    def __init__(self, gate, up, down):
+    def __init__(self, gate, up, down, limit):
         super().__init__()
         self.gate = gate
         self.up = up
         self.down = down
+        self.limit = limit
 
     def forward(self, x):
-        hidden = torch.nn.functional.silu(torch.nn.functional.linear(x, self.gate)) * torch.nn.functional.linear(x, self.up)
+        hidden = swiglu(torch.nn.functional.linear(x, self.gate), torch.nn.functional.linear(x, self.up), self.limit)
         return torch.nn.functional.linear(hidden, self.down)
 
 
+class LimitedSharedExpert(torch.nn.Module):
+    def __init__(self, mlp, limit):
+        super().__init__()
+        self.mlp = mlp
+        self.limit = limit
+
+    def forward(self, x):
+        return self.mlp.down_proj(swiglu(self.mlp.gate_proj(x), self.mlp.up_proj(x), self.limit))
+
+
 class ExpertCache:
-    def __init__(self, reader, device, capacity):
+    def __init__(self, reader, device, capacity, limits):
         self.reader = reader
         self.device = device
         self.capacity = capacity
+        self.limits = limits
         self.entries = collections.OrderedDict()
         self.misses = 0
         self.hits = 0
@@ -128,7 +156,7 @@ class ExpertCache:
         self.misses += 1
         prefix = f"model.layers.{layer}.mlp.experts.{expert}."
         tensors = [self.reader.get(prefix + part + ".weight").to(self.device) for part in ("gate_proj", "up_proj", "down_proj")]
-        module = LazyExpert(*tensors)
+        module = LazyExpert(*tensors, layer_limit(self.limits, layer))
         self.entries[key] = module
         if len(self.entries) > self.capacity:
             self.entries.popitem(last=False)
@@ -166,7 +194,7 @@ def place_tensor(model, name, tensor):
         raise SystemExit(f"{name}: no parameter or buffer in the publisher module")
 
 
-def build_model(checkpoint, device, expert_capacity):
+def build_model(checkpoint, device, expert_capacity, swiglu_limits):
     configuration, modeling_module = load_publisher_modules(checkpoint)
     config = configuration.BailingMoeV3Config.from_pretrained(checkpoint)
     config.num_nextn_predict_layers = 0
@@ -179,10 +207,16 @@ def build_model(checkpoint, device, expert_capacity):
     with torch.device("meta"):
         model = modeling_module.BailingMoeV3ForCausalLM(config)
     reader = ShardReader(checkpoint)
-    cache = ExpertCache(reader, device, expert_capacity)
+    serving = swiglu_limits == "serving"
+    expert_limits = getattr(config, "expert_swiglu_limit_list", None) if serving else None
+    shared_limits = getattr(config, "share_expert_swiglu_limit_list", None) if serving else None
+    cache = ExpertCache(reader, device, expert_capacity, expert_limits)
+    limited = []
     for layer_index, layer in enumerate(model.model.layers):
         if isinstance(layer.mlp, modeling_module.BailingMoeV3SparseMoeBlock):
             layer.mlp.experts = LazyExperts(cache, layer_index, config.num_experts)
+            if layer_limit(expert_limits, layer_index) is not None or layer_limit(shared_limits, layer_index) is not None:
+                limited.append(layer_index)
     placed = 0
     for name in reader.weight_map:
         if ".mlp.experts." in name:
@@ -191,12 +225,19 @@ def build_model(checkpoint, device, expert_capacity):
             continue
         place_tensor(model, name, reader.get(name).to(device))
         placed += 1
+    for layer_index in limited:
+        block = model.model.layers[layer_index].mlp
+        limit = layer_limit(shared_limits, layer_index)
+        if limit is not None:
+            if getattr(block, "shared_experts", None) is None:
+                raise SystemExit(f"layer {layer_index}: shared expert limit {limit} without a shared expert")
+            block.shared_experts = LimitedSharedExpert(block.shared_experts, limit)
     model.model.rotary_emb = modeling_module.BailingMoeV3RotaryEmbedding(config=config, device=device)
     missing = [name for name, tensor in list(model.named_parameters()) + list(model.named_buffers()) if tensor.is_meta]
     if missing:
         raise SystemExit(f"unplaced tensors: {missing[:8]} (+{max(0, len(missing) - 8)})")
     model.eval()
-    return model, config, cache, placed
+    return model, config, cache, placed, limited
 
 
 @torch.no_grad()
@@ -230,6 +271,7 @@ def main():
     parser.add_argument("--new-tokens", type=int, required=True)
     parser.add_argument("--expert-cache", type=int, required=True)
     parser.add_argument("--top", type=int, required=True)
+    parser.add_argument("--swiglu-limits", choices=SWIGLU_LIMIT_MODES, required=True)
     args = parser.parse_args()
     from tokenizers import Tokenizer
     device = torch.device("cuda")
@@ -237,8 +279,8 @@ def main():
     with open(args.prompts) as handle:
         prompts = json.load(handle)["prompts"]
     started = time.time()
-    model, config, cache, placed = build_model(args.checkpoint, device, args.expert_cache)
-    print(f"placed {placed} non-expert tensors in {time.time() - started:.1f}s", flush=True)
+    model, config, cache, placed, limited = build_model(args.checkpoint, device, args.expert_cache, args.swiglu_limits)
+    print(f"placed {placed} non-expert tensors in {time.time() - started:.1f}s; swiglu limits {args.swiglu_limits} on layers {limited}", flush=True)
     results = []
     for prompt in prompts:
         prompt_ids = tokenizer.encode(prompt["text"], add_special_tokens=False).ids
@@ -252,6 +294,8 @@ def main():
                         "tokens": tokens, "completion": text, "steps": steps})
     receipt = {
         "engine": "publisher modeling_bailing_moe_v3.py with fla kernels, lazy per-expert loading",
+        "swiglu_limits": args.swiglu_limits,
+        "swiglu_limited_layers": limited,
         "checkpoint": args.checkpoint,
         "config_sha256": sha256_file(os.path.join(args.checkpoint, "config.json")),
         "index_sha256": sha256_file(os.path.join(args.checkpoint, "model.safetensors.index.json")),

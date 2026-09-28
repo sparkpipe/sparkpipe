@@ -507,6 +507,14 @@ progress diary.
   belongs to the model: carry it in the deployment's tokenizer or model
   description and let the API render whatever the model declares, then drop
   `node/model_api.c` from the `PENDING` list in `tests/test_dry_law.py`.
+- The ling driver applies no SwiGLU clamp. The publisher serving code
+  (sglang and vLLM `bailing_moe_v3`) clamps `silu(gate)` to at most L and
+  `up` to [-L, L] on layers 34-41, using `expert_swiglu_limit_list` and
+  `share_expert_swiglu_limit_list`; the HF modeling and our contract treat
+  the lists as inert. The three reference prompts cannot tell the two
+  apart (docs/T1_REFERENCE_COMPARE.md). Add the clamp to the routed and
+  shared expert activation for those layers, and make the contract name
+  the lists as required behaviour.
 - Sampling is temperature-only and only glm5_next implements it; other
   adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
   which need a cross-rank log-sum-exp, and port the sampled head

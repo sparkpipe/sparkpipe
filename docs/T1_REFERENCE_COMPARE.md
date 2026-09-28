@@ -124,8 +124,22 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   `systemd-run --user` unit with `MemoryMax=28G`, and took 440 s:
   `python ling_hf_reference.py --checkpoint /mnt/model-warm/ling-3.0-flash
   --prompts prompts.json --out ling_hf_reference.json --new-tokens 16
-  --expert-cache 256 --top 5`. Logits are bf16, so scores are quantized
-  to 1/16 at this magnitude.
+  --expert-cache 256 --top 5 --swiglu-limits modeling`. Logits are bf16,
+  so scores are quantized to 1/16 at this magnitude.
+- ling SwiGLU limits: the config carries `expert_swiglu_limit_list` (4 on
+  layers 35-41) and `share_expert_swiglu_limit_list` (5 on layers 34-39,
+  7 on 40-41). The publisher HF modeling ignores them. The publisher
+  serving implementations apply `silu(gate).clamp(max=L) *
+  up.clamp(-L, L)` to the routed experts and the shared expert of those
+  layers: sglang `python/sglang/srt/models/bailing_moe_v3.py` (81f27fb3)
+  and vLLM `vllm/model_executor/models/bailing_moe_v3.py` (d8818125).
+  `--swiglu-limits serving` applies the same clamp. The 2026-09-28 run on
+  spark3 (`qualification/ling_reference/ling_hf_reference_serving_limits.json`,
+  478 s) gives the same 48 greedy tokens as the modeling receipt. Its
+  top-5 logits move by at most 0.5 from a modeling run on the same node.
+  A modeling rerun on spark3 also differs from the spark0 receipt by up
+  to 0.5, so these prompts cannot separate the clamp from run-to-run
+  noise. The CUDA driver implements no clamp (TECHDEBT).
 - gemma4 31b (60 layers, 5 sliding : 1 full): verified against the
   publishers' HF implementation on the fleet — the anchor oracle
   (`tools/t1_gemma4_anchor_check.py`) reproduces the committed
