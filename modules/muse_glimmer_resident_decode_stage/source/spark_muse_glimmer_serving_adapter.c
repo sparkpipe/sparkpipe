@@ -40,7 +40,7 @@
 	"muse_glimmer.30b.resident-decode-stage-firmware"
 #define SPARK_MUSE_GLIMMER_SERVING_STAGE_NAME "muse_glimmer_resident_decode_stage"
 #define SPARK_MUSE_GLIMMER_SERVING_TARGET \
-	"cuda.sm121.muse_glimmer.resident_decode_stage.bf16"
+	"cuda.sm121.muse.resident_decode_stage.bf16"
 #define SPARK_MUSE_GLIMMER_SERVING_PROGRAM_NAME "resident_decode"
 #define SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT 1u
 #define SPARK_MUSE_GLIMMER_SERVING_DEFAULT_TP_DEGREE 16u

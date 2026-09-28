@@ -467,7 +467,7 @@ static int SparkMuseGlimmerValModuleExecute(SparkMuseGlimmerValModule *module, u
 }
 
 #define SPARK_MUSE_GLIMMER_VALIDATION_MODEL_ID "meta-models/Muse-Glimmer-30B"
-#define SPARK_MUSE_GLIMMER_VALIDATION_NODE_TARGET "cuda.sm121.muse_glimmer.resident_decode_stage.bf16"
+#define SPARK_MUSE_GLIMMER_VALIDATION_NODE_TARGET "cuda.sm121.muse.resident_decode_stage.bf16"
 #include "sparkpipe/family/validation/spark_val_module_initialize.h"
 
 static int SparkMuseGlimmerValCheckModule(void)

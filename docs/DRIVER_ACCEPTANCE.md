@@ -96,6 +96,28 @@ No-op callbacks that return success are not implementations. Diagnostic
 behavior clamps require #ifdef DEBUG and a visible diagnostic; DEBUG does not
 waive mandatory operations.
 
+## Driver identity
+
+A serving adapter loads a driver only when five descriptor fields equal the
+ones the adapter sends; otherwise initialize fails with `TARGET_MISMATCH`
+(`runtime/serving_adapter_template.c`). The driver compiler takes them from
+the firmware description it compiles:
+
+| Descriptor field | Firmware description | Adapter side |
+| --- | --- | --- |
+| `model_id` | `model.id` | its driver model id constant |
+| `model_revision` | `model.revision` | the checkpoint revision the build passes, the contract's `source_revision` |
+| `stage_name` | the stage's `name` | its stage name constant |
+| `target` | the stage's `target`, which must be the module's `MODULE_TARGET` | its target constant, and each node's `node_target` |
+| `model_description_sha256` | the description file's SHA-256 | the hash its build computes from the same file |
+
+The stage's operations name the module by its `MODULE_IDENTIFIER`.
+`tests/test_adapter_description_identity.py` expands the six qwen38-template
+adapters (gemma4 31B and 26B, minimax, muse_glimmer, qwen38_max, qwen4_flash)
+with the flags their own builds pass and checks all of this against their
+descriptions and module Makefiles. qwen38_max's revision comes from its build
+invocation, so the test supplies the one its in-tree callers pass.
+
 ## Performance evidence
 
 Record raw per-request latency and aggregate output rate, prefill throughput,

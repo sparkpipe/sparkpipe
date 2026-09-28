@@ -1,5 +1,5 @@
 {
-  "file_count": 3054,
+  "file_count": 3055,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "c8cc57c65c87d76aa5e56c2c3c97ecab33682e9ed82f7efe1e9c2fa4c83e45cd",
-      "size_bytes": 139946
+      "sha256": "76fbd4c7e8f29620322bead9217af7b47f14e5ea6a2928e4588bd75c6e33fc72",
+      "size_bytes": 139992
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -68,8 +68,8 @@
     },
     {
       "path": "TECHDEBT.md",
-      "sha256": "225d4e5a82bf3e10c18cd22c98870888db97dd86c36a4301271e7575bd463b26",
-      "size_bytes": 38206
+      "sha256": "6f5740a455ccd71fb0484114a820bd749e4fb18e4c9bb3d86a36490d12583a2c",
+      "size_bytes": 39701
     },
     {
       "path": "cache/cache.h",
@@ -683,8 +683,8 @@
     },
     {
       "path": "docs/DRIVER_ACCEPTANCE.md",
-      "sha256": "cd5826b8b5e70623d492eead7d5a26002597dad532079b3c5a577ccbe47e1d4f",
-      "size_bytes": 8116
+      "sha256": "d76539f89c32a77d6f392311a8f26f9513dd03600bf7ba91a24f7a22e810651c",
+      "size_bytes": 9409
     },
     {
       "path": "docs/DRY_PACKBUILDER_PROPOSAL.md",
@@ -2578,8 +2578,8 @@
     },
     {
       "path": "examples/model_descriptions/gemma4_26b_resident_decode_stage_firmware.json",
-      "sha256": "19fdbbd9156e54eb2a24b56c4a3c512f45d7ecb0cff52a52988e039707e373e8",
-      "size_bytes": 3942
+      "sha256": "59f0bdc27af9f840d5cefe13407f1f646e10e5d21864680b92d6d0bb70318350",
+      "size_bytes": 3941
     },
     {
       "path": "examples/model_descriptions/gemma4_resident_decode_stage_bf16_firmware.json",
@@ -2668,8 +2668,8 @@
     },
     {
       "path": "examples/model_descriptions/muse_glimmer_resident_decode_stage_firmware.json",
-      "sha256": "0a8cf53ac4e0cd0dbd80c3c6ccbc5ca1def3318b55dcaa31ecb9623aacd3efba",
-      "size_bytes": 3151
+      "sha256": "db46f0accb9ad3e95121782880e2a195dfec359910d0d1c044a2e1e3318b6a51",
+      "size_bytes": 3401
     },
     {
       "path": "examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json",
@@ -2683,8 +2683,8 @@
     },
     {
       "path": "examples/model_descriptions/qwen4_flash_resident_decode_stage_firmware.json",
-      "sha256": "fb7d6e2c4fdcc1047bf5c54f9d57c854daeae1d26952d91aa810453bf10a2b89",
-      "size_bytes": 3320
+      "sha256": "53c93d2c2cbecdc4bec51915931c4ddb879a3684eb82d97737678ecb2659d4f0",
+      "size_bytes": 3972
     },
     {
       "path": "examples/recipes/dsv4.PP13.d280b28ba9ed6b0e.json",
@@ -5858,8 +5858,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_serving_adapter.c",
-      "sha256": "971b1fd59136f85a460e173836ba7798b1df8fed151e1d00d437b020f48d10cb",
-      "size_bytes": 9225
+      "sha256": "d88ff04f1607d4505df8d058d7c4f57abc187622989b89ead44d7c3a7ce9d013",
+      "size_bytes": 9217
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_stagepack_format.h",
@@ -5878,8 +5878,8 @@
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu",
-      "sha256": "124c2b7a3a3184e154ba85135cb1528b138402ed55411569b97f83d8f7b52324",
-      "size_bytes": 27496
+      "sha256": "59b845309265343b0f494ccf2661cb2f3aa5206b8444e9e4e5cacd8359fb333d",
+      "size_bytes": 27488
     },
     {
       "path": "modules/muse_glimmer_resident_decode_stage/validation/validate_muse_glimmer_resident_decode_stage_cuda.sh",
@@ -6023,8 +6023,8 @@
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/Makefile",
-      "sha256": "2fef87c24fdb801142e2a169115982e4487776ae5bf6e4f760ed4adcea0eac71",
-      "size_bytes": 5306
+      "sha256": "58c53ae9d7ef794199b3300c66b9d85e28fb0c037432092fbf807b01b641953e",
+      "size_bytes": 5448
     },
     {
       "path": "modules/qwen4_flash_resident_decode_stage/include/sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h",
@@ -8453,8 +8453,8 @@
     },
     {
       "path": "tests/fixtures/muse_glimmer_serving_adapter_driver.c",
-      "sha256": "90361f42c463549f81a13081970fe6ea0812a5e202bb87f30bb01bbf5933256d",
-      "size_bytes": 11518
+      "sha256": "782f15b905b04e62bb8b4af85a9fc2beb974d16d491f3a8ee195d26716e007a1",
+      "size_bytes": 11510
     },
     {
       "path": "tests/fixtures/qwen38_27b_remote_spec_driver.c",
@@ -8775,6 +8775,11 @@
       "path": "tests/test_acc_parity_oracle.py",
       "sha256": "46e26423374a15b0f187100ce03722def2ad7597c858a9cd3c86a4f05d164c42",
       "size_bytes": 6628
+    },
+    {
+      "path": "tests/test_adapter_description_identity.py",
+      "sha256": "966aa157e44fa91257019f345712e5f1c4d52fd44060b3efffb18028b6a1a508",
+      "size_bytes": 5242
     },
     {
       "path": "tests/test_api_stress.py",
@@ -10098,8 +10103,8 @@
     },
     {
       "path": "tests/test_muse_glimmer_serving_adapter.c",
-      "sha256": "d51b364c73eeef127a93d137948c45100aba38d32558a4941a15e5b10adaae23",
-      "size_bytes": 12008
+      "sha256": "be9bc053b48a8470776a2dafab95e04d3cd23b13c8a43a2f8e8f4bcd7bf10835",
+      "size_bytes": 12000
     },
     {
       "path": "tests/test_must_work_targets.py",
@@ -15275,5 +15280,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73948017
+  "total_bytes": 73957104
 }

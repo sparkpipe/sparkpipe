@@ -86,12 +86,13 @@ GPU_VALIDATOR := validation/validate_qwen4_flash_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
-ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/libqwen4_flash_serving_adapter_$(EXPERT_CODEC).so
+ADAPTER_LIBRARY := $(BUILD_DIRECTORY)/$(EXPERT_CODEC)/libqwen4_flash_serving_adapter_$(EXPERT_CODEC).so
 
 .PHONY: adapter
 adapter:
+	@test "$(EXPERT_CODEC)" = fp8 || { echo "adapter: EXPERT_CODEC=fp8 is required, got '$(EXPERT_CODEC)'" >&2; exit 2; }
 	$(MAKE) -C $(REPOSITORY_ROOT) core model_common
-	@mkdir -p "$(BUILD_DIRECTORY)"
+	@mkdir -p "$(dir $(ADAPTER_LIBRARY))"
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) -fPIC -shared \
 		-I$(REPOSITORY_ROOT)/src -I"$(CUDA_HOME)/include" $(MODULE_INCLUDE_FLAGS) \
 		$(MODULE_COMPILE_FLAGS) \
