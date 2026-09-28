@@ -196,9 +196,15 @@ LAGUNA_SERVING_ADAPTER := build/liblaguna_serving_adapter.$(SHARED_LIBRARY_EXT)
 LAGUNA_MODEL_REVISION ?= 0f573140834b11cfac0c2af97a101a7a69a13e22
 LAGUNA_CONTRACT_SOURCE := model_contracts/laguna_authoritative.json
 LAGUNA_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_CONTRACT_SOURCE)"; else shasum -a 256 "$(LAGUNA_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
-LAGUNA_SERVING_ADAPTER_FLAGS := -DLAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DLAGUNA_CONTRACT_SHA256=\"$(LAGUNA_CONTRACT_SHA256)\" -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\"
+LAGUNA_DESCRIPTION_SOURCE := examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json
+LAGUNA_DESCRIPTION_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_DESCRIPTION_SOURCE)"; else shasum -a 256 "$(LAGUNA_DESCRIPTION_SOURCE)"; fi | awk '{print $$1}')
+LAGUNA_DRIVER_IDENTITY_FLAGS := -DLAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DLAGUNA_CONTRACT_SHA256=\"$(LAGUNA_CONTRACT_SHA256)\" -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\"
+LAGUNA_SERVING_ADAPTER_FLAGS := $(LAGUNA_DRIVER_IDENTITY_FLAGS) -DLAGUNA_MODEL_DESCRIPTION_SHA256=\"$(LAGUNA_DESCRIPTION_SHA256)\"
+LAGUNA_FOREIGN_DESCRIPTION_SHA256 := 0000000000000000000000000000000000000000000000000000000000000000
 TEST_LAGUNA_SERVING_DRIVER_MODULE := \
     build/test_modules/liblaguna_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE := \
+    build/test_modules/liblaguna_serving_foreign_driver_module.$(SHARED_LIBRARY_EXT)
 MUSE_GLIMMER_MODEL_REVISION ?= 4177486a9f199bd7be520eff14431071d5d41ec5
 MUSE_GLIMMER_CONTRACT_SOURCE := model_contracts/muse_glimmer_authoritative.json
 MUSE_GLIMMER_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MUSE_GLIMMER_CONTRACT_SOURCE)"; else shasum -a 256 "$(MUSE_GLIMMER_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
@@ -412,6 +418,7 @@ PYTHON_TESTS := \
 	tests/test_ling_model_header.py \
 	tests/test_laguna_model_header.py \
 	tests/test_laguna_multidev_lane.py \
+	tests/test_laguna_reference_fixture.py \
 	tests/test_laguna_smoke_experts.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
@@ -559,6 +566,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
+	tests/test_glm5_next_nvfp4_spine_scale.py \
 	tests/test_checkpoint_row_read.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
@@ -602,6 +610,7 @@ PYTHON_TESTS := \
 	tests/test_ling_verify_pack.py \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
+	tests/test_mimo26_model_inputs.py \
 	tests/test_mimo26_stagepack.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \
@@ -623,9 +632,11 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_glm53flash.py \
 	tests/test_t1_reference_hy4.py \
 	tests/test_t1_reference_k3.py \
+	tests/test_t1_reference_mimo26.py \
 	tests/test_t1_reference_minimax.py \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_qwen38_27b.py \
+	tests/test_t1_reference_quarantine.py \
 	tests/test_tp_collective_open.py \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
@@ -656,6 +667,16 @@ TEST_HIDDEN_TRANSPORT_MODULE := \
     build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_MODULE := \
     build/test_modules/libmodel_serving_adapter_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE := \
+    build/test_modules/libmodel_serving_adapter_without_prefix_reuse_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE := \
+    build/test_modules/libmodel_serving_adapter_speculative_inline_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE := \
+    build/test_modules/libmodel_serving_adapter_speculative_deferred_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
+    $(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE) \
+    $(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE) \
+    $(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)
 TEST_DSV4_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_DSV4_TP16_SERVING_DRIVER_MODULE := \
@@ -1024,7 +1045,7 @@ build/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c inc
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# Fleet startup protocol phase 1+1b registrar (docs/FLEET_STARTUP_PROTOCOL.md):
+# Fleet startup protocol phase 1+1b registrar (docs/archive/FLEET_STARTUP_PROTOCOL.md):
 # pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
 # must start in milliseconds on every node with zero library dependencies.
 build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
@@ -1117,6 +1138,15 @@ $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c includ
 $(TEST_MODEL_SERVING_ADAPTER_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_CHECKPOINTS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_CHECKPOINTS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_DSV4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_driver.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_MODEL_HEADER) include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h | build/test_modules
 	$(CC) $(CPPFLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1138,8 +1168,11 @@ $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE): tests/fixtures/muse_glimmer_serving_
 $(TEST_LING_SERVING_DRIVER_MODULE): tests/fixtures/ling_serving_adapter_driver.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LING_CONTRACT_SOURCE) | build/test_modules
 	$(CC) $(CPPFLAGS) -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-$(TEST_LAGUNA_SERVING_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) | build/test_modules
+$(TEST_LAGUNA_SERVING_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) $(LAGUNA_DESCRIPTION_SOURCE) | build/test_modules
 	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) | build/test_modules
+	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_DRIVER_IDENTITY_FLAGS) -DLAGUNA_MODEL_DESCRIPTION_SHA256=\"$(LAGUNA_FOREIGN_DESCRIPTION_SHA256)\" $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_defines: tests/test_gemma4_defines.c model-families/gemma4/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_hybrid_state.h model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/gemma4/include -Imodel-families/k3/include -DSPARK_GEMMA4_MODULE_BUILD=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -1215,8 +1248,8 @@ build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtu
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
-build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1265,11 +1298,11 @@ $(LING_SERVING_ADAPTER): modules/ling_resident_decode_stage/source/spark_ling_se
 build/test_ling_serving_adapter: tests/test_ling_serving_adapter.c tests/fixtures/ling_serving_adapter_config.json $(LING_SERVING_ADAPTER) $(TEST_LING_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -I tests/cuda_stub -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DTEST_LING_SERVING_ADAPTER_PATH=\"$(LING_SERVING_ADAPTER)\" -DTEST_LING_SERVING_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIVER_MODULE)\" -DTEST_LING_SERVING_CONFIG_PATH=\"tests/fixtures/ling_serving_adapter_config.json\" $(CFLAGS) tests/test_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-$(LAGUNA_SERVING_ADAPTER): modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(LAGUNA_SERVING_ADAPTER): modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h $(LAGUNA_DESCRIPTION_SOURCE) modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -shared -fPIC $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_laguna_serving_adapter: tests/test_laguna_serving_adapter.c tests/fixtures/laguna_serving_adapter_config.json $(LAGUNA_SERVING_ADAPTER) $(TEST_LAGUNA_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(DEFAULT_BATCH_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+build/test_laguna_serving_adapter: tests/test_laguna_serving_adapter.c tests/fixtures/laguna_serving_adapter_config.json $(LAGUNA_SERVING_ADAPTER) $(TEST_LAGUNA_SERVING_DRIVER_MODULE) $(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(DEFAULT_BATCH_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_FOREIGN_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_serving_adapter: tests/test_gemma4_serving_adapter.c tests/fixtures/gemma4_serving_adapter_config.json tests/fixtures/gemma4_moe_serving_adapter_config.json $(GEMMA4_SERVING_ADAPTER) $(GEMMA4_MOE_SERVING_ADAPTER) $(TEST_GEMMA4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(GEMMA4_INCLUDE_FLAGS) -DTEST_GEMMA4_SERVING_ADAPTER_PATH=\"$(GEMMA4_SERVING_ADAPTER)\" -DTEST_GEMMA4_MOE_SERVING_ADAPTER_PATH=\"$(GEMMA4_MOE_SERVING_ADAPTER)\" -DTEST_GEMMA4_SERVING_DRIVER_PATH=\"$(TEST_GEMMA4_SERVING_DRIVER_MODULE)\" -DTEST_GEMMA4_SERVING_CONFIG_PATH=\"tests/fixtures/gemma4_serving_adapter_config.json\" -DTEST_GEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" -DTEST_GEMMA4_MOE_MODEL_REVISION=\"$(GEMMA4_MOE_MODEL_REVISION)\" -DTEST_GEMMA4_SERVING_TP_DEGREE=16u -DTEST_GEMMA4_SERVING_ADAPTER_ID=\"spark.gemma4.serving-adapter.tp16.v1\" $(CFLAGS) tests/test_gemma4_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@

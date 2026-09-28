@@ -47,6 +47,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t cache_published_token_count;
 	uint32_t cache_pending_token_count;
 	uint32_t cache_deferred_publication;
+	uint32_t cache_decode_publication_closed;
 	uint64_t cache_lookup_epoch;
 	uint64_t inflight_since_ns;
 	uint64_t request_id;
@@ -859,7 +860,10 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 			request->first_draft_policy = extension_policy;
 		}
 		if ( completion->tokens_per_sequence != 1u && request->cache_pending_token_count != 0u )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		{
+			request->cache_pending_token_count = 0u;
+			request->cache_decode_publication_closed = 1u;
+		}
 		status = SparkModelBatchPublishCompletedPrefix(engine,request,
 			request_slots[lane],request->cache_pending_token_count);
 		if ( status != SPARK_STATUS_OK )
@@ -1148,6 +1152,25 @@ static uint32_t SparkModelBatchContextLimit(
 	return(positions != 0u && positions < configuration->max_context_tokens ? positions : configuration->max_context_tokens);
 }
 
+static uint32_t SparkModelBatchDefersDecodePublication(const SparkModelBatchEngine *engine)
+{
+	return((engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u && engine->adapter_descriptor->max_speculative_token_count != 0u ? 1u : 0u);
+}
+
+static void SparkModelBatchLogCacheMode(const SparkModelBatchEngine *engine)
+{
+	const char *decode_mode;
+	decode_mode = "inline";
+	if ( SparkModelBatchDefersDecodePublication(engine) != 0u )
+		decode_mode = "deferred";
+	else if ( engine->adapter_descriptor->max_speculative_token_count != 0u )
+		decode_mode = "inline-until-speculative";
+	fprintf(stderr,"batch engine adapter=%s prefix_reuse=%s decode_checkpoints=%s\n",
+		engine->adapter_descriptor->adapter_id != 0 ? engine->adapter_descriptor->adapter_id : "unnamed",
+		(engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u ? "on" : "off",
+		decode_mode);
+}
+
 static SparkStatus SparkModelBatchInitialize(
 	const SparkModelBatchEngineConfiguration *configuration,
 	SparkModelBatchEngine *engine)
@@ -1184,6 +1207,7 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( engine->adapter_descriptor == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	engine->cache_block_token_count = engine->adapter_descriptor->cache_block_token_count;
+	SparkModelBatchLogCacheMode(engine);
 	engine->pipeline_depth = SparkModelBatchSchedulerPipelineDepth(engine->adapter_descriptor->capability_flags,engine->adapter_descriptor->stage_count,engine->adapter_descriptor->parallel_group_size);
 	if ( engine->cache_block_token_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1393,7 +1417,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		return;
 	slot = (uint32_t)(request - engine->requests);
 	memset(&lookup,0,sizeof(lookup));
-	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) == 0u )
 	{
 		SparkModelBatchApplyPrefixLookup(engine,request,SparkModelBatchRequestTokens(engine,slot),&lookup);
 		return;
@@ -1956,9 +1980,9 @@ static void SparkModelBatchBuildDecodeRows(
 			chain_tokens = block_remaining;
 		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
 		request->cache_deferred_publication = 0u;
-		if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u && engine->adapter_descriptor->max_speculative_token_count != 0u && (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
+		if ( (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (request->cache_decode_publication_closed != 0u || SparkModelBatchDefersDecodePublication(engine) != 0u) )
 		{
-			request->cache_deferred_publication = 1u;
+			request->cache_deferred_publication = request->cache_decode_publication_closed == 0u ? 1u : 0u;
 			engine->scratch_lanes[lane].flags &= ~SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
 			engine->scratch_lanes[lane].cache_publish_token_count = 0u;
 			memset(&engine->scratch_lanes[lane].cache_publish_identity,0,sizeof(engine->scratch_lanes[lane].cache_publish_identity));

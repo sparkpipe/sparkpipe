@@ -41,9 +41,6 @@ MODULE_FAMILY := laguna
 MODULE_IDENTIFIER_PREFIX := spark.laguna.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h3072.l48.gqa.e256.k10
 MODULE_IDENTIFIER_SUFFIX := v2
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
-# The batch-variant ladder: one archive per power of two, emitted by
-# resident_decode_stage_rules.mk from the single template there. Trim for
-# local iteration here, never by editing a variant.
 MODULE_BATCH_VARIANT_BUCKETS ?= 1 2 4 8 16 32 64 128 256 512 1024
 MODULE_TARGET := cuda.sm121.laguna.resident_decode_stage.bf16.expert_$(EXPERT_CODEC)
 MODEL_HEADER := ../../model-families/laguna/include/sparkpipe/spark_laguna_model.h
@@ -94,5 +91,13 @@ GPU_VALIDATOR := validation/validate_laguna_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
+LAGUNA_MODEL_DESCRIPTION := ../../examples/model_descriptions/laguna_resident_decode_stage_$(EXPERT_CODEC)_firmware.json
+LAGUNA_MODEL_DESCRIPTION_SHA256 = $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_MODEL_DESCRIPTION)"; else shasum -a 256 "$(LAGUNA_MODEL_DESCRIPTION)"; fi | awk '{print $$1}')
+
 ADAPTER_SOURCE := source/spark_laguna_serving_adapter.c
-ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS)
+ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS) -DLAGUNA_MODEL_DESCRIPTION_SHA256=\"$(LAGUNA_MODEL_DESCRIPTION_SHA256)\"
+
+.PHONY: laguna_require_model_description
+adapter: laguna_require_model_description
+laguna_require_model_description:
+	@test -r "$(LAGUNA_MODEL_DESCRIPTION)" || { echo "laguna: EXPERT_CODEC=$(EXPERT_CODEC) has no firmware description: $(LAGUNA_MODEL_DESCRIPTION)" >&2; exit 1; }

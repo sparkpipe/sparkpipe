@@ -267,14 +267,18 @@ class LagunaEngine:
         activated = bf16_round_f32(bf16_round_f32(gate * sigmoid(gate)) * up)
         return self.linear(activated, prefix + "down_proj")
 
+    def correction_bias(self, index):
+        for name in (f"{PREFIX}{index}.mlp.experts.e_score_correction_bias",
+                     f"{PREFIX}{index}.mlp.gate.e_score_correction_bias"):
+            if self.st.has(name):
+                return self.tensor(name).reshape(-1)
+        raise LagunaConfigError(
+            f"layer {index} has no router e_score_correction_bias")
+
     def sparse_mlp(self, index, x, sink):
         p = f"{PREFIX}{index}.mlp."
         scores = sigmoid(self.tensor(p + "gate.weight") @ x)
-        bias_name = f"{PREFIX}{index}.mlp.gate.e_score_correction_bias"
-        if bias_name in self.st.map:
-            bias = self.st.pread(bias_name).astype(np.float32).reshape(-1)
-        else:
-            bias = np.zeros(self.experts, dtype=np.float32)
+        bias = self.correction_bias(index)
         choice = scores + bias
         order = np.argsort(-choice, kind="stable")
         selected = np.sort(order[:self.topk])

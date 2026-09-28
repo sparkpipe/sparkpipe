@@ -50,9 +50,6 @@ EXEMPT = {
     "K3_KDA_FULL_RANK_GATE": "same. K3 replaced Kimi Linear's low-rank output "
                              "gate with a full-rank projection, which is what "
                              "kda_gate is low-rank g_a/g_b, like the decay",
-    "K3_ATTNRES_BLOCK_SIZE": "NOT IMPLEMENTED. AttnRes needs 9 hidden states "
-                             "per token across the stage boundary; see "
-                             "docs/MODEL_SUPPORT.md item 7",
     "K3_MXFP4_GROUP": "the routed experts are MXFP4 at group 32; the format "
                       "trait carries the group and no checkpoint is loaded yet",
     "K3_MTP_LAYERS": "0 in config.json, 1 in the report's Table 1. The "

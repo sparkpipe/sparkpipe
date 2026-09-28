@@ -153,6 +153,6 @@ cannot close the route or byte-balance gate. Timeout diagnostics identify the
 rank, rail, phase, stripe, and chunk that stopped progressing.
 
 Measurements and crossover values live only in
-[`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md). Unfinished
+[`../PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md). Unfinished
 implementation and qualification work lives only in
-[`../TECHDEBT.md`](../TECHDEBT.md).
+[`../TECHDEBT.md`](../../TECHDEBT.md).
