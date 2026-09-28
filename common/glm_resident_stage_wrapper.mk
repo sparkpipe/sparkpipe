@@ -67,3 +67,5 @@ adapter:
 		$(GLM_REPO_ROOT)/build/libsparkpipe_model_common.a \
 		$(GLM_REPO_ROOT)/build/libsparkpipe_core.a -ldl -pthread \
 		-o "$(ADAPTER_LIBRARY)"
+
+.DEFAULT_GOAL := all

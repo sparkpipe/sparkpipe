@@ -1,5 +1,5 @@
 {
-  "file_count": 3053,
+  "file_count": 3054,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "8fb39e96c87b1fc51366f4f23c7fbdae964f126c0f50731bdef9a46ada8af674",
-      "size_bytes": 139408
+      "sha256": "265f5a706b60dea282a075f15acf11099197681a389a728ae3182636f7ed17f8",
+      "size_bytes": 139445
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -183,8 +183,8 @@
     },
     {
       "path": "common/glm_resident_stage_wrapper.mk",
-      "sha256": "bb0e30b39d59d916a68b158148fead528e17174d0b114f367dea06fdbc5165f1",
-      "size_bytes": 2833
+      "sha256": "93fe807766cedc9c763947aee25229d7b3ebaf3f49e4be24b8b530d3d322f66d",
+      "size_bytes": 2855
     },
     {
       "path": "config/litellm-config.yaml",
@@ -10067,6 +10067,11 @@
       "size_bytes": 4711
     },
     {
+      "path": "tests/test_module_default_goal.py",
+      "sha256": "5d47c7628aff476c4206b0b641d0fb4063c4bc67d9ea405620df8d4677cbc646",
+      "size_bytes": 1984
+    },
+    {
       "path": "tests/test_module_host_contracts.py",
       "sha256": "314693b31d0c4fff4b15dac2fa399d36bcca9f4c0f64136fb1b12937ea21730b",
       "size_bytes": 1229
@@ -15270,5 +15275,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73937227
+  "total_bytes": 73939270
 }
