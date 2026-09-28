@@ -400,6 +400,11 @@ progress diary.
     route as `INVALID_ARGUMENT`. The qwen38 template returned the raw status
     from submit, and residentd's IPC cannot encode a status above
     `UNSUPPORTED` in a submit result either.
+  - the glm52, glm5_next, laguna and ling GPU validators now compile at the
+    batch bucket of the archive they validate (`SPARK_MODULE_BATCH_BUCKET`).
+    Before, they compiled at the header default of 1024, so
+    `publish_variants` validated every tighter variant with a b1024
+    validator.
 - Some production headers still default a build setting with `#ifndef`, so
   a build that forgets the flag silently gets the default:
   - `SPARK_BATCH_BUCKET` (1024, "the unflagged archive is the b1024

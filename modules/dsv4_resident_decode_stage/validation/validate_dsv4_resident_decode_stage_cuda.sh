@@ -30,21 +30,13 @@ validation_nvcc_extra_args() {
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_directory}/../../spark_resident_decode_stage_cuda_validation_common.sh"
 
-batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"
 validation_defines="${SPARK_DSV4_VALIDATION_DEFINES:-}"
 
 spark_cuda_validation_begin "$@"
 reference_fixture_directory="${repository_root}/qualification/dsv4/reference_vectors/ga_stage0_compsec076_p128"
 reference_verifier="${repository_root}/tools/verify_dsv4_ga_reference_fixture.py"
 spark_cuda_validation_check_hash_format
-case "${batch_bucket}" in
-    1|2|4|8|16|32|64|128|256|512|1024)
-        ;;
-    *)
-        echo "SPARK_MODULE_BATCH_BUCKET must name the archive's built variant" >&2
-        exit 2
-        ;;
-esac
+spark_cuda_validation_check_batch_bucket
 spark_cuda_validation_check_archive
 spark_cuda_validation_check_pack
 spark_cuda_validation_check_source_digests

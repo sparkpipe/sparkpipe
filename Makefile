@@ -602,6 +602,7 @@ PYTHON_TESTS := \
 	tests/test_tp_collective_open.py \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
+	tests/test_validation_batch_bucket.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \

@@ -31,6 +31,7 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' \
+        "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
         "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=${glm5_next_codec_ids[${codec_index}]}" \
         "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"${SPARK_GLM5_NEXT_EXPERT_CODEC}\"" \
         "-DGLM5_NEXT_MODEL_REVISION=\"${model_revision}\"" \
@@ -45,6 +46,7 @@ glm5_next_codec_ids=(2 3 4 5 6 7)
 
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_archive
+spark_cuda_validation_check_batch_bucket
 
 codec_index=-1
 for index in "${!glm5_next_codecs[@]}"; do

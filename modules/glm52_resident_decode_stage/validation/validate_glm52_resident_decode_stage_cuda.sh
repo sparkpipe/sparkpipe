@@ -29,6 +29,7 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' \
+        "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
         "-DGLM_EXPERT_WEIGHT_CODEC=${glm52_codec_ids[${codec_index}]}" \
         "-DGLM_EXPERT_CODEC_NAME=\"${SPARK_GLM52_EXPERT_CODEC}\"" \
         "-DGLM_MODEL_REVISION=\"${model_revision}\"" \
@@ -44,6 +45,7 @@ glm52_codec_ids=(1 2 3 4 5 6 7)
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
+spark_cuda_validation_check_batch_bucket
 spark_cuda_validation_check_source_digests
 
 # The validator walks three tiers on synthetic weights; it does not load the

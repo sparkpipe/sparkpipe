@@ -28,6 +28,7 @@
 #   spark_cuda_validation_begin "$@"
 #   spark_cuda_validation_check_hash_format
 #   spark_cuda_validation_check_archive
+#   spark_cuda_validation_check_batch_bucket   (families built per batch bucket)
 #   spark_cuda_validation_check_pack
 #   spark_cuda_validation_check_source_digests
 #   spark_cuda_validation_check_toolchain
@@ -98,6 +99,18 @@ spark_cuda_validation_check_archive() {
 	    echo "module archive is missing or empty: ${module_archive}" >&2
 	    exit 2
 	fi
+}
+
+spark_cuda_validation_check_batch_bucket() {
+	batch_bucket="${SPARK_MODULE_BATCH_BUCKET:-}"
+	case "${batch_bucket}" in
+	    1|2|4|8|16|32|64|128|256|512|1024)
+	        ;;
+	    *)
+	        echo "SPARK_MODULE_BATCH_BUCKET must name the archive's built variant" >&2
+	        exit 2
+	        ;;
+	esac
 }
 
 spark_cuda_validation_check_pack() {

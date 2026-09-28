@@ -31,6 +31,7 @@ validation_include_dirs() {
 
 validation_nvcc_extra_args() {
     printf '%s\n' \
+        "-DSPARK_BATCH_BUCKET=${batch_bucket}" \
         "-DLAGUNA_EXPERT_WEIGHT_CODEC=${laguna_codec_ids[${codec_index}]}" \
         "-DLAGUNA_EXPERT_CODEC_NAME=\"${SPARK_LAGUNA_EXPERT_CODEC}\"" \
         "-DLAGUNA_MODEL_REVISION=\"${model_revision}\"" \
@@ -45,6 +46,7 @@ laguna_codec_ids=(1 2 3 4 5 6 7)
 
 spark_cuda_validation_begin "$@"
 spark_cuda_validation_check_archive
+spark_cuda_validation_check_batch_bucket
 
 codec_index=-1
 for index in "${!laguna_codecs[@]}"; do
