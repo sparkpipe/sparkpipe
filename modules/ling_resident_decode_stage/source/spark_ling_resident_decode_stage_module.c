@@ -1072,7 +1072,7 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 	wave->kda_k_window_pool = state->kda_k_window_pool;
 	wave->kda_v_window_pool = state->kda_v_window_pool;
 	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
-	wave->kda_state_index = state->kda_state_index_device;
+	wave->kda_state_index = slot->resident_slots;
 	wave->kda_layer_count = state->kda_layer_count;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
