@@ -794,6 +794,60 @@ static int32_t LingLayerDenseMlp(
         stream);
 }
 
+static int32_t LingLaunchNarrowInputLinear(
+    const uint16_t *activation_bf16,
+    const void *weight_bf16,
+    uint16_t *output_bf16,
+    const uint32_t *row_offset,
+    uint32_t *tile_prefix,
+    uint32_t rows,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    uint32_t first;
+    uint32_t count;
+    int32_t status;
+
+    if ((input_dimension % LmBf16Format::kTileK) == 0u)
+    {
+        return LingLaunchBf16Linear(
+            activation_bf16,
+            weight_bf16,
+            output_bf16,
+            row_offset,
+            tile_prefix,
+            rows,
+            input_dimension,
+            output_dimension,
+            output_dimension,
+            0u,
+            multiprocessors,
+            stream);
+    }
+    for (first = 0u; first < rows; first += count)
+    {
+        count = rows - first < LM_SKINNY_ROWS ? rows - first : LM_SKINNY_ROWS;
+        status = LmSkinnyDense<LmBf16Format>(
+            weight_bf16,
+            activation_bf16 + (uint64_t)first * input_dimension,
+            output_bf16 + (uint64_t)first * output_dimension,
+            0,
+            count,
+            input_dimension,
+            output_dimension,
+            output_dimension,
+            0u,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+    }
+    return LM_LAUNCH_OK;
+}
+
 static int32_t LingLaunchSiluMul(
     const uint16_t *gate_up_bf16,
     uint16_t *intermediate_bf16,
@@ -967,6 +1021,36 @@ static int32_t LingLayerMoe(
 	gemm.source_row_map = buffers->route_source_token;
 	gemm.source_row_count = rows;
     gemm.output_bf16 = buffers->gate_up_bf16;
+    status = LmSkinnyExperts<ExpertFormat>(
+        buffers->expert_w1_weight,
+        gemm.scale_b,
+        buffers->normed_bf16,
+        buffers->gate_up_bf16,
+        buffers->route_expert,
+        buffers->route_packed_row,
+        packed_rows,
+        LING_TOP_K,
+        0u,
+        LING_HIDDEN,
+        buffers->expert_w1_rows,
+        stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+    {
+        status = LmSkinnyGroupedExperts<ExpertFormat>(
+            buffers->expert_w1_weight,
+            gemm.scale_b,
+            buffers->normed_bf16,
+            buffers->gate_up_bf16,
+            buffers->group_row_offset,
+            buffers->route_source_token,
+            LING_EXPERTS,
+            packed_rows,
+            0u,
+            LING_HIDDEN,
+            buffers->expert_w1_rows,
+            stream);
+    }
+    if (status == LM_LAUNCH_ERR_SHAPE)
     status = LmGemmWeightOnlyIndirectLaunch<
         ExpertFormat,
         LING_LAYER_TILE_N,
@@ -1011,6 +1095,36 @@ static int32_t LingLayerMoe(
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
     gemm.output_bf16 = buffers->expert_out_bf16;
+    status = LmSkinnyExperts<ExpertFormat>(
+        buffers->expert_w2_weight,
+        gemm.scale_b,
+        buffers->intermediate_bf16,
+        buffers->expert_out_bf16,
+        buffers->route_expert,
+        buffers->route_packed_row,
+        packed_rows,
+        LING_TOP_K,
+        1u,
+        buffers->expert_intermediate,
+        LING_HIDDEN,
+        stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+    {
+        status = LmSkinnyGroupedExperts<ExpertFormat>(
+            buffers->expert_w2_weight,
+            gemm.scale_b,
+            buffers->intermediate_bf16,
+            buffers->expert_out_bf16,
+            buffers->group_row_offset,
+            buffers->route_source_token,
+            LING_EXPERTS,
+            packed_rows,
+            1u,
+            buffers->expert_intermediate,
+            LING_HIDDEN,
+            stream);
+    }
+    if (status == LM_LAUNCH_ERR_SHAPE)
     status = LmGemmWeightOnlyLaunch<
         ExpertFormat,
         LING_LAYER_TILE_N,
@@ -1077,7 +1191,7 @@ static int32_t LingLayerMoe(
     {
         return status;
     }
-    status = LingLaunchBf16Linear(
+    status = LingLaunchNarrowInputLinear(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
         buffers->shared_out_bf16,
@@ -1086,8 +1200,6 @@ static int32_t LingLayerMoe(
         rows,
         buffers->shared_intermediate,
         LING_HIDDEN,
-        LING_HIDDEN,
-        0u,
         multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
