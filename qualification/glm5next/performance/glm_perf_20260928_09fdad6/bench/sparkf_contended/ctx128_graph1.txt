@@ -1,8 +1,0 @@
-ROOFLINE-DEVICE sm=12.1 multiprocessors=48 l2_bytes=25165824 tp=16 layers=45 experts=288 copies=2
-ROOFLINE-MODEL fixed_mb_kda_dense=41.2 fixed_mb_kda_moe=27.9 fixed_mb_dsa_moe=85.5 expert_mb=1.622 head_mb=79.3
-ROOFLINE-GRAPH rows=1 nodes=1504 replays=40 median_ms=22.532 min_ms=19.120 max_ms=142.782 mean_ms=35.335
-ROOFLINE rows=1 context=128 index_cp=1 step_ms=35.33 compute_tok_s=28 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.55 achieved_gbps=72 memory_bound_ms=9.35 hidden_finite=1
-ROOFLINE-FLEET rows=1 collectives=92 direct_ms=10.2 rsag_ms=18.5 tok_s_direct=22 tok_s_rsag=19 tok_s_rsag_overlapped=28
-ROOFLINE-PHASES rows=1 attention_kda_ms=8.71 attention_dsa_ms=5.29 attention_post_ms=0.40 route_ms=4.93 experts_ms=6.34 mlp_post_ms=0.45 begin_head_ms=1.23
-ROOFLINE-EXPERTS rows=1 up_ms=71.05 down_ms=1.34 combine_ms=2.07 up_gbps=5 down_gbps=132
-ROOFLINE-DONE

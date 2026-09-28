@@ -595,15 +595,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaW
 	wave->slot->route_recorded = 1u;
 	return(LM_LAUNCH_OK);
 }
-extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
-{
-	int32_t status;
-	status = SparkGlm5NextValidateWaveShape(wave);
-	if ( status != LM_LAUNCH_OK || local_layer >= wave->layer_count )
-		return(LM_LAUNCH_ERR_SHAPE);
-	wave->slot->route_recorded = 0u;
-	return(SparkGlm5NextRunLayerMlpRoute(wave,local_layer));
-}
 static int32_t SparkGlm5NextMtpReduceRows(const SparkGlm5NextMtpDraftOps *ops,uint16_t *rows_bf16)
 {
 	if ( ops == 0 || ops->reduce_rows_bf16 == 0 )
