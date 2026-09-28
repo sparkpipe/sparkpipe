@@ -731,9 +731,11 @@ GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_re
 build:
 	mkdir -p build
 
+build/test_glm5_next_head_offset: tests/test_glm5_next_head_offset.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
 .PHONY: test-glm-head-offset
-test-glm-head-offset: | build
-	$(GLM5_NEXT_NVCC) tests/test_glm5_next_head_offset.cu $(GLM5_NEXT_CUDA_LINK) -o build/test_glm5_next_head_offset
+test-glm-head-offset: build/test_glm5_next_head_offset
 	./build/test_glm5_next_head_offset
 
 build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_next_hc_mix_baseline.cuh inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
