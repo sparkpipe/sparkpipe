@@ -516,8 +516,10 @@ progress diary.
   un-noised bounds, and drafts are keyed by relative positions. Noise the
   screen bounds and key drafts by absolute position to lift both. Sampled
   waves replay their own CUDA graphs (the graph key carries the head mode);
-  a GPU check that a sampled replay draws the linear chain's tokens for the
-  same seed is still owed.
+  `test-glm5-next-rows-kernels` checks on a GB10 that a captured sampled
+  head replays each step's uploaded seeds and positions and draws the eager
+  tokens bitwise. A TP chain run that compares a sampled graph stream with
+  the linear chain for the same seed is still owed.
 - Draw sampled tokens as the argmax of logit/T plus Gumbel noise keyed by
   (seed, absolute position, token id), as TensorFold's exact sampler does, so
   a seeded sampled stream replays exactly and a draft is accepted exactly
